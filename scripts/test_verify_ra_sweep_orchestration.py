@@ -69,7 +69,7 @@ fn sweep_orchestration_rejects_contract_not_bound_to_run_spec() {}
         "justfile",
         justfile
         if justfile is not None
-        else """source-fence-static:
+        else """source-fence-static-inner:
     python3 scripts/test_verify_ra_sweep_orchestration.py
     python3 scripts/verify_ra_sweep_orchestration.py
 """,
@@ -204,7 +204,7 @@ def test_rejects_missing_source_fence_wiring() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_common(root, justfile="source-fence-static:\n    python3 scripts/other.py\n")
+        write_common(root, justfile="source-fence-static-inner:\n    python3 scripts/other.py\n")
 
         findings = verifier.scan_root(root)
 

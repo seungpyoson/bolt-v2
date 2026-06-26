@@ -216,7 +216,7 @@ def write_common(
     write(root / "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_research_analytics.rs", compliant_tests() if tests is None else tests)
     write(
         root / "justfile",
-        """source-fence-static:
+        """source-fence-static-inner:
     python3 scripts/test_verify_ra_findings_promotion.py
     python3 scripts/verify_ra_findings_promotion.py
 """,

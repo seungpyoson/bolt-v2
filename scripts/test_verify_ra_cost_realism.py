@@ -105,7 +105,7 @@ def write_common(root: Path, *, run_manifest: str | None = None, tasks_checked: 
     )
     write(
         root / "justfile",
-        """source-fence-static:
+        """source-fence-static-inner:
     python3 scripts/test_verify_ra_cost_realism.py
     python3 scripts/verify_ra_cost_realism.py
 """,

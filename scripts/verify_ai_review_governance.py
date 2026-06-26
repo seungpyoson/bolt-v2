@@ -4,19 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+HTML_ANCHOR_RE = re.compile(r"<a\b[^>]*>\s*</a>", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
 class MirrorRule:
     name: str
     agents_id: str
-    pr_agent_rule: str
+    statement_markers: tuple[str, ...] = ()
 
 
 PR_AGENT_CONFIG_PATH = ".pr_agent.toml"
@@ -27,52 +29,50 @@ MIRRORED_RULES = (
     MirrorRule(
         "scope discipline",
         "governance-scope-discipline",
-        "Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice; flag out-of-scope changes, hidden adjacent work, and missing claimed scope.",
+        (
+            "One branch or PR may cover",
+            "Reviewers must flag out-of-scope changes",
+        ),
     ),
     MirrorRule(
         "no hardcodes",
         "repo-rule-no-hardcodes",
-        "NO HARDCODES: every runtime value comes from TOML config; no string literals for IDs, quantities, timeouts, or any runtime value in code.",
     ),
     MirrorRule(
         "no dual paths",
         "repo-rule-no-dual-paths",
-        "NO DUAL PATHS: one way to do each thing; one config format, one secret source, one build path.",
     ),
     MirrorRule(
         "no debts",
         "repo-rule-no-debts",
-        "NO DEBTS: no TODO, no \"fix later\", no unpinned dependencies, no uncommitted work.",
     ),
     MirrorRule(
         "no credential display",
         "repo-rule-no-credential-display",
-        "NO CREDENTIAL DISPLAY: never cat, print, or log API keys, private keys, or secrets.",
     ),
     MirrorRule(
         "ssm secret source",
         "repo-rule-ssm-single-secret-source",
-        "SSM is the single secret source for runtime credentials; do not add environment variable fallbacks or alternate secret backends in product code.",
     ),
     MirrorRule(
         "evidence-driven verification",
         "governance-evidence-driven-verification",
-        "Evidence-driven verification: every claim must map to tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit user-approved risk acceptance.",
+        ("Every claim must map",),
     ),
     MirrorRule(
         "external review gate",
         "governance-evidence-driven-verification",
-        "External review happens only after local findings are resolved and exact-head CI or a user-approved equivalent is green.",
+        ("External review:",),
     ),
     MirrorRule(
         "remote-first rust verification",
         "governance-remote-first-rust-verification",
-        "Remote-first Rust verification: do not request local compile-heavy Rust checks by default; request remote CI or allowed static checks.",
+        ("Do not run local compile-heavy Rust verification by default",),
     ),
     MirrorRule(
         "required human review",
         "governance-review-bar",
-        "Required human review must be preserved; agents must not merge or bypass the required reviewer gate.",
+        ("Agents must not merge",),
     ),
 )
 
@@ -222,12 +222,78 @@ def missing_snippets(label: str, text: str, snippets: tuple[str, ...]) -> list[s
     return [f"{label} missing expected snippet: {snippet!r}" for snippet in snippets if snippet not in text]
 
 
-def agents_rule_id(rule_id: str) -> str:
-    return f'id="{rule_id}"'
+def anchor_tag_pattern(rule_id: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"<a\b[^>]*\bid\s*=\s*['\"]{re.escape(rule_id)}['\"][^>]*>\s*</a>",
+        re.IGNORECASE,
+    )
 
 
-def pr_agent_rule_line(rule: MirrorRule) -> str:
-    return f"- {rule.pr_agent_rule}"
+def plain_statement(text: str) -> str:
+    text = HTML_ANCHOR_RE.sub("", text)
+    text = re.sub(r"^\s*(?:[-*]|\d+\.)\s+", "", text)
+    text = text.replace("**", "").replace("`", "")
+    text = re.sub(r"\s+\u2014\s+", ": ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def anchored_region(agents_md: str, rule_id: str) -> str | None:
+    match = anchor_tag_pattern(rule_id).search(agents_md)
+    if match is None:
+        return None
+    next_anchor = re.search(r"<a\b[^>]*\bid\s*=", agents_md[match.end() :], re.IGNORECASE)
+    end = len(agents_md) if next_anchor is None else match.end() + next_anchor.start()
+    return agents_md[match.start() : end]
+
+
+def anchored_line_statement(agents_md: str, rule_id: str) -> str | None:
+    pattern = anchor_tag_pattern(rule_id)
+    for line in agents_md.splitlines():
+        if pattern.search(line):
+            return plain_statement(line)
+    return None
+
+
+def bullet_statements(region: str) -> list[str]:
+    bullets: list[str] = []
+    current: list[str] = []
+    for raw_line in region.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("- "):
+            if current:
+                bullets.append(plain_statement(" ".join(current)))
+            current = [stripped]
+            continue
+        if current and stripped and not stripped.startswith("#"):
+            current.append(stripped)
+            continue
+        if current:
+            bullets.append(plain_statement(" ".join(current)))
+            current = []
+    if current:
+        bullets.append(plain_statement(" ".join(current)))
+    return bullets
+
+
+def mirrored_agents_statement(rule: MirrorRule, agents_md: str) -> str | None:
+    if not rule.statement_markers:
+        return anchored_line_statement(agents_md, rule.agents_id)
+
+    region = anchored_region(agents_md, rule.agents_id)
+    if region is None:
+        return None
+    bullets = bullet_statements(region)
+    selected: list[str] = []
+    for marker in rule.statement_markers:
+        statement = next((bullet for bullet in bullets if marker in bullet), None)
+        if statement is None:
+            return None
+        selected.append(statement)
+    return " ".join(selected)
+
+
+def pr_agent_rule_line(statement: str) -> str:
+    return f"- {statement}"
 
 
 def verify_ai_review_config(ai_review_toml: str) -> list[str]:
@@ -388,10 +454,13 @@ def verify_texts(
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, smoke_workflow, "smoke", setup_required=False))
 
     for rule in MIRRORED_RULES:
-        expected_id = agents_rule_id(rule.agents_id)
-        if expected_id not in agents_md:
+        if anchor_tag_pattern(rule.agents_id).search(agents_md) is None:
             findings.append(f"AGENTS.md missing mirrored rule ID {rule.agents_id!r} for {rule.name!r}")
-        expected_line = pr_agent_rule_line(rule)
+        statement = mirrored_agents_statement(rule, agents_md)
+        if statement is None:
+            findings.append(f"AGENTS.md missing mirrored rule payload for {rule.name!r} at ID {rule.agents_id!r}")
+            continue
+        expected_line = pr_agent_rule_line(statement)
         if expected_line not in extra:
             findings.append(f".pr_agent.toml missing mirrored AGENTS.md rule {rule.name!r}: {expected_line!r}")
 
@@ -459,7 +528,7 @@ def run_self_tests(repo_root: Path) -> None:
     if baseline:
         raise AssertionError(f"real repository must satisfy AI review governance check, got {baseline!r}")
 
-    reworded_agents_rule = verify_texts(
+    reworded_agents_rule_without_pr_agent_update = verify_texts(
         agents_md=agents.replace("one way to do each thing", "one accepted path for each behavior"),
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
@@ -467,8 +536,30 @@ def run_self_tests(repo_root: Path) -> None:
         kimi_workflow=kimi,
         smoke_workflow=smoke,
     )
-    if reworded_agents_rule:
-        raise AssertionError(f"AGENTS rule prose reword must not break mirror governance, got {reworded_agents_rule!r}")
+    assert_finding(
+        "reworded AGENTS rule without PR-Agent mirror update",
+        reworded_agents_rule_without_pr_agent_update,
+        ".pr_agent.toml missing mirrored AGENTS.md rule",
+    )
+
+    moved_or_renumbered_agents_rule = verify_texts(
+        agents_md=agents.replace("## Repo Rules", "## Repo Runtime Rules")
+        .replace("2. <a id=\"repo-rule-no-dual-paths\"", "22. <a id=\"repo-rule-no-dual-paths\"")
+        .replace(
+            "These repo-level rules are in addition to any higher-level agent instructions.",
+            "These repository instructions may move around without changing rule meaning.",
+        ),
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    if moved_or_renumbered_agents_rule:
+        raise AssertionError(
+            "AGENTS heading, ordinal, and surrounding prose changes must not break mirror governance, "
+            f"got {moved_or_renumbered_agents_rule!r}"
+        )
 
     wrong_ai_review_config = verify_texts(
         agents_md=agents,

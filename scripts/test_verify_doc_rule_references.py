@@ -78,13 +78,15 @@ One coherent strategy-intent scope (`../../../AGENTS.md#repo-rule-strategies-pro
 """
 
 
-def justfile_text(*, wired: bool = True) -> str:
+def justfile_text(*, wired: bool = True, standalone_only: bool = False) -> str:
     commands = (
         "    python3 scripts/test_verify_doc_rule_references.py\n"
         "    python3 scripts/verify_doc_rule_references.py\n"
         if wired
         else ""
     )
+    if standalone_only:
+        return f"verify-doc-rule-references:\n{commands}\nsource-fence-static-inner:\n"
     return f"source-fence-static-inner:\n{commands}"
 
 
@@ -178,6 +180,18 @@ def test_missing_source_fence_wiring_is_a_finding() -> None:
     assert any("source-fence-static must run" in finding for finding in findings), findings
 
 
+def test_standalone_recipe_does_not_satisfy_source_fence_static_inner_wiring() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root, verifier)
+        write_file(root, "justfile", justfile_text(standalone_only=True))
+
+        findings = verifier.scan_root(root)
+
+    assert any("source-fence-static" in finding for finding in findings), findings
+
+
 def test_cli_fails_with_actionable_output() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -200,6 +214,7 @@ def main() -> int:
         test_unknown_repo_rule_link_is_a_finding,
         test_a1_single_source_truth_must_not_use_ssm_rule,
         test_missing_source_fence_wiring_is_a_finding,
+        test_standalone_recipe_does_not_satisfy_source_fence_static_inner_wiring,
         test_cli_fails_with_actionable_output,
     ]
     for test in tests:

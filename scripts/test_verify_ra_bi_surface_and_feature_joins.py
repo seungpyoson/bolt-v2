@@ -176,7 +176,7 @@ class RaBiSurfaceVerifierTests(unittest.TestCase):
         just_text = ""
         if just_wired:
             just_text = (
-                "source-fence-static:\n"
+                "source-fence-static-inner:\n"
                 "    python3 scripts/test_verify_ra_bi_surface_and_feature_joins.py\n"
                 "    python3 scripts/verify_ra_bi_surface_and_feature_joins.py\n"
             )

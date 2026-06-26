@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from justfile_recipe_checks import missing_recipe_commands
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RA_PATH = Path("crates/backtesting-vertical-slice/src/research_analytics.rs")
@@ -180,12 +182,14 @@ def scan_root(root: Path) -> list[str]:
     if "promotion-packages" not in test_text:
         findings.append(f"{RA_TEST_PATH}: missing negative proof that promotion-packages paths are rejected")
 
-    for command in (
-        "python3 scripts/test_verify_ra_findings_promotion.py",
-        "python3 scripts/verify_ra_findings_promotion.py",
+    for command in missing_recipe_commands(
+        just_text,
+        (
+            "python3 scripts/test_verify_ra_findings_promotion.py",
+            "python3 scripts/verify_ra_findings_promotion.py",
+        ),
     ):
-        if command not in just_text:
-            findings.append(f"{JUSTFILE_PATH}: source-fence-static must run {command}")
+        findings.append(f"{JUSTFILE_PATH}: source-fence-static must run {command}")
 
     return findings
 

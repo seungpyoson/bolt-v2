@@ -126,7 +126,7 @@ def write_common(
     write(root / "crates/backtesting-vertical-slice/tests/artifact_store_contract.rs", compliant_tests() if tests is None else tests)
     write(
         root / "justfile",
-        """source-fence-static:
+        """source-fence-static-inner:
     python3 scripts/test_verify_ra_artifact_index_commit.py
     python3 scripts/verify_ra_artifact_index_commit.py
 """,

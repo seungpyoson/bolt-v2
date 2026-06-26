@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from justfile_recipe_checks import missing_recipe_commands
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_RS = Path("crates/backtesting-vertical-slice/src/dashboard_contract.rs")
@@ -16,7 +18,7 @@ DASHBOARD_PLAN = Path("specs/023-nt-research-analytics-platform/3-dashboard/plan
 DASHBOARD_TASKS = Path("specs/023-nt-research-analytics-platform/3-dashboard/tasks.md")
 JUSTFILE = Path("justfile")
 
-CHECKED_TASKS = (
+REQUIRED_TASK_ROWS = (
     "DASH-003",
     "DASH-004",
     "DASH-005",
@@ -121,12 +123,12 @@ def scan_root(root: Path) -> list[str]:
     require_snippets(DASHBOARD_TEST, test_text, TEST_SNIPPETS, findings)
     require_marker_ids(DASHBOARD_PLAN, plan_text, PLAN_MARKER, PLAN_REQUIRED_IDS, findings)
 
-    for task_id in CHECKED_TASKS:
+    for task_id in REQUIRED_TASK_ROWS:
         if tasks_text and not task_is_present(tasks_text, task_id):
             findings.append(f"{DASHBOARD_TASKS}: {task_id} task row is missing")
 
-    for command in JUSTFILE_COMMANDS:
-        if justfile_text and command not in justfile_text:
+    if justfile_text:
+        for command in missing_recipe_commands(justfile_text, JUSTFILE_COMMANDS):
             findings.append(f"{JUSTFILE}: source-fence-static must run {command}")
 
     return findings

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from bolt_v3_source_roots import OUTCOME_GROUP_SOURCE_ROOTS, source_set_files
+from justfile_recipe_checks import missing_recipe_commands
 from verify_bolt_v3_provider_leaks import production_text
 from verify_bolt_v3_pure_rust_runtime import strip_rust_comments_and_literals
 
@@ -350,12 +351,14 @@ def validate_just_wiring(root: Path) -> list[str]:
 
     text = uncommented_justfile_text(path.read_text(encoding="utf-8"))
     findings = []
-    for command in (
-        "python3 scripts/test_verify_outcome_group_nt_reuse.py",
-        "python3 scripts/verify_outcome_group_nt_reuse.py",
+    for command in missing_recipe_commands(
+        text,
+        (
+            "python3 scripts/test_verify_outcome_group_nt_reuse.py",
+            "python3 scripts/verify_outcome_group_nt_reuse.py",
+        ),
     ):
-        if command not in text:
-            findings.append(f"source-fence-static must run {command}")
+        findings.append(f"source-fence-static must run {command}")
     return findings
 
 

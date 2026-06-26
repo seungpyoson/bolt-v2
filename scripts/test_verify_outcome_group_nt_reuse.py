@@ -158,7 +158,7 @@ def write_fixture(
         if justfile_text is not None
         else textwrap.dedent(
             """
-            source-fence-static:
+            source-fence-static-inner:
                 python3 scripts/test_verify_outcome_group_nt_reuse.py
                 python3 scripts/verify_outcome_group_nt_reuse.py
             """
@@ -363,7 +363,7 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
             write_fixture(
                 root,
                 sources={"src/bolt_v3_basket_execution.rs": good_execution_source()},
-                justfile_text="source-fence-static:\n    python3 scripts/other.py\n",
+                justfile_text="source-fence-static-inner:\n    python3 scripts/other.py\n",
             )
 
             findings = VERIFIER.collect_findings(root)

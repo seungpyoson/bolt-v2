@@ -316,11 +316,33 @@ def test_validate_docs_rejects_blanket_non_gtd_expiry_claim() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,
         CURRENT_STATUS_MAP,
+        data_model="- `expire_time_unix_nanos` is exclusively for GTD orders",
+    )
+
+    if not any("data model" in finding and "non-GTD expiry" in finding for finding in findings):
+        raise AssertionError(f"expected data-model expiry finding, got {findings!r}")
+
+
+def test_validate_docs_keeps_non_gtd_expiry_no_regression_case() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
         data_model="- `expire_time_unix_nanos` only when GTD is enabled by a reviewed slice",
     )
 
     if not any("data model" in finding and "non-GTD expiry" in finding for finding in findings):
         raise AssertionError(f"expected data-model expiry finding, got {findings!r}")
+
+
+def test_validate_docs_allows_current_gtd_expiry_usage_statement() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        data_model="- `expire_time_unix_nanos` is only used for GTD orders.",
+    )
+
+    if any("data model" in finding and "non-GTD expiry" in finding for finding in findings):
+        raise AssertionError(f"expected current-state expiry usage wording to pass, got {findings!r}")
 
 
 def test_validate_docs_rejects_removed_market_exit_fields_and_requires_forced_exit_order() -> None:
@@ -406,13 +428,23 @@ def test_validate_docs_rejects_equivalent_trailing_stop_market_default_field_req
             )
 
 
-def test_validate_docs_rejects_completed_phase50_blocker_wording() -> None:
+def completed_phase_task_rows() -> str:
+    return """
+- [x] T224 Verify Phase 50 focused checks and exact-head PR state
+- [x] T228 Verify Phase 51 focused checks and exact-head PR state
+- [x] T233 Verify Phase 52 focused checks and exact-head PR state
+- [x] T236 Verify Phase 53 focused checks and exact-head PR state
+- [x] T240 Verify Phase 54 focused checks and exact-head PR state
+"""
+
+
+def test_validate_docs_rejects_completed_phase50_blocker_rewording() -> None:
     stale_tasks = """
 - [x] T221 [US3] RED: Add regression proving post-only entry book-impact cap derives depth from the passive book side
 - [x] T222 [US3] RED: Add regression proving Managed external position close cancels a resting pending entry before flattening
 - [x] T223 [US3] GREEN: Fix strategy-owned sizing and lifecycle paths without changing shared NT order construction
-- Phase 50 blocks completion because current-head PR-body/Greptile evidence and source inspection found maker entry sizing still uses taker-side book depth and external Managed close still drops a resting pending entry without NT cancel.
-"""
+- Phase 50 still prevents completion because current-head PR-body/Greptile evidence and source inspection found maker entry sizing still uses taker-side book depth and external Managed close still drops a resting pending entry without NT cancel.
+""" + completed_phase_task_rows()
 
     findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP, tasks=stale_tasks)
     expected_fragments = [
@@ -426,13 +458,30 @@ def test_validate_docs_rejects_completed_phase50_blocker_wording() -> None:
             )
 
 
-def test_validate_docs_rejects_completed_phase47_and_phase48_blocker_wording() -> None:
+def test_validate_docs_keeps_completed_phase_blocker_no_regression_case() -> None:
+    stale_tasks = """
+- Phase 50 blocks completion because current-head review found maker entry sizing still uses taker-side book depth.
+""" + completed_phase_task_rows()
+
+    findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP, tasks=stale_tasks)
+    expected_fragments = [
+        "Phase 50",
+        "open/blocking",
+    ]
+    for fragment in expected_fragments:
+        if not any(fragment in finding for finding in findings):
+            raise AssertionError(
+                f"expected stale completed-Phase-50 fragment {fragment!r}, got {findings!r}"
+            )
+
+
+def test_validate_docs_rejects_completed_phase47_and_phase48_blocker_rewording() -> None:
     stale_tasks = """
 - [x] T209 [US3] GREEN: Add a single TOML-owned forced-exit order template path and remove the hardcoded forced-flat market-order synthesis
 - [x] T214 [US3] GREEN: Update active schema docs/verifier and add the NT manage-stop compatibility guard without adding venue or maker/taker policy
-- Phase 47 blocks completion because current-head multi-agent review found forced-flat exit order semantics still synthesized as Market/TIF/reduce-only fields in strategy code rather than carried as a TOML-owned NT order template.
-- Phase 48 blocks completion because latest-head multi-agent review found active schema docs still describe removed market-exit fields and `manage_stop=true` can silently route non-market `forced_exit_order` configs through NT's built-in market close path.
-"""
+- Phase 47 is blocked pending current-head multi-agent review closure for forced-flat exit order semantics still synthesized as Market/TIF/reduce-only fields in strategy code rather than carried as a TOML-owned NT order template.
+- Phase 48 still prevents completion because latest-head multi-agent review found active schema docs still describe removed market-exit fields and `manage_stop=true` can silently route non-market `forced_exit_order` configs through NT's built-in market close path.
+""" + completed_phase_task_rows()
 
     findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP, tasks=stale_tasks)
     expected_fragments = [
@@ -447,12 +496,12 @@ def test_validate_docs_rejects_completed_phase47_and_phase48_blocker_wording() -
             )
 
 
-def test_validate_docs_rejects_completed_phase34_default_blocker_wording() -> None:
+def test_validate_docs_rejects_completed_phase34_default_blocker_rewording() -> None:
     stale_tasks = """
 - [x] T150 [US2] Verify focused TrailingStopMarket tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
-- Phase 34 blocks completion because multi-agent pinned-NT review found TrailingStopMarket validation still requires optional fields that NT defaults.
+- Phase 34 is blocked pending multi-agent pinned-NT review closure for TrailingStopMarket validation still requiring optional fields that NT defaults.
 - Phase 51 closes the TrailingStopMarket schema-default drift and equivalent-wording verifier gap; only terminal reviewer/no-mistakes state remains open in T228.
-"""
+""" + completed_phase_task_rows()
 
     findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP, tasks=stale_tasks)
     expected_fragments = [
@@ -637,14 +686,13 @@ def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> 
     stale_runtime_contracts = CURRENT_RUNTIME_CONTRACTS.replace("`activation_price`, ", "")
     stale_status_map = CURRENT_STATUS_MAP.replace("forced_exit_order", "exit_order")
     stale_maker_contract = (
-        "Forced-flat exits use the same configured maker exit shape until a separate "
-        "TOML-owned forced-exit override exists.\n"
-        "bolt-v3 must not enable `gtd` until this contract adds an explicit TOML-owned "
-        "expiry policy.\n"
+        "Forced-flat exits are blocked pending a TOML-owned forced-exit override.\n"
+        "The expiry policy must be approved before enabling GTD.\n"
+        "Maps TOML-owned timing into NT expire_time. This policy is not implemented.\n"
     )
     stale_maker_data_model = (
         "Rejected values:\n"
-        "- limit + post-only + `gtd` until a TOML-owned expiry policy is approved\n"
+        "- The expiry policy must be approved before enabling GTD.\n"
     )
 
     findings = VERIFIER.validate_docs(
@@ -665,6 +713,38 @@ def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> 
     for fragment in expected_fragments:
         if not any(fragment in finding for finding in findings):
             raise AssertionError(f"expected {fragment!r} in findings, got {findings!r}")
+
+
+def test_validate_docs_keeps_maker_scope_stale_no_regression_case() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        maker_scope_contract=(
+            "Forced-flat exits use the same configured maker exit shape until a separate "
+            "TOML-owned forced-exit override exists.\n"
+            "bolt-v3 must not enable `gtd` until this contract adds an explicit TOML-owned "
+            "expiry policy.\n"
+        ),
+    )
+
+    expected_fragments = [
+        "maker scope contract: forced-exit override still described as missing",
+        "maker scope contract: GTD still described as blocked pending expiry policy",
+    ]
+    for fragment in expected_fragments:
+        if not any(fragment in finding for finding in findings):
+            raise AssertionError(f"expected {fragment!r} in findings, got {findings!r}")
+
+
+def test_validate_docs_allows_current_forced_exit_override_requirement() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        maker_scope_contract="A separate forced-exit override template is required.",
+    )
+
+    if any("forced-exit override still described as missing" in finding for finding in findings):
+        raise AssertionError(f"expected current forced-exit override requirement to pass, got {findings!r}")
 
 
 def test_validate_docs_rejects_stale_strategy_schema_version_examples() -> None:
@@ -763,12 +843,15 @@ def main() -> int:
         test_validate_docs_rejects_stale_contract_short_side_claim,
         test_validate_docs_rejects_stale_spec_short_side_claim,
         test_validate_docs_rejects_blanket_non_gtd_expiry_claim,
+        test_validate_docs_keeps_non_gtd_expiry_no_regression_case,
+        test_validate_docs_allows_current_gtd_expiry_usage_statement,
         test_validate_docs_rejects_removed_market_exit_fields_and_requires_forced_exit_order,
         test_validate_docs_rejects_trailing_stop_market_required_default_field_claims,
         test_validate_docs_rejects_equivalent_trailing_stop_market_default_field_requirements,
-        test_validate_docs_rejects_completed_phase50_blocker_wording,
-        test_validate_docs_rejects_completed_phase47_and_phase48_blocker_wording,
-        test_validate_docs_rejects_completed_phase34_default_blocker_wording,
+        test_validate_docs_rejects_completed_phase50_blocker_rewording,
+        test_validate_docs_keeps_completed_phase_blocker_no_regression_case,
+        test_validate_docs_rejects_completed_phase47_and_phase48_blocker_rewording,
+        test_validate_docs_rejects_completed_phase34_default_blocker_rewording,
         test_validate_docs_requires_phase51_dependency_note_when_tasks_are_checked,
         test_validate_docs_rejects_terminal_only_final_dependency_notes_after_wait_cap,
         test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere,
@@ -779,6 +862,8 @@ def main() -> int:
         test_validate_docs_allows_spec_architecture_risk_context,
         test_validate_docs_requires_all_enabled_and_factory_gap_order_types,
         test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift,
+        test_validate_docs_keeps_maker_scope_stale_no_regression_case,
+        test_validate_docs_allows_current_forced_exit_override_requirement,
         test_validate_docs_rejects_stale_strategy_schema_version_examples,
         test_validate_docs_rejects_stale_decision_evidence_record_type_wording,
         test_validate_docs_rejects_retired_financial_envelope_schema_section,

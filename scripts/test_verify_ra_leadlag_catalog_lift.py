@@ -177,7 +177,7 @@ def write_common(root: Path, *, rust: str | None = None, session: str | None = N
     write_file(
         root,
         "justfile",
-        """source-fence-static:
+        """source-fence-static-inner:
     python3 scripts/test_verify_ra_leadlag_catalog_lift.py
     python3 scripts/verify_ra_leadlag_catalog_lift.py
 """,

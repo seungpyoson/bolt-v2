@@ -107,7 +107,7 @@ def justfile_text(*, wired: bool = True) -> str:
         if wired
         else ""
     )
-    return f"source-fence-static:\n{commands}"
+    return f"source-fence-static-inner:\n{commands}"
 
 
 def write_complete_fixture(root: Path) -> None:

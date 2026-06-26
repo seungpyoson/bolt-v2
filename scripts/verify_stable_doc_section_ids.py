@@ -9,10 +9,16 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from justfile_recipe_checks import missing_recipe_commands
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 JUSTFILE_PATH = Path("justfile")
 MARKDOWN_FRAGMENT_LINK = re.compile(r"\[[^\]]+\]\((?P<target>[^)\s]+\.md)#(?P<section_id>[^)\s]+)\)")
+EXPLICIT_ANCHOR = re.compile(
+    r"<a\b[^>]*\bid\s*=\s*(?P<quote>['\"])(?P<section_id>[^'\"]+)(?P=quote)[^>]*>\s*</a>",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -64,7 +70,19 @@ def read_required(root: Path, rel_path: Path, findings: list[str]) -> str:
 
 
 def has_explicit_anchor(text: str, section_id: str) -> bool:
-    return f'<a id="{section_id}"></a>' in text or f"<a id='{section_id}'></a>" in text
+    return section_id in explicit_anchor_ids(text)
+
+
+def explicit_anchor_ids(text: str) -> list[str]:
+    return [match.group("section_id") for match in EXPLICIT_ANCHOR.finditer(text)]
+
+
+def check_duplicate_anchors(rel_path: Path, text: str, findings: list[str]) -> None:
+    seen: set[str] = set()
+    for section_id in explicit_anchor_ids(text):
+        if section_id in seen:
+            findings.append(f"{rel_path}: duplicate stable section id `{section_id}`")
+        seen.add(section_id)
 
 
 def resolve_markdown_target(root: Path, source_path: Path, target_path: str) -> Path:
@@ -86,6 +104,10 @@ def scan_root(root: Path) -> list[str]:
     paths_to_read = {JUSTFILE_PATH, *LINK_SOURCE_PATHS, *(anchor.path for anchor in REQUIRED_ANCHORS)}
     for rel_path in sorted(paths_to_read):
         text_by_path[rel_path] = read_required(root, rel_path, findings)
+
+    for rel_path, text in text_by_path.items():
+        if text:
+            check_duplicate_anchors(rel_path, text, findings)
 
     for anchor in REQUIRED_ANCHORS:
         if text_by_path.get(anchor.path) and not has_explicit_anchor(text_by_path[anchor.path], anchor.section_id):
@@ -114,8 +136,8 @@ def scan_root(root: Path) -> list[str]:
                 )
 
     justfile_text = text_by_path.get(JUSTFILE_PATH, "")
-    for command in JUSTFILE_COMMANDS:
-        if justfile_text and command not in justfile_text:
+    if justfile_text:
+        for command in missing_recipe_commands(justfile_text, JUSTFILE_COMMANDS):
             findings.append(f"{JUSTFILE_PATH}: source-fence-static must run {command}")
 
     return findings

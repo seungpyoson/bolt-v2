@@ -135,7 +135,7 @@ def write_common(root: Path, *, run_manifest: str | None = None, runner: str | N
     write(root / "crates/backtesting-vertical-slice/src/domain_metrics.rs", compliant_domain_metrics() if domain_metrics is None else domain_metrics)
     write(root / "crates/backtesting-vertical-slice/src/lib.rs", "pub mod domain_metrics;\n")
     write(root / "crates/backtesting-vertical-slice/Cargo.toml", 'nautilus-analysis = { git = "https://github.com/nautechsystems/nautilus_trader.git" }\n')
-    write(root / "justfile", "source-fence-static:\n    python3 scripts/test_verify_ra_domain_metrics.py\n    python3 scripts/verify_ra_domain_metrics.py\n")
+    write(root / "justfile", "source-fence-static-inner:\n    python3 scripts/test_verify_ra_domain_metrics.py\n    python3 scripts/verify_ra_domain_metrics.py\n")
     task_mark = "x" if tasks_checked else " "
     write(root / "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md", f"- [{task_mark}] RA-010 Implement domain metrics as PortfolioStatistic trait impls registered via the PortfolioAnalyzer::register_statistic method.\n")
 

@@ -139,26 +139,35 @@ COMPLETED_PHASE_VERIFICATION_TASKS = (
     ("54", "T240"),
 )
 COMPLETED_PHASE_OPEN_PATTERN = re.compile(
-    r"\bPhase\s+(?P<phase>34|47|48|50|51|52|53|54)\b[^\n]*(?:blocks completion|remains open(?:\s+until)?)\b",
+    r"\bPhase\s+(?P<phase>34|47|48|50|51|52|53|54)\b[^\n]*"
+    r"(?:blocks\s+completion|prevents\s+completion|remains\s+open(?:\s+until)?|blocked\s+pending)\b",
     re.IGNORECASE,
 )
 NON_GTD_EXPIRY_OVERCLAIM_PATTERN = re.compile(
-    r"\bexpire_time_unix_nanos\b[^\n]*(?:only|solely)[^\n]*\bGTD\b|"
-    r"\bGTD\b[^\n]*(?:only|solely)[^\n]*\bexpire_time_unix_nanos\b",
+    r"\bexpire_time_unix_nanos\b[^\n]*(?:\b(?:exclusively|solely|only)\s+for\b[^\n]*\bGTD\b|"
+    r"\b(?:only|solely)\b[^\n]*\bGTD\b[^\n]*(?:reviewed slice|reviewed|approved|approval|until|before))|"
+    r"\bGTD\b[^\n]*\b(?:only|solely)\b[^\n]*\bexpire_time_unix_nanos\b[^\n]*"
+    r"(?:reviewed slice|reviewed|approved|approval|until|before)",
     re.IGNORECASE,
 )
 MAKER_SCOPE_STALE_PATTERNS = (
     (
         "forced-exit override still described as missing",
         re.compile(
-            r"\bforced[- ]exit\b[^\n]*(?:until|before|missing|separate)[^\n]*\boverride\b|"
-            r"\b(?:until|before|missing|separate)\b[^\n]*\bforced[- ]exit\b[^\n]*\boverride\b",
+            r"\bforced[- ](?:flat|exit)\b[^\n]*(?:until|before|blocked(?:\s+pending)?|missing|not implemented|does not exist)[^\n]*\boverride\b|"
+            r"\b(?:until|before|blocked(?:\s+pending)?|missing|not implemented|does not exist)\b[^\n]*\bforced[- ]exit\b[^\n]*\boverride\b",
             re.IGNORECASE,
         ),
     ),
     (
         "GTD still described as blocked pending expiry policy",
-        re.compile(r"\b(?:gtd|expire_time)\b[^\n]*(?:until|before|blocked|must not enable)[^\n]*\bexpiry policy\b", re.IGNORECASE),
+        re.compile(
+            r"\b(?:gtd|expire_time)\b[^\n]*(?:until|before|blocked(?:\s+pending)?|must not enable|not implemented)[^\n]*"
+            r"\b(?:expiry policy|policy)\b|"
+            r"\bexpiry policy\b[^\n]*(?:until|before|blocked(?:\s+pending)?|must be approved|approval pending)[^\n]*\bGTD\b|"
+            r"\bexpire_time\b[^\n]*\bpolicy\b[^\n]*\bnot implemented\b",
+            re.IGNORECASE,
+        ),
     ),
 )
 UNSUPPORTED_SCOPE_PATTERNS = (

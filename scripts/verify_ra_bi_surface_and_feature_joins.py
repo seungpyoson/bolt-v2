@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from justfile_recipe_checks import missing_recipe_commands
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HELPER_PATH = Path("crates/backtesting-vertical-slice/src/research_reader.rs")
@@ -224,12 +226,14 @@ def scan_root(root: Path) -> list[str]:
     ):
         require_pattern(TEST_PATH, test_text if '"' in pattern else test_code, label, pattern, findings)
 
-    for command in (
-        "python3 scripts/test_verify_ra_bi_surface_and_feature_joins.py",
-        "python3 scripts/verify_ra_bi_surface_and_feature_joins.py",
+    for command in missing_recipe_commands(
+        just_text,
+        (
+            "python3 scripts/test_verify_ra_bi_surface_and_feature_joins.py",
+            "python3 scripts/verify_ra_bi_surface_and_feature_joins.py",
+        ),
     ):
-        if command not in just_text:
-            findings.append(f"{JUSTFILE_PATH}: source-fence-static must run {command}")
+        findings.append(f"{JUSTFILE_PATH}: source-fence-static must run {command}")
 
     return findings
 

@@ -51,17 +51,19 @@ The read-only dashboard plan prose may be reworded.
 
 def tasks_text(*, checked: bool = True) -> str:
     mark = "x" if checked else " "
-    return "\n".join(f"- [{mark}] {task_id} task" for task_id in load_verifier().CHECKED_TASKS)
+    return "\n".join(f"- [{mark}] {task_id} task" for task_id in load_verifier().REQUIRED_TASK_ROWS)
 
 
-def justfile_text(*, wired: bool = True) -> str:
+def justfile_text(*, wired: bool = True, standalone_only: bool = False) -> str:
     commands = (
         "    python3 scripts/test_verify_dashboard_read_only_contract.py\n"
         "    python3 scripts/verify_dashboard_read_only_contract.py\n"
         if wired
         else ""
     )
-    return f"source-fence-static:\n{commands}"
+    if standalone_only:
+        return f"verify-dashboard-read-only-contract:\n{commands}\nsource-fence-static-inner:\n"
+    return f"source-fence-static-inner:\n{commands}"
 
 
 def write_complete_fixture(root: Path) -> None:
@@ -138,6 +140,18 @@ def test_missing_source_fence_wiring_is_a_finding() -> None:
     assert any("source-fence-static must run" in finding for finding in findings)
 
 
+def test_standalone_recipe_does_not_satisfy_source_fence_static_inner_wiring() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        write_file(root, "justfile", justfile_text(standalone_only=True))
+
+        findings = verifier.scan_root(root)
+
+    assert any("source-fence-static" in finding for finding in findings), findings
+
+
 def test_cli_fails_with_actionable_output() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -158,6 +172,7 @@ def main() -> int:
         test_missing_plan_marker_is_a_finding,
         test_unchecked_tasks_still_pass,
         test_missing_source_fence_wiring_is_a_finding,
+        test_standalone_recipe_does_not_satisfy_source_fence_static_inner_wiring,
         test_cli_fails_with_actionable_output,
     ]
     for test in tests:

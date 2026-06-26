@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from justfile_recipe_checks import missing_recipe_commands
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRACTS_PATH = Path("specs/023-nt-research-analytics-platform/reference/contracts.md")
@@ -149,8 +151,8 @@ def scan_root(root: Path) -> list[str]:
     if tasks_text and not TASK_ROOT009.search(tasks_text):
         findings.append(f"{TASKS_PATH}: ROOT-009 task row is missing")
 
-    for command in JUSTFILE_COMMANDS:
-        if justfile_text and command not in justfile_text:
+    if justfile_text:
+        for command in missing_recipe_commands(justfile_text, JUSTFILE_COMMANDS):
             findings.append(f"{JUSTFILE_PATH}: source-fence-static must run {command}")
 
     return findings

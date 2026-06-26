@@ -9,6 +9,8 @@ import re
 import sys
 from pathlib import Path
 
+from justfile_recipe_checks import missing_recipe_commands
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 READER_PATH = Path("crates/backtesting-vertical-slice/src/leadlag_catalog_reader.rs")
@@ -293,9 +295,8 @@ def verify_justfile(text: str, findings: list[str]) -> None:
         "python3 scripts/test_verify_ra_leadlag_catalog_lift.py",
         "python3 scripts/verify_ra_leadlag_catalog_lift.py",
     )
-    for command in required:
-        if command not in text:
-            findings.append(f"{JUSTFILE_PATH}: source-fence-static must run {command}")
+    for command in missing_recipe_commands(text, required):
+        findings.append(f"{JUSTFILE_PATH}: source-fence-static must run {command}")
 
 
 def scan_root(root: Path) -> list[str]:

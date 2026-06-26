@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from justfile_recipe_checks import missing_recipe_commands
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENTS_PATH = Path("AGENTS.md")
@@ -117,8 +119,8 @@ def scan_root(root: Path) -> list[str]:
         check_spec_522_doc(root, rel_doc, rule_ids, findings)
 
     justfile_text = read_text(root, JUSTFILE_PATH, findings)
-    for command in JUSTFILE_COMMANDS:
-        if justfile_text and command not in justfile_text:
+    if justfile_text:
+        for command in missing_recipe_commands(justfile_text, JUSTFILE_COMMANDS):
             findings.append(f"{JUSTFILE_PATH}: source-fence-static must run {command}")
 
     return findings

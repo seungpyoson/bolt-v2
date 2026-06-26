@@ -112,9 +112,9 @@ class RunPointerVerifierTests(unittest.TestCase):
         just_text = ""
         if just_wired:
             just_text = (
-                "source-fence-static:\\n"
-                "    python3 scripts/test_verify_ra_run_pointer_index.py\\n"
-                "    python3 scripts/verify_ra_run_pointer_index.py\\n"
+                "source-fence-static-inner:\n"
+                "    python3 scripts/test_verify_ra_run_pointer_index.py\n"
+                "    python3 scripts/verify_ra_run_pointer_index.py\n"
             )
         (root / verifier.JUSTFILE_PATH).write_text(just_text, encoding="utf-8")
 

@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from justfile_recipe_checks import missing_recipe_commands
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RA_PATH = Path("crates/backtesting-vertical-slice/src/research_analytics.rs")
@@ -201,12 +203,14 @@ def scan_root(root: Path) -> list[str]:
         r"\brun_backtest_sweep_with_executor\s*\(",
         findings,
     )
-    for command in (
-        "python3 scripts/test_verify_ra_sweep_orchestration.py",
-        "python3 scripts/verify_ra_sweep_orchestration.py",
+    for command in missing_recipe_commands(
+        just_text,
+        (
+            "python3 scripts/test_verify_ra_sweep_orchestration.py",
+            "python3 scripts/verify_ra_sweep_orchestration.py",
+        ),
     ):
-        if command not in just_text:
-            findings.append(f"{JUSTFILE_PATH}: source-fence-static must run {command}")
+        findings.append(f"{JUSTFILE_PATH}: source-fence-static must run {command}")
 
     return findings
 

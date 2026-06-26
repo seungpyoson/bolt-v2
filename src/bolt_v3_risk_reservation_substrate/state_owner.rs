@@ -147,6 +147,7 @@ pub struct LifecycleMutationResult {
     pub lifecycle_state: ReservationLifecycleState,
 }
 
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 impl FencedRiskStateStore {
     pub fn new(config: RiskReservationSubstrateConfig) -> Self {
         Self {
@@ -1247,6 +1248,7 @@ pub struct RiskStateOwner {
     lease: PoolOwnershipLease,
 }
 
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 impl RiskStateOwner {
     pub fn acquire(
         store: FencedRiskStateStore,
@@ -1597,6 +1599,7 @@ fn next_pool_version(
     Ok(version)
 }
 
+#[allow(clippy::result_large_err)]
 fn enforce_offered_load_envelope(
     inner: &mut FencedRiskStateStoreInner,
     lease: &PoolOwnershipLease,
@@ -1637,6 +1640,7 @@ fn enforce_offered_load_envelope(
     })
 }
 
+#[allow(clippy::result_large_err)]
 fn validate_risk_increasing_policy_epoch(
     state: Option<&ActivePolicyEpochState>,
     candidate_policy_epoch_id: &str,

@@ -52,13 +52,14 @@ use rust_decimal::Decimal;
 
 #[test]
 fn s5_reduce_only_safety_action_is_admitted_while_kill_switch_and_governor_freeze_new_risk() {
-    let (service, owner, reconciler, client_order_id) = submitted_reservation_context(
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
         "pool-s5-reduce",
         "owner-s5-reduce",
         "intent-s5-reduce",
         "idempotency-s5-reduce",
         "S5-REDUCE-ORDER",
     );
+    let service = AdmissionService::new(owner.clone());
     reconciler
         .apply_order_status_truth(nt_open_status(client_order_id, "s5-reduce-open"))
         .expect("open truth should make the order fillable before the partial fill");

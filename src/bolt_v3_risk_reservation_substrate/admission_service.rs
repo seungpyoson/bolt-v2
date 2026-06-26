@@ -107,6 +107,7 @@ pub enum SafetyActionAdmissionError {
     StateMutation(RiskStateMutationError),
 }
 
+#[allow(clippy::result_large_err)]
 impl AdmissionService {
     pub fn new(owner: RiskStateOwner) -> Self {
         Self { owner }

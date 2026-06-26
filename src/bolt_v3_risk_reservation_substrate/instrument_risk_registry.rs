@@ -338,6 +338,12 @@ impl InstrumentRiskRegistry {
     }
 }
 
+impl Default for InstrumentRiskRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InstrumentRiskDescriptor {
     pub fn new(
         instrument_id: String,

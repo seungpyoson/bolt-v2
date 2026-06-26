@@ -332,6 +332,7 @@ fn subtract_floor_zero(value: Decimal, amount: Decimal) -> Decimal {
     }
 }
 
+#[allow(clippy::result_large_err)]
 impl RiskReservationTransaction {
     pub fn validate_static(
         &self,
@@ -416,6 +417,7 @@ impl RiskReservationTransaction {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn reject_count_over_bound(
     dimension: RiskReservationWorkDimension,
     max_count: usize,

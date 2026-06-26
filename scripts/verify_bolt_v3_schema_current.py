@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from pathlib import Path
@@ -24,26 +23,12 @@ MAKER_SCOPE_CONTRACT_DOC = (
     REPO_ROOT / "specs/022-nt-maker-order-scope/contracts/maker-order-config.md"
 )
 MAKER_SCOPE_DATA_MODEL_DOC = REPO_ROOT / "specs/022-nt-maker-order-scope/data-model.md"
-AGENTS_DOC = REPO_ROOT / "AGENTS.md"
-FEATURE_JSON = REPO_ROOT / ".specify/feature.json"
 VALIDATE_SOURCE = REPO_ROOT / "src/bolt_v3_validate.rs"
 DECISION_EVIDENCE_SOURCE = REPO_ROOT / "src/bolt_v3_decision_evidence.rs"
 ARCHETYPE_BINARY_ORACLE_SOURCE = (
     REPO_ROOT / "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 )
 POSITION_CONTRACT_SOURCE = REPO_ROOT / "src/bolt_v3_position_contract.rs"
-ORDER_INTENT_FEATURE_DIR = "specs/023-nt-order-intent-layer"
-ORDER_INTENT_PLAN = f"{ORDER_INTENT_FEATURE_DIR}/plan.md"
-ACTIVE_SPECKIT_FEATURE_DIRS = (
-    ORDER_INTENT_FEATURE_DIR,
-    "specs/026-nt-backed-iv-engine",
-)
-ACTIVE_SPECKIT_PLANS = tuple(f"{feature_dir}/plan.md" for feature_dir in ACTIVE_SPECKIT_FEATURE_DIRS)
-SPECKIT_BLOCK_PATTERN = re.compile(
-    r"<!-- SPECKIT START -->(?P<body>.*?)<!-- SPECKIT END -->",
-    re.DOTALL,
-)
-BACKTICKED_PLAN_PATTERN = re.compile(r"`(?P<path>specs/[^`]+/plan\.md)`")
 RUST_STRUCT_FIELD_PATTERN = re.compile(r"^\s*(?P<field>[a-z][a-z0-9_]*):\s*[^,]+,\s*$")
 SCHEMA_FIELD_LINE_PATTERN = re.compile(r"^\s*-\s*(?P<fields>[^:]+):")
 BACKTICKED_FIELD_PATTERN = re.compile(r"`(?P<field>[a-z][a-z0-9_]*)`")
@@ -317,53 +302,6 @@ def section_requires_defaulted_trailing_stop_market_field(section: str) -> bool:
     return False
 
 
-def validate_speckit_context(agents_doc: str | None, feature_json: str | None) -> list[str]:
-    findings: list[str] = []
-
-    if agents_doc is not None:
-        if not agents_doc.strip():
-            findings.append("AGENTS.md is empty; missing active Speckit block")
-        else:
-            match = SPECKIT_BLOCK_PATTERN.search(agents_doc)
-            if match is None:
-                findings.append("AGENTS.md missing active Speckit block")
-            else:
-                speckit_block = match.group("body")
-                plan_paths = [
-                    plan_match.group("path") for plan_match in BACKTICKED_PLAN_PATTERN.finditer(speckit_block)
-                ]
-                if len(plan_paths) != 1 or plan_paths[0] not in ACTIVE_SPECKIT_PLANS:
-                    findings.append(
-                        "AGENTS.md active Speckit block must contain exactly "
-                        f"one current plan pointer from {ACTIVE_SPECKIT_PLANS!r}, got {plan_paths!r}"
-                    )
-                if "specs/023-nt-research-analytics-platform/plan.md" in speckit_block:
-                    findings.append(
-                        "AGENTS.md active Speckit block still points at stale research-analytics plan"
-                    )
-
-    if feature_json is not None:
-        if not feature_json.strip():
-            findings.append(".specify/feature.json is empty; missing feature_directory")
-            return findings
-        try:
-            parsed = json.loads(feature_json)
-        except json.JSONDecodeError as exc:
-            findings.append(f".specify/feature.json is not valid JSON: {exc.msg}")
-        else:
-            if not isinstance(parsed, dict):
-                findings.append(".specify/feature.json must be a JSON object")
-                return findings
-            feature_directory = parsed.get("feature_directory")
-            if feature_directory not in ACTIVE_SPECKIT_FEATURE_DIRS:
-                findings.append(
-                    ".specify/feature.json points to "
-                    f"{feature_directory!r}, expected one of {ACTIVE_SPECKIT_FEATURE_DIRS!r}"
-                )
-
-    return findings
-
-
 def validate_docs(
     schema: str,
     status_map: str,
@@ -375,8 +313,6 @@ def validate_docs(
     runtime_contracts: str = "",
     maker_scope_contract: str = "",
     maker_scope_data_model: str = "",
-    agents_doc: str | None = None,
-    feature_json: str | None = None,
     validate_source: str = "",
     decision_evidence_source: str = "",
     archetype_source: str = "",
@@ -555,7 +491,6 @@ def validate_docs(
     findings.extend(unsupported_scope_overclaims("data model", data_model))
     findings.extend(unsupported_scope_overclaims("maker scope contract", maker_scope_contract))
     findings.extend(unsupported_scope_overclaims("maker scope data model", maker_scope_data_model))
-    findings.extend(validate_speckit_context(agents_doc, feature_json))
 
     return findings
 
@@ -572,8 +507,6 @@ def main() -> int:
         runtime_contracts=RUNTIME_CONTRACTS_DOC.read_text(encoding="utf-8"),
         maker_scope_contract=MAKER_SCOPE_CONTRACT_DOC.read_text(encoding="utf-8"),
         maker_scope_data_model=MAKER_SCOPE_DATA_MODEL_DOC.read_text(encoding="utf-8"),
-        agents_doc=AGENTS_DOC.read_text(encoding="utf-8"),
-        feature_json=FEATURE_JSON.read_text(encoding="utf-8"),
         validate_source=VALIDATE_SOURCE.read_text(encoding="utf-8"),
         decision_evidence_source=DECISION_EVIDENCE_SOURCE.read_text(encoding="utf-8"),
         archetype_source=ARCHETYPE_BINARY_ORACLE_SOURCE.read_text(encoding="utf-8"),

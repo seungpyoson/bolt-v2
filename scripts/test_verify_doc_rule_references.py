@@ -30,11 +30,20 @@ def write_file(root: Path, rel: str, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def agents_text(module, *, omit_anchor: str | None = None) -> str:
-    lines = ["# bolt-v2 Agent Rules", "", "## Repo Rules", ""]
+def agents_text(
+    module,
+    *,
+    omit_anchor: str | None = None,
+    heading: str = "## Repo Rules",
+    decorated_anchors: bool = False,
+) -> str:
+    lines = ["# bolt-v2 Agent Rules", "", heading, ""]
     for index, anchor in enumerate(module.REPO_RULE_IDS, start=1):
         if anchor == omit_anchor:
             lines.append(f"{index}. **RULE {index}** — placeholder rule text.")
+        elif decorated_anchors:
+            anchor_markup = f"<a class='stable-id' id='{anchor}' data-owner='agents'></a>"
+            lines.append(f"{index}. {anchor_markup} **RULE {index}** — placeholder rule text.")
         else:
             lines.append(f"{index}. <a id=\"{anchor}\"></a> **RULE {index}** — placeholder rule text.")
     lines.extend(["", "## Evidence-Driven Verification", ""])
@@ -117,6 +126,30 @@ def test_complete_fixture_passes() -> None:
         write_complete_fixture(root, verifier)
 
         assert verifier.scan_root(root) == []
+
+
+def test_repo_rule_anchor_scan_ignores_heading_text() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root, verifier)
+        write_file(root, "AGENTS.md", agents_text(verifier, heading="## Runtime Rules"))
+
+        findings = verifier.scan_root(root)
+
+    assert findings == []
+
+
+def test_repo_rule_anchor_scan_accepts_single_quotes_and_attributes() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root, verifier)
+        write_file(root, "AGENTS.md", agents_text(verifier, decorated_anchors=True))
+
+        findings = verifier.scan_root(root)
+
+    assert findings == []
 
 
 def test_owned_rule_ordinal_is_a_finding() -> None:
@@ -209,6 +242,8 @@ def test_cli_fails_with_actionable_output() -> None:
 def main() -> int:
     tests = [
         test_complete_fixture_passes,
+        test_repo_rule_anchor_scan_ignores_heading_text,
+        test_repo_rule_anchor_scan_accepts_single_quotes_and_attributes,
         test_owned_rule_ordinal_is_a_finding,
         test_missing_repo_rule_anchor_is_a_finding,
         test_unknown_repo_rule_link_is_a_finding,

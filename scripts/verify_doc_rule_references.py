@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from justfile_recipe_checks import missing_recipe_commands
+from verify_stable_doc_section_ids import EXPLICIT_ANCHOR
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -42,8 +43,6 @@ JUSTFILE_COMMANDS = (
     "python3 scripts/verify_doc_rule_references.py",
 )
 
-SECTION_RE = re.compile(r"^## Repo Rules\n(?P<body>.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
-RULE_LINE_RE = re.compile(r"^\d+\.\s*<a id=\"(?P<anchor>repo-rule-[a-z0-9-]+)\"></a>\s+\*\*", re.MULTILINE)
 ORDINAL_RE = re.compile(r"\brule #[0-9]+\b", re.IGNORECASE)
 AGENTS_ANCHOR_RE = re.compile(r"AGENTS\.md#(?P<anchor>repo-rule-[a-z0-9-]+)")
 
@@ -56,17 +55,12 @@ def read_text(root: Path, rel_path: Path, findings: list[str]) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def repo_rules_section(agents_text: str, findings: list[str]) -> str:
-    match = SECTION_RE.search(agents_text)
-    if not match:
-        findings.append(f"{AGENTS_PATH}: missing `## Repo Rules` section")
-        return ""
-    return match.group("body")
-
-
 def repo_rule_anchors(agents_text: str, findings: list[str]) -> set[str]:
-    section = repo_rules_section(agents_text, findings)
-    anchors = [match.group("anchor") for match in RULE_LINE_RE.finditer(section)]
+    anchors = [
+        match.group("section_id")
+        for match in EXPLICIT_ANCHOR.finditer(agents_text)
+        if match.group("section_id").startswith("repo-rule-")
+    ]
     seen: set[str] = set()
     for anchor in anchors:
         if anchor in seen:

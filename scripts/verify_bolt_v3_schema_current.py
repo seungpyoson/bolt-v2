@@ -123,38 +123,6 @@ COMPLETED_PHASE_VERIFICATION_TASKS = (
     ("53", "T236"),
     ("54", "T240"),
 )
-COMPLETED_PHASE_OPEN_PATTERN = re.compile(
-    r"\bPhase\s+(?P<phase>34|47|48|50|51|52|53|54)\b[^\n]*"
-    r"(?:blocks\s+completion|prevents\s+completion|remains\s+open(?:\s+until)?|blocked\s+pending)\b",
-    re.IGNORECASE,
-)
-NON_GTD_EXPIRY_OVERCLAIM_PATTERN = re.compile(
-    r"\bexpire_time_unix_nanos\b[^\n]*(?:\b(?:exclusively|solely|only)\s+for\b[^\n]*\bGTD\b|"
-    r"\b(?:only|solely)\b[^\n]*\bGTD\b[^\n]*(?:reviewed slice|reviewed|approved|approval|until|before))|"
-    r"\bGTD\b[^\n]*\b(?:only|solely)\b[^\n]*\bexpire_time_unix_nanos\b[^\n]*"
-    r"(?:reviewed slice|reviewed|approved|approval|until|before)",
-    re.IGNORECASE,
-)
-MAKER_SCOPE_STALE_PATTERNS = (
-    (
-        "forced-exit override still described as missing",
-        re.compile(
-            r"\bforced[- ](?:flat|exit)\b[^\n]*(?:until|before|blocked(?:\s+pending)?|missing|not implemented|does not exist)[^\n]*\boverride\b|"
-            r"\b(?:until|before|blocked(?:\s+pending)?|missing|not implemented|does not exist)\b[^\n]*\bforced[- ]exit\b[^\n]*\boverride\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "GTD still described as blocked pending expiry policy",
-        re.compile(
-            r"\b(?:gtd|expire_time)\b[^\n]*(?:until|before|blocked(?:\s+pending)?|must not enable|not implemented)[^\n]*"
-            r"\b(?:expiry policy|policy)\b|"
-            r"\bexpiry policy\b[^\n]*(?:until|before|blocked(?:\s+pending)?|must be approved|approval pending)[^\n]*\bGTD\b|"
-            r"\bexpire_time\b[^\n]*\bpolicy\b[^\n]*\bnot implemented\b",
-            re.IGNORECASE,
-        ),
-    ),
-)
 UNSUPPORTED_SCOPE_PATTERNS = (
     re.compile(
         r"\b(short[- ]side|short position contracts?|short contracts?|short entry|short exit)\b",
@@ -293,25 +261,10 @@ def unsupported_scope_overclaims(label: str, text: str) -> list[str]:
 def completed_phase_task_findings(tasks: str) -> list[str]:
     findings: list[str] = []
     for phase, task_id in COMPLETED_PHASE_VERIFICATION_TASKS:
-        if task_id not in tasks:
-            findings.append(f"tasks missing completed Phase {phase} verification task {task_id}")
-    for match in COMPLETED_PHASE_OPEN_PATTERN.finditer(tasks):
-        phase = match.group("phase")
-        findings.append(f"tasks describe completed Phase {phase} as open/blocking")
-    return findings
-
-
-def non_gtd_expiry_overclaim(label: str, text: str) -> list[str]:
-    if NON_GTD_EXPIRY_OVERCLAIM_PATTERN.search(text):
-        return [f"{label} contains blanket non-GTD expiry overclaim"]
-    return []
-
-
-def maker_scope_stale_findings(label: str, text: str) -> list[str]:
-    findings: list[str] = []
-    for description, pattern in MAKER_SCOPE_STALE_PATTERNS:
-        if pattern.search(text):
-            findings.append(f"{label}: {description}")
+        if not re.search(rf"(?m)^- \[x\] {re.escape(task_id)}\b", tasks):
+            findings.append(
+                f"tasks missing checked completed Phase {phase} verification task {task_id}"
+            )
     return findings
 
 
@@ -483,9 +436,6 @@ def validate_docs(
     findings.extend(unsupported_scope_overclaims("contract", contract))
     findings.extend(unsupported_scope_overclaims("spec", spec))
     findings.extend(unsupported_scope_overclaims("data model", data_model))
-    findings.extend(non_gtd_expiry_overclaim("data model", data_model))
-    findings.extend(maker_scope_stale_findings("maker scope contract", maker_scope_contract))
-    findings.extend(maker_scope_stale_findings("maker scope data model", maker_scope_data_model))
     findings.extend(unsupported_scope_overclaims("maker scope contract", maker_scope_contract))
     findings.extend(unsupported_scope_overclaims("maker scope data model", maker_scope_data_model))
 

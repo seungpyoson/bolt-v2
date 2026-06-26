@@ -8489,6 +8489,10 @@ def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+actions:\s+read\s*$", workflow_text) is not None
 
 
+def workflow_permissions_have_issues_read(workflow_text: str) -> bool:
+    return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+issues:\s+read\s*$", workflow_text) is not None
+
+
 def configured_ci_provenance_retention_days() -> int:
     try:
         config = load_github_actions_runners_config()
@@ -8823,6 +8827,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if not workflow_permissions_have_actions_read(workflow_text):
         errors.append("workflow permissions must include actions: read")
+    if not workflow_permissions_have_issues_read(workflow_text):
+        errors.append("workflow permissions must include issues: read")
 
     for job in REQUIRED_JOBS:
         if job not in jobs:

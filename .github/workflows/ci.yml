@@ -114,6 +114,7 @@ env:
 permissions:
   contents: read
   actions: read
+  issues: read
 
 jobs:
   ci-policy:

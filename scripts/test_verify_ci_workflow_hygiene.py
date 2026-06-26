@@ -278,6 +278,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  issues: read
 
 jobs:
   ci-policy:
@@ -8258,6 +8259,10 @@ def main() -> int:
     assert_shell_logical_lines_handles_crlf_continuations()
     assert_workflow_hygiene_reviewer_regressions()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
+    assert_error(
+        "workflow permissions must include issues: read",
+        replace_once(BASE_WORKFLOW, "  issues: read\n", ""),
+    )
     assert_error(
         "concurrency group must split noop PR runs from full CI runs",
         replace_once(BASE_WORKFLOW, "format('pr-{0}-noop', github.event.number)", "format('pr-{0}-full', github.event.number)"),

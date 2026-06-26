@@ -2610,6 +2610,113 @@ def assert_gate_carry_forward_blocks_equal_updated_at_failure_tie() -> None:
         )
 
 
+def assert_gate_carry_forward_blocks_equal_updated_at_non_completed_tie(status: str) -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        success = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        tied_non_completed = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status=status,
+            conclusion=None,
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[success, tied_non_completed]],
+            jobs_by_run_id={RUN_ID + 1: {"jobs": [job_payload("gate")]}},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 2,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=False,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
+        )
+
+
+def assert_gate_carry_forward_blocks_equal_updated_at_in_progress_tie() -> None:
+    assert_gate_carry_forward_blocks_equal_updated_at_non_completed_tie("in_progress")
+
+
+def assert_gate_carry_forward_blocks_equal_updated_at_queued_tie() -> None:
+    assert_gate_carry_forward_blocks_equal_updated_at_non_completed_tie("queued")
+
+
+def assert_gate_carry_forward_blocks_equal_updated_at_waiting_tie() -> None:
+    assert_gate_carry_forward_blocks_equal_updated_at_non_completed_tie("waiting")
+
+
+def assert_gate_carry_forward_newer_success_supersedes_older_failure() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        older_failure = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        newer_success = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:20:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[newer_success, older_failure]],
+            jobs_by_run_id={RUN_ID + 1: {"jobs": [job_payload("gate")]}},
+        )
+        result = module.resolve_gate_carry_forward(
+            repo="seungpyoson/bolt-v2",
+            token="token",
+            requested_sha=SHA,
+            base_sha="1" * 40,
+            current_run_id=RUN_ID + 2,
+            gate_name="gate",
+            workflow_path=".github/workflows/ci.yml",
+            config=module.load_config(config),
+            config_path=config,
+            require_provenance_base=False,
+            api_json=fake.json,
+            api_bytes=fake.bytes,
+            now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+        )
+        if result.source_run_id != str(RUN_ID + 1) or not result.carry_forward_verified:
+            raise AssertionError(result)
+
+
 def assert_gate_carry_forward_blocks_failure_hidden_behind_all_old_page() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -3124,6 +3231,10 @@ def main() -> int:
     assert_gate_carry_forward_newest_failure_blocks_across_pages()
     assert_gate_carry_forward_refuses_page_cap_without_natural_boundary()
     assert_gate_carry_forward_blocks_equal_updated_at_failure_tie()
+    assert_gate_carry_forward_blocks_equal_updated_at_in_progress_tie()
+    assert_gate_carry_forward_blocks_equal_updated_at_queued_tie()
+    assert_gate_carry_forward_blocks_equal_updated_at_waiting_tie()
+    assert_gate_carry_forward_newer_success_supersedes_older_failure()
     assert_gate_carry_forward_blocks_failure_hidden_behind_all_old_page()
     assert_gate_carry_forward_blocks_old_failure_rerun_after_cutoff()
     assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof()

@@ -1794,16 +1794,29 @@ def missing_gate_carry_forward_provenance_error(exc: ProvenanceError, run_id: in
     return str(exc) == f"source run {run_id} has no provenance artifact"
 
 
-def gate_carry_forward_dominance_key(run: dict[str, object]) -> tuple[str, int, int]:
-    completed_non_success = (
-        as_text(run.get("status")) == "completed"
-        and as_text(run.get("conclusion")) != "success"
-    )
+def gate_carry_forward_dominance_key(run: dict[str, object]) -> tuple[str, int]:
     return (
         as_text(run.get("updated_at")),
-        1 if completed_non_success else 0,
         positive_int_value(run.get("id"), "workflow run id"),
     )
+
+
+def require_newest_gate_carry_forward_bucket_success(candidates: list[dict[str, object]]) -> None:
+    if not candidates:
+        return
+    newest_updated_at = max(as_text(run.get("updated_at")) for run in candidates)
+    newest_candidates = [
+        run for run in candidates if as_text(run.get("updated_at")) == newest_updated_at
+    ]
+    newest_candidates.sort(key=gate_carry_forward_dominance_key, reverse=True)
+    for run in newest_candidates:
+        status = as_text(run.get("status"))
+        conclusion = as_text(run.get("conclusion"))
+        if status != "completed" or conclusion != "success":
+            run_id = positive_int_value(run.get("id"), "workflow run id")
+            raise ProvenanceError(
+                f"newest same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
+            )
 
 
 def resolve_gate_carry_forward(
@@ -1900,6 +1913,7 @@ def resolve_gate_carry_forward(
         key=gate_carry_forward_dominance_key,
         reverse=True,
     )
+    require_newest_gate_carry_forward_bucket_success(candidates)
     saw_successful_gate_without_provenance = False
     for run in candidates:
         run_id = positive_int_value(run.get("id"), "workflow run id")

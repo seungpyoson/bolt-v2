@@ -9543,7 +9543,7 @@ def verify_test_harness_manifest(
 def verify_test_harness_test_args(file_name: str, text: str, manifest: CiTestManifest) -> list[str]:
     errors: list[str] = []
     harness_roots = set(manifest.harness_to_members)
-    for match in re.finditer(r"--test(?:=|\s+)(?P<quote>[\"']?)(?P<name>[A-Za-z0-9_-]+)(?P=quote)", text):
+    for match in re.finditer(r"['\"]?--test['\"]?(?:=|\s+)(?P<quote>[\"']?)(?P<name>[A-Za-z0-9_-]+)(?P=quote)", text):
         test_name = match.group("name")
         if test_name in harness_roots:
             continue
@@ -9555,6 +9555,24 @@ def verify_test_harness_test_args(file_name: str, text: str, manifest: CiTestMan
         else:
             expected = ", ".join(sorted(harness_roots))
             errors.append(f"{file_name} references unknown integration-test binary {test_name!r} with --test; expected one of: {expected}")
+    # Source-fence recipes select tests as `--test <harness> -- <member>:: ...`.
+    # The harness token is checked above; validate each positional <member>:: filter
+    # resolves to a real member of THAT harness (a typo/stale member silently matches
+    # zero tests while the required check reports green).
+    for line in text.splitlines():
+        head = re.search(r"['\"]?--test['\"]?(?:=|\s+)[\"']?(?P<harness>[A-Za-z0-9_-]+)[\"']?", line)
+        if head is None or " -- " not in line:
+            continue
+        harness = head.group("harness")
+        for pm in re.finditer(r"\b(?P<member>[A-Za-z0-9_]+)::", line.split(" -- ", 1)[1]):
+            member = pm.group("member")
+            owner = manifest.member_to_harness.get(member)
+            if owner != harness:
+                filt = member + "::"
+                errors.append(
+                    f"{file_name} source-fence test filter {filt!r} does not belong to "
+                    f"--test harness {harness!r} (member maps to {owner!r}); typo or stale member"
+                )
     return errors
 
 

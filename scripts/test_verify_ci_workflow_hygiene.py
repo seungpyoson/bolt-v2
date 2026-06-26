@@ -4764,6 +4764,23 @@ def test_harness_manifest_rejects_retired_member_test_filters() -> None:
     )
 
 
+def test_harness_manifest_rejects_typo_positional_test_filter() -> None:
+    assert_test_harness_manifest_clean(
+        justfile_text=f"ci-test:\n    cargo test --test iv -- {TEST_HARNESS_MEMBER}:: --nocapture\n",
+    )
+    assert_test_harness_manifest_error(
+        "does not belong to --test harness 'iv'",
+        justfile_text="ci-test:\n    cargo test --test iv -- bolt_v3_fixture_TYPO:: --nocapture\n",
+    )
+
+
+def test_harness_manifest_rejects_quoted_retired_member_test_flag() -> None:
+    assert_test_harness_manifest_error(
+        f"references retired integration-test member {TEST_HARNESS_MEMBER!r}",
+        justfile_text=f"ci-test:\n    cargo test '--test' {TEST_HARNESS_MEMBER}\n",
+    )
+
+
 def test_nextest_config_rejects_surprise_binary_overrides() -> None:
     verifier = load_verifier()
     manifest = all_standalone_live_node_manifest(verifier)
@@ -8465,6 +8482,15 @@ def assert_ci_lint_runs_cancel_obsolete_dispatch_tests() -> None:
         raise AssertionError("ci-lint-workflow must run dispatch cancellation self-tests")
 
 
+def test_ci_test_manifest_self_tests_are_gated() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    if "scripts/test_ci_test_manifest.py" not in justfile:
+        raise AssertionError(
+            "ci-lint-workflow must invoke scripts/test_ci_test_manifest.py so the "
+            "manifest parser's self-tests are gated"
+        )
+
+
 def assert_github_scripts_are_repo_automation_fenced() -> None:
     verifier = load_verifier()
     expected_glob = (verifier.REPO_ROOT / ".github" / "scripts", "*.sh")
@@ -8579,6 +8605,7 @@ def main() -> int:
     assert_ci_lint_runs_command_understanding_tests()
     assert_ci_lint_runs_rust_probe_tests()
     assert_ci_lint_runs_cancel_obsolete_dispatch_tests()
+    test_ci_test_manifest_self_tests_are_gated()
     assert_github_scripts_are_repo_automation_fenced()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()
@@ -8773,6 +8800,8 @@ def main() -> int:
     test_harness_manifest_rejects_harness_roots_as_members()
     test_harness_manifest_masks_inner_attrs_and_rejects_crate_attrs()
     test_harness_manifest_rejects_retired_member_test_filters()
+    test_harness_manifest_rejects_typo_positional_test_filter()
+    test_harness_manifest_rejects_quoted_retired_member_test_flag()
     test_nextest_config_rejects_surprise_binary_overrides()
     test_nextest_config_rejects_regex_form_binary_overrides()
     test_nextest_config_rejects_regex_binary_smuggled_into_live_node_override()

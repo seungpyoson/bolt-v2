@@ -3556,6 +3556,10 @@ def rust_probe_suggestions(
             ]
         )
         for stem in sorted(stems):
+            if stem == target:
+                # Harness root file has no direct #[test]s; `nextest-test-target {target}`
+                # above already covers it. A `{target}::` filter would match zero tests.
+                continue
             suggestions.append(f"just rust-probe nextest-test-target-name {target} {stem}::")
     if suggestions:
         return suggestions

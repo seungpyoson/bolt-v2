@@ -412,11 +412,12 @@ def assert_fixture_manifest_suggestions_use_harness_and_member_filter() -> None:
         "just rust-probe check-test-target foo",
         "just rust-probe nextest-no-run-test-target foo",
         "just rust-probe nextest-test-target foo",
-        "just rust-probe nextest-test-target-name foo foo::",
     ]
     for command in expected_standalone:
         if command not in standalone_suggestions:
             raise AssertionError((command, standalone_suggestions))
+    if any("nextest-test-target-name foo foo::" in command for command in standalone_suggestions):
+        raise AssertionError(("harness-root self-filter must be omitted", standalone_suggestions))
 
 
 def assert_changed_files_produce_targeted_suggestions() -> None:

@@ -29,6 +29,11 @@ class CiTestManifest:
 
 MOD_DECL_RE = re.compile(r"^\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 PATH_ATTR_RE = re.compile(r"""^\s*#\s*\[\s*path\s*=\s*"([^"]+)"\s*\]\s*$""")
+# Rust char / byte-char literal: '{', '}', 'a', '\n', '\x41', '\u{7b}', '"',
+# b'{', ...
+# The closing quote distinguishes a char literal from a lifetime ('a, 'static),
+# which must be left intact.
+CHAR_LITERAL_RE = re.compile(r"b?'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]+\}|.)|[^'\\])'")
 
 
 def build_test_manifest(manifest_path: pathlib.Path | str, tests_root: pathlib.Path | str) -> CiTestManifest:
@@ -191,14 +196,10 @@ def _mask_rust_non_code(text: str) -> str:
             _blank(chars, i, end)
             i = end
             continue
-        quote_char_literal_end = None
-        for quote_char_literal in ("'\"'", "'\\\"'", "b'\"'", "b'\\\"'"):
-            if text.startswith(quote_char_literal, i):
-                quote_char_literal_end = i + len(quote_char_literal)
-                break
-        if quote_char_literal_end is not None:
-            _blank(chars, i, quote_char_literal_end)
-            i = quote_char_literal_end
+        char_literal_match = CHAR_LITERAL_RE.match(text, i)
+        if char_literal_match is not None:
+            _blank(chars, i, char_literal_match.end())
+            i = char_literal_match.end()
             continue
         if text.startswith('b"', i) or text[i] == '"':
             start = i

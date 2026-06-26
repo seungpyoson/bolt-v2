@@ -125,8 +125,19 @@ def assert_quote_char_literals_do_not_desync_rust_masker() -> None:
         raise AssertionError("masked Rust code lost top-level markers:\n\n" + "\n\n".join(failures))
 
 
+def assert_brace_char_literals_do_not_desync_rust_masker() -> None:
+    failures: list[str] = []
+    for brace_literal in ("'{'", "'}'", "b'{'", "b'}'"):
+        masked = _mask_rust_non_code(f"let _ = {brace_literal};\nmod real_member;\n")
+        if "{" in masked or "}" in masked:
+            failures.append(f"{brace_literal!r} left a stray brace in masked output:\n{masked!r}")
+    if failures:
+        raise AssertionError("brace char literals desynced the masker:\n" + "\n".join(failures))
+
+
 def main() -> int:
     assert_quote_char_literals_do_not_desync_rust_masker()
+    assert_brace_char_literals_do_not_desync_rust_masker()
     assert_fixture_manifest_maps_members_to_harnesses()
     assert_live_top_level_tests_resolve_to_real_harnesses()
     print("OK: CI test manifest self-tests passed.")

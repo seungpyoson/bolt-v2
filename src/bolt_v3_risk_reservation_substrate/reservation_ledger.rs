@@ -154,6 +154,20 @@ pub enum RiskReservationWorkDimension {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleReconciliationFault {
+    pub kind: LifecycleReconciliationFaultKind,
+    pub ts_event_unix_nanos: u64,
+    pub event_sequence: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleReconciliationFaultKind {
+    OrderStatus,
+    Fill,
+    Settlement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubstrateReservationRecord {
     pub pool_id: PoolId,
     pub admission_token: AdmissionToken,
@@ -170,7 +184,7 @@ pub struct SubstrateReservationRecord {
     pub filled_position_governor_realized_loss: Decimal,
     pub filled_position_held: bool,
     pub applied_lifecycle_event_ids: BTreeSet<String>,
-    pub unresolved_lifecycle_reconciliation_event_ids: BTreeSet<String>,
+    pub unresolved_lifecycle_reconciliation_faults: BTreeMap<String, LifecycleReconciliationFault>,
     pub last_lifecycle_ts_event_unix_nanos: Option<u64>,
     pub last_lifecycle_event_sequence: Option<u64>,
 }
@@ -266,15 +280,6 @@ impl RiskReservationTotals {
                 .bucket_stress_loss
                 .entry(bucket.clone())
                 .or_insert(Decimal::ZERO) += equity_floor_delta;
-        }
-    }
-
-    pub fn release_settled_reservation(&mut self, record: &SubstrateReservationRecord) {
-        if record.open_order_remainder_held {
-            self.release_open_order_remainder(record);
-        }
-        if record.filled_position_held {
-            self.release_filled_position(record);
         }
     }
 

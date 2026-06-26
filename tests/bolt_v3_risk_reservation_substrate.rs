@@ -31,8 +31,8 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         NtOrderStatusReportTruth, NtOrderStatusTruth, NtSettlementTruth,
     },
     reservation_ledger::{
-        RiskReservationCommit, RiskReservationError, RiskReservationTransaction,
-        SubstrateReservationRecord,
+        LifecycleReconciliationFaultKind, RiskReservationCommit, RiskReservationError,
+        RiskReservationTransaction, SubstrateReservationRecord,
     },
     risk_classifier::{
         ConcentrationBucket, ConcentrationBucketDimension, RiskClassificationError,
@@ -3787,12 +3787,31 @@ fn s8c_local_cancel_request_cannot_clear_reconciliation_fault() {
         Err(RiskStateMutationError::ReconciliationRequired),
         "local cancel intent must not clear a reconciliation fault"
     );
+    let mut sink = RecordingLiveSubmitBoundary::default();
     assert_eq!(
-        owner.complete_reconciliation(),
-        Err(RiskSubmissionMutationError::State(
-            RiskStateMutationError::ReconciliationRequired,
+        reconciler.reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: Vec::new(),
+                fill_reports: Vec::new(),
+                settlement_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        ),
+        Err(LifecycleReconciliationError::State(
+            RiskSubmissionMutationError::State(RiskStateMutationError::ReconciliationRequired),
         )),
         "restart finalization must still fail closed until authoritative truth resolves the fault"
+    );
+    assert_eq!(
+        sink.submitted_client_order_ids(),
+        Vec::<ClientOrderId>::new(),
+        "restart finalization must not resubmit when the live submission record is already present"
+    );
+    assert_eq!(
+        owner.reconcile_before_new_risk(),
+        Err(RiskStateMutationError::ReconciliationRequired),
+        "the pool must remain closed after failed restart finalization"
     );
     assert_eq!(
         only_reservation_record(&owner).lifecycle_state,
@@ -3866,13 +3885,15 @@ fn s8c_faulting_event_replays_after_sequence_gap_is_filled() {
 #[test]
 fn s8c_reconciliation_required_exits_on_corrected_terminal_truth_and_releases_totals() {
     let pool_id = "pool-s8c-reconciliation-exit";
+    let idempotency_key = "idempotency-s8c-reconciliation-exit";
     let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
         pool_id,
         "owner-s8c-reconciliation-exit",
         "intent-s8c-reconciliation-exit",
-        "idempotency-s8c-reconciliation-exit",
+        idempotency_key,
         "S8C-RECONCILIATION-EXIT",
     );
+    record_live_submission_for_test(&owner, idempotency_key, client_order_id);
     reconciler
         .apply_order_status_truth(nt_open_status_with_ordering(
             client_order_id,
@@ -3925,6 +3946,110 @@ fn s8c_reconciliation_required_exits_on_corrected_terminal_truth_and_releases_to
             .open_order_count(),
         0,
         "corrected terminal truth must not leave a permanent ReconciliationRequired leak"
+    );
+    let mut sink = RecordingLiveSubmitBoundary::default();
+    reconciler
+        .reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: Vec::new(),
+                fill_reports: Vec::new(),
+                settlement_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        )
+        .expect("corrected terminal truth must let restart completion reopen the pool");
+}
+
+#[test]
+fn s8c_faulted_fill_is_not_cleared_by_later_terminal_truth() {
+    let pool_id = "pool-s8c-fill-fault-retained";
+    let idempotency_key = "idempotency-s8c-fill-fault-retained";
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        pool_id,
+        "owner-s8c-fill-fault-retained",
+        "intent-s8c-fill-fault-retained",
+        idempotency_key,
+        "S8C-FILL-FAULT-RETAINED",
+    );
+    record_live_submission_for_test(&owner, idempotency_key, client_order_id);
+    reconciler
+        .apply_order_status_truth(nt_open_status_with_ordering(
+            client_order_id,
+            "s8c-fill-fault-retained-open",
+            1_150,
+            Some(1),
+        ))
+        .expect("first status event should apply");
+
+    let fault = reconciler
+        .apply_fill_truth(nt_fill_with_ordering(
+            client_order_id,
+            "s8c-fill-fault-retained-fill",
+            1_170,
+            Some(3),
+            dec(1),
+            dec(1),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("gapped fill must fail closed into reconciliation");
+    assert_eq!(
+        fault.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    let record_after_fill_fault = only_reservation_record(&owner);
+    let fill_fault = record_after_fill_fault
+        .unresolved_lifecycle_reconciliation_faults
+        .get("s8c-fill-fault-retained-fill")
+        .expect("the unresolved fill fault must retain its ordering key");
+    assert_eq!(fill_fault.kind, LifecycleReconciliationFaultKind::Fill);
+    assert_eq!(fill_fault.ts_event_unix_nanos, 1_170);
+    assert_eq!(fill_fault.event_sequence, Some(3));
+
+    let terminal = reconciler
+        .apply_order_status_truth(nt_cancel_confirmed_status_with_ordering(
+            client_order_id,
+            "s8c-fill-fault-retained-cancel",
+            1_160,
+            Some(2),
+        ))
+        .expect("lower-sequence terminal status should apply");
+    assert_eq!(
+        terminal.lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed
+    );
+
+    let record_after_terminal = only_reservation_record(&owner);
+    assert!(
+        record_after_terminal.filled_position_exposure.is_none(),
+        "the faulted fill must not be synthesized without authoritative application"
+    );
+    assert!(
+        record_after_terminal
+            .unresolved_lifecycle_reconciliation_faults
+            .contains_key("s8c-fill-fault-retained-fill"),
+        "terminal status must not drop an unresolved fill fault"
+    );
+
+    let mut sink = RecordingLiveSubmitBoundary::default();
+    let error = reconciler
+        .reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: Vec::new(),
+                fill_reports: Vec::new(),
+                settlement_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        )
+        .expect_err("the retained fill fault must keep reconciliation fail-closed");
+    assert_eq!(
+        error,
+        LifecycleReconciliationError::State(RiskSubmissionMutationError::State(
+            RiskStateMutationError::ReconciliationRequired,
+        )),
     );
 }
 
@@ -4080,6 +4205,23 @@ fn s4_sc_012_submit_boundary_is_admitted_order_only_and_authority_owned() {
         state_owner_source.contains("ReservationLifecycleState::Reserved")
             && state_owner_source.contains("ReservationLifecycleState::Submitted"),
         "the store transition that backs AdmittedOrder construction must be Reserved -> Submitted"
+    );
+}
+
+#[test]
+fn s4_complete_reconciliation_is_not_a_public_direct_reconcile_door() {
+    let state_owner_source =
+        include_str!("../src/bolt_v3_risk_reservation_substrate/state_owner.rs");
+    assert!(
+        !state_owner_source.contains("    pub fn complete_reconciliation(&self)"),
+        "RiskStateOwner::complete_reconciliation must be unreachable to direct callers"
+    );
+
+    let lifecycle_reconciler_source =
+        include_str!("../src/bolt_v3_risk_reservation_substrate/lifecycle_reconciler.rs");
+    assert!(
+        lifecycle_reconciler_source.contains(".complete_reconciliation()?"),
+        "LifecycleReconciler::reconcile_restart must own reconciliation completion"
     );
 }
 

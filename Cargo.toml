@@ -95,52 +95,8 @@ name = "bolt_v3_instrument_filters"
 path = "tests/bolt_v3_instrument_filters.rs"
 
 [[test]]
-name = "bolt_v3_iv_capability"
-path = "tests/bolt_v3_iv_capability.rs"
-
-[[test]]
-name = "bolt_v3_iv_config"
-path = "tests/bolt_v3_iv_config.rs"
-
-[[test]]
-name = "bolt_v3_iv_derive"
-path = "tests/bolt_v3_iv_derive.rs"
-
-[[test]]
-name = "bolt_v3_iv_foundation"
-path = "tests/bolt_v3_iv_foundation.rs"
-
-[[test]]
-name = "bolt_v3_iv_ingest"
-path = "tests/bolt_v3_iv_ingest.rs"
-
-[[test]]
-name = "bolt_v3_iv_live_integration"
-path = "tests/bolt_v3_iv_live_integration.rs"
-
-[[test]]
-name = "bolt_v3_iv_policy"
-path = "tests/bolt_v3_iv_policy.rs"
-
-[[test]]
-name = "bolt_v3_iv_query"
-path = "tests/bolt_v3_iv_query.rs"
-
-[[test]]
-name = "bolt_v3_iv_source_fence"
-path = "tests/bolt_v3_iv_source_fence.rs"
-
-[[test]]
-name = "bolt_v3_iv_store"
-path = "tests/bolt_v3_iv_store.rs"
-
-[[test]]
-name = "bolt_v3_iv_subscription"
-path = "tests/bolt_v3_iv_subscription.rs"
-
-[[test]]
-name = "bolt_v3_iv_support"
-path = "tests/bolt_v3_iv_support.rs"
+name = "iv"
+path = "tests/iv.rs"
 
 [[test]]
 name = "bolt_v3_kill_switch"

@@ -747,7 +747,7 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     timeout-minutes: 60
     env:
-      CARGO_BUILD_JOBS: "4"
+      CARGO_BUILD_JOBS: "2"
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
       EXPECTED_SHA: ${{ github.event.inputs.cross_build_expected_sha || '' }}

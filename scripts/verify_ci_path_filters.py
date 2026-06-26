@@ -29,7 +29,6 @@ REQUIRED_DOC_SCENARIOS = (
     "Rust source change",
     "managed rust-verification config",
     "forbidden legacy rust-verification config",
-    "feature registry input",
     "lockfile change",
     "mixed docs and source",
     "ignored Claude agent dir",

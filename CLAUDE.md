@@ -9,7 +9,5 @@ If Claude Code skills, SpecKit generated prompts, Superpowers skills, or this
 file conflict with `AGENTS.md`, follow `AGENTS.md`, then report the drift.
 
 <!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan:
-`specs/026-nt-backed-iv-engine/plan.md`
+Active feature plan: read `feature_directory` in `.specify/feature.json`, then that directory's `plan.md`.
 <!-- SPECKIT END -->

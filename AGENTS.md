@@ -97,5 +97,5 @@ Repo rules for agents; higher-level instructions apply; deeper `AGENTS.md` wins 
 - Never force past a green-but-cached block with `gh pr merge --admin`; that bypasses required checks.
 
 <!-- SPECKIT START -->
-`specs/026-nt-backed-iv-engine/plan.md`
+Active feature plan: read `feature_directory` in `.specify/feature.json`, then that directory's `plan.md`.
 <!-- SPECKIT END -->

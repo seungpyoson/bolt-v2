@@ -170,9 +170,9 @@ pub struct RiskReservationSubstrateConfig {
 ///
 /// When configured, the substrate enforces the maximum number of in-flight
 /// risk-increasing admissions inside the same compare-and-reserve mutex that
-/// owns risk-state versioning. The async runtime owns the bounded queue and
-/// fairness policy; this substrate boundary only owns the fail-closed admission
-/// decision, priority invariant, and operational alert.
+/// owns risk-state versioning. The async runtime owns the bounded queue and fairness policy;
+/// this substrate boundary only owns the fail-closed admission decision, priority invariant,
+/// and operational alert.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RiskReservationOfferedLoadEnvelope {
     max_supported_in_flight_risk_increasing_admissions: u64,

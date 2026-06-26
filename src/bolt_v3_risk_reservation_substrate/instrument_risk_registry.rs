@@ -142,6 +142,7 @@ struct RegisteredDescriptor {
     descriptor_digest: String,
 }
 
+#[allow(clippy::new_without_default)]
 impl InstrumentRiskRegistry {
     pub fn new() -> Self {
         Self {
@@ -335,12 +336,6 @@ impl InstrumentRiskRegistry {
         let envelope = registered.descriptor.unknown_state_envelope.clone();
         inner.halted_unknown_states.insert(active, envelope.clone());
         Ok(TerminalStateObservation::Unknown(envelope))
-    }
-}
-
-impl Default for InstrumentRiskRegistry {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

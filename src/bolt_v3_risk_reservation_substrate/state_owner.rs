@@ -1105,11 +1105,10 @@ impl FencedRiskStateStore {
     /// bucket, and terminal-scenario sizes are enforced before idempotent token
     /// replay and again after the coherent `risk_state_version` check before
     /// the kernel evaluation, so an over-bound transaction reserves nothing.
-    /// The offered-load shed gate runs only on risk-increasing
-    /// compare-and-reserve, uses the substrate-owned scalar in-flight
-    /// reservation count, records through the existing policy alert source, and
-    /// fails closed before kernel evaluation. The runtime owns the bounded
-    /// event queue, fair-queue scheduling, and wall-clock latency policy; this
+    /// The offered-load shed gate runs only on risk-increasing compare-and-reserve, uses
+    /// the substrate-owned scalar in-flight reservation count, records through the existing
+    /// policy alert source, and fails closed before kernel evaluation. The runtime owns the
+    /// bounded event queue, fair-queue scheduling, and wall-clock latency policy; this
     /// substrate does not spawn threads, timers, or a second serialization path.
     fn compare_and_reserve(
         &self,

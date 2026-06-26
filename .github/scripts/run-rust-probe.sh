@@ -93,7 +93,7 @@ case "$mode" in
   nextest-test-target)
     require_target
     forbid_name
-    probe_args=(nextest run --locked --no-fail-fast --test "$test_target")
+    probe_args=(nextest run --locked --test "$test_target")
     ;;
   nextest-test-target-name)
     require_target

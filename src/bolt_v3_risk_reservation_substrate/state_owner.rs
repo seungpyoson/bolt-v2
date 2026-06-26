@@ -2053,6 +2053,10 @@ fn terminal_order_status_supersedes_fault(
                 < (ts_event_unix_nanos, event_sequence))
 }
 
+/// A terminal order-status is absorbed and advances ordering, but remains held
+/// in `ReconciliationRequired` while any non-superseded fault remains so
+/// exposure events replay before completion. The blocking fault's exact
+/// re-delivery or a later superseding terminal resolves the hold.
 fn terminal_order_status_has_blocking_fault(
     record: &SubstrateReservationRecord,
     ts_event_unix_nanos: u64,
@@ -2062,12 +2066,7 @@ fn terminal_order_status_has_blocking_fault(
         .unresolved_lifecycle_reconciliation_faults
         .values()
         .any(|fault| {
-            fault.kind == LifecycleReconciliationFaultKind::OrderStatus
-                && !terminal_order_status_supersedes_fault(
-                    fault,
-                    ts_event_unix_nanos,
-                    event_sequence,
-                )
+            !terminal_order_status_supersedes_fault(fault, ts_event_unix_nanos, event_sequence)
         })
 }
 

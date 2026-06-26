@@ -4066,6 +4066,135 @@ fn s8c_later_open_status_fault_blocks_older_terminal_release() {
 }
 
 #[test]
+fn s8c_faulted_fill_replays_after_absorbed_terminal_before_reconciliation_completion() {
+    let pool_id = "pool-s8c-fill-before-terminal-release";
+    let idempotency_key = "idempotency-s8c-fill-before-terminal-release";
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        pool_id,
+        "owner-s8c-fill-before-terminal-release",
+        "intent-s8c-fill-before-terminal-release",
+        idempotency_key,
+        "S8C-FILL-BEFORE-TERMINAL-RELEASE",
+    );
+    record_live_submission_for_test(&owner, idempotency_key, client_order_id);
+    reconciler
+        .apply_order_status_truth(nt_open_status_with_ordering(
+            client_order_id,
+            "s8c-fill-before-terminal-release-open",
+            1_150,
+            Some(1),
+        ))
+        .expect("first open status should apply");
+    let before_fill_fault_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before the fill fault");
+
+    let fill_fault = reconciler
+        .apply_fill_truth(nt_fill_with_ordering(
+            client_order_id,
+            "s8c-fill-before-terminal-release-fill",
+            1_170,
+            Some(3),
+            dec(1),
+            dec(1),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("gapped fill should fail closed into reconciliation");
+    assert_eq!(
+        fill_fault.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    let record_after_fill_fault = only_reservation_record(&owner);
+    assert!(record_after_fill_fault.open_order_remainder_held);
+    assert_eq!(record_after_fill_fault.remaining_fillable_quantity, dec(2));
+    assert!(record_after_fill_fault.filled_position_exposure.is_none());
+    assert!(
+        record_after_fill_fault
+            .unresolved_lifecycle_reconciliation_faults
+            .values()
+            .any(|fault| fault.kind == LifecycleReconciliationFaultKind::Fill
+                && fault.ts_event_unix_nanos == 1_170
+                && fault.event_sequence == Some(3)),
+        "the gapped fill must be retained as the blocking exposure fault"
+    );
+
+    let terminal = reconciler
+        .apply_order_status_truth(nt_cancel_confirmed_status_with_ordering(
+            client_order_id,
+            "s8c-fill-before-terminal-release-cancel",
+            1_160,
+            Some(2),
+        ))
+        .expect("terminal status should be absorbed while the fill fault remains");
+    assert_eq!(
+        terminal.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    let record_after_terminal = only_reservation_record(&owner);
+    assert_eq!(
+        record_after_terminal.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    assert!(
+        record_after_terminal.open_order_remainder_held,
+        "the terminal must not release open-order risk before the fill can replay"
+    );
+    assert_eq!(record_after_terminal.remaining_fillable_quantity, dec(2));
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should remain readable after the absorbed terminal"),
+        before_fill_fault_totals,
+        "absorbing the terminal must not release the open remainder while exposure is unresolved"
+    );
+
+    let replayed_fill = reconciler
+        .apply_fill_truth(nt_fill_with_ordering(
+            client_order_id,
+            "s8c-fill-before-terminal-release-fill",
+            1_170,
+            Some(3),
+            dec(1),
+            dec(1),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("the exact fill replay should apply after the terminal advances the sequence");
+    assert_eq!(
+        replayed_fill.lifecycle_state,
+        ReservationLifecycleState::PartiallyFilled
+    );
+    let record_after_replayed_fill = only_reservation_record(&owner);
+    assert!(record_after_replayed_fill.open_order_remainder_held);
+    assert_eq!(
+        record_after_replayed_fill.remaining_fillable_quantity,
+        dec(1)
+    );
+    assert!(
+        record_after_replayed_fill
+            .unresolved_lifecycle_reconciliation_faults
+            .is_empty(),
+        "the replayed fill must clear its reconciliation fault"
+    );
+
+    let mut sink = RecordingLiveSubmitBoundary::default();
+    reconciler
+        .reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: Vec::new(),
+                fill_reports: Vec::new(),
+                settlement_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        )
+        .expect("clearing the fill fault should let restart reconciliation complete");
+}
+
+#[test]
 fn s8c_terminal_status_clears_stale_earlier_open_status_fault() {
     let pool_id = "pool-s8c-stale-open-fault";
     let idempotency_key = "idempotency-s8c-stale-open-fault";
@@ -4289,10 +4418,14 @@ fn s8c_faulted_fill_is_not_cleared_by_later_terminal_truth() {
         .expect("lower-sequence terminal status should apply");
     assert_eq!(
         terminal.lifecycle_state,
-        ReservationLifecycleState::CancelConfirmed
+        ReservationLifecycleState::ReconciliationRequired
     );
 
     let record_after_terminal = only_reservation_record(&owner);
+    assert_eq!(
+        record_after_terminal.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
     assert!(
         record_after_terminal.filled_position_exposure.is_none(),
         "the faulted fill must not be synthesized without authoritative application"

@@ -433,10 +433,10 @@ def assert_changed_files_produce_targeted_suggestions() -> None:
     )
     expected = [
         "just rust-probe check-lib",
-        "just rust-probe check-test-target build_script_git_head_rerun_paths",
-        "just rust-probe nextest-no-run-test-target build_script_git_head_rerun_paths",
-        "just rust-probe nextest-test-target build_script_git_head_rerun_paths",
-        "just rust-probe nextest-test-target-name build_script_git_head_rerun_paths build_script_git_head_rerun_paths::",
+        "just rust-probe check-test-target platform_config",
+        "just rust-probe nextest-no-run-test-target platform_config",
+        "just rust-probe nextest-test-target platform_config",
+        "just rust-probe nextest-test-target-name platform_config build_script_git_head_rerun_paths::",
     ]
     for command in expected:
         if command not in suggestions:
@@ -559,9 +559,9 @@ def assert_cmd_rust_probe_suggest_reports_policy_and_rejects_runner_tier() -> No
         output = stdout.getvalue()
         if "tests/config_parsing.rs" not in output:
             raise AssertionError(output)
-        if "just rust-probe check-test-target config_parsing" not in output:
+        if "just rust-probe check-test-target platform_config" not in output:
             raise AssertionError(output)
-        if "just rust-probe nextest-test-target-name config_parsing config_parsing::" not in output:
+        if "just rust-probe nextest-test-target-name platform_config config_parsing::" not in output:
             raise AssertionError(output)
         if "Rust Probe is not merge proof" not in output:
             raise AssertionError(output)

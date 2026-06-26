@@ -32,13 +32,11 @@ ARCHETYPE_BINARY_ORACLE_SOURCE = (
     REPO_ROOT / "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 )
 POSITION_CONTRACT_SOURCE = REPO_ROOT / "src/bolt_v3_position_contract.rs"
-ORDER_INTENT_FEATURE_DIR = "specs/023-nt-order-intent-layer"
-ORDER_INTENT_PLAN = f"{ORDER_INTENT_FEATURE_DIR}/plan.md"
-ACTIVE_SPECKIT_FEATURE_DIRS = (
-    ORDER_INTENT_FEATURE_DIR,
-    "specs/026-nt-backed-iv-engine",
-)
-ACTIVE_SPECKIT_PLANS = tuple(f"{feature_dir}/plan.md" for feature_dir in ACTIVE_SPECKIT_FEATURE_DIRS)
+# The agent docs (AGENTS.md/CLAUDE.md/GEMINI.md) must hold a STABLE INSTRUCTION
+# pointing at the single source of the active feature, never an embedded mutable
+# plan path. The active feature lives only in .specify/feature.json, which
+# /speckit.specify persists; the docs and this check derive from it.
+SPECKIT_FEATURE_JSON_REF = ".specify/feature.json"
 SPECKIT_BLOCK_PATTERN = re.compile(
     r"<!-- SPECKIT START -->(?P<body>.*?)<!-- SPECKIT END -->",
     re.DOTALL,
@@ -317,7 +315,11 @@ def section_requires_defaulted_trailing_stop_market_field(section: str) -> bool:
     return False
 
 
-def validate_speckit_context(agents_doc: str | None, feature_json: str | None) -> list[str]:
+def validate_speckit_context(
+    agents_doc: str | None,
+    feature_json: str | None,
+    repo_root: Path = REPO_ROOT,
+) -> list[str]:
     findings: list[str] = []
 
     if agents_doc is not None:
@@ -329,17 +331,22 @@ def validate_speckit_context(agents_doc: str | None, feature_json: str | None) -
                 findings.append("AGENTS.md missing active Speckit block")
             else:
                 speckit_block = match.group("body")
-                plan_paths = [
-                    plan_match.group("path") for plan_match in BACKTICKED_PLAN_PATTERN.finditer(speckit_block)
-                ]
-                if len(plan_paths) != 1 or plan_paths[0] not in ACTIVE_SPECKIT_PLANS:
+                # Stable instruction, not a mutable value: the block must point at
+                # the single source (.specify/feature.json) and must not hard-code a
+                # per-feature plan path that a doc-only edit would silently break.
+                if SPECKIT_FEATURE_JSON_REF not in speckit_block:
                     findings.append(
-                        "AGENTS.md active Speckit block must contain exactly "
-                        f"one current plan pointer from {ACTIVE_SPECKIT_PLANS!r}, got {plan_paths!r}"
+                        "AGENTS.md active Speckit block must reference "
+                        f"{SPECKIT_FEATURE_JSON_REF} as the active-feature source"
                     )
-                if "specs/023-nt-research-analytics-platform/plan.md" in speckit_block:
+                embedded_plans = [
+                    plan_match.group("path")
+                    for plan_match in BACKTICKED_PLAN_PATTERN.finditer(speckit_block)
+                ]
+                if embedded_plans:
                     findings.append(
-                        "AGENTS.md active Speckit block still points at stale research-analytics plan"
+                        "AGENTS.md active Speckit block must not embed a mutable plan "
+                        f"path; point at {SPECKIT_FEATURE_JSON_REF} instead, got {embedded_plans!r}"
                     )
 
     if feature_json is not None:
@@ -355,10 +362,14 @@ def validate_speckit_context(agents_doc: str | None, feature_json: str | None) -
                 findings.append(".specify/feature.json must be a JSON object")
                 return findings
             feature_directory = parsed.get("feature_directory")
-            if feature_directory not in ACTIVE_SPECKIT_FEATURE_DIRS:
+            if not isinstance(feature_directory, str) or not feature_directory.strip():
                 findings.append(
-                    ".specify/feature.json points to "
-                    f"{feature_directory!r}, expected one of {ACTIVE_SPECKIT_FEATURE_DIRS!r}"
+                    ".specify/feature.json must set a non-empty feature_directory string"
+                )
+            elif not (repo_root / feature_directory / "plan.md").is_file():
+                findings.append(
+                    ".specify/feature.json feature_directory "
+                    f"{feature_directory!r} has no plan.md on disk"
                 )
 
     return findings
@@ -382,6 +393,7 @@ def validate_docs(
     archetype_source: str = "",
     strategy_source: str = "",
     position_contract_source: str = "",
+    repo_root: Path = REPO_ROOT,
 ) -> list[str]:
     findings: list[str] = []
 
@@ -555,7 +567,7 @@ def validate_docs(
     findings.extend(unsupported_scope_overclaims("data model", data_model))
     findings.extend(unsupported_scope_overclaims("maker scope contract", maker_scope_contract))
     findings.extend(unsupported_scope_overclaims("maker scope data model", maker_scope_data_model))
-    findings.extend(validate_speckit_context(agents_doc, feature_json))
+    findings.extend(validate_speckit_context(agents_doc, feature_json, repo_root))
 
     return findings
 

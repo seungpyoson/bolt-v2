@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -122,82 +123,126 @@ def test_validate_docs_checks_decision_evidence_schema_version_source() -> None:
         raise AssertionError(f"expected decision-evidence schema source drift finding, got {findings!r}")
 
 
-def test_validate_docs_rejects_wrong_active_speckit_context() -> None:
+def test_speckit_block_accepts_feature_json_pointer() -> None:
+    agents_doc = (
+        "intro\n"
+        "<!-- SPECKIT START -->\n"
+        "For additional context about technologies to be used, project structure,\n"
+        "shell commands, and other important information, read the active feature's\n"
+        "plan. The active feature is recorded in `.specify/feature.json`\n"
+        "(`feature_directory`); read that directory's `plan.md`.\n"
+        "<!-- SPECKIT END -->\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_root = Path(tmp)
+        feature_dir = "specs/099-example-feature"
+        (repo_root / feature_dir).mkdir(parents=True)
+        (repo_root / feature_dir / "plan.md").write_text("plan", encoding="utf-8")
+        findings = VERIFIER.validate_docs(
+            CURRENT_SCHEMA,
+            CURRENT_STATUS_MAP,
+            agents_doc=agents_doc,
+            feature_json=f'{{"feature_directory": "{feature_dir}"}}',
+            repo_root=repo_root,
+        )
+    if findings:
+        raise AssertionError(f"expected no Speckit findings, got {findings!r}")
+
+
+def test_speckit_block_rejects_embedded_plan_path() -> None:
+    # Regression guard: the block must hold a stable instruction, never a mutable
+    # plan path that a doc-only edit can silently break (the bug this fix removes).
+    agents_doc = (
+        "<!-- SPECKIT START -->\n"
+        "shell commands, and other important information, read the current plan:\n"
+        "`specs/026-nt-backed-iv-engine/plan.md`\n"
+        "<!-- SPECKIT END -->\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_root = Path(tmp)
+        feature_dir = "specs/099-example-feature"
+        (repo_root / feature_dir).mkdir(parents=True)
+        (repo_root / feature_dir / "plan.md").write_text("plan", encoding="utf-8")
+        findings = VERIFIER.validate_docs(
+            CURRENT_SCHEMA,
+            CURRENT_STATUS_MAP,
+            agents_doc=agents_doc,
+            feature_json=f'{{"feature_directory": "{feature_dir}"}}',
+            repo_root=repo_root,
+        )
+    if not any("must not embed" in finding for finding in findings):
+        raise AssertionError(f"expected embedded-plan-path finding, got {findings!r}")
+
+
+def test_speckit_block_requires_feature_json_reference() -> None:
+    agents_doc = (
+        "<!-- SPECKIT START -->\n"
+        "read the active feature's plan.\n"
+        "<!-- SPECKIT END -->\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_root = Path(tmp)
+        feature_dir = "specs/099-example-feature"
+        (repo_root / feature_dir).mkdir(parents=True)
+        (repo_root / feature_dir / "plan.md").write_text("plan", encoding="utf-8")
+        findings = VERIFIER.validate_docs(
+            CURRENT_SCHEMA,
+            CURRENT_STATUS_MAP,
+            agents_doc=agents_doc,
+            feature_json=f'{{"feature_directory": "{feature_dir}"}}',
+            repo_root=repo_root,
+        )
+    if not any(
+        ".specify/feature.json" in finding and "active-feature source" in finding
+        for finding in findings
+    ):
+        raise AssertionError(f"expected feature.json-reference finding, got {findings!r}")
+
+
+def test_speckit_block_missing_is_reported() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,
         CURRENT_STATUS_MAP,
-        agents_doc=(
-            "shell commands, and other important information, read the current plan:\n"
-            "`specs/023-nt-research-analytics-platform/plan.md`\n"
-        ),
-        feature_json='{"feature_directory": "specs/023-nt-research-analytics-platform"}',
+        agents_doc="no markers here",
+        feature_json='{"feature_directory": "specs/026-nt-backed-iv-engine"}',
     )
-
-    expected_fragments = [
-        "AGENTS.md",
-        ".specify/feature.json",
-    ]
-    for fragment in expected_fragments:
-        if not any(fragment in finding for finding in findings):
-            raise AssertionError(f"expected Speckit context fragment {fragment!r}, got {findings!r}")
+    if not any("missing active Speckit block" in finding for finding in findings):
+        raise AssertionError(f"expected missing-block finding, got {findings!r}")
 
 
-def test_validate_docs_checks_active_speckit_block_not_any_substring() -> None:
-    stale_active_block = """
-Historical context: `specs/023-nt-order-intent-layer/plan.md`
+def test_feature_json_rejects_nonexistent_feature_dir() -> None:
+    agents_doc = (
+        "<!-- SPECKIT START -->\n"
+        "read the feature recorded in `.specify/feature.json`.\n"
+        "<!-- SPECKIT END -->\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_root = Path(tmp)  # no specs/... directory created
+        findings = VERIFIER.validate_docs(
+            CURRENT_SCHEMA,
+            CURRENT_STATUS_MAP,
+            agents_doc=agents_doc,
+            feature_json='{"feature_directory": "specs/404-missing"}',
+            repo_root=repo_root,
+        )
+    if not any("no plan.md on disk" in finding for finding in findings):
+        raise AssertionError(f"expected missing-plan finding, got {findings!r}")
 
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan:
-`specs/024-other-feature/plan.md`
-<!-- SPECKIT END -->
-"""
+
+def test_feature_json_rejects_blank_feature_directory() -> None:
+    agents_doc = (
+        "<!-- SPECKIT START -->\n"
+        "read the feature recorded in `.specify/feature.json`.\n"
+        "<!-- SPECKIT END -->\n"
+    )
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,
         CURRENT_STATUS_MAP,
-        agents_doc=stale_active_block,
-        feature_json='{"feature_directory": "specs/023-nt-order-intent-layer"}',
+        agents_doc=agents_doc,
+        feature_json='{"feature_directory": ""}',
     )
-    if not any("AGENTS.md" in finding and "active Speckit block" in finding for finding in findings):
-        raise AssertionError(f"expected active-block pointer finding, got {findings!r}")
-
-    correct_active_block_with_history = """
-Historical context: `specs/023-nt-research-analytics-platform/plan.md`
-
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan:
-`specs/023-nt-order-intent-layer/plan.md`
-<!-- SPECKIT END -->
-"""
-    history_findings = VERIFIER.validate_docs(
-        CURRENT_SCHEMA,
-        CURRENT_STATUS_MAP,
-        agents_doc=correct_active_block_with_history,
-        feature_json='{"feature_directory": "specs/023-nt-order-intent-layer"}',
-    )
-    if history_findings:
-        raise AssertionError(f"expected historical stale pointer outside active block to pass, got {history_findings!r}")
-
-
-def test_validate_docs_rejects_same_block_wrong_active_plan_even_with_current_note() -> None:
-    same_block_note = """
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan:
-`specs/024-other-feature/plan.md`
-
-Historical replacement target: `specs/023-nt-order-intent-layer/plan.md`
-<!-- SPECKIT END -->
-"""
-    findings = VERIFIER.validate_docs(
-        CURRENT_SCHEMA,
-        CURRENT_STATUS_MAP,
-        agents_doc=same_block_note,
-        feature_json='{"feature_directory": "specs/023-nt-order-intent-layer"}',
-    )
-    if not any("AGENTS.md" in finding and "active Speckit block" in finding for finding in findings):
-        raise AssertionError(f"expected same-block active-plan finding, got {findings!r}")
+    if not any("non-empty feature_directory" in finding for finding in findings):
+        raise AssertionError(f"expected blank-feature_directory finding, got {findings!r}")
 
 
 def test_validate_docs_rejects_empty_speckit_context_files() -> None:
@@ -223,7 +268,7 @@ def test_validate_docs_rejects_non_object_feature_json_without_crashing() -> Non
             CURRENT_STATUS_MAP,
             agents_doc=(
                 "<!-- SPECKIT START -->\n"
-                "`specs/023-nt-order-intent-layer/plan.md`\n"
+                "read the feature recorded in `.specify/feature.json`.\n"
                 "<!-- SPECKIT END -->\n"
             ),
             feature_json="[]",
@@ -241,7 +286,7 @@ def test_validate_docs_rejects_malformed_feature_json_without_crashing() -> None
         CURRENT_STATUS_MAP,
         agents_doc=(
             "<!-- SPECKIT START -->\n"
-            "`specs/023-nt-order-intent-layer/plan.md`\n"
+            "read the feature recorded in `.specify/feature.json`.\n"
             "<!-- SPECKIT END -->\n"
         ),
         feature_json="{",
@@ -756,9 +801,12 @@ def main() -> int:
     tests = [
         test_extract_section_stops_at_next_matching_heading,
         test_validate_docs_accepts_current_terms,
-        test_validate_docs_rejects_wrong_active_speckit_context,
-        test_validate_docs_checks_active_speckit_block_not_any_substring,
-        test_validate_docs_rejects_same_block_wrong_active_plan_even_with_current_note,
+        test_speckit_block_accepts_feature_json_pointer,
+        test_speckit_block_rejects_embedded_plan_path,
+        test_speckit_block_requires_feature_json_reference,
+        test_speckit_block_missing_is_reported,
+        test_feature_json_rejects_nonexistent_feature_dir,
+        test_feature_json_rejects_blank_feature_directory,
         test_validate_docs_rejects_empty_speckit_context_files,
         test_validate_docs_rejects_non_object_feature_json_without_crashing,
         test_validate_docs_rejects_malformed_feature_json_without_crashing,

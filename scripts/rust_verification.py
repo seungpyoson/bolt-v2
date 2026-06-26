@@ -64,14 +64,10 @@ RUST_PROBE_SUGGEST_COMMAND = "suggest"
 RUST_PROBE_COMMANDS = (RUST_PROBE_SUGGEST_COMMAND, *RUST_PROBE_MODES)
 GATE_NAME_KEYS = (
     "gate_required",
-    "gate_defer",
     "gate_iteration",
-    "gate_noop",
     "gate_dispatch_full",
     "backtester_required",
-    "backtester_defer",
     "backtester_iteration",
-    "backtester_noop",
     "backtester_dispatch_full",
 )
 RUST_PROBE_HELP_EPILOG = """\
@@ -2900,12 +2896,8 @@ def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
     keys = (
         "gate_required",
         "backtester_required",
-        "gate_defer",
-        "backtester_defer",
         "gate_iteration",
         "backtester_iteration",
-        "gate_noop",
-        "backtester_noop",
         "gate_dispatch_full",
         "backtester_dispatch_full",
     )

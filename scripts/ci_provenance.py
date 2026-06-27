@@ -33,6 +33,13 @@ SUPPORTED_MODES = {
     "validate-record",
 }
 POLICY_VALUES = {"full", "docs", "defer", "iteration", "noop", "tag_reuse"}
+# The event classes for which gate_name_suffix_for() publishes the REQUIRED gate /
+# backtester-gate context (vs the feedback-only gate-iteration): "full" via
+# merge_group / push / actor-verified mergify_temp_pr, and "tag_reuse" via tag.
+# Every PR/dispatch feedback path (iteration, docs, defer, noop) routes to
+# gate-iteration. required_check_applicable_event_classes() intersects against this
+# so the dynamic gates' applicable set can never include a feedback class.
+REQUIRED_GATE_PROOF_EVENT_CLASSES = {"full", "tag_reuse"}
 GATE_NAME_KEYS = (
     "gate_required",
     "gate_iteration",
@@ -394,9 +401,16 @@ def required_check_applicable_event_classes(
     if not check.runs_on_tags:
         applicable.discard("tag_reuse")
     if check.context in {gate_names["gate_required"], gate_names["backtester_required"]}:
-        # Ordinary PR iteration events publish the feedback-only gate_iteration names.
-        # They do not emit the required gate/backtester-gate contexts.
-        applicable.discard("iteration")
+        # Single source of truth: gate_name_suffix_for() is the authority on which events
+        # publish the REQUIRED gate/backtester-gate name vs the feedback-only gate-iteration.
+        # It returns the required suffix ONLY for merge_group / push / actor-verified
+        # mergify_temp_pr (event class "full") and tag (class "tag_reuse"); EVERY PR/dispatch
+        # path (iteration, docs, defer, noop) routes to gate-iteration. So keep ONLY the
+        # required-proof classes instead of denylisting each feedback class one by one — a
+        # denylist drifts (iteration was missed, then docs). This intersection fails safe: a
+        # new feedback class is auto-excluded, and a missing required class fails loud in
+        # required_check_registry_contract_errors rather than silently over-claiming.
+        applicable &= REQUIRED_GATE_PROOF_EVENT_CLASSES
     return applicable
 
 
@@ -2721,7 +2735,7 @@ def emit_full_ci_record(
 
 
 def parser_for_mode(mode: str) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=f"ci_provenance.py {mode}")
+    parser = argparse.ArgumentParser(prog=f"ci_provenance.py {mode}", allow_abbrev=False)
     parser.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
     if mode == "ci-policy":
         parser.add_argument("--event-name", required=True)
@@ -2731,7 +2745,6 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--pull-request-base-changed", default="false")
         parser.add_argument("--workflow-dispatch-full-ci", default="")
         parser.add_argument("--docs-only", default="false")
-        parser.add_argument("--event-sender-id", default="")
         parser.add_argument("--ref", required=True)
     if mode == "check-ci-gate":
         parser.add_argument("--policy-path", required=True)
@@ -2805,7 +2818,7 @@ def main(argv: list[str] | None = None) -> int:
                 pull_request_base_changed=parse_bool(args.pull_request_base_changed),
                 workflow_dispatch_full_ci=args.workflow_dispatch_full_ci,
                 docs_only=parse_bool(args.docs_only),
-                event_sender_id=parse_event_sender_id(args.event_sender_id or os.environ.get("EVENT_SENDER_ID") or -1),
+                event_sender_id=parse_event_sender_id(os.environ.get("EVENT_SENDER_ID") or -1),
                 ref=args.ref,
             )
             print(f"ci_policy_path={result.ci_policy_path}")

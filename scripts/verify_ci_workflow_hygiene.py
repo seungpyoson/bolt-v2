@@ -1455,6 +1455,7 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         errors.append("ci-policy must pass github.ref")
     if "EVENT_SENDER_ID: ${{ github.event.sender.id }}" not in text:
         errors.append("ci-policy must set EVENT_SENDER_ID env for the mergify actor binding")
+    # Secondary defense: ci_provenance removed this CLI arg and uses allow_abbrev=False.
     if "--event-sender-id" in text:
         errors.append("ci-policy must not pass --event-sender-id on the resolver command line")
     return errors
@@ -8623,7 +8624,7 @@ def base_ref_archive_scripts_directory_errors(workflow_text: str) -> list[str]:
             continue
         rendered = " ".join(command)
         errors.append(
-            "ci.yml base_ref git archive must archive scripts/ wholesale and must not list "
+            "base_ref git archive must archive scripts/ wholesale and must not list "
             f"individual scripts: {rendered}"
         )
     return errors
@@ -10390,6 +10391,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         ]:
             if required not in policy_text:
                 errors.append(f"backtester draft deferral ci-policy job must include {required}")
+        # Secondary defense: ci_provenance removed this CLI arg and uses allow_abbrev=False.
         if "--event-sender-id" in policy_text:
             errors.append("ci-policy must not pass --event-sender-id on the resolver command line")
 

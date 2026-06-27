@@ -124,7 +124,7 @@ supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.gate.proof_rule]
-fresh = ["full", "docs", "tag_reuse"]
+fresh = ["full", "tag_reuse"]
 carry_forward = []
 
 [ci_provenance.required_checks.backtester-gate]
@@ -138,7 +138,7 @@ supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
-fresh = ["full", "docs", "tag_reuse"]
+fresh = ["full", "tag_reuse"]
 carry_forward = []
 
 [ci_provenance.required_checks.host-health]
@@ -350,7 +350,7 @@ context = "host-health"
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
 carry_forward = []
-fresh = ["full", "docs", "tag_reuse"]
+fresh = ["full", "tag_reuse"]
 
 [ci_provenance.required_checks.backtester-gate]
 arrivals = ["pull_request", "merge_group"]
@@ -364,7 +364,7 @@ context = "backtester-gate"
 
 [ci_provenance.required_checks.gate.proof_rule]
 carry_forward = []
-fresh = ["full", "docs", "tag_reuse"]
+fresh = ["full", "tag_reuse"]
 
 [ci_provenance.required_checks.gate]
 arrivals = ["pull_request", "merge_group"]
@@ -520,6 +520,11 @@ def patched_env(values: dict[str, str]):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def run_cli_with_event_sender(args: list[str], sender: object) -> tuple[int, str, str]:
+    with patched_env({"EVENT_SENDER_ID": str(sender)}):
+        return run_cli(args)
 
 
 def assert_fails(fragment: str, args: list[str]) -> None:
@@ -1269,6 +1274,39 @@ def assert_top_level_help_is_supported() -> None:
         raise AssertionError(f"expected supported modes in help output, got {combined!r}")
 
 
+def assert_ci_policy_rejects_event_sender_cli_override_arguments() -> None:
+    base_args = [
+        "ci-policy",
+        "--event-name",
+        "pull_request",
+        "--event-action",
+        "opened",
+        "--pull-request-draft",
+        "true",
+        "--pull-request-head-ref",
+        "mergify/merge-queue/83d4b0be7e",
+        "--pull-request-base-changed",
+        "false",
+        "--workflow-dispatch-full-ci",
+        "",
+        "--docs-only",
+        "false",
+        "--ref",
+        "refs/pull/965/merge",
+    ]
+    for flag, value in (
+        ("--event-sender-id", "37929162"),
+        ("--event-sender", "37929162"),
+        ("--event-nam", "pull_request"),
+    ):
+        code, stdout, stderr = run_cli([*base_args, flag, value])
+        combined = stdout + stderr
+        if code == 0:
+            raise AssertionError(f"{flag} must be rejected, got stdout={stdout!r}")
+        if "unrecognized arguments" not in combined or flag not in combined:
+            raise AssertionError(f"{flag} must fail as unrecognized, got {combined!r}")
+
+
 def assert_ci_policy_outputs_matrix() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
@@ -1385,7 +1423,7 @@ def assert_ci_policy_outputs_matrix() -> None:
             if output.get("ignore_emit_failure") != "false":
                 raise AssertionError(f"ci-policy must expose ignore_emit_failure: {output}")
 
-        code, stdout, stderr = run_cli(
+        code, stdout, stderr = run_cli_with_event_sender(
             [
                 "ci-policy",
                 "--config",
@@ -1406,9 +1444,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                 "false",
                 "--ref",
                 "refs/pull/965/merge",
-                "--event-sender-id",
-                "37929162",
-            ]
+            ],
+            "37929162",
         )
         if code != 0:
             raise AssertionError(f"Mergify ci-policy failed: {stderr}")
@@ -1422,7 +1459,7 @@ def assert_ci_policy_outputs_matrix() -> None:
         ):
             raise AssertionError(f"Mergify temp PR must resolve to required full CI: {output}")
 
-        code, stdout, stderr = run_cli(
+        code, stdout, stderr = run_cli_with_event_sender(
             [
                 "ci-policy",
                 "--config",
@@ -1443,9 +1480,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                 "true",
                 "--ref",
                 "refs/pull/965/merge",
-                "--event-sender-id",
-                "37929162",
-            ]
+            ],
+            "37929162",
         )
         if code != 0:
             raise AssertionError(f"Mergify docs-only ci-policy failed: {stderr}")
@@ -1693,7 +1729,7 @@ def assert_mergify_temp_pr_requires_actor_binding() -> None:
             "refs/pull/965/merge",
         ]
 
-        code, stdout, stderr = run_cli([*base_args, "--event-sender-id", "12345"])
+        code, stdout, stderr = run_with_event_sender(base_args, "12345")
         if code != 0:
             raise AssertionError(f"spoofed mergify ci-policy failed: {stderr}")
         spoof = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
@@ -1720,7 +1756,7 @@ def assert_mergify_temp_pr_requires_actor_binding() -> None:
         if env_bound.get("reason") != "mergify_temp_pr" or env_bound.get("gate_name") != "gate":
             raise AssertionError(f"env EVENT_SENDER_ID must bind mergify temp PR to required gate: {env_bound}")
 
-        code, stdout, stderr = run_cli([*base_args, "--event-sender-id", "37929162"])
+        code, stdout, stderr = run_with_event_sender(base_args, "37929162")
         if code != 0:
             raise AssertionError(f"bound-actor mergify ci-policy failed: {stderr}")
         bound = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
@@ -1811,7 +1847,7 @@ def assert_ci_policy_non_numeric_sender_id_does_not_crash() -> None:
     # A malformed EVENT_SENDER_ID must demote, never crash the ci-policy job.
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
-        code, stdout, stderr = run_cli(
+        code, stdout, stderr = run_cli_with_event_sender(
             [
                 "ci-policy",
                 "--config",
@@ -1832,9 +1868,8 @@ def assert_ci_policy_non_numeric_sender_id_does_not_crash() -> None:
                 "false",
                 "--ref",
                 "refs/pull/965/merge",
-                "--event-sender-id",
-                "not-a-number",
-            ]
+            ],
+            "not-a-number",
         )
     if code != 0:
         raise AssertionError(f"non-numeric sender id must not crash ci-policy: {stderr}")
@@ -2116,13 +2151,13 @@ EXPECTED_REQUIRED_CHECK_PROOF_RULES = {
     "gate": {
         "runs_on_tags": True,
         "supports_carry_forward": True,
-        "fresh": ("full", "docs", "tag_reuse"),
+        "fresh": ("full", "tag_reuse"),
         "carry_forward": (),
     },
     "backtester-gate": {
         "runs_on_tags": True,
         "supports_carry_forward": True,
-        "fresh": ("full", "docs", "tag_reuse"),
+        "fresh": ("full", "tag_reuse"),
         "carry_forward": (),
     },
     "host-health": {
@@ -2301,11 +2336,22 @@ required = false
         "proof_rule.fresh must be": replace_once(
             CONFIG_TOML,
             """[ci_provenance.required_checks.gate.proof_rule]
-fresh = ["full", "docs", "tag_reuse"]
+fresh = ["full", "tag_reuse"]
 carry_forward = []
 """,
             """[ci_provenance.required_checks.gate.proof_rule]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
+fresh = ["full", "docs", "tag_reuse"]
+carry_forward = []
+""",
+        ),
+        "fresh must be": replace_once(
+            CONFIG_TOML,
+            """[ci_provenance.required_checks.gate.proof_rule]
+fresh = ["full", "tag_reuse"]
+carry_forward = []
+""",
+            """[ci_provenance.required_checks.gate.proof_rule]
+fresh = ["full", "iteration", "tag_reuse"]
 carry_forward = []
 """,
         ),
@@ -4112,6 +4158,7 @@ def main() -> int:
     assert_fingerprint_reuse_api_errors_fail_closed()
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
+    assert_ci_policy_rejects_event_sender_cli_override_arguments()
     assert_ci_policy_outputs_matrix()
     assert_ci_policy_gate_names_are_event_based()
     assert_mergify_temp_pr_requires_actor_binding()

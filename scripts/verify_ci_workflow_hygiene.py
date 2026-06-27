@@ -546,6 +546,46 @@ TEST_ARCHIVE_SIDECAR_CACHE_KEY = (
     "-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
 )
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_SCCACHE_OPT_IN = (
+    "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}"
+)
+# Value, not mere presence: the fail-open flag must be literally "1", and the build
+# must retry without sccache on failure, so a future edit cannot silently disable
+# either and make the cache able to fail the required build.
+TEST_ARCHIVE_SCCACHE_IGNORE_IO = 'SCCACHE_IGNORE_SERVER_IO_ERROR: "1"'
+TEST_ARCHIVE_SCCACHE_RETRY = "BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive"
+TEST_ARCHIVE_SCCACHE_PREFIX_PRECONDITION = (
+    '[[ -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]]'
+)
+TEST_ARCHIVE_SCCACHE_LOCATION_PRECONDITION = (
+    '[[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]]'
+)
+TEST_ARCHIVE_SCCACHE_MAIN_DISPATCH_TRUST = (
+    'if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi'
+)
+TEST_ARCHIVE_SCCACHE_MAIN_PUSH_TRUST = (
+    'if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi'
+)
+TEST_ARCHIVE_SCCACHE_TRUSTED_ASSIGNMENTS = (
+    TEST_ARCHIVE_SCCACHE_MAIN_DISPATCH_TRUST,
+    TEST_ARCHIVE_SCCACHE_MAIN_PUSH_TRUST,
+)
+TEST_ARCHIVE_SCCACHE_PR_ROLE_ENV = "PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}"
+TEST_ARCHIVE_SCCACHE_READ_WRITE_ROLE = (
+    'if [[ "$trusted" == "true" ]]; then\n'
+    '            cache_mode="read_write"\n'
+    '            role_arn="$ROLE_ARN"\n'
+    "          fi"
+)
+TEST_ARCHIVE_SCCACHE_PR_READ_ONLY_ROLE = (
+    'if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then\n'
+    '            cache_mode="read_only"\n'
+    '            role_arn="$PR_READONLY_ROLE_ARN"\n'
+    "          fi"
+)
+TEST_ARCHIVE_SCCACHE_ROLE_OUTPUT = 'echo "role_arn=$role_arn" >> "$GITHUB_OUTPUT"'
+TEST_ARCHIVE_SCCACHE_MODE_OUTPUT = 'echo "cache_mode=$cache_mode" >> "$GITHUB_OUTPUT"'
+TEST_ARCHIVE_SCCACHE_RESOLVED_ROLE_ASSUME = "role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}"
 TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'"
 TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_SIDECAR_BUILD_GUARD = (
@@ -8948,6 +8988,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "test-shards" in jobs:
         errors.append("test-shards job must not reintroduce nextest archive artifact fan-out")
 
+    for job_name, job_lines in jobs.items():
+        if job_name != "test-archive" and "BOLT_RUST_VERIFICATION_SCCACHE" in uncommented_text(job_lines):
+            errors.append("BOLT_RUST_VERIFICATION_SCCACHE opt-in must stay scoped to the test-archive job")
+
     if "clippy" in jobs:
         clippy_needs = extract_needs(jobs["clippy"])
         if "detector" not in clippy_needs:
@@ -9147,6 +9191,60 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must save root binary sidecar cache only on sidecar cache miss")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
+        # Fail-open contract for the S3 sccache compile cache (#1011): when the
+        # opt-in is wired, the cache must never be able to fail the required build,
+        # and cache use must be gated to trusted refs (the IAM trust scope is the
+        # real poison boundary, but keep the workflow itself honest too).
+        if "BOLT_RUST_VERIFICATION_SCCACHE" in archive_text:
+            if TEST_ARCHIVE_SCCACHE_OPT_IN not in archive_text:
+                errors.append("test-archive sccache opt-in must stay conditional on the resolver, never hardcoded")
+            for label in (
+                "Resolve sccache eligibility",
+                "Configure AWS credentials for sccache",
+                "Install sccache",
+                "Resolve sccache enablement",
+            ):
+                block = named_step_block(archive_lines, label)
+                if block is None or "continue-on-error: true" not in uncommented_text(block):
+                    errors.append(f"test-archive sccache step '{label}' must be continue-on-error (fail-open)")
+            # Value, not mere presence: the flag must be "1" so a future edit cannot
+            # silently flip it to "0" and make S3/server I/O errors fatal.
+            if TEST_ARCHIVE_SCCACHE_IGNORE_IO not in archive_text:
+                errors.append('test-archive sccache must set SCCACHE_IGNORE_SERVER_IO_ERROR: "1" (degrade S3 errors to local compile)')
+            # Even a mid-build sccache server crash (which SCCACHE_IGNORE_SERVER_IO_ERROR
+            # does not cover) must not fail the build: it retries once without sccache.
+            build_block = named_step_block(archive_lines, "Build nextest archive")
+            if build_block is None or TEST_ARCHIVE_SCCACHE_RETRY not in uncommented_text(build_block):
+                errors.append("test-archive sccache must retry the build without sccache on failure (fail-open)")
+            # Gate cache use to trusted refs in the eligibility step itself, not merely
+            # somewhere in the job: main (post-merge) and the GitHub-controlled
+            # merge_group queue ref are the only write-safe refs (IAM is the real boundary).
+            eligibility_block = named_step_block(archive_lines, "Resolve sccache eligibility")
+            eligibility_text = uncommented_text(eligibility_block) if eligibility_block is not None else ""
+            if TEST_ARCHIVE_SCCACHE_PREFIX_PRECONDITION not in eligibility_text:
+                errors.append("test-archive sccache eligibility must require CI_SCCACHE_S3_KEY_PREFIX")
+            if TEST_ARCHIVE_SCCACHE_LOCATION_PRECONDITION not in eligibility_text:
+                errors.append("test-archive sccache eligibility must pin bucket/region/prefix to the bolt-v2 CI cache")
+            trusted_assignments = tuple(
+                line.strip()
+                for line in eligibility_text.splitlines()
+                if "trusted=true" in line
+            )
+            if trusted_assignments != TEST_ARCHIVE_SCCACHE_TRUSTED_ASSIGNMENTS:
+                errors.append("test-archive sccache must gate write-cache use exactly to main push/dispatch refs")
+            if TEST_ARCHIVE_SCCACHE_PR_ROLE_ENV not in eligibility_text:
+                errors.append("test-archive sccache must configure PR read-only sccache role path")
+            if (
+                TEST_ARCHIVE_SCCACHE_READ_WRITE_ROLE not in eligibility_text
+                or TEST_ARCHIVE_SCCACHE_PR_READ_ONLY_ROLE not in eligibility_text
+                or TEST_ARCHIVE_SCCACHE_ROLE_OUTPUT not in eligibility_text
+                or TEST_ARCHIVE_SCCACHE_MODE_OUTPUT not in eligibility_text
+            ):
+                errors.append("test-archive sccache must configure PR read-only sccache role path")
+            aws_block = named_step_block(archive_lines, "Configure AWS credentials for sccache")
+            aws_text = uncommented_text(aws_block) if aws_block is not None else ""
+            if TEST_ARCHIVE_SCCACHE_RESOLVED_ROLE_ASSUME not in aws_text:
+                errors.append("test-archive sccache must assume the resolved sccache role")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:
             errors.append("test-archive must not download nextest archive artifact")
         if TEST_ARCHIVE_SHARDS_ASSIGNMENT not in archive_text or TEST_ARCHIVE_SHARDS_ASSERT not in archive_text:

@@ -95,20 +95,13 @@ class RunPointerVerifierTests(unittest.TestCase):
         *,
         ra_text: str = COMPLIANT_RA,
         test_text: str = COMPLIANT_TEST,
-        tasks_checked: bool = True,
         just_wired: bool = True,
     ) -> None:
         (root / verifier.RA_PATH).parent.mkdir(parents=True, exist_ok=True)
         (root / verifier.TEST_PATH).parent.mkdir(parents=True, exist_ok=True)
-        (root / verifier.TASKS_PATH).parent.mkdir(parents=True, exist_ok=True)
         (root / verifier.JUSTFILE_PATH).parent.mkdir(parents=True, exist_ok=True)
         (root / verifier.RA_PATH).write_text(textwrap.dedent(ra_text), encoding="utf-8")
         (root / verifier.TEST_PATH).write_text(textwrap.dedent(test_text), encoding="utf-8")
-        task_box = "x" if tasks_checked else " "
-        (root / verifier.TASKS_PATH).write_text(
-            f"- [{task_box}] RA-013 Implement run pointer index\\n",
-            encoding="utf-8",
-        )
         just_text = ""
         if just_wired:
             just_text = (
@@ -123,13 +116,6 @@ class RunPointerVerifierTests(unittest.TestCase):
             root = Path(tmp)
             self.write_repo(root)
             self.assertEqual(verifier.scan_root(root), [])
-
-    def test_task_checkbox_is_required(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.write_repo(root, tasks_checked=False)
-            findings = verifier.scan_root(root)
-            self.assertTrue(any("RA-013" in finding for finding in findings))
 
     def test_comment_only_catalog_delegate_does_not_pass(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

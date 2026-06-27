@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use bolt_v2::bolt_v3_capital_admission::{CapitalAdmissionPolicy, FeeSlippagePolicy, ProductKind};
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;

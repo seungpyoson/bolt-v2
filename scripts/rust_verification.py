@@ -291,6 +291,93 @@ def string_array_policy_value(table: dict[str, Any], key: str) -> list[str]:
     return value
 
 
+def validate_cheap_lane_label(label: object, key: str) -> str:
+    if not isinstance(label, str) or not LANE_LABEL_RE.match(label):
+        raise PolicyError(f"local_lane_policy.{key} entries must be safe lane labels")
+    return label
+
+
+def validate_cheap_lane_just_recipe(recipe: object) -> str:
+    if not isinstance(recipe, str) or not SAFE_IDENTIFIER_RE.match(recipe):
+        raise PolicyError("local_lane_policy.cheap_lane_just_recipes entries must be safe just recipe names")
+    return recipe
+
+
+def just_recipe_name(line: str) -> str | None:
+    if not line or line[0].isspace():
+        return None
+    stripped = line.strip()
+    if not stripped or stripped.startswith(("#", "[")) or ":=" in stripped:
+        return None
+    match = re.match(r"^([A-Za-z0-9][A-Za-z0-9_-]*)(?:\s+[^:]*)?:", line)
+    return match.group(1) if match else None
+
+
+def just_recipe_body(justfile_text: str, recipe: str) -> list[str]:
+    body: list[str] = []
+    in_recipe = False
+    found = False
+    for line in justfile_text.splitlines():
+        name = just_recipe_name(line)
+        if name is not None:
+            if in_recipe:
+                break
+            in_recipe = name == recipe
+            found = found or in_recipe
+            continue
+        if in_recipe and (line.startswith(" ") or line.startswith("\t")):
+            body.append(line)
+    if not found:
+        raise PolicyError(f"local_lane_policy.cheap_lane_just_recipes {recipe!r} is missing from justfile")
+    return body
+
+
+def cheap_lane_just_recipe_labels(repo: pathlib.Path, recipe: str) -> list[str]:
+    body: list[str] | None = None
+    for candidate in (repo, *repo.parents):
+        justfile = candidate / "justfile"
+        if not justfile.is_file():
+            continue
+        try:
+            body = just_recipe_body(justfile.read_text(encoding="utf-8"), recipe)
+        except PolicyError:
+            continue
+        break
+    if body is None:
+        raise PolicyError(f"local_lane_policy.cheap_lane_just_recipes {recipe!r} is missing from justfile")
+    labels = sorted(
+        {
+            match.group(1)
+            for line in body
+            for match in re.finditer(r"(?<![A-Za-z0-9_./-])scripts/([A-Za-z0-9_.-]+\.py)\b", line)
+        }
+    )
+    if not labels:
+        raise PolicyError(f"local_lane_policy.cheap_lane_just_recipes {recipe!r} runs no scripts/*.py files")
+    return labels
+
+
+def resolve_cheap_lane_labels(repo: pathlib.Path, lane_policy: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+
+    def append_label(label: str) -> None:
+        if label in seen:
+            raise PolicyError("local_lane_policy cheap lane labels must resolve to unique values")
+        seen.add(label)
+        labels.append(label)
+
+    for label in lane_policy.get("cheap_lane_labels", []):
+        append_label(validate_cheap_lane_label(label, "cheap_lane_labels"))
+
+    for recipe in lane_policy.get("cheap_lane_just_recipes", []):
+        safe_recipe = validate_cheap_lane_just_recipe(recipe)
+        for label in cheap_lane_just_recipe_labels(repo, safe_recipe):
+            append_label(validate_cheap_lane_label(label, "cheap_lane_just_recipes"))
+
+    return labels
+
+
 def validate_local_compile_policy(data: dict[str, Any]) -> None:
     policy = data.get("local_compile_policy")
     if not isinstance(policy, dict):
@@ -325,6 +412,7 @@ def validate_local_lane_policy(data: dict[str, Any]) -> None:
         "heartbeat_seconds",
         "poll_interval_seconds",
         "cheap_lane_labels",
+        "cheap_lane_just_recipes",
         "cheap_lane_max_concurrent",
     }
     for key in policy:
@@ -362,11 +450,20 @@ def validate_local_lane_policy(data: dict[str, Any]) -> None:
             raise PolicyError("local_lane_policy.cheap_lane_labels must be a list of lane labels")
         seen_labels: set[str] = set()
         for label in cheap_lane_labels:
-            if not isinstance(label, str) or not LANE_LABEL_RE.match(label):
-                raise PolicyError("local_lane_policy.cheap_lane_labels entries must be safe lane labels")
-            if label in seen_labels:
+            safe_label = validate_cheap_lane_label(label, "cheap_lane_labels")
+            if safe_label in seen_labels:
                 raise PolicyError("local_lane_policy.cheap_lane_labels entries must be unique")
-            seen_labels.add(label)
+            seen_labels.add(safe_label)
+    cheap_lane_just_recipes = policy.get("cheap_lane_just_recipes")
+    if cheap_lane_just_recipes is not None:
+        if not isinstance(cheap_lane_just_recipes, list):
+            raise PolicyError("local_lane_policy.cheap_lane_just_recipes must be a list of just recipe names")
+        seen_recipes: set[str] = set()
+        for recipe in cheap_lane_just_recipes:
+            safe_recipe = validate_cheap_lane_just_recipe(recipe)
+            if safe_recipe in seen_recipes:
+                raise PolicyError("local_lane_policy.cheap_lane_just_recipes entries must be unique")
+            seen_recipes.add(safe_recipe)
     cheap_lane_max_concurrent = policy.get("cheap_lane_max_concurrent", 0)
     if (
         not isinstance(cheap_lane_max_concurrent, int)
@@ -4095,6 +4192,7 @@ def cmd_validate_policy(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
     try:
         policy = load_policy(repo)
+        resolve_cheap_lane_labels(repo, policy["local_lane_policy"])
     except FileNotFoundError:
         print(f"missing {POLICY_RELATIVE_PATH}", file=sys.stderr)
         return 2

@@ -7,6 +7,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from verifier_io import require_snippets, require_text_file
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_RS = Path("crates/backtesting-vertical-slice/src/dashboard_contract.rs")
@@ -48,27 +50,13 @@ JUSTFILE_COMMANDS = (
 )
 
 
-def require_file(root: Path, rel_path: Path, findings: list[str]) -> str:
-    path = root / rel_path
-    if not path.exists():
-        findings.append(f"{rel_path}: file is missing")
-        return ""
-    return path.read_text(encoding="utf-8")
-
-
-def require_snippets(rel_path: Path, text: str, snippets: tuple[str, ...], findings: list[str]) -> None:
-    for snippet in snippets:
-        if snippet not in text:
-            findings.append(f"{rel_path}: missing `{snippet}`")
-
-
 def scan_root(root: Path) -> list[str]:
     root = root.resolve()
     findings: list[str] = []
 
-    code_text = require_file(root, DASHBOARD_RS, findings)
-    test_text = require_file(root, DASHBOARD_TEST, findings)
-    justfile_text = require_file(root, JUSTFILE, findings)
+    code_text = require_text_file(root, DASHBOARD_RS, findings)
+    test_text = require_text_file(root, DASHBOARD_TEST, findings)
+    justfile_text = require_text_file(root, JUSTFILE, findings)
 
     require_snippets(DASHBOARD_RS, code_text, CODE_SNIPPETS, findings)
     require_snippets(DASHBOARD_TEST, test_text, TEST_SNIPPETS, findings)

@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from verifier_io import require_snippets, require_text_file
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BTE_CARGO_TOML = Path("crates/backtesting-vertical-slice/Cargo.toml")
@@ -76,20 +78,6 @@ RUNNER_ARM_PATTERNS = (
         r"\bengine\s*\.\s*kernel\s*\(\s*\)\s*\.\s*trader\s*\(\s*\)",
     ),
 )
-
-
-def require_file(root: Path, rel_path: Path, findings: list[str]) -> str:
-    path = root / rel_path
-    if not path.exists():
-        findings.append(f"{rel_path}: file is missing")
-        return ""
-    return path.read_text(encoding="utf-8")
-
-
-def require_snippets(rel_path: Path, text: str, snippets: tuple[str, ...], findings: list[str]) -> None:
-    for snippet in snippets:
-        if snippet not in text:
-            findings.append(f"{rel_path}: missing `{snippet}`")
 
 
 def strip_rust_comments(text: str) -> str:
@@ -247,7 +235,7 @@ def require_tokens(rel_path: Path, body: str, tokens: tuple[str, ...], findings:
 
 
 def verify_run_manifest_wiring(root: Path, findings: list[str]) -> None:
-    text = require_file(root, BTE_RUN_MANIFEST, findings)
+    text = require_text_file(root, BTE_RUN_MANIFEST, findings)
     if not text:
         return
     without_comments = strip_rust_comments(text)
@@ -297,7 +285,7 @@ def verify_run_manifest_wiring(root: Path, findings: list[str]) -> None:
 
 
 def verify_runner_wiring(root: Path, findings: list[str]) -> None:
-    text = require_file(root, BTE_RUNNER, findings)
+    text = require_text_file(root, BTE_RUNNER, findings)
     if not text:
         return
     code = rust_code_only(text)
@@ -316,7 +304,7 @@ def scan_root(root: Path) -> list[str]:
     root = root.resolve()
     findings: list[str] = []
 
-    cargo_text = require_file(root, BTE_CARGO_TOML, findings)
+    cargo_text = require_text_file(root, BTE_CARGO_TOML, findings)
     require_snippets(BTE_CARGO_TOML, cargo_text, CARGO_REQUIRED_SNIPPETS, findings)
     verify_run_manifest_wiring(root, findings)
     verify_runner_wiring(root, findings)

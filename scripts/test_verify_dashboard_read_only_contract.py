@@ -89,6 +89,18 @@ def test_missing_contract_code_is_a_finding() -> None:
     assert any("PortfolioSnapshot" in finding for finding in findings)
 
 
+def test_missing_required_file_does_not_cascade_snippet_findings() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        (root / "crates/backtesting-vertical-slice/src/dashboard_contract.rs").unlink()
+
+        findings = verifier.scan_root(root)
+
+    assert findings == ["crates/backtesting-vertical-slice/src/dashboard_contract.rs: file is missing"]
+
+
 def test_missing_source_fence_wiring_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -118,6 +130,7 @@ def main() -> int:
     tests = [
         test_complete_fixture_passes,
         test_missing_contract_code_is_a_finding,
+        test_missing_required_file_does_not_cascade_snippet_findings,
         test_missing_source_fence_wiring_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]

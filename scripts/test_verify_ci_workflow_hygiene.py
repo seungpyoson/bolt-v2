@@ -2424,6 +2424,137 @@ def assert_ci_policy_rejects_backslash_split_event_sender_id_argument() -> None:
         raise AssertionError(f"backtester backslash-split event sender id must be rejected, got: {errors}")
 
 
+def assert_ci_policy_rejects_env_command_event_sender_id_override() -> None:
+    command = '          python3 "$policy_script" ci-policy'
+    mutated = replace_once(
+        BASE_WORKFLOW,
+        command,
+        '          env EVENT_SENDER_ID=37929162 python3 "$policy_script" ci-policy',
+    )
+    assert_error(
+        "ci-policy must not override EVENT_SENDER_ID inline on the resolver command line",
+        workflow=mutated,
+    )
+
+    verifier = load_verifier()
+    backtester = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    backtester_mutated = replace_once(
+        backtester,
+        command,
+        '          env EVENT_SENDER_ID=37929162 python3 "$policy_script" ci-policy',
+    )
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": backtester_mutated})
+    if not any(
+        "ci-policy must not override EVENT_SENDER_ID inline on the resolver command line" in error
+        for error in errors
+    ):
+        raise AssertionError(f"backtester env EVENT_SENDER_ID override must be rejected, got: {errors}")
+
+
+def assert_ci_policy_rejects_prior_event_sender_id_exports() -> None:
+    command = '          python3 "$policy_script" ci-policy'
+    for label, prefix in (
+        ("standalone", "          EVENT_SENDER_ID=37929162\n"),
+        ("export", "          export EVENT_SENDER_ID=37929162\n"),
+    ):
+        mutated = replace_once(BASE_WORKFLOW, command, prefix + command)
+        assert_error(
+            "ci-policy must not override EVENT_SENDER_ID before the resolver command",
+            workflow=mutated,
+        )
+
+        verifier = load_verifier()
+        backtester = repo_workflow_text(".github/workflows/backtester-ci.yml")
+        backtester_mutated = replace_once(backtester, command, prefix + command)
+        errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": backtester_mutated})
+        if not any("ci-policy must not override EVENT_SENDER_ID before the resolver command" in error for error in errors):
+            raise AssertionError(f"backtester {label} EVENT_SENDER_ID override must be rejected, got: {errors}")
+
+
+def assert_ci_policy_rejects_event_sender_id_append_assignment() -> None:
+    command = '          python3 "$policy_script" ci-policy'
+    mutated = replace_once(
+        BASE_WORKFLOW,
+        command,
+        '          EVENT_SENDER_ID+=37929162 python3 "$policy_script" ci-policy',
+    )
+    assert_error(
+        "ci-policy must not override EVENT_SENDER_ID inline on the resolver command line",
+        workflow=mutated,
+    )
+
+
+def assert_ci_policy_rejects_alternate_python_event_sender_id_argument() -> None:
+    command = '          python3 "$policy_script" ci-policy'
+    ref_arg = '            --ref "${{ github.ref }}"'
+    decoy = '          : \'python3 "$policy_script" ci-policy\'\n'
+    mutated = replace_once(BASE_WORKFLOW, command, decoy + '          /usr/bin/python3 "$policy_script" ci-policy')
+    mutated = replace_once(mutated, ref_arg, ref_arg + " --event-sender-id 37929162")
+    assert_error(
+        "ci-policy must not pass --event-sender-id on the resolver command line",
+        workflow=mutated,
+    )
+
+    verifier = load_verifier()
+    backtester = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    backtester_ref_arg = """            --ref "${{ github.ref }}" \\
+"""
+    backtester_mutated = replace_once(
+        backtester,
+        command,
+        decoy + '          python3.12 "$policy_script" ci-policy',
+    )
+    backtester_mutated = replace_once(
+        backtester_mutated,
+        backtester_ref_arg,
+        backtester_ref_arg + "            --event-sender-id 37929162 \\\n",
+    )
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": backtester_mutated})
+    if not any("ci-policy must not pass --event-sender-id on the resolver command line" in error for error in errors):
+        raise AssertionError(f"backtester alternate Python event sender id argument must be rejected, got: {errors}")
+
+
+def assert_ci_policy_rejects_split_and_boundary_event_sender_id_arguments() -> None:
+    ci_ref_arg = '            --ref "${{ github.ref }}"'
+    mid_token_split = "            --event-send\\\n            er-id 37929162 \\"
+    mutated = replace_once(
+        BASE_WORKFLOW,
+        ci_ref_arg,
+        f"{mid_token_split}\n{ci_ref_arg}",
+    )
+    assert_error(
+        "ci-policy must not pass --event-sender-id on the resolver command line",
+        workflow=mutated,
+    )
+
+    boundary_arg = "            --event-name if --event-sender-id 37929162"
+    mutated = replace_once(
+        BASE_WORKFLOW,
+        '            --event-name "${{ github.event_name }}"',
+        boundary_arg,
+    )
+    assert_error(
+        "ci-policy must not pass --event-sender-id on the resolver command line",
+        workflow=mutated,
+    )
+
+
+def assert_ci_policy_counts_structural_event_sender_id_env_keys() -> None:
+    env_line = "          EVENT_SENDER_ID: ${{ github.event.sender.id }}"
+    duplicate = replace_once(BASE_WORKFLOW, env_line, env_line + "\n          EVENT_SENDER_ID : 37929162")
+    assert_error(
+        "ci-policy must declare EVENT_SENDER_ID env exactly once",
+        workflow=duplicate,
+    )
+
+    command = '          python3 "$policy_script" ci-policy'
+    diagnostic = (
+        '          : "${EVENT_SENDER_ID:?missing sender id}"\n'
+        '          echo "EVENT_SENDER_ID: ${EVENT_SENDER_ID}" >> "$GITHUB_STEP_SUMMARY"\n'
+    )
+    assert_clean(workflow=replace_once(BASE_WORKFLOW, command, diagnostic + command))
+
+
 def assert_ci_policy_real_workflows_keep_event_sender_binding_clean() -> None:
     verifier = load_verifier()
     workflows = {
@@ -11320,6 +11451,12 @@ def main() -> int:
     assert_ci_policy_rejects_literal_event_sender_id_argument()
     assert_ci_policy_rejects_inline_event_sender_id_override()
     assert_ci_policy_rejects_backslash_split_event_sender_id_argument()
+    assert_ci_policy_rejects_env_command_event_sender_id_override()
+    assert_ci_policy_rejects_prior_event_sender_id_exports()
+    assert_ci_policy_rejects_event_sender_id_append_assignment()
+    assert_ci_policy_rejects_alternate_python_event_sender_id_argument()
+    assert_ci_policy_rejects_split_and_boundary_event_sender_id_arguments()
+    assert_ci_policy_counts_structural_event_sender_id_env_keys()
     assert_ci_policy_real_workflows_keep_event_sender_binding_clean()
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()

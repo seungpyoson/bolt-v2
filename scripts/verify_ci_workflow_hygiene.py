@@ -1410,15 +1410,33 @@ def workflow_dispatch_input_errors(workflow_text: str, input_name: str) -> list[
     return []
 
 
-INLINE_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-EVENT_SENDER_ID_INLINE_ASSIGNMENT_RE = re.compile(r"^EVENT_SENDER_ID=")
+SHELL_ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\+)?=[\s\S]*$")
+CI_POLICY_SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "(", "{", ")", "}"}
+PYTHON3_EXECUTABLE_RE = re.compile(r"^python3(?:\.\d+)?$")
+
+
+def shell_assignment_name(token: str) -> str | None:
+    match = SHELL_ASSIGNMENT_RE.match(token)
+    return match.group(1) if match else None
+
+
+def token_assigns_event_sender_id(token: str) -> bool:
+    return shell_assignment_name(token) == "EVENT_SENDER_ID"
+
+
+def token_executable_name(token: str) -> str:
+    return pathlib.Path(token).name
+
+
+def token_is_python3_executable(token: str) -> bool:
+    return PYTHON3_EXECUTABLE_RE.fullmatch(token_executable_name(token)) is not None
 
 
 def command_segments(tokens: list[str]) -> list[list[str]]:
     segments: list[list[str]] = []
     current: list[str] = []
     for token in tokens:
-        if token in SHELL_COMMAND_BOUNDARIES:
+        if token in CI_POLICY_SHELL_COMMAND_BOUNDARIES:
             if current:
                 segments.append(current)
                 current = []
@@ -1430,12 +1448,14 @@ def command_segments(tokens: list[str]) -> list[list[str]]:
 
 
 def ci_policy_resolver_command_index(segment: list[str]) -> int | None:
-    index = 0
-    while index < len(segment) and INLINE_ENV_ASSIGNMENT_RE.match(segment[index]):
-        index += 1
+    index = consume_assignment_words(segment, 0)
+    while index < len(segment) and token_executable_name(segment[index]) == "env":
+        index = env_command_prefix_index(segment, index + 1)
+        if index is None:
+            return None
     if index + 2 >= len(segment):
         return None
-    if segment[index] != "python3" or segment[index + 2] != "ci-policy":
+    if not token_is_python3_executable(segment[index]) or segment[index + 2] != "ci-policy":
         return None
     script = segment[index + 1]
     if script != "$policy_script" and not script.endswith("/ci_provenance.py") and script != "scripts/ci_provenance.py":
@@ -1447,30 +1467,76 @@ def command_passes_event_sender_id_arg(tokens: list[str]) -> bool:
     for index, token in enumerate(tokens):
         if token.startswith("--event-sender-id"):
             return True
-        if token == "--event-" and index + 1 < len(tokens) and tokens[index + 1].startswith("sender-id"):
-            return True
+        candidate = token
+        for continuation in tokens[index + 1 : index + 5]:
+            candidate += continuation
+            if candidate.startswith("--event-sender-id"):
+                return True
+            if not "--event-sender-id".startswith(candidate):
+                break
     return False
 
 
+def segment_overrides_event_sender_id_inline(segment: list[str], command_index: int) -> bool:
+    return any(token_assigns_event_sender_id(token) for token in segment[:command_index])
+
+
+def segment_persists_event_sender_id_override(segment: list[str]) -> bool:
+    if any(token in CI_POLICY_SHELL_COMMAND_BOUNDARIES for token in segment):
+        return False
+    assignment_index = consume_assignment_words(segment, 0)
+    if assignment_index == len(segment):
+        return any(token_assigns_event_sender_id(token) for token in segment)
+    if assignment_index < len(segment) and token_executable_name(segment[assignment_index]) == "export":
+        return any(token_assigns_event_sender_id(token) for token in segment[assignment_index + 1 :])
+    return False
+
+
+def yaml_structural_key_count(lines: list[str], key: str) -> int:
+    count = 0
+    skip_scalar_indent: int | None = None
+    key_re = re.compile(rf"^\s*{re.escape(key)}\s*:")
+    for line in lines:
+        clean = strip_comment(line).rstrip()
+        if skip_scalar_indent is not None:
+            if not clean.strip():
+                continue
+            indent = len(clean) - len(clean.lstrip(" "))
+            if indent > skip_scalar_indent:
+                continue
+            skip_scalar_indent = None
+        run_match = YAML_RUN_LINE_RE.match(clean)
+        if run_match is not None and run_match.group(2).strip().startswith(("|", ">")):
+            skip_scalar_indent = len(run_match.group(1))
+            continue
+        if key_re.match(clean):
+            count += 1
+    return count
+
+
 def ci_policy_event_sender_command_errors(job_lines: list[str]) -> list[str]:
-    text = uncommented_text(job_lines)
     errors: list[str] = []
-    if text.count("EVENT_SENDER_ID:") > 1:
+    if yaml_structural_key_count(job_lines, "EVENT_SENDER_ID") > 1:
         errors.append("ci-policy must declare EVENT_SENDER_ID env exactly once")
     # Defense-in-depth only: same-repo PRs control their workflow run blocks, so
     # sender id hygiene is not an unspoofable trust boundary. The queue-only boundary
     # remains trusted-base check-ci-gate plus branch-protection sp-reviewer approval;
     # this tokenized check blocks known command-level injections.
     for block in step_blocks(job_lines):
+        event_sender_id_overridden = False
         tokens = command_tokens_with_line_boundaries(block_run_body(block))
         for segment in command_segments(tokens):
             command_index = ci_policy_resolver_command_index(segment)
-            if command_index is None:
-                continue
-            if any(EVENT_SENDER_ID_INLINE_ASSIGNMENT_RE.match(token) for token in segment[:command_index]):
+            if command_index is not None and segment_overrides_event_sender_id_inline(segment, command_index):
                 errors.append("ci-policy must not override EVENT_SENDER_ID inline on the resolver command line")
-            if command_passes_event_sender_id_arg(segment[command_index + 3 :]):
-                errors.append("ci-policy must not pass --event-sender-id on the resolver command line")
+            if command_index is not None and event_sender_id_overridden:
+                errors.append("ci-policy must not override EVENT_SENDER_ID before the resolver command")
+            if command_index is not None:
+                if command_passes_event_sender_id_arg(segment[command_index + 3 :]):
+                    errors.append("ci-policy must not pass --event-sender-id on the resolver command line")
+                continue
+            if segment_persists_event_sender_id_override(segment):
+                event_sender_id_overridden = True
     return errors
 
 
@@ -2218,7 +2284,7 @@ def first_step_running_command(job_lines: list[str], command: str) -> int | None
 
 
 def shell_assignment_word(token: str) -> bool:
-    return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=[\s\S]*$", token) is not None
+    return shell_assignment_name(token) is not None
 
 
 def shell_name_word(token: str) -> bool:

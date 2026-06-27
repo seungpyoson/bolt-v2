@@ -19337,3 +19337,91 @@ literal = '''"..."'''
 context = '''const REJECT_REASON_TRUNCATION_MARKER: &str = "...";'''
 classification = "order_reject_observer_reason_truncation_marker"
 reason = "Marker appended when the redacted RCA #885 reject reason is truncated at the length cap; it labels truncated evidence text and does not configure order behavior."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/reservation_ledger.rs"
+kind = "number"
+literal = "1"
+context = '''totals.open_order_count = totals.open_order_count.saturating_add(1);'''
+classification = "risk_reservation_open_order_counter_increment"
+reason = "Each held open-order reservation record contributes exactly one open-order reservation slot to the derived projection; the open-order headroom is config/view-owned, while this is the structural unit increment."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/reservation_ledger.rs"
+kind = "number"
+literal = "0"
+context = '''open_order_count: 0,'''
+classification = "risk_reservation_open_order_counter_identity"
+reason = "A fresh risk-reservation projection starts with zero open-order reservations before live reservation records contribute slots; the configured headroom remains view-owned."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/state_owner.rs"
+kind = "number"
+literal = "1"
+context = '''event_sequence <= last_sequence || event_sequence > last_sequence.saturating_add(1)'''
+classification = "risk_reservation_lifecycle_event_sequence_contiguous_step"
+reason = "Authoritative per-order event sequences must advance by exactly one to prove no lifecycle event gap; venue-provided sequence values remain event-owned while this literal is the structural adjacent-sequence delta."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/admission_service.rs"
+kind = "number"
+literal = "0"
+context = '''new_exposure_count: 0,'''
+classification = "safety_action_reduction_counter_identity"
+reason = "A fresh SafetyAction structural reduction scan starts with zero new exposure identities found; the bounded proof domain is request/view-owned and validated separately."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/admission_service.rs"
+kind = "number"
+literal = "0"
+context = '''increased_exposure_count: 0,'''
+classification = "safety_action_reduction_counter_identity"
+reason = "A fresh SafetyAction structural reduction scan starts with zero enlarged exposure identities found; the bounded proof domain is request/view-owned and validated separately."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/admission_service.rs"
+kind = "number"
+literal = "0"
+context = '''self.new_exposure_count > 0 || self.increased_exposure_count > 0'''
+classification = "safety_action_reduction_counter_nonempty_check"
+reason = "Zero is the structural identity used to test whether the SafetyAction reduction scan found any new or enlarged exposure identities; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/admission_service.rs"
+kind = "number"
+literal = "1"
+context = '''reduction.new_exposure_count += 1;'''
+classification = "safety_action_reduction_counter_increment"
+reason = "The structural scan increments by one for each after-exposure identity absent from the authoritative before view; risk limits remain enforced by the view/kernel state."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/admission_service.rs"
+kind = "number"
+literal = "1"
+context = '''reduction.increased_exposure_count += 1;'''
+classification = "safety_action_reduction_counter_increment"
+reason = "The structural scan increments by one for each after-exposure identity whose per-exposure loss contribution exceeds the authoritative before view; risk limits remain enforced by the view/kernel state."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/epoch_manager.rs"
+kind = "number"
+literal = "0"
+context = '''|| envelope.ranges.max_descriptor_count == 0'''
+classification = "policy_epoch_envelope_zero_bound_reject"
+reason = "A safety-policy envelope with zero allowed descriptors cannot cover any prepared descriptor map; descriptor cardinality is envelope-owned, while zero is the structural empty-bound rejection sentinel."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/epoch_manager.rs"
+kind = "number"
+literal = "0"
+context = '''|| envelope.ranges.max_terminal_states_per_descriptor == 0'''
+classification = "policy_epoch_envelope_zero_bound_reject"
+reason = "A safety-policy envelope with zero terminal states per descriptor cannot cover a valid descriptor; the bound is envelope-owned, while zero is the structural empty-bound rejection sentinel."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/epoch_manager.rs"
+kind = "number"
+literal = "0"
+context = '''|| envelope.ranges.max_quantity_policy_versions == 0'''
+classification = "policy_epoch_envelope_zero_bound_reject"
+reason = "A safety-policy envelope with zero quantity-policy versions cannot approve any prepared quantity-policy bundle; the bound is envelope-owned, while zero is the structural empty-bound rejection sentinel."

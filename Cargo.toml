@@ -42,6 +42,14 @@ path = "tests/runtime_capture_io.rs"
 name = "wiring_registration"
 path = "tests/wiring_registration.rs"
 
+[[test]]
+name = "bolt_v3_risk_reservation_substrate"
+path = "tests/bolt_v3_risk_reservation_substrate.rs"
+
+[[test]]
+name = "bolt_v3_risk_reservation_epoch_manager"
+path = "tests/bolt_v3_risk_reservation_epoch_manager.rs"
+
 [dependencies]
 ahash = "0.8.12"
 alloy-primitives = "=1.6.0"

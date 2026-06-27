@@ -1344,6 +1344,8 @@ TEST_HARNESS_NAMES = (
     "platform_config",
     "runtime_capture_io",
     "wiring_registration",
+    "bolt_v3_risk_reservation_substrate",
+    "bolt_v3_risk_reservation_epoch_manager",
 )
 TEST_HARNESS_MEMBER = "bolt_v3_fixture_member"
 
@@ -5728,8 +5730,10 @@ def test_harness_manifest_enforces_expected_harness_count() -> None:
         **base_test_harness_manifest().harness_to_members,
         "extra_harness": ("extra_harness",),
     }
+    expected_count = load_verifier().EXPECTED_HARNESS_COUNT
+    actual_count = len(harness_to_members)
     assert_test_harness_manifest_error(
-        "Cargo.toml explicit test harness count must be 9, got 10",
+        f"Cargo.toml explicit test harness count must be {expected_count}, got {actual_count}",
         manifest=base_test_harness_manifest(harness_to_members),
     )
 

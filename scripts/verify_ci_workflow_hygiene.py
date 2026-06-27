@@ -8577,39 +8577,54 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
     return errors
 
 
-def docs_only_archive_pathspecs(text: str) -> list[str] | None:
-    match = re.search(r'git\s+archive\s+"\$base_ref"(?P<args>.*?)\|\s*tar\b', text, re.DOTALL)
-    if match is None:
-        return None
-    archive_args = re.sub(r"\\\s*\n", " ", match.group("args"))
-    try:
-        return shlex.split(archive_args)
-    except ValueError:
-        return []
-
-
 def detector_docs_only_archive_errors(job_lines: list[str]) -> list[str]:
     docs_only_block = unique_step_with_id(job_lines, "docs_only")
     if docs_only_block is None:
         return []
     text = uncommented_text(docs_only_block)
     errors: list[str] = []
-    pathspecs = docs_only_archive_pathspecs(text)
-    if pathspecs is None:
-        errors.append('detector docs-only classifier base archive must include git archive "$base_ref"')
-        pathspecs = []
-    required_pathspecs = {
-        "scripts/": {"scripts/", "scripts"},
-        "ci/rust-verification.toml": {"ci/rust-verification.toml"},
-        "ci/github-actions-runners.toml": {"ci/github-actions-runners.toml"},
-        ".github/workflows/ci.yml": {".github/workflows/ci.yml"},
-    }
-    for label, accepted_tokens in required_pathspecs.items():
-        if not any(token in accepted_tokens for token in pathspecs):
-            errors.append(f"detector docs-only classifier base archive must include {label}")
-    if 'python3 "$base_tree/scripts/verify_ci_path_filters.py"' not in text:
+    for required in (
+        'git archive "$base_ref"',
+        "ci/rust-verification.toml",
+        "ci/github-actions-runners.toml",
+        ".github/workflows/ci.yml",
+        'python3 "$base_tree/scripts/verify_ci_path_filters.py"',
+    ):
+        if required not in text:
+            errors.append(f"detector docs-only classifier base archive must include {required}")
+    return errors
+
+
+def base_ref_git_archive_commands(workflow_text: str) -> list[list[str]]:
+    commands: list[list[str]] = []
+    for job_lines in parse_jobs(workflow_text).values():
+        for block in step_blocks(job_lines):
+            for logical_line in shell_logical_lines(block_run_body(block)):
+                tokens = command_tokens_with_line_boundaries(logical_line)
+                index = 0
+                while index + 2 < len(tokens):
+                    if tokens[index : index + 3] != ["git", "archive", "$base_ref"]:
+                        index += 1
+                        continue
+                    end = index + 3
+                    while end < len(tokens) and tokens[end] not in {"|", "&&", "||", ";", "\n"}:
+                        end += 1
+                    commands.append(tokens[index:end])
+                    index = end
+    return commands
+
+
+def base_ref_archive_scripts_directory_errors(workflow_text: str) -> list[str]:
+    errors: list[str] = []
+    for command in base_ref_git_archive_commands(workflow_text):
+        archive_args = command[3:]
+        script_args = [arg for arg in archive_args if arg.startswith("scripts/")]
+        if "scripts/" in archive_args and all(arg == "scripts/" for arg in script_args):
+            continue
+        rendered = " ".join(command)
         errors.append(
-            'detector docs-only classifier base archive must include python3 "$base_tree/scripts/verify_ci_path_filters.py"'
+            "ci.yml base_ref git archive must archive scripts/ wholesale and must not list "
+            f"individual scripts: {rendered}"
         )
     return errors
 
@@ -8926,6 +8941,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
     is_ci_topology = "pull_request" in triggers and "push" in triggers
     errors.extend(raw_rust_storage_errors(workflow_text))
     errors.extend(exact_head_governance_cache_errors(workflow_text))
+    errors.extend(base_ref_archive_scripts_directory_errors(workflow_text))
     for job_lines in jobs.values():
         errors.extend(upload_artifact_pin_errors(job_lines))
 

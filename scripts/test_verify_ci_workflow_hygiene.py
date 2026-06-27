@@ -380,12 +380,7 @@ jobs:
           git diff --name-only "${base_ref}...${head_ref}" > "$changed_files"
           base_tree="$RUNNER_TEMP/ci-policy-base-tree"
           mkdir -p "$base_tree"
-          git archive "$base_ref" \
-            scripts/ \
-            ci/rust-verification.toml \
-            ci/github-actions-runners.toml \
-            .github/workflows/ci.yml \
-            | tar -x -C "$base_tree"
+          git archive "$base_ref" scripts/ ci/rust-verification.toml ci/github-actions-runners.toml .github/workflows/ci.yml | tar -x -C "$base_tree"
           python3 "$base_tree/scripts/verify_ci_path_filters.py" \
             --changed-files "$changed_files" \
             --github-output "$GITHUB_OUTPUT"
@@ -2403,61 +2398,41 @@ def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
         raise AssertionError(f"expected workflow_dispatch detector guard error, got: {errors}")
 
 
-def assert_ci_detector_docs_only_archive_includes_runtime_dependencies() -> None:
+def assert_ci_base_ref_archives_use_scripts_directory() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
-    for required, archive_line in (
-        ("scripts/", "            scripts/ \\\n"),
-        ("ci/rust-verification.toml", "            ci/rust-verification.toml \\\n"),
-        ("ci/github-actions-runners.toml", "            ci/github-actions-runners.toml \\\n"),
-        (".github/workflows/ci.yml", "            .github/workflows/ci.yml \\\n"),
+    marker = 'git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"'
+    for replacement in (
+        'git archive "$base_ref" scripts/ci_provenance.py scripts/rust_verification.py ci/github-actions-runners.toml | tar -x -C "$base_tree"',
+        'git archive "$base_ref" scripts/ scripts/ci_provenance.py ci/github-actions-runners.toml | tar -x -C "$base_tree"',
     ):
-        mutated = replace_once(workflow, archive_line, "")
+        mutated = replace_once(workflow, marker, replacement)
         errors = verifier.verify_workflow(mutated)
-        expected = f"detector docs-only classifier base archive must include {required}"
         if not any(
-            expected in error
+            "base_ref git archive must archive scripts/ wholesale" in error
             for error in errors
         ):
-            raise AssertionError(f"expected detector docs-only base archive dependency error {expected!r}, got: {errors}")
+            raise AssertionError(f"expected base_ref scripts/ archive error for {replacement!r}, got: {errors}")
 
-    old_narrow_archive = replace_once(
-        workflow,
-        "            scripts/ \\\n",
-        "            scripts/verify_ci_path_filters.py \\\n",
-    )
-    old_narrow_errors = verifier.verify_workflow(old_narrow_archive)
-    if not any("detector docs-only classifier base archive must include scripts/" in error for error in old_narrow_errors):
-        raise AssertionError(f"old per-file docs-only script archive must be rejected, got: {old_narrow_errors}")
 
-    free_text_bypass = replace_once(
-        old_narrow_archive,
-        '          python3 "$base_tree/scripts/verify_ci_path_filters.py" \\\n',
-        '          echo "scripts/ "\n          python3 "$base_tree/scripts/verify_ci_path_filters.py" \\\n',
+def assert_ci_detector_docs_only_archive_includes_lane_policy() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    archive_without_policy = (
+        'git archive "$base_ref" scripts/ ci/github-actions-runners.toml .github/workflows/ci.yml | tar -x -C "$base_tree"'
     )
-    free_text_errors = verifier.verify_workflow(free_text_bypass)
-    if not any("detector docs-only classifier base archive must include scripts/" in error for error in free_text_errors):
-        raise AssertionError(f"free-text scripts/ decoy must not satisfy archive pathspec check, got: {free_text_errors}")
-
-    scripts_terminal = replace_once(
-        workflow,
-        """          git archive "$base_ref" \\
-            scripts/ \\
-            ci/rust-verification.toml \\
-            ci/github-actions-runners.toml \\
-            .github/workflows/ci.yml \\
-            | tar -x -C "$base_tree"
-""",
-        """          git archive "$base_ref" \\
-            ci/rust-verification.toml \\
-            ci/github-actions-runners.toml \\
-            .github/workflows/ci.yml \\
-            scripts/ | tar -x -C "$base_tree"
-""",
+    archive_with_policy = (
+        'git archive "$base_ref" scripts/ ci/rust-verification.toml ci/github-actions-runners.toml .github/workflows/ci.yml | tar -x -C "$base_tree"'
     )
-    scripts_terminal_errors = verifier.verify_workflow(scripts_terminal)
-    if scripts_terminal_errors:
-        raise AssertionError(f"scripts/ as terminal git archive arg must be accepted, got: {scripts_terminal_errors}")
+    if archive_without_policy in workflow:
+        workflow = replace_once(workflow, archive_without_policy, archive_with_policy)
+    mutated = replace_once(workflow, " ci/rust-verification.toml", "")
+    errors = verifier.verify_workflow(mutated)
+    if not any(
+        "detector docs-only classifier base archive must include ci/rust-verification.toml" in error
+        for error in errors
+    ):
+        raise AssertionError(f"expected detector docs-only lane policy archive error, got: {errors}")
 
 
 def assert_merge_group_support_gaps_are_reported() -> None:
@@ -11094,7 +11069,8 @@ def main() -> int:
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
     assert_ci_detector_forces_build_on_workflow_dispatch()
-    assert_ci_detector_docs_only_archive_includes_runtime_dependencies()
+    assert_ci_base_ref_archives_use_scripts_directory()
+    assert_ci_detector_docs_only_archive_includes_lane_policy()
     assert_merge_group_support_gaps_are_reported()
     assert_mergify_config_gaps_are_reported()
     assert_ci_policy_heavy_lane_gaps_are_reported()

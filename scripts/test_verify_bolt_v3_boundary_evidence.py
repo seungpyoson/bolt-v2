@@ -753,6 +753,64 @@ async fn f(config: ws::WebSocketConfig) {
     assert_finding(findings, "raw NT wire symbol WebSocketClient")
 
 
+def test_wire_boundary_restricted_visibility_reexport_fails() -> None:
+    def mutate(root: Path) -> None:
+        with (root / "src/bolt_v3_wire_boundary.rs").open("a", encoding="utf-8") as file:
+            file.write("\npub(crate) use nautilus_network::websocket::WebSocketClient;\n")
+
+    assert_finding(scan_temp(mutate), "wire boundary must not re-export raw NT wire symbol WebSocketClient")
+
+
+def test_wire_boundary_multiline_reexport_fails() -> None:
+    def mutate(root: Path) -> None:
+        with (root / "src/bolt_v3_wire_boundary.rs").open("a", encoding="utf-8") as file:
+            file.write(
+                """
+pub use nautilus_network::websocket::{
+    WebSocketClient,
+};
+"""
+            )
+
+    assert_finding(scan_temp(mutate), "wire boundary must not re-export raw NT wire symbol WebSocketClient")
+
+
+def test_transport_module_alias_and_renamed_message_outside_wire_boundary_fail() -> None:
+    def mutate(root: Path) -> None:
+        write(
+            root,
+            "src/raw_transport.rs",
+            """
+use nautilus_network::transport as t;
+use self::t::Message as M;
+
+fn f(message: M) {
+    let _ = message;
+}
+""",
+        )
+
+    assert_finding(scan_temp(mutate), "raw NT wire module path nautilus_network::transport")
+
+
+def test_crate_alias_websocket_module_outside_wire_boundary_fails() -> None:
+    def mutate(root: Path) -> None:
+        write(
+            root,
+            "src/raw_websocket_config.rs",
+            """
+use nautilus_network as nn;
+use nn::websocket as ws;
+
+fn f(config: ws::WebSocketConfig) {
+    let _ = config;
+}
+""",
+        )
+
+    assert_finding(scan_temp(mutate), "raw NT wire module path nautilus_network::websocket")
+
+
 if __name__ == "__main__":
     import lane_governor
 

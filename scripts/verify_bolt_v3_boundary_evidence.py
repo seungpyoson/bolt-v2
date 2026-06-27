@@ -46,15 +46,18 @@ REQUIRED_NON_WS_EXEMPTIONS = {
     ("Imdsv2HostFactsSource", "ImdsMetadata", "DeployTargetHostFacts"),
     ("AwsSsmSecretSource", "AwsSdkResponse", "SecretResolution"),
 }
+RUST_VISIBILITY_PREFIX = r"(?:pub(?:\s+|\s*\([^)]*\)\s*)?)?"
 FORBIDDEN_NT_WIRE_PATH_PATTERNS = {
     r"\bnautilus_network\s*::\s*websocket\s*::": "nautilus_network::websocket",
-    r"\b(?:pub\s+)?use\s+nautilus_network\s*::\s*websocket\b": "nautilus_network::websocket",
-    r"\b(?:pub\s+)?use\s+nautilus_network\s*::\s*\{[^;]*\bwebsocket\b": "nautilus_network::{websocket...}",
+    rf"\b{RUST_VISIBILITY_PREFIX}use\s+nautilus_network\s*::\s*websocket\b": "nautilus_network::websocket",
+    rf"\b{RUST_VISIBILITY_PREFIX}use\s+nautilus_network\s*::\s*\{{[^;]*\bwebsocket\b": "nautilus_network::{websocket...}",
     r"\bextern\s+crate\s+nautilus_network\b": "extern crate nautilus_network",
     r"\bnautilus_network\s*::\s*transport\s*::\s*Message\b": "nautilus_network::transport::Message",
-    r"\buse\s+nautilus_network\s*::\s*\{[^;]*\btransport\s*::\s*Message\b": "nautilus_network::{transport::Message}",
+    rf"\b{RUST_VISIBILITY_PREFIX}use\s+nautilus_network\s*::\s*transport\b": "nautilus_network::transport",
+    rf"\b{RUST_VISIBILITY_PREFIX}use\s+nautilus_network\s*::\s*\{{[^;]*\btransport\b": "nautilus_network::{transport...}",
     r"\bnautilus_network\s*::\s*socket\s*::\s*SocketClient\b": "nautilus_network::socket::SocketClient",
-    r"\buse\s+nautilus_network\s*::\s*\{[^;]*\bsocket\s*::\s*SocketClient\b": "nautilus_network::{socket::SocketClient}",
+    rf"\b{RUST_VISIBILITY_PREFIX}use\s+nautilus_network\s*::\s*socket\b": "nautilus_network::socket",
+    rf"\b{RUST_VISIBILITY_PREFIX}use\s+nautilus_network\s*::\s*\{{[^;]*\bsocket\b": "nautilus_network::{socket...}",
 }
 FORBIDDEN_NT_WIRE_SYMBOL_PATTERNS = {
     r"\bWebSocketClient\b": "WebSocketClient",
@@ -66,7 +69,7 @@ FORBIDDEN_NT_WIRE_SYMBOL_PATTERNS = {
     r"(?<!Web)\bSocketClient\b": "SocketClient",
 }
 FORBIDDEN_WIRE_BOUNDARY_REEXPORT_PATTERN = (
-    r"\bpub\s+(?:use|type)\b[^\n;]*"
+    r"\bpub(?:\s+|\s*\([^)]*\)\s*)(?:use|type)\b[^;]*?"
     r"\b(WebSocketClient|WebSocketClientInner|MessageReader|MessageHandler|SocketClient)\b"
 )
 ALLOWED_AWS_SSM_PATHS = {
@@ -372,7 +375,7 @@ def scan_wire_boundary(root: Path, findings: list[str]) -> None:
         text = production_text(path.read_text(encoding="utf-8"))
         scan_text = strip_string_literals_preserve_lines(text)
         if rel == WIRE_BOUNDARY.as_posix():
-            for match in re.finditer(FORBIDDEN_WIRE_BOUNDARY_REEXPORT_PATTERN, scan_text):
+            for match in re.finditer(FORBIDDEN_WIRE_BOUNDARY_REEXPORT_PATTERN, scan_text, re.DOTALL):
                 findings.append(
                     f"{rel}:{line_number(scan_text, match.start())}: wire boundary must not re-export raw NT wire symbol {match.group(1)}"
                 )
@@ -387,6 +390,16 @@ def scan_wire_boundary(root: Path, findings: list[str]) -> None:
                     findings.append(
                         f"{rel}:{line_number(scan_text, match.start())}: raw NT wire symbol {label} must go through {WIRE_BOUNDARY}"
                     )
+            for alias_match in re.finditer(
+                rf"\b{RUST_VISIBILITY_PREFIX}use\s+nautilus_network\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                scan_text,
+            ):
+                alias = re.escape(alias_match.group(1))
+                for module in ("websocket", "transport", "socket"):
+                    for use_match in re.finditer(rf"\b{alias}\s*::\s*{module}\b", scan_text):
+                        findings.append(
+                            f"{rel}:{line_number(scan_text, use_match.start())}: raw NT wire module path nautilus_network::{module} must go through {WIRE_BOUNDARY}"
+                        )
 
         if rel not in ALLOWED_AWS_SSM_PATHS and re.search(r"\baws_sdk_ssm::|\baws_sdk_ssm\b", text):
             findings.append(f"{rel}: aws_sdk_ssm usage must go through the registered SSM boundary")

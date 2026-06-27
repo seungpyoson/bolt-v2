@@ -1106,6 +1106,49 @@ jobs:
 """
 
 
+BASE_COVERAGE_ENFORCER_WORKFLOW = """
+name: Coverage Enforcer
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  checks: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  coverage-enforcer:
+    name: coverage-enforcer
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Enforce coverage map
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ ! -f scripts/coverage_enforcer.py ]; then
+            echo "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py"
+            exit 0
+          fi
+          python3 scripts/coverage_enforcer.py
+"""
+
+
 BASE_ADVISORY_WORKFLOW = """
 name: Advisory Check
 
@@ -4053,6 +4096,99 @@ def assert_merge_readiness_finalizer_gaps_are_reported() -> None:
         errors = verifier.verify_merge_readiness_finalizer_workflow(
             {".github/workflows/merge-readiness-finalizer.yml": mutated_workflow}
         )
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/coverage-enforcer.yml"
+    clean_errors = verifier.verify_coverage_enforcer_workflow(
+        {workflow_name: BASE_COVERAGE_ENFORCER_WORKFLOW}
+    )
+    if clean_errors:
+        raise AssertionError(f"expected clean coverage-enforcer workflow, got: {clean_errors}")
+
+    cases = [
+        (
+            "must exist as its own workflow",
+            {},
+        ),
+        (
+            "must trigger only on pull_request and merge_group",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  merge_group:\n", "  workflow_dispatch:\n")},
+        ),
+        (
+            "pull_request types must include converted_to_draft",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "converted_to_draft, ", "")},
+        ),
+        (
+            "on.pull_request must not define paths filters",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "    branches: [main]\n", "    branches: [main]\n    paths: ['src/**']\n")},
+        ),
+        (
+            "merge_group trigger must use checks_requested",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "    types: [checks_requested]\n", "    types: [requested]\n")},
+        ),
+        (
+            "permissions must include checks: write",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  checks: write\n", "  checks: read\n")},
+        ),
+        (
+            "permissions must include pull-requests: read",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  pull-requests: read\n", "")},
+        ),
+        (
+            "permissions must not include contents: write",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  contents: read\n", "  contents: write\n")},
+        ),
+        (
+            "must define coverage-enforcer job",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  coverage-enforcer:\n", "  renamed:\n")},
+        ),
+        (
+            "must check out only the trusted base tree",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}\n", "")},
+        ),
+        (
+            "must not check out PR head code",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "github.event.pull_request.base.sha", "github.event.pull_request.head.sha")},
+        ),
+        (
+            "checkout must not persist credentials",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "          persist-credentials: false\n", "")},
+        ),
+        (
+            "job must run scripts/coverage_enforcer.py",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "python3 scripts/coverage_enforcer.py", "python3 scripts/merge_readiness.py status")},
+        ),
+        (
+            "job must guard first-run trusted-base bootstrap",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n"
+                    "            echo \"coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
+                    "            exit 0\n"
+                    "          fi\n",
+                    "",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer must not be defined inside another workflow",
+            {
+                workflow_name: BASE_COVERAGE_ENFORCER_WORKFLOW,
+                ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
+                    "jobs:\n",
+                    "jobs:\n  coverage-enforcer:\n    name: coverage-enforcer\n    steps:\n      - run: python3 scripts/coverage_enforcer.py\n",
+                    1,
+                ),
+            },
+        ),
+    ]
+    for fragment, workflows in cases:
+        errors = verifier.verify_coverage_enforcer_workflow(workflows)
         if not any(fragment in error for error in errors):
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
@@ -7187,6 +7323,7 @@ def write_base_workflows(workflow_dir: pathlib.Path) -> None:
     (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
     (workflow_dir / "dispatch-ci-cancel.yml").write_text(BASE_DISPATCH_CI_CANCEL_WORKFLOW)
     (workflow_dir / "merge-readiness-finalizer.yml").write_text(BASE_MERGE_READINESS_FINALIZER_WORKFLOW)
+    (workflow_dir / "coverage-enforcer.yml").write_text(BASE_COVERAGE_ENFORCER_WORKFLOW)
 
 
 def run_verifier_main_with_no_mistakes(
@@ -11361,6 +11498,7 @@ def main() -> int:
     assert_dispatch_cancel_watchdog_gaps_are_reported()
     assert_merge_readiness_progress_gaps_are_reported()
     assert_merge_readiness_finalizer_gaps_are_reported()
+    assert_coverage_enforcer_workflow_gaps_are_reported()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

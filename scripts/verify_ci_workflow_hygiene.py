@@ -69,6 +69,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     "merge-readiness-finalizer.yml": "merge_readiness_finalizer",
     ".github/workflows/merge-readiness-finalizer.yml": "merge_readiness_finalizer",
+    "coverage-enforcer.yml": "coverage_enforcer",
+    ".github/workflows/coverage-enforcer.yml": "coverage_enforcer",
     "ci-runner-debug.yml": "ci_runner_debug",
     ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
     "rust-probe.yml": "rust_probe",
@@ -11195,6 +11197,95 @@ def verify_merge_readiness_finalizer_workflow(workflows: dict[str, str]) -> list
     return errors
 
 
+def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
+    workflow_name = ".github/workflows/coverage-enforcer.yml"
+    workflow_text = workflows.get(workflow_name)
+    if workflow_text is None:
+        return [f"{workflow_name} must exist as its own workflow"]
+
+    errors: list[str] = []
+    for other_name, other_text in workflows.items():
+        if other_name == workflow_name:
+            continue
+        if "coverage-enforcer" in parse_jobs(other_text):
+            errors.append("coverage-enforcer must not be defined inside another workflow")
+
+    if workflow_trigger_keys(workflow_text) != {"pull_request", "merge_group"}:
+        errors.append(f"{workflow_name} must trigger only on pull_request and merge_group")
+    errors.extend(workflow_pull_request_type_errors(workflow_text))
+    pull_request_trigger = "\n".join(workflow_trigger_block(workflow_text, "pull_request"))
+    if "paths:" in pull_request_trigger or "paths-ignore:" in pull_request_trigger:
+        errors.append(f"{workflow_name} on.pull_request must not define paths filters")
+    merge_group_trigger = "\n".join(workflow_trigger_block(workflow_text, "merge_group"))
+    if "types: [checks_requested]" not in merge_group_trigger:
+        errors.append(f"{workflow_name} merge_group trigger must use checks_requested")
+
+    permissions = "\n".join(top_level_block(workflow_text, "permissions"))
+    for required in (
+        "  checks: write",
+        "  contents: read",
+        "  pull-requests: read",
+    ):
+        if required not in permissions:
+            errors.append(f"{workflow_name} permissions must include {required.strip()}")
+    for forbidden in (
+        "  contents: write",
+        "  pull-requests: write",
+        "  actions:",
+        "  id-token:",
+        "  issues:",
+    ):
+        if forbidden in permissions:
+            errors.append(f"{workflow_name} permissions must not include {forbidden.strip()}")
+
+    jobs = parse_jobs(workflow_text)
+    job = jobs.get("coverage-enforcer")
+    if job is None:
+        errors.append(f"{workflow_name} must define coverage-enforcer job")
+        return errors
+    job_text = "\n".join(job)
+    trusted_base_ref = (
+        "          ref: ${{ github.event.pull_request.base.sha || "
+        "github.event.merge_group.base_sha }}"
+    )
+    for required in (
+        "uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+        trusted_base_ref,
+        "          persist-credentials: false",
+    ):
+        if required not in job_text:
+            errors.append(f"{workflow_name} must check out only the trusted base tree")
+            break
+    for forbidden in (
+        "github.event.pull_request.head",
+        "github.head_ref",
+        "refs/pull",
+    ):
+        if forbidden in job_text:
+            errors.append(f"{workflow_name} must not check out PR head code")
+            break
+    if "          persist-credentials: false" not in job_text:
+        errors.append(f"{workflow_name} checkout must not persist credentials")
+    for required in (
+        "if [ ! -f scripts/coverage_enforcer.py ]; then",
+        "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py",
+        "exit 0",
+    ):
+        if required not in job_text:
+            errors.append(f"{workflow_name} job must guard first-run trusted-base bootstrap")
+            break
+    if "python3 scripts/coverage_enforcer.py" not in job_text:
+        errors.append(f"{workflow_name} job must run scripts/coverage_enforcer.py")
+    for required in (
+        "GITHUB_TOKEN: ${{ github.token }}",
+        "GITHUB_EVENT_PATH: ${{ github.event_path }}",
+        "GITHUB_REPOSITORY: ${{ github.repository }}",
+    ):
+        if required not in job_text:
+            errors.append(f"{workflow_name} job must pass {required.split(':', 1)[0]}")
+    return errors
+
+
 def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
     if not DEFAULT_RUNNERS_CONFIG.exists():
         return []
@@ -11374,6 +11465,7 @@ def main() -> int:
     if ci_workflow is not None:
         errors.extend(verify_merge_readiness_ci_job(ci_workflow))
     errors.extend(verify_merge_readiness_finalizer_workflow(workflow_texts))
+    errors.extend(verify_coverage_enforcer_workflow(workflow_texts))
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())

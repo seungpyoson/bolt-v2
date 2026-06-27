@@ -845,11 +845,6 @@ MERGIFY_PROOF_PR_CANCEL_GUARD = f"!{MERGIFY_PROOF_PR_HEAD_REF_PREDICATE}"
 MERGIFY_PROOF_PR_GROUP_TOKEN = "mergify-proof"
 
 # Shared predicate used by advisory jobs to skip redundant runs on Mergify proof
-# PR metadata-only edits (title/body) after the initial opened run. It must NOT
-# be used for required merge-proof jobs. The predicate is true only for
-# pull_request edited events where the head ref is a Mergify queue proof branch
-# and the base ref did not change.
-# Shared predicate used by advisory jobs to skip redundant runs on Mergify proof
 # PR metadata-only edits (title/body) after the initial opened run. It is true
 # only for pull_request edited events where the head ref is a Mergify queue
 # proof branch and the base ref did not change. It must NOT be used for required

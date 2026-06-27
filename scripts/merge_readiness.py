@@ -255,14 +255,10 @@ def latest_check_run_for_required_context(
     context: str,
     context_aliases: dict[str, tuple[str, ...]],
 ) -> dict[str, object] | None:
-    candidates = [
-        by_name[name]
-        for name in context_aliases.get(context, (context,))
-        if name in by_name
-    ]
-    if not candidates:
-        return None
-    return max(candidates, key=check_run_sort_key)
+    for name in context_aliases.get(context, (context,)):
+        if name in by_name:
+            return by_name[name]
+    return None
 
 
 def evaluate_required_checks(

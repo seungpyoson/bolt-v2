@@ -257,12 +257,30 @@ def terminal_runs_for_context(
     context: str,
     context_aliases: dict[str, tuple[str, ...]] | None = None,
 ) -> list[dict[str, object]]:
-    names = context_aliases.get(context, (context,)) if context_aliases else (context,)
+    runs = selected_runs_for_context(
+        check_runs=check_runs,
+        context=context,
+        context_aliases=context_aliases,
+    )
     return [
         run
-        for run in check_runs
-        if run.get("name") in names and run.get("status") == "completed"
+        for run in runs
+        if run.get("status") == "completed"
     ]
+
+
+def selected_runs_for_context(
+    *,
+    check_runs: list[dict[str, object]],
+    context: str,
+    context_aliases: dict[str, tuple[str, ...]] | None = None,
+) -> list[dict[str, object]]:
+    names = context_aliases.get(context, (context,)) if context_aliases else (context,)
+    for name in names:
+        runs = [run for run in check_runs if run.get("name") == name]
+        if runs:
+            return runs
+    return []
 
 
 def pending_contexts(

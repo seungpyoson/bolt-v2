@@ -165,8 +165,8 @@ def verify_pr_agent_mirror(ai_review_toml: str, pr_agent_toml: str) -> list[str]
     findings: list[str] = []
     try:
         parsed = tomllib.loads(ai_review_toml)
-    except tomllib.TOMLDecodeError:
-        return findings
+    except tomllib.TOMLDecodeError as exc:
+        return [f"ci/ai-review.toml invalid TOML: {exc}"]
 
     mirror = parsed.get("pr_agent_mirror")
     if not isinstance(mirror, dict):
@@ -500,6 +500,52 @@ def run_self_tests(repo_root: Path) -> None:
         smoke_workflow=smoke,
     )
     assert_finding("missing PR-Agent mirror", missing_mirror, ".pr_agent.toml missing mirrored")
+
+    invalid_mirror_toml = verify_pr_agent_mirror("[pr_agent_mirror\n", pr_agent)
+    assert_finding("invalid PR-Agent mirror TOML", invalid_mirror_toml, "ci/ai-review.toml invalid TOML")
+
+    missing_mirror_table = verify_pr_agent_mirror('title = "missing"\n', pr_agent)
+    assert_finding("missing PR-Agent mirror table", missing_mirror_table, "missing [pr_agent_mirror]")
+
+    bad_mirror_rules = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = ["placeholder governance note"]
+        rules = "not-a-table-array"
+        """,
+        pr_agent,
+    )
+    assert_finding("bad PR-Agent mirror rules", bad_mirror_rules, "rules must be a non-empty table array")
+
+    duplicate_mirror_rule = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = ["placeholder governance note"]
+
+        [[pr_agent_mirror.rules]]
+        name = "scope discipline"
+        snippets = ["Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice"]
+
+        [[pr_agent_mirror.rules]]
+        name = "scope discipline"
+        snippets = ["flag out-of-scope changes, hidden adjacent work, and missing claimed scope"]
+        """,
+        pr_agent,
+    )
+    assert_finding("duplicate PR-Agent mirror rule", duplicate_mirror_rule, "duplicate pr_agent_mirror rule")
+
+    empty_mirror_snippet = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = ["placeholder governance note"]
+
+        [[pr_agent_mirror.rules]]
+        name = "empty snippets"
+        snippets = [""]
+        """,
+        pr_agent,
+    )
+    assert_finding("empty PR-Agent mirror snippet", empty_mirror_snippet, "snippets must be non-empty")
 
     glm_split_config = verify_texts(
         ai_review_toml=ai_review,

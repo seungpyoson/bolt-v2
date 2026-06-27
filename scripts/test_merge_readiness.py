@@ -320,6 +320,73 @@ def assert_iteration_gate_contexts_satisfy_required_gate_status() -> None:
         raise AssertionError(status)
 
 
+def assert_canonical_gate_context_takes_precedence_over_iteration_alias() -> None:
+    module = load_script()
+    aliases = {"gate": ("gate", "gate-iteration")}
+    contexts = ("gate",)
+
+    failed_canonical = module.evaluate_required_checks(
+        contexts,
+        [
+            check_run(
+                "gate",
+                conclusion="failure",
+                started_at="2026-06-27T00:00:00Z",
+                id=1,
+            ),
+            check_run(
+                "gate-iteration",
+                started_at="2026-06-27T00:01:00Z",
+                id=2,
+            ),
+        ],
+        context_aliases=aliases,
+    )
+    if failed_canonical.state != "failed" or failed_canonical.failed != ("gate",):
+        raise AssertionError(failed_canonical)
+
+    pending_canonical = module.evaluate_required_checks(
+        contexts,
+        [
+            check_run(
+                "gate",
+                status="in_progress",
+                conclusion=None,
+                started_at="2026-06-27T00:00:00Z",
+                id=3,
+            ),
+            check_run(
+                "gate-iteration",
+                started_at="2026-06-27T00:01:00Z",
+                id=4,
+            ),
+        ],
+        context_aliases=aliases,
+    )
+    if pending_canonical.state != "running" or pending_canonical.pending != ("gate",):
+        raise AssertionError(pending_canonical)
+
+    passed_canonical = module.evaluate_required_checks(
+        contexts,
+        [
+            check_run(
+                "gate",
+                started_at="2026-06-27T00:00:00Z",
+                id=5,
+            ),
+            check_run(
+                "gate-iteration",
+                conclusion="failure",
+                started_at="2026-06-27T00:01:00Z",
+                id=6,
+            ),
+        ],
+        context_aliases=aliases,
+    )
+    if passed_canonical.state != "passed":
+        raise AssertionError(passed_canonical)
+
+
 def assert_comment_upsert_replaces_existing_marker() -> None:
     module = load_script()
     existing = issue_comment(777, marker_body(module))
@@ -600,6 +667,7 @@ def main() -> int:
     assert_non_blocking_required_check_conclusions_do_not_fail()
     assert_registry_context_set_is_source_of_truth()
     assert_iteration_gate_contexts_satisfy_required_gate_status()
+    assert_canonical_gate_context_takes_precedence_over_iteration_alias()
     assert_comment_upsert_replaces_existing_marker()
     assert_comment_upsert_finds_sticky_comment_on_second_page()
     assert_find_sticky_comment_ignores_forged_human_marker()

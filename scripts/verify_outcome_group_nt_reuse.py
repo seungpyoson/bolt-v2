@@ -38,6 +38,10 @@ VALID_DISPOSITIONS = {
     "bolt_shim",
     "reject_for_now",
 }
+ANCHOR_REPO_LEDGER_FIELDS = {
+    "nautilus_trader": "nt_revision",
+    "bolt-v2": "bolt_revision",
+}
 
 APPROVED_PROVIDER_NORMALIZER_PREFIXES: tuple[str, ...] = (
     "src/bolt_v3_outcome_group_polymarket.rs",
@@ -87,7 +91,13 @@ def load_ledger(root: Path, findings: list[str]) -> dict[str, Any] | None:
         return None
 
 
-def validate_anchor(capability: str, index: int, anchor: object, findings: list[str]) -> None:
+def validate_anchor(
+    capability: str,
+    index: int,
+    anchor: object,
+    ledger_revisions: dict[str, str],
+    findings: list[str],
+) -> None:
     if not isinstance(anchor, dict):
         findings.append(f"{capability} source_anchors[{index}] must be a table")
         return
@@ -99,6 +109,19 @@ def validate_anchor(capability: str, index: int, anchor: object, findings: list[
     rev = anchor.get("rev")
     if _is_non_empty_string(rev) and HEX_REV_RE.fullmatch(str(rev)) is None:
         findings.append(f"{capability} source_anchors[{index}] rev must be a pinned hex revision")
+
+    repo = anchor.get("repo")
+    if _is_non_empty_string(repo):
+        repo_text = str(repo)
+        ledger_field = ANCHOR_REPO_LEDGER_FIELDS.get(repo_text)
+        if ledger_field is None:
+            findings.append(
+                f"{capability} source_anchors[{index}] repo must be one of {sorted(ANCHOR_REPO_LEDGER_FIELDS)}"
+            )
+        else:
+            expected_rev = ledger_revisions.get(ledger_field)
+            if expected_rev is not None and rev != expected_rev:
+                findings.append(f"{capability} source_anchors[{index}] rev must match ledger.{ledger_field}")
 
     path = anchor.get("path")
     if not _repo_relative_path(path):
@@ -115,6 +138,7 @@ def validate_ledger(root: Path) -> list[str]:
     if data is None:
         return findings
 
+    ledger_revisions: dict[str, str] = {}
     ledger = data.get("ledger")
     if not isinstance(ledger, dict):
         findings.append(f"{LEDGER_PATH}: missing [ledger] table")
@@ -125,11 +149,17 @@ def validate_ledger(root: Path) -> list[str]:
             value = ledger.get(field)
             if not _is_non_empty_string(value) or HEX_REV_RE.fullmatch(str(value)) is None:
                 findings.append(f"{LEDGER_PATH}: ledger.{field} must be a pinned hex revision")
+            else:
+                ledger_revisions[field] = str(value)
 
     capabilities = data.get("capabilities")
     if not isinstance(capabilities, dict):
         findings.append(f"{LEDGER_PATH}: missing [capabilities] table")
         return findings
+
+    expected_capabilities = set(REQUIRED_CAPABILITIES)
+    for capability in sorted(set(capabilities) - expected_capabilities):
+        findings.append(f"{LEDGER_PATH}: unexpected capability {capability}")
 
     for capability in REQUIRED_CAPABILITIES:
         entry = capabilities.get(capability)
@@ -157,7 +187,7 @@ def validate_ledger(root: Path) -> list[str]:
             findings.append(f"{capability} missing source_anchors")
         else:
             for index, anchor in enumerate(anchors):
-                validate_anchor(capability, index, anchor, findings)
+                validate_anchor(capability, index, anchor, ledger_revisions, findings)
 
         if disposition == "bolt_shim":
             if not _is_non_empty_string(reason):
@@ -330,6 +360,22 @@ def uncommented_justfile_text(text: str) -> str:
     return "\n".join(lines)
 
 
+def just_recipe_body(text: str, recipe: str) -> str | None:
+    body: list[str] = []
+    in_recipe = False
+    recipe_header = re.compile(rf"^{re.escape(recipe)}\b.*:")
+    for raw_line in text.splitlines():
+        if raw_line and not raw_line.startswith((" ", "\t")):
+            if in_recipe:
+                break
+            if recipe_header.match(raw_line):
+                in_recipe = True
+            continue
+        if in_recipe:
+            body.append(raw_line)
+    return "\n".join(body) if in_recipe else None
+
+
 def validate_just_wiring(root: Path) -> list[str]:
     path = root / "Justfile"
     if not path.is_file():
@@ -338,13 +384,17 @@ def validate_just_wiring(root: Path) -> list[str]:
         return ["Justfile: missing source-fence-static recipe"]
 
     text = uncommented_justfile_text(path.read_text(encoding="utf-8"))
+    recipe_name = "source-fence-static-inner"
+    recipe_body = just_recipe_body(text, recipe_name)
+    if recipe_body is None:
+        return [f"Justfile: missing {recipe_name} recipe"]
     findings = []
     for command in (
         "python3 scripts/test_verify_outcome_group_nt_reuse.py",
         "python3 scripts/verify_outcome_group_nt_reuse.py",
     ):
-        if command not in text:
-            findings.append(f"source-fence-static must run {command}")
+        if command not in recipe_body:
+            findings.append(f"{recipe_name} must run {command}")
     return findings
 
 

@@ -411,6 +411,28 @@ def assert_iteration_gate_contexts_succeed() -> None:
         raise AssertionError(posted)
 
 
+def assert_canonical_pending_gate_is_not_masked_by_iteration_alias() -> None:
+    result, fake = run_enforcer(
+        [
+            [
+                check_run("gate", status="in_progress", conclusion=None),
+                check_run("gate-iteration"),
+                check_run("backtester-gate"),
+                check_run("host-health"),
+                check_run("actionlint"),
+            ]
+        ],
+        clock=FakeClock([0.0, 2.0]),
+    )
+    if result.conclusion != "failure":
+        raise AssertionError(result)
+    if "timed out waiting for terminal check-runs: gate" not in result.summary:
+        raise AssertionError(result.summary)
+    posted = fake.posted_check_runs()
+    if len(posted) != 1 or posted[0]["conclusion"] != "failure":
+        raise AssertionError(posted)
+
+
 def assert_poll_timeout_fails_closed() -> None:
     result, fake = run_enforcer(
         [[check_run("gate", status="in_progress", conclusion=None)]],
@@ -580,6 +602,7 @@ def main() -> int:
     assert_drift_detects_missing_and_wrong_app()
     assert_all_present_and_correct_succeeds()
     assert_iteration_gate_contexts_succeed()
+    assert_canonical_pending_gate_is_not_masked_by_iteration_alias()
     assert_poll_timeout_fails_closed()
     assert_r2_derivation_mismatch_fails()
     assert_r2_derives_generic_tag_triggers()

@@ -515,6 +515,9 @@ TEST_ARCHIVE_SIDECAR_CACHE_KEY = (
     "-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
 )
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_SCCACHE_OPT_IN = (
+    "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}"
+)
 TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'"
 TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_SIDECAR_BUILD_GUARD = (
@@ -9049,6 +9052,21 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must save root binary sidecar cache only on sidecar cache miss")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
+        # Fail-open contract for the S3 sccache compile cache (#1011): when the
+        # opt-in is wired, the cache must never be able to fail the required build,
+        # and cache use must be gated to trusted refs (the IAM trust scope is the
+        # real poison boundary, but keep the workflow itself honest too).
+        if "BOLT_RUST_VERIFICATION_SCCACHE" in archive_text:
+            if TEST_ARCHIVE_SCCACHE_OPT_IN not in archive_text:
+                errors.append("test-archive sccache opt-in must stay conditional on the resolver, never hardcoded")
+            for label in ("Configure AWS credentials for sccache", "Install sccache"):
+                block = named_step_block(archive_lines, label)
+                if block is None or "continue-on-error: true" not in uncommented_text(block):
+                    errors.append(f"test-archive sccache step '{label}' must be continue-on-error (fail-open)")
+            if "SCCACHE_IGNORE_SERVER_IO_ERROR" not in archive_text:
+                errors.append("test-archive sccache must set SCCACHE_IGNORE_SERVER_IO_ERROR (degrade S3 errors to local compile)")
+            if "refs/heads/main" not in archive_text:
+                errors.append("test-archive sccache must gate cache use to trusted refs (refs/heads/main)")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:
             errors.append("test-archive must not download nextest archive artifact")
         if TEST_ARCHIVE_SHARDS_ASSIGNMENT not in archive_text or TEST_ARCHIVE_SHARDS_ASSERT not in archive_text:

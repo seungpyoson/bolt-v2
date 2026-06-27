@@ -2111,6 +2111,46 @@ def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
 
+def assert_test_archive_sccache_fail_open_contract() -> None:
+    # #1011: the S3 sccache compile cache must never be able to fail the required
+    # test-archive build. Lock the fail-open invariants so a future edit can't
+    # silently make the cache fatal.
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    clean = [error for error in verifier.verify_workflow(workflow) if "sccache" in error]
+    if clean:
+        raise AssertionError(f"real ci.yml must satisfy the sccache fail-open contract, got: {clean}")
+    cases = [
+        (
+            "test-archive sccache opt-in must stay conditional",
+            replace_once(
+                workflow,
+                "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}",
+                'BOLT_RUST_VERIFICATION_SCCACHE: "1"',
+            ),
+        ),
+        (
+            "Configure AWS credentials for sccache' must be continue-on-error",
+            replace_once(
+                workflow,
+                "        id: sccache-aws\n"
+                "        if: steps.sccache-eligible.outputs.eligible == 'true'\n"
+                "        continue-on-error: true\n",
+                "        id: sccache-aws\n"
+                "        if: steps.sccache-eligible.outputs.eligible == 'true'\n",
+            ),
+        ),
+        (
+            "must set SCCACHE_IGNORE_SERVER_IO_ERROR",
+            replace_once(workflow, '      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"\n', ""),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
 def assert_ci_workflow_run_name_matches_dispatch_config() -> None:
     workflow = repo_workflow_text(".github/workflows/ci.yml")
     assert_error(
@@ -10452,6 +10492,7 @@ def main() -> int:
     assert_ci_policy_resolvers_agree()
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
+    assert_test_archive_sccache_fail_open_contract()
     assert_ci_detector_forces_build_on_workflow_dispatch()
     assert_ci_detector_docs_only_archive_includes_runtime_dependencies()
     assert_merge_group_support_gaps_are_reported()

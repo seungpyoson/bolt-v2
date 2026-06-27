@@ -8,13 +8,14 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 
+use crate::support;
+use crate::support::fast_test_live_node;
 use arrow::array::{Array, StringArray};
 use bolt_v2::{
     lake_batch::{convert_live_spool_to_parquet, supported_stream_classes},
     nt_runtime_capture,
     venue_contract::{Capability, Policy, Provenance, StreamContract, VenueContract},
 };
-mod support;
 use nautilus_common::msgbus::{
     publish_any, publish_deltas, publish_depth10, publish_index_price, publish_mark_price,
     publish_quote, publish_trade, switchboard,
@@ -31,7 +32,6 @@ use nautilus_model::{
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use support::fast_test_live_node;
 use tempfile::tempdir;
 use tokio::task::LocalSet;
 

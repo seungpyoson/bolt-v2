@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,

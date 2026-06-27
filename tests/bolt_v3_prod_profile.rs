@@ -14,7 +14,7 @@
 //! pre-refactor standalone profile (`tests/fixtures/legacy_prod_btc_5m_oracle.toml`),
 //! so the base/overlay refactor changes nothing the runtime sees.
 
-mod support;
+use crate::support;
 
 use std::{collections::BTreeSet, path::Path};
 

@@ -49,6 +49,7 @@ Repo governance for agents; higher-level standing instructions apply.
 
 - Ready-PR or merge-queue full CI is proof; draft `workflow_dispatch` full CI is feedback; Rust Probe is debugging — use it only when cheap local checks cannot answer the question, and never to replace the required `gate`.
 - Run `just rust-probe suggest` first; dispatch `just rust-probe ...` only from a clean named branch whose pushed `HEAD` SHA is used (dispatch refuses unsafe local state). Before dispatch, state changed files, suspected failure class, mode, target, and smallest-sufficient rationale. Limits: max 2 probe runs before stopping to explain root cause; full CI may run only after the slice is coherent; Rust Probe success is not merge readiness; do not run full CI just to discover ordinary compiler errors.
+- Suggested integration-test probes use the Cargo `[[test]]` harness as `test_target`; when a changed file is a harness member module, the suggested `test_name` is `<member_stem>::` so nextest stays scoped to that module.
 
 ## Review Bar & Merge Mechanics
 

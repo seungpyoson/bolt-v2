@@ -4,7 +4,7 @@
 //! product" and "we may submit live orders". Discovery evidence must not open
 //! submit.
 
-mod support;
+use crate::support;
 
 use std::{collections::BTreeMap, sync::Arc};
 

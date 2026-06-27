@@ -22,7 +22,7 @@
 //! Chainlink/reference/fused price, strategy actors, or any order
 //! construction. Those boundaries belong to later slices.
 
-mod support;
+use crate::support;
 
 use bolt_v2::{
     bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},

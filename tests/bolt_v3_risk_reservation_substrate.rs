@@ -3751,6 +3751,162 @@ fn s8c_sequence_gap_requires_reconciliation_and_blocks_new_risk() {
 }
 
 #[test]
+fn s8c_malformed_fill_remainder_faults_without_wiping_sibling_capacity() {
+    let pool_id = "pool-s8c-malformed-fill-remainder";
+    let (service, owner, _store) =
+        reconciled_risk_context(pool_id, "owner-s8c-malformed-fill-remainder");
+    let authority = SubmissionAuthority::new(owner.clone());
+    let bucket = bucket("risk_class", "alpha");
+    let first_view = published_view_with_open_order_headroom(
+        RiskStateVersion::zero(),
+        pool_id,
+        "candidate-instrument",
+        bucket.clone(),
+        dec(100),
+        dec(100),
+        3,
+    );
+    let first = service
+        .compare_and_reserve(
+            &first_view,
+            admission_candidate_from_preview(
+                "intent-s8c-malformed-fill-a",
+                "idempotency-s8c-malformed-fill-a",
+                RiskPreviewInput {
+                    pool_id: PoolId::new(pool_id).expect("pool id should be valid"),
+                    instrument_id: "candidate-instrument".to_string(),
+                    model_risk_scope: ModelRiskEvaluationScope::CandidateInstrument {
+                        instrument_id: "candidate-instrument".to_string(),
+                    },
+                    side: "long".to_string(),
+                    quantity: dec(2),
+                    order_type: "limit".to_string(),
+                    time_in_force: "gtc".to_string(),
+                    max_unit_price: Some(dec(20)),
+                    max_cash_outlay: dec(20),
+                    source_view_version: RiskStateVersion::zero(),
+                    policy_epoch_id: "policy-epoch".to_string(),
+                },
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect("first reservation should be accepted");
+    let first_client_order_id = client_order_id("S8C-MALFORMED-FILL-A");
+    authority
+        .prepare_admitted_order(&first, first_client_order_id, 1_100)
+        .expect("first reservation should move to Submitted");
+
+    let second_view_version = owner
+        .policy_epoch_snapshot()
+        .expect("policy snapshot should expose second source version")
+        .risk_state_version;
+    let second_view = published_view_with_open_order_headroom(
+        second_view_version,
+        pool_id,
+        "candidate-instrument",
+        bucket,
+        dec(100),
+        dec(100),
+        3,
+    );
+    let second = service
+        .compare_and_reserve(
+            &second_view,
+            admission_candidate_from_preview(
+                "intent-s8c-malformed-fill-b",
+                "idempotency-s8c-malformed-fill-b",
+                RiskPreviewInput {
+                    pool_id: PoolId::new(pool_id).expect("pool id should be valid"),
+                    instrument_id: "candidate-instrument".to_string(),
+                    model_risk_scope: ModelRiskEvaluationScope::CandidateInstrument {
+                        instrument_id: "candidate-instrument".to_string(),
+                    },
+                    side: "long".to_string(),
+                    quantity: dec(2),
+                    order_type: "limit".to_string(),
+                    time_in_force: "gtc".to_string(),
+                    max_unit_price: Some(dec(20)),
+                    max_cash_outlay: dec(20),
+                    source_view_version: second_view_version,
+                    policy_epoch_id: "policy-epoch".to_string(),
+                },
+            ),
+            unlatched_safety(second_view_version),
+            None,
+            1_200,
+        )
+        .expect("sibling reservation should be accepted");
+    let second_client_order_id = client_order_id("S8C-MALFORMED-FILL-B");
+    authority
+        .prepare_admitted_order(&second, second_client_order_id, 1_210)
+        .expect("sibling reservation should move to Submitted");
+
+    let reconciler = LifecycleReconciler::new(owner.clone());
+    reconciler
+        .apply_order_status_truth(nt_open_status(
+            first_client_order_id,
+            "s8c-malformed-fill-a-open",
+        ))
+        .expect("first order should become Open before malformed fill");
+    reconciler
+        .apply_order_status_truth(nt_open_status(
+            second_client_order_id,
+            "s8c-malformed-fill-b-open",
+        ))
+        .expect("sibling order should become Open before malformed fill");
+    let before_fault_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before malformed fill");
+
+    let malformed = reconciler
+        .apply_fill_truth(nt_fill(
+            first_client_order_id,
+            "s8c-malformed-fill-over-remaining",
+            dec(1),
+            dec(100),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("malformed fill should be absorbed as a reconciliation fault");
+
+    assert_eq!(
+        malformed.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    let first_record = reservation_record_for_commit(&owner, &first);
+    assert_eq!(
+        first_record.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    assert_eq!(
+        first_record.remaining_fillable_quantity,
+        dec(2),
+        "malformed fill must not overwrite the authoritative remaining quantity"
+    );
+    assert!(
+        first_record.filled_position_exposure.is_none(),
+        "malformed fill must not synthesize filled-position exposure"
+    );
+    let second_record = reservation_record_for_commit(&owner, &second);
+    assert_eq!(
+        second_record.lifecycle_state,
+        ReservationLifecycleState::Open
+    );
+    assert_eq!(second_record.remaining_fillable_quantity, dec(2));
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should remain readable after malformed fill"),
+        before_fault_totals,
+        "malformed fill must not mutate pool totals or wipe sibling capacity"
+    );
+    assert_new_risk_blocked_by_reconciliation(&owner, pool_id, "s8c-malformed-fill-successor");
+}
+
+#[test]
 fn s8c_local_cancel_request_cannot_clear_reconciliation_fault() {
     let pool_id = "pool-s8c-local-cancel-fault";
     let idempotency_key = "idempotency-s8c-local-cancel-fault";

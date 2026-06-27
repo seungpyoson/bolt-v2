@@ -19342,17 +19342,9 @@ reason = "Marker appended when the redacted RCA #885 reject reason is truncated 
 path = "src/bolt_v3_risk_reservation_substrate/reservation_ledger.rs"
 kind = "number"
 literal = "1"
-context = '''self.open_order_count = self.open_order_count.saturating_add(1);'''
+context = '''totals.open_order_count = totals.open_order_count.saturating_add(1);'''
 classification = "risk_reservation_open_order_counter_increment"
-reason = "Each accepted compare-and-reserve transaction consumes exactly one open-order reservation slot in the substrate accumulator; the open-order headroom is config/view-owned, while this is the structural unit increment."
-
-[[allowed]]
-path = "src/bolt_v3_risk_reservation_substrate/reservation_ledger.rs"
-kind = "number"
-literal = "1"
-context = '''self.open_order_count = self.open_order_count.saturating_sub(1);'''
-classification = "risk_reservation_settled_order_counter_decrement"
-reason = "A terminal-final and reconciled settlement releases exactly one previously consumed open-order reservation slot in the substrate accumulator; the headroom remains config/view-owned, while this is the structural unit decrement for the settled reservation."
+reason = "Each held open-order reservation record contributes exactly one open-order reservation slot to the derived projection; the open-order headroom is config/view-owned, while this is the structural unit increment."
 
 [[allowed]]
 path = "src/bolt_v3_risk_reservation_substrate/reservation_ledger.rs"
@@ -19360,7 +19352,7 @@ kind = "number"
 literal = "0"
 context = '''open_order_count: 0,'''
 classification = "risk_reservation_open_order_counter_identity"
-reason = "A fresh risk-reservation accumulator starts with zero open-order reservations before accepted compare-and-reserve transactions consume slots; the configured headroom remains view-owned."
+reason = "A fresh risk-reservation projection starts with zero open-order reservations before live reservation records contribute slots; the configured headroom remains view-owned."
 
 [[allowed]]
 path = "src/bolt_v3_risk_reservation_substrate/state_owner.rs"

@@ -37,7 +37,6 @@ struct FencedRiskStateStoreInner {
     versions: BTreeMap<PoolId, RiskStateVersion>,
     reconciled: BTreeMap<PoolId, bool>,
     mutations: Vec<DurableRiskMutationRecord>,
-    reservation_totals: BTreeMap<PoolId, RiskReservationTotals>,
     reservation_records: Vec<SubstrateReservationRecord>,
     idempotent_reservations: BTreeMap<(PoolId, String), IdempotentReservationRecord>,
     consumed_permits: BTreeMap<String, String>,
@@ -53,7 +52,6 @@ impl FencedRiskStateStoreInner {
             versions: BTreeMap::new(),
             reconciled: BTreeMap::new(),
             mutations: Vec::new(),
-            reservation_totals: BTreeMap::new(),
             reservation_records: Vec::new(),
             idempotent_reservations: BTreeMap::new(),
             consumed_permits: BTreeMap::new(),
@@ -287,15 +285,6 @@ impl FencedRiskStateStore {
             .cloned()
             .collect();
         if !orphaned.is_empty() {
-            {
-                let totals = inner
-                    .reservation_totals
-                    .entry(pool_id.clone())
-                    .or_insert_with(RiskReservationTotals::empty);
-                for record in &orphaned {
-                    totals.release_open_order_remainder(record);
-                }
-            }
             for record in &orphaned {
                 let reservation_key = (pool_id.clone(), record.admission_token.token_id.clone());
                 if let Some(idempotent) = inner.idempotent_reservations.remove(&reservation_key)
@@ -625,11 +614,10 @@ impl FencedRiskStateStore {
             .inner
             .lock()
             .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
-        Ok(inner
-            .reservation_totals
-            .get(pool_id)
-            .map(|totals| totals.reserved_bucket_stress_loss(bucket))
-            .unwrap_or(rust_decimal::Decimal::ZERO))
+        Ok(
+            RiskReservationTotals::from_records(pool_id, &inner.reservation_records)
+                .reserved_bucket_stress_loss(bucket),
+        )
     }
 
     pub fn reserved_risk_totals(
@@ -640,11 +628,10 @@ impl FencedRiskStateStore {
             .inner
             .lock()
             .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
-        Ok(inner
-            .reservation_totals
-            .get(pool_id)
-            .cloned()
-            .unwrap_or_else(RiskReservationTotals::empty))
+        Ok(RiskReservationTotals::from_records(
+            pool_id,
+            &inner.reservation_records,
+        ))
     }
 
     fn prepare_submission_intent(
@@ -904,11 +891,6 @@ impl FencedRiskStateStore {
         let release_open_remainder = state_changed
             && open_remainder_release_state(target_state)
             && inner.reservation_records[record_index].open_order_remainder_held;
-        let release_record = release_open_remainder.then(|| {
-            let mut released = inner.reservation_records[record_index].clone();
-            released.lifecycle_state = target_state;
-            released
-        });
 
         let version = next_pool_version(&mut inner, lease.pool_id())
             .map_err(RiskSubmissionMutationError::State)?;
@@ -927,13 +909,6 @@ impl FencedRiskStateStore {
                 LifecycleReconciliationFaultKind::OrderStatus,
                 Some(target_state),
             );
-        }
-        if let Some(release_record) = release_record {
-            inner
-                .reservation_totals
-                .entry(lease.pool_id().clone())
-                .or_insert_with(RiskReservationTotals::empty)
-                .release_open_order_remainder(&release_record);
         }
         inner.mutations.push(DurableRiskMutationRecord {
             pool_id: lease.pool_id().clone(),
@@ -1040,10 +1015,28 @@ impl FencedRiskStateStore {
             actual_governor_cost_basis,
             &terminal_cash_flows,
         )?;
-        let record = &inner.reservation_records[record_index];
-        if !fill_transition_allowed(record.lifecycle_state) {
-            return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
+        let fill_bounds_fault = {
+            let record = &inner.reservation_records[record_index];
+            if !fill_transition_allowed(record.lifecycle_state) {
+                return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
+            }
+            fill_would_increase_remaining(record, fill_quantity, remaining_fillable_quantity)
+        };
+        if fill_bounds_fault {
+            return mark_lifecycle_reconciliation_required(
+                &mut inner,
+                lease,
+                record_index,
+                LifecycleEventInput {
+                    event_id,
+                    ts_event_unix_nanos,
+                    event_sequence,
+                    kind: LifecycleReconciliationFaultKind::Fill,
+                    order_status: None,
+                },
+            );
         }
+        let record = &inner.reservation_records[record_index];
         let old_equity_floor_stress_loss = record.filled_position_equity_floor_stress_loss;
         let old_governor_realized_loss = record.filled_position_governor_realized_loss;
         let mut filled_position_exposure =
@@ -1076,7 +1069,6 @@ impl FencedRiskStateStore {
         } else {
             ReservationLifecycleState::PartiallyFilled
         };
-        let buckets = record.buckets.clone();
 
         let version = next_pool_version(&mut inner, lease.pool_id())
             .map_err(RiskSubmissionMutationError::State)?;
@@ -1095,17 +1087,6 @@ impl FencedRiskStateStore {
             LifecycleReconciliationFaultKind::Fill,
             None,
         );
-        inner
-            .reservation_totals
-            .entry(lease.pool_id().clone())
-            .or_insert_with(RiskReservationTotals::empty)
-            .apply_filled_position_risk_delta(
-                &buckets,
-                old_equity_floor_stress_loss,
-                old_governor_realized_loss,
-                new_equity_floor_stress_loss,
-                new_governor_realized_loss,
-            );
         inner.mutations.push(DurableRiskMutationRecord {
             pool_id: lease.pool_id().clone(),
             fencing_token: lease.fencing_token(),
@@ -1188,18 +1169,10 @@ impl FencedRiskStateStore {
         } else {
             settlement_source_state
         };
-        let buckets = record.buckets.clone();
         let release_open_order_remainder =
             target_state == ReservationLifecycleState::Settled && record.open_order_remainder_held;
         let release_filled_position =
             target_state == ReservationLifecycleState::Settled && record.filled_position_held;
-        let release_record = (release_open_order_remainder || release_filled_position).then(|| {
-            let mut released = record.clone();
-            released.filled_position_exposure = Some(revised_exposure.clone());
-            released.filled_position_equity_floor_stress_loss = new_equity_floor_stress_loss;
-            released.filled_position_governor_realized_loss = new_governor_realized_loss;
-            released
-        });
 
         let version = next_pool_version(&mut inner, lease.pool_id())
             .map_err(RiskSubmissionMutationError::State)?;
@@ -1223,25 +1196,6 @@ impl FencedRiskStateStore {
             LifecycleReconciliationFaultKind::Settlement,
             None,
         );
-        let totals = inner
-            .reservation_totals
-            .entry(lease.pool_id().clone())
-            .or_insert_with(RiskReservationTotals::empty);
-        totals.apply_filled_position_risk_delta(
-            &buckets,
-            old_equity_floor_stress_loss,
-            old_governor_realized_loss,
-            new_equity_floor_stress_loss,
-            new_governor_realized_loss,
-        );
-        if let Some(release_record) = &release_record {
-            if release_open_order_remainder {
-                totals.release_open_order_remainder(release_record);
-            }
-            if release_filled_position {
-                totals.release_filled_position(release_record);
-            }
-        }
         inner.mutations.push(DurableRiskMutationRecord {
             pool_id: lease.pool_id().clone(),
             fencing_token: lease.fencing_token(),
@@ -1367,11 +1321,9 @@ impl FencedRiskStateStore {
 
         let assessment = RiskKernel::evaluate(&transaction.kernel_input)
             .map_err(RiskReservationError::Kernel)?;
-        let totals = inner
-            .reservation_totals
-            .entry(lease.pool_id().clone())
-            .or_insert_with(RiskReservationTotals::empty);
-        let evaluation = evaluate_stateful_caps(totals, &transaction, &assessment);
+        let totals =
+            RiskReservationTotals::from_records(lease.pool_id(), &inner.reservation_records);
+        let evaluation = evaluate_stateful_caps(&totals, &transaction, &assessment);
         if !evaluation.breached_dimensions.is_empty() {
             return Err(RiskReservationError::Rejected(RiskReservationRejection {
                 evaluated_dimensions: evaluation.evaluated_dimensions,
@@ -1385,7 +1337,6 @@ impl FencedRiskStateStore {
             RiskReservationError::StateMutation(RiskStateMutationError::VersionOverflow)
         })?;
         let token = build_admission_token(&transaction, committed_version);
-        totals.apply(&transaction, &assessment);
         inner
             .versions
             .insert(lease.pool_id().clone(), committed_version);
@@ -1808,10 +1759,9 @@ fn enforce_offered_load_envelope(
     envelope: RiskReservationOfferedLoadEnvelope,
 ) -> Result<(), RiskReservationError> {
     let max_supported = envelope.max_supported_in_flight_risk_increasing_admissions();
-    let offered_load = inner.reservation_totals.get(lease.pool_id()).map_or_else(
-        || RiskReservationTotals::empty().open_order_count(),
-        RiskReservationTotals::open_order_count,
-    );
+    let offered_load =
+        RiskReservationTotals::from_records(lease.pool_id(), &inner.reservation_records)
+            .open_order_count();
     if offered_load < max_supported {
         return Ok(());
     }
@@ -2099,6 +2049,15 @@ fn validate_lifecycle_exposure_input(
         return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
     }
     Ok(())
+}
+
+fn fill_would_increase_remaining(
+    record: &SubstrateReservationRecord,
+    fill_quantity: Decimal,
+    remaining_fillable_quantity: Decimal,
+) -> bool {
+    remaining_fillable_quantity > record.remaining_fillable_quantity
+        || fill_quantity + remaining_fillable_quantity > record.remaining_fillable_quantity
 }
 
 fn validate_settlement_exposure_input(

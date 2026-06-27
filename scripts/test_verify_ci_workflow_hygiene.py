@@ -280,6 +280,39 @@ permissions:
   actions: read
 
 jobs:
+  merge-readiness-progress:
+    name: merge-readiness-progress
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Watch merge-readiness progress
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ ! -f scripts/merge_readiness.py ]]; then
+            echo "merge_readiness.py is not present on the PR base; skipping"
+            exit 0
+          fi
+          python3 scripts/merge_readiness.py comment "$PR_NUMBER" \
+            --head-sha "$PR_HEAD_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --watch
+
   ci-policy:
     name: ci-policy
     needs: detector
@@ -1035,6 +1068,45 @@ jobs:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python3 scripts/cancel_obsolete_dispatch_runs.py
+"""
+
+
+BASE_MERGE_READINESS_FINALIZER_WORKFLOW = """
+name: Merge Readiness Finalizer
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+  checks: read
+  actions: read
+  pull-requests: write
+
+jobs:
+  mark-stalled:
+    name: mark-stalled
+    if: >-
+      ${{ github.event.workflow_run.event == 'pull_request'
+          && github.event.workflow_run.path == '.github/workflows/ci.yml' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Mark stalled merge-readiness comment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/merge_readiness.py finalize-stalled
 """
 
 
@@ -3419,6 +3491,120 @@ def assert_dispatch_cancel_watchdog_gaps_are_reported() -> None:
     for fragment, mutated_workflow in cases:
         errors = verifier.verify_dispatch_ci_cancel_workflow(
             {".github/workflows/dispatch-ci-cancel.yml": mutated_workflow}
+        )
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_merge_readiness_progress_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    missing_job_workflow = workflow
+    if "  merge-readiness-progress:\n" in workflow:
+        missing_job_workflow = replace_once(
+            workflow,
+            "  merge-readiness-progress:\n",
+            "  merge-readiness-progress-renamed:\n",
+        )
+    missing_job_errors = verifier.verify_merge_readiness_ci_job(
+        missing_job_workflow
+    )
+    if not any("ci.yml must define merge-readiness-progress job" in error for error in missing_job_errors):
+        raise AssertionError(f"expected missing progress job error, got: {missing_job_errors}")
+
+    cases = [
+        (
+            "merge-readiness-progress permissions must include checks: read",
+            replace_once(workflow, "      checks: read\n", ""),
+        ),
+        (
+            "merge-readiness-progress permissions must include pull-requests: write",
+            replace_once(workflow, "      pull-requests: write\n", "      pull-requests: read\n"),
+        ),
+        (
+            "merge-readiness-progress must not request issues: write",
+            replace_once(
+                workflow,
+                "      pull-requests: write\n",
+                "      pull-requests: write\n      issues: write\n",
+            ),
+        ),
+        (
+            "merge-readiness-progress must check out the PR base SHA only",
+            replace_once(
+                workflow,
+                "          ref: ${{ github.event.pull_request.base.sha }}\n",
+                "          ref: ${{ github.event.pull_request.head.sha }}\n",
+            ),
+        ),
+        (
+            "merge-readiness-progress must run merge_readiness.py comment",
+            replace_once(
+                workflow,
+                "python3 scripts/merge_readiness.py comment",
+                "python3 scripts/merge_readiness.py status",
+            ),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_merge_readiness_ci_job(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_merge_readiness_finalizer_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    clean_errors = verifier.verify_merge_readiness_finalizer_workflow(
+        {".github/workflows/merge-readiness-finalizer.yml": BASE_MERGE_READINESS_FINALIZER_WORKFLOW}
+    )
+    if clean_errors:
+        raise AssertionError(f"expected clean finalizer workflow, got: {clean_errors}")
+
+    cases = [
+        (
+            "workflow_run trigger must use completed only",
+            replace_once(BASE_MERGE_READINESS_FINALIZER_WORKFLOW, "    types: [completed]\n", "    types: [requested]\n"),
+        ),
+        (
+            "permissions must include checks: read",
+            replace_once(BASE_MERGE_READINESS_FINALIZER_WORKFLOW, "  checks: read\n", ""),
+        ),
+        (
+            "permissions must include actions: read",
+            replace_once(BASE_MERGE_READINESS_FINALIZER_WORKFLOW, "  actions: read\n", ""),
+        ),
+        (
+            "permissions must include pull-requests: write",
+            replace_once(BASE_MERGE_READINESS_FINALIZER_WORKFLOW, "  pull-requests: write\n", "  pull-requests: read\n"),
+        ),
+        (
+            "permissions must not include actions: write",
+            replace_once(
+                BASE_MERGE_READINESS_FINALIZER_WORKFLOW,
+                "  actions: read\n",
+                "  actions: write\n",
+            ),
+        ),
+        (
+            "job must filter pull_request runs",
+            replace_once(
+                BASE_MERGE_READINESS_FINALIZER_WORKFLOW,
+                "github.event.workflow_run.event == 'pull_request'",
+                "github.event.workflow_run.event == 'workflow_dispatch'",
+            ),
+        ),
+        (
+            "job must run scripts/merge_readiness.py finalize-stalled",
+            replace_once(
+                BASE_MERGE_READINESS_FINALIZER_WORKFLOW,
+                "python3 scripts/merge_readiness.py finalize-stalled",
+                "python3 scripts/merge_readiness.py comment",
+            ),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_merge_readiness_finalizer_workflow(
+            {".github/workflows/merge-readiness-finalizer.yml": mutated_workflow}
         )
         if not any(fragment in error for error in errors):
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
@@ -6339,6 +6525,7 @@ def write_base_workflows(workflow_dir: pathlib.Path) -> None:
     workflow_dir.mkdir(parents=True)
     (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
     (workflow_dir / "dispatch-ci-cancel.yml").write_text(BASE_DISPATCH_CI_CANCEL_WORKFLOW)
+    (workflow_dir / "merge-readiness-finalizer.yml").write_text(BASE_MERGE_READINESS_FINALIZER_WORKFLOW)
 
 
 def run_verifier_main_with_no_mistakes(
@@ -10461,6 +10648,8 @@ def main() -> int:
     assert_ci_concurrency_split_gaps_are_reported()
     assert_mergify_proof_pr_concurrency_gaps_are_reported()
     assert_dispatch_cancel_watchdog_gaps_are_reported()
+    assert_merge_readiness_progress_gaps_are_reported()
+    assert_merge_readiness_finalizer_gaps_are_reported()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"
@@ -10472,6 +10661,12 @@ def main() -> int:
     assert not actionlint_errors, actionlint_errors
     dispatch_cancel_errors = verifier.verify_dispatch_ci_cancel_workflow(real_workflows)
     assert not dispatch_cancel_errors, dispatch_cancel_errors
+    progress_errors = verifier.verify_merge_readiness_ci_job(
+        real_workflows[".github/workflows/ci.yml"]
+    )
+    assert not progress_errors, progress_errors
+    finalizer_errors = verifier.verify_merge_readiness_finalizer_workflow(real_workflows)
+    assert not finalizer_errors, finalizer_errors
 
     print("OK: CI workflow hygiene verifier self-tests passed.")
     return 0

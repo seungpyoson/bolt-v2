@@ -66,6 +66,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/backtester-ci.yml": "backtester_ci",
     "dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     ".github/workflows/dispatch-ci-cancel.yml": "dispatch_ci_cancel",
+    "merge-readiness-finalizer.yml": "merge_readiness_finalizer",
+    ".github/workflows/merge-readiness-finalizer.yml": "merge_readiness_finalizer",
     "ci-runner-debug.yml": "ci_runner_debug",
     ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
     "rust-probe.yml": "rust_probe",
@@ -10652,6 +10654,124 @@ def verify_dispatch_ci_cancel_workflow(workflows: dict[str, str]) -> list[str]:
     return errors
 
 
+def verify_merge_readiness_ci_job(workflow_text: str) -> list[str]:
+    workflow_name = ".github/workflows/ci.yml"
+    jobs = parse_jobs(workflow_text)
+    job = jobs.get("merge-readiness-progress")
+    errors: list[str] = []
+    if job is None:
+        return [f"{workflow_name} must define merge-readiness-progress job"]
+    job_text = "\n".join(job)
+    job_if = job_if_value(job)
+    if "github.event_name == 'pull_request'" not in job_if:
+        errors.append("merge-readiness-progress job must run only for pull_request")
+    for required in (
+        "      contents: read",
+        "      checks: read",
+        "      pull-requests: write",
+    ):
+        if required not in job_text:
+            errors.append(
+                f"merge-readiness-progress permissions must include {required.strip()}"
+            )
+    if "      issues:" in job_text:
+        errors.append("merge-readiness-progress must not request issues: write")
+    if "      actions:" in job_text:
+        errors.append("merge-readiness-progress must not request actions:")
+    for required in (
+        "uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+        "          ref: ${{ github.event.pull_request.base.sha }}",
+        "          persist-credentials: false",
+    ):
+        if required not in job_text:
+            errors.append("merge-readiness-progress must check out the PR base SHA only")
+            break
+    for forbidden in ("refs/pull", "ref: ${{ github.event.pull_request.head"):
+        if forbidden in job_text:
+            errors.append("merge-readiness-progress must not check out PR head code")
+    if "python3 scripts/merge_readiness.py comment" not in job_text:
+        errors.append("merge-readiness-progress must run merge_readiness.py comment")
+    if "--watch" not in job_text:
+        errors.append("merge-readiness-progress must watch until terminal status or timeout")
+    for required in (
+        "GITHUB_TOKEN: ${{ github.token }}",
+        "GITHUB_REPOSITORY: ${{ github.repository }}",
+        "PR_NUMBER: ${{ github.event.pull_request.number }}",
+        "PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}",
+    ):
+        if required not in job_text:
+            errors.append(f"merge-readiness-progress must pass {required.split(':', 1)[0]}")
+    return errors
+
+
+def verify_merge_readiness_finalizer_workflow(workflows: dict[str, str]) -> list[str]:
+    workflow_name = ".github/workflows/merge-readiness-finalizer.yml"
+    workflow_text = workflows.get(workflow_name)
+    if workflow_text is None:
+        return [f"{workflow_name} must exist to mark stale merge-readiness comments stalled"]
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+
+    ci_provenance = config["ci_provenance"]
+    expected_ci_name = str(ci_provenance["workflow_name"])
+    errors: list[str] = []
+    if workflow_trigger_keys(workflow_text) != {"workflow_run"}:
+        errors.append(f"{workflow_name} must trigger only on workflow_run")
+    trigger = "\n".join(workflow_trigger_block(workflow_text, "workflow_run"))
+    if f'workflows: ["{expected_ci_name}"]' not in trigger and f"workflows: ['{expected_ci_name}']" not in trigger:
+        errors.append(f"{workflow_name} workflow_run trigger must watch {expected_ci_name!r}")
+    if "types: [completed]" not in trigger:
+        errors.append(f"{workflow_name} workflow_run trigger must use completed only")
+    permissions = "\n".join(top_level_block(workflow_text, "permissions"))
+    for required in (
+        "  contents: read",
+        "  checks: read",
+        "  actions: read",
+        "  pull-requests: write",
+    ):
+        if required not in permissions:
+            errors.append(f"{workflow_name} permissions must include {required.strip()}")
+    for forbidden in ("  actions: write", "  issues:"):
+        if forbidden in permissions:
+            errors.append(f"{workflow_name} permissions must not include {forbidden.strip()}")
+
+    jobs = parse_jobs(workflow_text)
+    job = jobs.get("mark-stalled")
+    if job is None:
+        errors.append(f"{workflow_name} must define mark-stalled job")
+        return errors
+    job_if = job_if_value(job)
+    job_text = "\n".join(job)
+    event_guard = "github.event.workflow_run.event == 'pull_request'"
+    path_guard = f"github.event.workflow_run.path == '{ci_provenance['workflow_path']}'"
+    if event_guard not in job_if:
+        errors.append(f"{workflow_name} job must filter pull_request runs")
+    if "workflow_run.name" in job_if:
+        errors.append(f"{workflow_name} job must not filter the configured CI workflow by mutable name")
+    if path_guard not in job_if:
+        errors.append(f"{workflow_name} job must filter the configured CI workflow by path")
+    if re.search(rf"{re.escape(event_guard)}\s*&&\s*{re.escape(path_guard)}", job_if) is None:
+        errors.append(f"{workflow_name} job must join pull_request and CI filters with &&")
+    if "github.event.workflow_run.head" in job_text or "refs/pull" in job_text:
+        errors.append(f"{workflow_name} job must not check out PR head code")
+    if "          persist-credentials: false" not in job_text:
+        errors.append(f"{workflow_name} checkout must not persist credentials")
+    if "python3 scripts/merge_readiness.py finalize-stalled" not in job_text:
+        errors.append(f"{workflow_name} job must run scripts/merge_readiness.py finalize-stalled")
+    for required in (
+        "GITHUB_TOKEN: ${{ github.token }}",
+        "GITHUB_EVENT_PATH: ${{ github.event_path }}",
+        "GITHUB_REPOSITORY: ${{ github.repository }}",
+    ):
+        if required not in job_text:
+            errors.append(f"{workflow_name} job must pass {required.split(':', 1)[0]}")
+    return errors
+
+
 def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
     if not DEFAULT_RUNNERS_CONFIG.exists():
         return []
@@ -10827,6 +10947,10 @@ def main() -> int:
     errors.extend(verify_github_actions_runner_contract(workflow_texts))
     errors.extend(verify_ci_runner_debug_workflow(workflow_texts))
     errors.extend(verify_dispatch_ci_cancel_workflow(workflow_texts))
+    ci_workflow = workflow_texts.get(".github/workflows/ci.yml")
+    if ci_workflow is not None:
+        errors.extend(verify_merge_readiness_ci_job(ci_workflow))
+    errors.extend(verify_merge_readiness_finalizer_workflow(workflow_texts))
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())

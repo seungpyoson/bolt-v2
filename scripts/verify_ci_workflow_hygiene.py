@@ -8488,11 +8488,6 @@ def detector_docs_only_archive_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
     for required in (
         'git archive "$base_ref"',
-        "scripts/verify_ci_path_filters.py",
-        "scripts/ci_provenance.py",
-        "scripts/lane_governor.py",
-        "scripts/rust_verification.py",
-        "scripts/command_understanding.py",
         "ci/rust-verification.toml",
         "ci/github-actions-runners.toml",
         ".github/workflows/ci.yml",
@@ -8500,6 +8495,40 @@ def detector_docs_only_archive_errors(job_lines: list[str]) -> list[str]:
     ):
         if required not in text:
             errors.append(f"detector docs-only classifier base archive must include {required}")
+    return errors
+
+
+def base_ref_git_archive_commands(workflow_text: str) -> list[list[str]]:
+    commands: list[list[str]] = []
+    for job_lines in parse_jobs(workflow_text).values():
+        for block in step_blocks(job_lines):
+            for logical_line in shell_logical_lines(block_run_body(block)):
+                tokens = command_tokens_with_line_boundaries(logical_line)
+                index = 0
+                while index + 2 < len(tokens):
+                    if tokens[index : index + 3] != ["git", "archive", "$base_ref"]:
+                        index += 1
+                        continue
+                    end = index + 3
+                    while end < len(tokens) and tokens[end] not in {"|", "&&", "||", ";", "\n"}:
+                        end += 1
+                    commands.append(tokens[index:end])
+                    index = end
+    return commands
+
+
+def base_ref_archive_scripts_directory_errors(workflow_text: str) -> list[str]:
+    errors: list[str] = []
+    for command in base_ref_git_archive_commands(workflow_text):
+        archive_args = command[3:]
+        script_args = [arg for arg in archive_args if arg.startswith("scripts/")]
+        if "scripts/" in archive_args and all(arg == "scripts/" for arg in script_args):
+            continue
+        rendered = " ".join(command)
+        errors.append(
+            "ci.yml base_ref git archive must archive scripts/ wholesale and must not list "
+            f"individual scripts: {rendered}"
+        )
     return errors
 
 
@@ -8819,6 +8848,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
     is_ci_topology = "pull_request" in triggers and "push" in triggers
     errors.extend(raw_rust_storage_errors(workflow_text))
     errors.extend(exact_head_governance_cache_errors(workflow_text))
+    errors.extend(base_ref_archive_scripts_directory_errors(workflow_text))
     for job_lines in jobs.values():
         errors.extend(upload_artifact_pin_errors(job_lines))
 

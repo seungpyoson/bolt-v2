@@ -9,7 +9,7 @@
 //! exposes the matching `ClientId` — with no execution client created (the
 //! strike source declares no `[execution]` block).
 
-mod support;
+use crate::support;
 
 use bolt_v2::{
     bolt_v3_config::{ClientBlock, LoadedBoltV3Config, load_bolt_v3_config},

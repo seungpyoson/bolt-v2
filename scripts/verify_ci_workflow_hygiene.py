@@ -46,6 +46,7 @@ from command_understanding import (
     python_constant_string,
     python_inline_command_payloads,
 )
+from ci_test_manifest import CiTestManifest, _mask_rust_non_code, build_test_manifest
 from rust_verification import CARGO_ALIAS_SUBCOMMANDS, CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 
 
@@ -259,6 +260,32 @@ LIVE_NODE_NEXTEST_BINARIES = (
     "nt_runtime_capture",
     "venue_contract",
 )
+EXPECTED_HARNESS_COUNT = 9
+DECLARED_TOP_LEVEL_TEST_HELPERS = {"bolt_v3_iv_support"}
+RUST_TEST_ATTR_RE = re.compile(r"#\s*\[\s*(?:tokio::)?test(?:\s*\([^]]*\))?\s*\]")
+RUST_INNER_ATTR_RE = re.compile(r"#!\s*\[\s*([A-Za-z_][A-Za-z0-9_]*)")
+BANNED_RUST_INNER_ATTRS = {
+    "feature",
+    "no_std",
+    "no_main",
+    "crate_name",
+    "crate_type",
+    "crate_id",
+}
+NEXTEST_BINARY_FILTER_RE = re.compile(r"\bbinary\(=([A-Za-z0-9_-]+)\)")
+# Equality tail for an audited binary target: binary(=name). Anything else after
+# `binary(` (regex form binary(/.../), spaced forms, etc.) is unparseable by the
+# guardrail and must fail closed rather than collapse to an empty binary set.
+NEXTEST_BINARY_EQ_TAIL_RE = re.compile(r"=[A-Za-z0-9_-]+\)")
+# Harness-scoped live-node test prefix: test(/^member::/).
+NEXTEST_TEST_PREFIX_RE = re.compile(r"test\(/\^([A-Za-z0-9_]+)::/\)")
+NEXTEST_SENSITIVE_OVERRIDE_KEYS = {
+    "test-group",
+    "retries",
+    "slow-timeout",
+    "leak-timeout",
+    "timeout",
+}
 LIVE_NODE_NEXTEST_FILTER = " | ".join(f"binary(={binary})" for binary in LIVE_NODE_NEXTEST_BINARIES)
 CHECK_AARCH64_JOB_LEVEL_IF_RE = re.compile(r"^    if:\s*.*$")
 CHECK_AARCH64_STANDALONE_IF_RE = re.compile(
@@ -9472,12 +9499,279 @@ def verify_setup_action(action_text: str) -> list[str]:
     return errors
 
 
-def verify_nextest_config(config_text: str) -> list[str]:
+def rust_text_has_test_attr(masked_text: str) -> bool:
+    return RUST_TEST_ATTR_RE.search(masked_text) is not None
+
+
+def rust_inner_attr_is_banned(attr_name: str) -> bool:
+    return attr_name in BANNED_RUST_INNER_ATTRS or attr_name.startswith("crate_")
+
+
+def format_banned_inner_attr(attr_name: str) -> str:
+    return f"#![{attr_name}(...)]"
+
+
+def test_manifest_referenced_by(manifest: CiTestManifest) -> dict[str, list[str]]:
+    referenced_by: dict[str, list[str]] = {}
+    for harness, members in manifest.harness_to_members.items():
+        for member in members:
+            if member == harness:
+                continue
+            referenced_by.setdefault(member, []).append(harness)
+    return referenced_by
+
+
+def verify_test_harness_manifest(
+    *,
+    cargo_manifest_path: pathlib.Path | str | None = None,
+    tests_root: pathlib.Path | str | None = None,
+    workflow_path: pathlib.Path | str | None = None,
+    justfile_path: pathlib.Path | str | None = None,
+) -> list[str]:
+    cargo_manifest = pathlib.Path(cargo_manifest_path) if cargo_manifest_path is not None else REPO_ROOT / "Cargo.toml"
+    root = pathlib.Path(tests_root) if tests_root is not None else REPO_ROOT / "tests"
+    workflow = pathlib.Path(workflow_path) if workflow_path is not None else DEFAULT_WORKFLOW
+    justfile = pathlib.Path(justfile_path) if justfile_path is not None else REPO_ROOT / "justfile"
+    errors: list[str] = []
+
+    try:
+        with cargo_manifest.open("rb") as handle:
+            cargo_config = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return [f"{cargo_manifest.name} could not be parsed for explicit test harness governance: {exc}"]
+
+    package = cargo_config.get("package")
+    if not isinstance(package, dict) or package.get("autotests") is not False:
+        errors.append(f"{cargo_manifest.name} [package].autotests must be false for explicit test harnesses")
+
+    try:
+        manifest = build_test_manifest(cargo_manifest, root)
+    except Exception as exc:
+        errors.append(f"{cargo_manifest.name} explicit test harness manifest could not be built: {exc}")
+        return errors
+
+    harness_roots = set(manifest.harness_to_members)
+    if len(harness_roots) != EXPECTED_HARNESS_COUNT:
+        errors.append(
+            f"{cargo_manifest.name} explicit test harness count must be {EXPECTED_HARNESS_COUNT}, got {len(harness_roots)}"
+        )
+
+    referenced_by = test_manifest_referenced_by(manifest)
+    for harness, members in manifest.harness_to_members.items():
+        for member in members:
+            if member in harness_roots and member != harness:
+                errors.append(f"tests/{member}.rs is a harness root and must not be mod-ed by harness {harness}")
+
+    for stem, harnesses in sorted(referenced_by.items()):
+        if len(harnesses) <= 1:
+            continue
+        unique_harnesses = sorted(set(harnesses))
+        test_path = root / f"{stem}.rs"
+        if len(unique_harnesses) == 1:
+            errors.append(f"{test_path.relative_to(root.parent).as_posix()} is registered multiple times by harness {unique_harnesses[0]}")
+        else:
+            errors.append(
+                f"{test_path.relative_to(root.parent).as_posix()} is registered by multiple harnesses: {', '.join(unique_harnesses)}"
+            )
+
+    for test_path in sorted(root.glob("*.rs")):
+        stem = test_path.stem
+        try:
+            masked_text = _mask_rust_non_code(test_path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            errors.append(f"{test_path.relative_to(root.parent).as_posix()} could not be read: {exc}")
+            continue
+        rel_path = test_path.relative_to(root.parent).as_posix()
+        has_test_attr = rust_text_has_test_attr(masked_text)
+        if stem not in harness_roots:
+            for attr_name in RUST_INNER_ATTR_RE.findall(masked_text):
+                if rust_inner_attr_is_banned(attr_name):
+                    errors.append(
+                        f"{rel_path} uses banned module-level inner attribute {format_banned_inner_attr(attr_name)}"
+                    )
+        if stem in harness_roots:
+            continue
+        if stem in DECLARED_TOP_LEVEL_TEST_HELPERS:
+            if has_test_attr:
+                errors.append(f"{rel_path} is declared as a test helper but contains #[test]")
+            continue
+        harnesses = referenced_by.get(stem, [])
+        if has_test_attr:
+            if not harnesses:
+                errors.append(f"{rel_path} has #[test] but is not registered in any explicit test harness")
+            elif len(harnesses) == 1 and manifest.member_to_harness.get(stem) == harnesses[0]:
+                continue
+            else:
+                errors.append(f"{rel_path} has #[test] but is not registered by exactly one explicit test harness")
+            continue
+        errors.append(f"{rel_path} is neither a harness root, a #[test]-bearing registered member, nor a declared test helper")
+
+    for file_name, path in ((".github/workflows/ci.yml", workflow), ("justfile", justfile)):
+        if not path.exists():
+            continue
+        errors.extend(verify_test_harness_test_args(file_name, path.read_text(encoding="utf-8"), manifest))
+
+    return errors
+
+
+def verify_test_harness_test_args(file_name: str, text: str, manifest: CiTestManifest) -> list[str]:
+    errors: list[str] = []
+    harness_roots = set(manifest.harness_to_members)
+    for match in re.finditer(r"['\"]?--test['\"]?(?:=|\s+)(?P<quote>[\"']?)(?P<name>[A-Za-z0-9_-]+)(?P=quote)", text):
+        test_name = match.group("name")
+        if test_name in harness_roots:
+            continue
+        harness = manifest.member_to_harness.get(test_name)
+        if harness is not None and test_name not in harness_roots:
+            errors.append(
+                f"{file_name} references retired integration-test member {test_name!r} with --test; use harness {harness!r}"
+            )
+        else:
+            expected = ", ".join(sorted(harness_roots))
+            errors.append(f"{file_name} references unknown integration-test binary {test_name!r} with --test; expected one of: {expected}")
+    # Source-fence recipes select tests as `--test <harness> -- <member>:: ...`.
+    # The harness token is checked above; validate each positional <member>:: filter
+    # resolves to a real member of THAT harness (a typo/stale member silently matches
+    # zero tests while the required check reports green).
+    for line in text.splitlines():
+        head = re.search(r"['\"]?--test['\"]?(?:=|\s+)[\"']?(?P<harness>[A-Za-z0-9_-]+)[\"']?", line)
+        if head is None or " -- " not in line:
+            continue
+        harness = head.group("harness")
+        for pm in re.finditer(r"\b(?P<member>[A-Za-z0-9_]+)::", line.split(" -- ", 1)[1]):
+            member = pm.group("member")
+            owner = manifest.member_to_harness.get(member)
+            if owner != harness:
+                filt = member + "::"
+                errors.append(
+                    f"{file_name} source-fence test filter {filt!r} does not belong to "
+                    f"--test harness {harness!r} (member maps to {owner!r}); typo or stale member"
+                )
+    return errors
+
+
+def live_node_nextest_expected_clause(member: str, manifest: CiTestManifest) -> str:
+    harness = manifest.member_to_harness.get(member, member)
+    if harness == member:
+        return f"binary(={member})"
+    return f"(binary(={harness}) & test(/^{member}::/))"
+
+
+def live_node_nextest_filter_matches(member: str, manifest: CiTestManifest, filter_expr: object) -> bool:
+    if not isinstance(filter_expr, str):
+        return False
+    harness = manifest.member_to_harness.get(member, member)
+    if harness == member:
+        return f"binary(={member})" in filter_expr
+    return f"binary(={harness})" in filter_expr and f"test(/^{member}::/)" in filter_expr
+
+
+def nextest_override_sensitive_keys(override: dict[object, object]) -> set[str]:
+    keys: set[str] = set()
+    for key in override:
+        if not isinstance(key, str):
+            continue
+        if key in NEXTEST_SENSITIVE_OVERRIDE_KEYS or key.endswith("timeout"):
+            keys.add(key)
+    return keys
+
+
+def nextest_filter_binaries(filter_expr: object) -> set[str]:
+    if not isinstance(filter_expr, str):
+        return set()
+    return set(NEXTEST_BINARY_FILTER_RE.findall(filter_expr))
+
+
+def nextest_filter_has_unparseable_binary(filter_expr: object) -> bool:
+    """True if any binary(...) target is not the audited equality form binary(=name).
+
+    Regex-form binary(/.../) and other shapes parse to an empty binary set, which
+    would silently slip past the subset/skip checks; treat them as unauditable so
+    the override fails closed.
+    """
+    if not isinstance(filter_expr, str):
+        return False
+    for match in re.finditer(r"\bbinary\(", filter_expr):
+        if not NEXTEST_BINARY_EQ_TAIL_RE.match(filter_expr, match.end()):
+            return True
+    return False
+
+
+def nextest_filter_test_prefixes(filter_expr: object) -> set[str]:
+    """The set of harness-scoped member prefixes test(/^member::/) in the filter."""
+    if not isinstance(filter_expr, str):
+        return set()
+    return set(NEXTEST_TEST_PREFIX_RE.findall(filter_expr))
+
+
+def nextest_override_is_known_root_unit(override: dict[object, object]) -> bool:
+    filter_expr = override.get("filter")
+    if override.get("test-group") != LIVE_NODE_TEST_GROUP or not isinstance(filter_expr, str):
+        return False
+    if set(override) != {"filter", "test-group"}:
+        return False
+    if nextest_filter_has_unparseable_binary(filter_expr):
+        return False
+    return nextest_filter_binaries(filter_expr) <= {"bolt_v2"} and all(
+        fragment in filter_expr for fragment in LIVE_NODE_UNIT_TEST_FILTERS
+    )
+
+
+def nextest_override_is_known_live_node(override: dict[object, object], manifest: CiTestManifest) -> bool:
+    filter_expr = override.get("filter")
+    if override.get("test-group") != LIVE_NODE_TEST_GROUP or not isinstance(filter_expr, str):
+        return False
+    if set(override) != {"filter", "test-group"}:
+        return False
+    if nextest_filter_has_unparseable_binary(filter_expr):
+        return False
+    expected_clauses = [live_node_nextest_expected_clause(member, manifest) for member in LIVE_NODE_NEXTEST_BINARIES]
+    expected_binaries = {
+        manifest.member_to_harness.get(member, member)
+        for member in LIVE_NODE_NEXTEST_BINARIES
+    }
+    consolidated_members = {
+        member
+        for member in LIVE_NODE_NEXTEST_BINARIES
+        if manifest.member_to_harness.get(member, member) != member
+    }
+    return (
+        nextest_filter_binaries(filter_expr) <= expected_binaries
+        and nextest_filter_test_prefixes(filter_expr) == consolidated_members
+        and all(clause in filter_expr for clause in expected_clauses)
+    )
+
+
+def nextest_unregistered_override_errors(overrides: list[object], manifest: CiTestManifest) -> list[str]:
+    errors: list[str] = []
+    for index, override in enumerate(overrides, start=1):
+        if not isinstance(override, dict):
+            continue
+        sensitive_keys = nextest_override_sensitive_keys(override)
+        filter_expr = override.get("filter")
+        if (
+            not sensitive_keys
+            and not nextest_filter_binaries(filter_expr)
+            and not nextest_filter_has_unparseable_binary(filter_expr)
+        ):
+            continue
+        if nextest_override_is_known_root_unit(override) or nextest_override_is_known_live_node(override, manifest):
+            continue
+        errors.append(
+            "nextest config has unregistered per-binary override "
+            f"#{index}: keys {', '.join(sorted(sensitive_keys)) or '<none>'}, filter {filter_expr!r}"
+        )
+    return errors
+
+
+def verify_nextest_config(config_text: str, *, manifest: CiTestManifest | None = None) -> list[str]:
     errors: list[str] = []
     try:
         config = tomllib.loads(config_text)
     except tomllib.TOMLDecodeError as exc:
         return [f"nextest config invalid TOML: {exc}"]
+    if manifest is None:
+        manifest = build_test_manifest(REPO_ROOT / "Cargo.toml", REPO_ROOT / "tests")
 
     groups = config.get("test-groups", {})
     if not isinstance(groups, dict):
@@ -9498,21 +9792,22 @@ def verify_nextest_config(config_text: str) -> list[str]:
         for override in overrides
         if isinstance(override, dict) and override.get("test-group") == LIVE_NODE_TEST_GROUP
     ]
-    missing_binaries = [
-        binary
-        for binary in LIVE_NODE_NEXTEST_BINARIES
-        if not any(isinstance(filter_expr, str) and f"binary(={binary})" in filter_expr for filter_expr in live_node_filters)
+    missing_live_node_filters = [
+        live_node_nextest_expected_clause(member, manifest)
+        for member in LIVE_NODE_NEXTEST_BINARIES
+        if not any(live_node_nextest_filter_matches(member, manifest, filter_expr) for filter_expr in live_node_filters)
     ]
     missing_unit_filters = [
         fragment
         for fragment in LIVE_NODE_UNIT_TEST_FILTERS
         if not any(isinstance(filter_expr, str) and fragment in filter_expr for filter_expr in live_node_filters)
     ]
-    if missing_binaries or missing_unit_filters:
+    if missing_live_node_filters or missing_unit_filters:
         missing = ", ".join(
-            [f"binary(={binary})" for binary in missing_binaries] + missing_unit_filters
+            missing_live_node_filters + missing_unit_filters
         )
         errors.append(f"nextest config must assign LiveNode test paths to live-node group: missing {missing}")
+    errors.extend(nextest_unregistered_override_errors(overrides, manifest))
     return errors
 
 
@@ -10905,6 +11200,7 @@ def main() -> int:
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())
+    errors.extend(verify_test_harness_manifest())
     if "justfile" in repo_automation_texts:
         errors.extend(verify_local_verification_gate_recipes(repo_automation_texts["justfile"]))
         errors.extend(verify_source_fence_static_recipe(repo_automation_texts["justfile"]))

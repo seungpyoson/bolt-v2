@@ -1,4 +1,4 @@
-mod bolt_v3_iv_support;
+use crate::bolt_v3_iv_support;
 
 use std::collections::BTreeSet;
 

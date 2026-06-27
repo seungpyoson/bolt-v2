@@ -844,6 +844,33 @@ MERGIFY_PROOF_PR_HEAD_REF_PREDICATE = (
 MERGIFY_PROOF_PR_CANCEL_GUARD = f"!{MERGIFY_PROOF_PR_HEAD_REF_PREDICATE}"
 MERGIFY_PROOF_PR_GROUP_TOKEN = "mergify-proof"
 
+# Shared predicate used by advisory jobs to skip redundant runs on Mergify proof
+# PR metadata-only edits (title/body) after the initial opened run. It must NOT
+# be used for required merge-proof jobs. The predicate is true only for
+# pull_request edited events where the head ref is a Mergify queue proof branch
+# and the base ref did not change.
+# Shared predicate used by advisory jobs to skip redundant runs on Mergify proof
+# PR metadata-only edits (title/body) after the initial opened run. It is true
+# only for pull_request edited events where the head ref is a Mergify queue
+# proof branch and the base ref did not change. It must NOT be used for required
+# merge-proof jobs.
+MERGIFY_METADATA_EDIT_SKIP_PREDICATE = (
+    "github.event.action == 'edited' "
+    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
+    "&& !(github.event.changes.base.ref.from != '')"
+)
+
+EXPECTED_MERGE_READINESS_PROGRESS_IF = (
+    "${{ github.event_name == 'pull_request' "
+    "&& !(" + MERGIFY_METADATA_EDIT_SKIP_PREDICATE + ") }}"
+)
+
+EXPECTED_COVERAGE_ENFORCER_IF = (
+    "${{ !(github.event_name == 'pull_request' "
+    "&& " + MERGIFY_METADATA_EDIT_SKIP_PREDICATE + ") }}"
+)
+
 
 MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # .github/workflows/ci.yml — merge_group arm format('mq-{0}', github.ref)
@@ -2070,6 +2097,10 @@ def job_if_value(job_lines: list[str]) -> str:
         match = re.match(r"^    if:\s*(?P<value>.*?)\s*$", clean)
         if match is not None:
             value = match.group("value")
+            # Strip YAML block/folding scalar indicators; they are syntax, not part
+            # of the evaluated expression.
+            if value in {">-", ">+", ">", "|-", "|+", "|"}:
+                value = ""
             child_values: list[str] = []
             for child in job_lines[index + 1 :]:
                 child_clean = strip_comment(child).rstrip()
@@ -11344,8 +11375,11 @@ def verify_merge_readiness_ci_job(workflow_text: str) -> list[str]:
         return [f"{workflow_name} must define merge-readiness-progress job"]
     job_text = "\n".join(job)
     job_if = job_if_value(job)
-    if "github.event_name == 'pull_request'" not in job_if:
-        errors.append("merge-readiness-progress job must run only for pull_request")
+    if _normalize_concurrency_text(job_if) != EXPECTED_MERGE_READINESS_PROGRESS_IF:
+        errors.append(
+            "merge-readiness-progress job if-condition must skip Mergify proof PR "
+            "metadata-only edited events while preserving all other pull_request runs"
+        )
     for required in (
         "      contents: read",
         "      checks: read",
@@ -11500,6 +11534,13 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
         errors.append(f"{workflow_name} must define coverage-enforcer job")
         return errors
     job_text = "\n".join(job)
+    job_if = job_if_value(job)
+    if _normalize_concurrency_text(job_if) != EXPECTED_COVERAGE_ENFORCER_IF:
+        errors.append(
+            f"{workflow_name} coverage-enforcer job if-condition must skip Mergify "
+            "proof PR metadata-only edited events while preserving merge_group and "
+            "all other pull_request runs"
+        )
     trusted_base_ref = (
         "          ref: ${{ github.event.pull_request.base.sha || "
         "github.event.merge_group.base_sha }}"
@@ -11512,12 +11553,13 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
         if required not in job_text:
             errors.append(f"{workflow_name} must check out only the trusted base tree")
             break
+    steps_text = "\n".join(line for block in step_blocks(job) for line in block)
     for forbidden in (
         "github.event.pull_request.head",
         "github.head_ref",
         "refs/pull",
     ):
-        if forbidden in job_text:
+        if forbidden in steps_text:
             errors.append(f"{workflow_name} must not check out PR head code")
             break
     if "          persist-credentials: false" not in job_text:

@@ -4,11 +4,15 @@ self-hosted-runner:
     - ubicloud-standard-4-arm
 
 config-variables:
+  - AWS_CI_CACHE_ROLE_ARN
   - AWS_DEPLOY_ROLE_ARN
   - CI_DEBUG_SSH_WAIT_MINUTES
   - CI_RUNNER_GITHUB_HOSTED
   - CI_RUNNER_MANAGED_HEAVY
   - CI_RUNNER_MANAGED_LIGHT
+  - CI_SCCACHE_BUCKET
+  - CI_SCCACHE_REGION
+  - CI_SCCACHE_S3_KEY_PREFIX
 
 config-secrets:
   - SSH_PUBLIC_KEY

@@ -301,6 +301,7 @@ TAG_SKIP_ALWAYS_IF_RE = re.compile(
 )
 SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
 FULL_CI_REQUIRED_EXPR = "needs.ci-policy.outputs.full_ci_required == 'true'"
+DOCS_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'docs'"
 TAG_REUSE_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'tag_reuse'"
 NEXTEST_REUSE_MISS_EXPR = "needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'"
 MAIN_BRANCH_SKIP_EXPR = "github.ref != 'refs/heads/main'"
@@ -7900,6 +7901,11 @@ def job_gates_on_full_ci_required(job_lines: list[str]) -> bool:
     return FULL_CI_REQUIRED_EXPR in uncommented_text(job_lines)
 
 
+def source_fence_runs_on_full_ci_or_docs(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return FULL_CI_REQUIRED_EXPR in text and DOCS_POLICY_EXPR in text
+
+
 def check_aarch64_runs_on_full_or_tag_reuse(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return FULL_CI_REQUIRED_EXPR in text and TAG_REUSE_POLICY_EXPR in text
@@ -8923,8 +8929,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
         source_fence_needs = extract_needs(jobs["source-fence"])
         if "ci-policy" not in source_fence_needs:
             errors.append("source-fence needs ci-policy")
-        if not job_gates_on_full_ci_required(jobs["source-fence"]):
-            errors.append("source-fence must gate on full_ci_required")
+        if not source_fence_runs_on_full_ci_or_docs(jobs["source-fence"]):
+            errors.append("source-fence must run for full_ci_required or docs policy")
+        if not job_runs_command(jobs["source-fence"], "just source-fence-static"):
+            errors.append("source-fence must run just source-fence-static for docs policy")
 
     for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):

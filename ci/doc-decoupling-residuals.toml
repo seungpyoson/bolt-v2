@@ -1,0 +1,47 @@
+[doc_decoupling_residuals]
+version = 1
+
+[[doc_decoupling_residuals.allowed_markdown_references]]
+path = "scripts/verify_ai_review_governance.py"
+kind = "workflow_snippet_false_positive"
+tracking_issue = "#1027"
+read_purpose = "none"
+snippets = [
+  '"AGENTS.md"',
+  '"cat .ai-review/base/AGENTS.md"',
+  '"--instructions-file .ai-review/standards/kimi-review-standards.md"',
+]
+
+[[doc_decoupling_residuals.allowed_markdown_references]]
+path = "scripts/verify_bolt_v3_dependency_direction.py"
+kind = "docstring_pointer_false_positive"
+tracking_issue = "#1027"
+read_purpose = "none"
+snippets = [
+  "architecture-contract.md",
+]
+
+[[doc_decoupling_residuals.allowed_markdown_references]]
+path = "scripts/verify_bolt_v3_naming.py"
+kind = "deliberate_guard"
+owner_issue = "#711"
+tracking_issue = "#1027"
+read_purpose = "rename_guard"
+snippets = [
+  '"docs/bolt-v3/*.md"',
+  '"docs/**/*"',
+  '"specs/**/*.md"',
+  '".md"',
+]
+
+[[doc_decoupling_residuals.allowed_markdown_references]]
+path = "scripts/verify_bolt_v3_schema_current.py"
+kind = "doc_sync_exception"
+owner_issue = "#559"
+tracking_issue = "#1027"
+read_purpose = "doc_sync_exception"
+snippets = [
+  'SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-schema.md"',
+  'RUNTIME_CONTRACTS_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"',
+  'STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"',
+]

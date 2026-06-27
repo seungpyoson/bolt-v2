@@ -16,6 +16,7 @@ variable = "CI_RUNNER_MANAGED_LIGHT"
 label = "ubicloud-standard-2"
 
 [workflows.ci]
+merge-readiness-progress = "github_hosted"
 ci-policy = "github_hosted"
 detector = "github_hosted"
 host-health = "github_hosted"
@@ -78,6 +79,9 @@ smoke = "github_hosted"
 
 [workflows.dispatch_ci_cancel]
 cancel-obsolete-dispatch = "github_hosted"
+
+[workflows.merge_readiness_finalizer]
+mark-stalled = "github_hosted"
 
 [workflows.advisory]
 advisories = "github_hosted"
@@ -168,6 +172,11 @@ run_name_default = "CI"
 run_name_full = "CI [dispatch:full]"
 run_name_iteration = "CI [dispatch:iteration]"
 proof_gate_job = "gate"
+
+[ci_provenance.merge_readiness]
+comment_marker = "bolt-v2-merge-readiness"
+poll_seconds = 30
+max_watch_seconds = 14400
 
 [ci_provenance.gate_names]
 gate_required = "gate"

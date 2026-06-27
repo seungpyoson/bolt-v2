@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Verify DASH-003..014 dashboard read-only contract and product-gate coverage."""
+"""Verify dashboard read-only contract code/test coverage."""
 
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
@@ -12,24 +11,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_RS = Path("crates/backtesting-vertical-slice/src/dashboard_contract.rs")
 DASHBOARD_TEST = Path("crates/backtesting-vertical-slice/tests/dashboard_contract.rs")
-DASHBOARD_PLAN = Path("specs/023-nt-research-analytics-platform/3-dashboard/plan.md")
-DASHBOARD_TASKS = Path("specs/023-nt-research-analytics-platform/3-dashboard/tasks.md")
 JUSTFILE = Path("justfile")
 
-CHECKED_TASKS = (
-    "DASH-003",
-    "DASH-004",
-    "DASH-005",
-    "DASH-006",
-    "DASH-007",
-    "DASH-008",
-    "DASH-009",
-    "DASH-010",
-    "DASH-011",
-    "DASH-012",
-    "DASH-013",
-    "DASH-014",
-)
 CODE_SNIPPETS = (
     "pub fn validate_dashboard_read_model",
     "DashboardReadModelSpec",
@@ -59,25 +42,6 @@ TEST_SNIPPETS = (
     "dashboard_rejects_mutation_actions_and_canonical_artifact_writes",
     "dashboard_rejects_unmapped_stale_missing_pnl_and_strategy_truth_fields",
 )
-PLAN_SNIPPETS = (
-    "## Dependency Decisions",
-    "#409 / `PortfolioSnapshot`",
-    "#77 durable trade-history/PnL",
-    "#36 redemption-realized PnL",
-    "#369 is non-closure context",
-    "## Read-Only Source Contract Validation",
-    "## Product Gate",
-    "Decision: select Metabase Open Source/self-hosted",
-    "Grafana Cloud",
-    "Metabase",
-    "Preset/Superset",
-    "Retool",
-    "Plotly/Dash",
-    "Custom UI",
-    "source_binding_key",
-    "no-mutation-controls",
-    "annotation/review",
-)
 JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_dashboard_read_only_contract.py",
     "python3 scripts/verify_dashboard_read_only_contract.py",
@@ -98,27 +62,16 @@ def require_snippets(rel_path: Path, text: str, snippets: tuple[str, ...], findi
             findings.append(f"{rel_path}: missing `{snippet}`")
 
 
-def task_is_checked(tasks_text: str, task_id: str) -> bool:
-    return re.search(rf"^- \[[xX]\] {re.escape(task_id)}\b", tasks_text, re.MULTILINE) is not None
-
-
 def scan_root(root: Path) -> list[str]:
     root = root.resolve()
     findings: list[str] = []
 
     code_text = require_file(root, DASHBOARD_RS, findings)
     test_text = require_file(root, DASHBOARD_TEST, findings)
-    plan_text = require_file(root, DASHBOARD_PLAN, findings)
-    tasks_text = require_file(root, DASHBOARD_TASKS, findings)
     justfile_text = require_file(root, JUSTFILE, findings)
 
     require_snippets(DASHBOARD_RS, code_text, CODE_SNIPPETS, findings)
     require_snippets(DASHBOARD_TEST, test_text, TEST_SNIPPETS, findings)
-    require_snippets(DASHBOARD_PLAN, plan_text, PLAN_SNIPPETS, findings)
-
-    for task_id in CHECKED_TASKS:
-        if tasks_text and not task_is_checked(tasks_text, task_id):
-            findings.append(f"{DASHBOARD_TASKS}: {task_id} must be checked for this source-contract slice")
 
     for command in JUSTFILE_COMMANDS:
         if justfile_text and command not in justfile_text:

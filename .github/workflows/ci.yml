@@ -241,11 +241,7 @@ jobs:
           base_tree="$RUNNER_TEMP/ci-policy-base-tree"
           mkdir -p "$base_tree"
           git archive "$base_ref" \
-            scripts/verify_ci_path_filters.py \
-            scripts/ci_provenance.py \
-            scripts/lane_governor.py \
-            scripts/rust_verification.py \
-            scripts/command_understanding.py \
+            scripts/ \
             ci/rust-verification.toml \
             ci/github-actions-runners.toml \
             .github/workflows/ci.yml \

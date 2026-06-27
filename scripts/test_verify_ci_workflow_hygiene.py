@@ -379,11 +379,7 @@ jobs:
           base_tree="$RUNNER_TEMP/ci-policy-base-tree"
           mkdir -p "$base_tree"
           git archive "$base_ref" \
-            scripts/verify_ci_path_filters.py \
-            scripts/ci_provenance.py \
-            scripts/lane_governor.py \
-            scripts/rust_verification.py \
-            scripts/command_understanding.py \
+            scripts/ \
             ci/rust-verification.toml \
             ci/github-actions-runners.toml \
             .github/workflows/ci.yml \
@@ -2381,14 +2377,20 @@ def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
 def assert_ci_detector_docs_only_archive_includes_runtime_dependencies() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
-    for dependency in ("scripts/rust_verification.py", "scripts/command_understanding.py", "ci/rust-verification.toml"):
-        mutated = replace_once(workflow, f"            {dependency} \\\n", "")
+    for required, archive_line in (
+        ("scripts/ ", "            scripts/ \\\n"),
+        ("ci/rust-verification.toml", "            ci/rust-verification.toml \\\n"),
+        ("ci/github-actions-runners.toml", "            ci/github-actions-runners.toml \\\n"),
+        (".github/workflows/ci.yml", "            .github/workflows/ci.yml \\\n"),
+    ):
+        mutated = replace_once(workflow, archive_line, "")
         errors = verifier.verify_workflow(mutated)
+        expected = f"detector docs-only classifier base archive must include {required}"
         if not any(
-            f"detector docs-only classifier base archive must include {dependency}" in error
+            expected in error
             for error in errors
         ):
-            raise AssertionError(f"expected detector docs-only base archive dependency error for {dependency}, got: {errors}")
+            raise AssertionError(f"expected detector docs-only base archive dependency error {expected!r}, got: {errors}")
 
 
 def assert_merge_group_support_gaps_are_reported() -> None:

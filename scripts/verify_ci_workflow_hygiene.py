@@ -8534,11 +8534,9 @@ def detector_docs_only_archive_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
     for required in (
         'git archive "$base_ref"',
-        "scripts/verify_ci_path_filters.py",
-        "scripts/ci_provenance.py",
-        "scripts/lane_governor.py",
-        "scripts/rust_verification.py",
-        "scripts/command_understanding.py",
+        "scripts/ ",  # whole scripts/ dir (note trailing space): a per-file entry like
+                      # "scripts/rust_verification.py" never produces "scripts/ ", so this
+                      # token only matches when the entire scripts/ dir is archived.
         "ci/rust-verification.toml",
         "ci/github-actions-runners.toml",
         ".github/workflows/ci.yml",

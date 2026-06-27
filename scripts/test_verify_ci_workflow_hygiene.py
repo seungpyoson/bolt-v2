@@ -290,7 +290,12 @@ permissions:
 jobs:
   merge-readiness-progress:
     name: merge-readiness-progress
-    if: ${{ github.event_name == 'pull_request' }}
+    if: >-
+      ${{ github.event_name == 'pull_request'
+          && !(github.event.action == 'edited'
+               && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+                   || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+               && !(github.event.changes.base.ref.from != '')) }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     permissions:
       contents: read
@@ -1128,6 +1133,12 @@ permissions:
 jobs:
   coverage-enforcer:
     name: coverage-enforcer
+    if: >-
+      ${{ !(github.event_name == 'pull_request'
+            && github.event.action == 'edited'
+            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+            && !(github.event.changes.base.ref.from != '')) }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -4397,6 +4408,19 @@ def assert_merge_readiness_progress_gaps_are_reported() -> None:
                 "python3 scripts/merge_readiness.py status",
             ),
         ),
+        (
+            "merge-readiness-progress job if-condition must skip Mergify proof PR",
+            replace_once(
+                workflow,
+                "    if: >-\n"
+                "      ${{ github.event_name == 'pull_request'\n"
+                "          && !(github.event.action == 'edited'\n"
+                "               && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                "                   || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+                "               && !(github.event.changes.base.ref.from != '')) }}\n",
+                "    if: ${{ github.event_name == 'pull_request' }}\n",
+            ),
+        ),
     ]
     for fragment, mutated_workflow in cases:
         errors = verifier.verify_merge_readiness_ci_job(mutated_workflow)
@@ -4546,6 +4570,21 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
                     "jobs:\n  coverage-enforcer:\n    name: coverage-enforcer\n    steps:\n      - run: python3 scripts/coverage_enforcer.py\n",
                     1,
                 ),
+            },
+        ),
+        (
+            "coverage-enforcer job if-condition must skip Mergify proof PR",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "    if: >-\n"
+                    "      ${{ !(github.event_name == 'pull_request'\n"
+                    "            && github.event.action == 'edited'\n"
+                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+                    "            && !(github.event.changes.base.ref.from != '')) }}\n",
+                    "",
+                )
             },
         ),
     ]

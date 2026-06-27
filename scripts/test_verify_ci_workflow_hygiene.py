@@ -7609,7 +7609,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: Extract BVS binary sidecars
         run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
       - name: List scoped BVS archive tests
-        run: nextest list --archive-file "$BVS_NEXTEST_ARCHIVE_PATH"
+        run: nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH"
       - name: test
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"

@@ -9955,7 +9955,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive must list scoped archive tests",
-            'nextest list --archive-file "$BVS_NEXTEST_ARCHIVE_PATH"',
+            'nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH"',
         ),
         (
             "backtester bvs-test archive must create archive extract root",

@@ -1821,18 +1821,21 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                 bound[keyword.arg] = value
                 explicit_names.add(keyword.arg)
                 bound_any = True
-        for name, default in self._function_defaults(function).items():
-            if name not in explicit_names and name not in bound:
+        for default_name, default in self._function_defaults(function).items():
+            if default_name not in explicit_names and default_name not in bound:
                 value = self._resolve_value(default)
-                bound[name] = value
+                bound[default_name] = value
                 bound_any = True
         if not bound_any:
             return
-        self.active_functions.add(name)
+        # Recursion guard for self/mutually-recursive wrappers. Key on the
+        # canonical function.name, never a local `name` that an inner loop
+        # (e.g. the defaults loop above) could shadow and corrupt.
+        self.active_functions.add(function.name)
         try:
             self._visit_function_body(function, bound)
         finally:
-            self.active_functions.discard(name)
+            self.active_functions.discard(function.name)
 
     def _function_parameters(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.arg]:
         return [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
@@ -3079,6 +3082,33 @@ outer("scripts/clean_merged_artifacts.py")
     assert {"test_nextest_fingerprint.py", "clean_merged_artifacts.py"} <= rels
 
 
+def test_recursive_local_wrapper_with_default_param_terminates() -> None:
+    # Regression: a self-recursive wrapper that also declares a default parameter
+    # must not exhaust the stack. The active_functions recursion guard keys on
+    # function.name; a `for name, default in defaults` loop once shadowed the
+    # local `name`, seeding the guard with the *parameter* name so the self-call
+    # slipped past it and recursed until the interpreter stack blew. The edge must
+    # still resolve, just without unbounded recursion.
+    source = """
+import subprocess
+
+def relay(script, retries=0):
+    subprocess.run(["python3", script])
+    relay(script)
+
+relay("scripts/test_nextest_fingerprint.py")
+"""
+    resolver = _CodeExecutionEdgeResolver(
+        SCRIPTS_DIR / "synthetic_guard_fixture.py",
+        ast.parse(source),
+        scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+    )
+    targets, failures = resolver.resolve()
+    assert not failures
+    rels = {target.relative_to(SCRIPTS_DIR).as_posix() for target in targets}
+    assert "test_nextest_fingerprint.py" in rels
+
+
 def test_shell_true_python_wrappers_resolve() -> None:
     fixtures = [
         "import subprocess\nsubprocess.run('env PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py', shell=True)\n",
@@ -4148,6 +4178,7 @@ def _registered_self_tests():
         test_asyncio_subprocess_resolves_python_targets,
         test_asyncio_subprocess_non_python_targets_are_boundaries,
         test_local_wrappers_resolve_forward_and_nested_calls,
+        test_recursive_local_wrapper_with_default_param_terminates,
         test_shell_true_python_wrappers_resolve,
         test_code_execution_tripwires_fail_closed,
         test_os_exec_spawn_non_python_targets_are_boundaries,

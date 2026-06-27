@@ -1,6 +1,6 @@
 //! Hyperliquid fail-closed and ops-artifact tests.
 
-mod support;
+use crate::support;
 
 use std::{collections::BTreeMap, sync::Arc};
 

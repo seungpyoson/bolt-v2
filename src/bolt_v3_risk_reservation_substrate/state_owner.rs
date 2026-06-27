@@ -1020,7 +1020,7 @@ impl FencedRiskStateStore {
             if !fill_transition_allowed(record.lifecycle_state) {
                 return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
             }
-            fill_would_increase_remaining(record, fill_quantity, remaining_fillable_quantity)
+            fill_remainder_not_conserved(record, fill_quantity, remaining_fillable_quantity)
         };
         if fill_bounds_fault {
             return mark_lifecycle_reconciliation_required(
@@ -1075,6 +1075,9 @@ impl FencedRiskStateStore {
         let record = &mut inner.reservation_records[record_index];
         record.lifecycle_state = target_state;
         record.remaining_fillable_quantity = remaining_fillable_quantity;
+        if target_state == ReservationLifecycleState::Filled {
+            record.open_order_remainder_held = false;
+        }
         record.filled_position_exposure = Some(filled_position_exposure);
         record.filled_position_equity_floor_stress_loss = new_equity_floor_stress_loss;
         record.filled_position_governor_realized_loss = new_governor_realized_loss;
@@ -1247,20 +1250,21 @@ impl FencedRiskStateStore {
     ///
     /// Worst-case complexity: with `P` current positions, at most `B`
     /// configured buckets per exposure, at most `T` configured terminal
-    /// cash-flow states per exposure, and `R` indexed live reservation keys,
-    /// this critical section runs in `O(P * (B + T) + B + log R)` time. It
-    /// performs no external I/O, acquires no nested mutable lock, uses only
-    /// pre-resolved immutable descriptor/policy/fee/classifier data carried by
-    /// the transaction, and allocates only bounded token/record/index data plus
-    /// bounded `B`-sized dimension sets. The configured maximum position,
+    /// cash-flow states per exposure, and `R` stored reservation records
+    /// projected for derived totals, this critical section runs in
+    /// `O(P * (B + T) + R * B + B + log R)` time. It performs no external I/O,
+    /// acquires no nested mutable lock, uses only pre-resolved immutable
+    /// descriptor/policy/fee/classifier data carried by the transaction, and
+    /// allocates only bounded token/record/index data plus bounded `B`-sized
+    /// dimension sets. The configured maximum position,
     /// bucket, and terminal-scenario sizes are enforced before idempotent token
     /// replay and again after the coherent `risk_state_version` check before
     /// the kernel evaluation, so an over-bound transaction reserves nothing.
-    /// The offered-load shed gate runs only on risk-increasing compare-and-reserve, uses
-    /// the substrate-owned scalar in-flight reservation count, records through the existing
-    /// policy alert source, and fails closed before kernel evaluation. The runtime owns the
-    /// bounded event queue, fair-queue scheduling, and wall-clock latency policy; this
-    /// substrate does not spawn threads, timers, or a second serialization path.
+    /// The offered-load shed gate runs only on risk-increasing compare-and-reserve, derives
+    /// the in-flight reservation count from held reservation records, records through the
+    /// existing policy alert source, and fails closed before kernel evaluation. The runtime
+    /// owns the bounded event queue, fair-queue scheduling, and wall-clock latency policy;
+    /// this substrate does not spawn threads, timers, or a second serialization path.
     fn compare_and_reserve(
         &self,
         lease: &PoolOwnershipLease,
@@ -2051,13 +2055,12 @@ fn validate_lifecycle_exposure_input(
     Ok(())
 }
 
-fn fill_would_increase_remaining(
+fn fill_remainder_not_conserved(
     record: &SubstrateReservationRecord,
     fill_quantity: Decimal,
     remaining_fillable_quantity: Decimal,
 ) -> bool {
-    remaining_fillable_quantity > record.remaining_fillable_quantity
-        || fill_quantity + remaining_fillable_quantity > record.remaining_fillable_quantity
+    fill_quantity + remaining_fillable_quantity != record.remaining_fillable_quantity
 }
 
 fn validate_settlement_exposure_input(

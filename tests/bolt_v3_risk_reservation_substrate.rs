@@ -866,7 +866,7 @@ fn s7a_compare_and_reserve_documents_bounded_critical_section_complexity() {
     let source = include_str!("../src/bolt_v3_risk_reservation_substrate/state_owner.rs");
 
     assert!(source.contains("Worst-case complexity"));
-    assert!(source.contains("O(P * (B + T) + B + log R)"));
+    assert!(source.contains("O(P * (B + T) + R * B + B + log R)"));
     assert!(source.contains("no external I/O"));
     assert!(source.contains("no nested mutable lock"));
     assert!(source.contains("pre-resolved immutable descriptor/policy/fee/classifier data"));
@@ -2874,6 +2874,130 @@ fn s8a_partial_fill_moves_quantity_and_keeps_reserved_risk_monotonic() {
         record.assessment.equity_floor_stress_loss,
         pre_fill_totals.equity_floor_stress_loss(),
         "the original conservative open-order reservation remains active for the remainder"
+    );
+}
+
+#[test]
+fn s8a_under_remaining_fill_requires_reconciliation_without_releasing_capacity() {
+    let pool_id = "pool-s8a-under-remaining-fill";
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        pool_id,
+        "owner-s8a-under-remaining-fill",
+        "intent-s8a-under-remaining-fill",
+        "idempotency-s8a-under-remaining-fill",
+        "S8A-UNDER-REMAINING-FILL",
+    );
+
+    reconciler
+        .apply_order_status_truth(nt_open_status(client_order_id, "s8a-under-remaining-open"))
+        .expect("authoritative NT open status should move the reservation to Open");
+    let pre_fill_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before malformed fill");
+
+    let malformed = reconciler
+        .apply_fill_truth(nt_fill(
+            client_order_id,
+            "s8a-under-remaining-fill",
+            dec(1),
+            Decimal::ZERO,
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("under-remaining fill should be absorbed as a reconciliation fault");
+
+    assert_eq!(
+        malformed.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    let record = only_reservation_record(&owner);
+    assert_eq!(
+        record.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    assert_eq!(
+        record.remaining_fillable_quantity,
+        dec(2),
+        "a fill event must not shrink remaining by more than its fill quantity"
+    );
+    assert!(
+        record.filled_position_exposure.is_none(),
+        "a non-conserving fill must not synthesize filled-position exposure"
+    );
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should remain readable after malformed fill"),
+        pre_fill_totals,
+        "a non-conserving fill must not release reserved capacity"
+    );
+    assert_new_risk_blocked_by_reconciliation(&owner, pool_id, "s8a-under-remaining-successor");
+}
+
+#[test]
+fn s8a_full_fill_releases_open_remainder_and_projects_only_filled_exposure() {
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        "pool-s8a-full-fill-exact",
+        "owner-s8a-full-fill-exact",
+        "intent-s8a-full-fill-exact",
+        "idempotency-s8a-full-fill-exact",
+        "S8A-FULL-FILL-EXACT",
+    );
+
+    reconciler
+        .apply_order_status_truth(nt_open_status(client_order_id, "s8a-full-fill-exact-open"))
+        .expect("authoritative NT open status should move the reservation to Open");
+    reconciler
+        .apply_fill_truth(nt_fill(
+            client_order_id,
+            "s8a-full-fill-exact-fill",
+            dec(2),
+            Decimal::ZERO,
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("authoritative full fill should be accepted");
+
+    let record = only_reservation_record(&owner);
+    assert_eq!(record.lifecycle_state, ReservationLifecycleState::Filled);
+    assert_eq!(record.remaining_fillable_quantity, Decimal::ZERO);
+    assert!(
+        !record.open_order_remainder_held,
+        "a full fill leaves no open-order remainder to reserve"
+    );
+    assert!(
+        record.filled_position_held,
+        "a full fill must keep filled-position exposure reserved until settlement"
+    );
+    let exposure = record
+        .filled_position_exposure
+        .as_ref()
+        .expect("full fill should create filled-position exposure");
+    assert_eq!(exposure.quantity, dec(2));
+
+    let totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable after full fill");
+    assert_eq!(
+        totals.open_order_count(),
+        0,
+        "full fills must stop consuming open-order slots"
+    );
+    assert_eq!(
+        totals.collateral_required(),
+        Decimal::ZERO,
+        "open-order collateral must not remain after the open remainder is gone"
+    );
+    assert_eq!(totals.position_quantity(), exposure.quantity);
+    assert_eq!(
+        totals.equity_floor_stress_loss(),
+        record.filled_position_equity_floor_stress_loss
+    );
+    assert_eq!(
+        totals.governor_realized_loss(),
+        record.filled_position_governor_realized_loss
     );
 }
 

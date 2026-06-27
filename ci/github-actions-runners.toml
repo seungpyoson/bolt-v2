@@ -81,6 +81,9 @@ cancel-obsolete-dispatch = "github_hosted"
 [workflows.merge_readiness_finalizer]
 mark-stalled = "github_hosted"
 
+[workflows.coverage_enforcer]
+coverage-enforcer = "github_hosted"
+
 [workflows.advisory]
 advisories = "github_hosted"
 

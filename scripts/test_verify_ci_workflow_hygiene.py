@@ -2370,6 +2370,71 @@ def assert_ci_policy_rejects_literal_event_sender_id_argument() -> None:
         raise AssertionError(f"backtester ci-policy literal event sender id must be rejected, got: {errors}")
 
 
+def assert_ci_policy_rejects_inline_event_sender_id_override() -> None:
+    command = '          python3 "$policy_script" ci-policy'
+    mutated = replace_once(
+        BASE_WORKFLOW,
+        command,
+        '          EVENT_SENDER_ID=37929162 python3 "$policy_script" ci-policy',
+    )
+    assert_error(
+        "ci-policy must not override EVENT_SENDER_ID inline on the resolver command line",
+        workflow=mutated,
+    )
+
+    verifier = load_verifier()
+    backtester = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    backtester_mutated = replace_once(
+        backtester,
+        command,
+        '          EVENT_SENDER_ID=37929162 python3 "$policy_script" ci-policy',
+    )
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": backtester_mutated})
+    if not any(
+        "ci-policy must not override EVENT_SENDER_ID inline on the resolver command line" in error
+        for error in errors
+    ):
+        raise AssertionError(f"backtester inline EVENT_SENDER_ID override must be rejected, got: {errors}")
+
+
+def assert_ci_policy_rejects_backslash_split_event_sender_id_argument() -> None:
+    ci_ref_arg = '            --ref "${{ github.ref }}"'
+    split_arg = "            --event-\\\n            sender-id 37929162 \\"
+    mutated = replace_once(
+        BASE_WORKFLOW,
+        ci_ref_arg,
+        f"{split_arg}\n{ci_ref_arg}",
+    )
+    assert_error(
+        "ci-policy must not pass --event-sender-id on the resolver command line",
+        workflow=mutated,
+    )
+
+    verifier = load_verifier()
+    backtester = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    backtester_ref_arg = """            --ref "${{ github.ref }}" \\
+"""
+    backtester_mutated = replace_once(
+        backtester,
+        backtester_ref_arg,
+        backtester_ref_arg + split_arg + "\n",
+    )
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": backtester_mutated})
+    if not any("ci-policy must not pass --event-sender-id on the resolver command line" in error for error in errors):
+        raise AssertionError(f"backtester backslash-split event sender id must be rejected, got: {errors}")
+
+
+def assert_ci_policy_real_workflows_keep_event_sender_binding_clean() -> None:
+    verifier = load_verifier()
+    workflows = {
+        ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml"),
+        ".github/workflows/backtester-ci.yml": repo_workflow_text(".github/workflows/backtester-ci.yml"),
+    }
+    errors = verifier.verify_workflows(workflows, BASE_ACTION, BASE_NEXTEST_CONFIG)
+    if errors:
+        raise AssertionError(f"real ci-policy workflows must remain clean, got: {errors}")
+
+
 def assert_pull_request_type_parser_accepts_block_list_indentation() -> None:
     verifier = load_verifier()
     workflow = """\
@@ -11253,6 +11318,9 @@ def main() -> int:
     assert_ci_policy_matrix()
     assert_ci_policy_resolvers_agree()
     assert_ci_policy_rejects_literal_event_sender_id_argument()
+    assert_ci_policy_rejects_inline_event_sender_id_override()
+    assert_ci_policy_rejects_backslash_split_event_sender_id_argument()
+    assert_ci_policy_real_workflows_keep_event_sender_binding_clean()
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
     assert_ci_detector_forces_build_on_workflow_dispatch()

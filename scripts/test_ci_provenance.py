@@ -1673,6 +1673,100 @@ def assert_ci_policy_gate_names_are_event_based() -> None:
         raise AssertionError("event-based naming matrix must exercise dispatch full/iteration and PR iteration")
 
 
+def required_gate_event_classes_from_resolver(module, config) -> set[str]:
+    gate_required = config.gate_names["gate_required"]
+    backtester_required = config.gate_names["backtester_required"]
+    actor_id = config.mergify_temp_pr_actor_id
+    required_event_classes: set[str] = set()
+    event_names = ("push", "pull_request", "merge_group", "workflow_dispatch", "unknown_event")
+    actions = (
+        "",
+        "opened",
+        "synchronize",
+        "reopened",
+        "edited",
+        "ready_for_review",
+        "converted_to_draft",
+        "labeled",
+        "checks_requested",
+    )
+    refs = (
+        "refs/heads/main",
+        "refs/tags/v1.2.3",
+        "refs/heads/codex/branch",
+        "refs/pull/1/merge",
+        "refs/heads/gh-readonly-queue/main/pr-1-deadbeef",
+    )
+    head_refs = (
+        "",
+        "feature",
+        "mergify/merge-queue/abc123abcd",
+        "tmp-mergify/merge-queue/abc123abcd",
+    )
+    workflow_dispatch_values = ("", "false", "true", "TRUE", " true ", "1")
+    sender_ids = (-1, 4242, actor_id)
+
+    for event_name in event_names:
+        for action in actions:
+            for draft in (False, True):
+                for base_changed in (False, True):
+                    for workflow_dispatch_full_ci in workflow_dispatch_values:
+                        for ref in refs:
+                            for sender_id in sender_ids:
+                                for head_ref in head_refs:
+                                    for docs_only in (False, True):
+                                        try:
+                                            result = module.evaluate_ci_policy(
+                                                config,
+                                                event_name=event_name,
+                                                event_action=action,
+                                                pull_request_draft=draft,
+                                                pull_request_head_ref=head_ref,
+                                                pull_request_base_changed=base_changed,
+                                                workflow_dispatch_full_ci=workflow_dispatch_full_ci,
+                                                docs_only=docs_only,
+                                                event_sender_id=sender_id,
+                                                ref=ref,
+                                            )
+                                        except module.ProvenanceError:
+                                            continue
+                                        suffix = module.gate_name_suffix_for(
+                                            event_name,
+                                            result.reason,
+                                            result.ci_policy_path,
+                                        )
+                                        has_required_names = (
+                                            result.gate_name == gate_required
+                                            and result.backtester_gate_name == backtester_required
+                                        )
+                                        if suffix == "required" and not has_required_names:
+                                            raise AssertionError(
+                                                f"required suffix must publish required gate names: {result}"
+                                            )
+                                        if has_required_names and suffix != "required":
+                                            raise AssertionError(
+                                                f"required gate names must derive from required suffix: {result}"
+                                            )
+                                        if suffix == "required":
+                                            required_event_classes.add(result.expected_event_class)
+    return required_event_classes
+
+
+def assert_required_gate_proof_event_classes_match_resolver() -> None:
+    module = load_script()
+    configs = [module.load_config(module.DEFAULT_CONFIG)]
+    with tempfile.TemporaryDirectory() as tmp:
+        configs.append(module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML)))
+    for config in configs:
+        expected = required_gate_event_classes_from_resolver(module, config)
+        actual = set(module.REQUIRED_GATE_PROOF_EVENT_CLASSES)
+        if actual != expected:
+            raise AssertionError(
+                "REQUIRED_GATE_PROOF_EVENT_CLASSES must match resolver-required gate event classes: "
+                f"actual={sorted(actual)!r} expected={sorted(expected)!r}"
+            )
+
+
 def assert_mergify_temp_pr_requires_actor_binding() -> None:
     # GAP-1 canary: a head-ref prefix alone must NEVER earn the required gate. The
     # mergify merge-queue temp PR is recognized only when github.event.sender.id is
@@ -4161,6 +4255,7 @@ def main() -> int:
     assert_ci_policy_rejects_event_sender_cli_override_arguments()
     assert_ci_policy_outputs_matrix()
     assert_ci_policy_gate_names_are_event_based()
+    assert_required_gate_proof_event_classes_match_resolver()
     assert_mergify_temp_pr_requires_actor_binding()
     assert_parse_event_sender_id_fails_closed()
     assert_ci_policy_non_numeric_sender_id_does_not_crash()

@@ -1410,6 +1410,70 @@ def workflow_dispatch_input_errors(workflow_text: str, input_name: str) -> list[
     return []
 
 
+INLINE_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+EVENT_SENDER_ID_INLINE_ASSIGNMENT_RE = re.compile(r"^EVENT_SENDER_ID=")
+
+
+def command_segments(tokens: list[str]) -> list[list[str]]:
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token in SHELL_COMMAND_BOUNDARIES:
+            if current:
+                segments.append(current)
+                current = []
+            continue
+        current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def ci_policy_resolver_command_index(segment: list[str]) -> int | None:
+    index = 0
+    while index < len(segment) and INLINE_ENV_ASSIGNMENT_RE.match(segment[index]):
+        index += 1
+    if index + 2 >= len(segment):
+        return None
+    if segment[index] != "python3" or segment[index + 2] != "ci-policy":
+        return None
+    script = segment[index + 1]
+    if script != "$policy_script" and not script.endswith("/ci_provenance.py") and script != "scripts/ci_provenance.py":
+        return None
+    return index
+
+
+def command_passes_event_sender_id_arg(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if token.startswith("--event-sender-id"):
+            return True
+        if token == "--event-" and index + 1 < len(tokens) and tokens[index + 1].startswith("sender-id"):
+            return True
+    return False
+
+
+def ci_policy_event_sender_command_errors(job_lines: list[str]) -> list[str]:
+    text = uncommented_text(job_lines)
+    errors: list[str] = []
+    if text.count("EVENT_SENDER_ID:") > 1:
+        errors.append("ci-policy must declare EVENT_SENDER_ID env exactly once")
+    # Defense-in-depth only: same-repo PRs control their workflow run blocks, so
+    # sender id hygiene is not an unspoofable trust boundary. The queue-only boundary
+    # remains trusted-base check-ci-gate plus branch-protection sp-reviewer approval;
+    # this tokenized check blocks known command-level injections.
+    for block in step_blocks(job_lines):
+        tokens = command_tokens_with_line_boundaries(block_run_body(block))
+        for segment in command_segments(tokens):
+            command_index = ci_policy_resolver_command_index(segment)
+            if command_index is None:
+                continue
+            if any(EVENT_SENDER_ID_INLINE_ASSIGNMENT_RE.match(token) for token in segment[:command_index]):
+                errors.append("ci-policy must not override EVENT_SENDER_ID inline on the resolver command line")
+            if command_passes_event_sender_id_arg(segment[command_index + 3 :]):
+                errors.append("ci-policy must not pass --event-sender-id on the resolver command line")
+    return errors
+
+
 def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
     text = uncommented_text(job_lines)
     errors: list[str] = []
@@ -1457,9 +1521,7 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         errors.append("ci-policy must pass github.ref")
     if "EVENT_SENDER_ID: ${{ github.event.sender.id }}" not in text:
         errors.append("ci-policy must set EVENT_SENDER_ID env for the mergify actor binding")
-    # Secondary defense: ci_provenance removed this CLI arg and uses allow_abbrev=False.
-    if "--event-sender-id" in text:
-        errors.append("ci-policy must not pass --event-sender-id on the resolver command line")
+    errors.extend(ci_policy_event_sender_command_errors(job_lines))
     return errors
 
 
@@ -10393,9 +10455,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         ]:
             if required not in policy_text:
                 errors.append(f"backtester draft deferral ci-policy job must include {required}")
-        # Secondary defense: ci_provenance removed this CLI arg and uses allow_abbrev=False.
-        if "--event-sender-id" in policy_text:
-            errors.append("ci-policy must not pass --event-sender-id on the resolver command line")
+        errors.extend(ci_policy_event_sender_command_errors(policy))
 
     for heavy_job in ("clippy", "test-archive", "test"):
         job = jobs.get(heavy_job)

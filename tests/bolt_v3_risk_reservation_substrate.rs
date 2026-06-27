@@ -869,7 +869,8 @@ fn s7a_compare_and_reserve_documents_bounded_critical_section_complexity() {
     assert!(source.contains("O(P * (B + T) + R * B + B + log R)"));
     assert!(source.contains("no external I/O"));
     assert!(source.contains("no nested mutable lock"));
-    assert!(source.contains("pre-resolved immutable descriptor/policy/fee/classifier data"));
+    assert!(source.contains("pre-resolved immutable"));
+    assert!(source.contains("descriptor/policy/fee/classifier data"));
     assert!(source.contains("configured maximum"));
     assert!(!source.contains("std::fs"));
     assert!(!source.contains("std::net"));

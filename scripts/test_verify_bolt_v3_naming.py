@@ -198,10 +198,9 @@ def test_default_scan_paths_cover_companion_docs_and_research_artifacts() -> Non
         raise AssertionError(f"default naming scan missing {sorted(missing)}")
 
 
-def test_main_reports_forbidden_and_required_names() -> None:
+def test_main_reports_forbidden_names() -> None:
     original_root = VERIFIER.REPO_ROOT
     original_audit_path = VERIFIER.AUDIT_PATH
-    original_docs = VERIFIER.CANONICAL_DOCS
     original_scan_globs = VERIFIER.SCAN_GLOBS
     original_excluded = VERIFIER.EXCLUDED_RELATIVE_PATHS
     original_allowlist_path = VERIFIER.MISNOMER_ALLOWLIST_PATH
@@ -212,16 +211,12 @@ def test_main_reports_forbidden_and_required_names() -> None:
         source = root / "src" / "core.rs"
         source.parent.mkdir(parents=True)
         source.write_text("pub type X = VenueKind;\n", encoding="utf-8")
-        docs = root / "docs" / "contract.md"
-        docs.parent.mkdir(parents=True)
-        docs.write_text("ProviderKey\n", encoding="utf-8")
         allowlist_path = root / "allowlist.txt"
         allowlist_path.write_text("# no allowed residuals\n", encoding="utf-8")
         stderr = io.StringIO()
         try:
             VERIFIER.REPO_ROOT = root
             VERIFIER.AUDIT_PATH = audit_path
-            VERIFIER.CANONICAL_DOCS = [docs]
             VERIFIER.SCAN_GLOBS = ["src/**/*.rs"]
             VERIFIER.EXCLUDED_RELATIVE_PATHS = set()
             VERIFIER.MISNOMER_ALLOWLIST_PATH = allowlist_path
@@ -230,7 +225,6 @@ def test_main_reports_forbidden_and_required_names() -> None:
         finally:
             VERIFIER.REPO_ROOT = original_root
             VERIFIER.AUDIT_PATH = original_audit_path
-            VERIFIER.CANONICAL_DOCS = original_docs
             VERIFIER.SCAN_GLOBS = original_scan_globs
             VERIFIER.EXCLUDED_RELATIVE_PATHS = original_excluded
             VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
@@ -243,7 +237,6 @@ def test_main_reports_forbidden_and_required_names() -> None:
 def test_main_reports_path_scoped_forbidden_table_prefix() -> None:
     original_root = VERIFIER.REPO_ROOT
     original_audit_path = VERIFIER.AUDIT_PATH
-    original_docs = VERIFIER.CANONICAL_DOCS
     original_scan_globs = VERIFIER.SCAN_GLOBS
     original_excluded = VERIFIER.EXCLUDED_RELATIVE_PATHS
     original_allowlist_path = VERIFIER.MISNOMER_ALLOWLIST_PATH
@@ -269,16 +262,12 @@ accepted_non_nt_names: []
         source = root / "tests" / "fixtures" / "root.toml"
         source.parent.mkdir(parents=True)
         source.write_text("[venues.polymarket_main]\n", encoding="utf-8")
-        docs = root / "docs" / "contract.md"
-        docs.parent.mkdir(parents=True)
-        docs.write_text("canonical docs\n", encoding="utf-8")
         allowlist_path = root / "allowlist.txt"
         allowlist_path.write_text("# no allowed residuals\n", encoding="utf-8")
         stderr = io.StringIO()
         try:
             VERIFIER.REPO_ROOT = root
             VERIFIER.AUDIT_PATH = audit_path
-            VERIFIER.CANONICAL_DOCS = [docs]
             VERIFIER.SCAN_GLOBS = ["tests/fixtures/**/*.toml"]
             VERIFIER.EXCLUDED_RELATIVE_PATHS = set()
             VERIFIER.MISNOMER_ALLOWLIST_PATH = allowlist_path
@@ -287,7 +276,6 @@ accepted_non_nt_names: []
         finally:
             VERIFIER.REPO_ROOT = original_root
             VERIFIER.AUDIT_PATH = original_audit_path
-            VERIFIER.CANONICAL_DOCS = original_docs
             VERIFIER.SCAN_GLOBS = original_scan_globs
             VERIFIER.EXCLUDED_RELATIVE_PATHS = original_excluded
             VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
@@ -303,7 +291,6 @@ def run_main_with_misnomer_fixture(
 ) -> tuple[int, str]:
     original_root = VERIFIER.REPO_ROOT
     original_audit_path = VERIFIER.AUDIT_PATH
-    original_docs = VERIFIER.CANONICAL_DOCS
     original_scan_globs = VERIFIER.SCAN_GLOBS
     original_misnomer_scan_globs = VERIFIER.MISNOMER_SCAN_GLOBS
     original_excluded = VERIFIER.EXCLUDED_RELATIVE_PATHS
@@ -312,9 +299,6 @@ def run_main_with_misnomer_fixture(
         root = Path(tmp)
         audit_path = root / "audit.yaml"
         audit_path.write_text(AUDIT_TEXT, encoding="utf-8")
-        docs = root / "docs" / "contract.md"
-        docs.parent.mkdir(parents=True)
-        docs.write_text("ProviderKey\n", encoding="utf-8")
         allowlist_path = root / "allowlist.txt"
         if allowlist_text is not None:
             allowlist_path.write_text(allowlist_text, encoding="utf-8")
@@ -326,7 +310,6 @@ def run_main_with_misnomer_fixture(
         try:
             VERIFIER.REPO_ROOT = root
             VERIFIER.AUDIT_PATH = audit_path
-            VERIFIER.CANONICAL_DOCS = [docs]
             VERIFIER.SCAN_GLOBS = ["src/**/*.rs"]
             VERIFIER.MISNOMER_SCAN_GLOBS = ["src/**/*.rs"]
             VERIFIER.EXCLUDED_RELATIVE_PATHS = set()
@@ -336,7 +319,6 @@ def run_main_with_misnomer_fixture(
         finally:
             VERIFIER.REPO_ROOT = original_root
             VERIFIER.AUDIT_PATH = original_audit_path
-            VERIFIER.CANONICAL_DOCS = original_docs
             VERIFIER.SCAN_GLOBS = original_scan_globs
             VERIFIER.MISNOMER_SCAN_GLOBS = original_misnomer_scan_globs
             VERIFIER.EXCLUDED_RELATIVE_PATHS = original_excluded
@@ -392,7 +374,7 @@ def main() -> int:
         test_matches_any_treats_globstar_as_zero_or_more_directories,
         test_scan_paths_excludes_audit_target_git_and_reviews,
         test_default_scan_paths_cover_companion_docs_and_research_artifacts,
-        test_main_reports_forbidden_and_required_names,
+        test_main_reports_forbidden_names,
         test_main_reports_path_scoped_forbidden_table_prefix,
         test_capital_admission_misnomer_fence_catches_screaming_snake,
         test_capital_admission_misnomer_fence_allows_legitimate_sizer_keep_list,

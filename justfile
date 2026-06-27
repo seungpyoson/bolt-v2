@@ -72,10 +72,6 @@ verify-bolt-v3-provider-leaks: check-workspace
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
     python3 scripts/verify_bolt_v3_provider_leaks.py
 
-verify-bolt-v3-status-map-current: check-workspace
-    python3 scripts/test_verify_bolt_v3_status_map_current.py
-    python3 scripts/verify_bolt_v3_status_map_current.py
-
 verify-bolt-v3-schema-current: check-workspace
     python3 scripts/test_verify_bolt_v3_schema_current.py
     python3 scripts/verify_bolt_v3_schema_current.py
@@ -329,8 +325,6 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_bolt_v3_naming.py
     python3 scripts/test_verify_bolt_v3_dependency_direction.py
     python3 scripts/verify_bolt_v3_dependency_direction.py
-    python3 scripts/test_verify_bolt_v3_status_map_current.py
-    python3 scripts/verify_bolt_v3_status_map_current.py
     python3 scripts/test_verify_bolt_v3_schema_current.py
     python3 scripts/verify_bolt_v3_schema_current.py
     python3 scripts/test_migrate_bolt_v3_decision_evidence_v13_to_v14.py

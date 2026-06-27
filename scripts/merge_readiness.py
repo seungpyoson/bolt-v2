@@ -27,6 +27,17 @@ GITHUB_API_HEADERS = {
 }
 GITHUB_API_REDIRECT_HEADERS = {"authorization", "accept", "x-github-api-version"}
 TERMINAL_STATES = {"passed", "failed", "stalled"}
+NON_BLOCKING_CHECK_CONCLUSIONS = {"success", "skipped", "neutral"}
+FAILING_CHECK_CONCLUSIONS = {
+    "action_required",
+    "cancelled",
+    "failure",
+    "stale",
+    "startup_failure",
+    "timed_out",
+}
+ACTIONS_BOT_LOGIN = "github-actions[bot]"
+ACTIONS_BOT_TYPE = "Bot"
 
 
 class MergeReadinessError(RuntimeError):
@@ -62,6 +73,12 @@ class CommentUpdateResult:
     posted: bool
     reason: str
     status: RequiredCheckStatus | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class GitHubApiPage:
+    payload: object
+    next_query: dict[str, str] | None
 
 
 def load_toml(path: pathlib.Path) -> dict[str, object]:
@@ -219,10 +236,14 @@ def evaluate_required_checks(
         if status != "completed":
             pending.append(context)
             continue
-        if conclusion == "success":
+        conclusion_text = as_text(conclusion)
+        if conclusion_text in NON_BLOCKING_CHECK_CONCLUSIONS:
             completed += 1
             continue
-        failed.append(context)
+        if conclusion_text in FAILING_CHECK_CONCLUSIONS:
+            failed.append(context)
+            continue
+        pending.append(context)
     if failed:
         state = "failed"
     elif pending:
@@ -293,7 +314,35 @@ def open_github_api_request(request: urllib.request.Request, *, timeout: int):
     return opener.open(request, timeout=timeout)
 
 
-def github_api_json(
+def next_query_from_link_header(header: object) -> dict[str, str] | None:
+    if not isinstance(header, str) or not header:
+        return None
+    for raw_part in header.split(","):
+        parts = [part.strip() for part in raw_part.split(";")]
+        if not parts or not parts[0].startswith("<") or not parts[0].endswith(">"):
+            continue
+        if not any(part.casefold() == 'rel="next"' for part in parts[1:]):
+            continue
+        parsed = urllib.parse.urlparse(parts[0][1:-1])
+        query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+        return query or None
+    return None
+
+
+def next_query_from_payload(payload: object) -> dict[str, str] | None:
+    if not isinstance(payload, dict):
+        return None
+    raw_next = payload.get("next")
+    if not isinstance(raw_next, dict):
+        return None
+    query: dict[str, str] = {}
+    for key, value in raw_next.items():
+        if isinstance(key, str):
+            query[key] = as_text(value)
+    return query or None
+
+
+def github_api_page(
     repo: str,
     token: str,
     path: str,
@@ -301,7 +350,7 @@ def github_api_json(
     *,
     method: str = "GET",
     data: object = None,
-) -> object:
+) -> GitHubApiPage:
     url = f"https://api.github.com/repos/{repo}/{path}"
     if query:
         url += "?" + urllib.parse.urlencode(query)
@@ -317,6 +366,7 @@ def github_api_json(
     try:
         with open_github_api_request(request, timeout=30) as response:
             raw = response.read().decode("utf-8")
+            next_query = next_query_from_link_header(response.headers.get("Link"))
     except urllib.error.HTTPError as exc:
         if exc.code in {403, 404}:
             raise GitHubPermissionError(
@@ -330,11 +380,31 @@ def github_api_json(
             f"GitHub API request failed for {method} {path}: {exc}"
         ) from exc
     try:
-        return json.loads(raw) if raw else {}
+        payload = json.loads(raw) if raw else {}
     except json.JSONDecodeError as exc:
         raise MergeReadinessError(
             f"GitHub API payload for {method} {path} is invalid JSON"
         ) from exc
+    return GitHubApiPage(payload=payload, next_query=next_query)
+
+
+def github_api_json(
+    repo: str,
+    token: str,
+    path: str,
+    query: dict[str, str] | None = None,
+    *,
+    method: str = "GET",
+    data: object = None,
+) -> object:
+    return github_api_page(
+        repo,
+        token,
+        path,
+        query,
+        method=method,
+        data=data,
+    ).payload
 
 
 def require_env(name: str) -> str:
@@ -435,6 +505,15 @@ def sticky_comment_payloads(payload: object) -> list[dict[str, object]]:
     return comments
 
 
+def is_actions_bot_comment(comment: dict[str, object]) -> bool:
+    user = comment.get("user")
+    return (
+        isinstance(user, dict)
+        and user.get("login") == ACTIONS_BOT_LOGIN
+        and user.get("type") == ACTIONS_BOT_TYPE
+    )
+
+
 def comment_marker(
     *,
     marker_name: str,
@@ -477,6 +556,8 @@ def find_sticky_comment(
     marker_name: str,
 ) -> tuple[dict[str, object], dict[str, object]] | None:
     for comment in comments:
+        if not is_actions_bot_comment(comment):
+            continue
         metadata = parse_marker(comment.get("body"), marker_name)
         if metadata is not None:
             return comment, metadata
@@ -519,13 +600,21 @@ def list_issue_comments(
     settings: MergeReadinessSettings,
     api_json=github_api_json,
 ) -> list[dict[str, object]]:
-    payload = api_json(
-        repo,
-        token,
-        f"issues/{pr_number}/comments",
-        {"per_page": str(settings.comments_per_page)},
-    )
-    return sticky_comment_payloads(payload)
+    path = f"issues/{pr_number}/comments"
+    query = {"per_page": str(settings.comments_per_page)}
+    comments: list[dict[str, object]] = []
+    while True:
+        if api_json is github_api_json:
+            page = github_api_page(repo, token, path, query)
+            payload = page.payload
+            next_query = page.next_query
+        else:
+            payload = api_json(repo, token, path, query)
+            next_query = next_query_from_payload(payload)
+        comments.extend(sticky_comment_payloads(payload))
+        if next_query is None:
+            return comments
+        query = next_query
 
 
 def upsert_sticky_comment(

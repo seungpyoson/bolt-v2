@@ -21,6 +21,8 @@ RUN_ID = 24623219988
 NEWER_RUN_ID = RUN_ID + 1
 PR_NUMBER = 942
 REPO = "seungpyoson/bolt-v2"
+ACTIONS_BOT_USER = {"login": "github-actions[bot]", "type": "Bot"}
+HUMAN_USER = {"login": "reviewer", "type": "User"}
 
 CONFIG_TOML = """
 [ci_provenance]
@@ -129,6 +131,10 @@ def marker_body(module, *, state: str = "running", run_id: int = RUN_ID, run_att
     return f"{marker}\nold body\n"
 
 
+def issue_comment(comment_id: int, body: str, *, user: dict[str, object] | None = None) -> dict[str, object]:
+    return {"id": comment_id, "body": body, "user": user or ACTIONS_BOT_USER}
+
+
 class FakeGitHub:
     def __init__(
         self,
@@ -166,7 +172,7 @@ class FakeGitHub:
         if path == f"issues/{PR_NUMBER}/comments":
             if method == "GET":
                 return {"comments": self.comments}
-            comment = {"id": 1000 + len(self.comments), "body": data["body"]}
+            comment = issue_comment(1000 + len(self.comments), data["body"])
             self.comments.append(comment)
             return comment
         if path.startswith("issues/comments/") and method == "PATCH":
@@ -233,6 +239,26 @@ def assert_status_mapping() -> None:
         raise AssertionError(module.status_summary(running))
 
 
+def assert_non_blocking_required_check_conclusions_do_not_fail() -> None:
+    module = load_script()
+    non_blocking = module.evaluate_required_checks(
+        ("skipped-context", "neutral-context"),
+        [
+            check_run("skipped-context", conclusion="skipped"),
+            check_run("neutral-context", conclusion="neutral"),
+        ],
+    )
+    if non_blocking.state != "passed" or non_blocking.failed:
+        raise AssertionError(non_blocking)
+
+    failed = module.evaluate_required_checks(
+        ("failing-context",),
+        [check_run("failing-context", conclusion="failure")],
+    )
+    if failed.state != "failed" or failed.failed != ("failing-context",):
+        raise AssertionError(failed)
+
+
 def assert_registry_context_set_is_source_of_truth() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -250,7 +276,7 @@ def assert_registry_context_set_is_source_of_truth() -> None:
 
 def assert_comment_upsert_replaces_existing_marker() -> None:
     module = load_script()
-    existing = {"id": 777, "body": marker_body(module)}
+    existing = issue_comment(777, marker_body(module))
     fake = FakeGitHub(
         checks=[check_run("gate"), check_run("backtester-gate"), check_run("host-health"), check_run("actionlint")],
         comments=[existing],
@@ -278,6 +304,80 @@ def assert_comment_upsert_replaces_existing_marker() -> None:
         raise AssertionError(fake.comments)
     if "all required checks passed" not in fake.comments[0]["body"]:
         raise AssertionError(fake.comments[0]["body"])
+
+
+def assert_comment_upsert_finds_sticky_comment_on_second_page() -> None:
+    module = load_script()
+
+    class PaginatedGitHub(FakeGitHub):
+        def __init__(self) -> None:
+            super().__init__(
+                checks=[check_run("gate"), check_run("backtester-gate"), check_run("host-health"), check_run("actionlint")],
+                comments=[
+                    issue_comment(111, "ordinary human comment", user=HUMAN_USER),
+                    issue_comment(222, marker_body(module)),
+                ],
+            )
+
+        def json(
+            self,
+            repo: str,
+            token: str,
+            path: str,
+            query: dict[str, str] | None = None,
+            *,
+            method: str = "GET",
+            data: object = None,
+        ) -> dict[str, object]:
+            if path == f"issues/{PR_NUMBER}/comments" and method == "GET":
+                self.requests.append((method, path, query, data))
+                page = int((query or {}).get("page", "1"))
+                if page == 1:
+                    return {"comments": [self.comments[0]], "next": {"per_page": "1", "page": "2"}}
+                if page == 2:
+                    return {"comments": [self.comments[1]]}
+                return {"comments": []}
+            return super().json(repo, token, path, query, method=method, data=data)
+
+    fake = PaginatedGitHub()
+    config_text = CONFIG_TOML.replace("run_jobs_per_page = 100", "run_jobs_per_page = 1")
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp), config_text)
+        result = module.update_progress_comment(
+            repo=REPO,
+            token="token",
+            pr_number=PR_NUMBER,
+            config_path=config,
+            head_sha=SHA,
+            workflow=".github/workflows/ci.yml",
+            run_id=RUN_ID,
+            run_attempt=1,
+            api_json=fake.json,
+        )
+    if result.posted is not True:
+        raise AssertionError(result)
+    page_queries = [
+        request[2]
+        for request in fake.requests
+        if request[0] == "GET" and request[1] == f"issues/{PR_NUMBER}/comments"
+    ]
+    if page_queries != [{"per_page": "1"}, {"per_page": "1", "page": "2"}]:
+        raise AssertionError(fake.requests)
+    patch_requests = [request for request in fake.requests if request[0] == "PATCH"]
+    post_requests = [request for request in fake.requests if request[0] == "POST"]
+    if len(patch_requests) != 1 or post_requests:
+        raise AssertionError(fake.requests)
+    if len(fake.comments) != 2 or "all required checks passed" not in fake.comments[1]["body"]:
+        raise AssertionError(fake.comments)
+
+
+def assert_find_sticky_comment_ignores_forged_human_marker() -> None:
+    module = load_script()
+    forged = issue_comment(111, marker_body(module), user=HUMAN_USER)
+    genuine = issue_comment(222, marker_body(module, run_id=NEWER_RUN_ID))
+    found = module.find_sticky_comment([forged, genuine], "bolt-v2-merge-readiness")
+    if found is None or found[0]["id"] != 222:
+        raise AssertionError(found)
 
 
 def assert_no_pull_requests_write_falls_back_without_failure() -> None:
@@ -371,7 +471,7 @@ def assert_run_dominance_stale_head_noops() -> None:
     module = load_script()
     fake = FakeGitHub(
         pr=pull_payload(head_sha=OTHER_SHA),
-        comments=[{"id": 777, "body": marker_body(module)}],
+        comments=[issue_comment(777, marker_body(module))],
         runs=[workflow_run_payload()],
     )
     with tempfile.TemporaryDirectory() as tmp:
@@ -392,7 +492,7 @@ def assert_run_dominance_stale_head_noops() -> None:
 def assert_run_dominance_older_run_noops() -> None:
     module = load_script()
     fake = FakeGitHub(
-        comments=[{"id": 777, "body": marker_body(module)}],
+        comments=[issue_comment(777, marker_body(module))],
         runs=[workflow_run_payload(run_id=NEWER_RUN_ID), workflow_run_payload(run_id=RUN_ID)],
     )
     with tempfile.TemporaryDirectory() as tmp:
@@ -413,7 +513,7 @@ def assert_run_dominance_older_run_noops() -> None:
 def assert_latest_run_finalizer_updates_stalled() -> None:
     module = load_script()
     fake = FakeGitHub(
-        comments=[{"id": 777, "body": marker_body(module)}],
+        comments=[issue_comment(777, marker_body(module))],
         runs=[workflow_run_payload(run_id=RUN_ID)],
     )
     with tempfile.TemporaryDirectory() as tmp:
@@ -450,8 +550,11 @@ def assert_cli_pr_status_uses_fallback_engine() -> None:
 
 def main() -> int:
     assert_status_mapping()
+    assert_non_blocking_required_check_conclusions_do_not_fail()
     assert_registry_context_set_is_source_of_truth()
     assert_comment_upsert_replaces_existing_marker()
+    assert_comment_upsert_finds_sticky_comment_on_second_page()
+    assert_find_sticky_comment_ignores_forged_human_marker()
     assert_no_pull_requests_write_falls_back_without_failure()
     assert_fork_pr_skips_comment_posting()
     assert_watch_returns_immediately_for_comment_fallback()

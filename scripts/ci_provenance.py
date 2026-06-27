@@ -579,11 +579,15 @@ def provenance_config_digest(path: pathlib.Path = DEFAULT_CONFIG) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
+def load_config(
+    path: pathlib.Path = DEFAULT_CONFIG, *, require_workflows: bool = True
+) -> ProvenanceConfig:
     data = load_toml(path)
     workflows = data.get("workflows")
-    if not isinstance(workflows, dict):
+    if require_workflows and not isinstance(workflows, dict):
         raise ProvenanceError("missing [workflows]")
+    if not require_workflows and workflows is not None and not isinstance(workflows, dict):
+        raise ProvenanceError("workflows must be a table")
     meter = data.get("meter")
     if not isinstance(meter, dict):
         raise ProvenanceError("missing [meter]")
@@ -670,9 +674,17 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     api_limits = require_table(ci_provenance, "api_limits", "ci_provenance")
     artifacts = require_table(ci_provenance, "artifacts", "ci_provenance")
     policy_table = require_table(ci_provenance, "policy", "ci_provenance")
-    required_checks_table = require_table(
-        ci_provenance, "required_checks", "ci_provenance"
-    )
+    raw_required_checks = ci_provenance.get("required_checks")
+    if require_workflows:
+        required_checks_table = require_table(
+            ci_provenance, "required_checks", "ci_provenance"
+        )
+    elif raw_required_checks is None:
+        required_checks_table = {}
+    elif isinstance(raw_required_checks, dict):
+        required_checks_table = raw_required_checks
+    else:
+        raise ProvenanceError("ci_provenance.required_checks must be a table")
     overrides = require_table(policy_table, "override", "ci_provenance.policy")
 
     retention_days = require_positive_int(artifacts, "retention_days", "ci_provenance.artifacts")
@@ -716,14 +728,16 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         raise ProvenanceError("; ".join(gate_name_errors))
 
     required_checks = load_required_checks(required_checks_table)
-    required_check_errors = required_check_registry_contract_errors(
-        required_checks=required_checks,
-        gate_names=gate_names,
-        policy=policy,
-        workflows=workflows,
-    )
-    if required_check_errors:
-        raise ProvenanceError("; ".join(required_check_errors))
+    if require_workflows:
+        assert isinstance(workflows, dict)
+        required_check_errors = required_check_registry_contract_errors(
+            required_checks=required_checks,
+            gate_names=gate_names,
+            policy=policy,
+            workflows=workflows,
+        )
+        if required_check_errors:
+            raise ProvenanceError("; ".join(required_check_errors))
 
     docs_safe_paths = require_string_list(docs_table, "safe_paths", "ci_provenance.docs")
     docs_forbidden_ignored_build_paths = require_string_list(

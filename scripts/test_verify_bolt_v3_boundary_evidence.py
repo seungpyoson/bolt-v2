@@ -473,8 +473,14 @@ def assert_finding(findings: list[str], needle: str) -> None:
         raise AssertionError(f"missing finding containing {needle!r}: {findings}")
 
 
-def test_clean_fixture_passes() -> None:
-    assert scan_temp() == []
+def test_capture_config_without_workflows_passes_boundary_scan() -> None:
+    def assert_no_workflows_table(root: Path) -> None:
+        config_path = root / "ci/chainlink-reference-fixture-capture-provenance.toml"
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        if "workflows" in config:
+            raise AssertionError("capture provenance fixture must not grow a [workflows] table")
+
+    assert scan_temp(assert_no_workflows_table) == []
 
 
 def test_planted_unregistered_any_class_fails() -> None:

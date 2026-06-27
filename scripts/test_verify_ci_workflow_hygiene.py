@@ -2352,6 +2352,17 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
     clean = [error for error in verifier.verify_workflow(workflow) if "sccache" in error]
     if clean:
         raise AssertionError(f"real ci.yml must satisfy the sccache fail-open contract, got: {clean}")
+    required_pr_read_fragments = [
+        "PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}",
+        'if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then',
+        'cache_mode="read_only"',
+        'role_arn="$PR_READONLY_ROLE_ARN"',
+        "echo \"cache_mode=$cache_mode\" >> \"$GITHUB_OUTPUT\"",
+        "role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}",
+    ]
+    for fragment in required_pr_read_fragments:
+        if fragment not in workflow:
+            raise AssertionError(f"real ci.yml must configure PR read-only sccache role path: missing {fragment!r}")
     cases = [
         (
             "test-archive sccache opt-in must stay conditional",
@@ -2442,6 +2453,33 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
                 ' && "$GITHUB_REF" == "refs/heads/gh-readonly-queue/main/"* ]];'
                 ' then trusted=true; fi\n',
                 "",
+            ),
+        ),
+        (
+            "must configure PR read-only sccache role path",
+            replace_once(
+                workflow,
+                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+                "",
+            ),
+        ),
+        (
+            "must configure PR read-only sccache role path",
+            replace_once(
+                workflow,
+                '          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then\n'
+                '            cache_mode="read_only"\n'
+                '            role_arn="$PR_READONLY_ROLE_ARN"\n'
+                "          fi\n",
+                "",
+            ),
+        ),
+        (
+            "must assume the resolved sccache role",
+            replace_once(
+                workflow,
+                "          role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}\n",
+                "          role-to-assume: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n",
             ),
         ),
         (

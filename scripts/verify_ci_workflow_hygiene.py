@@ -553,7 +553,7 @@ TEST_ARCHIVE_SCCACHE_OPT_IN = (
 TEST_ARCHIVE_SCCACHE_IGNORE_IO = 'SCCACHE_IGNORE_SERVER_IO_ERROR: "1"'
 TEST_ARCHIVE_SCCACHE_RETRY = "BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive"
 TEST_ARCHIVE_SCCACHE_PREFIX_PRECONDITION = (
-    '[[ -n "$ROLE_ARN" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]]'
+    '[[ -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]]'
 )
 TEST_ARCHIVE_SCCACHE_MAIN_DISPATCH_TRUST = (
     'if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi'
@@ -564,6 +564,22 @@ TEST_ARCHIVE_SCCACHE_MAIN_PUSH_TRUST = (
 TEST_ARCHIVE_SCCACHE_MERGE_GROUP_TRUST = (
     'if [[ "$GITHUB_EVENT_NAME" == "merge_group" && "$GITHUB_REF" == "refs/heads/gh-readonly-queue/main/"* ]]; then trusted=true; fi'
 )
+TEST_ARCHIVE_SCCACHE_PR_ROLE_ENV = "PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}"
+TEST_ARCHIVE_SCCACHE_READ_WRITE_ROLE = (
+    'if [[ "$trusted" == "true" ]]; then\n'
+    '            cache_mode="read_write"\n'
+    '            role_arn="$ROLE_ARN"\n'
+    "          fi"
+)
+TEST_ARCHIVE_SCCACHE_PR_READ_ONLY_ROLE = (
+    'if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then\n'
+    '            cache_mode="read_only"\n'
+    '            role_arn="$PR_READONLY_ROLE_ARN"\n'
+    "          fi"
+)
+TEST_ARCHIVE_SCCACHE_ROLE_OUTPUT = 'echo "role_arn=$role_arn" >> "$GITHUB_OUTPUT"'
+TEST_ARCHIVE_SCCACHE_MODE_OUTPUT = 'echo "cache_mode=$cache_mode" >> "$GITHUB_OUTPUT"'
+TEST_ARCHIVE_SCCACHE_RESOLVED_ROLE_ASSUME = "role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}"
 TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'"
 TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_SIDECAR_BUILD_GUARD = (
@@ -9170,6 +9186,19 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 or TEST_ARCHIVE_SCCACHE_MERGE_GROUP_TRUST not in eligibility_text
             ):
                 errors.append("test-archive sccache must gate cache use to trusted refs (refs/heads/main + merge_group queue) in the eligibility step")
+            if TEST_ARCHIVE_SCCACHE_PR_ROLE_ENV not in eligibility_text:
+                errors.append("test-archive sccache must configure PR read-only sccache role path")
+            if (
+                TEST_ARCHIVE_SCCACHE_READ_WRITE_ROLE not in eligibility_text
+                or TEST_ARCHIVE_SCCACHE_PR_READ_ONLY_ROLE not in eligibility_text
+                or TEST_ARCHIVE_SCCACHE_ROLE_OUTPUT not in eligibility_text
+                or TEST_ARCHIVE_SCCACHE_MODE_OUTPUT not in eligibility_text
+            ):
+                errors.append("test-archive sccache must configure PR read-only sccache role path")
+            aws_block = named_step_block(archive_lines, "Configure AWS credentials for sccache")
+            aws_text = uncommented_text(aws_block) if aws_block is not None else ""
+            if TEST_ARCHIVE_SCCACHE_RESOLVED_ROLE_ASSUME not in aws_text:
+                errors.append("test-archive sccache must assume the resolved sccache role")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:
             errors.append("test-archive must not download nextest archive artifact")
         if TEST_ARCHIVE_SHARDS_ASSIGNMENT not in archive_text or TEST_ARCHIVE_SHARDS_ASSERT not in archive_text:

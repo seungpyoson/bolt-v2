@@ -3327,6 +3327,38 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
 
+def assert_mergify_proof_prefix_alignment_holds() -> None:
+    # The CI policy resolver promotes a draft PR from the bound Mergify actor when the
+    # head ref starts with config.mergify_temp_pr_head_ref_prefix; the workflow
+    # concurrency layer only isolates (own per-run group, never cancelled) refs matching
+    # startsWith(head.ref, 'mergify/merge-queue/'). If the resolver promoted a ref the
+    # workflow won't isolate, that run would land in the cancellable group and a second
+    # event could cancel it -> required gate never reports -> queue deadlock. The real
+    # production config must keep the two prefixes aligned.
+    verifier = load_verifier()
+    provenance = load_provenance()
+    config = provenance.load_config(REPO_ROOT / "ci" / "github-actions-runners.toml")
+    errors = verifier.mergify_proof_prefix_alignment_errors(config)
+    if errors:
+        raise AssertionError(f"real config must keep resolver/workflow prefixes aligned: {errors}")
+
+
+def assert_mergify_proof_prefix_alignment_detects_drift() -> None:
+    # Differential: a resolver prefix the workflow predicate would NOT isolate must be
+    # caught. "tmp-mergify/merge-queue/" differs from the workflow's "mergify/merge-queue/"
+    # AND makes the resolver promote a "tmp-mergify/..." ref the workflow leaves in the
+    # cancellable group, so BOTH the prefix-equality arm and the promotion-subset arm fire.
+    verifier = load_verifier()
+    provenance = load_provenance()
+    config = provenance.load_config(REPO_ROOT / "ci" / "github-actions-runners.toml")
+    drifted = dataclasses.replace(config, mergify_temp_pr_head_ref_prefix="tmp-mergify/merge-queue/")
+    errors = verifier.mergify_proof_prefix_alignment_errors(drifted)
+    if not errors:
+        raise AssertionError("prefix drift between resolver and workflow predicate must be reported")
+    if not any("drift" in error for error in errors):
+        raise AssertionError(f"drift report must name the drift: {errors}")
+
+
 def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
     verifier = load_verifier()
     cases = [
@@ -10525,6 +10557,8 @@ def main() -> int:
     assert_gate_policy_truth_table_gaps_are_reported()
     assert_ci_concurrency_split_gaps_are_reported()
     assert_mergify_proof_pr_concurrency_gaps_are_reported()
+    assert_mergify_proof_prefix_alignment_holds()
+    assert_mergify_proof_prefix_alignment_detects_drift()
     assert_dispatch_cancel_watchdog_gaps_are_reported()
 
     verifier = load_verifier()

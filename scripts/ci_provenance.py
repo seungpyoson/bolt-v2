@@ -1147,19 +1147,17 @@ def gate_name_suffix_for(event_name: str, reason: str, path: str) -> str:
     raise ProvenanceError(f"cannot resolve gate name for ci_policy_path {path!r}")
 
 
-# Mergify documents the merge-queue branch as "[tmp-]mergify/merge-queue/<10 hex>";
-# the transient "tmp-" decoration is part of Mergify's naming convention, not an
-# independent constant, so it is normalized here (issue #929 requires matching BOTH
-# forms). Keeping ONE canonical prefix in config avoids duplicating the prefix string.
-MERGIFY_TEMP_PR_TRANSIENT_PREFIX = "tmp-"
-
-
-def head_ref_has_mergify_temp_prefix(head_ref: str, temp_pr_head_ref_prefix: str) -> bool:
-    # Mergify decorates with at most ONE "tmp-"; strip a single occurrence. A double
-    # "tmp-tmp-" is not a real Mergify form and intentionally does not match.
-    if head_ref.startswith(MERGIFY_TEMP_PR_TRANSIENT_PREFIX):
-        head_ref = head_ref[len(MERGIFY_TEMP_PR_TRANSIENT_PREFIX):]
-    return head_ref.startswith(temp_pr_head_ref_prefix)
+# Mergify documents the merge-queue branch as "[tmp-]mergify/merge-queue/<10 hex>".
+# The CI policy resolver intentionally matches ONLY the bare "mergify/merge-queue/"
+# form (config.mergify_temp_pr_head_ref_prefix) and does NOT strip a leading "tmp-".
+# Rationale: the workflow concurrency layer (.github/workflows/{ci,backtester-ci}.yml)
+# isolates a proof-PR run — its own per-run group, never cancelled — ONLY when the head
+# ref satisfies startsWith(head.ref, 'mergify/merge-queue/'). A "tmp-mergify/..." ref
+# fails that predicate, so it would land in the cancellable deferred group; promoting it
+# to the required gate here would let a second event cancel the run mid-flight and
+# deadlock the queue. The resolver must never promote a ref the workflow cannot isolate,
+# so both layers key off the SAME prefix. verify_ci_workflow_hygiene.py's
+# mergify_proof_prefix_alignment_errors() fails loud if the two ever drift.
 
 
 def mergify_temp_pr_matches(
@@ -1179,7 +1177,7 @@ def mergify_temp_pr_matches(
     return (
         event_name == "pull_request"
         and pull_request_draft
-        and head_ref_has_mergify_temp_prefix(pull_request_head_ref, temp_pr_head_ref_prefix)
+        and pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
         and event_sender_id == temp_pr_actor_id
     )
 

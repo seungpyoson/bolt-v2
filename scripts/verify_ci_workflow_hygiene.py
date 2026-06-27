@@ -27,6 +27,9 @@ from ci_provenance import (
     policy_contract_errors,
     evaluate_ci_policy as provenance_evaluate_ci_policy,
     docs_safe_path_contract_errors,
+    ProvenanceConfig,
+    load_config,
+    mergify_temp_pr_matches,
 )
 
 # Keep the former verifier-local helper families module-scoped so parity tests
@@ -939,6 +942,66 @@ def mergify_proof_pr_concurrency_errors(group_text: str, cancel_text: str) -> li
         errors.append("concurrency group must isolate Mergify proof PR runs")
     if MERGIFY_PROOF_PR_CANCEL_GUARD not in normalized_cancel:
         errors.append("cancel-in-progress must not cancel Mergify proof PR validations")
+    return errors
+
+
+def _workflow_proof_pr_prefix() -> str:
+    """The head-ref prefix the workflow concurrency layer isolates, extracted from
+    MERGIFY_PROOF_PR_HEAD_REF_PREDICATE: startsWith(<ref>, '<prefix>')."""
+    match = re.search(r"startsWith\([^,]+,\s*'([^']*)'\)", MERGIFY_PROOF_PR_HEAD_REF_PREDICATE)
+    if not match:
+        raise ProvenanceError(
+            "MERGIFY_PROOF_PR_HEAD_REF_PREDICATE must embed a startsWith(ref, '<prefix>') literal"
+        )
+    return match.group(1)
+
+
+def mergify_proof_prefix_alignment_errors(config: ProvenanceConfig) -> list[str]:
+    """Fail loud if the CI policy resolver and the workflow concurrency layer ever
+    disagree on which head-ref prefix marks a Mergify proof PR.
+
+    The workflow isolates a proof-PR run (own per-run concurrency group, never
+    cancelled) ONLY when the head ref satisfies
+    startsWith(head.ref, 'mergify/merge-queue/'). The resolver promotes a draft PR from
+    the bound Mergify actor to the required gate when the head ref starts with
+    config.mergify_temp_pr_head_ref_prefix. If the resolver promotes a ref the workflow
+    will NOT isolate, that run lands in the cancellable deferred group and a second event
+    can cancel it mid-flight -> the required gate never reports and the queue deadlocks.
+    So resolver-promotion must be a subset of workflow-isolation, and the two prefixes
+    must be identical."""
+    errors: list[str] = []
+    workflow_prefix = _workflow_proof_pr_prefix()
+    resolver_prefix = config.mergify_temp_pr_head_ref_prefix
+    if workflow_prefix != resolver_prefix:
+        errors.append(
+            "mergify proof-PR prefix drift: resolver "
+            f"config.mergify_temp_pr_head_ref_prefix={resolver_prefix!r} must equal the workflow "
+            f"concurrency predicate prefix {workflow_prefix!r} (ci_provenance and the workflows must "
+            "isolate the SAME head-ref prefix)"
+        )
+    actor_id = config.mergify_temp_pr_actor_id
+    suffix = "83d4b0be7e"
+    candidates = (
+        workflow_prefix + suffix,            # canonical proof PR: workflow isolates it
+        "tmp-" + workflow_prefix + suffix,   # transient tmp- form: workflow does NOT isolate it
+        "feature/spoofed-head",              # unrelated ref: workflow does NOT isolate it
+    )
+    for head_ref in candidates:
+        workflow_isolates = head_ref.startswith(workflow_prefix)
+        resolver_promotes = mergify_temp_pr_matches(
+            event_name="pull_request",
+            pull_request_draft=True,
+            pull_request_head_ref=head_ref,
+            temp_pr_head_ref_prefix=resolver_prefix,
+            event_sender_id=actor_id,
+            temp_pr_actor_id=actor_id,
+        )
+        if resolver_promotes and not workflow_isolates:
+            errors.append(
+                "mergify proof-PR drift: resolver promotes head ref "
+                f"{head_ref!r} that the workflow concurrency layer does not isolate (it would land "
+                "in the cancellable group and deadlock the queue)"
+            )
     return errors
 
 
@@ -10851,6 +10914,10 @@ def main() -> int:
         errors.extend(verify_mergify_config(DEFAULT_MERGIFY_CONFIG.read_text()))
     else:
         errors.append(".mergify.yml is required for Mergify queue governance")
+    # Mirror verify_github_actions_runner_contract's gating: the runners config drives
+    # this check, so a partial repo (or test harness) without it is tolerated, not failed.
+    if DEFAULT_RUNNERS_CONFIG.exists():
+        errors.extend(mergify_proof_prefix_alignment_errors(load_config(DEFAULT_RUNNERS_CONFIG)))
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

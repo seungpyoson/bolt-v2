@@ -1700,46 +1700,6 @@ def assert_mergify_temp_pr_requires_actor_binding() -> None:
             raise AssertionError(f"bound mergify actor must earn the required gate and full CI: {bound}")
 
 
-def assert_mergify_tmp_prefixed_temp_pr_earns_required_gate() -> None:
-    # #929: Mergify's transient "tmp-mergify/merge-queue/<hex>" form must be treated
-    # identically to "mergify/merge-queue/<hex>". Before the queue-only rework a missed
-    # temp PR fell through to a still-required gate; now it would fall to the NON-required
-    # gate-iteration and DEADLOCK the queue, so both forms must earn the required gate.
-    module = load_script()
-    with tempfile.TemporaryDirectory() as tmp:
-        config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
-    actor_id = config.mergify_temp_pr_actor_id
-    gate_required = config.gate_names["gate_required"]
-    gate_iteration = config.gate_names["gate_iteration"]
-    for head_ref in ("mergify/merge-queue/83d4b0be7e", "tmp-mergify/merge-queue/83d4b0be7e"):
-        bound = module.evaluate_ci_policy(
-            config,
-            event_name="pull_request",
-            event_action="opened",
-            pull_request_draft=True,
-            pull_request_head_ref=head_ref,
-            pull_request_base_changed=False,
-            workflow_dispatch_full_ci="",
-            event_sender_id=actor_id,
-            ref="refs/pull/965/merge",
-        )
-        if bound.reason != "mergify_temp_pr" or bound.gate_name != gate_required:
-            raise AssertionError(f"{head_ref} from bound actor must earn the required gate: {bound}")
-        spoof = module.evaluate_ci_policy(
-            config,
-            event_name="pull_request",
-            event_action="opened",
-            pull_request_draft=True,
-            pull_request_head_ref=head_ref,
-            pull_request_base_changed=False,
-            workflow_dispatch_full_ci="",
-            event_sender_id=4242,
-            ref="refs/pull/965/merge",
-        )
-        if spoof.reason == "mergify_temp_pr" or spoof.gate_name != gate_iteration:
-            raise AssertionError(f"{head_ref} from a non-actor sender must demote: {spoof}")
-
-
 def assert_parse_event_sender_id_fails_closed() -> None:
     module = load_script()
     cases = {
@@ -4078,7 +4038,6 @@ def main() -> int:
     assert_ci_policy_outputs_matrix()
     assert_ci_policy_gate_names_are_event_based()
     assert_mergify_temp_pr_requires_actor_binding()
-    assert_mergify_tmp_prefixed_temp_pr_earns_required_gate()
     assert_parse_event_sender_id_fails_closed()
     assert_ci_policy_non_numeric_sender_id_does_not_crash()
     assert_mergify_actor_binding_demotes_every_full_action()

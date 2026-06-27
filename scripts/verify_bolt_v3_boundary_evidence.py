@@ -48,13 +48,16 @@ REQUIRED_NON_WS_EXEMPTIONS = {
 }
 FORBIDDEN_NT_WIRE_PATH_PATTERNS = {
     r"\bnautilus_network\s*::\s*websocket\s*::": "nautilus_network::websocket",
-    r"\buse\s+nautilus_network\s*::\s*\{[^;]*\bwebsocket\s*::": "nautilus_network::{websocket::...}",
+    r"\b(?:pub\s+)?use\s+nautilus_network\s*::\s*websocket\b": "nautilus_network::websocket",
+    r"\b(?:pub\s+)?use\s+nautilus_network\s*::\s*\{[^;]*\bwebsocket\b": "nautilus_network::{websocket...}",
+    r"\bextern\s+crate\s+nautilus_network\b": "extern crate nautilus_network",
     r"\bnautilus_network\s*::\s*transport\s*::\s*Message\b": "nautilus_network::transport::Message",
     r"\buse\s+nautilus_network\s*::\s*\{[^;]*\btransport\s*::\s*Message\b": "nautilus_network::{transport::Message}",
     r"\bnautilus_network\s*::\s*socket\s*::\s*SocketClient\b": "nautilus_network::socket::SocketClient",
     r"\buse\s+nautilus_network\s*::\s*\{[^;]*\bsocket\s*::\s*SocketClient\b": "nautilus_network::{socket::SocketClient}",
 }
 FORBIDDEN_NT_WIRE_SYMBOL_PATTERNS = {
+    r"\bWebSocketClient\b": "WebSocketClient",
     r"\bWebSocketClientInner\b": "WebSocketClientInner",
     r"\bWebSocketClient\s*::\s*(connect|connect_url|connect_with_server|connect_stream|connect_with_rate_limiter)\s*\(": "WebSocketClient connect primitive",
     r"\bMessageReader\b": "MessageReader",

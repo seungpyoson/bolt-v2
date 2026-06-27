@@ -734,6 +734,25 @@ async fn f() {
     assert_finding(findings, "raw NT wire symbol WebSocketClientInner")
 
 
+def test_websocket_module_alias_and_renamed_client_outside_wire_boundary_fail() -> None:
+    def mutate(root: Path) -> None:
+        write(
+            root,
+            "src/raw_connect.rs",
+            """
+use nautilus_network::websocket as ws;
+use self::ws::WebSocketClient as Foo;
+
+async fn f(config: ws::WebSocketConfig) {
+    let _ = Foo::connect(config, None, None, None, vec![], None).await;
+}
+""",
+        )
+
+    findings = scan_temp(mutate)
+    assert_finding(findings, "raw NT wire symbol WebSocketClient")
+
+
 if __name__ == "__main__":
     import lane_governor
 

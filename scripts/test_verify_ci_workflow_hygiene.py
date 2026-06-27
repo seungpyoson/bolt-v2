@@ -5154,11 +5154,22 @@ ci-lint-workflow:
 
 ci-lint-workflow-inner: require-local-verification-gate
     python3 scripts/test_verify_ci_workflow_hygiene.py
+    python3 scripts/test_ci_storage_audit.py
     python3 scripts/test_root_bin_sidecars.py
 """
     errors = verifier.verify_local_verification_gate_recipes(justfile_text)
     if errors:
         raise AssertionError(f"local gate recipe wiring should pass, got: {errors}")
+
+    missing_storage_audit_test = justfile_text.replace("    python3 scripts/test_ci_storage_audit.py\n", "")
+    missing_storage_audit_test_errors = verifier.verify_local_verification_gate_recipes(missing_storage_audit_test)
+    if not any(
+        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in missing_storage_audit_test_errors
+    ):
+        raise AssertionError(
+            f"ci storage audit test wiring drift was silent, got: {missing_storage_audit_test_errors}"
+        )
 
     missing_sidecar_test = justfile_text.replace("    python3 scripts/test_root_bin_sidecars.py\n", "")
     missing_sidecar_test_errors = verifier.verify_local_verification_gate_recipes(missing_sidecar_test)

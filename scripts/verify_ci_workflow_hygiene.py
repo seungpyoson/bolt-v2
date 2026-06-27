@@ -5356,6 +5356,7 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
     "ci-lint-workflow",
 )
 CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
+    "python3 scripts/test_ci_storage_audit.py",
     "python3 scripts/test_root_bin_sidecars.py",
 )
 

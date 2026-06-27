@@ -369,6 +369,8 @@ def publish_coverage_check_run(
 
 
 def event_pull_request(event: dict[str, object]) -> dict[str, object] | None:
+    if not isinstance(event, dict):
+        raise CoverageEnforcerError("event payload is malformed")
     pr = event.get("pull_request")
     if pr is None:
         return None

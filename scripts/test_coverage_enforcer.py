@@ -540,6 +540,17 @@ def assert_cli_fork_failure_exits_nonzero_without_publish() -> None:
         raise AssertionError(stderr)
 
 
+def assert_non_object_event_fails_closed() -> None:
+    module = load_script()
+    try:
+        module.head_sha_from_event([])
+    except module.CoverageEnforcerError as exc:
+        if "event payload is malformed" not in str(exc):
+            raise AssertionError(str(exc)) from exc
+    else:
+        raise AssertionError("non-object event unexpectedly succeeded")
+
+
 def main() -> int:
     assert_drift_detects_missing_and_wrong_app()
     assert_all_present_and_correct_succeeds()
@@ -549,9 +560,13 @@ def main() -> int:
     assert_fork_pr_skips_publishing_but_fails_nonzero_semantics()
     assert_real_registry_derivation_matches_current_workflows()
     assert_cli_fork_failure_exits_nonzero_without_publish()
+    assert_non_object_event_fails_closed()
     print("OK: coverage enforcer self-tests passed.")
     return 0
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     sys.exit(main())

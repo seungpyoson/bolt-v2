@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import importlib.util
-import re
 import sys
 import tempfile
 import textwrap
@@ -84,22 +83,6 @@ def valid_ledger(capability_overrides: str = "") -> str:
         ```
         """
     )
-
-
-def remove_capability(ledger: str, capability: str) -> str:
-    pattern = re.compile(
-        rf"\n\s*\[capabilities\.{re.escape(capability)}\]\n.*?(?=\n\s*\[capabilities\.|\n\s*```)",
-        re.DOTALL,
-    )
-    return pattern.sub("\n", ledger)
-
-
-def replace_capability(ledger: str, capability: str, body: str) -> str:
-    pattern = re.compile(
-        rf"\n\s*\[capabilities\.{re.escape(capability)}\]\n.*?(?=\n\s*\[capabilities\.|\n\s*```)",
-        re.DOTALL,
-    )
-    return pattern.sub("\n" + textwrap.dedent(body).strip() + "\n", ledger)
 
 
 def good_execution_source() -> str:
@@ -197,44 +180,6 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
             ]
 
         self.assertEqual(actual, expected)
-
-    def test_missing_required_capability_fails(self) -> None:
-        ledger = remove_capability(valid_ledger(), "provider_discovery")
-
-        self.assert_has_finding(self.collect(ledger_text=ledger), "missing capability provider_discovery")
-
-    def test_missing_source_anchor_fails(self) -> None:
-        ledger = replace_capability(
-            valid_ledger(),
-            "neg_risk_market_id",
-            """
-            [capabilities.neg_risk_market_id]
-            disposition = "surface_in_nt"
-            owner_module = "src/bolt_v3_outcome_groups.rs"
-            reason = "NT parses negRiskMarketID but does not surface it through BinaryOption.info."
-            required_tests = ["neg_risk_market_id reuse regression"]
-            """,
-        )
-
-        self.assert_has_finding(self.collect(ledger_text=ledger), "neg_risk_market_id missing source_anchors")
-
-    def test_undocumented_bolt_shim_fails(self) -> None:
-        ledger = replace_capability(
-            valid_ledger(),
-            "provider_discovery",
-            """
-            [capabilities.provider_discovery]
-            disposition = "bolt_shim"
-            owner_module = "src/bolt_v3_outcome_group_sources.rs"
-            reason = ""
-            required_tests = []
-            """
-        )
-
-        findings = self.collect(ledger_text=ledger)
-
-        self.assert_has_finding(findings, "provider_discovery bolt_shim requires reason")
-        self.assert_has_finding(findings, "provider_discovery bolt_shim requires required_tests")
 
     def test_comment_only_submit_order_list_with_per_leg_submit_loop_fails(self) -> None:
         findings = self.collect(

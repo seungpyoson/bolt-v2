@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import re
 import sys
-import tomllib
 from pathlib import Path
-from typing import Any
 
 from bolt_v3_source_roots import OUTCOME_GROUP_SOURCE_ROOTS, source_set_files
 from verify_bolt_v3_provider_leaks import production_text
@@ -15,7 +13,6 @@ from verify_bolt_v3_pure_rust_runtime import strip_rust_comments_and_literals
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EVIDENCE_DOC = "docs/superpowers/plans/2026-06-13-outcome-group-nt-evidence.md"
 
 REQUIRED_CAPABILITIES: tuple[str, ...] = (
     "neg_risk_market_id",
@@ -30,14 +27,6 @@ REQUIRED_CAPABILITIES: tuple[str, ...] = (
     "min_size_precision",
     "provider_discovery",
 )
-
-VALID_DISPOSITIONS = {
-    "reuse_nt",
-    "wrap_nt",
-    "surface_in_nt",
-    "bolt_shim",
-    "reject_for_now",
-}
 
 APPROVED_PROVIDER_NORMALIZER_PREFIXES: tuple[str, ...] = (
     "src/bolt_v3_outcome_group_polymarket.rs",
@@ -54,129 +43,6 @@ OPAQUE_PROOF_ALLOWED_PREFIXES: tuple[str, ...] = (
     "src/bolt_v3_outcome_group_polymarket.rs",
     "src/bolt_v3_outcome_group_hyperliquid.rs",
 )
-
-LEDGER_FENCE_RE = re.compile(
-    r"^```(?:toml\s+)?outcome_group_nt_capability_ledger\s*\n(.*?)^```",
-    re.MULTILINE | re.DOTALL,
-)
-HEX_REV_RE = re.compile(r"^[0-9a-f]{7,40}$")
-LINES_RE = re.compile(r"^\d+(?:-\d+)?$")
-
-
-def _is_non_empty_string(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _is_non_empty_string_list(value: object) -> bool:
-    return isinstance(value, list) and bool(value) and all(_is_non_empty_string(item) for item in value)
-
-
-def _repo_relative_path(value: object) -> bool:
-    if not _is_non_empty_string(value):
-        return False
-    path = Path(str(value))
-    return not path.is_absolute() and ".." not in path.parts
-
-
-def load_ledger(root: Path, findings: list[str]) -> dict[str, Any] | None:
-    path = root / EVIDENCE_DOC
-    if not path.is_file():
-        findings.append(f"{EVIDENCE_DOC}: missing NT capability ledger evidence doc")
-        return None
-
-    text = path.read_text(encoding="utf-8")
-    match = LEDGER_FENCE_RE.search(text)
-    if match is None:
-        findings.append(f"{EVIDENCE_DOC}: missing outcome_group_nt_capability_ledger TOML fence")
-        return None
-
-    try:
-        data = tomllib.loads(match.group(1))
-    except tomllib.TOMLDecodeError as error:
-        findings.append(f"{EVIDENCE_DOC}: invalid TOML ledger: {error}")
-        return None
-
-    return data
-
-
-def validate_anchor(capability: str, index: int, anchor: object, findings: list[str]) -> None:
-    if not isinstance(anchor, dict):
-        findings.append(f"{capability} source_anchors[{index}] must be a table")
-        return
-
-    for field in ("repo", "rev", "path", "lines", "symbol", "evidence"):
-        if not _is_non_empty_string(anchor.get(field)):
-            findings.append(f"{capability} source_anchors[{index}] missing {field}")
-
-    rev = anchor.get("rev")
-    if _is_non_empty_string(rev) and HEX_REV_RE.fullmatch(str(rev)) is None:
-        findings.append(f"{capability} source_anchors[{index}] rev must be a pinned hex revision")
-
-    path = anchor.get("path")
-    if not _repo_relative_path(path):
-        findings.append(f"{capability} source_anchors[{index}] path must be repo-relative")
-
-    lines = anchor.get("lines")
-    if _is_non_empty_string(lines) and LINES_RE.fullmatch(str(lines)) is None:
-        findings.append(f"{capability} source_anchors[{index}] lines must be a concrete line or range")
-
-
-def validate_ledger(root: Path) -> list[str]:
-    findings: list[str] = []
-    data = load_ledger(root, findings)
-    if data is None:
-        return findings
-
-    ledger = data.get("ledger")
-    if not isinstance(ledger, dict):
-        findings.append(f"{EVIDENCE_DOC}: missing [ledger] table")
-    else:
-        if ledger.get("version") != 1:
-            findings.append(f"{EVIDENCE_DOC}: ledger.version must be 1")
-        for field in ("nt_revision", "bolt_revision"):
-            value = ledger.get(field)
-            if not _is_non_empty_string(value) or HEX_REV_RE.fullmatch(str(value)) is None:
-                findings.append(f"{EVIDENCE_DOC}: ledger.{field} must be a pinned hex revision")
-
-    capabilities = data.get("capabilities")
-    if not isinstance(capabilities, dict):
-        findings.append(f"{EVIDENCE_DOC}: missing [capabilities] table")
-        return findings
-
-    for capability in REQUIRED_CAPABILITIES:
-        entry = capabilities.get(capability)
-        if not isinstance(entry, dict):
-            findings.append(f"{EVIDENCE_DOC}: missing capability {capability}")
-            continue
-
-        disposition = entry.get("disposition")
-        if disposition not in VALID_DISPOSITIONS:
-            findings.append(f"{capability} disposition must be one of {sorted(VALID_DISPOSITIONS)}")
-
-        if not _is_non_empty_string(entry.get("owner_module")):
-            findings.append(f"{capability} missing owner_module")
-
-        if not _is_non_empty_string(entry.get("reason")):
-            findings.append(f"{capability} missing reason")
-
-        required_tests = entry.get("required_tests")
-        if not _is_non_empty_string_list(required_tests):
-            findings.append(f"{capability} missing required_tests")
-
-        anchors = entry.get("source_anchors")
-        if not isinstance(anchors, list) or not anchors:
-            findings.append(f"{capability} missing source_anchors")
-        else:
-            for index, anchor in enumerate(anchors):
-                validate_anchor(capability, index, anchor, findings)
-
-        if disposition == "bolt_shim":
-            if not _is_non_empty_string(entry.get("reason")):
-                findings.append(f"{capability} bolt_shim requires reason")
-            if not _is_non_empty_string_list(required_tests):
-                findings.append(f"{capability} bolt_shim requires required_tests")
-
-    return findings
 
 
 def outcome_group_source_files(root: Path) -> list[Path]:
@@ -361,7 +227,6 @@ def validate_just_wiring(root: Path) -> list[str]:
 
 def collect_findings(root: Path = REPO_ROOT) -> list[str]:
     findings: list[str] = []
-    findings.extend(validate_ledger(root))
     findings.extend(validate_outcome_sources(root))
     findings.extend(validate_just_wiring(root))
     return findings

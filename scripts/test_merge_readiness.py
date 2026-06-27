@@ -210,6 +210,22 @@ def run_cli(args: list[str], env: dict[str, str] | None = None) -> tuple[int, st
     return code, stdout.getvalue(), stderr.getvalue()
 
 
+def assert_positive_int_rejects_bool_values() -> None:
+    module = load_script()
+    for value in (True, False):
+        try:
+            module.positive_int(value, "x")
+        except module.MergeReadinessError:
+            pass
+        else:
+            raise AssertionError(f"positive_int accepted bool value: {value!r}")
+
+    if module.positive_int(5, "x") != 5:
+        raise AssertionError("positive_int rejected int value")
+    if module.positive_int("5", "x") != 5:
+        raise AssertionError("positive_int rejected decimal string value")
+
+
 def assert_status_mapping() -> None:
     module = load_script()
     contexts = ("gate", "backtester-gate", "host-health", "actionlint")
@@ -549,6 +565,7 @@ def assert_cli_pr_status_uses_fallback_engine() -> None:
 
 
 def main() -> int:
+    assert_positive_int_rejects_bool_values()
     assert_status_mapping()
     assert_non_blocking_required_check_conclusions_do_not_fail()
     assert_registry_context_set_is_source_of_truth()

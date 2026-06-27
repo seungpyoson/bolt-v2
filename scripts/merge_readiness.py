@@ -124,7 +124,7 @@ def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> in
 
 
 def positive_int(value: object, field: str) -> int:
-    if isinstance(value, int) and value > 0:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     if isinstance(value, str) and value.isdecimal() and int(value) > 0:
         return int(value)

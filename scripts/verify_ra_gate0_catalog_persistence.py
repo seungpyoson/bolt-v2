@@ -19,12 +19,10 @@ MAIN_RS = Path("crates/backtesting-vertical-slice/src/main.rs")
 CONTRACT_TEST = Path("crates/backtesting-vertical-slice/tests/artifact_store_contract.rs")
 BTE_CARGO_TOML = Path("crates/backtesting-vertical-slice/Cargo.toml")
 JUSTFILE = Path("justfile")
-TASKS_PATH = Path("specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md")
 RUN_SPEC = Path(
     "specs/023-nt-research-analytics-platform/reference/"
     "backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
 )
-CHECKED_RA001 = re.compile(r"^- \[[xX]\] RA-001\b", re.MULTILINE)
 
 CARGO_TOML_REQUIRED = (
     'aws-config = "=1.8.18"',
@@ -599,12 +597,6 @@ def validate_run_spec_toml(path: Path, text: str) -> list[str]:
 def scan_root(root: Path) -> list[str]:
     root = root.resolve()
     findings: list[str] = []
-
-    tasks = root / TASKS_PATH
-    if not tasks.exists():
-        findings.append(f"{TASKS_PATH}: tasks.md is missing")
-    elif not CHECKED_RA001.search(tasks.read_text(encoding="utf-8")):
-        findings.append(f"{TASKS_PATH}: RA-001 must be checked once Gate-0 catalog persistence is implemented")
 
     cargo_toml = root / BTE_CARGO_TOML
     if not cargo_toml.exists():

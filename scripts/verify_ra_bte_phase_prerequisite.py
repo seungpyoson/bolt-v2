@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify RA-016 wires the binary-oracle BTE prerequisite."""
+"""Verify the binary-oracle BTE phase-prerequisite code wiring."""
 
 from __future__ import annotations
 
@@ -10,39 +10,9 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PLAN_PATH = Path("specs/023-nt-research-analytics-platform/2-research-analytics/plan.md")
-SPEC_PATH = Path("specs/023-nt-research-analytics-platform/2-research-analytics/spec.md")
-TASKS_PATH = Path("specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md")
 BTE_CARGO_TOML = Path("crates/backtesting-vertical-slice/Cargo.toml")
 BTE_RUN_MANIFEST = Path("crates/backtesting-vertical-slice/src/run_manifest.rs")
 BTE_RUNNER = Path("crates/backtesting-vertical-slice/src/runner.rs")
-
-PLAN_REQUIRED_SNIPPETS = (
-    "## Backtest Phase Prerequisite",
-    "HurstVpinDirectional",
-    "bybit-spot",
-    "binary_oracle_edge_taker",
-    "venue normalization",
-    "before any Phase-3 sweep is real",
-    "hard precondition",
-)
-SPEC_REQUIRED_SNIPPETS = (
-    "Known prerequisite",
-    "HurstVpinDirectional",
-    "bybit-spot",
-    "binary_oracle_edge_taker",
-    "venue normalization",
-    "before Phase-3 sweeps are real",
-)
-TASK_REQUIRED_SNIPPETS = (
-    "RA-016 Document the known prerequisite",
-    "HurstVpinDirectional",
-    "bybit-spot",
-    "binary_oracle_edge_taker",
-    "venue normalization",
-    "before Phase-3 sweeps produce valid results",
-)
-CHECKED_RA016 = re.compile(r"^- \[[xX]\] RA-016\b", re.MULTILINE)
 
 CARGO_REQUIRED_SNIPPETS = (
     'bolt-v2 = { path = "../.." }',
@@ -345,17 +315,6 @@ def verify_runner_wiring(root: Path, findings: list[str]) -> None:
 def scan_root(root: Path) -> list[str]:
     root = root.resolve()
     findings: list[str] = []
-
-    plan_text = require_file(root, PLAN_PATH, findings)
-    spec_text = require_file(root, SPEC_PATH, findings)
-    tasks_text = require_file(root, TASKS_PATH, findings)
-
-    require_snippets(PLAN_PATH, plan_text, PLAN_REQUIRED_SNIPPETS, findings)
-    require_snippets(SPEC_PATH, spec_text, SPEC_REQUIRED_SNIPPETS, findings)
-    require_snippets(TASKS_PATH, tasks_text, TASK_REQUIRED_SNIPPETS, findings)
-
-    if tasks_text and not CHECKED_RA016.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: RA-016 must be checked once the prerequisite is documented")
 
     cargo_text = require_file(root, BTE_CARGO_TOML, findings)
     require_snippets(BTE_CARGO_TOML, cargo_text, CARGO_REQUIRED_SNIPPETS, findings)

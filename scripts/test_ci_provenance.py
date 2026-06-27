@@ -28,6 +28,7 @@ RUN_ID = 24623219988
 CHECK_SUITE_ID = 65233803543
 NEXTEST_FINGERPRINT = f"nextest-archive-v2-Linux-X64-test-profile-shards-4-{'a' * 64}"
 NEXTEST_FINGERPRINT_ARTIFACT = f"nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-{'a' * 64}"
+CAPTURE_PROVENANCE_CONFIG_DIGEST = "028c908b23a2e3088a09ace96b904d31be59e85239edc2198755989a2262a580"
 
 CONFIG_TOML = """
 schema_version = 1
@@ -1298,10 +1299,15 @@ def assert_artifact_metadata_outputs_configured_name_and_retention() -> None:
 
 
 def assert_artifact_metadata_accepts_capture_config_without_workflows() -> None:
+    module = load_script()
     capture_config = REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml"
     text = capture_config.read_text(encoding="utf-8")
     if "[workflows" in text:
         raise AssertionError("capture provenance config must not require workflow registry data")
+    module.load_config(capture_config, require_workflows=False)
+    digest = module.provenance_config_digest(capture_config)
+    if digest != CAPTURE_PROVENANCE_CONFIG_DIGEST:
+        raise AssertionError(f"capture provenance config digest changed: {digest}")
 
     code, stdout, stderr = run_cli(
         [

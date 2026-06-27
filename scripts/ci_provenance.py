@@ -731,9 +731,10 @@ def load_config(
                 f"ci_provenance.policy.{row} must be full, docs, defer, iteration, noop, or tag_reuse"
             )
         policy[row] = value
-    contract_errors = policy_contract_errors(policy)
-    if contract_errors:
-        raise ProvenanceError("; ".join(contract_errors))
+    if require_workflows:
+        contract_errors = policy_contract_errors(policy)
+        if contract_errors:
+            raise ProvenanceError("; ".join(contract_errors))
 
     dispatch_run_name_default = require_string(dispatch, "run_name_default", "ci_provenance.dispatch")
     dispatch_run_name_full = require_string(dispatch, "run_name_full", "ci_provenance.dispatch")
@@ -834,8 +835,12 @@ def load_config(
         mergify_temp_pr_head_ref_prefix=require_string(
             mergify, "temp_pr_head_ref_prefix", "ci_provenance.mergify"
         ),
-        mergify_temp_pr_actor_id=require_positive_int(
-            mergify, "mergify_temp_pr_actor_id", "ci_provenance.mergify"
+        mergify_temp_pr_actor_id=(
+            require_positive_int(
+                mergify, "mergify_temp_pr_actor_id", "ci_provenance.mergify"
+            )
+            if require_workflows
+            else 0
         ),
         docs_safe_paths=docs_safe_paths,
         docs_forbidden_ignored_build_paths=docs_forbidden_ignored_build_paths,

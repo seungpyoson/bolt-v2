@@ -2353,6 +2353,7 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
     if clean:
         raise AssertionError(f"real ci.yml must satisfy the sccache fail-open contract, got: {clean}")
     required_pr_read_fragments = [
+        '[[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]]',
         "PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}",
         'if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then',
         'cache_mode="read_only"',
@@ -2437,7 +2438,7 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             ),
         ),
         (
-            "must gate cache use to trusted refs",
+            "must gate write-cache use exactly to main push/dispatch refs",
             replace_once(
                 workflow,
                 '          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi\n',
@@ -2445,14 +2446,23 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             ),
         ),
         (
-            # Removing the merge_group arm un-gates the trusted-ref set.
-            "must gate cache use to trusted refs",
+            # Adding a fourth trusted arm must fail even if the required arms
+            # remain present.
+            "must gate write-cache use exactly to main push/dispatch refs",
             replace_once(
                 workflow,
-                '          if [[ "$GITHUB_EVENT_NAME" == "merge_group"'
-                ' && "$GITHUB_REF" == "refs/heads/gh-readonly-queue/main/"* ]];'
+                "          trusted=false\n",
+                '          trusted=false\n'
+                '          if [[ "$GITHUB_EVENT_NAME" == "pull_request_target" ]];'
                 ' then trusted=true; fi\n',
-                "",
+            ),
+        ),
+        (
+            "must pin bucket/region/prefix to the bolt-v2 CI cache",
+            replace_once(
+                workflow,
+                '"bolt-v2-ci-cache-675819144420-us-east-2"',
+                '"some-other-cache"',
             ),
         ),
         (

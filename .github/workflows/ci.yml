@@ -705,14 +705,11 @@ jobs:
         run: |
           trusted=false
           # Trusted, write-safe contexts only. The IAM role trust policy is the
-          # real poison boundary (a PR can rewrite this gate), so these must match
-          # the refs the role trusts: main (push/dispatch) and the
-          # merge_group pre-merge gate. The merge_group ref
-          # (refs/heads/gh-readonly-queue/main/*) is GitHub-controlled, not
-          # PR-pushable, and runs already review-approved code -- same trust as main.
+          # real poison boundary (a PR can rewrite this gate), so write access is
+          # limited to main post-merge/dispatch. PR and merge-queue builds do not
+          # write to the shared cache prefix.
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi
           if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi
-          if [[ "$GITHUB_EVENT_NAME" == "merge_group" && "$GITHUB_REF" == "refs/heads/gh-readonly-queue/main/"* ]]; then trusted=true; fi
           cache_mode=""
           role_arn=""
           if [[ "$trusted" == "true" ]]; then
@@ -725,14 +722,16 @@ jobs:
           fi
           vars_present=true
           [[ -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false
-          if [[ -n "$cache_mode" && "$vars_present" == "true" ]]; then
+          location_matches=true
+          [[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]] || location_matches=false
+          if [[ -n "$cache_mode" && "$vars_present" == "true" && "$location_matches" == "true" ]]; then
             echo "eligible=true" >> "$GITHUB_OUTPUT"
           else
             echo "eligible=false" >> "$GITHUB_OUTPUT"
           fi
           echo "role_arn=$role_arn" >> "$GITHUB_OUTPUT"
           echo "cache_mode=$cache_mode" >> "$GITHUB_OUTPUT"
-          echo "event=$GITHUB_EVENT_NAME trusted=$trusted cache_mode=$cache_mode vars_present=$vars_present"
+          echo "event=$GITHUB_EVENT_NAME trusted=$trusted cache_mode=$cache_mode vars_present=$vars_present location_matches=$location_matches"
 
       - name: Configure AWS credentials for sccache
         id: sccache-aws

@@ -555,14 +555,18 @@ TEST_ARCHIVE_SCCACHE_RETRY = "BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive
 TEST_ARCHIVE_SCCACHE_PREFIX_PRECONDITION = (
     '[[ -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]]'
 )
+TEST_ARCHIVE_SCCACHE_LOCATION_PRECONDITION = (
+    '[[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]]'
+)
 TEST_ARCHIVE_SCCACHE_MAIN_DISPATCH_TRUST = (
     'if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi'
 )
 TEST_ARCHIVE_SCCACHE_MAIN_PUSH_TRUST = (
     'if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi'
 )
-TEST_ARCHIVE_SCCACHE_MERGE_GROUP_TRUST = (
-    'if [[ "$GITHUB_EVENT_NAME" == "merge_group" && "$GITHUB_REF" == "refs/heads/gh-readonly-queue/main/"* ]]; then trusted=true; fi'
+TEST_ARCHIVE_SCCACHE_TRUSTED_ASSIGNMENTS = (
+    TEST_ARCHIVE_SCCACHE_MAIN_DISPATCH_TRUST,
+    TEST_ARCHIVE_SCCACHE_MAIN_PUSH_TRUST,
 )
 TEST_ARCHIVE_SCCACHE_PR_ROLE_ENV = "PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}"
 TEST_ARCHIVE_SCCACHE_READ_WRITE_ROLE = (
@@ -9180,12 +9184,15 @@ def verify_workflow(workflow_text: str) -> list[str]:
             eligibility_text = uncommented_text(eligibility_block) if eligibility_block is not None else ""
             if TEST_ARCHIVE_SCCACHE_PREFIX_PRECONDITION not in eligibility_text:
                 errors.append("test-archive sccache eligibility must require CI_SCCACHE_S3_KEY_PREFIX")
-            if (
-                TEST_ARCHIVE_SCCACHE_MAIN_DISPATCH_TRUST not in eligibility_text
-                or TEST_ARCHIVE_SCCACHE_MAIN_PUSH_TRUST not in eligibility_text
-                or TEST_ARCHIVE_SCCACHE_MERGE_GROUP_TRUST not in eligibility_text
-            ):
-                errors.append("test-archive sccache must gate cache use to trusted refs (refs/heads/main + merge_group queue) in the eligibility step")
+            if TEST_ARCHIVE_SCCACHE_LOCATION_PRECONDITION not in eligibility_text:
+                errors.append("test-archive sccache eligibility must pin bucket/region/prefix to the bolt-v2 CI cache")
+            trusted_assignments = tuple(
+                line.strip()
+                for line in eligibility_text.splitlines()
+                if "trusted=true" in line
+            )
+            if trusted_assignments != TEST_ARCHIVE_SCCACHE_TRUSTED_ASSIGNMENTS:
+                errors.append("test-archive sccache must gate write-cache use exactly to main push/dispatch refs")
             if TEST_ARCHIVE_SCCACHE_PR_ROLE_ENV not in eligibility_text:
                 errors.append("test-archive sccache must configure PR read-only sccache role path")
             if (

@@ -7507,20 +7507,20 @@ def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
           key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml') }}
 """
     errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
-    assert any("backtester managed-target cache key must include 'Cargo.lock'" in error for error in errors), errors
-    assert any("backtester managed-target cache key must include 'Cargo.toml'" in error for error in errors), errors
-    assert any("backtester managed-target cache key must include 'build.rs'" in error for error in errors), errors
-    assert any("backtester managed-target cache key must include 'src/**'" in error for error in errors), errors
-    assert any("backtester managed-target cache key must include 'tests/**'" in error for error in errors), errors
-    assert any("backtester managed-target cache key must include crates/backtesting-vertical-slice/src/**" in error for error in errors), errors
-    assert any("backtester managed-target cache key must include crates/backtesting-vertical-slice/tests/**" in error for error in errors), errors
+    assert any("backtester cache key must include 'Cargo.lock'" in error for error in errors), errors
+    assert any("backtester cache key must include 'Cargo.toml'" in error for error in errors), errors
+    assert any("backtester cache key must include 'build.rs'" in error for error in errors), errors
+    assert any("backtester cache key must include 'src/**'" in error for error in errors), errors
+    assert any("backtester cache key must include 'tests/**'" in error for error in errors), errors
+    assert any("backtester cache key must include crates/backtesting-vertical-slice/src/**" in error for error in errors), errors
+    assert any("backtester cache key must include crates/backtesting-vertical-slice/tests/**" in error for error in errors), errors
     good = bad.replace(
         "'crates/backtesting-vertical-slice/Cargo.toml'",
-        "'crates/backtesting-vertical-slice/Cargo.toml', 'Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**'",
+        "'crates/backtesting-vertical-slice/Cargo.toml', 'Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'scripts/rust_test_targets.py'",
     )
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [
-        error for error in good_errors if "backtester managed-target cache key must include" in error
+        error for error in good_errors if "backtester cache key must include" in error
     ], good_errors
 
 
@@ -7569,12 +7569,12 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         id: bvs-nextest-archive-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
-          key: bvs-nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-scoped-targets-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**') }}
+          key: bvs-nextest-archive-v3-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'scripts/rust_test_targets.py') }}
       - name: Restore BVS binary sidecars
         id: bvs-bin-sidecars-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
-          key: bvs-bin-sidecars-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-cargo-bin-exe-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**') }}
+          key: bvs-bin-sidecars-v3-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'scripts/rust_test_targets.py') }}
       - name: Resolve crate managed target dir
         id: crate_target
       - uses: Swatinem/rust-cache@example
@@ -7586,14 +7586,16 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
       - name: Build BVS nextest archive
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
-        run: just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" --lib --test backtesting_vertical_slice_tests --bin backtesting-vertical-slice --bin source_universe_batch_execution
+        run: |
+          mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)
+          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"
       - name: Save BVS nextest archive
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
       - name: Build BVS binary sidecars
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
         run: |
-          CARGO_BIN_EXE_([A-Za-z0-9_]+)
+          python3 scripts/rust_test_targets.py sidecars --crate crates/backtesting-vertical-slice
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- "${cargo_args[@]}"
           tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
       - name: Save BVS binary sidecars
@@ -7648,6 +7650,16 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     )
     fanout_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": fanout})
     assert any("legacy fan-out payload" in error for error in fanout_errors), fanout_errors
+
+    hardcoded_archive_targets = good.replace(
+        'mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)\n          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"',
+        'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" --lib --test backtesting_vertical_slice_tests --bin backtesting-vertical-slice',
+        1,
+    )
+    hardcoded_archive_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": hardcoded_archive_targets}
+    )
+    assert any("archive targets must be discovered" in error for error in hardcoded_archive_errors), hardcoded_archive_errors
 
     weakened_archive_guard = good.replace(
         'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }',

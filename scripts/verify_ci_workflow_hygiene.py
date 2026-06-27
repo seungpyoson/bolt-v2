@@ -9785,7 +9785,9 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
         return []
     errors: list[str] = []
     for line in text.splitlines():
-        if "managed-target-bvs-v" not in line or "hashFiles(" not in line:
+        if not any(prefix in line for prefix in ("managed-target-bvs-v", "bvs-nextest-archive-v", "bvs-bin-sidecars-v")):
+            continue
+        if "hashFiles(" not in line:
             continue
         for required in [
             "'Cargo.lock'",
@@ -9795,9 +9797,10 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
             "'tests/**'",
             "crates/backtesting-vertical-slice/src/**",
             "crates/backtesting-vertical-slice/tests/**",
+            "scripts/rust_test_targets.py",
         ]:
             if required not in line:
-                errors.append(f"backtester managed-target cache key must include {required}")
+                errors.append(f"backtester cache key must include {required}")
     return errors
 
 
@@ -9855,6 +9858,8 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester required bvs-test path must not download a test payload artifact")
     if "managed-target-bvs-v1-" in consumer_text or "test-target-cache" in consumer_text:
         errors.append("backtester bvs-test consumers must not restore the managed target cache")
+    if 'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" --lib --test' in archive_text:
+        errors.append("backtester bvs-test archive targets must be discovered, not hardcoded in workflow YAML")
     if gate_job is not None and (
         "issue_789" in extract_needs(gate_job) or "needs.issue_789.result" in gate_text
     ):
@@ -9875,7 +9880,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive cache key must be exact and content-addressed",
-            "key: bvs-nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-scoped-targets-shards-4-${{ hashFiles(",
+            "key: bvs-nextest-archive-v3-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ hashFiles(",
         ),
         (
             "backtester bvs-test archive must restore binary sidecar cache",
@@ -9883,7 +9888,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test sidecar cache key must be exact and content-addressed",
-            "key: bvs-bin-sidecars-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-cargo-bin-exe-${{ hashFiles(",
+            "key: bvs-bin-sidecars-v3-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ hashFiles(",
         ),
         (
             "backtester bvs-test archive must resolve the crate managed target directory",
@@ -9898,8 +9903,12 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'",
         ),
         (
-            "backtester bvs-test archive must build a nextest archive",
-            'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" --lib --test backtesting_vertical_slice_tests --bin backtesting-vertical-slice --bin source_universe_batch_execution',
+            "backtester bvs-test archive must derive archive targets from source",
+            "python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice",
+        ),
+        (
+            "backtester bvs-test archive must build a nextest archive from discovered targets",
+            'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"',
         ),
         (
             "backtester bvs-test archive must save nextest archive cache explicitly",
@@ -9915,7 +9924,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive sidecars must derive from CARGO_BIN_EXE references",
-            "CARGO_BIN_EXE_([A-Za-z0-9_]+)",
+            "python3 scripts/rust_test_targets.py sidecars --crate crates/backtesting-vertical-slice",
         ),
         (
             "backtester bvs-test archive sidecars must use managed cargo",

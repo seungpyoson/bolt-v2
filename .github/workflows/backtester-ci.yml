@@ -321,7 +321,7 @@ jobs:
         with:
           path: ${{ steps.crate_target.outputs.dir }}
           # BVS depends on the root crate, so root inputs are part of the cache identity.
-          key: managed-target-bvs-v2-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+          key: managed-target-bvs-v2-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'scripts/rust_test_targets.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
           restore-keys: |
             managed-target-bvs-v2-${{ runner.os }}-${{ runner.arch }}-clippy-
 
@@ -353,14 +353,14 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.BVS_NEXTEST_ARCHIVE_PATH }}
-          key: bvs-nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-scoped-targets-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+          key: bvs-nextest-archive-v3-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'scripts/rust_test_targets.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
 
       - name: Restore BVS binary sidecars
         id: bvs-bin-sidecars-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.BVS_BIN_SIDECARS_PATH }}
-          key: bvs-bin-sidecars-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-cargo-bin-exe-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+          key: bvs-bin-sidecars-v3-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'scripts/rust_test_targets.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
 
       - name: Resolve crate managed target dir
         id: crate_target
@@ -382,7 +382,7 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ steps.crate_target.outputs.dir }}
-          key: managed-target-bvs-v2-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+          key: managed-target-bvs-v2-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'scripts/rust_test_targets.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
           restore-keys: |
             managed-target-bvs-v2-${{ runner.os }}-${{ runner.arch }}-test-
 
@@ -398,14 +398,16 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           mkdir -p "$(dirname "$BVS_NEXTEST_ARCHIVE_PATH")"
-          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" --lib --test backtesting_vertical_slice_tests --bin backtesting-vertical-slice --bin source_universe_batch_execution
+          mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)
+          printf 'BVS archive args: %s\n' "${archive_args[*]}"
+          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"
 
       - name: Save BVS nextest archive
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.BVS_NEXTEST_ARCHIVE_PATH }}
-          key: bvs-nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-scoped-targets-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+          key: bvs-nextest-archive-v3-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'scripts/rust_test_targets.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
 
       - name: Build BVS binary sidecars
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
@@ -413,18 +415,7 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
-          mapfile -t sidecars < <(
-            python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          names = set()
-          for path in Path("crates/backtesting-vertical-slice/tests").rglob("*.rs"):
-              names.update(re.findall(r"CARGO_BIN_EXE_([A-Za-z0-9_]+)", path.read_text()))
-          for name in sorted(names):
-              print(name)
-          PY
-          )
+          mapfile -t sidecars < <(python3 scripts/rust_test_targets.py sidecars --crate crates/backtesting-vertical-slice)
           if [[ "${#sidecars[@]}" == "0" ]]; then
             echo "no BVS CARGO_BIN_EXE sidecars discovered"
             exit 1
@@ -457,14 +448,14 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.BVS_BIN_SIDECARS_PATH }}
-          key: bvs-bin-sidecars-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-cargo-bin-exe-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+          key: bvs-bin-sidecars-v3-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'scripts/rust_test_targets.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
 
       - name: Save archive build target cache
         if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ steps.crate_target.outputs.dir }}
-          key: managed-target-bvs-v2-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+          key: managed-target-bvs-v2-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'scripts/rust_test_targets.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
 
       - name: Require BVS local payload
         run: |

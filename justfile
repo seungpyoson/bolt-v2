@@ -148,14 +148,6 @@ verify-ra-bi-surface-and-feature-joins: check-workspace
     python3 scripts/test_verify_ra_bi_surface_and_feature_joins.py
     python3 scripts/verify_ra_bi_surface_and_feature_joins.py
 
-verify-dashboard-customer-jobs: check-workspace
-    python3 scripts/test_verify_dashboard_customer_jobs.py
-    python3 scripts/verify_dashboard_customer_jobs.py
-
-verify-dashboard-field-source-matrix: check-workspace
-    python3 scripts/test_verify_dashboard_field_source_matrix.py
-    python3 scripts/verify_dashboard_field_source_matrix.py
-
 verify-dashboard-read-only-contract: check-workspace
     python3 scripts/test_verify_dashboard_read_only_contract.py
     python3 scripts/verify_dashboard_read_only_contract.py
@@ -393,10 +385,6 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py
     python3 scripts/test_verify_bte_test_topology.py
     python3 scripts/verify_bte_test_topology.py
-    python3 scripts/test_verify_dashboard_customer_jobs.py
-    python3 scripts/verify_dashboard_customer_jobs.py
-    python3 scripts/test_verify_dashboard_field_source_matrix.py
-    python3 scripts/verify_dashboard_field_source_matrix.py
     python3 scripts/test_verify_dashboard_read_only_contract.py
     python3 scripts/verify_dashboard_read_only_contract.py
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py

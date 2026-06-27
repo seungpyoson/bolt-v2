@@ -251,6 +251,11 @@ def test_cheap_lane_just_recipes_must_be_safe_recipe_names() -> None:
         _expect_policy_error({"local_lane_policy": policy}, "cheap_lane_just_recipes")
 
 
+def test_cheap_lane_just_recipes_accept_private_recipe_names() -> None:
+    assert RV.just_recipe_name("_source_fence:") == "_source_fence"
+    assert RV.validate_cheap_lane_just_recipe("_source-fence") == "_source-fence"
+
+
 def test_cheap_lane_labels_resolve_just_recipes() -> None:
     policy = _valid_lane_policy()
     labels = RV.resolve_cheap_lane_labels(REPO_ROOT, policy)
@@ -262,6 +267,13 @@ def test_cheap_lane_labels_resolve_just_recipes() -> None:
     assert "local-gate:source-fence-static" in labels
     subcrate_labels = RV.resolve_cheap_lane_labels(REPO_ROOT / "crates/backtesting-vertical-slice", policy)
     assert subcrate_labels == labels
+
+
+def test_cheap_lane_label_resolution_deduplicates_explicit_recipe_overlap() -> None:
+    policy = _valid_lane_policy()
+    policy["cheap_lane_labels"] = [*policy["cheap_lane_labels"], "test_lane_governor.py"]
+    labels = RV.resolve_cheap_lane_labels(REPO_ROOT, policy)
+    assert labels.count("test_lane_governor.py") == 1
 
 
 def test_cheap_lane_max_concurrent_must_be_a_non_negative_integer() -> None:
@@ -4193,7 +4205,9 @@ def _registered_self_tests():
         test_non_positive_intervals_rejected,
         test_cheap_lane_labels_must_be_a_string_list,
         test_cheap_lane_just_recipes_must_be_safe_recipe_names,
+        test_cheap_lane_just_recipes_accept_private_recipe_names,
         test_cheap_lane_labels_resolve_just_recipes,
+        test_cheap_lane_label_resolution_deduplicates_explicit_recipe_overlap,
         test_cheap_lane_max_concurrent_must_be_a_non_negative_integer,
         test_unknown_lane_policy_keys_rejected,
         test_repo_policy_file_declares_lane_policy,

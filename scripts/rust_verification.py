@@ -51,6 +51,7 @@ POLICY_RELATIVE_PATH = pathlib.Path("ci/rust-verification.toml")
 CI_RUNNERS_RELATIVE_PATH = pathlib.Path("ci/github-actions-runners.toml")
 MAX_POLICY_BYTES = 1024 * 1024
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+JUST_RECIPE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
 LANE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 RUST_PROBE_MODES = (
@@ -298,7 +299,7 @@ def validate_cheap_lane_label(label: object, key: str) -> str:
 
 
 def validate_cheap_lane_just_recipe(recipe: object) -> str:
-    if not isinstance(recipe, str) or not SAFE_IDENTIFIER_RE.match(recipe):
+    if not isinstance(recipe, str) or not JUST_RECIPE_RE.match(recipe):
         raise PolicyError("local_lane_policy.cheap_lane_just_recipes entries must be safe just recipe names")
     return recipe
 
@@ -309,7 +310,7 @@ def just_recipe_name(line: str) -> str | None:
     stripped = line.strip()
     if not stripped or stripped.startswith(("#", "[")) or ":=" in stripped:
         return None
-    match = re.match(r"^([A-Za-z0-9][A-Za-z0-9_-]*)(?:\s+[^:]*)?:", line)
+    match = re.match(r"^([A-Za-z0-9_][A-Za-z0-9_-]*)(?:\s+[^:]*)?:", line)
     return match.group(1) if match else None
 
 
@@ -362,10 +363,9 @@ def resolve_cheap_lane_labels(repo: pathlib.Path, lane_policy: dict[str, Any]) -
     seen: set[str] = set()
 
     def append_label(label: str) -> None:
-        if label in seen:
-            raise PolicyError("local_lane_policy cheap lane labels must resolve to unique values")
-        seen.add(label)
-        labels.append(label)
+        if label not in seen:
+            seen.add(label)
+            labels.append(label)
 
     for label in lane_policy.get("cheap_lane_labels", []):
         append_label(validate_cheap_lane_label(label, "cheap_lane_labels"))

@@ -170,6 +170,76 @@ backtester_required = "backtester-gate"
 backtester_iteration = "backtester-gate-iteration"
 backtester_dispatch_full = "backtester-gate-dispatch"
 
+[ci_provenance.required_checks.gate]
+context = "gate"
+reporter = "ci.yml gate summary job"
+integration_id = 15368
+required = true
+target = true
+runs_on_tags = true
+supports_carry_forward = true
+arrivals = ["pull_request", "merge_group"]
+
+[ci_provenance.required_checks.gate.proof_rule]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+carry_forward = []
+
+[ci_provenance.required_checks.backtester-gate]
+context = "backtester-gate"
+reporter = "backtester-ci.yml gate job"
+integration_id = 15368
+required = true
+target = true
+runs_on_tags = true
+supports_carry_forward = true
+arrivals = ["pull_request", "merge_group"]
+
+[ci_provenance.required_checks.backtester-gate.proof_rule]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+carry_forward = []
+
+[ci_provenance.required_checks.host-health]
+context = "host-health"
+reporter = "ci.yml host-health lane"
+integration_id = 15368
+required = true
+target = true
+runs_on_tags = false
+supports_carry_forward = false
+arrivals = ["pull_request", "merge_group"]
+
+[ci_provenance.required_checks.host-health.proof_rule]
+fresh = ["full", "docs", "iteration"]
+carry_forward = []
+
+[ci_provenance.required_checks.actionlint]
+context = "actionlint"
+reporter = "actionlint.yml"
+integration_id = 15368
+required = true
+target = true
+runs_on_tags = false
+supports_carry_forward = false
+arrivals = ["pull_request", "merge_group"]
+
+[ci_provenance.required_checks.actionlint.proof_rule]
+fresh = ["full", "docs", "iteration"]
+carry_forward = []
+
+[ci_provenance.required_checks.coverage-enforcer]
+context = "coverage-enforcer"
+reporter = "self"
+integration_id = 15368
+required = false
+target = true
+runs_on_tags = false
+supports_carry_forward = false
+arrivals = ["pull_request", "merge_group"]
+
+[ci_provenance.required_checks.coverage-enforcer.proof_rule]
+fresh = ["full", "docs", "iteration"]
+carry_forward = []
+
 [ci_provenance.docs]
 safe_paths = [
   "AGENTS.md",

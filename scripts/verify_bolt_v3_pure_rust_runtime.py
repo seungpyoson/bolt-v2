@@ -16,7 +16,7 @@ from verify_bolt_v3_provider_leaks import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CARGO_TOML = REPO_ROOT / "Cargo.toml"
-STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
+MAIN_RS = REPO_ROOT / "src/main.rs"
 
 FORBIDDEN_ROOT_FILES = (
     "pyproject.toml",
@@ -77,9 +77,10 @@ FORBIDDEN_RUNTIME_SOURCE_PATTERNS = (
     ),
 )
 
-REQUIRED_STATUS_MAP_PHRASES = (
-    "| 3 | No Python runtime layer | Implemented as current source-scan gate |",
-    "`scripts/verify_bolt_v3_pure_rust_runtime.py`",
+MAIN_RS_ENTRYPOINT_CALLS = (
+    "verify_live_config(&context.config_root, &context.profile)?",
+    "build_bolt_v3_live_node_with_resolved(&loaded, resolved)?",
+    "run_bolt_v3_live_node(&mut node, &loaded).await?",
 )
 
 DEPENDENCY_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -158,6 +159,14 @@ def strip_cfg_test_items(text: str) -> str:
 
 def line_number(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
+
+
+def missing_main_rs_entrypoint_calls(text: str) -> list[str]:
+    return [
+        f"src/main.rs is missing entrypoint call {call!r}"
+        for call in MAIN_RS_ENTRYPOINT_CALLS
+        if call not in text
+    ]
 
 
 def blank_preserving_newlines(text: str) -> str:
@@ -328,12 +337,9 @@ def main() -> int:
                     f"{rel}:{line_number(text, match.start())}: forbidden {label}: {match.group(0)}"
                 )
 
-    status_map = STATUS_MAP.read_text(encoding="utf-8")
-    if "| 3 | No Python runtime layer | Missing verifier |" in status_map:
-        findings.append("status map still marks row 3 as missing a verifier")
-    for phrase in REQUIRED_STATUS_MAP_PHRASES:
-        if phrase not in status_map:
-            findings.append(f"status map missing current pure-Rust evidence phrase: {phrase}")
+    findings.extend(
+        missing_main_rs_entrypoint_calls(MAIN_RS.read_text(encoding="utf-8"))
+    )
 
     if findings:
         for finding in findings:

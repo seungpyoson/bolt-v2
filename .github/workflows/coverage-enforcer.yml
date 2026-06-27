@@ -31,4 +31,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python3 scripts/coverage_enforcer.py
+        run: |
+          if [ ! -f scripts/coverage_enforcer.py ]; then
+            echo "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py"
+            exit 0
+          fi
+          python3 scripts/coverage_enforcer.py

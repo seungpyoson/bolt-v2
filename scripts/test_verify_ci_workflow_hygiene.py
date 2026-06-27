@@ -1139,7 +1139,12 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python3 scripts/coverage_enforcer.py
+        run: |
+          if [ ! -f scripts/coverage_enforcer.py ]; then
+            echo "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py"
+            exit 0
+          fi
+          python3 scripts/coverage_enforcer.py
 """
 
 
@@ -3892,6 +3897,19 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
         (
             "job must run scripts/coverage_enforcer.py",
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "python3 scripts/coverage_enforcer.py", "python3 scripts/merge_readiness.py status")},
+        ),
+        (
+            "job must guard first-run trusted-base bootstrap",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n"
+                    "            echo \"coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
+                    "            exit 0\n"
+                    "          fi\n",
+                    "",
+                )
+            },
         ),
         (
             "coverage-enforcer must not be defined inside another workflow",

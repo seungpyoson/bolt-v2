@@ -312,6 +312,25 @@ def test_validate_docs_accepts_tolerant_checked_phase_task_rows_only() -> None:
             raise AssertionError(f"expected row {row!r} to miss T224, got {findings!r}")
 
 
+def test_validate_docs_rejects_cross_line_checkbox_rows() -> None:
+    # A real Markdown checked-task row lives on one line. A row whose dash,
+    # checkbox, or task id is split across newlines is not a checked completion
+    # and must produce a finding. Guards against the structural matcher treating
+    # any-whitespace (\s, which spans newlines) as intra-row spacing.
+    base_row = "- [x] T224 Verify Phase 50 focused checks and exact-head PR state"
+
+    for row in (
+        "-\n[x] T224 Verify Phase 50 focused checks and exact-head PR state",
+        "- [x]\nT224 Verify Phase 50 focused checks and exact-head PR state",
+    ):
+        tasks = completed_phase_task_rows().replace(base_row, row)
+
+        findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP, tasks=tasks)
+
+        if not any("Phase 50" in finding and "T224" in finding for finding in findings):
+            raise AssertionError(f"expected cross-line row {row!r} to miss T224, got {findings!r}")
+
+
 def test_validate_docs_allows_reworded_completed_phase_dependency_note() -> None:
     tasks = """
 ## Dependencies & Execution Order
@@ -559,6 +578,7 @@ def main() -> int:
         test_validate_docs_rejects_equivalent_trailing_stop_market_default_field_requirements,
         test_validate_docs_requires_completed_phase_task_row_to_be_checked,
         test_validate_docs_accepts_tolerant_checked_phase_task_rows_only,
+        test_validate_docs_rejects_cross_line_checkbox_rows,
         test_validate_docs_allows_reworded_completed_phase_dependency_note,
         test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere,
         test_validate_docs_rejects_gtd_broad_support_and_live_execution_overclaims,

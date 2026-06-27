@@ -261,7 +261,12 @@ def unsupported_scope_overclaims(label: str, text: str) -> list[str]:
 def completed_phase_task_findings(tasks: str) -> list[str]:
     findings: list[str] = []
     for phase, task_id in COMPLETED_PHASE_VERIFICATION_TASKS:
-        if not re.search(rf"(?m)^\s*-\s+\[[xX]\]\s+{re.escape(task_id)}\b", tasks):
+        # Intra-row whitespace is horizontal only ([ \t], not \s): a real Markdown
+        # checked-task row lives on one line. Allowing \s lets the dash, checkbox,
+        # and task id span separate lines, so malformed multi-line text would be
+        # miscounted as a checked completion. This stays decoupled from prose —
+        # it tightens what a structural task row is, not what any sentence says.
+        if not re.search(rf"(?m)^[ \t]*-[ \t]+\[[xX]\][ \t]+{re.escape(task_id)}\b", tasks):
             findings.append(
                 f"tasks missing checked completed Phase {phase} verification task {task_id}"
             )

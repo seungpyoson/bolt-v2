@@ -41,6 +41,12 @@ comment_marker = "bolt-v2-merge-readiness"
 poll_seconds = 1
 max_watch_seconds = 1
 
+[ci_provenance.gate_names]
+gate_required = "gate"
+gate_iteration = "gate-iteration"
+backtester_required = "backtester-gate"
+backtester_iteration = "backtester-gate-iteration"
+
 [ci_provenance.required_checks.gate]
 context = "gate"
 required = true
@@ -288,6 +294,30 @@ def assert_registry_context_set_is_source_of_truth() -> None:
         changed_config = write_config(pathlib.Path(tmp), changed)
         if module.required_contexts(changed_config) != ("gate", "backtester-gate", "host-health", "new-required"):
             raise AssertionError(module.required_contexts(changed_config))
+
+
+def assert_iteration_gate_contexts_satisfy_required_gate_status() -> None:
+    module = load_script()
+    fake = FakeGitHub(
+        checks=[
+            check_run("gate-iteration"),
+            check_run("backtester-gate-iteration"),
+            check_run("host-health"),
+            check_run("actionlint"),
+        ],
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        status = module.resolve_status(
+            repo=REPO,
+            token="token",
+            pr_number=PR_NUMBER,
+            config_path=config,
+            head_sha=SHA,
+            api_json=fake.json,
+        )
+    if status.state != "passed":
+        raise AssertionError(status)
 
 
 def assert_comment_upsert_replaces_existing_marker() -> None:
@@ -569,6 +599,7 @@ def main() -> int:
     assert_status_mapping()
     assert_non_blocking_required_check_conclusions_do_not_fail()
     assert_registry_context_set_is_source_of_truth()
+    assert_iteration_gate_contexts_satisfy_required_gate_status()
     assert_comment_upsert_replaces_existing_marker()
     assert_comment_upsert_finds_sticky_comment_on_second_page()
     assert_find_sticky_comment_ignores_forged_human_marker()

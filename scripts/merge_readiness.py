@@ -186,6 +186,37 @@ def required_contexts(path: pathlib.Path = DEFAULT_CONFIG) -> tuple[str, ...]:
     return tuple(contexts)
 
 
+def optional_gate_name(gate_names: dict[str, object], key: str) -> str | None:
+    value = gate_names.get(key)
+    if value is None:
+        return None
+    return require_string(gate_names, key, "ci_provenance.gate_names")
+
+
+def required_context_aliases(path: pathlib.Path = DEFAULT_CONFIG) -> dict[str, tuple[str, ...]]:
+    ci_provenance = load_ci_provenance(path)
+    gate_names = ci_provenance.get("gate_names")
+    if gate_names is None:
+        return {}
+    if not isinstance(gate_names, dict):
+        raise MergeReadinessError("ci_provenance.gate_names must be a table")
+
+    aliases: dict[str, tuple[str, ...]] = {}
+    for required_key, iteration_key in (
+        ("gate_required", "gate_iteration"),
+        ("backtester_required", "backtester_iteration"),
+    ):
+        required_name = optional_gate_name(gate_names, required_key)
+        if required_name is None:
+            continue
+        names = [required_name]
+        iteration_name = optional_gate_name(gate_names, iteration_key)
+        if iteration_name is not None and iteration_name not in names:
+            names.append(iteration_name)
+        aliases[required_name] = tuple(names)
+    return aliases
+
+
 def parse_timestamp(value: object) -> datetime.datetime:
     if not isinstance(value, str) or not value:
         return datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
@@ -218,16 +249,39 @@ def check_run_sort_key(run: dict[str, object]) -> tuple[datetime.datetime, datet
     )
 
 
+def latest_check_run_for_required_context(
+    *,
+    by_name: dict[str, dict[str, object]],
+    context: str,
+    context_aliases: dict[str, tuple[str, ...]],
+) -> dict[str, object] | None:
+    candidates = [
+        by_name[name]
+        for name in context_aliases.get(context, (context,))
+        if name in by_name
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=check_run_sort_key)
+
+
 def evaluate_required_checks(
     contexts: tuple[str, ...],
     check_runs: list[dict[str, object]],
+    *,
+    context_aliases: dict[str, tuple[str, ...]] | None = None,
 ) -> RequiredCheckStatus:
     by_name = latest_check_runs_by_name(check_runs)
+    aliases = context_aliases or {}
     failed: list[str] = []
     pending: list[str] = []
     completed = 0
     for context in contexts:
-        run = by_name.get(context)
+        run = latest_check_run_for_required_context(
+            by_name=by_name,
+            context=context,
+            context_aliases=aliases,
+        )
         if run is None:
             pending.append(context)
             continue
@@ -691,6 +745,7 @@ def resolve_status(
             settings=settings,
             api_json=api_json,
         ),
+        context_aliases=required_context_aliases(config_path),
     )
     if status.state != "running" or not include_sticky_state:
         return status
@@ -739,6 +794,7 @@ def update_progress_comment(
             settings=settings,
             api_json=api_json,
         ),
+        context_aliases=required_context_aliases(config_path),
     )
     if is_fork_pull_request(pr):
         return CommentUpdateResult(

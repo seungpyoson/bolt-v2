@@ -253,12 +253,15 @@ def app_id_for_run(run: dict[str, object]) -> int | None:
 
 
 def terminal_runs_for_context(
-    check_runs: list[dict[str, object]], context: str
+    check_runs: list[dict[str, object]],
+    context: str,
+    context_aliases: dict[str, tuple[str, ...]] | None = None,
 ) -> list[dict[str, object]]:
+    names = context_aliases.get(context, (context,)) if context_aliases else (context,)
     return [
         run
         for run in check_runs
-        if run.get("name") == context and run.get("status") == "completed"
+        if run.get("name") in names and run.get("status") == "completed"
     ]
 
 
@@ -266,10 +269,15 @@ def pending_contexts(
     *,
     checks: tuple[ci_provenance.RequiredCheckConfig, ...],
     check_runs: list[dict[str, object]],
+    context_aliases: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[str, ...]:
     pending: list[str] = []
     for check in checks:
-        if not terminal_runs_for_context(check_runs, check.context):
+        if not terminal_runs_for_context(
+            check_runs,
+            check.context,
+            context_aliases=context_aliases,
+        ):
             pending.append(check.context)
     return tuple(pending)
 
@@ -278,10 +286,15 @@ def drift_findings_for_terminal_runs(
     *,
     checks: tuple[ci_provenance.RequiredCheckConfig, ...],
     check_runs: list[dict[str, object]],
+    context_aliases: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[str, ...]:
     findings: list[str] = []
     for check in checks:
-        terminal = terminal_runs_for_context(check_runs, check.context)
+        terminal = terminal_runs_for_context(
+            check_runs,
+            check.context,
+            context_aliases=context_aliases,
+        )
         if not terminal:
             continue
         app_ids = [app_id_for_run(run) for run in terminal]
@@ -312,6 +325,7 @@ def poll_required_check_runs(
     head_sha: str,
     checks: tuple[ci_provenance.RequiredCheckConfig, ...],
     settings: merge_readiness.MergeReadinessSettings,
+    context_aliases: dict[str, tuple[str, ...]] | None = None,
     api_json=merge_readiness.github_api_json,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
@@ -327,7 +341,11 @@ def poll_required_check_runs(
             settings=settings,
             api_json=api_json,
         )
-        latest_pending = pending_contexts(checks=checks, check_runs=latest_runs)
+        latest_pending = pending_contexts(
+            checks=checks,
+            check_runs=latest_runs,
+            context_aliases=context_aliases,
+        )
         if not latest_pending:
             return latest_runs, ()
         if monotonic() >= deadline:
@@ -412,6 +430,7 @@ def enforce_coverage(
     all_checks = load_registry_checks(config_path)
     required_checks = required_registry_checks(config_path)
     settings = merge_readiness.merge_settings(config_path)
+    context_aliases = merge_readiness.required_context_aliases(config_path)
 
     findings = list(
         registry_workflow_derivation_findings(
@@ -425,12 +444,17 @@ def enforce_coverage(
         head_sha=head_sha,
         checks=required_checks,
         settings=settings,
+        context_aliases=context_aliases,
         api_json=api_json,
         monotonic=monotonic,
         sleep=sleep,
     )
     findings.extend(
-        drift_findings_for_terminal_runs(checks=required_checks, check_runs=check_runs)
+        drift_findings_for_terminal_runs(
+            checks=required_checks,
+            check_runs=check_runs,
+            context_aliases=context_aliases,
+        )
     )
     if pending:
         findings.append(

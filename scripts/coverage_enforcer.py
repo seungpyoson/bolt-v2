@@ -61,13 +61,24 @@ def load_registry_checks(
 
 def required_registry_checks(
     config_path: pathlib.Path = DEFAULT_CONFIG,
+    *,
+    check_runs: list[dict[str, object]] | None = None,
 ) -> tuple[ci_provenance.RequiredCheckConfig, ...]:
     checks = load_registry_checks(config_path)
+    static_contexts = merge_readiness.required_contexts(config_path)
+    active_contexts = merge_readiness.required_contexts(
+        config_path,
+        check_runs=check_runs,
+    )
     required = []
-    for context in merge_readiness.required_contexts(config_path):
-        check = checks.get(context)
+    for static_context, active_context in zip(static_contexts, active_contexts, strict=True):
+        check = checks.get(static_context)
         if check is None:
-            raise CoverageEnforcerError(f"required context {context!r} is missing from registry")
+            raise CoverageEnforcerError(
+                f"required context {static_context!r} is missing from registry"
+            )
+        if active_context != static_context:
+            check = dataclasses.replace(check, context=active_context)
         required.append(check)
     return tuple(required)
 
@@ -311,13 +322,15 @@ def poll_required_check_runs(
     token: str,
     head_sha: str,
     checks: tuple[ci_provenance.RequiredCheckConfig, ...],
+    config_path: pathlib.Path,
     settings: merge_readiness.MergeReadinessSettings,
     api_json=merge_readiness.github_api_json,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
-) -> tuple[list[dict[str, object]], tuple[str, ...]]:
+) -> tuple[list[dict[str, object]], tuple[str, ...], tuple[ci_provenance.RequiredCheckConfig, ...]]:
     deadline = monotonic() + settings.max_watch_seconds
     latest_runs: list[dict[str, object]] = []
+    latest_checks = checks
     latest_pending: tuple[str, ...] = tuple(check.context for check in checks)
     while True:
         latest_runs = merge_readiness.check_runs_for_sha(
@@ -327,11 +340,12 @@ def poll_required_check_runs(
             settings=settings,
             api_json=api_json,
         )
-        latest_pending = pending_contexts(checks=checks, check_runs=latest_runs)
+        latest_checks = required_registry_checks(config_path, check_runs=latest_runs)
+        latest_pending = pending_contexts(checks=latest_checks, check_runs=latest_runs)
         if not latest_pending:
-            return latest_runs, ()
+            return latest_runs, (), latest_checks
         if monotonic() >= deadline:
-            return latest_runs, latest_pending
+            return latest_runs, latest_pending, latest_checks
         sleep(settings.poll_seconds)
 
 
@@ -419,18 +433,19 @@ def enforce_coverage(
             workflow_dir=workflow_dir,
         )
     )
-    check_runs, pending = poll_required_check_runs(
+    check_runs, pending, active_required_checks = poll_required_check_runs(
         repo=repo,
         token=token,
         head_sha=head_sha,
         checks=required_checks,
+        config_path=config_path,
         settings=settings,
         api_json=api_json,
         monotonic=monotonic,
         sleep=sleep,
     )
     findings.extend(
-        drift_findings_for_terminal_runs(checks=required_checks, check_runs=check_runs)
+        drift_findings_for_terminal_runs(checks=active_required_checks, check_runs=check_runs)
     )
     if pending:
         findings.append(

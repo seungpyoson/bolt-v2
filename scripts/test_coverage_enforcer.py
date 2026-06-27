@@ -37,6 +37,14 @@ comment_marker = "bolt-v2-merge-readiness"
 poll_seconds = 1
 max_watch_seconds = 1
 
+[ci_provenance.gate_names]
+gate_required = "gate"
+gate_iteration = "gate-iteration"
+gate_dispatch_full = "gate-dispatch"
+backtester_required = "backtester-gate"
+backtester_iteration = "backtester-gate-iteration"
+backtester_dispatch_full = "backtester-gate-dispatch"
+
 [ci_provenance.required_checks.gate]
 context = "gate"
 reporter = "ci.yml gate summary job"
@@ -260,9 +268,12 @@ def check_run(
     conclusion: str | None = "success",
 ) -> dict[str, object]:
     return {
+        "id": sum(ord(char) for char in name),
         "name": name,
         "status": status,
         "conclusion": conclusion,
+        "started_at": "2026-06-27T00:00:00Z",
+        "completed_at": "2026-06-27T00:00:00Z",
         "app": {"id": app_id},
     }
 
@@ -384,6 +395,16 @@ def assert_all_present_and_correct_succeeds() -> None:
         raise AssertionError(payload)
     if payload["head_sha"] != SHA or payload["conclusion"] != "success":
         raise AssertionError(payload)
+
+
+def assert_iteration_gate_contexts_succeed() -> None:
+    contexts = ("gate-iteration", "backtester-gate-iteration", "host-health", "actionlint")
+    result, fake = run_enforcer([[check_run(context) for context in contexts]])
+    if result.conclusion != "success" or result.findings:
+        raise AssertionError(result)
+    posted = fake.posted_check_runs()
+    if len(posted) != 1 or posted[0]["conclusion"] != "success":
+        raise AssertionError(posted)
 
 
 def assert_poll_timeout_fails_closed() -> None:
@@ -554,6 +575,7 @@ def assert_non_object_event_fails_closed() -> None:
 def main() -> int:
     assert_drift_detects_missing_and_wrong_app()
     assert_all_present_and_correct_succeeds()
+    assert_iteration_gate_contexts_succeed()
     assert_poll_timeout_fails_closed()
     assert_r2_derivation_mismatch_fails()
     assert_r2_derives_generic_tag_triggers()

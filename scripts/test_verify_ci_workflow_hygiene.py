@@ -377,16 +377,7 @@ jobs:
           git diff --name-only "${base_ref}...${head_ref}" > "$changed_files"
           base_tree="$RUNNER_TEMP/ci-policy-base-tree"
           mkdir -p "$base_tree"
-          git archive "$base_ref" \
-            scripts/verify_ci_path_filters.py \
-            scripts/ci_provenance.py \
-            scripts/lane_governor.py \
-            scripts/rust_verification.py \
-            scripts/command_understanding.py \
-            ci/rust-verification.toml \
-            ci/github-actions-runners.toml \
-            .github/workflows/ci.yml \
-            | tar -x -C "$base_tree"
+          git archive "$base_ref" scripts/ ci/rust-verification.toml ci/github-actions-runners.toml .github/workflows/ci.yml | tar -x -C "$base_tree"
           python3 "$base_tree/scripts/verify_ci_path_filters.py" \
             --changed-files "$changed_files" \
             --github-output "$GITHUB_OUTPUT"
@@ -2529,17 +2520,41 @@ def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
         raise AssertionError(f"expected workflow_dispatch detector guard error, got: {errors}")
 
 
-def assert_ci_detector_docs_only_archive_includes_runtime_dependencies() -> None:
+def assert_ci_base_ref_archives_use_scripts_directory() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
-    for dependency in ("scripts/rust_verification.py", "scripts/command_understanding.py", "ci/rust-verification.toml"):
-        mutated = replace_once(workflow, f"            {dependency} \\\n", "")
+    marker = 'git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"'
+    for replacement in (
+        'git archive "$base_ref" scripts/ci_provenance.py scripts/rust_verification.py ci/github-actions-runners.toml | tar -x -C "$base_tree"',
+        'git archive "$base_ref" scripts/ scripts/ci_provenance.py ci/github-actions-runners.toml | tar -x -C "$base_tree"',
+    ):
+        mutated = replace_once(workflow, marker, replacement)
         errors = verifier.verify_workflow(mutated)
         if not any(
-            f"detector docs-only classifier base archive must include {dependency}" in error
+            "base_ref git archive must archive scripts/ wholesale" in error
             for error in errors
         ):
-            raise AssertionError(f"expected detector docs-only base archive dependency error for {dependency}, got: {errors}")
+            raise AssertionError(f"expected base_ref scripts/ archive error for {replacement!r}, got: {errors}")
+
+
+def assert_ci_detector_docs_only_archive_includes_lane_policy() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    archive_without_policy = (
+        'git archive "$base_ref" scripts/ ci/github-actions-runners.toml .github/workflows/ci.yml | tar -x -C "$base_tree"'
+    )
+    archive_with_policy = (
+        'git archive "$base_ref" scripts/ ci/rust-verification.toml ci/github-actions-runners.toml .github/workflows/ci.yml | tar -x -C "$base_tree"'
+    )
+    if archive_without_policy in workflow:
+        workflow = replace_once(workflow, archive_without_policy, archive_with_policy)
+    mutated = replace_once(workflow, " ci/rust-verification.toml", "")
+    errors = verifier.verify_workflow(mutated)
+    if not any(
+        "detector docs-only classifier base archive must include ci/rust-verification.toml" in error
+        for error in errors
+    ):
+        raise AssertionError(f"expected detector docs-only lane policy archive error, got: {errors}")
 
 
 def assert_merge_group_support_gaps_are_reported() -> None:
@@ -11100,7 +11115,8 @@ def main() -> int:
     assert_test_archive_sccache_fail_open_contract()
     assert_test_archive_sccache_retry_preserves_compile_failures()
     assert_ci_detector_forces_build_on_workflow_dispatch()
-    assert_ci_detector_docs_only_archive_includes_runtime_dependencies()
+    assert_ci_base_ref_archives_use_scripts_directory()
+    assert_ci_detector_docs_only_archive_includes_lane_policy()
     assert_merge_group_support_gaps_are_reported()
     assert_mergify_config_gaps_are_reported()
     assert_ci_policy_heavy_lane_gaps_are_reported()

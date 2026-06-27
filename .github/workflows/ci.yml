@@ -93,6 +93,41 @@ permissions:
   actions: read
 
 jobs:
+  merge-readiness-progress:
+    name: merge-readiness-progress
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Watch merge-readiness progress
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ ! -f scripts/merge_readiness.py ]]; then
+            echo "merge_readiness.py is not present on the PR base; skipping"
+            exit 0
+          fi
+          python3 scripts/merge_readiness.py comment "$PR_NUMBER" \
+            --head-sha "$PR_HEAD_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --watch
+
   ci-policy:
     name: ci-policy
     needs: detector

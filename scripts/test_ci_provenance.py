@@ -124,7 +124,7 @@ supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.gate.proof_rule]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
+fresh = ["full", "docs", "tag_reuse"]
 carry_forward = []
 
 [ci_provenance.required_checks.backtester-gate]
@@ -138,7 +138,7 @@ supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
+fresh = ["full", "docs", "tag_reuse"]
 carry_forward = []
 
 [ci_provenance.required_checks.host-health]
@@ -350,7 +350,7 @@ context = "host-health"
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
 carry_forward = []
-fresh = ["full", "docs", "iteration", "tag_reuse"]
+fresh = ["full", "docs", "tag_reuse"]
 
 [ci_provenance.required_checks.backtester-gate]
 arrivals = ["pull_request", "merge_group"]
@@ -364,7 +364,7 @@ context = "backtester-gate"
 
 [ci_provenance.required_checks.gate.proof_rule]
 carry_forward = []
-fresh = ["full", "docs", "iteration", "tag_reuse"]
+fresh = ["full", "docs", "tag_reuse"]
 
 [ci_provenance.required_checks.gate]
 arrivals = ["pull_request", "merge_group"]
@@ -1644,6 +1644,33 @@ def assert_mergify_temp_pr_requires_actor_binding() -> None:
     # sender id) fails closed to the non-required gate-iteration.
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        sender_absent = object()
+
+        def run_with_event_sender(args: list[str], sender: object = sender_absent) -> tuple[int, str, str]:
+            had_previous = "EVENT_SENDER_ID" in os.environ
+            previous = os.environ.get("EVENT_SENDER_ID")
+            try:
+                if sender is sender_absent:
+                    os.environ.pop("EVENT_SENDER_ID", None)
+                else:
+                    os.environ["EVENT_SENDER_ID"] = str(sender)
+                return run_cli(args)
+            finally:
+                if had_previous and previous is not None:
+                    os.environ["EVENT_SENDER_ID"] = previous
+                else:
+                    os.environ.pop("EVENT_SENDER_ID", None)
+
+        def with_head_ref(args: list[str], head_ref: str) -> list[str]:
+            replaced = list(args)
+            replaced[replaced.index("--pull-request-head-ref") + 1] = head_ref
+            return replaced
+
+        def with_draft(args: list[str], draft: str) -> list[str]:
+            replaced = list(args)
+            replaced[replaced.index("--pull-request-draft") + 1] = draft
+            return replaced
+
         base_args = [
             "ci-policy",
             "--config",
@@ -1686,6 +1713,13 @@ def assert_mergify_temp_pr_requires_actor_binding() -> None:
         if absent.get("reason") == "mergify_temp_pr" or absent.get("gate_name") != "gate-iteration":
             raise AssertionError(f"absent sender id must fail closed to gate-iteration: {absent}")
 
+        code, stdout, stderr = run_with_event_sender(base_args, "37929162")
+        if code != 0:
+            raise AssertionError(f"env-bound mergify ci-policy failed: {stderr}")
+        env_bound = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if env_bound.get("reason") != "mergify_temp_pr" or env_bound.get("gate_name") != "gate":
+            raise AssertionError(f"env EVENT_SENDER_ID must bind mergify temp PR to required gate: {env_bound}")
+
         code, stdout, stderr = run_cli([*base_args, "--event-sender-id", "37929162"])
         if code != 0:
             raise AssertionError(f"bound-actor mergify ci-policy failed: {stderr}")
@@ -1698,6 +1732,43 @@ def assert_mergify_temp_pr_requires_actor_binding() -> None:
             or bound.get("full_ci_required") != "true"
         ):
             raise AssertionError(f"bound mergify actor must earn the required gate and full CI: {bound}")
+
+        tmp_args = with_head_ref(base_args, "tmp-mergify/merge-queue/83d4b0be7e")
+        code, stdout, stderr = run_with_event_sender(tmp_args, "37929162")
+        if code != 0:
+            raise AssertionError(f"env-bound tmp mergify ci-policy failed: {stderr}")
+        tmp_bound = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if (
+            tmp_bound.get("reason") != "mergify_temp_pr"
+            or tmp_bound.get("gate_name") != "gate"
+            or tmp_bound.get("backtester_gate_name") != "backtester-gate"
+            or tmp_bound.get("full_ci_required") != "true"
+        ):
+            raise AssertionError(f"tmp mergify ref from env-bound actor must earn required full CI: {tmp_bound}")
+
+        code, stdout, stderr = run_with_event_sender(with_draft(tmp_args, "false"), "37929162")
+        if code != 0:
+            raise AssertionError(f"non-draft tmp mergify ci-policy failed: {stderr}")
+        tmp_non_draft = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if tmp_non_draft.get("reason") == "mergify_temp_pr" or tmp_non_draft.get("gate_name") != "gate-iteration":
+            raise AssertionError(f"non-draft tmp mergify ref must demote to gate-iteration: {tmp_non_draft}")
+
+        code, stdout, stderr = run_with_event_sender(tmp_args, "12345")
+        if code != 0:
+            raise AssertionError(f"non-actor tmp mergify ci-policy failed: {stderr}")
+        tmp_non_actor = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if tmp_non_actor.get("reason") == "mergify_temp_pr" or tmp_non_actor.get("gate_name") != "gate-iteration":
+            raise AssertionError(f"non-actor tmp mergify ref must demote to gate-iteration: {tmp_non_actor}")
+
+        code, stdout, stderr = run_with_event_sender(tmp_args, "not-a-number")
+        if code != 0:
+            raise AssertionError(f"malformed-env tmp mergify ci-policy failed: {stderr}")
+        tmp_malformed_env = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if (
+            tmp_malformed_env.get("reason") == "mergify_temp_pr"
+            or tmp_malformed_env.get("gate_name") != "gate-iteration"
+        ):
+            raise AssertionError(f"malformed EVENT_SENDER_ID must demote tmp ref: {tmp_malformed_env}")
 
 
 def assert_parse_event_sender_id_fails_closed() -> None:
@@ -2045,13 +2116,13 @@ EXPECTED_REQUIRED_CHECK_PROOF_RULES = {
     "gate": {
         "runs_on_tags": True,
         "supports_carry_forward": True,
-        "fresh": ("full", "docs", "iteration", "tag_reuse"),
+        "fresh": ("full", "docs", "tag_reuse"),
         "carry_forward": (),
     },
     "backtester-gate": {
         "runs_on_tags": True,
         "supports_carry_forward": True,
-        "fresh": ("full", "docs", "iteration", "tag_reuse"),
+        "fresh": ("full", "docs", "tag_reuse"),
         "carry_forward": (),
     },
     "host-health": {
@@ -2227,10 +2298,16 @@ required = false
             "integration_id = 15368",
             "integration_id = 15369",
         ),
-        "maps ready_pr": replace_once(
+        "proof_rule.fresh must be": replace_once(
             CONFIG_TOML,
-            'fresh = ["full", "docs", "iteration", "tag_reuse"]',
-            'fresh = ["full", "docs", "tag_reuse"]',
+            """[ci_provenance.required_checks.gate.proof_rule]
+fresh = ["full", "docs", "tag_reuse"]
+carry_forward = []
+""",
+            """[ci_provenance.required_checks.gate.proof_rule]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+carry_forward = []
+""",
         ),
     }
     for fragment, config_text in mutations.items():

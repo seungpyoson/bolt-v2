@@ -373,7 +373,7 @@ def load_required_checks(
 
 
 def required_check_applicable_event_classes(
-    *, check: RequiredCheckConfig, policy: dict[str, str]
+    *, check: RequiredCheckConfig, policy: dict[str, str], gate_names: dict[str, str]
 ) -> set[str]:
     # The registry model is keyed on event class, not individual pull_request
     # action. actionlint.yml omits converted_to_draft, but that action creates
@@ -393,6 +393,10 @@ def required_check_applicable_event_classes(
             applicable.add(expected_event_class_for(event, candidate_policy_path))
     if not check.runs_on_tags:
         applicable.discard("tag_reuse")
+    if check.context in {gate_names["gate_required"], gate_names["backtester_required"]}:
+        # Ordinary PR iteration events publish the feedback-only gate_iteration names.
+        # They do not emit the required gate/backtester-gate contexts.
+        applicable.discard("iteration")
     return applicable
 
 
@@ -492,7 +496,7 @@ def required_check_registry_contract_errors(
 
         fresh = set(check.fresh_event_classes)
         carry_forward = set(check.carry_forward_event_classes)
-        applicable = required_check_applicable_event_classes(check=check, policy=policy)
+        applicable = required_check_applicable_event_classes(check=check, policy=policy, gate_names=gate_names)
         expected_carry_forward = required_check_carry_forward_event_classes(
             check=check,
             policy=policy,
@@ -1147,17 +1151,12 @@ def gate_name_suffix_for(event_name: str, reason: str, path: str) -> str:
     raise ProvenanceError(f"cannot resolve gate name for ci_policy_path {path!r}")
 
 
+MERGIFY_TEMP_PR_TRANSIENT_PREFIX = "tmp-"
+
 # Mergify documents the merge-queue branch as "[tmp-]mergify/merge-queue/<10 hex>".
-# The CI policy resolver intentionally matches ONLY the bare "mergify/merge-queue/"
-# form (config.mergify_temp_pr_head_ref_prefix) and does NOT strip a leading "tmp-".
-# Rationale: the workflow concurrency layer (.github/workflows/{ci,backtester-ci}.yml)
-# isolates a proof-PR run — its own per-run group, never cancelled — ONLY when the head
-# ref satisfies startsWith(head.ref, 'mergify/merge-queue/'). A "tmp-mergify/..." ref
-# fails that predicate, so it would land in the cancellable deferred group; promoting it
-# to the required gate here would let a second event cancel the run mid-flight and
-# deadlock the queue. The resolver must never promote a ref the workflow cannot isolate,
-# so both layers key off the SAME prefix. verify_ci_workflow_hygiene.py's
-# mergify_proof_prefix_alignment_errors() fails loud if the two ever drift.
+# `tmp-` is a documented transient form (docs/ci/merge-queue-evidence.md); the
+# resolver and workflow concurrency layer must both recognize it, or a proof PR can
+# be promoted without isolation and leave the queue waiting forever for `gate`.
 
 
 def mergify_temp_pr_matches(
@@ -1174,10 +1173,14 @@ def mergify_temp_pr_matches(
     # temp PR is recognized only when the event sender is the bound mergify actor, so a
     # spoofed head ref (or an absent/mismatched sender id) fails closed and is treated
     # as an ordinary PR -> gate-iteration (demote).
+    transient_head_ref_prefix = f"{MERGIFY_TEMP_PR_TRANSIENT_PREFIX}{temp_pr_head_ref_prefix}"
     return (
         event_name == "pull_request"
         and pull_request_draft
-        and pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
+        and (
+            pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
+            or pull_request_head_ref.startswith(transient_head_ref_prefix)
+        )
         and event_sender_id == temp_pr_actor_id
     )
 

@@ -181,7 +181,7 @@ supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.gate.proof_rule]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
+fresh = ["full", "docs", "tag_reuse"]
 carry_forward = []
 
 [ci_provenance.required_checks.backtester-gate]
@@ -195,7 +195,7 @@ supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
+fresh = ["full", "docs", "tag_reuse"]
 carry_forward = []
 
 [ci_provenance.required_checks.host-health]

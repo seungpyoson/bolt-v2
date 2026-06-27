@@ -19,6 +19,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from ci_provenance import (
     GATE_NAME_KEYS,
+    MERGIFY_TEMP_PR_TRANSIENT_PREFIX,
     POLICY_ROWS,
     POLICY_VALUES,
     ProvenanceError,
@@ -788,7 +789,14 @@ def _normalize_concurrency_text(text: str) -> str:
     return " ".join(text.split())
 
 
-MERGIFY_PROOF_PR_HEAD_REF_PREDICATE = "startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')"
+MERGIFY_PROOF_PR_BASE_HEAD_REF_PREFIX = "mergify/merge-queue/"
+MERGIFY_PROOF_PR_TRANSIENT_HEAD_REF_PREFIX = (
+    f"{MERGIFY_TEMP_PR_TRANSIENT_PREFIX}{MERGIFY_PROOF_PR_BASE_HEAD_REF_PREFIX}"
+)
+MERGIFY_PROOF_PR_HEAD_REF_PREDICATE = (
+    f"(startsWith(github.event.pull_request.head.ref, '{MERGIFY_PROOF_PR_BASE_HEAD_REF_PREFIX}') "
+    f"|| startsWith(github.event.pull_request.head.ref, '{MERGIFY_PROOF_PR_TRANSIENT_HEAD_REF_PREFIX}'))"
+)
 MERGIFY_PROOF_PR_CANCEL_GUARD = f"!{MERGIFY_PROOF_PR_HEAD_REF_PREDICATE}"
 MERGIFY_PROOF_PR_GROUP_TOKEN = "mergify-proof"
 
@@ -798,7 +806,8 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # wins under merge_group (the PR/workflow_dispatch arms are false then), before
     # the per-ref/sha fallback; PR-draft-deferral arms are gated off merge_group.
     "group: >- ${{ github.event_name == 'pull_request' "
-    "&& startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
     "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
     "|| github.event_name == 'pull_request' && github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
@@ -814,7 +823,8 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # .github/workflows/actionlint.yml — simpler prefixed shape, same merge_group
     # arm before the per-ref/sha fallback.
     "group: >- actionlint-${{ github.event_name == 'pull_request' "
-    "&& startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
     "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
     "|| github.event_name == 'pull_request' && format('pr-{0}', github.event.number) "
     "|| github.event_name == 'merge_group' && format('mq-{0}', github.ref) "
@@ -822,7 +832,8 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # .github/workflows/backtester-ci.yml — same draft/full PR split as ci.yml
     # with a backtester-prefixed merge_group arm before the per-ref/sha fallback.
     "group: >- ${{ github.event_name == 'pull_request' "
-    "&& startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
     "&& format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
     "|| github.event_name == 'pull_request' && github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
@@ -852,12 +863,14 @@ KNOWN_SAFE_CANCEL_FORMS = frozenset(
         "&& (github.event.action == 'reopened' || (github.event.action == 'edited' "
         "&& !(github.event.changes.base.ref.from != '')))) || github.event_name == 'workflow_dispatch' }}",
         "${{ github.event_name == 'pull_request' "
-        "&& !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+        "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+        "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
         "&& !(github.event.pull_request.draft == false && (github.event.action == 'reopened' "
         "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))) "
         "|| github.event_name == 'workflow_dispatch' }}",
         "${{ github.event_name == 'pull_request' "
-        "&& !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') }}",
+        "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+        "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) }}",
     }
 )
 
@@ -957,78 +970,114 @@ def merge_group_concurrency_errors(group_text: str, cancel_text: str) -> list[st
     return errors
 
 
-def mergify_proof_pr_concurrency_errors(group_text: str, cancel_text: str) -> list[str]:
+def mergify_proof_pr_concurrency_errors(
+    group_text: str,
+    cancel_text: str,
+    *,
+    head_ref_predicate: str = MERGIFY_PROOF_PR_HEAD_REF_PREDICATE,
+    cancel_guard: str = MERGIFY_PROOF_PR_CANCEL_GUARD,
+) -> list[str]:
     errors: list[str] = []
     normalized_group = _normalize_concurrency_text(group_text)
     normalized_cancel = _normalize_concurrency_text(cancel_text)
     if (
-        MERGIFY_PROOF_PR_HEAD_REF_PREDICATE not in normalized_group
+        head_ref_predicate not in normalized_group
         or MERGIFY_PROOF_PR_GROUP_TOKEN not in normalized_group
         or "github.run_id" not in normalized_group
     ):
         errors.append("concurrency group must isolate Mergify proof PR runs")
-    if MERGIFY_PROOF_PR_CANCEL_GUARD not in normalized_cancel:
+    if cancel_guard not in normalized_cancel:
         errors.append("cancel-in-progress must not cancel Mergify proof PR validations")
     return errors
 
 
-def _workflow_proof_pr_prefix() -> str:
-    """The head-ref prefix the workflow concurrency layer isolates, extracted from
+def _workflow_proof_pr_prefixes() -> frozenset[str]:
+    """The head-ref prefixes the workflow concurrency layer isolates, extracted from
     MERGIFY_PROOF_PR_HEAD_REF_PREDICATE: startsWith(<ref>, '<prefix>')."""
-    match = re.search(r"startsWith\([^,]+,\s*'([^']*)'\)", MERGIFY_PROOF_PR_HEAD_REF_PREDICATE)
-    if not match:
+    prefixes = frozenset(re.findall(r"startsWith\([^,]+,\s*'([^']*)'\)", MERGIFY_PROOF_PR_HEAD_REF_PREDICATE))
+    if not prefixes:
         raise ProvenanceError(
-            "MERGIFY_PROOF_PR_HEAD_REF_PREDICATE must embed a startsWith(ref, '<prefix>') literal"
+            "MERGIFY_PROOF_PR_HEAD_REF_PREDICATE must embed at least one startsWith(ref, '<prefix>') literal"
         )
-    return match.group(1)
+    return prefixes
 
 
 def mergify_proof_prefix_alignment_errors(config: ProvenanceConfig) -> list[str]:
     """Fail loud if the CI policy resolver and the workflow concurrency layer ever
-    disagree on which head-ref prefix marks a Mergify proof PR.
+    disagree on which head-ref prefixes mark a Mergify proof PR.
 
     The workflow isolates a proof-PR run (own per-run concurrency group, never
-    cancelled) ONLY when the head ref satisfies
-    startsWith(head.ref, 'mergify/merge-queue/'). The resolver promotes a draft PR from
-    the bound Mergify actor to the required gate when the head ref starts with
-    config.mergify_temp_pr_head_ref_prefix. If the resolver promotes a ref the workflow
-    will NOT isolate, that run lands in the cancellable deferred group and a second event
-    can cancel it mid-flight -> the required gate never reports and the queue deadlocks.
-    So resolver-promotion must be a subset of workflow-isolation, and the two prefixes
-    must be identical."""
+    cancelled) when the head ref satisfies one of the documented Mergify proof-PR
+    prefixes. The resolver must promote exactly that same set for the bound actor.
+    If either layer handles a form the other does not, the required gate can be
+    skipped or cancelled and the queue can deadlock."""
     errors: list[str] = []
-    workflow_prefix = _workflow_proof_pr_prefix()
-    resolver_prefix = config.mergify_temp_pr_head_ref_prefix
-    if workflow_prefix != resolver_prefix:
+    workflow_prefixes = _workflow_proof_pr_prefixes()
+    resolver_prefixes = frozenset(
+        {
+            config.mergify_temp_pr_head_ref_prefix,
+            f"{MERGIFY_TEMP_PR_TRANSIENT_PREFIX}{config.mergify_temp_pr_head_ref_prefix}",
+        }
+    )
+    if workflow_prefixes != resolver_prefixes:
         errors.append(
-            "mergify proof-PR prefix drift: resolver "
-            f"config.mergify_temp_pr_head_ref_prefix={resolver_prefix!r} must equal the workflow "
-            f"concurrency predicate prefix {workflow_prefix!r} (ci_provenance and the workflows must "
-            "isolate the SAME head-ref prefix)"
+            "mergify proof-PR prefix drift: resolver prefixes "
+            f"{sorted(resolver_prefixes)!r} must equal workflow concurrency predicate prefixes "
+            f"{sorted(workflow_prefixes)!r}"
         )
     actor_id = config.mergify_temp_pr_actor_id
     suffix = "83d4b0be7e"
-    candidates = (
-        workflow_prefix + suffix,            # canonical proof PR: workflow isolates it
-        "tmp-" + workflow_prefix + suffix,   # transient tmp- form: workflow does NOT isolate it
-        "feature/spoofed-head",              # unrelated ref: workflow does NOT isolate it
-    )
-    for head_ref in candidates:
-        workflow_isolates = head_ref.startswith(workflow_prefix)
+    expected_head_refs = {prefix: prefix + suffix for prefix in resolver_prefixes}
+    resolver_promoted_prefixes: set[str] = set()
+    workflow_isolated_prefixes: set[str] = set()
+    for prefix, head_ref in expected_head_refs.items():
+        workflow_isolates = any(head_ref.startswith(workflow_prefix) for workflow_prefix in workflow_prefixes)
         resolver_promotes = mergify_temp_pr_matches(
             event_name="pull_request",
             pull_request_draft=True,
             pull_request_head_ref=head_ref,
-            temp_pr_head_ref_prefix=resolver_prefix,
+            temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,
             event_sender_id=actor_id,
             temp_pr_actor_id=actor_id,
         )
+        if resolver_promotes:
+            resolver_promoted_prefixes.add(prefix)
+        if workflow_isolates:
+            workflow_isolated_prefixes.add(prefix)
         if resolver_promotes and not workflow_isolates:
             errors.append(
                 "mergify proof-PR drift: resolver promotes head ref "
                 f"{head_ref!r} that the workflow concurrency layer does not isolate (it would land "
                 "in the cancellable group and deadlock the queue)"
             )
+        if workflow_isolates and not resolver_promotes:
+            errors.append(
+                "mergify proof-PR drift: workflow concurrency layer isolates head ref "
+                f"{head_ref!r} that the resolver does not promote (the required gate would not report)"
+            )
+    unrelated_ref = "feature/x"
+    unrelated_workflow_isolates = any(
+        unrelated_ref.startswith(workflow_prefix) for workflow_prefix in workflow_prefixes
+    )
+    unrelated_resolver_promotes = mergify_temp_pr_matches(
+        event_name="pull_request",
+        pull_request_draft=True,
+        pull_request_head_ref=unrelated_ref,
+        temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,
+        event_sender_id=actor_id,
+        temp_pr_actor_id=actor_id,
+    )
+    if unrelated_workflow_isolates or unrelated_resolver_promotes:
+        errors.append(
+            "mergify proof-PR drift: unrelated head ref "
+            f"{unrelated_ref!r} must be neither workflow-isolated nor resolver-promoted"
+        )
+    if resolver_promoted_prefixes != workflow_isolated_prefixes:
+        errors.append(
+            "mergify proof-PR prefix drift: resolver-promoted prefixes "
+            f"{sorted(resolver_promoted_prefixes)!r} must equal workflow-isolated prefixes "
+            f"{sorted(workflow_isolated_prefixes)!r}"
+        )
     return errors
 
 
@@ -1406,6 +1455,8 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         errors.append("ci-policy must pass github.ref")
     if "EVENT_SENDER_ID: ${{ github.event.sender.id }}" not in text:
         errors.append("ci-policy must set EVENT_SENDER_ID env for the mergify actor binding")
+    if "--event-sender-id" in text:
+        errors.append("ci-policy must not pass --event-sender-id on the resolver command line")
     return errors
 
 
@@ -8526,24 +8577,40 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
     return errors
 
 
+def docs_only_archive_pathspecs(text: str) -> list[str] | None:
+    match = re.search(r'git\s+archive\s+"\$base_ref"(?P<args>.*?)\|\s*tar\b', text, re.DOTALL)
+    if match is None:
+        return None
+    archive_args = re.sub(r"\\\s*\n", " ", match.group("args"))
+    try:
+        return shlex.split(archive_args)
+    except ValueError:
+        return []
+
+
 def detector_docs_only_archive_errors(job_lines: list[str]) -> list[str]:
     docs_only_block = unique_step_with_id(job_lines, "docs_only")
     if docs_only_block is None:
         return []
     text = uncommented_text(docs_only_block)
     errors: list[str] = []
-    for required in (
-        'git archive "$base_ref"',
-        "scripts/ ",  # whole scripts/ dir (note trailing space): a per-file entry like
-                      # "scripts/rust_verification.py" never produces "scripts/ ", so this
-                      # token only matches when the entire scripts/ dir is archived.
-        "ci/rust-verification.toml",
-        "ci/github-actions-runners.toml",
-        ".github/workflows/ci.yml",
-        'python3 "$base_tree/scripts/verify_ci_path_filters.py"',
-    ):
-        if required not in text:
-            errors.append(f"detector docs-only classifier base archive must include {required}")
+    pathspecs = docs_only_archive_pathspecs(text)
+    if pathspecs is None:
+        errors.append('detector docs-only classifier base archive must include git archive "$base_ref"')
+        pathspecs = []
+    required_pathspecs = {
+        "scripts/": {"scripts/", "scripts"},
+        "ci/rust-verification.toml": {"ci/rust-verification.toml"},
+        "ci/github-actions-runners.toml": {"ci/github-actions-runners.toml"},
+        ".github/workflows/ci.yml": {".github/workflows/ci.yml"},
+    }
+    for label, accepted_tokens in required_pathspecs.items():
+        if not any(token in accepted_tokens for token in pathspecs):
+            errors.append(f"detector docs-only classifier base archive must include {label}")
+    if 'python3 "$base_tree/scripts/verify_ci_path_filters.py"' not in text:
+        errors.append(
+            'detector docs-only classifier base archive must include python3 "$base_tree/scripts/verify_ci_path_filters.py"'
+        )
     return errors
 
 
@@ -10307,6 +10374,8 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         ]:
             if required not in policy_text:
                 errors.append(f"backtester draft deferral ci-policy job must include {required}")
+        if "--event-sender-id" in policy_text:
+            errors.append("ci-policy must not pass --event-sender-id on the resolver command line")
 
     for heavy_job in ("clippy", "test-archive", "test"):
         job = jobs.get(heavy_job)

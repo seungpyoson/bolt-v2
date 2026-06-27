@@ -1008,7 +1008,7 @@ def evaluate_backtester_gate_verdict(
         if expected_event_class != "iteration":
             raise ProvenanceError(f"backtester iteration CI policy outside resolver-permitted event class {expected_event_class!r}")
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip during iteration")
-        require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester iteration")
+        require_jobs_skipped(job_results, ("clippy", "test-archive"), "backtester iteration")
         return "backtester iteration CI policy; no required full proof published by this run"
 
     if not bvs_changed:
@@ -1021,7 +1021,7 @@ def evaluate_backtester_gate_verdict(
                 f"policy_path {policy_path!r}, got {expected_event_class!r}"
             )
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip on non-crate PR")
-        require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester no-crate")
+        require_jobs_skipped(job_results, ("clippy", "test-archive"), "backtester no-crate")
         return "backtester no-crate proof passed"
 
     if policy_path == "noop":
@@ -1031,7 +1031,6 @@ def evaluate_backtester_gate_verdict(
             ("fmt", "bvs-fmt"),
             ("clippy", "bvs-clippy"),
             ("test-archive", "bvs-test archive"),
-            ("test", "bvs-test"),
         ):
             require_job_result(job_results, job, "success", f"{label} did not succeed")
         return "backtester no-code policy recomputed proof passed"
@@ -1043,7 +1042,6 @@ def evaluate_backtester_gate_verdict(
             ("fmt", "bvs-fmt"),
             ("clippy", "bvs-clippy"),
             ("test-archive", "bvs-test archive"),
-            ("test", "bvs-test"),
         ):
             require_job_result(job_results, job, "success", f"{label} did not succeed")
         return "backtester deferred policy recomputed proof passed"
@@ -1056,7 +1054,6 @@ def evaluate_backtester_gate_verdict(
         ("fmt", "bvs-fmt"),
         ("clippy", "bvs-clippy"),
         ("test-archive", "bvs-test archive"),
-        ("test", "bvs-test"),
     ):
         require_job_result(job_results, job, "success", f"{label} did not succeed")
     return "backtester lanes passed"

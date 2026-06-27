@@ -4183,16 +4183,16 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
         )
 
     issue_gate_workflow = workflow
-    if "needs: [ci-policy, detect, fmt, clippy, test-archive, test, issue_789]" not in issue_gate_workflow:
+    if "needs: [ci-policy, detect, fmt, clippy, test-archive, issue_789]" not in issue_gate_workflow:
         issue_gate_workflow = replace_once(
             issue_gate_workflow,
-            "needs: [ci-policy, detect, fmt, clippy, test-archive, test]",
-            "needs: [ci-policy, detect, fmt, clippy, test-archive, test, issue_789]",
+            "needs: [ci-policy, detect, fmt, clippy, test-archive]",
+            "needs: [ci-policy, detect, fmt, clippy, test-archive, issue_789]",
         )
     issue_gate_workflow = replace_once(
         issue_gate_workflow,
-        "--job test=${{ needs.test.result }}",
-        "--job test=${{ needs.test.result }} \\\n            --job issue_789=${{ needs.issue_789.result }}",
+        "--job test-archive=${{ needs.test-archive.result }}",
+        "--job test-archive=${{ needs.test-archive.result }} \\\n            --job issue_789=${{ needs.issue_789.result }}",
     )
     issue_gate_errors = verifier.verify_repo_automation_texts({workflow_name: issue_gate_workflow})
     if not any("backtester diagnostic issue-789 lane must not gate merge proof" in error for error in issue_gate_errors):
@@ -7507,11 +7507,16 @@ def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
           key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml') }}
 """
     errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
+    assert any("backtester managed-target cache key must include 'Cargo.lock'" in error for error in errors), errors
+    assert any("backtester managed-target cache key must include 'Cargo.toml'" in error for error in errors), errors
+    assert any("backtester managed-target cache key must include 'build.rs'" in error for error in errors), errors
+    assert any("backtester managed-target cache key must include 'src/**'" in error for error in errors), errors
+    assert any("backtester managed-target cache key must include 'tests/**'" in error for error in errors), errors
     assert any("backtester managed-target cache key must include crates/backtesting-vertical-slice/src/**" in error for error in errors), errors
     assert any("backtester managed-target cache key must include crates/backtesting-vertical-slice/tests/**" in error for error in errors), errors
     good = bad.replace(
         "'crates/backtesting-vertical-slice/Cargo.toml'",
-        "'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**'",
+        "'crates/backtesting-vertical-slice/Cargo.toml', 'Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**'",
     )
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [
@@ -7548,8 +7553,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
 """
     errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
     assert any("backtester bvs-test must not run direct per-shard target builds" in error for error in errors), errors
-    assert any("backtester bvs-test shards must name matrix shards" in error for error in errors), errors
-    assert any("backtester bvs-test must define dedicated issue-789 job" in error for error in errors), errors
+    assert any("backtester bvs-test must run partitions in the archive producer" in error for error in errors), errors
+    assert any("backtester bvs-test must define manual issue-789 diagnostic job" in error for error in errors), errors
 
     good = """jobs:
   test-archive:
@@ -7558,19 +7563,20 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     env:
       BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+      BVS_NEXTEST_SHARDS: "4"
     steps:
       - name: Restore BVS nextest archive
         id: bvs-nextest-archive-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
-          key: bvs-nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**') }}
+          key: bvs-nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-scoped-targets-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**') }}
       - name: Restore BVS binary sidecars
         id: bvs-bin-sidecars-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
-          key: bvs-bin-sidecars-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**') }}
+          key: bvs-bin-sidecars-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-cargo-bin-exe-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**') }}
       - name: Resolve crate managed target dir
-        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+        id: crate_target
       - uses: Swatinem/rust-cache@example
         with:
           save-if: ${{ github.job == 'test-archive' }}
@@ -7580,79 +7586,52 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
       - name: Build BVS nextest archive
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
-        run: just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH"
+        run: just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" --lib --test backtesting_vertical_slice_tests --bin backtesting-vertical-slice --bin source_universe_batch_execution
       - name: Save BVS nextest archive
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
       - name: Build BVS binary sidecars
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
         run: |
-          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- build --locked --bins
-          find debug -maxdepth 1 -type f -perm -111 -print0
+          CARGO_BIN_EXE_([A-Za-z0-9_]+)
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- "${cargo_args[@]}"
+          tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
       - name: Save BVS binary sidecars
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
       - name: Save archive build target cache
         if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
-      - name: Upload BVS test payload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: bvs-test-payload
-          path: .nextest-archive
-          include-hidden-files: true
-          if-no-files-found: error
-  test:
-    name: bvs-test ${{ matrix.shard }} of 4
-    needs: [ci-policy, detect, fmt, test-archive]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.test-archive.result == 'success' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    env:
-      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
-      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
-      BVS_NEXTEST_SHARDS: "4"
-    steps:
-      - name: Download BVS test payload
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: bvs-test-payload
-          path: .nextest-archive
-      - name: Require BVS test payload
+      - name: Require BVS local payload
         run: |
-          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }
-          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }
+          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }
+          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty"; exit 1; }
+          stat -c 'bvs-payload-size %n %s' "$BVS_NEXTEST_ARCHIVE_PATH" "$BVS_BIN_SIDECARS_PATH"
       - name: Extract BVS binary sidecars
         run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
+      - name: List scoped BVS archive tests
+        run: nextest list --archive-file "$BVS_NEXTEST_ARCHIVE_PATH"
       - name: test
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
-          just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${{ matrix.shard }}/${{ env.BVS_NEXTEST_SHARDS }}" -- --skip issue_789_first_real_free_data_taker_pl
+          for shard in $(seq 1 "$BVS_NEXTEST_SHARDS"); do
+            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl
+          done
   issue_789:
     name: bvs-test issue-789
-    needs: [ci-policy, detect, test-archive, gate]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.test-archive.result == 'success' && needs.gate.result == 'success' }}
+    needs: [ci-policy, detect, gate]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.event.inputs.issue_789 == 'true' && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.gate.result == 'success' }}
     env:
-      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
-      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+      BVS_ISSUE_789_ARCHIVE_PATH: .nextest-archive/bvs-issue-789-lib.tar.zst
       BOLT_ISSUE_789_RESULT_PATH: result.json
     steps:
-      - name: Download BVS test payload
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: bvs-test-payload
-          path: .nextest-archive
-      - name: Require BVS test payload
+      - name: Build issue #789 lib archive
         run: |
-          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }
-          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }
-      - name: Extract BVS binary sidecars
-        run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
+          just bte-test-archive "$BVS_ISSUE_789_ARCHIVE_PATH" --lib
+          stat -c 'bvs-issue-789-archive-size %n %s' "$BVS_ISSUE_789_ARCHIVE_PATH"
       - name: test issue-789
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
-          just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl
+          just bte-test-archive-run "$BVS_ISSUE_789_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl
       - name: Upload issue #789 first-P/L artifact
         uses: actions/upload-artifact@example
         with:
@@ -7662,120 +7641,36 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
 
+    fanout = good.replace(
+        "      - name: Require BVS local payload\n",
+        "      - name: Upload BVS test payload\n        with:\n          name: bvs-test-payload\n      - name: Require BVS local payload\n",
+        1,
+    )
+    fanout_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": fanout})
+    assert any("legacy fan-out payload" in error for error in fanout_errors), fanout_errors
+
     weakened_archive_guard = good.replace(
-        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }',
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }',
         'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || true',
         1,
     )
     weakened_errors = verifier.verify_repo_automation_texts(
         {".github/workflows/backtester-ci.yml": weakened_archive_guard}
     )
-    assert any("not fail-closed" in error and 'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || true' in error for error in weakened_errors), weakened_errors
-
-    missing_archive_guard = good.replace(
-        '          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }\n',
-        "",
-        1,
-    )
-    def assert_missing_consumer_guard(workflow: str, payload_name: str, scope_name: str) -> None:
-        expected_error = (
-            f"backtester consumer must fail closed if the downloaded {payload_name} "
-            f"is missing or empty ({scope_name})"
-        )
-        workflow_errors = verifier.verify_repo_automation_texts(
-            {".github/workflows/backtester-ci.yml": workflow}
-        )
-        assert any(expected_error in error for error in workflow_errors), workflow_errors
-
-    def assert_missing_shards_archive_guard(workflow: str) -> None:
-        assert_missing_consumer_guard(workflow, "archive", "bvs-test shards")
-
-    missing_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": missing_archive_guard}
-    )
-    assert any(
-        "backtester consumer must fail closed if the downloaded archive is missing or empty" in error
-        for error in missing_errors
-    ), missing_errors
-    assert_missing_shards_archive_guard(
-        missing_archive_guard.replace(
-            '      BVS_NEXTEST_SHARDS: "4"\n',
-            '      BVS_NEXTEST_SHARDS: "4"\n'
-            '      ARCHIVE_DECOY: \'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\'\n',
-            1,
-        )
-    )
-    assert_missing_shards_archive_guard(
-        missing_archive_guard.replace(
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
-            '          echo \'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\'\n',
-            1,
-        )
-    )
-    assert_missing_shards_archive_guard(
-        missing_archive_guard.replace(
-            '      BVS_NEXTEST_SHARDS: "4"\n',
-            '      BVS_NEXTEST_SHARDS: "4"\n'
-            "      DECOY: |\n"
-            "        ignored\n"
-            '        test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\n',
-            1,
-        )
-    )
-    assert_missing_consumer_guard(
-        replace_once(
-            missing_archive_guard,
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
-            '          test -s "$BVS_NEXTEST_ARCHIVE_PATH".decoy || exit 1\n',
-        ),
-        "archive",
-        "bvs-test shards",
-    )
-
-    missing_sidecars_guard = good.replace(
-        '          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }\n',
-        "",
-        1,
-    )
-    assert_missing_consumer_guard(
-        replace_once(
-            missing_sidecars_guard,
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
-            '          test -s "$BVS_BIN_SIDECARS_PATH".decoy || exit 1\n',
-        ),
-        "sidecars",
-        "bvs-test shards",
-    )
-
-    missing_issue_archive_guard = without_once_after(
-        good,
-        "  issue_789:\n",
-        '          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }\n',
-    )
-    assert_missing_consumer_guard(
-        replace_once_after(
-            missing_issue_archive_guard,
-            "      - name: test issue-789\n",
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
-            '          test -s "$BVS_NEXTEST_ARCHIVE_PATH".decoy || exit 1\n',
-        ),
-        "archive",
-        "bvs-test issue-789",
-    )
+    assert any("backtester bvs-test archive must fail closed on missing local payload" in error for error in weakened_errors), weakened_errors
 
     exit_one_archive_guard = good.replace(
-        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }',
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }',
         'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1',
         1,
     )
     exit_one_errors = verifier.verify_repo_automation_texts(
         {".github/workflows/backtester-ci.yml": exit_one_archive_guard}
     )
-    assert not [error for error in exit_one_errors if "backtester consumer" in error], exit_one_errors
+    assert any(
+        "backtester bvs-test archive must fail closed on missing local payload" in error
+        for error in exit_one_errors
+    ), exit_one_errors
 
 
 def assert_cache_as_same_run_transport_is_banned() -> None:

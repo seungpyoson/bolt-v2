@@ -140,6 +140,81 @@ def missing_snippets(label: str, text: str, snippets: tuple[str, ...]) -> list[s
     return [f"{label} missing expected snippet: {snippet!r}" for snippet in snippets if snippet not in text]
 
 
+def pr_agent_extra_instructions(pr_agent_toml: str) -> tuple[str, list[str]]:
+    try:
+        parsed = tomllib.loads(pr_agent_toml)
+    except tomllib.TOMLDecodeError as exc:
+        return "", [f".pr_agent.toml invalid TOML: {exc}"]
+
+    reviewer = parsed.get("pr_reviewer")
+    if not isinstance(reviewer, dict):
+        return "", [".pr_agent.toml missing [pr_reviewer]"]
+
+    extra = reviewer.get("extra_instructions")
+    if not isinstance(extra, str) or not extra.strip():
+        return "", [".pr_agent.toml missing non-empty pr_reviewer.extra_instructions"]
+
+    return extra, []
+
+
+def non_empty_string_list(value: object) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(item, str) and item for item in value)
+
+
+def verify_pr_agent_mirror(ai_review_toml: str, pr_agent_toml: str) -> list[str]:
+    findings: list[str] = []
+    try:
+        parsed = tomllib.loads(ai_review_toml)
+    except tomllib.TOMLDecodeError:
+        return findings
+
+    mirror = parsed.get("pr_agent_mirror")
+    if not isinstance(mirror, dict):
+        return ["ci/ai-review.toml missing [pr_agent_mirror]"]
+
+    note_snippets = mirror.get("required_note_snippets")
+    if not non_empty_string_list(note_snippets):
+        findings.append("ci/ai-review.toml pr_agent_mirror.required_note_snippets must be a non-empty string list")
+        note_snippets = []
+
+    rules = mirror.get("rules")
+    if not isinstance(rules, list) or not rules:
+        findings.append("ci/ai-review.toml pr_agent_mirror.rules must be a non-empty table array")
+        rules = []
+
+    extra, extra_findings = pr_agent_extra_instructions(pr_agent_toml)
+    findings.extend(extra_findings)
+    if extra_findings:
+        return findings
+
+    for snippet in note_snippets:
+        if snippet not in extra:
+            findings.append(f".pr_agent.toml missing mirrored governance note: {snippet!r}")
+
+    seen_names: set[str] = set()
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            findings.append(f"ci/ai-review.toml pr_agent_mirror.rules[{index}] must be a table")
+            continue
+        name = rule.get("name")
+        if not isinstance(name, str) or not name:
+            findings.append(f"ci/ai-review.toml pr_agent_mirror.rules[{index}].name must be non-empty")
+            name = f"rule-{index}"
+        elif name in seen_names:
+            findings.append(f"ci/ai-review.toml duplicate pr_agent_mirror rule {name!r}")
+        seen_names.add(name)
+
+        snippets = rule.get("snippets")
+        if not non_empty_string_list(snippets):
+            findings.append(f"ci/ai-review.toml pr_agent_mirror rule {name!r} snippets must be non-empty")
+            continue
+        for snippet in snippets:
+            if snippet not in extra:
+                findings.append(f".pr_agent.toml missing mirrored governance rule {name!r}: {snippet!r}")
+
+    return findings
+
+
 def verify_ai_review_config(ai_review_toml: str) -> list[str]:
     findings: list[str] = []
     try:
@@ -277,6 +352,7 @@ def verify_review_job_timeout_budget(
 def verify_texts(
     *,
     ai_review_toml: str,
+    pr_agent_toml: str,
     glm_workflow: str,
     kimi_workflow: str,
     smoke_workflow: str,
@@ -284,6 +360,7 @@ def verify_texts(
     findings: list[str] = []
 
     findings.extend(verify_ai_review_config(ai_review_toml))
+    findings.extend(verify_pr_agent_mirror(ai_review_toml, pr_agent_toml))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, glm_workflow, "glm", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, kimi_workflow, "kimi", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, smoke_workflow, "smoke", setup_required=False))
@@ -320,6 +397,7 @@ def verify_texts(
 def verify_repo(repo_root: Path) -> list[str]:
     return verify_texts(
         ai_review_toml=read_text(repo_root / "ci/ai-review.toml"),
+        pr_agent_toml=read_text(repo_root / ".pr_agent.toml"),
         glm_workflow=read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml"),
         kimi_workflow=read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml"),
         smoke_workflow=read_text(repo_root / ".github/workflows/ai-review-coding-plan-smoke.yml"),
@@ -333,12 +411,14 @@ def assert_finding(name: str, findings: list[str], expected: str) -> None:
 
 def run_self_tests(repo_root: Path) -> None:
     ai_review = read_text(repo_root / "ci/ai-review.toml")
+    pr_agent = read_text(repo_root / ".pr_agent.toml")
     glm = read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml")
     kimi = read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml")
     smoke = read_text(repo_root / ".github/workflows/ai-review-coding-plan-smoke.yml")
 
     baseline = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -348,6 +428,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     wrong_ai_review_config = verify_texts(
         ai_review_toml=ai_review.replace("https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/paas/v4"),
+        pr_agent_toml=pr_agent,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -356,6 +437,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     workflow_runtime_literal = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm + "\n          GLM_MODEL: glm-5.2\n",
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -364,6 +446,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     smoke_runtime_literal = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke + "\n          GLM_API_BASE: https://api.z.ai/api/coding/paas/v4\n",
@@ -372,6 +455,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     glm_short_job_timeout = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm.replace("timeout-minutes: 35", "timeout-minutes: 20"),
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -380,6 +464,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     kimi_short_job_timeout = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm,
         kimi_workflow=kimi.replace("timeout-minutes: 45", "timeout-minutes: 35"),
         smoke_workflow=smoke,
@@ -388,6 +473,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     smoke_job_timeout_drift = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke.replace("timeout-minutes: 10", "timeout-minutes: 8"),
@@ -396,6 +482,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     smoke_head_config = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke.replace(
@@ -405,8 +492,18 @@ def run_self_tests(repo_root: Path) -> None:
     )
     assert_finding("Smoke head config", smoke_head_config, "Smoke workflow missing expected snippet")
 
+    missing_mirror = verify_texts(
+        ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent.replace("NO HARDCODES: every runtime value comes from TOML config", "NO HARDCODES"),
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding("missing PR-Agent mirror", missing_mirror, ".pr_agent.toml missing mirrored")
+
     glm_split_config = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm + "\n          pr_reviewer.num_max_findings: \"6\"\n",
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -415,6 +512,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     glm_missing_fallback = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm.replace("scripts/ai_review_deliverables.py glm-fallback", "echo missing"),
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -423,6 +521,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     glm_missing_infrastructure_notice = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm.replace("gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"", "python3 scripts/ai_review_deliverables.py notice"),
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -435,6 +534,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     kimi_head_governance = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm,
         kimi_workflow=kimi.replace(
             "ref: ${{ github.event.pull_request.base.sha }}",
@@ -446,6 +546,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     kimi_misospace_action = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm,
         kimi_workflow=kimi + "\n      - uses: misospace/pr-reviewer-action@deadbeef\n",
         smoke_workflow=smoke,
@@ -454,6 +555,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     kimi_prompt_override = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm,
         kimi_workflow=kimi + "\n          system_prompt_mode: append\n",
         smoke_workflow=smoke,
@@ -462,6 +564,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     kimi_missing_fallback = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm,
         kimi_workflow=kimi.replace(".ai-review/base/scripts/ai_review_deliverables.py kimi-fallback", "echo missing"),
         smoke_workflow=smoke,
@@ -470,6 +573,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     kimi_missing_infrastructure_notice = verify_texts(
         ai_review_toml=ai_review,
+        pr_agent_toml=pr_agent,
         glm_workflow=glm,
         kimi_workflow=kimi.replace("gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"", "python3 .ai-review/base/scripts/ai_review_deliverables.py notice"),
         smoke_workflow=smoke,

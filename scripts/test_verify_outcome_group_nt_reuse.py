@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 import tempfile
 import textwrap
@@ -24,7 +25,7 @@ NT_REV = "6be5a5094716790a8ca2875445fde4fa2586107e"
 BOLT_REV = "5f39d352c081446f309605e49d6beaba86931ca5"
 
 
-def valid_ledger(capability_overrides: str = "") -> str:
+def valid_ledger_toml(capability_overrides: str = "") -> str:
     entries = []
     for capability in VERIFIER.REQUIRED_CAPABILITIES:
         disposition = "wrap_nt" if capability == "order_book_depth" else "reuse_nt"
@@ -70,9 +71,6 @@ def valid_ledger(capability_overrides: str = "") -> str:
         )
     return textwrap.dedent(
         f"""
-        # Outcome Group NT Evidence
-
-        ```toml outcome_group_nt_capability_ledger
         [ledger]
         version = 1
         nt_revision = "{NT_REV}"
@@ -80,9 +78,36 @@ def valid_ledger(capability_overrides: str = "") -> str:
 
         {''.join(entries)}
         {capability_overrides}
+        """
+    )
+
+
+def valid_ledger(capability_overrides: str = "") -> str:
+    return textwrap.dedent(
+        f"""
+        # Outcome Group NT Evidence
+
+        ```toml outcome_group_nt_capability_ledger
+        {valid_ledger_toml(capability_overrides)}
         ```
         """
     )
+
+
+def remove_capability(ledger: str, capability: str) -> str:
+    pattern = re.compile(
+        rf"\n\s*\[capabilities\.{re.escape(capability)}\]\n.*?(?=\n\s*\[capabilities\.|\Z)",
+        re.DOTALL,
+    )
+    return pattern.sub("\n", ledger)
+
+
+def replace_capability(ledger: str, capability: str, body: str) -> str:
+    pattern = re.compile(
+        rf"\n\s*\[capabilities\.{re.escape(capability)}\]\n.*?(?=\n\s*\[capabilities\.|\Z)",
+        re.DOTALL,
+    )
+    return pattern.sub("\n" + textwrap.dedent(body).strip() + "\n", ledger)
 
 
 def good_execution_source() -> str:
@@ -122,6 +147,12 @@ def write_fixture(
     evidence = root / "docs/superpowers/plans/2026-06-13-outcome-group-nt-evidence.md"
     evidence.parent.mkdir(parents=True, exist_ok=True)
     evidence.write_text(ledger_text if ledger_text is not None else valid_ledger(), encoding="utf-8")
+    ledger = root / "docs/bolt-v3/research/outcome-groups/nt-capability-ledger.toml"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        ledger_text if ledger_text is not None else valid_ledger_toml(),
+        encoding="utf-8",
+    )
 
     default_sources = {}
     for relative_root in VERIFIER.OUTCOME_GROUP_SOURCE_ROOTS:
@@ -180,6 +211,44 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
             ]
 
         self.assertEqual(actual, expected)
+
+    def test_missing_required_capability_fails(self) -> None:
+        ledger = remove_capability(valid_ledger_toml(), "provider_discovery")
+
+        self.assert_has_finding(self.collect(ledger_text=ledger), "missing capability provider_discovery")
+
+    def test_missing_source_anchor_fails(self) -> None:
+        ledger = replace_capability(
+            valid_ledger_toml(),
+            "neg_risk_market_id",
+            """
+            [capabilities.neg_risk_market_id]
+            disposition = "surface_in_nt"
+            owner_module = "src/bolt_v3_outcome_groups.rs"
+            reason = "NT parses negRiskMarketID but does not surface it through BinaryOption.info."
+            required_tests = ["neg_risk_market_id reuse regression"]
+            """,
+        )
+
+        self.assert_has_finding(self.collect(ledger_text=ledger), "neg_risk_market_id missing source_anchors")
+
+    def test_undocumented_bolt_shim_fails(self) -> None:
+        ledger = replace_capability(
+            valid_ledger_toml(),
+            "provider_discovery",
+            """
+            [capabilities.provider_discovery]
+            disposition = "bolt_shim"
+            owner_module = "src/bolt_v3_outcome_group_sources.rs"
+            reason = ""
+            required_tests = []
+            """
+        )
+
+        findings = self.collect(ledger_text=ledger)
+
+        self.assert_has_finding(findings, "provider_discovery bolt_shim requires reason")
+        self.assert_has_finding(findings, "provider_discovery bolt_shim requires required_tests")
 
     def test_comment_only_submit_order_list_with_per_leg_submit_loop_fails(self) -> None:
         findings = self.collect(

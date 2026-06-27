@@ -56,6 +56,12 @@ def read_text(root: Path, rel_path: Path, findings: list[str]) -> str:
 
 
 def repo_rule_anchors(agents_text: str, findings: list[str]) -> set[str]:
+    # Contract: this verifier asserts the set of repo-rule-* anchor IDs equals
+    # REPO_RULE_IDS: existence, uniqueness, and no extras.
+    # It deliberately does NOT enforce where an anchor physically sits relative
+    # to its rule text; adjacency and placement are human-review concerns, in
+    # the same class as doc-claim accuracy. Coupling to rule-line format or
+    # heading structure is exactly what #994 removes.
     anchors = [
         match.group("section_id")
         for match in EXPLICIT_ANCHOR.finditer(agents_text)

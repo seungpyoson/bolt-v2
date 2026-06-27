@@ -261,7 +261,7 @@ def unsupported_scope_overclaims(label: str, text: str) -> list[str]:
 def completed_phase_task_findings(tasks: str) -> list[str]:
     findings: list[str] = []
     for phase, task_id in COMPLETED_PHASE_VERIFICATION_TASKS:
-        if not re.search(rf"(?m)^- \[x\] {re.escape(task_id)}\b", tasks):
+        if not re.search(rf"(?m)^\s*-\s+\[[xX]\]\s+{re.escape(task_id)}\b", tasks):
             findings.append(
                 f"tasks missing checked completed Phase {phase} verification task {task_id}"
             )

@@ -152,6 +152,30 @@ def test_repo_rule_anchor_scan_accepts_single_quotes_and_attributes() -> None:
     assert findings == []
 
 
+def test_repo_rule_anchor_scan_accepts_detached_anchor_as_contract_boundary() -> None:
+    """Pins the #994 boundary: anchor ID existence is verified, physical placement is not."""
+    verifier = load_verifier()
+    detached_anchor = "repo-rule-no-dual-paths"
+    inline_anchor = f'<a id="{detached_anchor}"></a> '
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root, verifier)
+        text = agents_text(verifier).replace(inline_anchor, "")
+        text = text.replace(
+            "## Evidence-Driven Verification",
+            f"<a id=\"{detached_anchor}\"></a>\n\n## Evidence-Driven Verification",
+        )
+        write_file(root, "AGENTS.md", text)
+
+        findings = verifier.scan_root(root)
+
+    assert findings == []
+    assert (
+        "deliberately does NOT enforce where an anchor physically sits"
+        in SCRIPT.read_text(encoding="utf-8")
+    )
+
+
 def test_owned_rule_ordinal_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -244,6 +268,7 @@ def main() -> int:
         test_complete_fixture_passes,
         test_repo_rule_anchor_scan_ignores_heading_text,
         test_repo_rule_anchor_scan_accepts_single_quotes_and_attributes,
+        test_repo_rule_anchor_scan_accepts_detached_anchor_as_contract_boundary,
         test_owned_rule_ordinal_is_a_finding,
         test_missing_repo_rule_anchor_is_a_finding,
         test_unknown_repo_rule_link_is_a_finding,

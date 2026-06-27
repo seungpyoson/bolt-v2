@@ -383,7 +383,6 @@ jobs:
             scripts/lane_governor.py \
             scripts/rust_verification.py \
             scripts/command_understanding.py \
-            scripts/ci_test_manifest.py \
             ci/rust-verification.toml \
             ci/github-actions-runners.toml \
             .github/workflows/ci.yml \
@@ -2353,12 +2352,7 @@ def assert_capture_artifact_metadata_is_config_derived() -> None:
 def assert_ci_detector_docs_only_archive_includes_runtime_dependencies() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
-    for dependency in (
-        "scripts/rust_verification.py",
-        "scripts/command_understanding.py",
-        "scripts/ci_test_manifest.py",
-        "ci/rust-verification.toml",
-    ):
+    for dependency in ("scripts/rust_verification.py", "scripts/command_understanding.py", "ci/rust-verification.toml"):
         mutated = replace_once(workflow, f"            {dependency} \\\n", "")
         errors = verifier.verify_workflow(mutated)
         if not any(

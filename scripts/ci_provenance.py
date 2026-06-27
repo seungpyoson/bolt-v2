@@ -2730,7 +2730,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = parser_for_mode(mode)
     try:
         args = parser.parse_args(rest)
-        config = load_config(args.config)
+        config = load_config(args.config, require_workflows=mode != "artifact-metadata")
         if mode == "artifact-metadata":
             run_attempt = positive_int_value(args.run_attempt, "run_attempt")
             print(f"artifact_name={provenance_artifact_name(config, run_attempt)}")

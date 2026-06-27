@@ -1290,6 +1290,33 @@ def assert_artifact_metadata_outputs_configured_name_and_retention() -> None:
         raise AssertionError(f"artifact metadata must derive retention from config, got {stdout!r}")
 
 
+def assert_artifact_metadata_accepts_capture_config_without_workflows() -> None:
+    capture_config = REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml"
+    text = capture_config.read_text(encoding="utf-8")
+    if "[workflows" in text:
+        raise AssertionError("capture provenance config must not require workflow registry data")
+
+    code, stdout, stderr = run_cli(
+        [
+            "artifact-metadata",
+            "--config",
+            str(capture_config),
+            "--run-attempt",
+            "3",
+        ]
+    )
+
+    if code != 0:
+        raise AssertionError(
+            f"capture artifact-metadata failed with {code}: stdout={stdout!r} stderr={stderr!r}"
+        )
+    lines = stdout.strip().splitlines()
+    if "artifact_name=chainlink-reference-fixture-capture-attempt-3" not in lines:
+        raise AssertionError(f"capture artifact metadata derived wrong artifact name: {stdout!r}")
+    if "retention_days=30" not in lines:
+        raise AssertionError(f"capture artifact metadata derived wrong retention: {stdout!r}")
+
+
 def assert_ci_policy_outputs_matrix() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
@@ -3672,6 +3699,7 @@ def main() -> int:
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
     assert_artifact_metadata_outputs_configured_name_and_retention()
+    assert_artifact_metadata_accepts_capture_config_without_workflows()
     assert_ci_policy_outputs_matrix()
     assert_ready_noop_rows_emit_full_event_class_when_configured_full()
     assert_ci_policy_gate_names_are_event_based()

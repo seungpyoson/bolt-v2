@@ -593,10 +593,23 @@ jobs:
     needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.result == 'success' && needs.nextest-fingerprint.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     env:
       CARGO_BUILD_JOBS: "2"
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
+      # S3 sccache compile cache (#1011). Inert unless the build step opts in via
+      # BOLT_RUST_VERIFICATION_SCCACHE=1 (set only on trusted, cache-miss builds).
+      SCCACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+      SCCACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
+      SCCACHE_S3_KEY_PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
+      SCCACHE_S3_SERVER_SIDE_ENCRYPTION: "true"
+      # Fail-open: S3/server I/O errors degrade to a normal local compile instead
+      # of failing the build (sccache fails the build by default otherwise).
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -646,6 +659,68 @@ jobs:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
+      # --- S3 sccache compile cache (#1011), fail-open ------------------------
+      # Active only on trusted, write-safe contexts (push to main + manual
+      # dispatch) so a PR-controlled build can never write to / poison the shared
+      # cache. Every step below is non-fatal: any failure leaves
+      # BOLT_RUST_VERIFICATION_SCCACHE=0 and the build runs exactly as before.
+      - name: Resolve sccache eligibility
+        id: sccache-eligible
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        env:
+          ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+          REGION: ${{ vars.CI_SCCACHE_REGION }}
+        run: |
+          trusted=false
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then trusted=true; fi
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then trusted=true; fi
+          vars_present=true
+          [[ -n "$ROLE_ARN" && -n "$BUCKET" && -n "$REGION" ]] || vars_present=false
+          if [[ "$trusted" == "true" && "$vars_present" == "true" ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "event=${{ github.event_name }} trusted=$trusted vars_present=$vars_present"
+
+      - name: Configure AWS credentials for sccache
+        id: sccache-aws
+        if: steps.sccache-eligible.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          aws-region: ${{ vars.CI_SCCACHE_REGION }}
+
+      - name: Install sccache
+        id: sccache-install
+        if: steps.sccache-eligible.outputs.eligible == 'true' && steps.sccache-aws.outcome == 'success'
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: "v0.10.0"
+
+      - name: Resolve sccache enablement
+        id: sccache
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        run: |
+          enabled=false
+          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \
+                && "${{ steps.sccache-aws.outcome }}" == "success" \
+                && "${{ steps.sccache-install.outcome }}" == "success" \
+                && -n "${SCCACHE_PATH:-}" ]]; then
+            if "$SCCACHE_PATH" --start-server; then
+              "$SCCACHE_PATH" --zero-stats || true
+              enabled=true
+            else
+              echo "sccache server failed to start; building without cache"
+            fi
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "sccache enabled=$enabled"
+      # -----------------------------------------------------------------------
+
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         env:
@@ -653,9 +728,16 @@ jobs:
           # link/disk limits; assertions and test logic still run.
           CARGO_PROFILE_TEST_DEBUG: "0"
           CARGO_PROFILE_DEV_DEBUG: "0"
+          # Opt into the TOML-governed sccache wrapper only when every precondition
+          # above succeeded; "0" => managed_env keeps RUSTC_WRAPPER scrubbed (no-op).
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
           just test-archive "$NEXTEST_ARCHIVE_PATH"
+
+      - name: Print sccache stats
+        if: always() && steps.sccache.outputs.enabled == 'true'
+        run: '"$SCCACHE_PATH" --show-stats || true'
 
       - name: Save nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'

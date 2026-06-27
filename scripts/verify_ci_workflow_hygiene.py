@@ -545,6 +545,23 @@ TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hi
 TEST_ARCHIVE_SCCACHE_OPT_IN = (
     "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}"
 )
+# Value, not mere presence: the fail-open flag must be literally "1", and the build
+# must retry without sccache on failure, so a future edit cannot silently disable
+# either and make the cache able to fail the required build.
+TEST_ARCHIVE_SCCACHE_IGNORE_IO = 'SCCACHE_IGNORE_SERVER_IO_ERROR: "1"'
+TEST_ARCHIVE_SCCACHE_RETRY = "BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive"
+TEST_ARCHIVE_SCCACHE_PREFIX_PRECONDITION = (
+    '[[ -n "$ROLE_ARN" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]]'
+)
+TEST_ARCHIVE_SCCACHE_MAIN_DISPATCH_TRUST = (
+    'if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi'
+)
+TEST_ARCHIVE_SCCACHE_MAIN_PUSH_TRUST = (
+    'if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi'
+)
+TEST_ARCHIVE_SCCACHE_MERGE_GROUP_TRUST = (
+    'if [[ "$GITHUB_EVENT_NAME" == "merge_group" && "$GITHUB_REF" == "refs/heads/gh-readonly-queue/main/"* ]]; then trusted=true; fi'
+)
 TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'"
 TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_SIDECAR_BUILD_GUARD = (
@@ -8880,6 +8897,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "test-shards" in jobs:
         errors.append("test-shards job must not reintroduce nextest archive artifact fan-out")
 
+    for job_name, job_lines in jobs.items():
+        if job_name != "test-archive" and "BOLT_RUST_VERIFICATION_SCCACHE" in uncommented_text(job_lines):
+            errors.append("BOLT_RUST_VERIFICATION_SCCACHE opt-in must stay scoped to the test-archive job")
+
     if "clippy" in jobs:
         clippy_needs = extract_needs(jobs["clippy"])
         if "detector" not in clippy_needs:
@@ -9086,14 +9107,37 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if "BOLT_RUST_VERIFICATION_SCCACHE" in archive_text:
             if TEST_ARCHIVE_SCCACHE_OPT_IN not in archive_text:
                 errors.append("test-archive sccache opt-in must stay conditional on the resolver, never hardcoded")
-            for label in ("Configure AWS credentials for sccache", "Install sccache"):
+            for label in (
+                "Resolve sccache eligibility",
+                "Configure AWS credentials for sccache",
+                "Install sccache",
+                "Resolve sccache enablement",
+            ):
                 block = named_step_block(archive_lines, label)
                 if block is None or "continue-on-error: true" not in uncommented_text(block):
                     errors.append(f"test-archive sccache step '{label}' must be continue-on-error (fail-open)")
-            if "SCCACHE_IGNORE_SERVER_IO_ERROR" not in archive_text:
-                errors.append("test-archive sccache must set SCCACHE_IGNORE_SERVER_IO_ERROR (degrade S3 errors to local compile)")
-            if "refs/heads/main" not in archive_text:
-                errors.append("test-archive sccache must gate cache use to trusted refs (refs/heads/main)")
+            # Value, not mere presence: the flag must be "1" so a future edit cannot
+            # silently flip it to "0" and make S3/server I/O errors fatal.
+            if TEST_ARCHIVE_SCCACHE_IGNORE_IO not in archive_text:
+                errors.append('test-archive sccache must set SCCACHE_IGNORE_SERVER_IO_ERROR: "1" (degrade S3 errors to local compile)')
+            # Even a mid-build sccache server crash (which SCCACHE_IGNORE_SERVER_IO_ERROR
+            # does not cover) must not fail the build: it retries once without sccache.
+            build_block = named_step_block(archive_lines, "Build nextest archive")
+            if build_block is None or TEST_ARCHIVE_SCCACHE_RETRY not in uncommented_text(build_block):
+                errors.append("test-archive sccache must retry the build without sccache on failure (fail-open)")
+            # Gate cache use to trusted refs in the eligibility step itself, not merely
+            # somewhere in the job: main (post-merge) and the GitHub-controlled
+            # merge_group queue ref are the only write-safe refs (IAM is the real boundary).
+            eligibility_block = named_step_block(archive_lines, "Resolve sccache eligibility")
+            eligibility_text = uncommented_text(eligibility_block) if eligibility_block is not None else ""
+            if TEST_ARCHIVE_SCCACHE_PREFIX_PRECONDITION not in eligibility_text:
+                errors.append("test-archive sccache eligibility must require CI_SCCACHE_S3_KEY_PREFIX")
+            if (
+                TEST_ARCHIVE_SCCACHE_MAIN_DISPATCH_TRUST not in eligibility_text
+                or TEST_ARCHIVE_SCCACHE_MAIN_PUSH_TRUST not in eligibility_text
+                or TEST_ARCHIVE_SCCACHE_MERGE_GROUP_TRUST not in eligibility_text
+            ):
+                errors.append("test-archive sccache must gate cache use to trusted refs (refs/heads/main + merge_group queue) in the eligibility step")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:
             errors.append("test-archive must not download nextest archive artifact")
         if TEST_ARCHIVE_SHARDS_ASSIGNMENT not in archive_text or TEST_ARCHIVE_SHARDS_ASSERT not in archive_text:

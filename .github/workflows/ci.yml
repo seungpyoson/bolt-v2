@@ -660,29 +660,38 @@ jobs:
           fallback: none
 
       # --- S3 sccache compile cache (#1011), fail-open ------------------------
-      # Active only on trusted, write-safe contexts (push to main + manual
-      # dispatch) so a PR-controlled build can never write to / poison the shared
-      # cache. Every step below is non-fatal: any failure leaves
+      # Active only on trusted, write-safe contexts (main + the merge queue ref)
+      # so a PR-controlled build can never write to / poison the shared
+      # cache. Every precondition step below is non-fatal: any failure leaves
       # BOLT_RUST_VERIFICATION_SCCACHE=0 and the build runs exactly as before.
       - name: Resolve sccache eligibility
         id: sccache-eligible
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
         env:
           ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
           BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
           REGION: ${{ vars.CI_SCCACHE_REGION }}
+          PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
         run: |
           trusted=false
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then trusted=true; fi
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then trusted=true; fi
+          # Trusted, write-safe contexts only. The IAM role trust policy is the
+          # real poison boundary (a PR can rewrite this gate), so these must match
+          # the refs the role trusts: main (push/dispatch) and the
+          # merge_group pre-merge gate. The merge_group ref
+          # (refs/heads/gh-readonly-queue/main/*) is GitHub-controlled, not
+          # PR-pushable, and runs already review-approved code -- same trust as main.
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi
+          if [[ "$GITHUB_EVENT_NAME" == "merge_group" && "$GITHUB_REF" == "refs/heads/gh-readonly-queue/main/"* ]]; then trusted=true; fi
           vars_present=true
-          [[ -n "$ROLE_ARN" && -n "$BUCKET" && -n "$REGION" ]] || vars_present=false
+          [[ -n "$ROLE_ARN" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false
           if [[ "$trusted" == "true" && "$vars_present" == "true" ]]; then
             echo "eligible=true" >> "$GITHUB_OUTPUT"
           else
             echo "eligible=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "event=${{ github.event_name }} trusted=$trusted vars_present=$vars_present"
+          echo "event=$GITHUB_EVENT_NAME trusted=$trusted vars_present=$vars_present"
 
       - name: Configure AWS credentials for sccache
         id: sccache-aws
@@ -704,6 +713,7 @@ jobs:
       - name: Resolve sccache enablement
         id: sccache
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
         run: |
           enabled=false
           if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \
@@ -733,7 +743,23 @@ jobs:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
+          # Fail-open guarantee: sccache must never be able to fail this required
+          # build. SCCACHE_IGNORE_SERVER_IO_ERROR covers in-flight S3/server I/O
+          # errors, but not a mid-build sccache server crash that also fails to
+          # restart (sccache propagates that connect/start failure to a non-zero
+          # rustc exit). If the wrapper is active and the build fails for any
+          # reason, rebuild once with the wrapper forced off so the gate reflects
+          # the code, not sccache.
+          set +e
           just test-archive "$NEXTEST_ARCHIVE_PATH"
+          rc=$?
+          set -e
+          if [[ "$rc" -ne 0 && "${BOLT_RUST_VERIFICATION_SCCACHE:-0}" == "1" ]]; then
+            echo "::warning::nextest archive build failed (rc=$rc) with sccache active; retrying once without sccache (fail-open)"
+            BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive "$NEXTEST_ARCHIVE_PATH"
+          elif [[ "$rc" -ne 0 ]]; then
+            exit "$rc"
+          fi
 
       - name: Print sccache stats
         if: always() && steps.sccache.outputs.enabled == 'true'

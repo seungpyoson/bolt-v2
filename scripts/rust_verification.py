@@ -596,12 +596,21 @@ def managed_remote_compile_cache_env(policy: dict[str, Any]) -> dict[str, str]:
     if os.environ.get(str(cache_policy["ci_env"])) != "true":
         return {}
 
+    # Fail-open: the opt-in only resolves to "1" after the CI precondition ladder
+    # has installed sccache and exported its path, so a missing or malformed
+    # wrapper here means the environment is not what we expect. Degrade to no
+    # wrapper (a normal local compile) instead of raising -- the remote compile
+    # cache must never be able to fail the build. A structurally invalid
+    # *committed* policy still fails loudly in validate_remote_compile_cache_policy;
+    # this guards only the runtime environment value.
     wrapper_program = str(cache_policy["wrapper_program"])
-    wrapper = os.environ.get(str(cache_policy["wrapper_env"])) or wrapper_program
+    wrapper = os.environ.get(str(cache_policy["wrapper_env"]), "")
+    if not wrapper:
+        return {}
     if wrapper.strip() != wrapper or any(char.isspace() for char in wrapper):
-        raise PolicyError("remote_compile_cache wrapper must be a single path without whitespace")
+        return {}
     if pathlib.Path(wrapper).name != wrapper_program:
-        raise PolicyError("remote_compile_cache wrapper basename must match wrapper_program")
+        return {}
     return {"RUSTC_WRAPPER": wrapper}
 
 

@@ -7,6 +7,7 @@ import contextlib
 import dataclasses
 import io
 import importlib.util
+import os
 import pathlib
 import re
 import subprocess
@@ -2298,6 +2299,17 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             ),
         ),
         (
+            "Resolve sccache eligibility' must be continue-on-error",
+            replace_once(
+                workflow,
+                "        id: sccache-eligible\n"
+                "        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n"
+                "        continue-on-error: true\n",
+                "        id: sccache-eligible\n"
+                "        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n",
+            ),
+        ),
+        (
             "Configure AWS credentials for sccache' must be continue-on-error",
             replace_once(
                 workflow,
@@ -2309,14 +2321,178 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             ),
         ),
         (
+            "Resolve sccache enablement' must be continue-on-error",
+            replace_once(
+                workflow,
+                "        id: sccache\n"
+                "        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n"
+                "        continue-on-error: true\n",
+                "        id: sccache\n"
+                "        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n",
+            ),
+        ),
+        (
             "must set SCCACHE_IGNORE_SERVER_IO_ERROR",
             replace_once(workflow, '      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"\n', ""),
+        ),
+        (
+            # Value spoof: flipping the flag to "0" disables in-flight fail-open.
+            "must set SCCACHE_IGNORE_SERVER_IO_ERROR",
+            replace_once(
+                workflow,
+                '      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"\n',
+                '      SCCACHE_IGNORE_SERVER_IO_ERROR: "0"\n',
+            ),
+        ),
+        (
+            # Dropping the without-sccache retry removes the only cover for a
+            # mid-build sccache server crash.
+            "must retry the build without sccache",
+            replace_once(
+                workflow,
+                'BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive "$NEXTEST_ARCHIVE_PATH"',
+                "true",
+            ),
+        ),
+        (
+            "must require CI_SCCACHE_S3_KEY_PREFIX",
+            replace_once(
+                workflow,
+                ' && -n "$PREFIX"',
+                "",
+            ),
+        ),
+        (
+            "must gate cache use to trusted refs",
+            replace_once(
+                workflow,
+                '          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi\n',
+                '          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then trusted=true; fi\n',
+            ),
+        ),
+        (
+            # Removing the merge_group arm un-gates the trusted-ref set.
+            "must gate cache use to trusted refs",
+            replace_once(
+                workflow,
+                '          if [[ "$GITHUB_EVENT_NAME" == "merge_group"'
+                ' && "$GITHUB_REF" == "refs/heads/gh-readonly-queue/main/"* ]];'
+                ' then trusted=true; fi\n',
+                "",
+            ),
+        ),
+        (
+            "BOLT_RUST_VERIFICATION_SCCACHE opt-in must stay scoped",
+            replace_once(
+                workflow,
+                "  detector:\n    name: detector\n",
+                "  detector:\n    name: detector\n    env:\n      BOLT_RUST_VERIFICATION_SCCACHE: \"1\"\n",
+            ),
         ),
     ]
     for fragment, mutated_workflow in cases:
         errors = verifier.verify_workflow(mutated_workflow)
         if not any(fragment in error for error in errors):
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def _test_archive_build_script(verifier) -> str:
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    archive_job = verifier.parse_jobs(workflow).get("test-archive")
+    if archive_job is None:
+        raise AssertionError("test-archive job missing")
+    build_block = verifier.named_step_block(archive_job, "Build nextest archive")
+    if build_block is None:
+        raise AssertionError("Build nextest archive step missing")
+    script = verifier.block_run_body(build_block)
+    if not script:
+        raise AssertionError("Build nextest archive run body missing")
+    return script
+
+
+def _run_test_archive_build_script(script: str, *, sccache: str, fake_just_mode: str) -> tuple[int, int]:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        counter = root / "just-count"
+        fake_just = root / "just"
+        fake_just.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                count=0
+                if [[ -f "$JUST_COUNT_FILE" ]]; then
+                  count="$(cat "$JUST_COUNT_FILE")"
+                fi
+                count=$((count + 1))
+                echo "$count" > "$JUST_COUNT_FILE"
+                case "$JUST_MODE" in
+                  transient-cache-failure)
+                    if [[ "$count" -eq 1 ]]; then exit 86; fi
+                    exit 0
+                    ;;
+                  compile-error)
+                    exit 42
+                    ;;
+                  no-cache-failure)
+                    exit 43
+                    ;;
+                  *)
+                    echo "unknown JUST_MODE=$JUST_MODE" >&2
+                    exit 99
+                    ;;
+                esac
+                """
+            ),
+            encoding="utf-8",
+        )
+        fake_just.chmod(0o755)
+        env = {
+            **os.environ,
+            "PATH": f"{root}:{os.environ['PATH']}",
+            "JUST_COUNT_FILE": str(counter),
+            "JUST_MODE": fake_just_mode,
+            "NEXTEST_ARCHIVE_PATH": "out/nextest-archive.tar.zst",
+            "BOLT_RUST_VERIFICATION_SCCACHE": sccache,
+        }
+        result = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+            cwd=root,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        count = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
+        return result.returncode, count
+
+
+def assert_test_archive_sccache_retry_preserves_compile_failures() -> None:
+    verifier = load_verifier()
+    script = _test_archive_build_script(verifier)
+    rc, count = _run_test_archive_build_script(
+        script,
+        sccache="1",
+        fake_just_mode="transient-cache-failure",
+    )
+    if (rc, count) != (0, 2):
+        raise AssertionError(f"sccache transient failure must retry once and pass, got rc={rc} count={count}")
+
+    rc, count = _run_test_archive_build_script(
+        script,
+        sccache="1",
+        fake_just_mode="compile-error",
+    )
+    if (rc, count) != (42, 2):
+        raise AssertionError(f"compile failure with sccache must fail after retry, got rc={rc} count={count}")
+
+    rc, count = _run_test_archive_build_script(
+        script,
+        sccache="0",
+        fake_just_mode="no-cache-failure",
+    )
+    if (rc, count) != (43, 1):
+        raise AssertionError(f"without sccache, build failure must not retry, got rc={rc} count={count}")
 
 
 def assert_ci_workflow_run_name_matches_dispatch_config() -> None:
@@ -10922,6 +11098,7 @@ def main() -> int:
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
     assert_test_archive_sccache_fail_open_contract()
+    assert_test_archive_sccache_retry_preserves_compile_failures()
     assert_ci_detector_forces_build_on_workflow_dispatch()
     assert_ci_detector_docs_only_archive_includes_runtime_dependencies()
     assert_merge_group_support_gaps_are_reported()

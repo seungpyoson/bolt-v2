@@ -495,6 +495,8 @@ jobs:
       CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         id: setup

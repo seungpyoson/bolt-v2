@@ -311,6 +311,10 @@ else
   just source-fence-static
 fi
 """
+SOURCE_FENCE_CHECKOUT_REF = (
+    "${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && "
+    "github.event.pull_request.head.sha || github.sha }}"
+)
 NEXTEST_REUSE_MISS_EXPR = "needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'"
 MAIN_BRANCH_SKIP_EXPR = "github.ref != 'refs/heads/main'"
 BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
@@ -7917,6 +7921,11 @@ def source_fence_uses_policy_switch(job_lines: list[str]) -> bool:
     return any(block_run_body_matches(block, SOURCE_FENCE_POLICY_SWITCH) for block in step_blocks(job_lines))
 
 
+def source_fence_checkout_uses_docs_head_ref(job_lines: list[str]) -> bool:
+    checkout_blocks = action_blocks(job_lines, "actions/checkout@")
+    return len(checkout_blocks) == 1 and block_has_input(checkout_blocks[0], "ref", SOURCE_FENCE_CHECKOUT_REF)
+
+
 def check_aarch64_runs_on_full_or_tag_reuse(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return FULL_CI_REQUIRED_EXPR in text and TAG_REUSE_POLICY_EXPR in text
@@ -8944,6 +8953,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("source-fence must run for full_ci_required or docs policy")
         if not source_fence_uses_policy_switch(jobs["source-fence"]):
             errors.append("source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy")
+        if not source_fence_checkout_uses_docs_head_ref(jobs["source-fence"]):
+            errors.append("source-fence checkout must use pull_request head SHA for docs policy and github.sha otherwise")
 
     for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):

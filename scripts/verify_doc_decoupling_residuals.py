@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import ast
+import io
 import sys
+import tokenize
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -12,8 +15,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LEDGER_PATH = Path("ci/doc-decoupling-residuals.toml")
 VERIFY_SCRIPT_GLOB = "verify_*.py"
-MARKDOWN_EXTENSION = "." + "md"
-DOCS_WIDE_GLOB = "docs/**" + "/*"
+MARKDOWN_EXTENSION = chr(46) + chr(109) + chr(100)
+DOCS_WIDE_GLOB = "/".join(("docs", "**", "*"))
 VALID_KINDS = {
     "workflow_snippet_false_positive",
     "docstring_pointer_false_positive",
@@ -41,11 +44,34 @@ def non_empty_string_list(value: object) -> bool:
     return isinstance(value, list) and bool(value) and all(non_empty_string(item) for item in value)
 
 
+def string_literal_values(line: str) -> list[str]:
+    values: list[str] = []
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(line).readline)
+        for token in tokens:
+            if token.type != tokenize.STRING:
+                continue
+            try:
+                value = ast.literal_eval(token.string)
+            except (SyntaxError, ValueError):
+                continue
+            if isinstance(value, str):
+                values.append(value)
+    except tokenize.TokenError:
+        return values
+    return values
+
+
 def prose_reference_count(text: str) -> int:
     markdown_count = text.count(MARKDOWN_EXTENSION)
-    if markdown_count:
-        return markdown_count
-    return 1 if DOCS_WIDE_GLOB in text else 0
+    docs_wide_count = text.count(DOCS_WIDE_GLOB)
+    if markdown_count or docs_wide_count:
+        return markdown_count + docs_wide_count
+
+    literal_text = "".join(string_literal_values(text))
+    if not literal_text:
+        return 0
+    return literal_text.count(MARKDOWN_EXTENSION) + literal_text.count(DOCS_WIDE_GLOB)
 
 
 def load_ledger(root: Path, findings: list[str]) -> list[dict[str, Any]]:

@@ -572,6 +572,9 @@ jobs:
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@example
+        with:
+          ref: ${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && github.event.pull_request.head.sha || github.sha }}
       - uses: ./.github/actions/setup-environment
         with:
           just-version: ${{ env.JUST_VERSION }}
@@ -3583,6 +3586,14 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
                 workflow,
                 "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}",
                 "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.ci-policy.outputs.ci_policy_path == 'docs' }}",
+            ),
+        ),
+        (
+            "source-fence checkout must use pull_request head SHA for docs policy and github.sha otherwise",
+            replace_once(
+                workflow,
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n        with:\n          ref: ${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && github.event.pull_request.head.sha || github.sha }}",
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2",
             ),
         ),
         (
@@ -10279,6 +10290,14 @@ def main() -> int:
         ),
     )
     assert_error(
+        "source-fence checkout must use pull_request head SHA for docs policy and github.sha otherwise",
+        replace_once(
+            BASE_WORKFLOW,
+            "        with:\n          ref: ${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && github.event.pull_request.head.sha || github.sha }}\n",
+            "",
+        ),
+    )
+    assert_error(
         "source-fence must run just source-fence",
         replace_once(BASE_WORKFLOW, "            just source-fence", "            echo source-fence"),
     )
@@ -10300,6 +10319,22 @@ def main() -> int:
             just source-fence-static
           else
             echo docs policy skipped
+          fi""",
+        ),
+    )
+    assert_error(
+        "source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy",
+        replace_once(
+            BASE_WORKFLOW,
+            """          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence
+          else
+            just source-fence-static
+          fi""",
+            """          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence-static
+          else
+            just source-fence
           fi""",
         ),
     )

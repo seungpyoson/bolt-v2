@@ -148,6 +148,28 @@ def test_same_line_extra_markdown_reference_fails() -> None:
     assert_finding(findings, "unclassified prose reference")
 
 
+def test_adjacent_literal_markdown_reference_fails() -> None:
+    findings = collect(
+        schema_script=(
+            'SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/schema.md"\n'
+            'NEW_DOC = REPO_ROOT / "docs/" "prose-authority." "md"\n'
+        )
+    )
+    assert_finding(findings, "unclassified prose reference")
+
+
+def test_split_suffix_helper_markdown_reference_fails() -> None:
+    findings = collect(
+        schema_script=(
+            'SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/schema.md"\n'
+            'def prose_doc(name):\n'
+            '    return REPO_ROOT / "docs" / (name + "." + "md")\n'
+            'NEW_DOC = prose_doc("prose-authority")\n'
+        )
+    )
+    assert_finding(findings, "unclassified prose reference")
+
+
 def test_exact_line_matching_does_not_allow_other_md_suffix_line() -> None:
     findings = collect(naming_script_suffix='EXT = ".md"\n')
     assert_finding(findings, "unclassified prose reference")
@@ -190,6 +212,8 @@ def main() -> int:
         test_unledgered_markdown_reference_fails,
         test_unledgered_docs_wide_glob_fails,
         test_same_line_extra_markdown_reference_fails,
+        test_adjacent_literal_markdown_reference_fails,
+        test_split_suffix_helper_markdown_reference_fails,
         test_exact_line_matching_does_not_allow_other_md_suffix_line,
         test_stale_ledger_snippet_fails,
         test_doc_sync_exception_requires_owner_issue,

@@ -4664,6 +4664,19 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
 
+def assert_coverage_enforcer_bootstrap_marker_matches_script() -> None:
+    workflow = repo_workflow_text(".github/workflows/coverage-enforcer.yml")
+    script = repo_workflow_text("scripts/coverage_enforcer.py")
+    match = re.search(r'if ! grep -q "([^"]+)" scripts/coverage_enforcer\.py; then', workflow)
+    if match is None:
+        raise AssertionError("coverage-enforcer workflow must define event-aware bootstrap marker")
+    marker = match.group(1)
+    if marker not in script:
+        raise AssertionError(
+            "coverage-enforcer event-aware bootstrap marker must match scripts/coverage_enforcer.py"
+        )
+
+
 def assert_runner_contract_rejects_missing_and_extra_jobs() -> None:
     verifier = load_verifier()
     workflow_name = ".github/workflows/ci.yml"
@@ -12000,6 +12013,7 @@ def main() -> int:
     assert_merge_readiness_progress_gaps_are_reported()
     assert_merge_readiness_finalizer_gaps_are_reported()
     assert_coverage_enforcer_workflow_gaps_are_reported()
+    assert_coverage_enforcer_bootstrap_marker_matches_script()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

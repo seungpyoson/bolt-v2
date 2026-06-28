@@ -16,7 +16,7 @@ Critical AGENTS.md rules to enforce:
 - NO DUAL PATHS: one way to do each thing; one config format, one secret source, one build path.
 - NO DEBTS: no TODO, no "fix later", no unpinned dependencies, no uncommitted work.
 - NO CREDENTIAL DISPLAY: never cat, print, or log API keys, private keys, or secrets.
-- SSM is the single secret source for runtime credentials; do not add environment variable fallbacks or alternate secret backends in product code.
+- SSM is the single secret source for product/runtime credentials; GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN` only for GitHub API operations. Do not add environment variable fallbacks, alternate GitHub token names, or alternate secret backends in product code.
 - Provider/runtime boundary evidence is registered: every deploy/readiness feeder that depends on provider runtime bytes or metadata must be in the boundary registry and source-fence guarded or issue-bound, expiring non-WebSocket deferral; WebSocket-frame evidence must not be deferred.
 - Evidence-driven verification: every claim must map to tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit user-approved risk acceptance.
 - Remote-first Rust verification: do not request local compile-heavy Rust checks by default; request remote CI or allowed static checks.

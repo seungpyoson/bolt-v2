@@ -384,7 +384,7 @@ def review_body_is_quality_deliverable(body: str, output_contract: ReviewOutputC
     if any(indicator.lower() in lowered for indicator in output_contract.non_deliverable_indicators):
         return False
     finding_labels = tuple(label.lower() for label in output_contract.finding_required_labels)
-    if finding_labels and all(label in lowered for label in finding_labels):
+    if finding_labels and all(review_body_has_line_starting_with(lowered, label) for label in finding_labels):
         return True
     if review_body_has_no_findings_contract(lowered, output_contract):
         return True
@@ -396,17 +396,27 @@ def review_body_is_quality_deliverable(body: str, output_contract: ReviewOutputC
     return False
 
 
+def review_body_has_line_starting_with(lowered: str, label: str) -> bool:
+    return any(line.strip().startswith(label) for line in lowered.splitlines())
+
+
 def review_body_has_no_findings_contract(lowered: str, output_contract: ReviewOutputContract) -> bool:
     if output_contract.no_findings_indicator.lower() not in lowered:
         return False
-    return all(label.lower() in lowered for label in output_contract.no_findings_required_labels)
+    return all(
+        review_body_has_line_starting_with(lowered, label.lower())
+        for label in output_contract.no_findings_required_labels
+    )
 
 
 def pr_agent_body_has_substantive_review(lowered: str, output_contract: ReviewOutputContract) -> bool:
     finding_labels = tuple(label.lower() for label in output_contract.finding_required_labels)
-    return any(label in lowered for label in finding_labels) or review_body_has_no_findings_contract(
-        lowered, output_contract
+    primary_finding_label = finding_labels[:1]
+    has_finding_label = any(
+        review_body_has_line_starting_with(lowered, label)
+        for label in primary_finding_label
     )
+    return has_finding_label or review_body_has_no_findings_contract(lowered, output_contract)
 
 
 def comment_part_key(body: object) -> str:

@@ -88,11 +88,14 @@ MIRRORED_RULES = (
         "ssm secret source",
         (
             "**SSM IS THE SINGLE SECRET SOURCE**",
-            "No AWS CLI subprocess, no 1Password CLI, no environment variable fallbacks",
+            "product/runtime credentials resolve from AWS SSM",
+            "GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN`",
+            "do not add alternate GitHub token names",
         ),
         (
-            "SSM is the single secret source for runtime credentials",
-            "do not add environment variable fallbacks or alternate secret backends in product code",
+            "SSM is the single secret source for product/runtime credentials",
+            "GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN`",
+            "Do not add environment variable fallbacks, alternate GitHub token names, or alternate secret backends",
         ),
     ),
     MirrorRule(
@@ -271,6 +274,9 @@ AI_REVIEW_DELIVERABLES_SNIPPETS = (
     "output_contract.non_deliverable_indicators",
     "output_contract.pr_agent_deliverable_headings",
     "output_contract.pr_agent_disabled_noise",
+    "def review_body_has_line_starting_with(",
+    "line.strip().startswith(label)",
+    "review_body_has_line_starting_with(lowered, label)",
     "def review_body_has_no_findings_contract(",
     "def pr_agent_body_has_substantive_review(",
     "def run_notice_env(",
@@ -1166,6 +1172,24 @@ def run_self_tests(repo_root: Path) -> None:
     )
     assert_finding("missing PR-Agent mirror", missing_mirror, ".pr_agent.toml missing mirrored")
 
+    missing_github_token_carveout = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent.replace(
+            "GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN`",
+            "GitHub automation may use the default token",
+        ),
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding(
+        "missing GITHUB_TOKEN carve-out mirror",
+        missing_github_token_carveout,
+        ".pr_agent.toml missing mirrored",
+    )
+
     changed_source = verify_texts(
         agents_md=agents.replace("**NO DUAL PATHS**", "**NO MULTI PATHS**"),
         pr_agent_toml=pr_agent,
@@ -1288,6 +1312,24 @@ def run_self_tests(repo_root: Path) -> None:
     assert_finding(
         "missing review quality gate",
         missing_quality_gate,
+        "scripts/ai_review_deliverables.py missing expected snippet",
+    )
+
+    embedded_pr_agent_label_gate = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables.replace(
+            "line.strip().startswith(label)",
+            "label in line",
+        ),
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding(
+        "embedded PR-Agent label gate",
+        embedded_pr_agent_label_gate,
         "scripts/ai_review_deliverables.py missing expected snippet",
     )
 

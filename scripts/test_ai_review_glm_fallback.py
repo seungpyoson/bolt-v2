@@ -73,6 +73,16 @@ def default_pr_agent_review_body_with_evidence_signal() -> str:
     return "\n".join([default_pr_agent_review_body(), "", "Severity: low"])
 
 
+def default_pr_agent_review_body_with_embedded_evidence_label() -> str:
+    return "\n".join(
+        [
+            default_pr_agent_review_body(),
+            "",
+            "The PR description mentions Severity: low, but no finding line was emitted.",
+        ]
+    )
+
+
 def load_script():
     if not SCRIPT_PATH.exists():
         raise AssertionError(f"missing script: {SCRIPT_PATH}")
@@ -430,6 +440,33 @@ def test_default_pr_agent_sections_without_evidence_do_not_suppress_fallback() -
     assert len(glm.prompts) == 1
     assert len(github.posted) == 1
     assert "fallback ran after default-only PR-Agent sections." in github.posted[0]
+
+
+def test_embedded_pr_agent_evidence_label_does_not_suppress_fallback() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "body": default_pr_agent_review_body_with_embedded_evidence_label(),
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+    glm = FakeGLM(response=valid_finding_response("fallback ran after embedded PR-Agent evidence label."))
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=fallback_config(module),
+    )
+
+    assert result == "fallback-posted"
+    assert len(glm.prompts) == 1
+    assert len(github.posted) == 1
+    assert "fallback ran after embedded PR-Agent evidence label." in github.posted[0]
 
 
 def test_default_pr_agent_sections_with_evidence_suppress_fallback() -> None:
@@ -1530,6 +1567,7 @@ def main() -> int:
     test_skips_fallback_when_pr_agent_deliverable_exists_after_start()
     test_pr_agent_severity_review_without_fallback_labels_suppresses_fallback()
     test_default_pr_agent_sections_without_evidence_do_not_suppress_fallback()
+    test_embedded_pr_agent_evidence_label_does_not_suppress_fallback()
     test_default_pr_agent_sections_with_evidence_suppress_fallback()
     test_unstamped_pr_agent_deliverable_does_not_suppress_fallback()
     test_plain_pr_agent_phrase_does_not_suppress_fallback()

@@ -33,12 +33,13 @@ def write_file(root: Path, rel_path: str, text: str) -> None:
 
 def config_text(
     *,
+    version: str = "1",
     logging_call_names: str = '["logger.exception", "logging.exception"]',
     extra_settings: str = "",
 ) -> str:
     return f"""
     [fail_closed_contracts]
-    version = 1
+    version = {version}
     include_globs = ["pkg/**/*.py"]
     exclude_globs = []
     broad_exception_names = ["Exception", "BaseException"]
@@ -140,7 +141,7 @@ def test_precise_exception_fixture_passes() -> None:
 
         findings = collect(root)
 
-    assert findings == []
+    assert findings == [], findings
 
 
 def test_bare_return_fails_as_return_from_catch_all() -> None:
@@ -162,6 +163,27 @@ def test_bare_return_fails_as_return_from_catch_all() -> None:
         findings = collect(root)
 
     assert any(finding.startswith("FLC003:pkg/bare_return.py:4:") for finding in findings)
+
+
+def test_bare_except_sentinel_return_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/bare_except_return.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except:
+                    return None
+            """,
+        )
+
+        findings = collect(root)
+
+    assert any(finding.startswith("FLC003:pkg/bare_except_return.py:4:") for finding in findings)
 
 
 def test_conditional_sentinel_return_fails_closed() -> None:
@@ -247,7 +269,32 @@ def test_nested_function_return_inside_handler_is_not_handler_return() -> None:
 
         findings = collect(root)
 
-    assert findings == []
+    assert findings == [], findings
+
+
+def test_nested_precise_exception_return_inside_handler_is_not_outer_handler_return() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/nested_precise_except_return.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except Exception:
+                    try:
+                        recover()
+                    except ValueError:
+                        return None
+                    raise
+            """,
+        )
+
+        findings = collect(root)
+
+    assert findings == [], findings
 
 
 def test_config_string_arrays_reject_invalid_shapes() -> None:
@@ -283,6 +330,24 @@ def test_exception_suppression_config_is_rejected() -> None:
             assert "fail_closed_contracts keys" in str(exc)
         else:
             raise AssertionError("accepted exception suppression config")
+
+
+def test_config_version_rejects_unsupported_shapes() -> None:
+    for malformed_version in ("2", "true"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_file(
+                root,
+                "ci/fail-closed-contracts.toml",
+                config_text(version=malformed_version),
+            )
+
+            try:
+                collect(root)
+            except TypeError as exc:
+                assert "version" in str(exc)
+            else:
+                raise AssertionError(f"accepted malformed version: {malformed_version}")
 
 
 def test_cli_fails_with_actionable_output() -> None:
@@ -327,12 +392,15 @@ def main() -> int:
         test_bad_fixtures_fail_with_stable_rule_ids,
         test_precise_exception_fixture_passes,
         test_bare_return_fails_as_return_from_catch_all,
+        test_bare_except_sentinel_return_fails_closed,
         test_conditional_sentinel_return_fails_closed,
         test_boolean_sentinel_return_fails_closed,
         test_conditional_broad_exception_type_fails_closed,
         test_nested_function_return_inside_handler_is_not_handler_return,
+        test_nested_precise_exception_return_inside_handler_is_not_outer_handler_return,
         test_config_string_arrays_reject_invalid_shapes,
         test_exception_suppression_config_is_rejected,
+        test_config_version_rejects_unsupported_shapes,
         test_cli_fails_with_actionable_output,
     ]
     for test in tests:

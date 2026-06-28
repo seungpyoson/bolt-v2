@@ -16,6 +16,7 @@ from typing import Callable, Iterable, cast
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = Path("ci/fail-closed-contracts.toml")
 CONFIG_TABLE = "fail_closed_contracts"
+SUPPORTED_CONFIG_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -67,7 +68,13 @@ RULES: tuple[Rule, ...] = (
         lambda facts: facts.catches_all and not facts.has_logging and bool(facts.sentinel_returns),
     ),
 )
-NESTED_SCOPE_NODES = (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef, ast.Lambda)
+NESTED_SCOPE_NODES = (
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.ExceptHandler,
+    ast.FunctionDef,
+    ast.Lambda,
+)
 
 CONFIG_KEYS = frozenset(
     {
@@ -106,10 +113,16 @@ def require_keys(field_name: str, actual: frozenset[str], expected: frozenset[st
         raise TypeError(f"{field_name} keys must be exactly {sorted(expected)}")
 
 
+def require_version(field_name: str, value: object) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value != SUPPORTED_CONFIG_VERSION:
+        raise TypeError(f"{field_name} must be {SUPPORTED_CONFIG_VERSION}")
+
+
 def load_config(path: Path) -> Config:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     table = data[CONFIG_TABLE]
     require_keys(CONFIG_TABLE, frozenset(table), CONFIG_KEYS)
+    require_version("version", table["version"])
     rule_ids = string_map("rule_ids", table["rule_ids"])
     require_keys("rule_ids", frozenset(rule_ids), RULE_ID_KEYS)
     return Config(

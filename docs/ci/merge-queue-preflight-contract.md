@@ -36,6 +36,10 @@ contract.
 - If the current cheap-lane registry cannot map labels to preflight verifier
   commands without ambiguity, extend the registry instead of copying values into
   the preflight implementation.
+- Mergify merge-condition check production is sourced from the CI workflow
+  definitions or a machine-readable registry generated from or validated against
+  those workflows at the expected base SHA. The mapping must not be inferred
+  from PR-head absence, check-name suffixes, or comments alone.
 
 ## Invariants
 
@@ -238,6 +242,11 @@ The required-check source for Mergify readiness is the selected queue rule's
 governance evidence when available, but they are not a substitute for Mergify's
 merge conditions.
 
+The source for classifying a Mergify `check-success` merge condition as
+in-place mapped, proof-only, or unsupported is the workflow check-production
+source at the expected base SHA. A check cannot be classified as proof-only by
+absence from PR-head checks. Positive evidence from that source is required.
+
 The implementation must classify each `.mergify.yml` field present in this repo:
 
 | Field | Preflight handling |
@@ -327,13 +336,18 @@ already failed. They do not prove the Mergify proof context will pass. Mergify
 merge-condition checks that are produced only in the proof context are residual
 risk when absent in-place, not `inconclusive`.
 
-The Mergify config lane must classify each `merge_conditions` check as one of:
+The readiness lane must classify each `merge_conditions` check as one of:
 
 - in-place mapped: an in-place PR-head check identity must be evaluated through
   the check-state table.
-- proof-only: absence from PR-head checks is residual risk; any available
-  in-place failed equivalent still blocks.
+- proof-only: positive workflow-production evidence says the check is produced
+  only in the proof context.
 - unsupported mapping: `inconclusive`.
+
+An in-place equivalent must be positively identified by the workflow
+check-production source. A repo-designated feedback-only or non-required
+iteration check is not an equivalent; its state is residual risk unless a future
+contract update provides evidence that it predicts proof failure.
 
 Required check states must be classified through one table:
 
@@ -345,9 +359,15 @@ Required check states must be classified through one table:
 | skipped or neutral | `inconclusive` |
 | missing in-place mapped check | `inconclusive` |
 | missing proof-only check | residual risk |
+| proof-only check unexpectedly present with terminal failure | `blocked` |
+| proof-only check unexpectedly present with non-terminal state | `inconclusive` |
+| feedback-only or non-required iteration check failed | residual risk |
 | duplicate name without unique app/workflow identity | `inconclusive` |
 | stale to a SHA other than expected head | `inconclusive` |
 | unknown state or bucket | `inconclusive` |
+
+Rows classified as residual risk create non-gating residual findings only. They
+do not provide required-lane ready evidence or change the readiness lane status.
 
 The readiness lane does not own git mergeability. Mergeability belongs to the
 integration lane. GitHub's async `mergeable` field may be reported as diagnostic
@@ -491,9 +511,16 @@ An implementation of this contract must include tests for:
 - required check pass, fail, pending, skipped, neutral, missing, duplicate,
   stale-to-old-SHA, action-required, startup-failure, and unknown buckets.
 - proof-only Mergify merge-condition check absent in-place is residual risk.
+- proof-only classification requires positive workflow-production evidence.
+- required check absent in-place without proof-only evidence is `inconclusive`.
+- CI workflow check-production mapping rename or removal is `inconclusive`.
+- mapping source drift between workflow and registry is `inconclusive`.
 - missing in-place mapped merge-condition check is `inconclusive`.
 - failed in-place mapped merge-condition check is `blocked`.
+- feedback-only or non-required iteration check failure is residual risk.
 - unsupported merge-condition check mapping is `inconclusive`.
+- mapped check present under the right name but wrong app or workflow identity
+  is `inconclusive`.
 - base conflict.
 - clean split into multiple advised batches.
 - verifier failure.

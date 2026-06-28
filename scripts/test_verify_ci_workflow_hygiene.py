@@ -8694,6 +8694,21 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     fanout_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": fanout})
     assert any("legacy fan-out payload" in error for error in fanout_errors), fanout_errors
 
+    download_in_archive = good.replace(
+        "      - name: Require BVS local payload\n",
+        "      - name: Download forbidden BVS test payload\n"
+        "        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n"
+        "      - name: Require BVS local payload\n",
+        1,
+    )
+    download_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": download_in_archive}
+    )
+    assert any(
+        "backtester required bvs-test path must not download a test payload artifact" in error
+        for error in download_errors
+    ), download_errors
+
     consumer_managed_target = good.replace(
         "      - name: Build issue #789 lib archive\n",
         "      - name: Restore forbidden managed target cache\n"

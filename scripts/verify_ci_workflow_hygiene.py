@@ -10269,7 +10269,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester bvs-test sidecars must not blanket-pack target/debug executables")
     if "name: bvs-test-payload" in combined_text:
         errors.append("backtester bvs-test must not publish or consume the legacy fan-out payload")
-    if "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in job_text:
+    if "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in archive_text:
         errors.append("backtester required bvs-test path must not download a test payload artifact")
     if "managed-target-bvs-v" in consumer_text or "test-target-cache" in consumer_text:
         errors.append("backtester bvs-test consumers must not restore the managed target cache")

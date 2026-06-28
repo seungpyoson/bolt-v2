@@ -5545,6 +5545,7 @@ ci-lint-workflow:
 ci-lint-workflow-inner: require-local-verification-gate
     python3 scripts/test_verify_ci_workflow_hygiene.py
     python3 scripts/test_ci_storage_audit.py
+    python3 scripts/test_ci_storage_tripwire.py
     python3 scripts/test_root_bin_sidecars.py
 """
     errors = verifier.verify_local_verification_gate_recipes(justfile_text)
@@ -5559,6 +5560,16 @@ ci-lint-workflow-inner: require-local-verification-gate
     ):
         raise AssertionError(
             f"ci storage audit test wiring drift was silent, got: {missing_storage_audit_test_errors}"
+        )
+
+    missing_storage_tripwire_test = justfile_text.replace("    python3 scripts/test_ci_storage_tripwire.py\n", "")
+    missing_storage_tripwire_test_errors = verifier.verify_local_verification_gate_recipes(missing_storage_tripwire_test)
+    if not any(
+        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_tripwire.py" in error
+        for error in missing_storage_tripwire_test_errors
+    ):
+        raise AssertionError(
+            f"ci storage tripwire test wiring drift was silent, got: {missing_storage_tripwire_test_errors}"
         )
 
     missing_sidecar_test = justfile_text.replace("    python3 scripts/test_root_bin_sidecars.py\n", "")
@@ -12301,7 +12312,6 @@ def main() -> int:
     assert not progress_errors, progress_errors
     finalizer_errors = verifier.verify_merge_readiness_finalizer_workflow(real_workflows)
     assert not finalizer_errors, finalizer_errors
-
     print("OK: CI workflow hygiene verifier self-tests passed.")
     return 0
 

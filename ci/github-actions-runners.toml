@@ -84,6 +84,9 @@ mark-stalled = "github_hosted"
 [workflows.coverage_enforcer]
 coverage-enforcer = "github_hosted"
 
+[workflows.ci_storage_tripwire]
+storage-tripwire = "github_hosted"
+
 [workflows.advisory]
 advisories = "github_hosted"
 

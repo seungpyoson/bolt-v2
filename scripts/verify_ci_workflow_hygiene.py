@@ -50,6 +50,7 @@ from command_understanding import (
 )
 from ci_test_manifest import CiTestManifest, _mask_rust_non_code, build_test_manifest
 from rust_verification import CARGO_ALIAS_SUBCOMMANDS, CARGO_DISK_PREFLIGHT_SUBCOMMANDS
+import ci_storage_tripwire
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -76,6 +77,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/merge-readiness-finalizer.yml": "merge_readiness_finalizer",
     "coverage-enforcer.yml": "coverage_enforcer",
     ".github/workflows/coverage-enforcer.yml": "coverage_enforcer",
+    "ci-storage-tripwire.yml": "ci_storage_tripwire",
+    ".github/workflows/ci-storage-tripwire.yml": "ci_storage_tripwire",
     "ci-runner-debug.yml": "ci_runner_debug",
     ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
     "rust-probe.yml": "rust_probe",
@@ -95,6 +98,7 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     "stale.yml": "stale",
     ".github/workflows/stale.yml": "stale",
 }
+STORAGE_TRIPWIRE_RUNNER_CONFIG_KEY = "ci_storage_tripwire"
 SSH_RUNNER_ACTION_RE = re.compile(r"^ubicloud/ssh-runner@[0-9a-f]{40}$")
 DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
 DEFAULT_REPO_AUTOMATION_GLOBS = (
@@ -5592,6 +5596,7 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
 )
 CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/test_ci_storage_audit.py",
+    "python3 scripts/test_ci_storage_tripwire.py",
     "python3 scripts/test_root_bin_sidecars.py",
 )
 
@@ -11792,6 +11797,69 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     return errors
 
 
+def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str) -> list[str]:
+    try:
+        policy = ci_storage_tripwire.load_policy_text(
+            policy_text,
+            source="storage tripwire policy",
+        )
+    except ci_storage_tripwire.TripwireError as exc:
+        return [f"storage tripwire policy invalid: {exc}"]
+
+    workflow_contract = policy.workflow
+    workflow_name = workflow_contract.workflow_path
+    workflow_text = workflows.get(workflow_name)
+    if workflow_text is None:
+        return [f"{workflow_name} must exist"]
+
+    errors: list[str] = []
+    if workflow_trigger_keys(workflow_text) != set(workflow_contract.triggers):
+        errors.append(f"{workflow_name} triggers must match storage_tripwire.workflow.triggers")
+    schedule_block = "\n".join(workflow_trigger_block(workflow_text, "schedule"))
+    if workflow_contract.schedule_cron not in schedule_block:
+        errors.append(f"{workflow_name} schedule cron must match storage_tripwire.workflow.schedule_cron")
+
+    actual_permissions: dict[str, str] = {}
+    for line in top_level_block(workflow_text, "permissions"):
+        clean = strip_comment(line).strip()
+        match = re.fullmatch(r"([A-Za-z-]+):\s*([A-Za-z-]+)", clean)
+        if match:
+            actual_permissions[match.group(1)] = match.group(2)
+    if actual_permissions != dict(workflow_contract.permissions):
+        errors.append(f"{workflow_name} permissions must match storage_tripwire.workflow.permissions")
+
+    for forbidden in workflow_contract.forbidden_fragments:
+        if forbidden in workflow_text:
+            errors.append(
+                f"{workflow_name} must not contain forbidden workflow fragment from storage_tripwire.workflow.forbidden_fragments"
+            )
+            break
+
+    jobs = parse_jobs(workflow_text)
+    job = jobs.get(workflow_contract.job_id)
+    if job is None:
+        errors.append(f"{workflow_name} must define configured storage tripwire job")
+        return errors
+    job_text = "\n".join(job)
+    actual_var = extract_job_runs_on_var(job)
+    if actual_var != workflow_contract.runner_var:
+        errors.append(f"{workflow_name} storage tripwire runs-on must match storage_tripwire.workflow.runner_var")
+
+    for required in workflow_contract.required_fragments:
+        if required not in job_text:
+            errors.append(f"{workflow_name} job must contain storage_tripwire.workflow.required_fragments")
+            break
+    return errors
+
+
+def has_storage_tripwire_workflow(workflows: Mapping[str, str]) -> bool:
+    return any(
+        workflow_path in workflows
+        for workflow_path, config_key in WORKFLOW_RUNNER_CONFIG_KEYS.items()
+        if config_key == STORAGE_TRIPWIRE_RUNNER_CONFIG_KEY
+    )
+
+
 def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
     if not DEFAULT_RUNNERS_CONFIG.exists():
         return []
@@ -11972,6 +12040,19 @@ def main() -> int:
         errors.extend(verify_merge_readiness_ci_job(ci_workflow))
     errors.extend(verify_merge_readiness_finalizer_workflow(workflow_texts))
     errors.extend(verify_coverage_enforcer_workflow(workflow_texts))
+    try:
+        storage_tripwire_policy = ci_storage_tripwire.discover_policy_path(REPO_ROOT)
+        errors.extend(
+            verify_storage_tripwire_workflow(
+                workflow_texts,
+                storage_tripwire_policy.read_text(encoding="utf-8"),
+            )
+        )
+    except ci_storage_tripwire.NoTripwirePolicyError as exc:
+        if has_storage_tripwire_workflow(workflow_texts):
+            errors.append(f"storage tripwire policy discovery failed: {exc}")
+    except ci_storage_tripwire.TripwireError as exc:
+        errors.append(f"storage tripwire policy discovery failed: {exc}")
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())

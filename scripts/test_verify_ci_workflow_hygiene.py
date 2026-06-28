@@ -8815,6 +8815,9 @@ def assert_ci_provenance_upload_name_comes_from_config_template() -> None:
 def assert_artifact_retention_config_refs_are_validated() -> None:
     verifier = load_verifier()
     config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    capture_config_text = (
+        REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml"
+    ).read_text(encoding="utf-8")
     binding_coverage_error = "artifact_retention.lookback_bindings must exactly cover config-ref retention uploads"
     build_lookback_binding = """[artifact_retention.lookback_bindings.build_deploy]
 upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
@@ -8912,6 +8915,16 @@ lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
             '\nretention_days_config_ref = "ci_provenance.artifacts.missing"',
             1,
         ),
+        "artifact_retention.lookback_bindings.build_deploy.upload must reference a configured upload": config_text.replace(
+            'upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"',
+            'upload = ".github/workflows/ci.yml::build::missing-upload"',
+            1,
+        ),
+        "artifact_retention.lookback_bindings.build_deploy must match the upload retention source": config_text.replace(
+            'retention_ref = "ci_provenance.artifacts.retention_days"',
+            'retention_ref = "ci_provenance.api_limits.max_lookback_age_seconds"',
+            1,
+        ),
         binding_coverage_error: config_text.replace(
             build_lookback_binding,
             "",
@@ -8941,6 +8954,28 @@ lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
                     raise AssertionError(f"expected {expected!r}, got {exc}") from exc
             else:
                 raise AssertionError(f"config mutation did not fail: {expected}")
+        capture_lookback_config = capture_config_text.replace(
+            "max_lookback_age_seconds = 2592000",
+            "max_lookback_age_seconds = 2592001",
+            1,
+        )
+        config_path = write_temp_runner_config(pathlib.Path(tmp), config_text)
+        config_path.with_name("chainlink-reference-fixture-capture-provenance.toml").write_text(
+            capture_lookback_config,
+            encoding="utf-8",
+        )
+        try:
+            verifier.load_github_actions_runners_config(config_path)
+        except ValueError as exc:
+            expected = "artifact_retention.lookback_bindings.capture: max lookback age must not exceed artifact retention"
+            if expected not in str(exc):
+                raise AssertionError(
+                    f"expected binding-level lookback error {expected!r}, got {exc!r}"
+                ) from exc
+        else:
+            raise AssertionError(
+                "artifact retention binding must reject lookback windows longer than external retention"
+            )
 
 
 def assert_v6_red_no_mistakes_raw_cargo_is_reported() -> None:

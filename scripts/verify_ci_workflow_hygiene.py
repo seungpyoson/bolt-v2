@@ -12128,10 +12128,19 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
     retention_days = require_config_positive_int(
         artifacts, "retention_days", "ci_provenance.artifacts"
     )
-    if api_limits["max_lookback_age_seconds"] > retention_days * 24 * 60 * 60:
+    try:
+        check_lookback_le_retention(
+            retention_days,
+            require_config_positive_int(
+                api_limits,
+                "max_lookback_age_seconds",
+                "ci_provenance.api_limits",
+            ),
+        )
+    except ProvenanceError as exc:
         raise ValueError(
             "ci_provenance.api_limits.max_lookback_age_seconds must not exceed artifact retention"
-        )
+        ) from exc
 
     policy = require_config_table(ci_provenance, "policy", "ci_provenance")
     unexpected_policy_keys = set(policy) - set(CI_PROVENANCE_POLICY_ROWS) - {"override"}

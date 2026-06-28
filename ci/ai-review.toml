@@ -7,6 +7,43 @@ expected_bot_login = "github-actions[bot]"
 max_comment_chars = 60000
 response_chars_per_chunk = 8000
 
+[review.output_contract]
+finding_required_labels = [
+  "Severity:",
+  "Evidence:",
+  "Issue:",
+  "Fix / verification:",
+]
+finding_guidance = [
+  "blocking, high, medium, or low",
+  "the smallest relevant snippet or line reference from the supplied chunk",
+  "why this is a real behavior, safety, governance, or verification problem",
+  "the concrete next step",
+]
+no_findings_indicator = "No hard-evidence findings"
+no_findings_intro = "No hard-evidence findings in this chunk."
+no_findings_required_labels = [
+  "Coverage reviewed:",
+  "Evidence basis:",
+  "Risk areas considered:",
+]
+no_findings_guidance = [
+  "<specific changed files or diff areas reviewed in this chunk>.",
+  "supplied diff only; no omitted files, logs, or external state were assumed.",
+  "correctness, security, workflow safety, verification, and repo-governance impact visible in this chunk.",
+]
+non_deliverable_indicators = [
+  "review did not produce a deliverable",
+  "review notice",
+]
+
+[review.pr_agent_output]
+deliverable_headings = [
+  "## PR Reviewer Guide",
+  "## Incremental PR Reviewer Guide",
+]
+disabled_noise = []
+
 [glm]
 api_base = "https://api.z.ai/api/coding/paas/v4"
 model = "glm-5.2"
@@ -14,6 +51,8 @@ temperature = 0.2
 api_timeout_seconds = 180
 review_max_chunk_chars = 60000
 comment_marker = "<!-- ai-pr-reviewer-glm -->"
+notice_marker = "<!-- ai-pr-reviewer-glm-notice -->"
+source_label_template = "GLM direct fallback (`{model}`)"
 deliverable_markers = [
   "## PR Reviewer Guide",
   "## Incremental PR Reviewer Guide",
@@ -23,6 +62,7 @@ deliverable_markers = [
 [glm.pr_agent]
 model = "openai/glm-5.2"
 fallback_models = ["openai/glm-5.2"]
+source_label_template = "GLM PR-Agent (`{model}`)"
 custom_model_max_tokens = 128000
 large_patch_policy = "clip"
 timeout_seconds = 300
@@ -46,6 +86,8 @@ telemetry_disabled = true
 cli_timeout_seconds = 180
 review_max_chunk_chars = 60000
 deliverable_marker = "<!-- ai-pr-reviewer-kimi -->"
+notice_marker = "<!-- ai-pr-reviewer-kimi-notice -->"
+source_label_template = "Kimi Code CLI (`{model}`)"
 cli_package = "@moonshot-ai/kimi-code@0.19.0"
 
 [kimi.workflow]

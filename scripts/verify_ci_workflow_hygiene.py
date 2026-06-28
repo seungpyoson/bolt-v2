@@ -844,10 +844,9 @@ MERGIFY_PROOF_PR_HEAD_REF_PREDICATE = (
 MERGIFY_PROOF_PR_CANCEL_GUARD = f"!{MERGIFY_PROOF_PR_HEAD_REF_PREDICATE}"
 MERGIFY_PROOF_PR_GROUP_TOKEN = "mergify-proof"
 
-# Shared predicates used by advisory jobs only. Draft and ordinary source PRs
-# are queue-covered and do not produce full-gate proof, so advisory waiters that
-# require proof gates must not run there. These predicates must NOT be used for
-# required merge-proof jobs.
+# Shared predicates used by advisory jobs only. Merge-readiness progress waits
+# for required proof gates, so it is limited to boundary proof PRs. The
+# coverage-enforcer is event-aware and must not reuse that boundary-only gate.
 MERGIFY_PROOF_PR_READY_PREDICATE = (
     "github.event_name == 'pull_request' "
     "&& github.event.pull_request.draft == false "
@@ -864,9 +863,10 @@ EXPECTED_MERGE_READINESS_PROGRESS_IF = (
 )
 
 EXPECTED_COVERAGE_ENFORCER_IF = (
-    "${{ github.event_name == 'merge_group' "
-    "|| (" + MERGIFY_PROOF_PR_READY_PREDICATE + " "
-    "&& !(" + MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE + ")) }}"
+    "${{ !(github.event_name == 'pull_request' "
+    "&& github.event.action == 'edited' "
+    "&& " + MERGIFY_PROOF_PR_HEAD_REF_PREDICATE + " "
+    "&& !(github.event.changes.base.ref.from != '')) }}"
 )
 
 
@@ -11511,13 +11511,14 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
 
     permissions = "\n".join(top_level_block(workflow_text, "permissions"))
     for required in (
-        "  checks: write",
+        "  checks: read",
         "  contents: read",
         "  pull-requests: read",
     ):
         if required not in permissions:
             errors.append(f"{workflow_name} permissions must include {required.strip()}")
     for forbidden in (
+        "  checks: write",
         "  contents: write",
         "  pull-requests: write",
         "  actions:",
@@ -11536,9 +11537,9 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     job_if = job_if_value(job)
     if _normalize_concurrency_text(job_if) != EXPECTED_COVERAGE_ENFORCER_IF:
         errors.append(
-            f"{workflow_name} coverage-enforcer job if-condition must run only on "
-            "merge_group and non-draft Mergify proof PRs while skipping "
-            "metadata-only proof PR edits"
+            f"{workflow_name} coverage-enforcer job if-condition must run on "
+            "ordinary PRs, draft Mergify proof PRs, and merge_group while skipping "
+            "only metadata-only proof PR edits"
         )
     trusted_base_ref = (
         "          ref: ${{ github.event.pull_request.base.sha || "
@@ -11566,6 +11567,8 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     for required in (
         "if [ ! -f scripts/coverage_enforcer.py ]; then",
         "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py",
+        'if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then',
+        "coverage-enforcer bootstrap: trusted base tree lacks event-aware scripts/coverage_enforcer.py",
         "exit 0",
     ):
         if required not in job_text:

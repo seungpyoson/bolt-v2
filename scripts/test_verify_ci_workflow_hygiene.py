@@ -1127,7 +1127,7 @@ on:
     types: [checks_requested]
 
 permissions:
-  checks: write
+  checks: read
   contents: read
   pull-requests: read
 
@@ -1135,13 +1135,11 @@ jobs:
   coverage-enforcer:
     name: coverage-enforcer
     if: >-
-      ${{ github.event_name == 'merge_group'
-          || (github.event_name == 'pull_request'
-              && github.event.pull_request.draft == false
-              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-              && !(github.event.action == 'edited'
-                   && !(github.event.changes.base.ref.from != ''))) }}
+      ${{ !(github.event_name == 'pull_request'
+            && github.event.action == 'edited'
+            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+            && !(github.event.changes.base.ref.from != '')) }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1161,6 +1159,10 @@ jobs:
         run: |
           if [ ! -f scripts/coverage_enforcer.py ]; then
             echo "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py"
+            exit 0
+          fi
+          if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then
+            echo "coverage-enforcer bootstrap: trusted base tree lacks event-aware scripts/coverage_enforcer.py"
             exit 0
           fi
           python3 scripts/coverage_enforcer.py
@@ -4540,8 +4542,12 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "    types: [checks_requested]\n", "    types: [requested]\n")},
         ),
         (
-            "permissions must include checks: write",
-            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  checks: write\n", "  checks: read\n")},
+            "permissions must include checks: read",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  checks: read\n", "")},
+        ),
+        (
+            "permissions must not include checks: write",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  checks: read\n", "  checks: write\n")},
         ),
         (
             "permissions must include pull-requests: read",
@@ -4596,43 +4602,36 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             },
         ),
         (
-            "coverage-enforcer job if-condition must run only on merge_group",
+            "coverage-enforcer job if-condition must run on ordinary PRs",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "      ${{ github.event_name == 'merge_group'\n"
-                    "          || (github.event_name == 'pull_request'\n",
-                    "      ${{ github.event_name == 'pull_request'\n",
-                )
-            },
-        ),
-        (
-            "coverage-enforcer job if-condition must run only on merge_group",
-            {
-                workflow_name: replace_once(
-                    BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "              && github.event.pull_request.draft == false\n",
+                    "            && github.event.action == 'edited'\n",
                     "",
                 )
             },
         ),
         (
-            "coverage-enforcer job if-condition must run only on merge_group",
+            "coverage-enforcer job if-condition must run on ordinary PRs",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-                    "                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
+                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
                     "",
                 )
             },
         ),
         (
-            "coverage-enforcer job if-condition must run only on merge_group",
+            "coverage-enforcer job if-condition must run on ordinary PRs",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "    if: >-\n"
+                    "      ${{ !(github.event_name == 'pull_request'\n"
+                    "            && github.event.action == 'edited'\n"
+                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+                    "            && !(github.event.changes.base.ref.from != '')) }}\n",
                     "      ${{ github.event_name == 'merge_group'\n"
                     "          || (github.event_name == 'pull_request'\n"
                     "              && github.event.pull_request.draft == false\n"
@@ -4640,6 +4639,20 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
                     "                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
                     "              && !(github.event.action == 'edited'\n"
                     "                   && !(github.event.changes.base.ref.from != ''))) }}\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job if-condition must run on ordinary PRs",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "    if: >-\n"
+                    "      ${{ !(github.event_name == 'pull_request'\n"
+                    "            && github.event.action == 'edited'\n"
+                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+                    "            && !(github.event.changes.base.ref.from != '')) }}\n",
                     "",
                 )
             },

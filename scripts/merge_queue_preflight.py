@@ -28,6 +28,9 @@ STATUS_READY = "ready"
 STATUS_BLOCKED = "blocked"
 STATUS_INCONCLUSIVE = "inconclusive"
 STATUS_RESIDUAL_RISK = "residual_risk"
+INPUT_FAILURE_USAGE_ERROR = "usage_error"
+INPUT_FAILURE_LANE_FINDING = "lane_finding"
+INPUT_FAILURE_USAGE_REASON = "preflight_usage_error"
 LANE_MERGIFY_CONFIG = "mergify_config"
 LANE_IDENTITY = "identity"
 LANE_READINESS = "readiness"
@@ -62,6 +65,43 @@ CONTRACT_VERDICT_EXIT_CODES = {
     VERDICT_SPLIT_ADVISED: 1,
     VERDICT_BLOCKED: 2,
     VERDICT_INCONCLUSIVE: 3,
+}
+INPUT_FAILURE_CLASSIFICATIONS = {
+    "absent_input": (INPUT_FAILURE_USAGE_ERROR, INPUT_FAILURE_USAGE_REASON, 4),
+    "absent_evidence": (INPUT_FAILURE_LANE_FINDING, STATUS_INCONCLUSIVE, 3),
+    "empty_input": (INPUT_FAILURE_USAGE_ERROR, INPUT_FAILURE_USAGE_REASON, 4),
+    "invalid": (INPUT_FAILURE_USAGE_ERROR, INPUT_FAILURE_USAGE_REASON, 4),
+    "stale_base": (INPUT_FAILURE_LANE_FINDING, STATUS_INCONCLUSIVE, 3),
+    "stale_head": (INPUT_FAILURE_LANE_FINDING, STATUS_BLOCKED, 2),
+    "unavailable": (INPUT_FAILURE_LANE_FINDING, STATUS_INCONCLUSIVE, 3),
+    "timeout": (INPUT_FAILURE_LANE_FINDING, STATUS_INCONCLUSIVE, 3),
+    "ambiguous": (INPUT_FAILURE_LANE_FINDING, STATUS_INCONCLUSIVE, 3),
+}
+MERGIFY_CONFIG_FIELD_HANDLING = {
+    "merge_queue.max_parallel_checks": "residual_cost_impact",
+    "merge_queue.reset_on_external_merge": "residual_post_preflight_invalidation",
+    "queue_rules[].name": "required_unique_queue_identity",
+    "queue_rules[].queue_conditions": "effective_pr_to_queue_routing",
+    "queue_rules[].merge_conditions": "required_reviewer_and_check_evidence",
+    "queue_rules[].branch_protection_injection_mode": "explicit_support_or_inconclusive",
+    "queue_rules[].batch_size": "batch_min_max_scalar_model",
+    "queue_rules[].batch_max_wait_time": "below_min_wait_model",
+    "queue_rules[].batch_max_failure_resolution_attempts": "explicit_support_or_inconclusive",
+    "queue_rules[].checks_timeout": "residual_proof_time_risk",
+    "queue_rules[].draft_bot_account": "explicit_support_or_inconclusive",
+    "queue_rules[].merge_method": "explicit_support_or_inconclusive",
+    "priority_rules[].conditions": "effective_routing_priority_conditions",
+    "priority_rules[].name": "required_unique_priority_identity",
+    "priority_rules[].priority": "residual_live_order_risk",
+    "priority_rules[].allow_checks_interruption": "residual_interruption_risk",
+}
+PREFLIGHT_ARTIFACT_CLASSIFICATIONS = {
+    "base_conflict": (LANE_INTEGRATION, "pr", STATUS_BLOCKED),
+    "batch_conflict": (LANE_INTEGRATION, "batch", STATUS_BLOCKED),
+    "batch_verifier_failed": (LANE_VERIFIER, "batch", STATUS_BLOCKED),
+    "metadata_unavailable": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
+    "readiness_failed": (LANE_READINESS, "pr", STATUS_BLOCKED),
+    "verifier_failed": (LANE_VERIFIER, "pr", STATUS_BLOCKED),
 }
 CHECK_STATE_CLASSIFICATIONS = {
     "success": (STATUS_READY, "required_check_ready"),
@@ -148,6 +188,19 @@ def classify_required_check_state(
             "expected_head": expected_head,
             "actual_head": actual_head,
         },
+    }
+
+
+def preflight_artifact_finding(artifact: Mapping[str, object]) -> dict[str, object]:
+    artifact_type = str(artifact["type"])
+    lane, scope, status = PREFLIGHT_ARTIFACT_CLASSIFICATIONS[artifact_type]
+    return {
+        "lane": lane,
+        "scope": scope,
+        "status": status,
+        "reason_code": artifact_type,
+        "message": artifact_type,
+        "evidence": dict(artifact),
     }
 
 
@@ -915,6 +968,10 @@ def preflight(
                 verifiers=current_verifiers,
             )
         )
+    findings = [
+        preflight_artifact_finding(artifact)
+        for artifact in (*blocked_prs, *conflicts)
+    ]
     payload = {
         "base": base,
         "base_sha": base_sha,
@@ -925,6 +982,7 @@ def preflight(
         "batches": [batch.as_json(output_policy) for batch in batches],
         "blocked_prs": blocked_prs,
         "conflicts": conflicts,
+        "findings": findings,
         "output_policy": output_policy.as_json(),
     }
     exit_code = 1 if blocked_prs or conflicts or metadata_warnings else 0

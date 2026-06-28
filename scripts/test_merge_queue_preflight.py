@@ -236,6 +236,82 @@ def assert_check_state_classification_is_table_driven() -> None:
         raise AssertionError(stale)
 
 
+def assert_input_failure_matrix_is_declarative() -> None:
+    module = load_preflight_module()
+    expected = {
+        "absent_input": ("usage_error", "preflight_usage_error", 4),
+        "absent_evidence": ("lane_finding", "inconclusive", 3),
+        "empty_input": ("usage_error", "preflight_usage_error", 4),
+        "invalid": ("usage_error", "preflight_usage_error", 4),
+        "stale_base": ("lane_finding", "inconclusive", 3),
+        "stale_head": ("lane_finding", "blocked", 2),
+        "unavailable": ("lane_finding", "inconclusive", 3),
+        "timeout": ("lane_finding", "inconclusive", 3),
+        "ambiguous": ("lane_finding", "inconclusive", 3),
+    }
+    if module.INPUT_FAILURE_CLASSIFICATIONS != expected:
+        raise AssertionError(module.INPUT_FAILURE_CLASSIFICATIONS)
+
+
+def assert_mergify_config_field_handling_is_declarative() -> None:
+    module = load_preflight_module()
+    expected = {
+        "merge_queue.max_parallel_checks": "residual_cost_impact",
+        "merge_queue.reset_on_external_merge": "residual_post_preflight_invalidation",
+        "queue_rules[].name": "required_unique_queue_identity",
+        "queue_rules[].queue_conditions": "effective_pr_to_queue_routing",
+        "queue_rules[].merge_conditions": "required_reviewer_and_check_evidence",
+        "queue_rules[].branch_protection_injection_mode": "explicit_support_or_inconclusive",
+        "queue_rules[].batch_size": "batch_min_max_scalar_model",
+        "queue_rules[].batch_max_wait_time": "below_min_wait_model",
+        "queue_rules[].batch_max_failure_resolution_attempts": "explicit_support_or_inconclusive",
+        "queue_rules[].checks_timeout": "residual_proof_time_risk",
+        "queue_rules[].draft_bot_account": "explicit_support_or_inconclusive",
+        "queue_rules[].merge_method": "explicit_support_or_inconclusive",
+        "priority_rules[].conditions": "effective_routing_priority_conditions",
+        "priority_rules[].name": "required_unique_priority_identity",
+        "priority_rules[].priority": "residual_live_order_risk",
+        "priority_rules[].allow_checks_interruption": "residual_interruption_risk",
+    }
+    if module.MERGIFY_CONFIG_FIELD_HANDLING != expected:
+        raise AssertionError(module.MERGIFY_CONFIG_FIELD_HANDLING)
+
+
+def assert_preflight_artifact_classification_is_declarative() -> None:
+    module = load_preflight_module()
+    expected = {
+        "base_conflict": ("integration", "pr", "blocked"),
+        "batch_conflict": ("integration", "batch", "blocked"),
+        "batch_verifier_failed": ("verifier", "batch", "blocked"),
+        "metadata_unavailable": ("readiness", "pr", "inconclusive"),
+        "readiness_failed": ("readiness", "pr", "blocked"),
+        "verifier_failed": ("verifier", "pr", "blocked"),
+    }
+    if module.PREFLIGHT_ARTIFACT_CLASSIFICATIONS != expected:
+        raise AssertionError(module.PREFLIGHT_ARTIFACT_CLASSIFICATIONS)
+
+
+def assert_preflight_artifact_finding_uses_classification_table() -> None:
+    module = load_preflight_module()
+    artifact = {
+        "type": "batch_conflict",
+        "pr": 2,
+        "against_batch": [1],
+        "files": ["shared.txt"],
+    }
+    expected = {
+        "lane": "integration",
+        "scope": "batch",
+        "status": "blocked",
+        "reason_code": "batch_conflict",
+        "message": "batch_conflict",
+        "evidence": artifact,
+    }
+    finding = module.preflight_artifact_finding(artifact)
+    if finding != expected:
+        raise AssertionError(finding)
+
+
 def write_preflight_config(
     root: pathlib.Path,
     profile: str,
@@ -455,6 +531,17 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
             }
         ]:
             raise AssertionError(blocked)
+        if payload["findings"] != [
+            {
+                "lane": "integration",
+                "scope": "pr",
+                "status": "blocked",
+                "reason_code": "base_conflict",
+                "message": "base_conflict",
+                "evidence": blocked[0],
+            }
+        ]:
+            raise AssertionError(payload["findings"])
 
 
 def assert_verifier_failure_blocks_bad_pr_before_batching() -> None:
@@ -898,6 +985,10 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
 def main() -> int:
     assert_contract_result_reduces_findings_by_table()
     assert_check_state_classification_is_table_driven()
+    assert_input_failure_matrix_is_declarative()
+    assert_mergify_config_field_handling_is_declarative()
+    assert_preflight_artifact_classification_is_declarative()
+    assert_preflight_artifact_finding_uses_classification_table()
     assert_clean_prs_batch_together()
     assert_conflicting_pr_starts_later_batch()
     assert_order_dependent_conflict_context_is_reported()

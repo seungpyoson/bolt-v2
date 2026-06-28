@@ -386,6 +386,26 @@ def assert_all_present_and_correct_succeeds() -> None:
         raise AssertionError(payload)
 
 
+def assert_retriggered_same_app_check_runs_succeed() -> None:
+    result, fake = run_enforcer(
+        [
+            [
+                check_run("gate"),
+                check_run("backtester-gate"),
+                check_run("host-health"),
+                check_run("host-health"),
+                check_run("actionlint"),
+                check_run("actionlint"),
+            ]
+        ]
+    )
+    if result.conclusion != "success" or result.findings:
+        raise AssertionError(result)
+    posted = fake.posted_check_runs()
+    if len(posted) != 1 or posted[0]["conclusion"] != "success":
+        raise AssertionError(posted)
+
+
 def assert_poll_timeout_fails_closed() -> None:
     result, fake = run_enforcer(
         [[check_run("gate", status="in_progress", conclusion=None)]],
@@ -554,6 +574,7 @@ def assert_non_object_event_fails_closed() -> None:
 def main() -> int:
     assert_drift_detects_missing_and_wrong_app()
     assert_all_present_and_correct_succeeds()
+    assert_retriggered_same_app_check_runs_succeed()
     assert_poll_timeout_fails_closed()
     assert_r2_derivation_mismatch_fails()
     assert_r2_derives_generic_tag_triggers()

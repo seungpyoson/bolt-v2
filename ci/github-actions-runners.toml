@@ -37,6 +37,8 @@ ci-provenance-emit = "managed_light"
 same-sha-main-evidence = "github_hosted"
 gate = "github_hosted"
 deploy = "github_hosted"
+capture = "managed_heavy"
+capture-gate = "github_hosted"
 
 [workflows.backtester_ci]
 ci-policy = "managed_light"
@@ -50,7 +52,6 @@ fmt = "managed_light"
 # which already compiles this crate on managed_heavy.
 clippy = "managed_heavy"
 test-archive = "managed_heavy"
-test = "managed_heavy"
 issue_789 = "managed_heavy"
 gate = "github_hosted"
 
@@ -98,7 +99,12 @@ stale = "github_hosted"
 fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
 fingerprint_workflow = "ci"
 debug_workflow = "ci_runner_debug"
-included_workflows = ["ci", "backtester_ci", "ci_runner_debug", "rust_probe"]
+included_workflows = [
+  "ci",
+  "backtester_ci",
+  "ci_runner_debug",
+  "rust_probe",
+]
 
 [meter.api_limits]
 workflow_runs_per_page = 100

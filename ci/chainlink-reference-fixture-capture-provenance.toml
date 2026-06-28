@@ -1,0 +1,103 @@
+schema_version = 1
+
+[meter]
+fingerprint_artifact_prefix = "chainlink-reference-fixture-capture-fingerprint-"
+fingerprint_workflow = "ci"
+
+[ci_provenance]
+schema_version = 1
+artifact_name_template = "chainlink-reference-fixture-capture-attempt-{run_attempt}"
+workflow_key = "ci"
+workflow_name = "CI"
+workflow_path = ".github/workflows/ci.yml"
+fingerprint_source = "meter"
+
+[ci_provenance.full_ci]
+required_jobs = ["capture"]
+conditional_jobs = []
+conditional_job_outputs = {}
+
+[ci_provenance.full_ci.jobs.capture]
+check_name = "capture"
+
+[ci_provenance.deploy]
+artifact_name = "chainlink-reference-fixture-capture"
+require_source_event = "workflow_dispatch"
+require_source_branch = "main"
+require_gate_check = false
+
+[ci_provenance.dispatch]
+workflow_input = "capture_reference_boundary_fixture"
+run_name_default = "Chainlink Reference Fixture Capture"
+run_name_full = "Chainlink Reference Fixture Capture [credential-ssm]"
+run_name_iteration = "Chainlink Reference Fixture Capture [dry]"
+proof_gate_job = "gate"
+
+[ci_provenance.gate_names]
+gate_required = "gate"
+gate_defer = "gate-deferred"
+gate_iteration = "gate-iteration"
+gate_noop = "gate-noop"
+gate_dispatch_full = "gate-dispatch"
+backtester_required = "backtester-gate"
+backtester_defer = "backtester-gate-deferred"
+backtester_iteration = "backtester-gate-iteration"
+backtester_noop = "backtester-gate-noop"
+backtester_dispatch_full = "backtester-gate-dispatch"
+
+[ci_provenance.docs]
+safe_paths = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "GEMINI.md",
+  "REASONIX.md",
+  "LICENSE",
+  "SECURITY.md",
+  ".github/ISSUE_TEMPLATE/**",
+  ".claude/**",
+  ".codex/**",
+  ".gemini/**",
+  ".opencode/**",
+  ".pi/**",
+  ".specify/**",
+]
+forbidden_ignored_build_paths = [
+  ".claude/rust-verification.toml",
+]
+non_heavy_required_jobs = ["capture"]
+
+[ci_provenance.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+max_lookback_pages = 10
+max_lookback_age_seconds = 2592000
+
+[ci_provenance.artifacts]
+retention_days = 30
+
+[ci_provenance.policy]
+draft_pr_synchronize = "defer"
+draft_pr_opened = "defer"
+draft_pr_reopened = "defer"
+draft_pr_edited = "defer"
+converted_to_draft = "defer"
+ready_pr = "full"
+ready_pr_edited_no_base = "noop"
+ready_pr_reopened = "noop"
+ready_for_review = "full"
+docs = "docs"
+workflow_dispatch = "iteration"
+workflow_dispatch_full_ci = "full"
+main_push = "full"
+merge_group = "full"
+mergify_temp_pr = "full"
+tag = "tag_reuse"
+unknown_event = "full"
+
+[ci_provenance.mergify]
+temp_pr_head_ref_prefix = "mergify/merge-queue/"
+
+[ci_provenance.policy.override]
+force_full_ci = false
+ignore_emit_failure = false

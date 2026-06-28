@@ -8,26 +8,23 @@ on:
     types: [checks_requested]
 
 permissions:
-  checks: write
+  checks: read
   contents: read
   pull-requests: read
 
 jobs:
   coverage-enforcer:
     name: coverage-enforcer
-    # Run only where required full-gate proof can exist: merge_group and Mergify
-    # proof PRs. Ordinary source PRs and drafts are queue-covered, so running this
-    # advisory waiter there only burns minutes waiting for absent proof gates.
-    # Also skip redundant advisory runs when Mergify edits proof PR metadata
+    # The script is event-aware: ordinary PRs verify always-present checks,
+    # while proof PRs and merge_group verify required full-gate contexts too.
+    # Skip only redundant advisory runs when Mergify edits proof PR metadata
     # after the initial opened run.
     if: >-
-      ${{ github.event_name == 'merge_group'
-          || (github.event_name == 'pull_request'
-              && github.event.pull_request.draft == false
-              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-              && !(github.event.action == 'edited'
-                   && !(github.event.changes.base.ref.from != ''))) }}
+      ${{ !(github.event_name == 'pull_request'
+            && github.event.action == 'edited'
+            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+            && !(github.event.changes.base.ref.from != '')) }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -47,6 +44,10 @@ jobs:
         run: |
           if [ ! -f scripts/coverage_enforcer.py ]; then
             echo "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py"
+            exit 0
+          fi
+          if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then
+            echo "coverage-enforcer bootstrap: trusted base tree lacks event-aware scripts/coverage_enforcer.py"
             exit 0
           fi
           python3 scripts/coverage_enforcer.py

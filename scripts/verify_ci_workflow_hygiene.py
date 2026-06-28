@@ -11030,7 +11030,7 @@ def require_config_string(parent: dict[str, object], key: str, prefix: str) -> s
 
 def require_config_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
     value = parent.get(key)
-    if not isinstance(value, int) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{prefix}.{key} must be a positive integer")
     return value
 
@@ -11060,7 +11060,7 @@ def resolve_config_positive_int_ref(data: dict[str, object], ref: str, prefix: s
         if not isinstance(current, dict) or key not in current:
             raise ValueError(f"{prefix} references missing TOML key {ref!r}")
         current = current[key]
-    if not isinstance(current, int) or current <= 0:
+    if isinstance(current, bool) or not isinstance(current, int) or current <= 0:
         raise ValueError(f"{prefix} must reference a positive integer")
     return current
 

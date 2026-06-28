@@ -8124,6 +8124,16 @@ def assert_artifact_retention_config_refs_are_validated() -> None:
     verifier = load_verifier()
     config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
     cases = {
+        "artifact_retention.classes.deployable.max_retention_days must be a positive integer": config_text.replace(
+            "max_retention_days = 3",
+            "max_retention_days = true",
+            1,
+        ),
+        "ci_provenance.artifacts.retention_days must be a positive integer": config_text.replace(
+            "retention_days = 30",
+            "retention_days = true",
+            1,
+        ),
         "max_retention_days_config_ref references missing TOML key": config_text.replace(
             'max_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
             'max_retention_days_config_ref = "ci_provenance.artifacts.missing"',

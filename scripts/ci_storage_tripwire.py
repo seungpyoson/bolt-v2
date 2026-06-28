@@ -12,6 +12,7 @@ import datetime as dt
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tomllib
@@ -27,6 +28,7 @@ import ci_storage_audit
 
 
 GITHUB_API_MAX_PAGE_SIZE = 100
+STORAGE_TRIPWIRE_TABLE_RE = re.compile(r"(?m)^\s*\[\[?\s*storage_tripwire(?:\s*\]|\.)")
 
 
 class TripwireError(RuntimeError):
@@ -34,6 +36,10 @@ class TripwireError(RuntimeError):
 
 
 class NoTripwirePolicyError(TripwireError):
+    pass
+
+
+class TripwirePolicyInventoryError(TripwireError):
     pass
 
 
@@ -65,6 +71,9 @@ class WorkflowPolicy:
     job_id: str
     runner_var: str
     schedule_cron: str
+    concurrency_group: str
+    cancel_in_progress: bool
+    run_command: str
     triggers: tuple[str, ...]
     permissions: Mapping[str, str]
     required_fragments: tuple[str, ...]
@@ -140,6 +149,13 @@ def require_positive_int_at_most(
     value = require_positive_int(table, key, field)
     if value > maximum:
         raise TripwireError(f"{field}.{key} must be no greater than {maximum}")
+    return value
+
+
+def require_bool(table: Mapping[str, Any], key: str, field: str) -> bool:
+    value = table.get(key)
+    if not isinstance(value, bool):
+        raise TripwireError(f"{field}.{key} must be a boolean")
     return value
 
 
@@ -237,6 +253,9 @@ def load_policy_text(text: str, *, source: str) -> StorageTripwirePolicy:
         job_id=require_string(workflow_table, "job_id", "storage_tripwire.workflow"),
         runner_var=require_string(workflow_table, "runner_var", "storage_tripwire.workflow"),
         schedule_cron=require_string(workflow_table, "schedule_cron", "storage_tripwire.workflow"),
+        concurrency_group=require_string(workflow_table, "concurrency_group", "storage_tripwire.workflow"),
+        cancel_in_progress=require_bool(workflow_table, "cancel_in_progress", "storage_tripwire.workflow"),
+        run_command=require_string(workflow_table, "run_command", "storage_tripwire.workflow"),
         triggers=require_string_list(workflow_table, "triggers", "storage_tripwire.workflow"),
         permissions=require_string_mapping(workflow_table, "permissions", "storage_tripwire.workflow"),
         required_fragments=require_string_list(workflow_table, "required_fragments", "storage_tripwire.workflow"),
@@ -309,17 +328,27 @@ def repository_toml_paths(root: pathlib.Path) -> list[pathlib.Path]:
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "unknown git failure"
-        raise TripwireError(f"git ls-files failed while discovering storage tripwire policy: {detail}")
+        raise TripwirePolicyInventoryError(f"git ls-files failed while discovering storage tripwire policy: {detail}")
     return [root / line for line in result.stdout.splitlines() if line.strip()]
+
+
+def contains_storage_tripwire_table(text: str) -> bool:
+    return STORAGE_TRIPWIRE_TABLE_RE.search(text) is not None
 
 
 def discover_policy_path(root: pathlib.Path) -> pathlib.Path:
     matches: list[pathlib.Path] = []
     for path in repository_toml_paths(root):
         try:
-            parsed = tomllib.loads(path.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError):
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise TripwireError(f"{path}: cannot inspect TOML while discovering storage tripwire policy: {exc}") from exc
+        if not contains_storage_tripwire_table(text):
             continue
+        try:
+            parsed = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            raise TripwireError(f"{path}: invalid TOML for storage tripwire policy: {exc}") from exc
         if isinstance(parsed, dict) and isinstance(parsed.get("storage_tripwire"), dict):
             matches.append(path)
     if not matches:
@@ -394,6 +423,10 @@ def evaluate_tripwire(policy: StorageTripwirePolicy, audit: Mapping[str, Any]) -
 
 def issue_marker(policy: StorageTripwirePolicy, threshold_id: str) -> str:
     return f"{policy.marker.prefix}{threshold_id}{policy.marker.suffix}"
+
+
+def body_has_marker_line(body: str, marker: str) -> bool:
+    return any(line.strip() == marker for line in body.splitlines())
 
 
 def render_issue_body(
@@ -564,7 +597,7 @@ class GhIssueClient:
                 if not isinstance(issue, dict) or "pull_request" in issue:
                     continue
                 body = issue.get("body")
-                if isinstance(body, str) and marker in body:
+                if isinstance(body, str) and body_has_marker_line(body, marker):
                     matches.append(issue)
                     if len(matches) >= result_limit:
                         return matches
@@ -593,12 +626,15 @@ class GhIssueClient:
 
 def build_live_audit(repo: str, branch: str) -> dict[str, Any]:
     client = ci_storage_audit.GhClient(repo)
-    return ci_storage_audit.build_snapshot(
-        client,
-        repo=repo,
-        branch=branch,
-        snapshot_utc=ci_storage_audit.isoformat_utc(dt.datetime.now(dt.UTC)),
-    )
+    try:
+        return ci_storage_audit.build_snapshot(
+            client,
+            repo=repo,
+            branch=branch,
+            snapshot_utc=ci_storage_audit.isoformat_utc(dt.datetime.now(dt.UTC)),
+        )
+    except ci_storage_audit.AuditError as exc:
+        raise TripwireError(f"live audit failed: {exc}") from exc
 
 
 def write_summary(text: str) -> None:
@@ -720,9 +756,13 @@ def main(argv: list[str]) -> int:
     return result.exit_code
 
 
-if __name__ == "__main__":
+def run_cli(argv: list[str]) -> int:
     try:
-        sys.exit(main(sys.argv[1:]))
+        return main(argv)
     except TripwireError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
-        sys.exit(2)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(run_cli(sys.argv[1:]))

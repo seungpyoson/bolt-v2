@@ -110,6 +110,9 @@ class CiStorageTripwireTests(unittest.TestCase):
                 job_id = "storage-tripwire"
                 runner_var = "CI_RUNNER_GITHUB_HOSTED"
                 schedule_cron = "17 9 * * 1"
+                concurrency_group = "ci-storage-tripwire"
+                cancel_in_progress = false
+                run_command = "python3 scripts/ci_storage_tripwire.py apply-live --repo \\"$GITHUB_REPOSITORY\\" --branch \\"$GITHUB_REF_NAME\\""
                 triggers = ["schedule", "workflow_dispatch"]
                 permissions = { contents = "read", actions = "read", issues = "write" }
                 required_fragments = ["python3 scripts/ci_storage_tripwire.py", "apply-live"]
@@ -272,6 +275,25 @@ class CiStorageTripwireTests(unittest.TestCase):
         finally:
             ci_storage_tripwire.subprocess.run = original_run  # type: ignore[assignment]
 
+    def test_policy_discovery_fails_closed_on_malformed_tripwire_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            bad_policy = root / "bad.toml"
+            bad_policy.write_text("[storage_tripwire]\npolicy_id =\n", encoding="utf-8")
+            good_policy = self.write_policy(root)
+
+            original_inventory = ci_storage_tripwire.repository_toml_paths
+
+            def fake_inventory(_root: pathlib.Path) -> list[pathlib.Path]:
+                return [bad_policy, good_policy]
+
+            ci_storage_tripwire.repository_toml_paths = fake_inventory  # type: ignore[assignment]
+            try:
+                with self.assertRaisesRegex(ci_storage_tripwire.TripwireError, "invalid TOML"):
+                    ci_storage_tripwire.discover_policy_path(root)
+            finally:
+                ci_storage_tripwire.repository_toml_paths = original_inventory  # type: ignore[assignment]
+
     def test_apply_cli_exits_zero_after_successful_breach_alerting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -356,6 +378,44 @@ class CiStorageTripwireTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertTrue(payload["evaluation"]["breached"])
         self.assertEqual(payload["alerts"], {"created": [100], "updated": [], "unchanged": []})
+
+    def test_apply_live_cli_reports_audit_errors_as_tripwire_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            policy_path = self.write_policy(root)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            original_snapshot = ci_storage_tripwire.ci_storage_audit.build_snapshot
+
+            def fail_snapshot(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                raise ci_storage_tripwire.ci_storage_audit.GhApiError(
+                    "repos/owner/repo/actions/caches",
+                    "rate limited",
+                )
+
+            ci_storage_tripwire.ci_storage_audit.build_snapshot = fail_snapshot  # type: ignore[assignment]
+            try:
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    exit_code = ci_storage_tripwire.run_cli(
+                        [
+                            "--policy",
+                            str(policy_path),
+                            "apply-live",
+                            "--repo",
+                            "owner/repo",
+                            "--branch",
+                            "main",
+                        ]
+                    )
+            finally:
+                ci_storage_tripwire.ci_storage_audit.build_snapshot = original_snapshot  # type: ignore[assignment]
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("ERROR: live audit failed:", stderr.getvalue())
+        self.assertIn("rate limited", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_apply_updates_existing_marker_issue_and_creates_missing_breach_issue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -456,7 +516,8 @@ class CiStorageTripwireTests(unittest.TestCase):
         client = RecordingGhIssueClient(
             [
                 [
-                    {"number": 6, "body": "different marker"},
+                    {"number": 5, "body": f"text before {marker} text after"},
+                    {"number": 6, "body": f"{marker}-suffix\n"},
                     {"number": 7, "body": marker},
                     {
                         "number": 8,
@@ -535,6 +596,9 @@ class CiStorageTripwireTests(unittest.TestCase):
                 job_id = "storage-tripwire"
                 runner_var = "CI_RUNNER_GITHUB_HOSTED"
                 schedule_cron = "17 9 * * 1"
+                concurrency_group = "ci-storage-tripwire"
+                cancel_in_progress = false
+                run_command = "python3 scripts/ci_storage_tripwire.py apply-live --repo \\"$GITHUB_REPOSITORY\\" --branch \\"$GITHUB_REF_NAME\\""
                 triggers = ["schedule", "workflow_dispatch"]
                 permissions = { contents = "read", actions = "read", issues = "write" }
                 required_fragments = ["python3 scripts/ci_storage_tripwire.py", "apply-live"]
@@ -550,13 +614,6 @@ class CiStorageTripwireTests(unittest.TestCase):
                 limit_bytes = 1000
                 severity = "warning"
                 title = "CI storage tripwire: cache threshold crossed"
-
-                [[storage_tripwire.thresholds]]
-                id = "cache-over-cap"
-                metric = "cache"
-                limit_bytes = 2000
-                severity = "warning"
-                title = "CI storage tripwire: duplicate"
                 """,
             )
 
@@ -593,6 +650,9 @@ class CiStorageTripwireTests(unittest.TestCase):
                 job_id = "storage-tripwire"
                 runner_var = "CI_RUNNER_GITHUB_HOSTED"
                 schedule_cron = "17 9 * * 1"
+                concurrency_group = "ci-storage-tripwire"
+                cancel_in_progress = false
+                run_command = "python3 scripts/ci_storage_tripwire.py apply-live --repo \\"$GITHUB_REPOSITORY\\" --branch \\"$GITHUB_REF_NAME\\""
                 triggers = ["schedule", "workflow_dispatch"]
                 permissions = { contents = "read", actions = "read", issues = "write" }
                 required_fragments = ["python3 scripts/ci_storage_tripwire.py", "apply-live"]
@@ -681,12 +741,39 @@ class CiStorageTripwireTests(unittest.TestCase):
                 "permissions must match",
             ),
             (
+                workflow.replace(
+                    "    name: storage-tripwire\n",
+                    "    name: storage-tripwire\n    permissions:\n      checks: write\n      statuses: write\n",
+                ),
+                "job-level permissions",
+            ),
+            (
+                workflow.replace("  group: ci-storage-tripwire\n", "  group: drifted\n"),
+                "concurrency",
+            ),
+            (
+                workflow.replace("  cancel-in-progress: false\n", "  cancel-in-progress: true\n"),
+                "concurrency",
+            ),
+            (
                 workflow.replace("CI_RUNNER_GITHUB_HOSTED", "CI_RUNNER_MANAGED_LIGHT"),
                 "runner_var",
             ),
             (
                 workflow.replace(" apply-live ", " evaluate "),
-                "required_fragments",
+                "run command",
+            ),
+            (
+                workflow.replace(
+                    '          python3 scripts/ci_storage_tripwire.py apply-live --repo "$GITHUB_REPOSITORY" --branch "$GITHUB_REF_NAME"\n',
+                    '          echo \'python3 scripts/ci_storage_tripwire.py apply-live --repo "$GITHUB_REPOSITORY" --branch "$GITHUB_REF_NAME"\'\n'
+                    "          python3 scripts/ci_storage_tripwire.py evaluate --audit-json audit.json --json\n",
+                ),
+                "run command",
+            ),
+            (
+                workflow.replace("        run: |\n", "        continue-on-error: true\n        run: |\n"),
+                "continue-on-error",
             ),
             (
                 workflow + "\n          gh api repos/$GITHUB_REPOSITORY/actions/artifacts\n",

@@ -12302,6 +12302,10 @@ def main() -> int:
     real_workflows = verifier.repo_workflow_texts()
     runner_errors = verifier.verify_github_actions_runner_contract(real_workflows)
     assert not runner_errors, runner_errors
+    storage_policy_path = verifier.ci_storage_tripwire.discover_policy_path(REPO_ROOT)
+    storage_policy = storage_policy_path.read_text(encoding="utf-8")
+    storage_errors = verifier.verify_storage_tripwire_workflow(real_workflows, storage_policy)
+    assert not storage_errors, storage_errors
     actionlint_errors = verifier.verify_actionlint_runner_contract(real_workflows)
     assert not actionlint_errors, actionlint_errors
     dispatch_cancel_errors = verifier.verify_dispatch_ci_cancel_workflow(real_workflows)

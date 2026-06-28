@@ -805,6 +805,47 @@ def top_level_block(workflow_text: str, key: str) -> list[str]:
     return []
 
 
+def yaml_scalar(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1]
+    return stripped
+
+
+def scalar_mapping(block_lines: list[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in block_lines:
+        clean = strip_comment(line).strip()
+        match = re.fullmatch(r"([A-Za-z-]+):\s*(.+)", clean)
+        if match:
+            values[match.group(1)] = yaml_scalar(match.group(2))
+    return values
+
+
+def block_run_commands(lines: list[str]) -> list[str]:
+    commands: list[str] = []
+    run_indent: int | None = None
+    for line in lines:
+        clean = strip_comment(line).rstrip()
+        if run_indent is not None:
+            if clean and len(clean) - len(clean.lstrip(" ")) <= run_indent:
+                run_indent = None
+            else:
+                command = clean.strip()
+                if command:
+                    commands.append(command)
+                continue
+        match = re.fullmatch(r"(\s*)run:\s*(.*)", clean)
+        if match is None:
+            continue
+        value = match.group(2).strip()
+        if value == "|":
+            run_indent = len(match.group(1))
+        elif value:
+            commands.append(yaml_scalar(value))
+    return commands
+
+
 # The merge_group concurrency group must isolate every queue entry on its own
 # ref. We do NOT analyze the group expression to decide that: GitHub's expression
 # language is too expressive for a regex contract to reason about safely. Every
@@ -11819,21 +11860,23 @@ def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str
     if workflow_contract.schedule_cron not in schedule_block:
         errors.append(f"{workflow_name} schedule cron must match storage_tripwire.workflow.schedule_cron")
 
-    actual_permissions: dict[str, str] = {}
-    for line in top_level_block(workflow_text, "permissions"):
-        clean = strip_comment(line).strip()
-        match = re.fullmatch(r"([A-Za-z-]+):\s*(['\"]?)([A-Za-z-]+)\2", clean)
-        if match:
-            actual_permissions[match.group(1)] = match.group(3)
+    actual_permissions = scalar_mapping(top_level_block(workflow_text, "permissions"))
     if actual_permissions != dict(workflow_contract.permissions):
         errors.append(f"{workflow_name} permissions must match storage_tripwire.workflow.permissions")
+
+    expected_concurrency = {
+        "group": workflow_contract.concurrency_group,
+        "cancel-in-progress": str(workflow_contract.cancel_in_progress).lower(),
+    }
+    actual_concurrency = scalar_mapping(top_level_block(workflow_text, "concurrency"))
+    if actual_concurrency != expected_concurrency:
+        errors.append(f"{workflow_name} concurrency must match storage_tripwire.workflow concurrency settings")
 
     for forbidden in workflow_contract.forbidden_fragments:
         if forbidden in workflow_text:
             errors.append(
                 f"{workflow_name} must not contain forbidden workflow fragment from storage_tripwire.workflow.forbidden_fragments"
             )
-            break
 
     jobs = parse_jobs(workflow_text)
     job = jobs.get(workflow_contract.job_id)
@@ -11845,10 +11888,17 @@ def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str
     if actual_var != workflow_contract.runner_var:
         errors.append(f"{workflow_name} storage tripwire runs-on must match storage_tripwire.workflow.runner_var")
 
+    if any(re.fullmatch(r"    permissions:\s*.*", line) for line in job):
+        errors.append(f"{workflow_name} storage tripwire job must not define job-level permissions")
+    if any(re.fullmatch(r"\s+continue-on-error:\s*true\s*", line) for line in job):
+        errors.append(f"{workflow_name} storage tripwire job must not use continue-on-error")
+
+    if block_run_commands(job) != [workflow_contract.run_command]:
+        errors.append(f"{workflow_name} run command must match storage_tripwire.workflow.run_command")
+
     for required in workflow_contract.required_fragments:
         if required not in job_text:
             errors.append(f"{workflow_name} job must contain storage_tripwire.workflow.required_fragments")
-            break
     return errors
 
 
@@ -12051,9 +12101,11 @@ def main() -> int:
     except ci_storage_tripwire.NoTripwirePolicyError as exc:
         if has_storage_tripwire_workflow(workflow_texts):
             errors.append(f"storage tripwire policy discovery failed: {exc}")
-    except ci_storage_tripwire.TripwireError as exc:
+    except ci_storage_tripwire.TripwirePolicyInventoryError as exc:
         if has_storage_tripwire_workflow(workflow_texts):
             errors.append(f"storage tripwire policy discovery failed: {exc}")
+    except ci_storage_tripwire.TripwireError as exc:
+        errors.append(f"storage tripwire policy discovery failed: {exc}")
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())

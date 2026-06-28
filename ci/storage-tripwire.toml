@@ -22,6 +22,9 @@ path = ".github/workflows/ci-storage-tripwire.yml"
 job_id = "storage-tripwire"
 runner_var = "CI_RUNNER_GITHUB_HOSTED"
 schedule_cron = "17 9 * * 1"
+concurrency_group = "ci-storage-tripwire"
+cancel_in_progress = false
+run_command = "python3 scripts/ci_storage_tripwire.py apply-live --repo \"$GITHUB_REPOSITORY\" --branch \"$GITHUB_REF_NAME\""
 triggers = ["schedule", "workflow_dispatch"]
 permissions = { contents = "read", actions = "read", issues = "write" }
 required_fragments = [

@@ -32,6 +32,7 @@ Repo governance for agents; higher-level standing instructions apply.
 8. **DO NOT REFERENCE BOLT V1** — do not read, import, or depend on `~/Projects/Claude/bolt/`. NT source is in `~/.cargo/git/checkouts/nautilus_trader-*/` or GitHub.
 9. **STRATEGIES PRODUCE INTENT ONLY** — strategies emit order intent and strategy-local signal state only. Admissibility, venue rules, fillability, rounding, minimum size, fee-adjusted sizing, and submit gating live in shared NT-based execution/admission modules. Submit mechanics under `src/strategies/*` are rejected unless explicitly approved as strategy-local signal logic.
 10. **CHAINLINK DATA STREAMS: TESTNET IS PRODUCTION** — for the `price_to_beat` oracle, testnet is the only final environment because mainnet credentials cannot be obtained. Treat the testnet Chainlink stream as production for this oracle; do not raise testnet-vs-mainnet as a concern or ask for reconfirmation solely because the stream is testnet. Still verify config-schema compatibility, service health, fail-closed behavior, and exact-head verification.
+11. **PROVIDER/RUNTIME BOUNDARY EVIDENCE IS REGISTERED** — every deploy/readiness feeder that depends on provider runtime bytes or metadata must be represented in the authoritative boundary registry and guarded by source-fence evidence or an issue-bound, expiring non-WebSocket deferral. WebSocket-frame evidence must not be deferred.
 
 ## Evidence-Driven Verification
 

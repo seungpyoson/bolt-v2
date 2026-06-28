@@ -180,8 +180,8 @@ def check_run(
     app_id: int = APP_ID,
     status: str = "completed",
     conclusion: str | None = "success",
-    started_at: str = "2026-06-28T00:00:00Z",
-    completed_at: str = "2026-06-28T00:01:00Z",
+    started_at: str = "2026-06-27T00:00:00Z",
+    completed_at: str = "2026-06-27T00:00:00Z",
 ) -> dict[str, object]:
     return {
         "id": run_id,
@@ -374,28 +374,9 @@ def assert_merge_boundary_waits_for_required_gates() -> None:
             raise AssertionError(result.summary)
 
 
-def assert_iteration_gate_contexts_succeed() -> None:
-    result, fake = run_enforcer(
-        [
-            [
-                check_run("gate-iteration"),
-                check_run("backtester-gate-iteration"),
-                check_run("actionlint"),
-                check_run("host-health"),
-            ]
-        ],
-        event=merge_group_event(),
-        clock=FakeClock([0.0, 2.0]),
-    )
-    if result.conclusion != "success" or result.findings:
-        raise AssertionError(result)
-    if fake.posted_check_runs():
-        raise AssertionError(fake.requests)
-
-
 def assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair() -> None:
-    stale_completed_at = "2026-06-28T00:00:10Z"
-    fresh_completed_at = "2026-06-28T00:01:10Z"
+    stale_completed_at = "2026-06-27T00:00:10Z"
+    fresh_completed_at = "2026-06-27T00:01:10Z"
     result, fake = run_enforcer(
         [
             [
@@ -405,7 +386,7 @@ def assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair() -> No
                 check_run("actionlint"),
                 check_run(
                     "gate-iteration",
-                    started_at="2026-06-28T00:01:00Z",
+                    started_at="2026-06-27T00:01:00Z",
                     completed_at=fresh_completed_at,
                 ),
             ]
@@ -831,7 +812,6 @@ def main() -> int:
     assert_all_present_and_correct_succeeds()
     assert_iteration_pr_does_not_wait_for_boundary_gates()
     assert_merge_boundary_waits_for_required_gates()
-    assert_iteration_gate_contexts_succeed()
     assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair()
     assert_poll_timeout_fails_closed()
     assert_same_app_reruns_do_not_count_as_duplicate_drift()

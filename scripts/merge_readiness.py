@@ -36,6 +36,11 @@ FAILING_CHECK_CONCLUSIONS = {
     "startup_failure",
     "timed_out",
 }
+GATE_CONTEXT_VARIANT_KEYS = (
+    ("gate_required", "backtester_required"),
+    ("gate_iteration", "backtester_iteration"),
+    ("gate_dispatch_full", "backtester_dispatch_full"),
+)
 ACTIONS_BOT_LOGIN = "github-actions[bot]"
 ACTIONS_BOT_TYPE = "Bot"
 
@@ -167,7 +172,68 @@ def merge_settings(path: pathlib.Path) -> MergeReadinessSettings:
     )
 
 
-def required_contexts(path: pathlib.Path = DEFAULT_CONFIG) -> tuple[str, ...]:
+def gate_context_variants(
+    ci_provenance: dict[str, object],
+) -> tuple[tuple[str, str], ...]:
+    raw_gate_names = ci_provenance.get("gate_names")
+    if raw_gate_names is None:
+        return ()
+    gate_names = require_table(ci_provenance, "gate_names", "ci_provenance")
+    variants: list[tuple[str, str]] = []
+    for gate_key, backtester_key in GATE_CONTEXT_VARIANT_KEYS:
+        variants.append(
+            (
+                require_string(gate_names, gate_key, "ci_provenance.gate_names"),
+                require_string(gate_names, backtester_key, "ci_provenance.gate_names"),
+            )
+        )
+    return tuple(variants)
+
+
+def active_gate_context_pair(
+    ci_provenance: dict[str, object],
+    check_runs: list[dict[str, object]] | None,
+) -> tuple[str, str] | None:
+    variants = gate_context_variants(ci_provenance)
+    if not variants or check_runs is None:
+        return None
+    by_name = latest_check_runs_by_name(check_runs)
+
+    def variant_key(pair: tuple[str, str]) -> tuple[tuple[datetime.datetime, datetime.datetime, int], int]:
+        runs = [by_name[context] for context in pair if context in by_name]
+        if not runs:
+            timestamp_floor = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+            return ((timestamp_floor, timestamp_floor, 0), 0)
+        return (max(check_run_sort_key(run) for run in runs), len(runs))
+
+    best_pair = max(variants, key=variant_key)
+    if variant_key(best_pair)[1] == 0:
+        return variants[0]
+    return best_pair
+
+
+def resolve_required_contexts(
+    contexts: tuple[str, ...],
+    ci_provenance: dict[str, object],
+    check_runs: list[dict[str, object]] | None,
+) -> tuple[str, ...]:
+    active_pair = active_gate_context_pair(ci_provenance, check_runs)
+    variants = gate_context_variants(ci_provenance)
+    if active_pair is None or not variants or active_pair == variants[0]:
+        return contexts
+    required_pair = variants[0]
+    replacements = {
+        required_pair[0]: active_pair[0],
+        required_pair[1]: active_pair[1],
+    }
+    return tuple(replacements.get(context, context) for context in contexts)
+
+
+def required_contexts(
+    path: pathlib.Path = DEFAULT_CONFIG,
+    *,
+    check_runs: list[dict[str, object]] | None = None,
+) -> tuple[str, ...]:
     ci_provenance = load_ci_provenance(path)
     required_checks = require_table(
         ci_provenance, "required_checks", "ci_provenance"
@@ -183,7 +249,7 @@ def required_contexts(path: pathlib.Path = DEFAULT_CONFIG) -> tuple[str, ...]:
             contexts.append(require_string(raw_entry, "context", prefix))
     if not contexts:
         raise MergeReadinessError("ci_provenance.required_checks has no required contexts")
-    return tuple(contexts)
+    return resolve_required_contexts(tuple(contexts), ci_provenance, check_runs)
 
 
 def optional_gate_name(gate_names: dict[str, object], key: str) -> str | None:
@@ -732,16 +798,16 @@ def resolve_status(
         raise MergeReadinessError("head SHA is malformed")
     if sha != current_head_sha:
         raise MergeReadinessError("stale head SHA does not match current PR head")
+    check_runs = check_runs_for_sha(
+        repo=repo,
+        token=token,
+        sha=sha,
+        settings=settings,
+        api_json=api_json,
+    )
     status = evaluate_required_checks(
-        required_contexts(config_path),
-        check_runs_for_sha(
-            repo=repo,
-            token=token,
-            sha=sha,
-            settings=settings,
-            api_json=api_json,
-        ),
-        context_aliases=required_context_aliases(config_path),
+        required_contexts(config_path, check_runs=check_runs),
+        check_runs,
     )
     if status.state != "running" or not include_sticky_state:
         return status
@@ -781,16 +847,16 @@ def update_progress_comment(
     current_head_sha = pull_request_head_sha(pr)
     if head_sha != current_head_sha:
         return CommentUpdateResult(False, "stale head SHA; PR advanced", stalled_status())
+    check_runs = check_runs_for_sha(
+        repo=repo,
+        token=token,
+        sha=head_sha,
+        settings=settings,
+        api_json=api_json,
+    )
     status = evaluate_required_checks(
-        required_contexts(config_path),
-        check_runs_for_sha(
-            repo=repo,
-            token=token,
-            sha=head_sha,
-            settings=settings,
-            api_json=api_json,
-        ),
-        context_aliases=required_context_aliases(config_path),
+        required_contexts(config_path, check_runs=check_runs),
+        check_runs,
     )
     if is_fork_pull_request(pr):
         return CommentUpdateResult(

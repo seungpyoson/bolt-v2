@@ -204,6 +204,10 @@ verify-bolt-v3-dependency-direction: check-workspace
     python3 scripts/test_verify_bolt_v3_dependency_direction.py
     python3 scripts/verify_bolt_v3_dependency_direction.py
 
+verify-bolt-v3-boundary-evidence: check-workspace
+    python3 scripts/test_verify_bolt_v3_boundary_evidence.py
+    python3 scripts/verify_bolt_v3_boundary_evidence.py
+
 # Enforces "allowlist may only shrink" against the protected mainline: fails if
 # the in-tree dependency allowlist is not a subset of the one on origin/main.
 # No-op on the PR that first introduces the fence; active on every PR after merge.
@@ -327,6 +331,10 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_bolt_v3_dependency_direction.py
     python3 scripts/test_verify_doc_decoupling_residuals.py
     python3 scripts/verify_doc_decoupling_residuals.py
+    python3 scripts/test_verify_bolt_v3_boundary_evidence.py
+    python3 scripts/verify_bolt_v3_boundary_evidence.py
+    python3 scripts/test_verify_bolt_v3_status_map_current.py
+    python3 scripts/verify_bolt_v3_status_map_current.py
     python3 scripts/test_verify_bolt_v3_schema_current.py
     python3 scripts/verify_bolt_v3_schema_current.py
     python3 scripts/test_migrate_bolt_v3_decision_evidence_v13_to_v14.py
@@ -488,6 +496,12 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
         failed=1
     fi
     if ! python3 scripts/test_ci_provenance.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_ci_input_sets.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_rust_test_targets.py; then
         failed=1
     fi
     if ! python3 scripts/test_merge_readiness.py; then

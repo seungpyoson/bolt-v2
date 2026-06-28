@@ -44,8 +44,10 @@ max_watch_seconds = 1
 [ci_provenance.gate_names]
 gate_required = "gate"
 gate_iteration = "gate-iteration"
+gate_dispatch_full = "gate-dispatch"
 backtester_required = "backtester-gate"
 backtester_iteration = "backtester-gate-iteration"
+backtester_dispatch_full = "backtester-gate-dispatch"
 
 [ci_provenance.required_checks.gate]
 context = "gate"
@@ -296,95 +298,58 @@ def assert_registry_context_set_is_source_of_truth() -> None:
             raise AssertionError(module.required_contexts(changed_config))
 
 
-def assert_iteration_gate_contexts_satisfy_required_gate_status() -> None:
+def assert_iteration_gate_contexts_follow_observed_gate_names() -> None:
     module = load_script()
-    fake = FakeGitHub(
-        checks=[
-            check_run("gate-iteration"),
-            check_run("backtester-gate-iteration"),
-            check_run("host-health"),
-            check_run("actionlint"),
-        ],
-    )
+    iteration_checks = [
+        check_run("gate-iteration"),
+        check_run("backtester-gate-iteration"),
+        check_run("host-health"),
+        check_run("actionlint"),
+    ]
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp))
-        status = module.resolve_status(
-            repo=REPO,
-            token="token",
-            pr_number=PR_NUMBER,
-            config_path=config,
-            head_sha=SHA,
-            api_json=fake.json,
-        )
+        contexts = module.required_contexts(config, check_runs=iteration_checks)
+    expected = ("gate-iteration", "backtester-gate-iteration", "host-health", "actionlint")
+    if contexts != expected:
+        raise AssertionError(contexts)
+    status = module.evaluate_required_checks(contexts, iteration_checks)
     if status.state != "passed":
         raise AssertionError(status)
 
 
-def assert_canonical_gate_context_takes_precedence_over_iteration_alias() -> None:
+def assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair() -> None:
     module = load_script()
-    aliases = {"gate": ("gate", "gate-iteration")}
-    contexts = ("gate",)
-
-    failed_canonical = module.evaluate_required_checks(
-        contexts,
-        [
-            check_run(
-                "gate",
-                conclusion="failure",
-                started_at="2026-06-27T00:00:00Z",
-                id=1,
-            ),
-            check_run(
-                "gate-iteration",
-                started_at="2026-06-27T00:01:00Z",
-                id=2,
-            ),
-        ],
-        context_aliases=aliases,
-    )
-    if failed_canonical.state != "failed" or failed_canonical.failed != ("gate",):
-        raise AssertionError(failed_canonical)
-
-    pending_canonical = module.evaluate_required_checks(
-        contexts,
-        [
-            check_run(
-                "gate",
-                status="in_progress",
-                conclusion=None,
-                started_at="2026-06-27T00:00:00Z",
-                id=3,
-            ),
-            check_run(
-                "gate-iteration",
-                started_at="2026-06-27T00:01:00Z",
-                id=4,
-            ),
-        ],
-        context_aliases=aliases,
-    )
-    if pending_canonical.state != "running" or pending_canonical.pending != ("gate",):
-        raise AssertionError(pending_canonical)
-
-    passed_canonical = module.evaluate_required_checks(
-        contexts,
-        [
-            check_run(
-                "gate",
-                started_at="2026-06-27T00:00:00Z",
-                id=5,
-            ),
-            check_run(
-                "gate-iteration",
-                conclusion="failure",
-                started_at="2026-06-27T00:01:00Z",
-                id=6,
-            ),
-        ],
-        context_aliases=aliases,
-    )
-    if passed_canonical.state != "passed":
-        raise AssertionError(passed_canonical)
+    mixed_checks = [
+        check_run(
+            "gate",
+            id=101,
+            started_at="2026-06-27T00:00:00Z",
+            completed_at="2026-06-27T00:00:10Z",
+        ),
+        check_run(
+            "backtester-gate",
+            id=102,
+            started_at="2026-06-27T00:00:00Z",
+            completed_at="2026-06-27T00:00:10Z",
+        ),
+        check_run("host-health"),
+        check_run("actionlint"),
+        check_run(
+            "gate-iteration",
+            id=201,
+            started_at="2026-06-27T00:01:00Z",
+            completed_at="2026-06-27T00:01:10Z",
+        ),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        contexts = module.required_contexts(config, check_runs=mixed_checks)
+    expected = ("gate-iteration", "backtester-gate-iteration", "host-health", "actionlint")
+    if contexts != expected:
+        raise AssertionError(contexts)
+    status = module.evaluate_required_checks(contexts, mixed_checks)
+    if status.state != "running" or status.pending != ("backtester-gate-iteration",):
+        raise AssertionError(status)
 
 
 def assert_comment_upsert_replaces_existing_marker() -> None:
@@ -666,8 +631,8 @@ def main() -> int:
     assert_status_mapping()
     assert_non_blocking_required_check_conclusions_do_not_fail()
     assert_registry_context_set_is_source_of_truth()
-    assert_iteration_gate_contexts_satisfy_required_gate_status()
-    assert_canonical_gate_context_takes_precedence_over_iteration_alias()
+    assert_iteration_gate_contexts_follow_observed_gate_names()
+    assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair()
     assert_comment_upsert_replaces_existing_marker()
     assert_comment_upsert_finds_sticky_comment_on_second_page()
     assert_find_sticky_comment_ignores_forged_human_marker()

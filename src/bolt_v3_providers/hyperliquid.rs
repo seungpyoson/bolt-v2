@@ -24,7 +24,6 @@ use nautilus_hyperliquid::{
     http::client::HyperliquidHttpClient,
 };
 use nautilus_model::identifiers::{AccountId, InstrumentId};
-use nautilus_network::websocket::TransportBackend;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -65,6 +64,7 @@ use crate::{
         SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    bolt_v3_wire_boundary::TransportBackend,
     strategies::registry::FeeProvider,
 };
 

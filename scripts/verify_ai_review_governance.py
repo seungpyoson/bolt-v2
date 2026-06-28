@@ -6,10 +6,140 @@ from __future__ import annotations
 import argparse
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+
+@dataclass(frozen=True)
+class MirrorRule:
+    name: str
+    agents_snippets: tuple[str, ...]
+    pr_agent_snippets: tuple[str, ...]
+
+
+AGENTS_BACKPOINTER_SNIPPETS = (
+    ".pr_agent.toml` mirrors the critical AI-review subset for PR-Agent",
+    "scripts/verify_ai_review_governance.py` checks the mirror in CI",
+)
+
+PR_AGENT_MIRROR_NOTE_SNIPPETS = (
+    "This mirror is checked by scripts/verify_ai_review_governance.py",
+    "update this block when the mirrored AGENTS.md rules change",
+)
+
+MIRRORED_RULES = (
+    MirrorRule(
+        "scope discipline",
+        (
+            "One branch or PR may cover only one declared issue, spec, task, or an explicitly named slice",
+            "Reviewers must flag out-of-scope changes, hidden adjacent issue work, and missing claimed scope",
+        ),
+        (
+            "Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice",
+            "flag out-of-scope changes, hidden adjacent work, and missing claimed scope",
+        ),
+    ),
+    MirrorRule(
+        "no hardcodes",
+        (
+            "**NO HARDCODES**",
+            "every runtime value comes from TOML config",
+        ),
+        (
+            "NO HARDCODES: every runtime value comes from TOML config",
+            "no string literals for IDs, quantities, timeouts, or any runtime value in code",
+        ),
+    ),
+    MirrorRule(
+        "no dual paths",
+        (
+            "**NO DUAL PATHS**",
+            "one way to do each thing",
+        ),
+        (
+            "NO DUAL PATHS: one way to do each thing",
+            "one config format, one secret source, one build path",
+        ),
+    ),
+    MirrorRule(
+        "no debts",
+        (
+            "**NO DEBTS**",
+            "no TODO, no \"fix later\", no unpinned dependencies, no uncommitted work",
+        ),
+        (
+            "NO DEBTS: no TODO, no \"fix later\", no unpinned dependencies, no uncommitted work",
+        ),
+    ),
+    MirrorRule(
+        "no credential display",
+        (
+            "**NO CREDENTIAL DISPLAY**",
+            "never cat/print/log API keys, private keys, secrets",
+        ),
+        (
+            "NO CREDENTIAL DISPLAY: never cat, print, or log API keys, private keys, or secrets",
+        ),
+    ),
+    MirrorRule(
+        "ssm secret source",
+        (
+            "**SSM IS THE SINGLE SECRET SOURCE**",
+            "No AWS CLI subprocess, no 1Password CLI, no environment variable fallbacks",
+        ),
+        (
+            "SSM is the single secret source for runtime credentials",
+            "do not add environment variable fallbacks or alternate secret backends in product code",
+        ),
+    ),
+    MirrorRule(
+        "provider runtime boundary evidence",
+        (
+            "**PROVIDER/RUNTIME BOUNDARY EVIDENCE IS REGISTERED**",
+            "every deploy/readiness feeder that depends on provider runtime bytes or metadata must be represented in the authoritative boundary registry",
+            "WebSocket-frame evidence must not be deferred",
+        ),
+        (
+            "Provider/runtime boundary evidence is registered",
+            "every deploy/readiness feeder that depends on provider runtime bytes or metadata must be in the boundary registry and source-fence guarded or issue-bound, expiring non-WebSocket deferral",
+            "WebSocket-frame evidence must not be deferred",
+        ),
+    ),
+    MirrorRule(
+        "evidence-driven verification",
+        (
+            "Every claim must map to evidence",
+            "External review: only after local findings are resolved and exact-head CI or the user-approved equivalent is green",
+        ),
+        (
+            "Evidence-driven verification: every claim must map to tests",
+            "External review happens only after local findings are resolved and exact-head CI or a user-approved equivalent is green",
+        ),
+    ),
+    MirrorRule(
+        "remote-first rust verification",
+        (
+            "Do not run local compile-heavy Rust verification by default",
+            "Use local non-compile gates for fast feedback",
+        ),
+        (
+            "Remote-first Rust verification: do not request local compile-heavy Rust checks by default",
+            "request remote CI or allowed static checks",
+        ),
+    ),
+    MirrorRule(
+        "required human review",
+        (
+            "Agents must not merge, squash, rebase-merge, or otherwise land code until the PR has approval",
+        ),
+        (
+            "Required human review must be preserved",
+            "agents must not merge or bypass the required reviewer gate",
+        ),
+    ),
+)
 
 KIMI_BASE_GOVERNANCE_SNIPPETS = (
     "ref: ${{ github.event.pull_request.base.sha }}",

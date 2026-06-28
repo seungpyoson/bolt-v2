@@ -177,62 +177,17 @@ def expected_registry_contexts(
     return tuple(check.context for check in checks)
 
 
-def gate_context_variants(
-    config: ci_provenance.ProvenanceConfig,
-) -> tuple[tuple[str, str], ...]:
-    variants: list[tuple[str, str]] = []
-    for gate_key, backtester_key in (
-        ("gate_required", "backtester_required"),
-        ("gate_iteration", "backtester_iteration"),
-        ("gate_dispatch_full", "backtester_dispatch_full"),
-    ):
-        gate = config.gate_names.get(gate_key)
-        backtester = config.gate_names.get(backtester_key)
-        if gate is not None and backtester is not None:
-            variants.append((gate, backtester))
-    return tuple(variants)
-
-
-def active_gate_context_pair(
-    config: ci_provenance.ProvenanceConfig,
-    check_runs: list[dict[str, object]] | None,
-) -> tuple[str, str] | None:
-    variants = gate_context_variants(config)
-    if not variants or check_runs is None:
-        return None
-    by_name = merge_readiness.latest_check_runs_by_name(check_runs)
-
-    def variant_key(pair: tuple[str, str]) -> tuple[tuple[object, object, int], int]:
-        runs = [by_name[context] for context in pair if context in by_name]
-        if not runs:
-            timestamp_floor = merge_readiness.parse_timestamp(None)
-            return ((timestamp_floor, timestamp_floor, 0), 0)
-        return (max(merge_readiness.check_run_sort_key(run) for run in runs), len(runs))
-
-    best_pair = max(variants, key=variant_key)
-    if variant_key(best_pair)[1] == 0:
-        return variants[0]
-    return best_pair
-
-
 def active_expected_registry_checks(
     *,
     checks: tuple[ci_provenance.RequiredCheckConfig, ...],
     config: ci_provenance.ProvenanceConfig,
     check_runs: list[dict[str, object]] | None,
 ) -> tuple[ci_provenance.RequiredCheckConfig, ...]:
-    active_pair = active_gate_context_pair(config, check_runs)
-    variants = gate_context_variants(config)
-    contexts = expected_registry_contexts(checks)
-    if active_pair is None or not variants or active_pair == variants[0]:
-        active_contexts = contexts
-    else:
-        required_pair = variants[0]
-        replacements = {
-            required_pair[0]: active_pair[0],
-            required_pair[1]: active_pair[1],
-        }
-        active_contexts = tuple(replacements.get(context, context) for context in contexts)
+    active_contexts = merge_readiness.resolve_required_contexts(
+        expected_registry_contexts(checks),
+        {"gate_names": config.gate_names},
+        check_runs,
+    )
     active_checks: list[ci_provenance.RequiredCheckConfig] = []
     for check, active_context in zip(checks, active_contexts, strict=True):
         if active_context == check.context:
@@ -534,10 +489,7 @@ def poll_required_check_runs(
             config=config,
             check_runs=latest_runs,
         )
-        latest_pending = pending_contexts(
-            checks=latest_checks,
-            check_runs=latest_runs,
-        )
+        latest_pending = pending_contexts(checks=latest_checks, check_runs=latest_runs)
         if not latest_pending:
             return latest_runs, (), latest_checks
         if monotonic() >= deadline:

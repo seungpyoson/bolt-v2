@@ -25,6 +25,7 @@ PR_REF_PREFIX = "refs/pull/"
 FETCH_HEAD = "FETCH_HEAD"
 PROFILE_NONE = "none"
 STATUS_READY = "ready"
+VERIFIER_STREAMS = ("stdout", "stderr")
 
 
 class PreflightError(RuntimeError):
@@ -66,13 +67,23 @@ class VerifierResult:
     stdout: str
     stderr: str
 
-    def as_json(self) -> dict[str, object]:
-        return {
+    def as_public_json(self, output_policy: OutputPolicy) -> dict[str, object]:
+        payload: dict[str, object] = {
             "command": self.command,
             "returncode": self.returncode,
-            "stdout": self.stdout,
-            "stderr": self.stderr,
         }
+        if self.returncode != 0:
+            for stream in VERIFIER_STREAMS:
+                preview = bounded_stream(self.stream(stream), output_policy)
+                payload.update(preview.as_fields(stream))
+        return payload
+
+    def stream(self, name: str) -> str:
+        if name == "stdout":
+            return self.stdout
+        if name == "stderr":
+            return self.stderr
+        raise PreflightError(f"unknown verifier stream {name!r}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -84,6 +95,18 @@ class OutputPolicy:
         return {
             "verifier_stream_max_lines": self.verifier_stream_max_lines,
             "verifier_stream_max_bytes": self.verifier_stream_max_bytes,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class StreamPreview:
+    text: str
+    truncated: bool
+
+    def as_fields(self, stream: str) -> dict[str, object]:
+        return {
+            f"{stream}_preview": self.text,
+            f"{stream}_truncated": self.truncated,
         }
 
 
@@ -150,12 +173,12 @@ class Batch:
     prs: tuple[int, ...]
     verifiers: tuple[VerifierResult, ...]
 
-    def as_json(self) -> dict[str, object]:
+    def as_json(self, output_policy: OutputPolicy) -> dict[str, object]:
         return {
             "index": self.index,
             "prs": list(self.prs),
             "status": STATUS_READY,
-            "verifiers": [result.as_json() for result in self.verifiers],
+            "verifiers": [result.as_public_json(output_policy) for result in self.verifiers],
         }
 
 
@@ -466,12 +489,12 @@ def first_failed_verifier(results: Sequence[VerifierResult]) -> VerifierResult |
     return None
 
 
-def verifier_block(pr: int, result: VerifierResult) -> dict[str, object]:
+def verifier_block(pr: int, result: VerifierResult, output_policy: OutputPolicy) -> dict[str, object]:
     return {
         "pr": pr,
         "reason": f"verifier failed: {result.command}",
         "type": "verifier_failed",
-        **result.as_json(),
+        **result.as_public_json(output_policy),
     }
 
 
@@ -616,6 +639,45 @@ def readiness_for_wave(
     return readiness, metadata_warnings
 
 
+def metadata_unavailable_block(readiness: dict[str, object]) -> dict[str, object] | None:
+    if readiness.get("metadata_unavailable") is not True:
+        return None
+    reason = str(readiness.get("metadata_error", "GitHub metadata unavailable"))
+    return {
+        "pr": readiness["pr"],
+        "reason": reason,
+        "type": "metadata_unavailable",
+    }
+
+
+def readiness_warning_block(readiness: dict[str, object]) -> dict[str, object] | None:
+    warnings = readiness.get("warnings", [])
+    if not warnings:
+        return None
+    return {
+        "pr": readiness["pr"],
+        "reason": "; ".join(str(warning) for warning in warnings),
+        "type": "readiness_failed",
+    }
+
+
+READINESS_BLOCK_CLASSIFIERS = (
+    metadata_unavailable_block,
+    readiness_warning_block,
+)
+
+
+def readiness_blocks(readiness: Sequence[dict[str, object]]) -> list[dict[str, object]]:
+    blocks: list[dict[str, object]] = []
+    for item in readiness:
+        blocks.extend(
+            block
+            for classifier in READINESS_BLOCK_CLASSIFIERS
+            if (block := classifier(item)) is not None
+        )
+    return blocks
+
+
 def preflight(
     *,
     repo: pathlib.Path,
@@ -635,16 +697,7 @@ def preflight(
         base=base,
         heads=heads,
     )
-    readiness_blocks = [
-        {
-            "pr": item["pr"],
-            "reason": "; ".join(item["warnings"]),
-            "type": "readiness_failed",
-        }
-        for item in readiness
-        if item["warnings"]
-    ]
-    blocked_prs: list[dict[str, object]] = list(readiness_blocks)
+    blocked_prs = readiness_blocks(readiness)
     blocked_numbers = {int(block["pr"]) for block in blocked_prs}
     base_commits: dict[int, SyntheticCommit] = {}
     base_verifiers: dict[int, tuple[VerifierResult, ...]] = {}
@@ -667,7 +720,7 @@ def preflight(
         verifier_results = run_verifier_commands(repo, synthetic.commit, verifier_commands)
         failed = first_failed_verifier(verifier_results)
         if failed is not None:
-            blocked_prs.append(verifier_block(pr, failed))
+            blocked_prs.append(verifier_block(pr, failed, output_policy))
             blocked_numbers.add(pr)
             continue
         base_commits[pr] = synthetic
@@ -717,7 +770,7 @@ def preflight(
                     "pr": pr,
                     "against_batch": list(current.prs),
                     "type": "batch_verifier_failed",
-                    **failed.as_json(),
+                    **failed.as_public_json(output_policy),
                 }
             )
             batches.append(
@@ -750,7 +803,7 @@ def preflight(
         "pr_heads": {str(number): head.sha for number, head in heads.items()},
         "readiness": readiness,
         "metadata_warnings": metadata_warnings,
-        "batches": [batch.as_json() for batch in batches],
+        "batches": [batch.as_json(output_policy) for batch in batches],
         "blocked_prs": blocked_prs,
         "conflicts": conflicts,
         "output_policy": output_policy.as_json(),
@@ -769,7 +822,7 @@ def output_policy_from_payload(payload: dict[str, object]) -> OutputPolicy:
     )
 
 
-def bounded_stream_lines(output: str, output_policy: OutputPolicy) -> tuple[list[str], bool]:
+def bounded_stream(output: str, output_policy: OutputPolicy) -> StreamPreview:
     encoded = output.encode("utf-8")
     byte_truncated = len(encoded) > output_policy.verifier_stream_max_bytes
     if byte_truncated:
@@ -779,7 +832,8 @@ def bounded_stream_lines(output: str, output_policy: OutputPolicy) -> tuple[list
         )
     stream_lines = output.rstrip().splitlines()
     line_truncated = len(stream_lines) > output_policy.verifier_stream_max_lines
-    return stream_lines[: output_policy.verifier_stream_max_lines], byte_truncated or line_truncated
+    text = "\n".join(stream_lines[: output_policy.verifier_stream_max_lines])
+    return StreamPreview(text=text, truncated=byte_truncated or line_truncated)
 
 
 def append_verifier_result(
@@ -798,13 +852,13 @@ def append_verifier_result(
     )
     if verifier["returncode"] == 0:
         return
-    for stream in ("stdout", "stderr"):
-        output = str(verifier.get(stream, ""))
-        if not output:
+    for stream in VERIFIER_STREAMS:
+        preview = str(verifier.get(f"{stream}_preview", ""))
+        truncated = bool(verifier.get(f"{stream}_truncated", False))
+        if not preview and not truncated:
             continue
         lines.append(f"{indent}  {stream}:")
-        stream_lines, truncated = bounded_stream_lines(output, output_policy)
-        lines.extend(f"{indent}    {line}" for line in stream_lines)
+        lines.extend(f"{indent}    {line}" for line in preview.splitlines())
         if truncated:
             lines.append(f"{indent}    ... truncated by merge_queue_preflight output policy")
 

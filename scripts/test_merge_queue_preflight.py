@@ -381,7 +381,7 @@ def assert_verifier_failure_blocks_bad_pr_before_batching() -> None:
         blocked = payload["blocked_prs"]
         if len(blocked) != 1 or blocked[0]["pr"] != 2 or blocked[0]["type"] != "verifier_failed":
             raise AssertionError(blocked)
-        if "fail.txt is not allowed" not in blocked[0]["stdout"]:
+        if "fail.txt is not allowed" not in blocked[0]["stdout_preview"]:
             raise AssertionError(blocked)
 
 
@@ -432,7 +432,7 @@ def assert_configured_verifier_profile_blocks_bad_pr() -> None:
         blocked = payload["blocked_prs"]
         if len(blocked) != 1 or blocked[0]["pr"] != 2 or blocked[0]["type"] != "verifier_failed":
             raise AssertionError(blocked)
-        if "configured verifier rejected fail.txt" not in blocked[0]["stdout"]:
+        if "configured verifier rejected fail.txt" not in blocked[0]["stdout_preview"]:
             raise AssertionError(blocked)
 
 
@@ -570,6 +570,64 @@ def assert_plain_output_bounds_failed_verifier_streams() -> None:
             raise AssertionError(result.stdout)
 
 
+def assert_json_output_uses_bounded_verifier_previews() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        fixture.make_pr(1, {"fail.txt": "fail\n"})
+        verifier = root / "noisy_json_failure.py"
+        write(
+            verifier,
+            "import sys\n"
+            "for line in ['json-line-1', 'json-line-2', 'json-line-3']:\n"
+            "    print(line)\n"
+            "sys.exit(7)\n",
+        )
+        config = write_preflight_config(
+            root,
+            "strict",
+            [f"{sys.executable} {verifier}"],
+            verifier_stream_max_lines=2,
+            verifier_stream_max_bytes=200,
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--no-gh",
+            "--config",
+            str(config),
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 1:
+            raise AssertionError(f"expected verifier rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1:
+            raise AssertionError(blocked)
+        verifier_result = blocked[0]
+        if "stdout" in verifier_result or "stderr" in verifier_result:
+            raise AssertionError(verifier_result)
+        if verifier_result.get("stdout_preview") != "json-line-1\njson-line-2":
+            raise AssertionError(verifier_result)
+        if verifier_result.get("stdout_truncated") is not True:
+            raise AssertionError(verifier_result)
+        if "json-line-3" in json.dumps(verifier_result):
+            raise AssertionError(verifier_result)
+
+
 def assert_head_oid_mismatch_blocks_pr() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -633,6 +691,11 @@ def assert_partial_gh_metadata_failure_preserves_other_readiness() -> None:
         if "metadata" not in readiness[1]:
             raise AssertionError(payload)
         if readiness[2].get("metadata_unavailable") is not True:
+            raise AssertionError(payload)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 2 or blocked[0]["type"] != "metadata_unavailable":
+            raise AssertionError(payload)
+        if [batch["prs"] for batch in payload["batches"]] != [[1]]:
             raise AssertionError(payload)
         warnings = payload.get("metadata_warnings")
         if not isinstance(warnings, list) or "PR #2" not in warnings[0]:
@@ -699,9 +762,11 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
             raise AssertionError(payload)
         if "gh executable not found" not in warnings[0]:
             raise AssertionError(warnings)
-        batches = payload["batches"]
-        if len(batches) != 1 or batches[0]["prs"] != [1]:
-            raise AssertionError(batches)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "metadata_unavailable":
+            raise AssertionError(payload)
+        if payload["batches"] != []:
+            raise AssertionError(payload["batches"])
 
 
 def main() -> int:
@@ -714,6 +779,7 @@ def main() -> int:
     assert_plain_output_includes_verifier_failure_details()
     assert_plain_output_omits_successful_verifier_streams()
     assert_plain_output_bounds_failed_verifier_streams()
+    assert_json_output_uses_bounded_verifier_previews()
     assert_head_oid_mismatch_blocks_pr()
     assert_wrong_base_ref_blocks_pr()
     assert_partial_gh_metadata_failure_preserves_other_readiness()

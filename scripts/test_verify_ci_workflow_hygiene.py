@@ -4738,6 +4738,35 @@ def assert_runner_contract_rejects_unmapped_workflow_jobs() -> None:
         raise AssertionError(f"runner contract must reject unmapped workflow jobs, got: {errors}")
 
 
+def assert_runner_contract_accepts_flaky_detection_workflow_mapping() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/flaky-test-detection.yml"
+    workflow = """name: Flaky Test Detection
+
+on:
+  workflow_dispatch:
+
+jobs:
+  flaky-detection-rust-root:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo root
+
+  flaky-detection-rust-backtester:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo backtester
+
+  flaky-detection-rust-backtester-issue-789:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo issue-789
+"""
+    errors = verifier.verify_github_actions_runner_contract({workflow_name: workflow})
+    if errors:
+        raise AssertionError(f"flaky detection workflow runner contract must be mapped, got: {errors}")
+
+
 def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> None:
     verifier = load_verifier()
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
@@ -4746,8 +4775,8 @@ def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> N
         config_text = original_config.read_text()
         config_path.write_text(
             config_text.replace(
-                'included_workflows = ["ci", "backtester_ci", "ci_runner_debug", "rust_probe"]',
-                'included_workflows = ["ci", "ci_runner_debug", "rust_probe"]',
+                'included_workflows = ["ci", "backtester_ci", "flaky_test_detection", "ci_runner_debug", "rust_probe"]',
+                'included_workflows = ["ci", "flaky_test_detection", "ci_runner_debug", "rust_probe"]',
             ),
             encoding="utf-8",
         )

@@ -70,6 +70,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/ci.yml": "ci",
     "backtester-ci.yml": "backtester_ci",
     ".github/workflows/backtester-ci.yml": "backtester_ci",
+    "flaky-test-detection.yml": "flaky_test_detection",
+    ".github/workflows/flaky-test-detection.yml": "flaky_test_detection",
     "dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     ".github/workflows/dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     "merge-readiness-finalizer.yml": "merge_readiness_finalizer",

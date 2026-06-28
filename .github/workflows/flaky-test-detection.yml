@@ -1,0 +1,226 @@
+name: Flaky Test Detection
+
+on:
+  schedule:
+    - cron: '0 */12 * * 1-5'  # Every 12 hours, Monday-Friday
+  workflow_dispatch:  # Manual trigger for testing
+
+permissions:
+  contents: read
+
+env:
+  JUST_VERSION: "1.49.0"
+  CARGO_TERM_COLOR: always
+  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
+
+jobs:
+  flaky-detection-rust-root:
+    name: Root Rust Tests - Flaky Detection (Run ${{ matrix.run_number }})
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    strategy:
+      fail-fast: false
+      matrix:
+        run_number: [1, 2, 3, 4, 5]
+    env:
+      MERGIFY_JOB_NAME: nextest archive
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+          include-managed-target-dir: "true"
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: false
+
+      - name: Restore test target cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-flaky-root-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/flaky-test-detection.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-flaky-root-test-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Configure nextest JUnit output
+        run: |
+          cp .config/nextest.toml "$RUNNER_TEMP/nextest-junit.toml"
+          printf '%s\n' \
+            '' \
+            '[profile.default.junit]' \
+            'path = "junit-unit-${{ matrix.run_number }}.xml"' \
+            'store-success-output = false' \
+            'store-failure-output = true' \
+            >> "$RUNNER_TEMP/nextest-junit.toml"
+
+      - name: Run tests
+        run: just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast || true
+
+      - name: Stage JUnit report
+        run: cp "${{ steps.setup.outputs.managed_target_dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+
+      - name: Upload test results to Mergify
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v14
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          flaky_test_detection: true
+          report_path: "junit-*.xml"
+
+  flaky-detection-rust-backtester:
+    name: Backtester Rust Tests - Flaky Detection (Shard ${{ matrix.shard }}, Run ${{ matrix.run_number }})
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    strategy:
+      fail-fast: false
+      matrix:
+        run_number: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4]
+    env:
+      MERGIFY_JOB_NAME: bvs-test ${{ matrix.shard }} of 4
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+
+      - name: Resolve crate managed target dir
+        id: crate_target
+        run: |
+          dir="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo crates/backtesting-vertical-slice)"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-bvs-v1
+          save-if: false
+
+      - name: Restore test target cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.crate_target.outputs.dir }}
+          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-flaky-test-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/flaky-test-detection.yml') }}
+          restore-keys: |
+            managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-flaky-test-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Configure nextest JUnit output
+        run: |
+          printf '%s\n' \
+            '[profile.default.junit]' \
+            'path = "junit-unit-${{ matrix.run_number }}.xml"' \
+            'store-success-output = false' \
+            'store-failure-output = true' \
+            > "$RUNNER_TEMP/nextest-junit.toml"
+
+      - name: Run tests
+        run: just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl || true
+
+      - name: Stage JUnit report
+        run: cp "${{ steps.crate_target.outputs.dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+
+      - name: Upload test results to Mergify
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v14
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          flaky_test_detection: true
+          report_path: "junit-*.xml"
+
+  flaky-detection-rust-backtester-issue-789:
+    name: Backtester Issue 789 - Flaky Detection (Run ${{ matrix.run_number }})
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    strategy:
+      fail-fast: false
+      matrix:
+        run_number: [1, 2, 3, 4, 5]
+    env:
+      MERGIFY_JOB_NAME: bvs-test issue-789
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+
+      - name: Resolve crate managed target dir
+        id: crate_target
+        run: |
+          dir="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo crates/backtesting-vertical-slice)"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-bvs-v1
+          save-if: false
+
+      - name: Restore test target cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.crate_target.outputs.dir }}
+          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-flaky-issue-789-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/flaky-test-detection.yml') }}
+          restore-keys: |
+            managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-flaky-issue-789-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Configure nextest JUnit output
+        run: |
+          printf '%s\n' \
+            '[profile.default.junit]' \
+            'path = "junit-unit-${{ matrix.run_number }}.xml"' \
+            'store-success-output = false' \
+            'store-failure-output = true' \
+            > "$RUNNER_TEMP/nextest-junit.toml"
+
+      - name: Run tests
+        run: just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl || true
+
+      - name: Stage JUnit report
+        run: cp "${{ steps.crate_target.outputs.dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+
+      - name: Upload test results to Mergify
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v14
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          flaky_test_detection: true
+          report_path: "junit-*.xml"

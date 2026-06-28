@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
 import json
 import os
 import pathlib
+import shlex
 import sys
 import tempfile
 import threading
@@ -1456,6 +1459,61 @@ def test_render_notice_redacts_new_provider_secret_env_names() -> None:
     assert "provider returned ***" in notice
 
 
+def test_notice_env_outputs_shell_safe_marker_and_bot_login() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_path = pathlib.Path(temp_dir) / "ai-review.toml"
+        marker = "<!-- ai-pr-reviewer-glm-notice -->"
+        expected_bot_login = "github-actions[bot]"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[github]",
+                    f"expected_bot_login = {json.dumps(expected_bot_login)}",
+                    "",
+                    "[glm]",
+                    f"notice_marker = {json.dumps(marker)}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout):
+            result = module.main(["notice-env", "--provider", "glm", "--config-file", str(config_path)])
+
+    assert result == 0
+    assert stdout.getvalue().splitlines() == [
+        f"marker={shlex.quote(marker)}",
+        f"expected_bot_login={shlex.quote(expected_bot_login)}",
+    ]
+
+
+def test_notice_env_fails_closed_without_notice_marker() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_path = pathlib.Path(temp_dir) / "ai-review.toml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[github]",
+                    'expected_bot_login = "github-actions[bot]"',
+                    "",
+                    "[glm]",
+                    'comment_marker = "<!-- ai-pr-reviewer-glm -->"',
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        try:
+            module.main(["notice-env", "--provider", "glm", "--config-file", str(config_path)])
+        except RuntimeError as exc:
+            assert "notice_marker" in str(exc)
+        else:
+            raise AssertionError("notice-env must fail closed when notice_marker is absent")
+
+
 def main() -> int:
     test_packs_more_than_two_review_chunks_when_budget_requires_it()
     test_splits_one_oversized_file_patch_into_multiple_review_chunks()
@@ -1492,6 +1550,8 @@ def main() -> int:
     test_kimi_cli_client_uses_documented_env_auth_path()
     test_render_notice_redacts_secret_values()
     test_render_notice_redacts_new_provider_secret_env_names()
+    test_notice_env_outputs_shell_safe_marker_and_bot_login()
+    test_notice_env_fails_closed_without_notice_marker()
     print("GLM fallback self-tests OK")
     return 0
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import json
 import os
 import subprocess
@@ -1387,6 +1388,15 @@ def post_notice_from_env(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_notice_env(args: argparse.Namespace) -> int:
+    runtime_config = load_runtime_config(args)
+    github_config = config_table(runtime_config, "github")
+    provider_config = config_table(runtime_config, args.provider)
+    print("marker=" + shlex.quote(config_str(provider_config, "notice_marker")))
+    print("expected_bot_login=" + shlex.quote(config_str(github_config, "expected_bot_login")))
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -1415,6 +1425,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     notice.add_argument("--message", required=True)
     notice.add_argument("--config-file", type=Path)
 
+    notice_env = subparsers.add_parser("notice-env")
+    notice_env.add_argument("--provider", required=True, choices=("glm", "kimi"))
+    notice_env.add_argument("--config-file", type=Path)
+
     return parser.parse_args(argv)
 
 
@@ -1430,6 +1444,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_kimi_review_from_env(args)
     if args.mode == "notice":
         return post_notice_from_env(args)
+    if args.mode == "notice-env":
+        return run_notice_env(args)
     raise RuntimeError(f"unknown mode {args.mode!r}")
 
 

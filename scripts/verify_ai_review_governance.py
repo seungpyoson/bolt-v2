@@ -176,8 +176,7 @@ GLM_DELIVERABLE_SNIPPETS = (
     "steps.glm_stamp.outcome == 'failure' && steps.glm_fallback.outcome != 'success'",
     "review infrastructure failed or timed out before posting a usable failure notice",
     'marker="${{ steps.runtime-config.outputs.glm_notice_marker }}"',
-    'config_exports="$(python3 - <<\'PY\'',
-    'config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))',
+    "scripts/ai_review_deliverables.py notice-env --provider glm --config-file ci/ai-review.toml",
     "AI review notice marker or expected bot login is unavailable.",
     'eval "$config_exports"',
     "gh api \"repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments\" --paginate",
@@ -227,8 +226,7 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "steps.kimi_fallback.outputs.failure_notice_posted != 'true'",
     "review infrastructure failed or timed out before posting a usable failure notice",
     'marker="${{ steps.runtime-config.outputs.kimi_notice_marker }}"',
-    'config_exports="$(python3 - <<\'PY\'',
-    'config = tomllib.loads(Path(".ai-review/base/ci/ai-review.toml").read_text(encoding="utf-8"))',
+    ".ai-review/base/scripts/ai_review_deliverables.py notice-env --provider kimi --config-file .ai-review/base/ci/ai-review.toml",
     "AI review notice marker or expected bot login is unavailable.",
     'eval "$config_exports"',
     "gh api \"repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments\" --paginate",
@@ -258,6 +256,8 @@ AI_REVIEW_DELIVERABLES_SNIPPETS = (
     "output_contract.pr_agent_disabled_noise",
     "def review_body_has_no_findings_contract(",
     "def pr_agent_body_has_substantive_review(",
+    "def run_notice_env(",
+    "shlex.quote(",
     "review_output_contract(review_config)",
     "def source_label_from_template(",
     "source_label=source_label_from_template(",
@@ -398,6 +398,9 @@ def verify_pr_agent_config(pr_agent_toml: str, ai_review_toml: str) -> list[str]
     extra = reviewer.get("extra_instructions", "")
     if expected_source not in extra:
         findings.append(".pr_agent.toml extra_instructions must delegate source/model stamping to ci/ai-review.toml")
+    expected_severity_label = "include a line starting exactly with `Severity:`"
+    if expected_severity_label not in extra:
+        findings.append(".pr_agent.toml extra_instructions must require the literal Severity: finding label")
     for literal in configured_runtime_literals(ai_review_toml):
         if literal in extra:
             findings.append(f".pr_agent.toml extra_instructions must read AI review runtime value from ci/ai-review.toml, not {literal!r}")
@@ -426,6 +429,27 @@ def workflow_step_block(workflow_text: str, step_name: str) -> str:
             block.append(next_line)
         return "\n".join(block)
     return ""
+
+
+def verify_notice_step_guard(
+    workflow_text: str,
+    *,
+    provider_label: str,
+    step_name: str,
+    helper_snippet: str,
+) -> list[str]:
+    step = workflow_step_block(workflow_text, step_name)
+    if not step:
+        return [f"{provider_label} workflow missing {step_name} step"]
+    for snippet in (
+        helper_snippet,
+        "AI review notice marker or expected bot login is unavailable.",
+        'eval "$config_exports"',
+        'if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then',
+    ):
+        if snippet not in step:
+            return [f"{provider_label} notice step {step_name!r} must not use empty marker or bot login"]
+    return []
 
 
 def verify_ai_review_config(ai_review_toml: str) -> list[str]:
@@ -687,7 +711,7 @@ def verify_texts(
         ("Kimi workflow", kimi_workflow),
         ("Smoke workflow", smoke_workflow),
     ):
-        if "ai_review_deliverables.py notice" in workflow:
+        if "ai_review_deliverables.py notice --" in workflow:
             findings.append(f"{workflow_name} backup/skip notices must not depend on ai_review_deliverables.py")
         for endpoint in FORBIDDEN_API_ENDPOINTS:
             if endpoint in workflow:
@@ -723,34 +747,38 @@ def verify_texts(
                     "GLM fallback step must run after stamp failure while requiring usable checkout/runtime context"
                 )
                 break
-    glm_notice_step = workflow_step_block(glm_workflow, "Post GLM fallback infrastructure failure notice")
-    if not glm_notice_step:
-        findings.append("GLM workflow missing Post GLM fallback infrastructure failure notice step")
-    else:
-        for snippet in (
-            'config_exports="$(python3 - <<\'PY\'',
-            'tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))',
-            "AI review notice marker or expected bot login is unavailable.",
-            'eval "$config_exports"',
-            'if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then',
-        ):
-            if snippet not in glm_notice_step:
-                findings.append("GLM fallback infrastructure notice must not use empty marker or bot login")
-                break
-    kimi_notice_step = workflow_step_block(kimi_workflow, "Post Kimi fallback infrastructure failure notice")
-    if not kimi_notice_step:
-        findings.append("Kimi workflow missing Post Kimi fallback infrastructure failure notice step")
-    else:
-        for snippet in (
-            'config_exports="$(python3 - <<\'PY\'',
-            'tomllib.loads(Path(".ai-review/base/ci/ai-review.toml").read_text(encoding="utf-8"))',
-            "AI review notice marker or expected bot login is unavailable.",
-            'eval "$config_exports"',
-            'if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then',
-        ):
-            if snippet not in kimi_notice_step:
-                findings.append("Kimi fallback infrastructure notice must not use empty marker or bot login")
-                break
+    findings.extend(
+        verify_notice_step_guard(
+            glm_workflow,
+            provider_label="GLM",
+            step_name="Notice when Z.ai secret is not configured",
+            helper_snippet="scripts/ai_review_deliverables.py notice-env --provider glm --config-file ci/ai-review.toml",
+        )
+    )
+    findings.extend(
+        verify_notice_step_guard(
+            glm_workflow,
+            provider_label="GLM",
+            step_name="Post GLM fallback infrastructure failure notice",
+            helper_snippet="scripts/ai_review_deliverables.py notice-env --provider glm --config-file ci/ai-review.toml",
+        )
+    )
+    findings.extend(
+        verify_notice_step_guard(
+            kimi_workflow,
+            provider_label="Kimi",
+            step_name="Notice when Kimi secret is not configured",
+            helper_snippet=".ai-review/base/scripts/ai_review_deliverables.py notice-env --provider kimi --config-file .ai-review/base/ci/ai-review.toml",
+        )
+    )
+    findings.extend(
+        verify_notice_step_guard(
+            kimi_workflow,
+            provider_label="Kimi",
+            step_name="Post Kimi fallback infrastructure failure notice",
+            helper_snippet=".ai-review/base/scripts/ai_review_deliverables.py notice-env --provider kimi --config-file .ai-review/base/ci/ai-review.toml",
+        )
+    )
     for snippet in KIMI_FORBIDDEN_INPUTS:
         if snippet in kimi_workflow:
             findings.append(f"Kimi workflow must use the official Kimi CLI path, not {snippet!r}")
@@ -928,7 +956,7 @@ def run_self_tests(repo_root: Path) -> None:
     assert_finding(
         "notice empty marker guard removed",
         notice_empty_marker_guard_removed,
-        "GLM fallback infrastructure notice must not use empty marker or bot login",
+        "GLM notice step",
     )
 
     kimi_notice_empty_marker_guard_removed = verify_texts(
@@ -943,7 +971,7 @@ def run_self_tests(repo_root: Path) -> None:
     assert_finding(
         "Kimi notice empty marker guard removed",
         kimi_notice_empty_marker_guard_removed,
-        "Kimi fallback infrastructure notice must not use empty marker or bot login",
+        "Kimi notice step",
     )
 
     last_step_then_later_job = "\n".join(
@@ -976,6 +1004,21 @@ def run_self_tests(repo_root: Path) -> None:
         smoke_workflow=smoke,
     )
     assert_finding("PR-Agent model literal", pr_agent_model_literal, ".pr_agent.toml extra_instructions must read AI review runtime value")
+
+    pr_agent_missing_severity_label = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent.replace("include a line starting exactly with `Severity:`", "include severity"),
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding(
+        "PR-Agent missing severity label",
+        pr_agent_missing_severity_label,
+        "must require the literal Severity: finding label",
+    )
 
     smoke_runtime_literal = verify_texts(
         agents_md=agents,

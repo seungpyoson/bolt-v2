@@ -292,9 +292,10 @@ jobs:
     name: merge-readiness-progress
     if: >-
       ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == false
+          && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+              || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
           && !(github.event.action == 'edited'
-               && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-                   || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
                && !(github.event.changes.base.ref.from != '')) }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     permissions:
@@ -1134,11 +1135,13 @@ jobs:
   coverage-enforcer:
     name: coverage-enforcer
     if: >-
-      ${{ !(github.event_name == 'pull_request'
-            && github.event.action == 'edited'
-            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-            && !(github.event.changes.base.ref.from != '')) }}
+      ${{ github.event_name == 'merge_group'
+          || (github.event_name == 'pull_request'
+              && github.event.pull_request.draft == false
+              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+              && !(github.event.action == 'edited'
+                   && !(github.event.changes.base.ref.from != ''))) }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -4411,14 +4414,32 @@ def assert_merge_readiness_progress_gaps_are_reported() -> None:
             ),
         ),
         (
-            "merge-readiness-progress job if-condition must skip Mergify proof PR",
+            "merge-readiness-progress job if-condition must run only on non-draft Mergify proof PRs",
+            replace_once(
+                workflow,
+                "          && github.event.pull_request.draft == false\n",
+                "",
+            ),
+        ),
+        (
+            "merge-readiness-progress job if-condition must run only on non-draft Mergify proof PRs",
+            replace_once(
+                workflow,
+                "          && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                "              || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
+                "",
+            ),
+        ),
+        (
+            "merge-readiness-progress job if-condition must run only on non-draft Mergify proof PRs",
             replace_once(
                 workflow,
                 "    if: >-\n"
                 "      ${{ github.event_name == 'pull_request'\n"
+                "          && github.event.pull_request.draft == false\n"
+                "          && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                "              || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
                 "          && !(github.event.action == 'edited'\n"
-                "               && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-                "                   || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
                 "               && !(github.event.changes.base.ref.from != '')) }}\n",
                 "    if: ${{ github.event_name == 'pull_request' }}\n",
             ),
@@ -4575,16 +4596,50 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             },
         ),
         (
-            "coverage-enforcer job if-condition must skip Mergify proof PR",
+            "coverage-enforcer job if-condition must run only on merge_group",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "      ${{ github.event_name == 'merge_group'\n"
+                    "          || (github.event_name == 'pull_request'\n",
+                    "      ${{ github.event_name == 'pull_request'\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job if-condition must run only on merge_group",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "              && github.event.pull_request.draft == false\n",
+                    "",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job if-condition must run only on merge_group",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                    "                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
+                    "",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job if-condition must run only on merge_group",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
                     "    if: >-\n"
-                    "      ${{ !(github.event_name == 'pull_request'\n"
-                    "            && github.event.action == 'edited'\n"
-                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
-                    "            && !(github.event.changes.base.ref.from != '')) }}\n",
+                    "      ${{ github.event_name == 'merge_group'\n"
+                    "          || (github.event_name == 'pull_request'\n"
+                    "              && github.event.pull_request.draft == false\n"
+                    "              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                    "                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+                    "              && !(github.event.action == 'edited'\n"
+                    "                   && !(github.event.changes.base.ref.from != ''))) }}\n",
                     "",
                 )
             },

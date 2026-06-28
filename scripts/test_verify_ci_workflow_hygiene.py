@@ -8697,7 +8697,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     download_in_archive = good.replace(
         "      - name: Require BVS local payload\n",
         "      - name: Download forbidden BVS test payload\n"
-        "        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n"
+        "        uses: actions/download-artifact@example\n"
         "      - name: Require BVS local payload\n",
         1,
     )

@@ -324,12 +324,13 @@ def drift_findings_for_terminal_runs(
                 f"{check.context} was reported by wrong GitHub App id(s) "
                 f"{unexpected!r}; expected {expected}"
             )
-        if len(matching) != 1:
+        if not matching:
             findings.append(
-                f"{check.context} must have exactly one terminal check-run from "
-                f"GitHub App id {expected}; found {len(matching)}"
+                f"{check.context} must have at least one terminal check-run from "
+                f"GitHub App id {expected}; found 0"
             )
-        if len(terminal) != 1:
+        distinct_app_ids = list(dict.fromkeys(app_ids))
+        if len(distinct_app_ids) != 1:
             findings.append(
                 f"{check.context} has unexpected duplicate terminal reporters: app ids {app_ids!r}"
             )

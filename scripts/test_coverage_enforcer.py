@@ -392,14 +392,34 @@ def assert_all_present_and_correct_succeeds() -> None:
         raise AssertionError(payload)
 
 
+def assert_retriggered_same_app_check_runs_succeed() -> None:
+    result, fake = run_enforcer(
+        [
+            [
+                check_run("gate"),
+                check_run("backtester-gate"),
+                check_run("host-health"),
+                check_run("host-health"),
+                check_run("actionlint"),
+                check_run("actionlint"),
+            ]
+        ]
+    )
+    if result.conclusion != "success" or result.findings:
+        raise AssertionError(result)
+    posted = fake.posted_check_runs()
+    if len(posted) != 1 or posted[0]["conclusion"] != "success":
+        raise AssertionError(posted)
+
+
 def assert_iteration_gate_contexts_succeed() -> None:
     result, fake = run_enforcer(
         [
             [
                 check_run("gate-iteration"),
                 check_run("backtester-gate-iteration"),
-                check_run("host-health"),
                 check_run("actionlint"),
+                check_run("host-health"),
             ]
         ],
         clock=FakeClock([0.0, 2.0]),
@@ -601,6 +621,7 @@ def assert_non_object_event_fails_closed() -> None:
 def main() -> int:
     assert_drift_detects_missing_and_wrong_app()
     assert_all_present_and_correct_succeeds()
+    assert_retriggered_same_app_check_runs_succeed()
     assert_iteration_gate_contexts_succeed()
     assert_canonical_pending_gate_is_not_masked_by_iteration_alias()
     assert_poll_timeout_fails_closed()

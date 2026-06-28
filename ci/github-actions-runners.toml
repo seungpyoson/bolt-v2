@@ -193,8 +193,8 @@ supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.gate.proof_rule]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
-carry_forward = ["defer", "noop"]
+fresh = ["full", "tag_reuse"]
+carry_forward = []
 
 [ci_provenance.required_checks.backtester-gate]
 context = "backtester-gate"
@@ -207,8 +207,8 @@ supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
-carry_forward = ["defer", "noop"]
+fresh = ["full", "tag_reuse"]
+carry_forward = []
 
 [ci_provenance.required_checks.host-health]
 context = "host-health"
@@ -221,7 +221,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["full", "docs", "iteration", "defer", "noop"]
+fresh = ["full", "docs", "iteration"]
 carry_forward = []
 
 [ci_provenance.required_checks.actionlint]
@@ -235,7 +235,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.actionlint.proof_rule]
-fresh = ["full", "docs", "iteration", "defer", "noop"]
+fresh = ["full", "docs", "iteration"]
 carry_forward = []
 
 [ci_provenance.required_checks.coverage-enforcer]
@@ -249,7 +249,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.coverage-enforcer.proof_rule]
-fresh = ["full", "docs", "iteration", "defer", "noop"]
+fresh = ["full", "docs", "iteration"]
 carry_forward = []
 
 [ci_provenance.docs]
@@ -283,16 +283,21 @@ max_lookback_age_seconds = 2592000
 [ci_provenance.artifacts]
 retention_days = 30
 
+# Queue-only rework (#981): the Mergify queue runs in TEMP-PR mode, so merge_group
+# never fires and the SOLE producer of a green REQUIRED gate is the actor-verified
+# mergify temp PR validated at the merge boundary. Every ordinary pull_request row is
+# pinned to "iteration" (defer heavy lanes, publish only the non-required
+# gate-iteration); only the genuine merge-boundary rows stay "full".
 [ci_provenance.policy]
-draft_pr_synchronize = "defer"
-draft_pr_opened = "defer"
-draft_pr_reopened = "defer"
-draft_pr_edited = "defer"
-converted_to_draft = "defer"
-ready_pr = "full"
-ready_pr_edited_no_base = "noop"
-ready_pr_reopened = "noop"
-ready_for_review = "full"
+draft_pr_synchronize = "iteration"
+draft_pr_opened = "iteration"
+draft_pr_reopened = "iteration"
+draft_pr_edited = "iteration"
+converted_to_draft = "iteration"
+ready_pr = "iteration"
+ready_pr_edited_no_base = "iteration"
+ready_pr_reopened = "iteration"
+ready_for_review = "iteration"
 docs = "docs"
 workflow_dispatch = "iteration"
 workflow_dispatch_full_ci = "full"
@@ -304,6 +309,11 @@ unknown_event = "full"
 
 [ci_provenance.mergify]
 temp_pr_head_ref_prefix = "mergify/merge-queue/"
+# GAP-1 (#981): a head-ref prefix alone must never earn the required gate. The temp PR
+# is recognized only when github.event.sender.id is this bound mergify[bot] actor id.
+# Evidence: author.id == 37929162 == mergify[bot], verified on merge-queue temp PRs
+# #998, #984, #980 (github.event.sender.id on those temp PRs). Do not re-litigate.
+mergify_temp_pr_actor_id = 37929162
 
 [ci_provenance.policy.override]
 force_full_ci = false

@@ -15,6 +15,19 @@ permissions:
 jobs:
   coverage-enforcer:
     name: coverage-enforcer
+    # Run only where required full-gate proof can exist: merge_group and Mergify
+    # proof PRs. Ordinary source PRs and drafts are queue-covered, so running this
+    # advisory waiter there only burns minutes waiting for absent proof gates.
+    # Also skip redundant advisory runs when Mergify edits proof PR metadata
+    # after the initial opened run.
+    if: >-
+      ${{ github.event_name == 'merge_group'
+          || (github.event_name == 'pull_request'
+              && github.event.pull_request.draft == false
+              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+              && !(github.event.action == 'edited'
+                   && !(github.event.changes.base.ref.from != ''))) }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

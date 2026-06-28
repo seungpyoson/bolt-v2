@@ -15,6 +15,29 @@ import tempfile
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "merge_queue_preflight.py"
+MERGIFY_YML = """\
+merge_queue:
+  max_parallel_checks: 1
+  reset_on_external_merge: always
+
+queue_rules:
+  - name: default
+    queue_conditions: []
+    merge_conditions:
+      - approved-reviews-by = sp-reviewer
+      - check-success = gate
+    branch_protection_injection_mode: merge
+    batch_size:
+      min: 2
+      max: 10
+    batch_max_wait_time: 5 minutes
+    batch_max_failure_resolution_attempts: 0
+    checks_timeout: 150 minutes
+    draft_bot_account: null
+    merge_method: squash
+
+priority_rules: []
+"""
 
 
 def run(command: list[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
@@ -53,6 +76,7 @@ class GitFixture:
         git(self.repo, "config", "user.email", "preflight@example.invalid")
         git(self.repo, "config", "user.name", "Merge Queue Preflight Test")
         write(self.repo / "shared.txt", "base\n")
+        write(self.repo / ".mergify.yml", MERGIFY_YML)
         self.base = commit(self.repo, "base")
         git(self.repo, "branch", "-M", "main")
         git(self.repo, "push", "origin", "main")
@@ -123,6 +147,23 @@ def no_gh_finding() -> dict[str, object]:
         "reason_code": "readiness_disabled_by_no_gh",
         "message": "--no-gh disables authoritative readiness evidence",
         "evidence": {"use_gh": False},
+    }
+
+
+def mergify_config_finding(base_sha: str, blob_sha: str) -> dict[str, object]:
+    return {
+        "lane": "mergify_config",
+        "scope": "run",
+        "status": "ready",
+        "reason_code": "mergify_config_snapshot_read",
+        "message": ".mergify.yml snapshot read from expected base",
+        "evidence": {
+            "path": ".mergify.yml",
+            "base_sha": base_sha,
+            "blob_sha": blob_sha,
+            "git_returncode": 0,
+            "git_stderr": "",
+        },
     }
 
 
@@ -516,6 +557,24 @@ def run_preflight_with_gh(
     )
 
 
+def assert_mergify_config_snapshot_uses_base_blob() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        fixture.make_pr(1, {"one.txt": "one\n"})
+        base_blob = git(fixture.repo, "rev-parse", f"{fixture.base}:.mergify.yml")
+        write(fixture.repo / ".mergify.yml", "not: [valid\n")
+
+        rc, stdout, _ = run_preflight(
+            fixture.repo,
+            fixture.remote,
+            "1",
+            expect_success=False,
+        )
+        assert_equal(rc, 3, "mergify snapshot no-gh rc")
+        payload = parse_json(stdout)
+        assert mergify_config_finding(fixture.base, base_blob) in payload["findings"], payload["findings"]
+
+
 def assert_clean_prs_batch_together() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
@@ -534,7 +593,13 @@ def assert_clean_prs_batch_together() -> None:
         assert_equal(payload["verdict"], "inconclusive", "clean no-gh verdict")
         assert_equal(
             payload["findings"],
-            [no_gh_finding()],
+            [
+                mergify_config_finding(
+                    payload["base_sha"],
+                    git(fixture.repo, "rev-parse", f"{payload['base_sha']}:.mergify.yml"),
+                ),
+                no_gh_finding(),
+            ],
             "clean no-gh findings",
         )
 
@@ -648,6 +713,10 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
         assert_equal(
             payload["findings"],
             [
+                mergify_config_finding(
+                    payload["base_sha"],
+                    git(fixture.repo, "rev-parse", f"{payload['base_sha']}:.mergify.yml"),
+                ),
                 no_gh_finding(),
                 {
                     "lane": "integration",
@@ -1110,6 +1179,7 @@ def main() -> int:
     assert_preflight_artifact_classification_is_declarative()
     assert_preflight_artifact_finding_uses_classification_table()
     assert_contract_evaluator_reduces_normalized_evidence()
+    assert_mergify_config_snapshot_uses_base_blob()
     assert_clean_prs_batch_together()
     assert_conflicting_pr_starts_later_batch()
     assert_order_dependent_conflict_context_is_reported()

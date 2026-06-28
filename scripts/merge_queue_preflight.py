@@ -19,6 +19,7 @@ from collections.abc import Mapping, Sequence
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "rust-verification.toml"
+MERGIFY_CONFIG_PATH = ".mergify.yml"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 CONFLICT_LINE_RE = re.compile(r"^\d{6} [0-9a-f]{40} [123]\t(.+)$")
 PR_REF_PREFIX = "refs/pull/"
@@ -78,6 +79,18 @@ INPUT_FAILURE_CLASSIFICATIONS = {
     "ambiguous": (INPUT_FAILURE_LANE_FINDING, STATUS_INCONCLUSIVE, 3),
 }
 PREFLIGHT_USAGE_EXIT_CODE = INPUT_FAILURE_CLASSIFICATIONS["invalid"][2]
+MERGIFY_CONFIG_SNAPSHOT_STATES = {
+    True: (
+        STATUS_READY,
+        "mergify_config_snapshot_read",
+        ".mergify.yml snapshot read from expected base",
+    ),
+    False: (
+        STATUS_INCONCLUSIVE,
+        "mergify_config_snapshot_unavailable",
+        ".mergify.yml snapshot unavailable at expected base",
+    ),
+}
 MERGIFY_CONFIG_FIELD_HANDLING = {
     "merge_queue.max_parallel_checks": "residual_cost_impact",
     "merge_queue.reset_on_external_merge": "residual_post_preflight_invalidation",
@@ -181,6 +194,32 @@ def preflight_mode_findings(*, use_gh: bool) -> tuple[dict[str, object], ...]:
         }
         for finding in PREFLIGHT_MODE_FINDINGS[use_gh]
     )
+
+
+def mergify_config_snapshot_finding(*, repo: pathlib.Path, base_sha: str) -> dict[str, object]:
+    result = git(repo, "rev-parse", f"{base_sha}:{MERGIFY_CONFIG_PATH}", check=False)
+    blob_sha = result.stdout.strip()
+    status, reason_code, message = MERGIFY_CONFIG_SNAPSHOT_STATES[
+        result.returncode == 0 and SHA_RE.fullmatch(blob_sha) is not None
+    ]
+    return {
+        "lane": LANE_MERGIFY_CONFIG,
+        "scope": "run",
+        "status": status,
+        "reason_code": reason_code,
+        "message": message,
+        "evidence": {
+            "path": MERGIFY_CONFIG_PATH,
+            "base_sha": base_sha,
+            "blob_sha": blob_sha,
+            "git_returncode": result.returncode,
+            "git_stderr": result.stderr.strip(),
+        },
+    }
+
+
+def mergify_config_findings(*, repo: pathlib.Path, base_sha: str) -> tuple[dict[str, object], ...]:
+    return (mergify_config_snapshot_finding(repo=repo, base_sha=base_sha),)
 
 
 def contract_result(findings: Sequence[dict[str, object]], *, wave_status: str) -> dict[str, object]:
@@ -1045,7 +1084,10 @@ def preflight(
         )
     contract_evaluation = evaluate_preflight_contract(
         ContractEvidence(
-            findings=preflight_mode_findings(use_gh=use_gh),
+            findings=(
+                *mergify_config_findings(repo=repo, base_sha=base_sha),
+                *preflight_mode_findings(use_gh=use_gh),
+            ),
             artifacts=(*blocked_prs, *conflicts),
             wave_status=STATUS_READY,
         )

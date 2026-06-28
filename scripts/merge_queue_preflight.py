@@ -77,6 +77,7 @@ INPUT_FAILURE_CLASSIFICATIONS = {
     "timeout": (INPUT_FAILURE_LANE_FINDING, STATUS_INCONCLUSIVE, 3),
     "ambiguous": (INPUT_FAILURE_LANE_FINDING, STATUS_INCONCLUSIVE, 3),
 }
+PREFLIGHT_USAGE_EXIT_CODE = INPUT_FAILURE_CLASSIFICATIONS["invalid"][2]
 MERGIFY_CONFIG_FIELD_HANDLING = {
     "merge_queue.max_parallel_checks": "residual_cost_impact",
     "merge_queue.reset_on_external_merge": "residual_post_preflight_invalidation",
@@ -144,6 +145,12 @@ PREFLIGHT_MODE_FINDINGS = {
 
 class PreflightError(RuntimeError):
     """Raised when preflight input or repository state is invalid."""
+
+
+class PreflightArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        self.exit(PREFLIGHT_USAGE_EXIT_CODE, f"{self.prog}: error: {message}\n")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1178,7 +1185,7 @@ def plain_text(payload: dict[str, object]) -> str:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="merge_queue_preflight.py")
+    root = PreflightArgumentParser(prog="merge_queue_preflight.py")
     root.add_argument("prs", nargs="+", type=positive_pr_number)
     root.add_argument("--base")
     root.add_argument("--origin")
@@ -1212,7 +1219,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     except PreflightError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 2
+        return PREFLIGHT_USAGE_EXIT_CODE
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:

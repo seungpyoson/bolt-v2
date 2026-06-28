@@ -1050,10 +1050,8 @@ def assert_invalid_pr_input_is_rejected() -> None:
             "abc",
             expect_success=False,
         )
-        if rc != 2:
-            raise AssertionError((rc, stdout, stderr))
-        if "PR numbers must be positive integers" not in stderr:
-            raise AssertionError(stderr)
+        assert_equal(rc, 4, "invalid PR rc")
+        assert "PR numbers must be positive integers" in stderr, stderr
 
 
 def assert_missing_gh_reports_inconclusive_metadata() -> None:

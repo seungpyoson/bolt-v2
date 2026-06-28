@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import pathlib
 import sys
@@ -174,7 +176,14 @@ class CiStorageAuditTests(unittest.TestCase):
             {
                 "actions/caches": {
                     "total_count": 10,
-                    "actions_caches": [{"id": 1, "size_in_bytes": 100}],
+                    "actions_caches": [
+                        {
+                            "id": 1,
+                            "ref": "refs/heads/main",
+                            "key": "cache-key",
+                            "size_in_bytes": 100,
+                        }
+                    ],
                 },
                 "actions/artifacts": {
                     "total_count": 20,
@@ -202,7 +211,14 @@ class CiStorageAuditTests(unittest.TestCase):
                     {
                         "actions/caches": {
                             "total_count": total_count,
-                            "actions_caches": [{"id": 1, "size_in_bytes": 100}],
+                            "actions_caches": [
+                                {
+                                    "id": 1,
+                                    "ref": "refs/heads/main",
+                                    "key": "cache-key",
+                                    "size_in_bytes": 100,
+                                }
+                            ],
                         },
                         "actions/artifacts": {
                             "total_count": total_count,
@@ -676,6 +692,116 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.UNAVAILABLE)
         self.assertEqual(raised.exception.field, "actions/cache/usage")
         self.assertIn("secondary rate limit", str(raised.exception))
+
+    def test_fetch_cache_usage_rejects_malformed_numeric_fields(self) -> None:
+        malformed_payloads = (
+            {"active_caches_count": "many", "active_caches_size_in_bytes": 1},
+            {"active_caches_count": 1, "active_caches_size_in_bytes": -1},
+            {"active_caches_count": True, "active_caches_size_in_bytes": 1},
+        )
+        for payload in malformed_payloads:
+            with self.subTest(payload=payload):
+                client = FakeClient({"actions/cache/usage": payload})
+
+                with self.assertRaises(ci_storage_audit.AuditError) as raised:
+                    ci_storage_audit.fetch_cache_usage(client)
+
+                self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.INVALID)
+                self.assertEqual(raised.exception.field, "actions/cache/usage")
+
+    def test_fetch_cache_key_probes_rejects_malformed_cache_entries(self) -> None:
+        malformed_entries = (
+            (
+                {"ref": "refs/heads/main", "key": "exact-key", "size_in_bytes": "bad"},
+                ci_storage_audit.FailureKind.INVALID,
+                "actions/caches.size_in_bytes",
+            ),
+            (
+                {"ref": "", "key": "exact-key", "size_in_bytes": 1},
+                ci_storage_audit.FailureKind.EMPTY,
+                "actions/caches.ref",
+            ),
+            (
+                {"ref": "refs/heads/main", "key": "", "size_in_bytes": 1},
+                ci_storage_audit.FailureKind.EMPTY,
+                "actions/caches.key",
+            ),
+        )
+        for entry, expected_kind, expected_field in malformed_entries:
+            with self.subTest(entry=entry):
+                client = FakeClient(
+                    {
+                        (
+                            "actions/caches",
+                            (("key", "exact-key"), ("per_page", "100")),
+                        ): {
+                            "total_count": 1,
+                            "actions_caches": [entry],
+                        },
+                    }
+                )
+
+                with self.assertRaises(ci_storage_audit.AuditError) as raised:
+                    ci_storage_audit.fetch_cache_key_probes(
+                        client,
+                        [ci_storage_audit.CacheKeyProbeRequest("probe", "exact-key")],
+                        cache_refs=["refs/heads/main"],
+                    )
+
+                self.assertEqual(raised.exception.kind, expected_kind)
+                self.assertEqual(raised.exception.field, expected_field)
+
+    def test_main_reports_empty_step_summary_without_traceback(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            rc = ci_storage_audit.main(
+                [
+                    "--repo",
+                    "owner/repo",
+                    "--cache-key",
+                    "probe=exact-key",
+                    "--github-event-name",
+                    "pull_request",
+                    "--github-ref",
+                    "refs/pull/986/merge",
+                    "--github-base-ref",
+                    "main",
+                    "--github-default-branch",
+                    "main",
+                    "--github-step-summary",
+                    "",
+                ]
+            )
+
+        self.assertEqual(rc, 2)
+        self.assertIn("empty --github-step-summary", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_validate_args_rejects_empty_step_summary(self) -> None:
+        args = ci_storage_audit.parse_args(
+            [
+                "--repo",
+                "owner/repo",
+                "--cache-key",
+                "probe=exact-key",
+                "--github-event-name",
+                "pull_request",
+                "--github-ref",
+                "refs/pull/986/merge",
+                "--github-base-ref",
+                "main",
+                "--github-default-branch",
+                "main",
+                "--github-step-summary",
+                "",
+            ]
+        )
+
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.validate_args(args)
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.EMPTY)
+        self.assertEqual(raised.exception.field, "--github-step-summary")
 
     def test_build_cache_key_probe_snapshot_includes_cache_usage(self) -> None:
         client = FakeClient(

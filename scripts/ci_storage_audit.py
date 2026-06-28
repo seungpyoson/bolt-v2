@@ -239,6 +239,12 @@ def nonnegative_int(value: Any, *, default: int = 0) -> int:
     return default
 
 
+def require_nonnegative_int(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise AuditError(f"{field} must be a non-negative integer", kind=FailureKind.INVALID, field=field)
+    return value
+
+
 def count_with_source(payload: dict[str, Any], *, fallback: int) -> tuple[int, str]:
     value = payload.get("total_count")
     if isinstance(value, bool):
@@ -251,10 +257,10 @@ def count_with_source(payload: dict[str, Any], *, fallback: int) -> tuple[int, s
 def cache_entry_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "cache_id": raw.get("id"),
-        "ref": optional_text(raw.get("ref")),
-        "key": optional_text(raw.get("key")),
+        "ref": require_ref(raw.get("ref"), "actions/caches.ref"),
+        "key": require_text(raw.get("key"), "actions/caches.key"),
         "last_accessed_at": optional_text(raw.get("last_accessed_at")),
-        "size_bytes": nonnegative_int(raw.get("size_in_bytes")),
+        "size_bytes": require_nonnegative_int(raw.get("size_in_bytes"), "actions/caches.size_in_bytes"),
     }
 
 
@@ -501,8 +507,14 @@ def fetch_cache_usage(client: GhClient) -> dict[str, Any]:
         raise AuditError(str(exc), kind=FailureKind.UNAVAILABLE, field="actions/cache/usage") from exc
     return {
         "available": True,
-        "active_caches_count": nonnegative_int(payload.get("active_caches_count")),
-        "active_caches_size_in_bytes": nonnegative_int(payload.get("active_caches_size_in_bytes")),
+        "active_caches_count": require_nonnegative_int(
+            payload.get("active_caches_count"),
+            "actions/cache/usage",
+        ),
+        "active_caches_size_in_bytes": require_nonnegative_int(
+            payload.get("active_caches_size_in_bytes"),
+            "actions/cache/usage",
+        ),
         "source": "rest",
     }
 
@@ -931,6 +943,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    if args.github_step_summary is not None:
+        require_text(args.github_step_summary, "--github-step-summary")
+
+
 def run(args: argparse.Namespace) -> int:
     repo = args.repo or infer_repo()
     client = GhClient(repo)
@@ -1004,6 +1021,13 @@ def run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    try:
+        validate_args(args)
+    except AuditError as exc:
+        if getattr(args, "github_annotations", False):
+            print(f"::error::cache persistence audit contract failed: {exc}")
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     try:
         return run(args)
     except AuditError as exc:

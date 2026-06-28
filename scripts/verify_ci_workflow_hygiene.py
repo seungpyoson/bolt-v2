@@ -694,10 +694,6 @@ CACHE_PERSISTENCE_AUDIT_PROBE_SCALAR_REQUIREMENTS = (
 )
 CACHE_PERSISTENCE_AUDIT_PROBE_COMMAND_REQUIREMENTS = (
     (
-        "cache-persistence-audit must run ci_storage_audit exact-key probes",
-        (CACHE_PERSISTENCE_AUDIT_COMMAND,),
-    ),
-    (
         "cache-persistence-audit must probe all root nextest cache keys",
         CACHE_PERSISTENCE_AUDIT_CACHE_KEYS,
     ),
@@ -722,6 +718,7 @@ CACHE_PERSISTENCE_AUDIT_PROBE_COMMAND_REQUIREMENTS = (
         CACHE_PERSISTENCE_AUDIT_SAVE_OUTCOME_ARGS,
     ),
 )
+CACHE_PERSISTENCE_AUDIT_ARGV_PREFIX = ("python3", "scripts/ci_storage_audit.py")
 TEST_ARCHIVE_TEST_PROFILE_ENV = 'CARGO_PROFILE_TEST_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_BUILD_COMMAND = (
@@ -2178,6 +2175,14 @@ def run_body_has_single_terminal_exit(lines: list[str], command: str) -> bool:
     return exit_lines == [(last_index, last_line)]
 
 
+def command_argv_has_prefix(command: str, expected_prefix: tuple[str, ...]) -> bool:
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    return tuple(argv[: len(expected_prefix)]) == expected_prefix
+
+
 def append_missing_cache_persistence_probe_structure(
     errors: list[str],
     run_lines: list[str],
@@ -2189,7 +2194,11 @@ def append_missing_cache_persistence_probe_structure(
         (
             (
                 "cache-persistence-audit must delegate audit policy to ci_storage_audit",
-                len(commands) == 1 and command_text.startswith(CACHE_PERSISTENCE_AUDIT_COMMAND),
+                len(commands) == 1,
+            ),
+            (
+                "cache-persistence-audit must run ci_storage_audit exact-key probes",
+                command_argv_has_prefix(command_text, CACHE_PERSISTENCE_AUDIT_ARGV_PREFIX),
             ),
             (
                 "cache-persistence-audit must not suppress audit contract failures",

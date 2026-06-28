@@ -4503,6 +4503,10 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             replace_once(workflow, "          python3 scripts/ci_storage_audit.py \\\n", "          python3 scripts/ci_storage_audit_probe.py \\\n"),
         ),
         (
+            "cache-persistence-audit must run ci_storage_audit exact-key probes",
+            replace_once(workflow, "          python3 scripts/ci_storage_audit.py \\\n", "          python3 scripts/ci_storage_audit.py.bak \\\n"),
+        ),
+        (
             "cache-persistence-audit probe must be non-blocking",
             replace_once(
                 workflow,

@@ -41,15 +41,6 @@ def test_text() -> str:
     return "\n".join(load_verifier().TEST_SNIPPETS)
 
 
-def plan_text() -> str:
-    return "\n".join(load_verifier().PLAN_SNIPPETS)
-
-
-def tasks_text(*, checked: bool = True) -> str:
-    mark = "x" if checked else " "
-    return "\n".join(f"- [{mark}] {task_id} task" for task_id in load_verifier().CHECKED_TASKS)
-
-
 def justfile_text(*, wired: bool = True) -> str:
     commands = (
         "    python3 scripts/test_verify_dashboard_read_only_contract.py\n"
@@ -63,8 +54,6 @@ def justfile_text(*, wired: bool = True) -> str:
 def write_complete_fixture(root: Path) -> None:
     write_file(root, "crates/backtesting-vertical-slice/src/dashboard_contract.rs", code_text())
     write_file(root, "crates/backtesting-vertical-slice/tests/dashboard_contract.rs", test_text())
-    write_file(root, "specs/023-nt-research-analytics-platform/3-dashboard/plan.md", plan_text())
-    write_file(root, "specs/023-nt-research-analytics-platform/3-dashboard/tasks.md", tasks_text())
     write_file(root, "justfile", justfile_text())
 
 
@@ -100,16 +89,16 @@ def test_missing_contract_code_is_a_finding() -> None:
     assert any("PortfolioSnapshot" in finding for finding in findings)
 
 
-def test_unchecked_task_is_a_finding() -> None:
+def test_missing_required_file_does_not_cascade_snippet_findings() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_complete_fixture(root)
-        write_file(root, "specs/023-nt-research-analytics-platform/3-dashboard/tasks.md", tasks_text(checked=False))
+        (root / "crates/backtesting-vertical-slice/src/dashboard_contract.rs").unlink()
 
         findings = verifier.scan_root(root)
 
-    assert any("DASH-010" in finding for finding in findings)
+    assert findings == ["crates/backtesting-vertical-slice/src/dashboard_contract.rs: file is missing"]
 
 
 def test_missing_source_fence_wiring_is_a_finding() -> None:
@@ -141,7 +130,7 @@ def main() -> int:
     tests = [
         test_complete_fixture_passes,
         test_missing_contract_code_is_a_finding,
-        test_unchecked_task_is_a_finding,
+        test_missing_required_file_does_not_cascade_snippet_findings,
         test_missing_source_fence_wiring_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]

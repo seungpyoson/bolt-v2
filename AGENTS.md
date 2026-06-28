@@ -12,7 +12,7 @@ Repo governance for agents; higher-level standing instructions apply.
 ## Agent & Plugin Discipline
 
 - Do not create per-agent policy docs unless the tool loads them and the policy cannot live in `AGENTS.md`. For tools that do not load it, pass `AGENTS.md` as read-only context; add `.specify/memory/constitution.md` only when SpecKit principles or gates matter.
-- `.pr_agent.toml` mirrors the critical AI-review subset for PR-Agent, which cannot load arbitrary repo files in GitHub Actions. Keep that mirror current with this file; `scripts/verify_ai_review_governance.py` checks the mirror in CI.
+- `ci/ai-review.toml` is the machine-readable AI-review mirror authority for PR-Agent, which cannot load arbitrary repo files in GitHub Actions; `scripts/verify_ai_review_governance.py` checks `.pr_agent.toml` against that config in CI.
 - AI review deliverables must identify the reviewer source and exact configured model. Runtime source/model labels and comment markers come from `ci/ai-review.toml`; workflow and prompt text must not embed those runtime values.
 - Do not patch plugin caches as durable fixes; use repo governance, SpecKit templates, verified extension/override surfaces, or regenerated adapters. Generated prompts may recommend strict TDD — use Evidence-Driven Verification unless the user, active spec, or risk requires TDD.
 

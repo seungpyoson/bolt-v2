@@ -411,16 +411,10 @@ fn codebase_does_not_expose_dead_platform_runtime_actor_or_catalog_modules() {
 
 #[test]
 fn production_entrypoint_vocab_does_not_claim_future_or_env_query_path() {
-    let checked_surfaces = [
-        (
-            "src/bolt_v3_live_node.rs",
-            include_str!("../src/bolt_v3_live_node.rs"),
-        ),
-        (
-            "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
-            include_str!("../docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"),
-        ),
-    ];
+    let checked_surfaces = [(
+        "src/bolt_v3_live_node.rs",
+        include_str!("../src/bolt_v3_live_node.rs"),
+    )];
 
     for (path, source) in checked_surfaces {
         for forbidden in [

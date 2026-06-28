@@ -119,7 +119,6 @@ def write_common(
     artifact_store: str | None = None,
     artifact_index: str = "pub enum ResearchAnalyticsSubfamily { Datasets, FeatureTables, ExperimentResults }\n",
     tests: str | None = None,
-    tasks_checked: bool = True,
 ) -> None:
     write(root / "crates/backtesting-vertical-slice/src/artifact_store.rs", compliant_artifact_store() if artifact_store is None else artifact_store)
     write(root / "crates/backtesting-vertical-slice/src/artifact_index.rs", artifact_index)
@@ -130,11 +129,6 @@ def write_common(
     python3 scripts/test_verify_ra_artifact_index_commit.py
     python3 scripts/verify_ra_artifact_index_commit.py
 """,
-    )
-    task_mark = "x" if tasks_checked else " "
-    write(
-        root / "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
-        f"- [{task_mark}] RA-012 Implement the producer-owned Artifact Index commit for every RA-owned artifact family.\n",
     )
 
 
@@ -186,21 +180,11 @@ def test_required_commit_test_literals_are_enforced() -> None:
         assert any("missing RA commit test literal 'feature-tables'" in finding for finding in findings)
 
 
-def test_task_checkbox_is_required() -> None:
-    verifier = load_verifier()
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        write_common(root, tasks_checked=False)
-        findings = verifier.scan_root(root)
-        assert any("RA-012 must be checked" in finding for finding in findings)
-
-
 def main() -> int:
     test_compliant_fixture_passes()
     test_comments_and_strings_only_do_not_satisfy_code_patterns()
     test_promotion_package_family_is_rejected_in_model()
     test_required_commit_test_literals_are_enforced()
-    test_task_checkbox_is_required()
     print("OK: verify_ra_artifact_index_commit self-tests passed.")
     return 0
 

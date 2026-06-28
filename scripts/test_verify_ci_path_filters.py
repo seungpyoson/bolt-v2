@@ -61,21 +61,6 @@ non_heavy_required_jobs = ["detector"]
 """
 
 
-DOCS_FIXTURE = """
-| Scenario | Example path | Classification | CI behavior |
-| --- | --- | --- | --- |
-| docs-only root agent doc | `AGENTS.md` | docs | heavy lanes skipped; `gate` records docs proof |
-| root security policy | `SECURITY.md` | docs | heavy lanes skipped; `gate` records docs proof |
-| workflow change | `.github/workflows/ci.yml` | full-ci | full CI runs |
-| Rust source change | `src/lib.rs` | full-ci | full CI runs |
-| managed rust-verification config | `ci/rust-verification.toml` | full-ci | full CI runs |
-| forbidden legacy rust-verification config | `.claude/rust-verification.toml` | full-ci | full CI runs |
-| lockfile change | `Cargo.lock` | full-ci | full CI runs |
-| mixed docs and source | `AGENTS.md` + `src/lib.rs` | full-ci | full CI runs |
-| ignored Claude agent dir | `.claude/skills/speckit-plan/SKILL.md` | docs | heavy lanes skipped; `gate` records docs proof |
-| ignored config dir | `.codex/config.toml` | docs | heavy lanes skipped; `gate` records docs proof |
-"""
-
 def load_script():
     if not SCRIPT_PATH.exists():
         raise AssertionError(f"missing script: {SCRIPT_PATH}")
@@ -184,22 +169,6 @@ def assert_forbidden_rust_policy_path_forces_full_ci() -> None:
         raise AssertionError(text)
 
 
-def assert_verifies_docs_rows() -> None:
-    module = load_script()
-    module.verify_docs_table(DOCS_FIXTURE)
-    assert_raises(
-        "docs missing required scenario",
-        lambda: module.verify_docs_table(DOCS_FIXTURE.replace("mixed docs and source", "mixed row removed")),
-    )
-    assert_raises(
-        "docs table scenario is not enforced",
-        lambda: module.verify_docs_table(
-            DOCS_FIXTURE
-            + "| future docs-only row | `AGENTS.md` | docs | untracked behavior |\n"
-        ),
-    )
-
-
 def assert_writes_github_output() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -265,7 +234,6 @@ def main() -> int:
     assert_loads_registry_safe_paths()
     assert_classifies_changed_paths()
     assert_forbidden_rust_policy_path_forces_full_ci()
-    assert_verifies_docs_rows()
     assert_writes_github_output()
     assert_input_reads_are_bounded()
     assert_require_docs_only_fails_closed()

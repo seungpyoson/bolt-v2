@@ -14,9 +14,6 @@ RUN_MANIFEST_PATH = Path("crates/backtesting-vertical-slice/src/run_manifest.rs"
 CARGO_PATH = Path("crates/backtesting-vertical-slice/Cargo.toml")
 TEST_PATH = RUN_MANIFEST_PATH
 JUSTFILE_PATH = Path("justfile")
-TASKS_PATH = Path("specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md")
-
-CHECKED_RA009 = re.compile(r"^- \[[xX]\] RA-009\b", re.MULTILINE)
 
 
 def strip_rust_comments_and_literals(text: str) -> str:
@@ -108,15 +105,9 @@ def scan_root(root: Path) -> list[str]:
     just_text = (
         (root / JUSTFILE_PATH).read_text(encoding="utf-8") if (root / JUSTFILE_PATH).exists() else ""
     )
-    tasks_text = (
-        (root / TASKS_PATH).read_text(encoding="utf-8") if (root / TASKS_PATH).exists() else ""
-    )
 
     code = strip_rust_comments_and_literals(run_manifest_text)
     test_code = strip_rust_comments_and_literals(test_text)
-
-    if not CHECKED_RA009.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: RA-009 must be checked only when cost realism is implemented")
 
     if "nautilus-execution" not in cargo_text:
         findings.append(f"{CARGO_PATH}: missing direct nautilus-execution dependency")

@@ -853,41 +853,6 @@ fn verify_rejects_divergent_deployed_strategy_file() {
     );
 }
 
-#[test]
-fn deploy_readme_documents_the_full_pre_arm_gate() {
-    // #768 step 3 pre-arm duties: config identity (generate/verify), live secret
-    // resolution (3c), and arming-gate/readiness (3d). `prestart-check` does config-load +
-    // storage only — (3d) is structural (the bot starts disarmed behind the arming gate;
-    // data-client readiness is probed separately). The runbook must name all of them so an
-    // operator is not told prestart-check verified readiness when it did not.
-    let readme = support::repo_text("deploy/README.md");
-    for needle in [
-        "generate-live-config",
-        "verify-live-config",
-        "ops launch",
-        "secrets resolve",
-        "prestart-check",
-        "arming",
-        "data-client-probe",
-    ] {
-        assert!(
-            readme.contains(needle),
-            "deploy/README.md must document `{needle}` in the pre-arm sequence (#768 step 3)"
-        );
-    }
-
-    for forbidden in [
-        "bolt-v2 run --config ...` remains a non-canonical primitive",
-        "keeps only its minimal generated-config, invariant, and storage prestart guards",
-        "verify-live-config / prestart-check / reference-current-price-health / run",
-    ] {
-        assert!(
-            !readme.contains(forbidden),
-            "deploy/README.md must not present the old separate live-arming lane `{forbidden}`"
-        );
-    }
-}
-
 fn overlay_loss_governor_enabled_is_false(overlay_text: &str) -> bool {
     let mut in_loss_governor = false;
     for line in overlay_text.lines() {

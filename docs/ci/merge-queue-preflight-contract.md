@@ -38,6 +38,38 @@ Every preflight result must be:
 - centrally classified: every decision uses the same typed status model.
 - explicit about residual risk: the output states what preflight did not prove.
 
+## No Silent Fallback Policy
+
+Preflight must not continue by guessing, substituting defaults, widening scope,
+or taking alternate paths that are not explicitly defined by this contract.
+
+The implementation must treat missing, empty, invalid, stale, unavailable,
+timed-out, and ambiguous inputs as contract failures unless this document assigns
+a different status. These cases are distinct and must not collapse into a
+generic falsey value.
+
+Disallowed behavior:
+
+- defaulting missing inputs to branch tips.
+- treating missing lists as empty lists.
+- accepting empty values as absent values.
+- broad optional parsing that skips malformed fields.
+- skipped, unknown, or missing checks counted as success.
+- retrying through a different source without reporting degraded evidence.
+- best-effort continuation after a required lane input fails validation.
+
+Required pattern:
+
+- validate inputs at the boundary.
+- classify failures through the central lane/decision model.
+- fail closed with a precise diagnostic.
+- keep policy in one contract, lane, or table.
+- distinguish absent, empty, invalid, stale, unavailable, timeout, and ambiguous.
+- add negative tests for each failure class introduced by an implementation.
+
+If implementation appears to need fallback behavior, stop and update this
+contract before adding that behavior.
+
 ## Decision Model
 
 Each lane returns one of these statuses:
@@ -81,6 +113,9 @@ An authoritative run requires:
 
 If any expected SHA is missing, the run is non-authoritative and the verdict is
 `inconclusive`.
+
+Boundary validation must classify all input failures before any fetch, metadata
+request, merge simulation, or verifier command runs.
 
 `--no-gh` is a debug mode only. It disables the readiness lane and therefore must
 produce an `inconclusive` verdict, never `queue_as_one_wave`.
@@ -211,6 +246,13 @@ Diagnostics must be useful without violating the no-credential-display rule.
 
 An implementation of this contract must include tests for:
 
+- absent required input.
+- empty required input.
+- invalid required input.
+- stale required input.
+- unavailable required input.
+- timed-out required input.
+- ambiguous required input.
 - expected base SHA mismatch.
 - expected PR head SHA mismatch.
 - no use of `FETCH_HEAD` or another shared mutable fetch result.
@@ -235,3 +277,7 @@ Completion evidence requires:
 - `just ci-lint-workflow`.
 - `just source-fence-static`.
 - internal adversarial review after local findings are resolved.
+- an implementation-branch audit that lists every new `if`, `match`, `except`,
+  `unwrap_or`, `unwrap_or_default`, `or_else`, and default branch, with a short
+  explanation of why each branch is validation or classification rather than
+  silent fallback.

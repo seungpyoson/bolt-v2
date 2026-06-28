@@ -57,6 +57,7 @@ jobs:
             AGENTS.md
             ci/ai-review.toml
             scripts/ai_review_deliverables.py
+            scripts/verify_ai_review_model_freshness.py
           sparse-checkout-cone-mode: false
 
       - name: Load AI review runtime config
@@ -143,6 +144,17 @@ jobs:
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
           fi
 
+      - name: Check AI review model freshness
+        id: model-freshness
+        if: env.KIMI_API_KEY != ''
+        continue-on-error: true
+        run: >-
+          python3 .ai-review/base/scripts/verify_ai_review_model_freshness.py
+          --config-file .ai-review/base/ci/ai-review.toml
+          --live
+          --advisory
+          --provider kimi
+
       - name: Prepare Kimi review standards
         id: prepare-standards
         if: env.KIMI_API_KEY != ''
@@ -208,6 +220,7 @@ jobs:
           KIMI_REVIEW_MAX_CHUNK_CHARS: ${{ steps.runtime-config.outputs.kimi_review_max_chunk_chars }}
           KIMI_CLI_TIMEOUT_SECONDS: ${{ steps.runtime-config.outputs.kimi_cli_timeout_seconds }}
           AI_REVIEW_MAX_COMMENT_CHARS: ${{ steps.runtime-config.outputs.ai_review_max_comment_chars }}
+          AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.kimi_warning }}
         run: >-
           python3 .ai-review/base/scripts/ai_review_deliverables.py kimi-review
           --started-at "${{ steps.review-window.outputs.started_at }}"
@@ -234,10 +247,28 @@ jobs:
           KIMI_REVIEW_MAX_CHUNK_CHARS: ${{ steps.runtime-config.outputs.kimi_review_max_chunk_chars }}
           KIMI_CLI_TIMEOUT_SECONDS: ${{ steps.runtime-config.outputs.kimi_cli_timeout_seconds }}
           AI_REVIEW_MAX_COMMENT_CHARS: ${{ steps.runtime-config.outputs.ai_review_max_comment_chars }}
+          AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.kimi_warning }}
         run: >-
           python3 .ai-review/base/scripts/ai_review_deliverables.py kimi-fallback
           --started-at "${{ steps.review-window.outputs.started_at }}"
           --instructions-file .ai-review/standards/kimi-review-standards.md
+          --config-file .ai-review/base/ci/ai-review.toml
+
+      - name: Post Kimi model freshness advisory
+        if: >-
+          ${{
+            env.KIMI_API_KEY != ''
+            && always()
+            && steps.model-freshness.outputs.kimi_warning != ''
+          }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+          AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.kimi_warning }}
+        run: >-
+          python3 .ai-review/base/scripts/ai_review_deliverables.py model-freshness-notice
+          --provider Kimi
+          --started-at "${{ steps.review-window.outputs.started_at }}"
           --config-file .ai-review/base/ci/ai-review.toml
 
       - name: Post Kimi fallback infrastructure failure notice

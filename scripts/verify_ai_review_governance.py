@@ -34,6 +34,9 @@ GLM_DELIVERABLE_SNIPPETS = (
     'emit("glm_pr_agent_model", pr_agent["model"])',
     'emit("glm_pr_agent_fallback_models", pr_agent["fallback_models"])',
     'emit("glm_primary_timeout_minutes", workflow["primary_timeout_minutes"])',
+    "scripts/verify_ai_review_model_freshness.py",
+    "Check AI review model freshness",
+    "--advisory",
     "OPENAI__API_BASE: ${{ steps.runtime-config.outputs.glm_api_base }}",
     "config.model: ${{ steps.runtime-config.outputs.glm_pr_agent_model }}",
     "config.fallback_models: ${{ steps.runtime-config.outputs.glm_pr_agent_fallback_models }}",
@@ -52,9 +55,12 @@ GLM_DELIVERABLE_SNIPPETS = (
     "steps.review-window.outcome == 'success'",
     "continue-on-error: true",
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_fallback_timeout_minutes) }}",
+    "AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.glm_warning }}",
     "scripts/ai_review_deliverables.py glm-fallback",
     "--instructions-file .pr_agent.toml",
     "--config-file ci/ai-review.toml",
+    "Post GLM model freshness advisory",
+    "scripts/ai_review_deliverables.py model-freshness-notice",
     "Post GLM fallback infrastructure failure notice",
     "&& always()",
     "steps.runtime-config.outcome == 'failure'",
@@ -87,6 +93,9 @@ KIMI_DELIVERABLE_SNIPPETS = (
     'emit("kimi_notice_marker", notice_marker(kimi))',
     'raise RuntimeError("notice_marker is required")',
     'emit("kimi_node_version", workflow["node_version"])',
+    "scripts/verify_ai_review_model_freshness.py",
+    "Check AI review model freshness",
+    "--advisory",
     "id: kimi-review",
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.kimi_primary_timeout_minutes) }}",
     "uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0",
@@ -98,6 +107,7 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "KIMI_MODEL_API_KEY: ${{ env.KIMI_API_KEY }}",
     "KIMI_MODEL_BASE_URL: ${{ steps.runtime-config.outputs.kimi_model_base_url }}",
     "KIMI_DELIVERABLE_MARKER: ${{ steps.runtime-config.outputs.kimi_deliverable_marker }}",
+    "AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.kimi_warning }}",
     ".ai-review/base/scripts/ai_review_deliverables.py kimi-review",
     "--config-file .ai-review/base/ci/ai-review.toml",
     "Capture Kimi review window",
@@ -107,6 +117,8 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.kimi_fallback_timeout_minutes) }}",
     ".ai-review/base/scripts/ai_review_deliverables.py kimi-fallback",
     "--instructions-file .ai-review/standards/kimi-review-standards.md",
+    "Post Kimi model freshness advisory",
+    ".ai-review/base/scripts/ai_review_deliverables.py model-freshness-notice",
     "Post Kimi fallback infrastructure failure notice",
     "&& always()",
     "steps.install-kimi.outcome == 'failure'",
@@ -214,7 +226,6 @@ def pr_agent_extra_instructions(pr_agent_toml: str) -> tuple[str, list[str]]:
         return "", [".pr_agent.toml missing non-empty pr_reviewer.extra_instructions"]
 
     return extra, []
-
 
 def non_empty_string_list(value: object) -> bool:
     return isinstance(value, list) and bool(value) and all(isinstance(item, str) and item for item in value)
@@ -324,60 +335,6 @@ def verify_pr_agent_mirror(ai_review_toml: str, pr_agent_toml: str) -> list[str]
     return findings
 
 
-def exact_glm_model_id(value: object) -> bool:
-    return isinstance(value, str) and re.fullmatch(r"glm-\d+(?:\.\d+)*", value) is not None
-
-
-def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
-    try:
-        parsed = tomllib.loads(ai_review_toml)
-    except tomllib.TOMLDecodeError:
-        return ()
-    literals: list[str] = []
-    github = parsed.get("github")
-    if isinstance(github, dict):
-        value = github.get("expected_bot_login")
-        if isinstance(value, str) and value:
-            literals.append(value)
-    for table_name in ("glm", "kimi"):
-        table = parsed.get(table_name)
-        if isinstance(table, dict):
-            for key in (
-                "api_base",
-                "model",
-                "deliverable_marker",
-                "deliverable_markers",
-                "comment_marker",
-                "notice_marker",
-                "source_label_template",
-                "cli_package",
-            ):
-                value = table.get(key)
-                if isinstance(value, str) and value:
-                    literals.append(value)
-                elif isinstance(value, list):
-                    literals.extend(item for item in value if isinstance(item, str) and item)
-            pr_agent = table.get("pr_agent")
-            if isinstance(pr_agent, dict):
-                value = pr_agent.get("model")
-                if isinstance(value, str) and value:
-                    literals.append(value)
-                value = pr_agent.get("source_label_template")
-                if isinstance(value, str) and value:
-                    literals.append(value)
-                fallback_models = pr_agent.get("fallback_models")
-                if isinstance(fallback_models, list):
-                    literals.extend(value for value in fallback_models if isinstance(value, str) and value)
-            workflow = table.get("workflow")
-            if isinstance(workflow, dict):
-                node_version = workflow.get("node_version")
-                if isinstance(node_version, str) and node_version:
-                    literals.append(f'node-version: "{node_version}"')
-                    literals.append(f"node-version: '{node_version}'")
-                    literals.append(f"node-version: {node_version}")
-    return tuple(dict.fromkeys(literals))
-
-
 def verify_pr_agent_config(pr_agent_toml: str, ai_review_toml: str) -> list[str]:
     findings: list[str] = []
     try:
@@ -441,6 +398,107 @@ def workflow_step_block(workflow_text: str, step_name: str) -> str:
     return ""
 
 
+def verify_model_freshness_step_contracts(glm_workflow: str, kimi_workflow: str) -> list[str]:
+    findings: list[str] = []
+    provider_steps = (
+        ("GLM workflow", glm_workflow, "glm", "GLM_API_KEY"),
+        ("Kimi workflow", kimi_workflow, "kimi", "KIMI_API_KEY"),
+    )
+    for workflow_name, workflow_text, provider, api_key_name in provider_steps:
+        block = workflow_step_block(workflow_text, "Check AI review model freshness")
+        if not block:
+            findings.append(f"{workflow_name} missing Check AI review model freshness step")
+            continue
+        if f"if: env.{api_key_name} != ''" not in block:
+            findings.append(f"{workflow_name} model freshness step must be gated on {api_key_name}")
+        if "continue-on-error: true" not in block:
+            findings.append(f"{workflow_name} model freshness step must be advisory via continue-on-error")
+        if f"--provider {provider}" not in block:
+            findings.append(f"{workflow_name} model freshness step must check only {provider.upper()} freshness")
+
+    glm_block = workflow_step_block(glm_workflow, "Check AI review model freshness")
+    if model_freshness_step_receives_kimi_secret(glm_block):
+        findings.append("GLM workflow model freshness step must not receive Kimi/Moonshot secrets")
+    kimi_block = workflow_step_block(kimi_workflow, "Check AI review model freshness")
+    if model_freshness_step_receives_kimi_secret(kimi_block):
+        findings.append("Kimi workflow model freshness step must not receive Kimi/Moonshot secrets")
+    return findings
+
+
+def model_freshness_step_receives_kimi_secret(block: str) -> bool:
+    secret_patterns = (
+        "KIMI_API_KEY:",
+        "MOONSHOT_API_KEY:",
+        "secrets.KIMI_API_KEY",
+        "secrets.MOONSHOT_API_KEY",
+        "${{ env.KIMI_API_KEY }}",
+        "${{ env.MOONSHOT_API_KEY }}",
+    )
+    return any(pattern in block for pattern in secret_patterns)
+
+
+def exact_kimi_model_id(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"kimi-k\d+(?:\.\d+)*-code(?:-highspeed)?", value) is not None
+
+
+def exact_glm_model_id(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"glm-\d+(?:\.\d+)*", value) is not None
+
+
+def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
+    try:
+        parsed = tomllib.loads(ai_review_toml)
+    except tomllib.TOMLDecodeError:
+        return ()
+    literals: list[str] = []
+    github = parsed.get("github")
+    if isinstance(github, dict):
+        value = github.get("expected_bot_login")
+        if isinstance(value, str) and value:
+            literals.append(value)
+    model_freshness = parsed.get("model_freshness")
+    if isinstance(model_freshness, dict):
+        for key in ("github_api_version", "issue_marker", "issue_title", "notice_marker_template", "user_agent"):
+            value = model_freshness.get(key)
+            if isinstance(value, str) and value:
+                literals.append(value)
+    for table_name in ("glm", "kimi"):
+        table = parsed.get(table_name)
+        if isinstance(table, dict):
+            for key in (
+                "api_base",
+                "model",
+                "deliverable_marker",
+                "deliverable_markers",
+                "comment_marker",
+                "notice_marker",
+                "source_label_template",
+                "cli_package",
+            ):
+                value = table.get(key)
+                if isinstance(value, str) and value:
+                    literals.append(value)
+                elif isinstance(value, list):
+                    literals.extend(item for item in value if isinstance(item, str) and item)
+            pr_agent = table.get("pr_agent")
+            if isinstance(pr_agent, dict):
+                for key in ("model", "source_label_template"):
+                    value = pr_agent.get(key)
+                    if isinstance(value, str) and value:
+                        literals.append(value)
+                fallback_models = pr_agent.get("fallback_models")
+                if isinstance(fallback_models, list):
+                    literals.extend(value for value in fallback_models if isinstance(value, str) and value)
+            workflow = table.get("workflow")
+            if isinstance(workflow, dict):
+                node_version = workflow.get("node_version")
+                if isinstance(node_version, str) and node_version:
+                    literals.append(f'node-version: "{node_version}"')
+                    literals.append(f"node-version: '{node_version}'")
+                    literals.append(f"node-version: {node_version}")
+    return tuple(dict.fromkeys(literals))
+
+
 def verify_notice_step_guard(
     workflow_text: str,
     *,
@@ -478,6 +536,7 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
 
     github = table("github")
     review = table("review")
+    model_freshness = table("model_freshness")
     output_contract = review.get("output_contract")
     if not isinstance(output_contract, dict):
         output_contract = {}
@@ -506,6 +565,47 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("github.expected_bot_login", github.get("expected_bot_login"), "github-actions[bot]"),
         ("review.max_comment_chars", review.get("max_comment_chars"), 60000),
         ("review.response_chars_per_chunk", review.get("response_chars_per_chunk"), 8000),
+        (
+            "model_freshness.user_agent",
+            model_freshness.get("user_agent"),
+            "bolt-v2-ai-review-model-freshness/1.0",
+        ),
+        ("model_freshness.github_api_version", model_freshness.get("github_api_version"), "2022-11-28"),
+        ("model_freshness.kimi_chat_docs_url", model_freshness.get("kimi_chat_docs_url"), "https://platform.kimi.ai/docs/api/chat"),
+        ("model_freshness.glm_docs_index_url", model_freshness.get("glm_docs_index_url"), "https://docs.z.ai/llms.txt"),
+        (
+            "model_freshness.glm_migration_docs_url",
+            model_freshness.get("glm_migration_docs_url"),
+            "https://docs.z.ai/guides/overview/migrate-to-glm-new",
+        ),
+        ("model_freshness.request_timeout_seconds", model_freshness.get("request_timeout_seconds"), 30),
+        ("model_freshness.github_issues_per_page", model_freshness.get("github_issues_per_page"), 100),
+        (
+            "model_freshness.issue_marker",
+            model_freshness.get("issue_marker"),
+            "<!-- ai-review-model-freshness-issue -->",
+        ),
+        (
+            "model_freshness.issue_title",
+            model_freshness.get("issue_title"),
+            "AI review model pin update available",
+        ),
+        (
+            "model_freshness.notice_marker_template",
+            model_freshness.get("notice_marker_template"),
+            "<!-- ai-review-model-freshness-notice-{provider} -->",
+        ),
+        ("glm.api_base", glm.get("api_base"), "https://api.z.ai/api/coding/paas/v4"),
+        ("glm.api_timeout_seconds", glm.get("api_timeout_seconds"), 180),
+        ("glm.review_max_chunk_chars", glm.get("review_max_chunk_chars"), 60000),
+        ("glm.comment_marker", glm.get("comment_marker"), "<!-- ai-pr-reviewer-glm -->"),
+        ("glm.notice_marker", glm.get("notice_marker"), "<!-- ai-pr-reviewer-glm-notice -->"),
+        ("glm.source_label_template", glm.get("source_label_template"), "GLM direct fallback (`{model}`)"),
+        (
+            "glm.pr_agent.source_label_template",
+            glm_pr_agent.get("source_label_template"),
+            "GLM PR-Agent (`{model}`)",
+        ),
         (
             "review.output_contract.finding_required_labels",
             output_contract.get("finding_required_labels"),
@@ -560,17 +660,6 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
             pr_agent_output.get("disabled_noise"),
             [],
         ),
-        ("glm.api_base", glm.get("api_base"), "https://api.z.ai/api/coding/paas/v4"),
-        ("glm.api_timeout_seconds", glm.get("api_timeout_seconds"), 180),
-        ("glm.review_max_chunk_chars", glm.get("review_max_chunk_chars"), 60000),
-        ("glm.comment_marker", glm.get("comment_marker"), "<!-- ai-pr-reviewer-glm -->"),
-        ("glm.notice_marker", glm.get("notice_marker"), "<!-- ai-pr-reviewer-glm-notice -->"),
-        ("glm.source_label_template", glm.get("source_label_template"), "GLM direct fallback (`{model}`)"),
-        (
-            "glm.pr_agent.source_label_template",
-            glm_pr_agent.get("source_label_template"),
-            "GLM PR-Agent (`{model}`)",
-        ),
         ("glm.pr_agent.custom_model_max_tokens", glm_pr_agent.get("custom_model_max_tokens"), 128000),
         ("glm.pr_agent.large_patch_policy", glm_pr_agent.get("large_patch_policy"), "clip"),
         ("glm.pr_agent.timeout_seconds", glm_pr_agent.get("timeout_seconds"), 300),
@@ -582,7 +671,6 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("glm.workflow.fallback_timeout_minutes", glm_workflow.get("fallback_timeout_minutes"), 20),
         ("glm.workflow.setup_overhead_timeout_minutes", glm_workflow.get("setup_overhead_timeout_minutes"), 7),
         ("kimi.api_base", kimi.get("api_base"), "https://api.kimi.com/coding/v1"),
-        ("kimi.model", kimi.get("model"), "kimi-for-coding"),
         ("kimi.provider_type", kimi.get("provider_type"), "kimi"),
         ("kimi.model_max_context_size", kimi.get("model_max_context_size"), 262144),
         ("kimi.default_thinking", kimi.get("default_thinking"), True),
@@ -617,6 +705,8 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
     expected_glm_pr_agent_model = f"openai/{glm_model}" if isinstance(glm_model, str) else ""
     if not exact_glm_model_id(glm_model):
         findings.append("ci/ai-review.toml glm.model must be an exact GLM model id, not an alias")
+    if not exact_kimi_model_id(kimi_model):
+        findings.append("ci/ai-review.toml kimi.model must be an exact Kimi coding model id, not an alias")
     if "latest" in str(glm_model).lower() or "latest" in str(kimi_model).lower():
         findings.append("ci/ai-review.toml AI review models must not use latest aliases")
     if glm_pr_agent_model != expected_glm_pr_agent_model:
@@ -692,6 +782,7 @@ def verify_texts(
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, glm_workflow, "glm", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, kimi_workflow, "kimi", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, smoke_workflow, "smoke", setup_required=False))
+    findings.extend(verify_model_freshness_step_contracts(glm_workflow, kimi_workflow))
 
     if "pr_reviewer." in glm_workflow:
         findings.append(
@@ -795,6 +886,16 @@ def assert_finding(name: str, findings: list[str], expected: str) -> None:
         raise AssertionError(f"{name}: expected finding containing {expected!r}, got {findings!r}")
 
 
+def bump_model_version(model_id: str) -> str:
+    match = re.search(r"\d+(?:\.\d+)*", model_id)
+    if not match:
+        raise AssertionError(f"model id has no numeric version: {model_id!r}")
+    parts = [int(part) for part in match.group(0).split(".")]
+    parts[-1] += 1
+    bumped = ".".join(str(part) for part in parts)
+    return f"{model_id[: match.start()]}{bumped}{model_id[match.end():]}"
+
+
 def run_self_tests(repo_root: Path) -> None:
     ai_review = read_text(repo_root / "ci/ai-review.toml")
     pr_agent = read_text(repo_root / ".pr_agent.toml")
@@ -802,6 +903,7 @@ def run_self_tests(repo_root: Path) -> None:
     github_config = ai_review_config["github"]
     glm_config = ai_review_config["glm"]
     current_glm_model = ai_review_config["glm"]["model"]
+    current_kimi_model = ai_review_config["kimi"]["model"]
     current_glm_pr_agent_model = ai_review_config["glm"]["pr_agent"]["model"]
     current_bot_login = github_config["expected_bot_login"]
     current_glm_comment_marker = glm_config["comment_marker"]
@@ -832,6 +934,100 @@ def run_self_tests(repo_root: Path) -> None:
     baseline = verify_variant()
     if baseline:
         raise AssertionError(f"real repository must satisfy AI review governance check, got {baseline!r}")
+
+    glm_model_freshness_step = workflow_step_block(glm, "Check AI review model freshness")
+    if not glm_model_freshness_step:
+        raise AssertionError("missing GLM model freshness step")
+    if "continue-on-error: true" not in glm_model_freshness_step:
+        raise AssertionError("GLM model freshness step must be advisory via continue-on-error")
+    if "if: env.GLM_API_KEY != ''" not in glm_model_freshness_step:
+        raise AssertionError("GLM model freshness step must be gated on GLM_API_KEY")
+    if "--provider glm" not in glm_model_freshness_step:
+        raise AssertionError("GLM model freshness step must check only GLM freshness")
+    if model_freshness_step_receives_kimi_secret(glm_model_freshness_step):
+        raise AssertionError("GLM model freshness step must not receive Kimi/Moonshot secrets")
+
+    kimi_model_freshness_step = workflow_step_block(kimi, "Check AI review model freshness")
+    if not kimi_model_freshness_step:
+        raise AssertionError("missing Kimi model freshness step")
+    if "continue-on-error: true" not in kimi_model_freshness_step:
+        raise AssertionError("Kimi model freshness step must be advisory via continue-on-error")
+    if "if: env.KIMI_API_KEY != ''" not in kimi_model_freshness_step:
+        raise AssertionError("Kimi model freshness step must be gated on KIMI_API_KEY")
+    if "--provider kimi" not in kimi_model_freshness_step:
+        raise AssertionError("Kimi model freshness step must check only Kimi freshness")
+    if model_freshness_step_receives_kimi_secret(kimi_model_freshness_step):
+        raise AssertionError("Kimi model freshness step must not receive Kimi/Moonshot secrets")
+
+    glm_blocking_freshness = verify_variant(
+        glm_text=glm.replace(
+            "        continue-on-error: true\n        run: >-\n          python3 scripts/verify_ai_review_model_freshness.py",
+            "        run: >-\n          python3 scripts/verify_ai_review_model_freshness.py",
+            1,
+        ),
+    )
+    assert_finding("GLM blocking freshness step", glm_blocking_freshness, "model freshness step must be advisory")
+
+    glm_unscoped_freshness = verify_variant(
+        glm_text=glm.replace("          --provider glm", "          --provider all", 1),
+    )
+    assert_finding("GLM unscoped freshness step", glm_unscoped_freshness, "must check only GLM freshness")
+
+    glm_ungated_freshness = verify_variant(
+        glm_text=glm.replace(
+            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: env.GLM_API_KEY != ''\n",
+            "      - name: Check AI review model freshness\n        id: model-freshness\n",
+            1,
+        ),
+    )
+    assert_finding("GLM ungated freshness step", glm_ungated_freshness, "must be gated on GLM_API_KEY")
+
+    glm_secret_expansion = verify_variant(
+        glm_text=glm.replace(
+            "        continue-on-error: true\n        run: >-",
+            "        continue-on-error: true\n        env:\n          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}\n        run: >-",
+            1,
+        ),
+    )
+    assert_finding("GLM model freshness secret expansion", glm_secret_expansion, "must not receive Kimi/Moonshot secrets")
+
+    kimi_blocking_freshness = verify_variant(
+        kimi_text=kimi.replace(
+            "        continue-on-error: true\n        run: >-\n          python3 .ai-review/base/scripts/verify_ai_review_model_freshness.py",
+            "        run: >-\n          python3 .ai-review/base/scripts/verify_ai_review_model_freshness.py",
+            1,
+        ),
+    )
+    assert_finding("Kimi blocking freshness step", kimi_blocking_freshness, "model freshness step must be advisory")
+
+    kimi_ungated_freshness = verify_variant(
+        kimi_text=kimi.replace(
+            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: env.KIMI_API_KEY != ''\n",
+            "      - name: Check AI review model freshness\n        id: model-freshness\n",
+            1,
+        ),
+    )
+    assert_finding("Kimi ungated freshness step", kimi_ungated_freshness, "must be gated on KIMI_API_KEY")
+
+    kimi_secret_expansion = verify_variant(
+        kimi_text=kimi.replace(
+            "        continue-on-error: true\n        run: >-",
+            "        continue-on-error: true\n        env:\n          KIMI_API_KEY: ${{ env.KIMI_API_KEY }}\n        run: >-",
+            1,
+        ),
+    )
+    assert_finding("Kimi model freshness secret expansion", kimi_secret_expansion, "must not receive Kimi/Moonshot secrets")
+
+    future_ai_review = ai_review.replace(
+        current_glm_model,
+        bump_model_version(current_glm_model),
+    ).replace(
+        current_kimi_model,
+        bump_model_version(current_kimi_model),
+    )
+    future_model_config = verify_variant(ai_review_text=future_ai_review)
+    if future_model_config:
+        raise AssertionError(f"future exact model pins must be accepted, got {future_model_config!r}")
 
     wrong_ai_review_config = verify_variant(
         ai_review_text=ai_review.replace("https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/paas/v4"),

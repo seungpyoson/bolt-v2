@@ -491,8 +491,16 @@ def assert_clean_prs_batch_together() -> None:
         fixture.make_pr(1, {"one.txt": "one\n"})
         fixture.make_pr(2, {"two.txt": "two\n"})
 
-        _, stdout, _ = run_preflight(fixture.repo, fixture.remote, "1", "2")
+        rc, stdout, _ = run_preflight(
+            fixture.repo,
+            fixture.remote,
+            "1",
+            "2",
+            expect_success=False,
+        )
+        assert_equal(rc, 3, "clean no-gh rc")
         payload = parse_json(stdout)
+        assert_equal(payload["verdict"], "inconclusive", "clean no-gh verdict")
 
         assert_equal(
             payload["batches"],
@@ -516,7 +524,7 @@ def assert_conflicting_pr_starts_later_batch() -> None:
             "2",
             expect_success=False,
         )
-        assert_equal(rc, 1, "batch conflict rc")
+        assert_equal(rc, 3, "batch conflict rc")
         payload = parse_json(stdout)
 
         expected = {
@@ -548,7 +556,7 @@ def assert_order_dependent_conflict_context_is_reported() -> None:
             "3",
             expect_success=False,
         )
-        assert_equal(rc, 1, "order-dependent conflict rc")
+        assert_equal(rc, 3, "order-dependent conflict rc")
         payload = parse_json(stdout)
 
         assert_equal(
@@ -587,7 +595,7 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
             "2",
             expect_success=False,
         )
-        assert_equal(rc, 1, "base conflict rc")
+        assert_equal(rc, 2, "base conflict rc")
         payload = parse_json(stdout)
 
         blocked = payload["blocked_prs"]
@@ -659,10 +667,7 @@ def assert_verifier_failure_blocks_bad_pr_before_batching() -> None:
             stderr=subprocess.PIPE,
             check=False,
         )
-        if result.returncode != 1:
-            raise AssertionError(
-                f"expected verifier failure exit 1, got {result.returncode}\n{result.stdout}\n{result.stderr}"
-            )
+        assert_equal(result.returncode, 2, "verifier failure rc")
         payload = parse_json(result.stdout)
         if [batch["prs"] for batch in payload["batches"]] != [[1]]:
             raise AssertionError(payload["batches"])
@@ -712,10 +717,7 @@ def assert_configured_verifier_profile_blocks_bad_pr() -> None:
             stderr=subprocess.PIPE,
             check=False,
         )
-        if result.returncode != 1:
-            raise AssertionError(
-                f"expected configured verifier failure, got {result.returncode}\n{result.stdout}\n{result.stderr}"
-            )
+        assert_equal(result.returncode, 2, "configured verifier failure rc")
         payload = parse_json(result.stdout)
         blocked = payload["blocked_prs"]
         if len(blocked) != 1 or blocked[0]["pr"] != 2 or blocked[0]["type"] != "verifier_failed":
@@ -760,8 +762,7 @@ def assert_plain_output_includes_verifier_failure_details() -> None:
             stderr=subprocess.PIPE,
             check=False,
         )
-        if result.returncode != 1:
-            raise AssertionError(f"expected verifier rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}")
+        assert_equal(result.returncode, 2, "plain verifier failure rc")
         if f"verifier {sys.executable} {verifier}: exit 7" not in result.stdout:
             raise AssertionError(result.stdout)
         if "plain verifier rejected fail.txt" not in result.stdout:
@@ -800,8 +801,7 @@ def assert_plain_output_omits_successful_verifier_streams() -> None:
             stderr=subprocess.PIPE,
             check=False,
         )
-        if result.returncode != 0:
-            raise AssertionError(f"expected verifier rc=0, got {result.returncode}\n{result.stdout}\n{result.stderr}")
+        assert_equal(result.returncode, 3, "plain successful verifier no-gh rc")
         if f"verifier {sys.executable} {verifier}: exit 0" not in result.stdout:
             raise AssertionError(result.stdout)
         if "success output should stay quiet" in result.stdout:
@@ -848,8 +848,7 @@ def assert_plain_output_bounds_failed_verifier_streams() -> None:
             stderr=subprocess.PIPE,
             check=False,
         )
-        if result.returncode != 1:
-            raise AssertionError(f"expected verifier rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}")
+        assert_equal(result.returncode, 2, "plain bounded verifier failure rc")
         if "line-1" not in result.stdout or "line-2" not in result.stdout:
             raise AssertionError(result.stdout)
         if "line-3" in result.stdout:
@@ -899,8 +898,7 @@ def assert_json_output_uses_bounded_verifier_previews() -> None:
             stderr=subprocess.PIPE,
             check=False,
         )
-        if result.returncode != 1:
-            raise AssertionError(f"expected verifier rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}")
+        assert_equal(result.returncode, 2, "json bounded verifier failure rc")
         payload = parse_json(result.stdout)
         blocked = payload["blocked_prs"]
         if len(blocked) != 1:
@@ -926,10 +924,7 @@ def assert_head_oid_mismatch_blocks_pr() -> None:
             views={1: approved_pr_view("0" * 40)},
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
-        if result.returncode != 1:
-            raise AssertionError(
-                f"expected head mismatch rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}"
-            )
+        assert_equal(result.returncode, 2, "head mismatch rc")
         payload = parse_json(result.stdout)
         blocked = payload["blocked_prs"]
         if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "readiness_failed":
@@ -948,8 +943,7 @@ def assert_wrong_base_ref_blocks_pr() -> None:
             views={1: approved_pr_view(head, base="release")},
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
-        if result.returncode != 1:
-            raise AssertionError(f"expected wrong base rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}")
+        assert_equal(result.returncode, 2, "wrong base rc")
         payload = parse_json(result.stdout)
         blocked = payload["blocked_prs"]
         if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "readiness_failed":
@@ -970,10 +964,7 @@ def assert_partial_gh_metadata_failure_preserves_other_readiness() -> None:
             failed_views={2: "simulated metadata failure"},
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1", "2")
-        if result.returncode != 1:
-            raise AssertionError(
-                f"expected partial metadata failure rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}"
-            )
+        assert_equal(result.returncode, 3, "partial metadata failure rc")
         payload = parse_json(result.stdout)
         readiness = {item["pr"]: item for item in payload["readiness"]}
         if "metadata" not in readiness[1]:
@@ -1040,10 +1031,7 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
             stderr=subprocess.PIPE,
             check=False,
         )
-        if result.returncode != 1:
-            raise AssertionError(
-                f"expected inconclusive metadata rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}"
-            )
+        assert_equal(result.returncode, 3, "missing gh metadata rc")
         payload = parse_json(result.stdout)
         warnings = payload.get("metadata_warnings")
         if not isinstance(warnings, list) or not warnings:

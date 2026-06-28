@@ -1014,7 +1014,7 @@ def preflight(
         "wave_status": contract_evaluation["wave_status"],
         "output_policy": output_policy.as_json(),
     }
-    exit_code = 1 if blocked_prs or conflicts or metadata_warnings else 0
+    exit_code = int(contract_evaluation["exit_code"])
     return payload, exit_code
 
 

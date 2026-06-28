@@ -254,6 +254,24 @@ class CiStorageTripwireTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertFalse(payload["evaluation"]["breached"])
 
+    def test_policy_discovery_fails_closed_when_git_inventory_is_unavailable(self) -> None:
+        original_run = ci_storage_tripwire.subprocess.run
+
+        class FailedGitInventory:
+            returncode = 1
+            stdout = ""
+            stderr = "fatal: not a git repository"
+
+        def fail_git_inventory(*_args: Any, **_kwargs: Any) -> FailedGitInventory:
+            return FailedGitInventory()
+
+        ci_storage_tripwire.subprocess.run = fail_git_inventory  # type: ignore[assignment]
+        try:
+            with self.assertRaisesRegex(ci_storage_tripwire.TripwireError, "git ls-files"):
+                ci_storage_tripwire.repository_toml_paths(pathlib.Path("."))
+        finally:
+            ci_storage_tripwire.subprocess.run = original_run  # type: ignore[assignment]
+
     def test_apply_cli_exits_zero_after_successful_breach_alerting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -289,6 +307,55 @@ class CiStorageTripwireTests(unittest.TestCase):
         self.assertTrue(payload["evaluation"]["breached"])
         self.assertEqual(payload["alerts"], {"created": [100], "updated": [], "unchanged": []})
         self.assertEqual(len(fake.created), 1)
+
+    def test_apply_live_cli_exits_zero_after_successful_breach_alerting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            policy_path = self.write_policy(root)
+            fake = FakeIssueClient()
+            stdout = io.StringIO()
+
+            original_client = ci_storage_tripwire.GhIssueClient
+            original_build_live_audit = ci_storage_tripwire.build_live_audit
+
+            def fake_client(repo: str) -> FakeIssueClient:
+                self.assertEqual(repo, "owner/repo")
+                return fake
+
+            def fake_build_live_audit(repo: str, branch: str) -> dict[str, Any]:
+                self.assertEqual(repo, "owner/repo")
+                self.assertEqual(branch, "main")
+                return {
+                    "snapshot_utc": "2026-06-28T11:21:08+00:00",
+                    "repo": repo,
+                    "cache": {"total_bytes": 1200, "count": 3},
+                    "artifacts": {"total_bytes": 600, "count": 7},
+                }
+
+            ci_storage_tripwire.GhIssueClient = fake_client  # type: ignore[assignment]
+            ci_storage_tripwire.build_live_audit = fake_build_live_audit  # type: ignore[assignment]
+            try:
+                with contextlib.redirect_stdout(stdout):
+                    exit_code = ci_storage_tripwire.main(
+                        [
+                            "--policy",
+                            str(policy_path),
+                            "apply-live",
+                            "--repo",
+                            "owner/repo",
+                            "--branch",
+                            "main",
+                            "--json",
+                        ]
+                    )
+            finally:
+                ci_storage_tripwire.GhIssueClient = original_client  # type: ignore[assignment]
+                ci_storage_tripwire.build_live_audit = original_build_live_audit  # type: ignore[assignment]
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload["evaluation"]["breached"])
+        self.assertEqual(payload["alerts"], {"created": [100], "updated": [], "unchanged": []})
 
     def test_apply_updates_existing_marker_issue_and_creates_missing_breach_issue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -329,6 +396,33 @@ class CiStorageTripwireTests(unittest.TestCase):
         self.assertEqual(fake.created[0]["title"], "CI storage tripwire: artifact threshold crossed")
         self.assertIn("<!-- ci-storage-tripwire:artifact-over-cap -->", fake.created[0]["body"])
         self.assertEqual(fake.created[0]["labels"], ["infra", "ops", "github_actions"])
+
+    def test_apply_updates_existing_marker_issue_when_labels_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            policy = ci_storage_tripwire.load_policy(self.write_policy(root))
+            audit = ci_storage_tripwire.load_audit_json(self.write_audit(root, 1200, 600))
+            evaluation = ci_storage_tripwire.evaluate_tripwire(policy, audit)
+        threshold = next(item for item in evaluation["thresholds"] if item["id"] == "cache-over-cap")
+        marker = "<!-- ci-storage-tripwire:cache-over-cap -->"
+        body = ci_storage_tripwire.render_issue_body(policy, evaluation, threshold)
+        fake = FakeIssueClient(
+            {
+                marker: [
+                    {
+                        "number": 42,
+                        "title": threshold["title"],
+                        "body": body,
+                        "labels": [{"name": "infra"}],
+                    }
+                ]
+            }
+        )
+
+        result = ci_storage_tripwire.apply_alerts(policy, evaluation, fake)
+
+        self.assertEqual(result, {"created": [], "updated": [42], "unchanged": []})
+        self.assertEqual(fake.edited[0]["labels"], ["infra", "ops", "github_actions"])
 
     def test_apply_rejects_duplicate_marker_matches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -538,6 +632,19 @@ class CiStorageTripwireTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(ci_storage_tripwire.TripwireError, "result_limit"):
+                ci_storage_tripwire.load_policy(policy_path)
+
+    def test_policy_rejects_issue_match_page_size_outside_github_api_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            policy_path = self.write_policy(
+                root,
+                self.write_policy(root)
+                .read_text(encoding="utf-8")
+                .replace("page_size = 50", "page_size = 101"),
+            )
+
+            with self.assertRaisesRegex(ci_storage_tripwire.TripwireError, "page_size"):
                 ci_storage_tripwire.load_policy(policy_path)
 
     def test_workflow_contract_is_driven_by_tripwire_policy(self) -> None:

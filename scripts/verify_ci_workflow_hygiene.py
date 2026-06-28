@@ -12052,7 +12052,8 @@ def main() -> int:
         if has_storage_tripwire_workflow(workflow_texts):
             errors.append(f"storage tripwire policy discovery failed: {exc}")
     except ci_storage_tripwire.TripwireError as exc:
-        errors.append(f"storage tripwire policy discovery failed: {exc}")
+        if has_storage_tripwire_workflow(workflow_texts):
+            errors.append(f"storage tripwire policy discovery failed: {exc}")
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())

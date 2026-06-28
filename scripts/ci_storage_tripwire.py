@@ -26,6 +26,9 @@ if str(SCRIPT_DIR) not in sys.path:
 import ci_storage_audit
 
 
+GITHUB_API_MAX_PAGE_SIZE = 100
+
+
 class TripwireError(RuntimeError):
     pass
 
@@ -131,6 +134,15 @@ def require_positive_int(table: Mapping[str, Any], key: str, field: str) -> int:
     return value
 
 
+def require_positive_int_at_most(
+    table: Mapping[str, Any], key: str, field: str, maximum: int
+) -> int:
+    value = require_positive_int(table, key, field)
+    if value > maximum:
+        raise TripwireError(f"{field}.{key} must be no greater than {maximum}")
+    return value
+
+
 def require_string_list(table: Mapping[str, Any], key: str, field: str) -> tuple[str, ...]:
     value = table.get(key)
     if (
@@ -208,8 +220,11 @@ def load_policy_text(text: str, *, source: str) -> StorageTripwirePolicy:
             "max_open_matches_per_marker",
             "storage_tripwire.issue_match",
         ),
-        page_size=require_positive_int(
-            issue_match_table, "page_size", "storage_tripwire.issue_match"
+        page_size=require_positive_int_at_most(
+            issue_match_table,
+            "page_size",
+            "storage_tripwire.issue_match",
+            GITHUB_API_MAX_PAGE_SIZE,
         ),
     )
     if issue_match.result_limit <= issue_match.max_open_matches_per_marker:
@@ -293,7 +308,8 @@ def repository_toml_paths(root: pathlib.Path) -> list[pathlib.Path]:
         check=False,
     )
     if result.returncode != 0:
-        return sorted(root.rglob("*.toml"))
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown git failure"
+        raise TripwireError(f"git ls-files failed while discovering storage tripwire policy: {detail}")
     return [root / line for line in result.stdout.splitlines() if line.strip()]
 
 
@@ -433,6 +449,34 @@ def existing_issue_by_marker(
     return issues[0] if issues else None
 
 
+def issue_label_names(issue: Mapping[str, Any]) -> frozenset[str]:
+    raw_labels = issue.get("labels", [])
+    if not isinstance(raw_labels, list):
+        raise TripwireError("matched issue labels must be a list")
+    names: set[str] = set()
+    for label in raw_labels:
+        if isinstance(label, str):
+            name = label
+        elif isinstance(label, dict):
+            name = label.get("name")
+        else:
+            raise TripwireError("matched issue labels must be strings or objects with name")
+        if not isinstance(name, str) or not name.strip():
+            raise TripwireError("matched issue label names must be non-empty strings")
+        names.add(name)
+    return frozenset(names)
+
+
+def issue_matches_desired_state(
+    issue: Mapping[str, Any], *, title: str, body: str, labels: list[str]
+) -> bool:
+    return (
+        issue.get("title") == title
+        and issue.get("body") == body
+        and issue_label_names(issue) == frozenset(labels)
+    )
+
+
 def apply_alerts(
     policy: StorageTripwirePolicy,
     evaluation: Mapping[str, Any],
@@ -461,7 +505,7 @@ def apply_alerts(
             created.append(int(created_issue["number"]))
             continue
         number = int(existing["number"])
-        if existing.get("title") == title and existing.get("body") == body:
+        if issue_matches_desired_state(existing, title=title, body=body, labels=labels):
             unchanged.append(number)
             continue
         client.edit_issue(number=number, title=title, body=body, labels=labels)

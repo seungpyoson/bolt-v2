@@ -396,6 +396,107 @@ class CiStorageAuditTests(unittest.TestCase):
             ["actions/caches", "actions/caches"],
         )
 
+    def test_fetch_cache_key_probes_keeps_later_probes_after_api_error(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "unavailable-key"), ("per_page", "100")),
+                ): ci_storage_audit.GhApiError("actions/caches", "rate limited"),
+                (
+                    "actions/caches",
+                    (("key", "present-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 1,
+                    "actions_caches": [
+                        {
+                            "id": 402,
+                            "ref": "refs/pull/986/merge",
+                            "key": "present-key",
+                            "last_accessed_at": "2026-06-25T10:00:00Z",
+                            "size_in_bytes": 1024,
+                        }
+                    ],
+                },
+            }
+        )
+
+        probes = ci_storage_audit.fetch_cache_key_probes(
+            client,
+            [
+                ci_storage_audit.CacheKeyProbeRequest("unavailable", "unavailable-key"),
+                ci_storage_audit.CacheKeyProbeRequest("present", "present-key"),
+            ],
+        )
+
+        self.assertFalse(probes[0]["available"])
+        self.assertFalse(probes[0]["present"])
+        self.assertIn("rate limited", probes[0]["reason"])
+        self.assertTrue(probes[1]["available"])
+        self.assertTrue(probes[1]["present"])
+        self.assertEqual(
+            [call[0] for call in client.calls],
+            ["actions/caches", "actions/caches"],
+        )
+
+    def test_fetch_cache_key_probes_ignores_exact_keys_on_unusable_refs(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "exact-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 1,
+                    "actions_caches": [
+                        {
+                            "id": 403,
+                            "ref": "refs/pull/1/merge",
+                            "key": "exact-key",
+                            "last_accessed_at": "2026-06-25T10:00:00Z",
+                            "size_in_bytes": 2048,
+                        }
+                    ],
+                },
+            }
+        )
+
+        probes = ci_storage_audit.fetch_cache_key_probes(
+            client,
+            [ci_storage_audit.CacheKeyProbeRequest("current", "exact-key")],
+            cache_refs=["refs/pull/986/merge", "refs/heads/main"],
+        )
+
+        self.assertTrue(probes[0]["available"])
+        self.assertFalse(probes[0]["present"])
+        self.assertEqual(probes[0]["exact_count"], 0)
+        self.assertEqual(probes[0]["api_prefix_count"], 1)
+        self.assertEqual(probes[0]["api_prefix_enumerated_count"], 1)
+        self.assertEqual(probes[0]["ref_filtered_prefix_enumerated_count"], 0)
+        self.assertEqual(probes[0]["ref_filter"], ["refs/pull/986/merge", "refs/heads/main"])
+
+    def test_fetch_cache_usage_unavailable_keeps_reason(self) -> None:
+        client = FakeClient(
+            {
+                "actions/cache/usage": ci_storage_audit.GhApiError(
+                    "actions/cache/usage",
+                    "secondary rate limit",
+                )
+            }
+        )
+
+        usage = ci_storage_audit.fetch_cache_usage(client)
+
+        self.assertEqual(
+            usage,
+            {
+                "available": False,
+                "active_caches_count": 0,
+                "active_caches_size_in_bytes": 0,
+                "source": "unavailable",
+                "reason": "actions/cache/usage: secondary rate limit",
+            },
+        )
+
     def test_build_cache_key_probe_snapshot_includes_cache_usage(self) -> None:
         client = FakeClient(
             {
@@ -507,7 +608,46 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertIn("Cache usage: 11 active caches, 10.3 GiB (source: rest)", rendered)
         self.assertIn("present; exact_count=1", rendered)
         self.assertIn("id=501 ref=refs/heads/main size=1.0 KiB", rendered)
+        # The workflow warning grep is coupled to this exact missing-key marker.
+        self.assertIn(": missing;", rendered)
         self.assertIn("missing; exact_count=0", rendered)
+
+    def test_render_cache_key_probe_text_reports_unavailable_probe(self) -> None:
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "cache_usage": {
+                "available": False,
+                "active_caches_count": 0,
+                "active_caches_size_in_bytes": 0,
+                "source": "unavailable",
+                "reason": "actions/cache/usage: secondary rate limit",
+            },
+            "cache_key_probes": [
+                {
+                    "label": "probe",
+                    "key": "exact-key",
+                    "available": False,
+                    "present": False,
+                    "exact_count": 0,
+                    "api_prefix_count": 0,
+                    "api_prefix_count_source": "unavailable",
+                    "api_prefix_enumerated_count": 0,
+                    "prefix_only_count": 0,
+                    "entries": [],
+                    "reason": "actions/caches: rate limited",
+                }
+            ],
+        }
+
+        rendered = ci_storage_audit.render_cache_key_probe_text(snapshot)
+
+        self.assertIn(
+            "Cache usage: unavailable (source: unavailable; reason=actions/cache/usage: secondary rate limit)",
+            rendered,
+        )
+        self.assertIn(": unavailable;", rendered)
+        self.assertIn("reason=actions/caches: rate limited", rendered)
 
     def test_render_cache_key_probe_text_warns_on_prefix_only_match(self) -> None:
         snapshot = {

@@ -928,12 +928,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set +e
           python3 scripts/ci_storage_audit.py \
             --repo "$GITHUB_REPOSITORY" \
+            --cache-ref "$GITHUB_REF" \
+            --cache-ref "refs/heads/${{ github.event.repository.default_branch }}" \
             --cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}" \
             --cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}" \
             --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" \
-            | tee "$RUNNER_TEMP/cache-persistence-audit.txt"
+            2>&1 | tee "$RUNNER_TEMP/cache-persistence-audit.txt"
+          audit_rc=${PIPESTATUS[0]}
+          set -e
 
           {
             echo "### Cache persistence audit"
@@ -944,15 +949,25 @@ jobs:
             echo "- nextest archive save outcome: \`${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}\`"
             echo "- root binary sidecars save outcome: \`${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}\`"
             echo "- archive build target save outcome: \`${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}\`"
+            if [[ "$audit_rc" -ne 0 ]]; then
+              echo "- probe exit status: \`$audit_rc\`"
+            fi
             echo
             echo '```text'
             cat "$RUNNER_TEMP/cache-persistence-audit.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+          if [[ "$audit_rc" -ne 0 ]]; then
+            echo "::warning::cache persistence audit probe could not query the cache API; inspect the audit summary for failure context"
+          fi
+          if grep -q ': unavailable;' "$RUNNER_TEMP/cache-persistence-audit.txt"; then
+            echo "::warning::cache persistence audit could not query one or more cache keys; inspect the audit summary for API error context"
+          fi
           if grep -q ': missing;' "$RUNNER_TEMP/cache-persistence-audit.txt"; then
             echo "::warning::one or more root nextest cache keys are missing from the Actions cache inventory after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context"
           fi
+          exit "$audit_rc"
 
   test:
     name: test

@@ -203,28 +203,76 @@ def parse_cache_key_probe(raw: str) -> CacheKeyProbeRequest:
     return CacheKeyProbeRequest(label=label, key=key)
 
 
+def normalize_cache_refs(cache_refs: list[str] | None) -> list[str]:
+    refs: list[str] = []
+    seen: set[str] = set()
+    for raw in cache_refs or []:
+        ref = raw.strip()
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        refs.append(ref)
+    return refs
+
+
+def unavailable_cache_key_probe(
+    request: CacheKeyProbeRequest,
+    reason: str,
+    *,
+    cache_refs: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "label": request.label,
+        "key": request.key,
+        "available": False,
+        "present": False,
+        "exact_count": 0,
+        "api_prefix_count": 0,
+        "api_prefix_count_source": "unavailable",
+        "api_prefix_enumerated_count": 0,
+        "ref_filtered_prefix_enumerated_count": 0,
+        "prefix_only_count": 0,
+        "entries": [],
+        "reason": reason,
+        "ref_filter": normalize_cache_refs(cache_refs),
+    }
+
+
 def fetch_cache_key_probes(
     client: GhClient,
     requests: list[CacheKeyProbeRequest],
+    *,
+    cache_refs: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     probes: list[dict[str, Any]] = []
+    ref_filter = normalize_cache_refs(cache_refs)
+    ref_filter_set = set(ref_filter)
     for request in requests:
-        payload = require_object(
-            client.api(
+        try:
+            payload = require_object(
+                client.api(
+                    "actions/caches",
+                    params={"key": request.key, "per_page": "100"},
+                    paginate=True,
+                ),
                 "actions/caches",
-                params={"key": request.key, "per_page": "100"},
-                paginate=True,
-            ),
-            "actions/caches",
-        )
-        raw_entries = list_field(payload, "actions_caches", "actions/caches")
+            )
+            raw_entries = list_field(payload, "actions_caches", "actions/caches")
+        except (GhApiError, AuditError) as exc:
+            probes.append(unavailable_cache_key_probe(request, str(exc), cache_refs=ref_filter))
+            continue
         prefix_entries = [
             cache_entry_from_raw(raw)
             for raw in raw_entries
             if isinstance(raw, dict)
         ]
+        accessible_prefix_entries = [
+            entry
+            for entry in prefix_entries
+            if not ref_filter_set or entry.get("ref") in ref_filter_set
+        ]
         exact_entries = [
-            entry for entry in prefix_entries
+            entry for entry in accessible_prefix_entries
             if entry.get("key") == request.key
         ]
         api_prefix_count, count_source = count_with_source(payload, fallback=len(prefix_entries))
@@ -232,13 +280,16 @@ def fetch_cache_key_probes(
             {
                 "label": request.label,
                 "key": request.key,
+                "available": True,
                 "present": bool(exact_entries),
                 "exact_count": len(exact_entries),
                 "api_prefix_count": api_prefix_count,
                 "api_prefix_count_source": count_source,
                 "api_prefix_enumerated_count": len(prefix_entries),
-                "prefix_only_count": max(0, len(prefix_entries) - len(exact_entries)),
+                "ref_filtered_prefix_enumerated_count": len(accessible_prefix_entries),
+                "prefix_only_count": max(0, len(accessible_prefix_entries) - len(exact_entries)),
                 "entries": exact_entries,
+                "ref_filter": ref_filter,
             }
         )
     return probes
@@ -247,12 +298,13 @@ def fetch_cache_key_probes(
 def fetch_cache_usage(client: GhClient) -> dict[str, Any]:
     try:
         payload = require_object(client.api("actions/cache/usage"), "actions/cache/usage")
-    except (GhApiError, AuditError):
+    except (GhApiError, AuditError) as exc:
         return {
             "available": False,
             "active_caches_count": 0,
             "active_caches_size_in_bytes": 0,
             "source": "unavailable",
+            "reason": str(exc),
         }
     return {
         "available": True,
@@ -404,11 +456,13 @@ def build_cache_key_probe_snapshot(
     repo: str,
     snapshot_utc: str,
     requests: list[CacheKeyProbeRequest],
+    cache_refs: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "snapshot_utc": snapshot_utc,
         "repo": repo,
-        "cache_key_probes": fetch_cache_key_probes(client, requests),
+        "cache_key_probes": fetch_cache_key_probes(client, requests, cache_refs=cache_refs),
+        "cache_refs": normalize_cache_refs(cache_refs),
         "cache_usage": fetch_cache_usage(client),
     }
 
@@ -420,6 +474,10 @@ def render_cache_key_probe_text(snapshot: dict[str, Any]) -> str:
         f"Snapshot: {snapshot['snapshot_utc']}",
         "",
     ]
+    cache_refs = snapshot.get("cache_refs")
+    if isinstance(cache_refs, list) and cache_refs:
+        lines.append(f"Cache refs: {', '.join(str(ref) for ref in cache_refs)}")
+        lines.append("")
     usage = snapshot.get("cache_usage")
     if isinstance(usage, dict):
         if usage.get("available"):
@@ -430,21 +488,50 @@ def render_cache_key_probe_text(snapshot: dict[str, Any]) -> str:
                 f"(source: {usage.get('source')})"
             )
         else:
-            lines.append(f"Cache usage: unavailable (source: {usage.get('source')})")
+            reason = optional_text(usage.get("reason"))
+            if reason:
+                lines.append(
+                    f"Cache usage: unavailable (source: {usage.get('source')}; reason={reason})"
+                )
+            else:
+                lines.append(f"Cache usage: unavailable (source: {usage.get('source')})")
         lines.append("")
     lines.append("Cache key probes:")
     for raw in probes:
         if not isinstance(raw, dict):
             continue
-        status = "present" if raw.get("present") else "missing"
+        if raw.get("available") is False:
+            status = "unavailable"
+        else:
+            status = "present" if raw.get("present") else "missing"
+        reason = optional_text(raw.get("reason"))
+        reason_fragment = f" reason={reason}" if reason else ""
+        ref_filtered_count = raw.get("ref_filtered_prefix_enumerated_count")
+        ref_filtered_fragment = ""
+        if isinstance(ref_filtered_count, int) and not isinstance(ref_filtered_count, bool):
+            ref_filtered_fragment = f" ref_filtered_prefix_enumerated={ref_filtered_count}"
+        ref_filter = raw.get("ref_filter")
+        ref_fragment = ""
+        if isinstance(ref_filter, list) and ref_filter:
+            ref_fragment = f" ref_filter={','.join(str(ref) for ref in ref_filter)}"
         lines.append(
             f"  - {raw.get('label')}: {status}; "
             f"exact_count={raw.get('exact_count')} "
             f"api_prefix_count={raw.get('api_prefix_count')} "
             f"api_prefix_enumerated={raw.get('api_prefix_enumerated_count')} "
             f"key={raw.get('key')}"
+            f"{ref_filtered_fragment}"
+            f"{ref_fragment}"
+            f"{reason_fragment}"
         )
-        if raw.get("exact_count") == 0 and raw.get("api_prefix_enumerated_count", 0) > 0:
+        if (
+            raw.get("exact_count") == 0
+            and raw.get("ref_filter")
+            and raw.get("api_prefix_enumerated_count", 0)
+            > raw.get("ref_filtered_prefix_enumerated_count", 0)
+        ):
+            lines.append("      note=API returned matches outside the configured cache refs")
+        elif raw.get("exact_count") == 0 and raw.get("api_prefix_enumerated_count", 0) > 0:
             lines.append("      note=API returned prefix matches, but no exact key matched")
         entries = raw.get("entries")
         if isinstance(entries, list):
@@ -453,7 +540,7 @@ def render_cache_key_probe_text(snapshot: dict[str, Any]) -> str:
                     continue
                 lines.append(
                     f"      id={entry.get('cache_id')} ref={entry.get('ref')} "
-                    f"size={human_bytes(entry['size_bytes'])} "
+                    f"size={human_bytes(nonnegative_int(entry.get('size_bytes')))} "
                     f"last_accessed_at={entry.get('last_accessed_at')}"
                 )
     return "\n".join(lines)
@@ -549,6 +636,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         metavar="LABEL=KEY",
         help="Probe an exact Actions cache key. Repeat to probe multiple keys.",
     )
+    parser.add_argument(
+        "--cache-ref",
+        action="append",
+        default=[],
+        metavar="REF",
+        help="Limit exact-key presence to cache refs restorable by this run. Repeat for multiple refs.",
+    )
     return parser.parse_args(argv)
 
 
@@ -563,6 +657,7 @@ def main(argv: list[str]) -> int:
             repo=repo,
             snapshot_utc=snapshot_utc,
             requests=[parse_cache_key_probe(raw) for raw in args.cache_key],
+            cache_refs=args.cache_ref,
         )
         if args.json:
             print(json.dumps(snapshot, indent=2, sort_keys=True))

@@ -630,6 +630,11 @@ TEST_ARCHIVE_CACHE_SAVE_STEP_IDS = (
     ("Save root binary sidecars", "id: root-bin-sidecars-cache-save"),
     ("Save archive build target cache", "id: test-target-cache-save"),
 )
+TEST_ARCHIVE_CACHE_RESTORE_STEP_IDS = (
+    ("Restore nextest archive", "id: nextest-archive-cache"),
+    ("Restore root binary sidecars", "id: root-bin-sidecars-cache"),
+    ("Restore archive build target cache", "id: test-target-cache"),
+)
 TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS = (
     "nextest_archive_cache_key=",
     "root_bin_sidecars_cache_key=",
@@ -643,6 +648,10 @@ CACHE_PERSISTENCE_AUDIT_CACHE_KEYS = (
     '--cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}"',
     '--cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"',
 )
+CACHE_PERSISTENCE_AUDIT_CACHE_REFS = (
+    '--cache-ref "$GITHUB_REF"',
+    '--cache-ref "refs/heads/${{ github.event.repository.default_branch }}"',
+)
 CACHE_PERSISTENCE_AUDIT_SAVE_SUMMARY_LINES = (
     'echo "- nextest archive save outcome: \\`${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}\\`"',
     'echo "- root binary sidecars save outcome: \\`${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}\\`"',
@@ -652,34 +661,66 @@ CACHE_PERSISTENCE_AUDIT_MISSING_WARNING = (
     "::warning::one or more root nextest cache keys are missing from the Actions cache inventory "
     "after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context"
 )
-CACHE_PERSISTENCE_AUDIT_PROBE_REQUIREMENTS = (
+CACHE_PERSISTENCE_AUDIT_PROBE_FAILURE_WARNING = (
+    "::warning::cache persistence audit probe could not query the cache API; "
+    "inspect the audit summary for failure context"
+)
+CACHE_PERSISTENCE_AUDIT_UNAVAILABLE_WARNING = (
+    "::warning::cache persistence audit could not query one or more cache keys; "
+    "inspect the audit summary for API error context"
+)
+CACHE_PERSISTENCE_AUDIT_MISSING_GREP = (
+    """if grep -q ': missing;' "$RUNNER_TEMP/cache-persistence-audit.txt"; then"""
+)
+CACHE_PERSISTENCE_AUDIT_UNAVAILABLE_GREP = (
+    """if grep -q ': unavailable;' "$RUNNER_TEMP/cache-persistence-audit.txt"; then"""
+)
+CACHE_PERSISTENCE_AUDIT_PROBE_BLOCK_REQUIREMENTS = (
     (
         "cache-persistence-audit must use the workflow token for cache API reads",
         ('GH_TOKEN: ${{ github.token }}',),
     ),
+)
+CACHE_PERSISTENCE_AUDIT_PROBE_RUN_REQUIREMENTS = (
     (
         "cache-persistence-audit must run ci_storage_audit exact-key probes",
         (CACHE_PERSISTENCE_AUDIT_COMMAND,),
     ),
     (
-        "cache-persistence-audit probe must be non-blocking",
-        ("continue-on-error: true",),
+        "cache-persistence-audit must preserve probe exit status before reporting",
+        ("set +e", "audit_rc=${PIPESTATUS[0]}", "set -e", 'exit "$audit_rc"'),
     ),
     (
         "cache-persistence-audit must probe all root nextest cache keys",
         CACHE_PERSISTENCE_AUDIT_CACHE_KEYS,
     ),
     (
+        "cache-persistence-audit must limit exact-key probes to restorable cache refs",
+        CACHE_PERSISTENCE_AUDIT_CACHE_REFS,
+    ),
+    (
         "cache-persistence-audit must write probe results to the job summary",
-        ("$GITHUB_STEP_SUMMARY",),
+        ('} >> "$GITHUB_STEP_SUMMARY"',),
     ),
     (
         "cache-persistence-audit must summarize cache save outcomes",
         CACHE_PERSISTENCE_AUDIT_SAVE_SUMMARY_LINES,
     ),
     (
+        "cache-persistence-audit must warn when probe execution fails",
+        (CACHE_PERSISTENCE_AUDIT_PROBE_FAILURE_WARNING,),
+    ),
+)
+CACHE_PERSISTENCE_AUDIT_WARNING_REQUIREMENTS = (
+    (
         "cache-persistence-audit must warn when cache keys are missing",
-        (CACHE_PERSISTENCE_AUDIT_MISSING_WARNING,),
+        CACHE_PERSISTENCE_AUDIT_MISSING_GREP,
+        CACHE_PERSISTENCE_AUDIT_MISSING_WARNING,
+    ),
+    (
+        "cache-persistence-audit must warn when cache key probes are unavailable",
+        CACHE_PERSISTENCE_AUDIT_UNAVAILABLE_GREP,
+        CACHE_PERSISTENCE_AUDIT_UNAVAILABLE_WARNING,
     ),
 )
 TEST_ARCHIVE_TEST_PROFILE_ENV = 'CARGO_PROFILE_TEST_DEBUG: "0"'
@@ -2018,6 +2059,64 @@ def append_missing_text_requirements(
 ) -> None:
     for error, fragments in requirements:
         if not all(fragment in text for fragment in fragments):
+            errors.append(error)
+
+
+def block_run_body_lines(block: list[str]) -> list[str]:
+    for index, line in enumerate(block):
+        clean = strip_comment(line).rstrip()
+        match = YAML_RUN_LINE_RE.match(clean)
+        if match is None:
+            continue
+        value = match.group(2).strip().strip("'\"")
+        if value not in {"|", ">"}:
+            return [value] if value else []
+        run_indent = len(clean) - len(clean.lstrip(" "))
+        body_indent: int | None = None
+        body: list[str] = []
+        for nested in block[index + 1:]:
+            nested_clean = strip_comment(nested).rstrip()
+            if not nested_clean.strip():
+                body.append("")
+                continue
+            indent = len(nested_clean) - len(nested_clean.lstrip(" "))
+            if indent <= run_indent:
+                break
+            if body_indent is None:
+                body_indent = indent
+            body.append(nested_clean[body_indent:] if indent >= body_indent else nested_clean.lstrip())
+        return body
+    return []
+
+
+def line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def run_body_has_immediate_child(lines: list[str], parent: str, child: str) -> bool:
+    for index, line in enumerate(lines):
+        if line.strip() != parent:
+            continue
+        parent_indent = line_indent(line)
+        for nested in lines[index + 1:]:
+            if not nested.strip():
+                continue
+            nested_indent = line_indent(nested)
+            if nested_indent <= parent_indent:
+                return False
+            if nested_indent == parent_indent + 2 and nested.strip() == child:
+                return True
+        return False
+    return False
+
+
+def append_missing_warning_requirements(
+    errors: list[str],
+    run_lines: list[str],
+    requirements: tuple[tuple[str, str, str], ...],
+) -> None:
+    for error, condition, warning in requirements:
+        if not run_body_has_immediate_child(run_lines, condition, f'echo "{warning}"'):
             errors.append(error)
 
 
@@ -9475,6 +9574,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
             for block in target_save_blocks
         ):
             errors.append("test-archive must save target cache only on target cache miss")
+        if not target_restore_blocks or not target_save_blocks or not all(
+            block_has_input(block, "key", TEST_ARCHIVE_TARGET_CACHE_KEY)
+            for block in target_restore_blocks + target_save_blocks
+        ):
+            errors.append("test-archive managed target cache key must mirror cache persistence audit key")
         for required in ("src/**", "tests/**"):
             if not any(required in key for key in target_cache_keys):
                 errors.append(f"test-archive managed target cache key must include {required}")
@@ -9543,6 +9647,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
             block = named_step_block(archive_lines, label)
             if block is None or step_id not in uncommented_text(block):
                 errors.append("test-archive cache save steps must have stable ids for persistence evidence")
+                break
+        for label, step_id in TEST_ARCHIVE_CACHE_RESTORE_STEP_IDS:
+            block = named_step_block(archive_lines, label)
+            if block is None or step_id not in uncommented_text(block):
+                errors.append("test-archive cache restore steps must have stable ids for persistence evidence")
                 break
         cache_audit_step = named_step_block(archive_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
         if cache_audit_step is None or TEST_ARCHIVE_CACHE_AUDIT_STEP_ID not in uncommented_text(cache_audit_step):
@@ -9654,10 +9763,25 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if audit_probe_block is None:
             errors.append(f"cache-persistence-audit must include {CACHE_PERSISTENCE_AUDIT_PROBE_STEP} step")
         else:
+            audit_probe_text = uncommented_text(audit_probe_block)
+            audit_probe_run_lines = block_run_body_lines(audit_probe_block)
+            audit_probe_run_text = "\n".join(audit_probe_run_lines)
+            if not block_has_scalar(audit_probe_block, "continue-on-error", "true"):
+                errors.append("cache-persistence-audit probe must be non-blocking")
             append_missing_text_requirements(
                 errors,
-                uncommented_text(audit_probe_block),
-                CACHE_PERSISTENCE_AUDIT_PROBE_REQUIREMENTS,
+                audit_probe_text,
+                CACHE_PERSISTENCE_AUDIT_PROBE_BLOCK_REQUIREMENTS,
+            )
+            append_missing_text_requirements(
+                errors,
+                audit_probe_run_text,
+                CACHE_PERSISTENCE_AUDIT_PROBE_RUN_REQUIREMENTS,
+            )
+            append_missing_warning_requirements(
+                errors,
+                audit_probe_run_lines,
+                CACHE_PERSISTENCE_AUDIT_WARNING_REQUIREMENTS,
             )
 
     if "nextest-fingerprint-reuse" in jobs:

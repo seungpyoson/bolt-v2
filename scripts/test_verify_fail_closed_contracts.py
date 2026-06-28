@@ -164,6 +164,92 @@ def test_bare_return_fails_as_return_from_catch_all() -> None:
     assert any(finding.startswith("FLC003:pkg/bare_return.py:4:") for finding in findings)
 
 
+def test_conditional_sentinel_return_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/conditional_return.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except Exception:
+                    return [] if degraded else parsed
+            """,
+        )
+
+        findings = collect(root)
+
+    assert any(finding.startswith("FLC003:pkg/conditional_return.py:4:") for finding in findings)
+
+
+def test_boolean_sentinel_return_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/boolean_return.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except Exception:
+                    return parsed or []
+            """,
+        )
+
+        findings = collect(root)
+
+    assert any(finding.startswith("FLC003:pkg/boolean_return.py:4:") for finding in findings)
+
+
+def test_conditional_broad_exception_type_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/conditional_except.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except Exception if enabled else ValueError:
+                    return None
+            """,
+        )
+
+        findings = collect(root)
+
+    assert any(finding.startswith("FLC003:pkg/conditional_except.py:4:") for finding in findings)
+
+
+def test_nested_function_return_inside_handler_is_not_handler_return() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/nested_return.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except Exception:
+                    def helper():
+                        return None
+                    recover()
+            """,
+        )
+
+        findings = collect(root)
+
+    assert findings == []
+
+
 def test_config_string_arrays_reject_invalid_shapes() -> None:
     for malformed_logging_names in ('"logger.exception"', "[1]"):
         with tempfile.TemporaryDirectory() as tmp:
@@ -241,6 +327,10 @@ def main() -> int:
         test_bad_fixtures_fail_with_stable_rule_ids,
         test_precise_exception_fixture_passes,
         test_bare_return_fails_as_return_from_catch_all,
+        test_conditional_sentinel_return_fails_closed,
+        test_boolean_sentinel_return_fails_closed,
+        test_conditional_broad_exception_type_fails_closed,
+        test_nested_function_return_inside_handler_is_not_handler_return,
         test_config_string_arrays_reject_invalid_shapes,
         test_exception_suppression_config_is_rejected,
         test_cli_fails_with_actionable_output,

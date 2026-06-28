@@ -67,6 +67,7 @@ RULES: tuple[Rule, ...] = (
         lambda facts: facts.catches_all and not facts.has_logging and bool(facts.sentinel_returns),
     ),
 )
+NESTED_SCOPE_NODES = (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef, ast.Lambda)
 
 CONFIG_KEYS = frozenset(
     {
@@ -154,19 +155,11 @@ def dotted_name(node: ast.AST) -> str | None:
 
 
 def exception_name_candidates(node: ast.AST) -> frozenset[str]:
-    match node:
-        case ast.Name(id=name):
-            return frozenset((name,))
-        case ast.Attribute():
-            match dotted_name(node):
-                case str(name):
-                    return frozenset((name,))
-                case None:
-                    return frozenset()
-        case ast.Tuple(elts=elts):
-            return frozenset().union(*(exception_name_candidates(item) for item in elts))
-        case _:
-            return frozenset()
+    return frozenset(
+        name
+        for child in ast.walk(node)
+        if (name := dotted_name(child)) is not None
+    )
 
 
 def exception_names(handler: ast.ExceptHandler, broad_names: frozenset[str]) -> frozenset[str]:
@@ -180,9 +173,19 @@ def exception_names(handler: ast.ExceptHandler, broad_names: frozenset[str]) -> 
     )
 
 
-def call_names(node: ast.AST) -> Iterable[str]:
-    for child in ast.walk(node):
-        if isinstance(child, ast.Call) and (name := dotted_name(child.func)):
+def handler_body_walk(handler: ast.ExceptHandler) -> Iterable[ast.AST]:
+    stack = list(reversed(handler.body))
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, NESTED_SCOPE_NODES):
+            continue
+        stack.extend(reversed(list(ast.iter_child_nodes(node))))
+
+
+def call_names(nodes: Iterable[ast.AST]) -> Iterable[str]:
+    for node in nodes:
+        if isinstance(node, ast.Call) and (name := dotted_name(node.func)):
             yield name
 
 
@@ -204,12 +207,25 @@ def sentinel_shape(node: ast.AST | None) -> str | None:
             return None
 
 
+def sentinel_shapes(node: ast.AST | None) -> frozenset[str]:
+    direct = sentinel_shape(node)
+    if direct is not None:
+        return frozenset((direct,))
+    match node:
+        case ast.IfExp(body=body, orelse=orelse):
+            return sentinel_shapes(body) | sentinel_shapes(orelse)
+        case ast.BoolOp(values=values):
+            return frozenset().union(*(sentinel_shapes(value) for value in values))
+        case _:
+            return frozenset()
+
+
 def sentinel_returns(handler: ast.ExceptHandler) -> frozenset[str]:
     return frozenset(
         shape
-        for node in ast.walk(handler)
+        for node in handler_body_walk(handler)
         if isinstance(node, ast.Return)
-        if (shape := sentinel_shape(node.value)) is not None
+        for shape in sentinel_shapes(node.value)
     )
 
 
@@ -220,7 +236,7 @@ def facts_for_handler(rel_path: str, handler: ast.ExceptHandler, config: Config)
         exception_names=exception_names(handler, config.broad_exception_names),
         is_bare=handler.type is None,
         only_pass=len(handler.body) == 1 and isinstance(handler.body[0], ast.Pass),
-        has_logging=bool(config.logging_call_names.intersection(call_names(handler))),
+        has_logging=bool(config.logging_call_names.intersection(call_names(handler_body_walk(handler)))),
         sentinel_returns=sentinel_returns(handler),
     )
 

@@ -721,8 +721,7 @@ def load_config(
     max_lookback_age_seconds = require_positive_int(
         api_limits, "max_lookback_age_seconds", "ci_provenance.api_limits"
     )
-    if max_lookback_age_seconds > retention_days * 24 * 60 * 60:
-        raise ProvenanceError("max lookback age must not exceed artifact retention")
+    check_lookback_le_retention(retention_days, max_lookback_age_seconds)
 
     unexpected_policy_keys = sorted(set(policy_table) - set(POLICY_ROWS) - {"override"})
     if unexpected_policy_keys:

@@ -2055,9 +2055,9 @@ def upload_artifact_retention_errors(
         if retention_days <= 0:
             errors.append(f"{label} retention-days must be a positive integer")
             continue
-        if retention_days != site.retention_days:
+        if retention_values[0] != str(site.retention_days):
             errors.append(
-                f"{label} retention-days {retention_days} "
+                f"{label} retention-days {retention_values[0]} "
                 f"does not match configured retention-days {site.retention_days}"
             )
             continue

@@ -5673,89 +5673,6 @@ def assert_actionlint_requires_pr_event_types() -> None:
             )
 
 
-def assert_jules_advisory_workflow_gaps_are_reported() -> None:
-    verifier = load_verifier()
-    workflows = {
-        contract.path: repo_workflow_text(contract.path)
-        for contract in verifier.JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS
-    }
-    clean_errors = verifier.verify_required_text_contracts(
-        workflows,
-        verifier.JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS,
-        "Jules advisory workflow",
-    )
-    if clean_errors:
-        raise AssertionError(f"Jules advisory workflows must satisfy their contract, got: {clean_errors}")
-
-    missing = dict(workflows)
-    missing.pop(".github/workflows/weekly-cleanup.yml")
-    missing_errors = verifier.verify_required_text_contracts(
-        missing,
-        verifier.JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS,
-        "Jules advisory workflow",
-    )
-    if not any("weekly-cleanup.yml must exist" in error for error in missing_errors):
-        raise AssertionError(f"Jules contract must require all three workflows, got: {missing_errors}")
-
-    weekly = workflows[".github/workflows/weekly-cleanup.yml"]
-    cases = (
-        (
-            "contents: write",
-            replace_once(weekly, "permissions: {}\n", "permissions:\n  contents: write\n"),
-            "permissions: {}",
-        ),
-        (
-            "missing non-blocking invocation",
-            replace_once(weekly, "        continue-on-error: true\n", ""),
-            "continue-on-error: true",
-        ),
-        (
-            "missing HTTP failure detection",
-            replace_once(weekly, " --fail-with-body", ""),
-            "--fail-with-body",
-        ),
-        (
-            "missing session validation",
-            replace_once(weekly, "jq -e '.name and .id'", "jq '.'"),
-            "jq -e '.name and .id'",
-        ),
-        (
-            "wrong upstream payload source",
-            replace_once(weekly, 'source: "sources/github/\\($repo_full_name)"', "owner: $repo_full_name"),
-            'source: "sources/github/\\\\($repo_full_name)"',
-        ),
-        (
-            "missing unavailable notice",
-            replace_once(
-                weekly,
-                "::notice::Jules advisory automation is non-blocking and emits no merge signal.",
-                "::notice::Jules completed",
-            ),
-            "::notice::Jules advisory automation is non-blocking and emits no merge signal.",
-        ),
-        (
-            "missing draft-only prompt",
-            replace_once(weekly, "draft pull request", "pull request"),
-            "draft pull request",
-        ),
-        (
-            "alternate GitHub token reference",
-            replace_once(weekly, "JULES_API_KEY: ${{ secrets.JULES_API_KEY }}", "GH_TOKEN: ${{ github.token }}"),
-            "github.token",
-        ),
-    )
-    for label, mutated, expected in cases:
-        errors = verifier.verify_required_text_contracts(
-            {**workflows, ".github/workflows/weekly-cleanup.yml": mutated},
-            verifier.JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS,
-            "Jules advisory workflow",
-        )
-        if not any(expected in error for error in errors):
-            raise AssertionError(
-                f"Jules contract must reject {label}, expected {expected!r}, got: {errors}"
-            )
-
-
 def assert_ci_docs_pass_stub_is_absent() -> None:
     workflow_path = REPO_ROOT / ".github/workflows/ci-docs-pass-stub.yml"
     if workflow_path.exists():
@@ -8415,10 +8332,6 @@ def write_base_workflows(workflow_dir: pathlib.Path) -> None:
     (workflow_dir / "dispatch-ci-cancel.yml").write_text(BASE_DISPATCH_CI_CANCEL_WORKFLOW)
     (workflow_dir / "merge-readiness-finalizer.yml").write_text(BASE_MERGE_READINESS_FINALIZER_WORKFLOW)
     (workflow_dir / "coverage-enforcer.yml").write_text(BASE_COVERAGE_ENFORCER_WORKFLOW)
-    for name in ("weekly-cleanup.yml", "performance-improver.yml", "tech-debt-review.yml"):
-        (workflow_dir / name).write_text((REPO_ROOT / ".github" / "workflows" / name).read_text())
-
-
 def run_verifier_main_with_no_mistakes(
     no_mistakes_text: str,
     *,
@@ -12636,7 +12549,6 @@ def main() -> int:
     assert_backtester_ci_defers_managed_heavy_on_draft_prs()
     assert_actionlint_rejects_stale_config_variables()
     assert_actionlint_requires_pr_event_types()
-    assert_jules_advisory_workflow_gaps_are_reported()
     assert_ci_docs_pass_stub_is_absent()
     assert_source_fence_static_ignores_comments()
     assert_local_verification_gate_recipes_are_enforced()

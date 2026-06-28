@@ -39,7 +39,7 @@ jobs:
             Tech-debt focus:
             - Identify stale small abstractions, obsolete test fixtures, or low-risk local simplifications.
             - Prefer deleting unnecessary code over adding new frameworks or broad refactors.
-            - Do not create tracking debt comments or fix-later comments.
+            - Do not create tracking debt comments or deferred cleanup comments.
             - Keep changes scoped and include verification evidence in the draft PR body.
         run: |
           jq -n \

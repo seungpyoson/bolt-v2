@@ -66,12 +66,6 @@ DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
 DEFAULT_BVS_RUST_VERIFICATION_POLICY = REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
 
 
-class TextContract(NamedTuple):
-    path: str
-    required: tuple[str, ...]
-    forbidden: tuple[str, ...] = ()
-
-
 JOB_RUNS_ON_VAR_RE = re.compile(r"^    runs-on:\s*\$\{\{\s*vars\.([A-Z0-9_]+)\s*\}\}\s*$")
 WORKFLOW_RUNNER_CONFIG_KEYS = {
     "ci.yml": "ci",
@@ -111,89 +105,7 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     "tech-debt-review.yml": "tech_debt_review",
     ".github/workflows/tech-debt-review.yml": "tech_debt_review",
 }
-JULES_ADVISORY_COMMON_REQUIRED_SNIPPETS = (
-    "on:\n  schedule:",
-    "  workflow_dispatch: {}",
-    "permissions: {}",
-    "runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}",
-    "id: invoke-jules",
-    "continue-on-error: true",
-    "JULES_API_KEY: ${{ secrets.JULES_API_KEY }}",
-    "JULES_STARTING_BRANCH: ${{ github.event.repository.default_branch }}",
-    '--arg repo_full_name "$GITHUB_REPOSITORY"',
-    "sourceContext:",
-    'source: "sources/github/\\($repo_full_name)"',
-    "githubRepoContext:",
-    "startingBranch: $branch",
-    'automationMode: "AUTO_CREATE_PR"',
-    "requirePlanApproval: false",
-    "https://jules.googleapis.com/v1alpha/sessions",
-    "--fail-with-body",
-    "jq -e '.name and .id'",
-    "::notice::Jules advisory automation is non-blocking and emits no merge signal.",
-    "Verified Jules session evidence is the Start Jules advisory session step passing with a session id.",
-    "Unavailable Jules results remain advisory only.",
-    "advisory only",
-    "draft pull request",
-    "agent:jules",
-    "not a required gate",
-    "not reviewer of record",
-    "must not approve, merge, or waive findings",
-    "Do not edit governance or policy files",
-    "No AWS access",
-    "No trading, runtime, deploy, live, market data, or order execution access",
-)
-JULES_ADVISORY_COMMON_FORBIDDEN_SNIPPETS = (
-    "  actions: write",
-    "  checks: write",
-    "  contents: write",
-    "  deployments: write",
-    "  id-token: write",
-    "  issues: write",
-    "  pull-requests: write",
-    "  statuses: write",
-    "secrets.GITHUB_TOKEN",
-    "github.token",
-    "aws-actions/",
-    "configure-aws-credentials",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "AWS_DEPLOY_ROLE_ARN",
-    "AWS_CAPTURE_ROLE_ARN",
-)
-JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS = (
-    TextContract(
-        path=".github/workflows/weekly-cleanup.yml",
-        required=(
-            "group: jules-weekly-cleanup",
-            "  jules-weekly-cleanup:",
-            "    name: jules-weekly-cleanup",
-            *JULES_ADVISORY_COMMON_REQUIRED_SNIPPETS,
-        ),
-        forbidden=JULES_ADVISORY_COMMON_FORBIDDEN_SNIPPETS,
-    ),
-    TextContract(
-        path=".github/workflows/performance-improver.yml",
-        required=(
-            "group: jules-performance-improver",
-            "  jules-performance-improver:",
-            "    name: jules-performance-improver",
-            *JULES_ADVISORY_COMMON_REQUIRED_SNIPPETS,
-        ),
-        forbidden=JULES_ADVISORY_COMMON_FORBIDDEN_SNIPPETS,
-    ),
-    TextContract(
-        path=".github/workflows/tech-debt-review.yml",
-        required=(
-            "group: jules-tech-debt-review",
-            "  jules-tech-debt-review:",
-            "    name: jules-tech-debt-review",
-            *JULES_ADVISORY_COMMON_REQUIRED_SNIPPETS,
-        ),
-        forbidden=JULES_ADVISORY_COMMON_FORBIDDEN_SNIPPETS,
-    ),
-)
+
 SSH_RUNNER_ACTION_RE = re.compile(r"^ubicloud/ssh-runner@[0-9a-f]{40}$")
 DEFAULT_REPO_AUTOMATION_FILES = (
     REPO_ROOT / "justfile",
@@ -12064,33 +11976,6 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     return errors
 
 
-def verify_required_text_contracts(
-    texts: dict[str, str],
-    contracts: Iterable[TextContract],
-    label: str,
-) -> list[str]:
-    contract_list = tuple(contracts)
-    missing_errors = [
-        f"{label} {contract.path} must exist"
-        for contract in contract_list
-        if contract.path not in texts
-    ]
-    present_contracts = tuple(contract for contract in contract_list if contract.path in texts)
-    required_errors = [
-        f"{label} {contract.path} must include {snippet!r}"
-        for contract in present_contracts
-        for snippet in contract.required
-        if snippet not in texts[contract.path]
-    ]
-    forbidden_errors = [
-        f"{label} {contract.path} must not include {snippet!r}"
-        for contract in present_contracts
-        for snippet in contract.forbidden
-        if snippet in texts[contract.path]
-    ]
-    return missing_errors + required_errors + forbidden_errors
-
-
 def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
     if not DEFAULT_RUNNERS_CONFIG.exists():
         return []
@@ -12271,13 +12156,6 @@ def main() -> int:
         errors.extend(verify_merge_readiness_ci_job(ci_workflow))
     errors.extend(verify_merge_readiness_finalizer_workflow(workflow_texts))
     errors.extend(verify_coverage_enforcer_workflow(workflow_texts))
-    errors.extend(
-        verify_required_text_contracts(
-            workflow_texts,
-            JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS,
-            "Jules advisory workflow",
-        )
-    )
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())

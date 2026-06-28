@@ -165,11 +165,58 @@ edition = "2024"
         raise AssertionError(f"conventional crate target discovery drifted: expected={expected!r} actual={actual!r}")
 
 
+def assert_explicit_bins_can_use_cargo_default_paths() -> None:
+    module = load_module()
+    with TemporaryDirectory() as tmp:
+        crate = Path(tmp) / "explicit-bin-crate"
+        write(
+            crate / "Cargo.toml",
+            """
+[package]
+name = "explicit-bin-crate"
+version = "0.0.0"
+edition = "2024"
+autobins = false
+
+[[bin]]
+name = "explicit_runner"
+""",
+        )
+        write(crate / "src" / "bin" / "explicit_runner.rs", "fn main() {}\n#[test]\nfn runner_test_runs() {}\n")
+        actual = module.archive_args(crate)
+    expected = ["--bin", "explicit_runner"]
+    if actual != expected:
+        raise AssertionError(f"default explicit-bin path discovery drifted: expected={expected!r} actual={actual!r}")
+
+
+def assert_autolib_false_disables_conventional_lib_target() -> None:
+    module = load_module()
+    with TemporaryDirectory() as tmp:
+        crate = Path(tmp) / "no-autolib-crate"
+        write(
+            crate / "Cargo.toml",
+            """
+[package]
+name = "no-autolib-crate"
+version = "0.0.0"
+edition = "2024"
+autolib = false
+""",
+        )
+        write(crate / "src" / "lib.rs", "pub fn lib() {}\n")
+        actual = module.archive_args(crate)
+    expected: list[str] = []
+    if actual != expected:
+        raise AssertionError(f"autolib=false target discovery drifted: expected={expected!r} actual={actual!r}")
+
+
 def main() -> int:
     assert_archive_args_are_derived_from_cargo_and_test_bearing_bins()
     assert_sidecars_are_derived_from_cargo_bin_exe_references()
     assert_cli_matches_library_output()
     assert_conventional_crates_do_not_need_bvs_layout()
+    assert_explicit_bins_can_use_cargo_default_paths()
+    assert_autolib_false_disables_conventional_lib_target()
     print("OK: Rust test target discovery self-tests passed.")
     return 0
 

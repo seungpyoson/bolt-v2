@@ -5390,6 +5390,8 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
 CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/test_ci_storage_audit.py",
     "python3 scripts/test_root_bin_sidecars.py",
+    "python3 scripts/test_ci_input_sets.py",
+    "python3 scripts/test_rust_test_targets.py",
 )
 
 
@@ -10269,7 +10271,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester bvs-test must not publish or consume the legacy fan-out payload")
     if "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in job_text:
         errors.append("backtester required bvs-test path must not download a test payload artifact")
-    if "managed-target-bvs-v1-" in consumer_text or "test-target-cache" in consumer_text:
+    if "managed-target-bvs-v" in consumer_text or "test-target-cache" in consumer_text:
         errors.append("backtester bvs-test consumers must not restore the managed target cache")
     if 'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" --lib --test' in archive_text:
         errors.append("backtester bvs-test archive targets must be discovered, not hardcoded in workflow YAML")

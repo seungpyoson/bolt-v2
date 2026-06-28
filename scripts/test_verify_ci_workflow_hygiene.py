@@ -5351,6 +5351,8 @@ ci-lint-workflow-inner: require-local-verification-gate
     python3 scripts/test_verify_ci_workflow_hygiene.py
     python3 scripts/test_ci_storage_audit.py
     python3 scripts/test_root_bin_sidecars.py
+    python3 scripts/test_ci_input_sets.py
+    python3 scripts/test_rust_test_targets.py
 """
     errors = verifier.verify_local_verification_gate_recipes(justfile_text)
     if errors:
@@ -5370,6 +5372,16 @@ ci-lint-workflow-inner: require-local-verification-gate
     missing_sidecar_test_errors = verifier.verify_local_verification_gate_recipes(missing_sidecar_test)
     if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_root_bin_sidecars.py" in error for error in missing_sidecar_test_errors):
         raise AssertionError(f"root bin sidecar test wiring drift was silent, got: {missing_sidecar_test_errors}")
+
+    missing_ci_input_sets_test = justfile_text.replace("    python3 scripts/test_ci_input_sets.py\n", "")
+    missing_ci_input_sets_test_errors = verifier.verify_local_verification_gate_recipes(missing_ci_input_sets_test)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_ci_input_sets.py" in error for error in missing_ci_input_sets_test_errors):
+        raise AssertionError(f"CI input set test wiring drift was silent, got: {missing_ci_input_sets_test_errors}")
+
+    missing_rust_test_targets_test = justfile_text.replace("    python3 scripts/test_rust_test_targets.py\n", "")
+    missing_rust_test_targets_test_errors = verifier.verify_local_verification_gate_recipes(missing_rust_test_targets_test)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_rust_test_targets.py" in error for error in missing_rust_test_targets_test_errors):
+        raise AssertionError(f"Rust test target test wiring drift was silent, got: {missing_rust_test_targets_test_errors}")
 
     ungated = justfile_text.replace(
         "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner",
@@ -8681,6 +8693,23 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     )
     fanout_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": fanout})
     assert any("legacy fan-out payload" in error for error in fanout_errors), fanout_errors
+
+    consumer_managed_target = good.replace(
+        "      - name: Build issue #789 lib archive\n",
+        "      - name: Restore forbidden managed target cache\n"
+        "        uses: actions/cache/restore@example\n"
+        "        with:\n"
+        "          key: managed-target-bvs-v4-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}\n"
+        "      - name: Build issue #789 lib archive\n",
+        1,
+    )
+    consumer_target_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": consumer_managed_target}
+    )
+    assert any(
+        "backtester bvs-test consumers must not restore the managed target cache" in error
+        for error in consumer_target_errors
+    ), consumer_target_errors
 
     hardcoded_archive_targets = good.replace(
         'mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)\n          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"',

@@ -512,6 +512,12 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
     if ! python3 scripts/test_ci_provenance.py; then
         failed=1
     fi
+    if ! python3 scripts/test_ci_input_sets.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_rust_test_targets.py; then
+        failed=1
+    fi
     if ! python3 scripts/test_merge_readiness.py; then
         failed=1
     fi

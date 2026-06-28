@@ -87,16 +87,34 @@ def test_targets(crate: Path, cargo: dict[str, object]) -> list[str]:
 
 
 def explicit_bin_targets(crate: Path, cargo: dict[str, object]) -> dict[str, Path]:
+    package = package_name(crate, cargo)
     targets: dict[str, Path] = {}
     for entry in table_array(cargo, "bin"):
         name = entry.get("name")
         if not isinstance(name, str) or not name:
             raise SystemExit("Cargo.toml [[bin]] entries must define name")
         path = entry.get("path")
-        if not isinstance(path, str) or not path:
-            raise SystemExit(f"Cargo.toml [[bin]] {name} must define path")
-        targets[name] = crate / path
+        if isinstance(path, str) and path:
+            targets[name] = crate / path
+        else:
+            targets[name] = default_bin_path(crate, package, name)
     return targets
+
+
+def default_bin_path(crate: Path, package: str, name: str) -> Path:
+    candidates: list[Path] = []
+    if name == package:
+        candidates.append(crate / "src" / "main.rs")
+    candidates.extend(
+        [
+            crate / "src" / "bin" / f"{name}.rs",
+            crate / "src" / "bin" / name / "main.rs",
+        ]
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise SystemExit(f"Cargo.toml [[bin]] {name} omitted path and no conventional source exists")
 
 
 def convention_bin_targets(crate: Path, package: str) -> dict[str, Path]:
@@ -127,9 +145,15 @@ def has_rust_test_attr(path: Path) -> bool:
     return bool(RUST_TEST_ATTR_RE.search(read_text(path)))
 
 
+def lib_target_enabled(crate: Path, cargo: dict[str, object]) -> bool:
+    if isinstance(cargo.get("lib"), dict):
+        return True
+    return auto_discovery_enabled(cargo, "autolib") and (crate / "src" / "lib.rs").exists()
+
+
 def archive_args(crate: Path) -> list[str]:
     cargo = cargo_toml(crate)
-    args = ["--lib"] if (crate / "src" / "lib.rs").exists() or isinstance(cargo.get("lib"), dict) else []
+    args = ["--lib"] if lib_target_enabled(crate, cargo) else []
     for test in test_targets(crate, cargo):
         args.extend(["--test", test])
     for name, path in sorted(bin_targets(crate, cargo).items()):

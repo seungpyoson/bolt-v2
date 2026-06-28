@@ -54,141 +54,6 @@ EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'scripts/command_understanding.py'",
 )
 
-CI_PROVENANCE_TOML = """
-[ci_provenance]
-schema_version = 1
-artifact_name_template = "ci-provenance-attempt-{run_attempt}"
-workflow_key = "ci"
-workflow_name = "CI"
-workflow_path = ".github/workflows/ci.yml"
-fingerprint_source = "meter"
-
-[ci_provenance.artifact_name_template_vars]
-run_attempt = "${{ github.run_attempt }}"
-
-[ci_provenance.full_ci]
-required_jobs = [
-  "detector",
-  "deny",
-  "clippy",
-  "check-aarch64",
-  "source-fence",
-  "nextest-fingerprint",
-  "test-archive",
-  "test",
-]
-conditional_jobs = ["build"]
-conditional_job_outputs = { build = "detector.build_required" }
-
-[ci_provenance.full_ci.jobs.detector]
-check_name = "detector"
-
-[ci_provenance.full_ci.jobs.deny]
-check_name = "deny"
-
-[ci_provenance.full_ci.jobs.clippy]
-check_name = "clippy"
-
-[ci_provenance.full_ci.jobs.check-aarch64]
-check_name = "check-aarch64"
-
-[ci_provenance.full_ci.jobs.source-fence]
-check_name = "source-fence"
-
-[ci_provenance.full_ci.jobs.nextest-fingerprint]
-check_name = "nextest fingerprint"
-
-[ci_provenance.full_ci.jobs.test-archive]
-check_name = "nextest archive"
-
-[ci_provenance.full_ci.jobs.test]
-check_name = "test"
-
-[ci_provenance.full_ci.jobs.build]
-check_name = "build"
-conditional = "detector.build_required"
-
-[ci_provenance.deploy]
-artifact_name = "bolt-v2-binary"
-require_source_event = "push"
-require_source_branch = "main"
-require_gate_check = true
-
-[ci_provenance.dispatch]
-workflow_input = "full_ci"
-run_name_default = "CI"
-run_name_full = "CI [dispatch:full]"
-run_name_iteration = "CI [dispatch:iteration]"
-proof_gate_job = "gate"
-
-[ci_provenance.gate_names]
-gate_required = "gate"
-gate_iteration = "gate-iteration"
-gate_dispatch_full = "gate-dispatch"
-backtester_required = "backtester-gate"
-backtester_iteration = "backtester-gate-iteration"
-backtester_dispatch_full = "backtester-gate-dispatch"
-
-[ci_provenance.docs]
-safe_paths = [
-  "AGENTS.md",
-  "CLAUDE.md",
-  "GEMINI.md",
-  "REASONIX.md",
-  "LICENSE",
-  "SECURITY.md",
-  ".github/ISSUE_TEMPLATE/**",
-  ".claude/**",
-  ".codex/**",
-  ".gemini/**",
-  ".opencode/**",
-  ".pi/**",
-  ".specify/**",
-]
-forbidden_ignored_build_paths = [
-  ".claude/rust-verification.toml",
-]
-non_heavy_required_jobs = ["detector"]
-
-[ci_provenance.api_limits]
-workflow_runs_per_page = 100
-run_jobs_per_page = 100
-run_artifacts_per_page = 100
-max_lookback_pages = 10
-max_lookback_age_seconds = 2592000
-
-[ci_provenance.artifacts]
-retention_days = 30
-
-[ci_provenance.policy]
-draft_pr_synchronize = "iteration"
-draft_pr_opened = "iteration"
-draft_pr_reopened = "iteration"
-draft_pr_edited = "iteration"
-converted_to_draft = "iteration"
-ready_pr = "iteration"
-ready_pr_edited_no_base = "iteration"
-ready_pr_reopened = "iteration"
-ready_for_review = "iteration"
-docs = "docs"
-workflow_dispatch = "iteration"
-workflow_dispatch_full_ci = "full"
-main_push = "full"
-merge_group = "full"
-mergify_temp_pr = "full"
-tag = "tag_reuse"
-unknown_event = "full"
-
-[ci_provenance.mergify]
-temp_pr_head_ref_prefix = "mergify/merge-queue/"
-mergify_temp_pr_actor_id = 37929162
-
-[ci_provenance.policy.override]
-force_full_ci = false
-ignore_emit_failure = false
-"""
-
-
 def load_verifier(
     path: pathlib.Path = VERIFIER_PATH, module_name: str = "verify_ci_workflow_hygiene"
 ):
@@ -1667,8 +1532,7 @@ def strip_ci_provenance_config(config_text: str) -> str:
 
 
 def ci_provenance_config_fixture() -> str:
-    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text()
-    return strip_ci_provenance_config(config_text) + "\n" + CI_PROVENANCE_TOML
+    return (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text()
 
 
 def runner_config_load_error(config_text: str, verifier=None) -> str:
@@ -8267,6 +8131,18 @@ runs:
         raise AssertionError(
             f"composite action.yaml upload-artifact drift was silent: exit={yaml_result}, output={yaml_output!r}"
         )
+    nested_result, nested_output = run_verifier_main_with_extra_action(
+        textwrap.dedent(extra_action),
+        "nested/action.yml",
+    )
+    nested_expected = (
+        ".github/actions/evade/nested/action.yml::__composite__::upload-composite-artifact "
+        "missing from artifact retention policy"
+    )
+    if nested_result == 0 or nested_expected not in nested_output:
+        raise AssertionError(
+            f"nested composite upload-artifact drift was silent: exit={nested_result}, output={nested_output!r}"
+        )
 
     config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
     noncanonical_config = config_text.replace(
@@ -8277,6 +8153,14 @@ runs:
     error = runner_config_load_error(noncanonical_config, verifier=verifier)
     if "artifact_retention.uploads source must use canonical repo path" not in error:
         raise AssertionError(f"non-canonical retention source must fail config load, got: {error!r}")
+    nested_workflow_config = config_text.replace(
+        '[artifact_retention.uploads.".github/workflows/ci.yml::build::upload-bolt-v2-binary"]',
+        '[artifact_retention.uploads.".github/workflows/archive/ci.yml::build::upload-bolt-v2-binary"]',
+        1,
+    )
+    error = runner_config_load_error(nested_workflow_config, verifier=verifier)
+    if "artifact_retention.uploads source must use canonical repo path" not in error:
+        raise AssertionError(f"nested workflow retention source must fail config load, got: {error!r}")
 
 
 def assert_ci_provenance_upload_name_comes_from_config_template() -> None:

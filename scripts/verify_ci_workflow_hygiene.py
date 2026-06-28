@@ -65,6 +65,10 @@ DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
 DEFAULT_BVS_RUST_VERIFICATION_POLICY = REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
 JOB_RUNS_ON_VAR_RE = re.compile(r"^    runs-on:\s*\$\{\{\s*vars\.([A-Z0-9_]+)\s*\}\}\s*$")
 CONFIG_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+ARTIFACT_RETENTION_WORKFLOW_SOURCE_RE = re.compile(r"\.github/workflows/[^/]+\.ya?ml")
+ARTIFACT_RETENTION_ACTION_SOURCE_RE = re.compile(
+    r"\.github/actions/[^/]+(?:/[^/]+)*/action\.ya?ml"
+)
 WORKFLOW_RUNNER_CONFIG_KEYS = {
     "ci.yml": "ci",
     ".github/workflows/ci.yml": "ci",
@@ -101,8 +105,8 @@ DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
     (REPO_ROOT / "tests", "*.sh"),
     (REPO_ROOT / ".github" / "scripts", "*.sh"),
-    (REPO_ROOT / ".github" / "actions", "*/action.yml"),
-    (REPO_ROOT / ".github" / "actions", "*/action.yaml"),
+    (REPO_ROOT / ".github" / "actions", "**/action.yml"),
+    (REPO_ROOT / ".github" / "actions", "**/action.yaml"),
 )
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
 LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS = {"build", "clippy", "test"}
@@ -1921,12 +1925,9 @@ def artifact_retention_upload_key(source_name: str, job_id: str, step_id: str) -
 
 
 def artifact_retention_source_is_canonical(source_name: str) -> bool:
-    return (
-        source_name.startswith(".github/workflows/")
-        and source_name.endswith((".yml", ".yaml"))
-    ) or (
-        source_name.startswith(".github/actions/")
-        and source_name.endswith(("/action.yml", "/action.yaml"))
+    return bool(
+        ARTIFACT_RETENTION_WORKFLOW_SOURCE_RE.fullmatch(source_name)
+        or ARTIFACT_RETENTION_ACTION_SOURCE_RE.fullmatch(source_name)
     )
 
 

@@ -283,6 +283,39 @@ max_lookback_age_seconds = 2592000
 [ci_provenance.artifacts]
 retention_days = 30
 
+[artifact_retention.classes.deployable]
+max_retention_days = 3
+allowed_refs = ["refs/heads/main", "refs/tags/v*"]
+
+[artifact_retention.classes.provenance]
+max_retention_days_config_ref = "ci_provenance.artifacts.retention_days"
+
+[artifact_retention.classes.cross-job-handoff]
+max_retention_days = 30
+
+[artifact_retention.classes.transient]
+max_retention_days = 7
+
+[artifact_retention.name_rules.nextest_fingerprint]
+artifact_name = "${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}"
+artifact_class = "cross-job-handoff"
+
+[artifact_retention.name_rules.bolt_v2_binary]
+artifact_name = "bolt-v2-binary"
+artifact_class = "deployable"
+
+[artifact_retention.name_rules.ci_provenance]
+artifact_name = "ci-provenance-attempt-${{ github.run_attempt }}"
+artifact_class = "provenance"
+
+[artifact_retention.name_rules.bvs_test_payload]
+artifact_name = "bvs-test-payload"
+artifact_class = "transient"
+
+[artifact_retention.name_rules.issue_789_first_pl]
+artifact_name_prefix = "issue-789-first-pl-"
+artifact_class = "transient"
+
 # Queue-only rework (#981): the Mergify queue runs in TEMP-PR mode, so merge_group
 # never fires and the SOLE producer of a green REQUIRED gate is the actor-verified
 # mergify temp PR validated at the merge boundary. Every ordinary pull_request row is

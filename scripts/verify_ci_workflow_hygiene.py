@@ -129,6 +129,22 @@ class CiPolicyResult(NamedTuple):
     reason: str
 
 
+class ArtifactRetentionClass(NamedTuple):
+    max_retention_days: int
+    allowed_refs: tuple[str, ...]
+
+
+class ArtifactRetentionNameRule(NamedTuple):
+    artifact_name: str | None
+    artifact_name_prefix: str | None
+    artifact_class: str
+
+
+class ArtifactRetentionPolicy(NamedTuple):
+    classes: dict[str, ArtifactRetentionClass]
+    name_rules: dict[str, ArtifactRetentionNameRule]
+
+
 REQUIRED_JOBS = (
     "ci-policy",
     "detector",
@@ -638,7 +654,6 @@ JUST_LANE_RE = re.compile(
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
 BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
 BOLT_V2_BINARY_ARTIFACT_NAME = "bolt-v2-binary"
-BOLT_V2_BINARY_RETENTION_DAYS = "3"
 # taiki-e/install-action must be pinned to a 40-hex commit SHA (mutable tags
 # like @v2 are rejected). The specific SHA is NOT enforced here — Dependabot
 # opens a PR with release notes for every bump and PR review is the human
@@ -1900,6 +1915,94 @@ def block_input_value(block: list[str], name: str) -> str | None:
         if item_name == name:
             return unquote_yaml_scalar(item_value)
     return None
+
+
+def artifact_retention_rule_matches(rule: ArtifactRetentionNameRule, artifact_name: str) -> bool:
+    if rule.artifact_name is not None and artifact_name == rule.artifact_name:
+        return True
+    return rule.artifact_name_prefix is not None and artifact_name.startswith(rule.artifact_name_prefix)
+
+
+def upload_artifact_retention_errors(
+    policy: ArtifactRetentionPolicy,
+    source_name: str,
+    job_id: str,
+    job_lines: list[str],
+) -> list[str]:
+    errors: list[str] = []
+    for block in action_blocks(job_lines, "actions/upload-artifact@"):
+        artifact_names = block_input_values(block, "name")
+        if len(artifact_names) != 1:
+            errors.append(f"{source_name} {job_id} upload-artifact step must set exactly one name")
+            continue
+        artifact_name = artifact_names[0]
+        label = f"{source_name} {job_id} artifact {artifact_name}"
+        matching_rules = [
+            (rule_key, rule)
+            for rule_key, rule in sorted(policy.name_rules.items())
+            if artifact_retention_rule_matches(rule, artifact_name)
+        ]
+        if not matching_rules:
+            errors.append(f"{label} missing from artifact retention policy")
+            continue
+        if len(matching_rules) > 1:
+            matched_rule_keys = ", ".join(rule_key for rule_key, _rule in matching_rules)
+            errors.append(f"{label} matches multiple artifact retention rules: {matched_rule_keys}")
+            continue
+        _rule_key, rule = matching_rules[0]
+        class_policy = policy.classes[rule.artifact_class]
+        retention_values = block_input_values(block, "retention-days")
+        if not retention_values:
+            errors.append(f"{label} must set retention-days")
+            continue
+        if len(retention_values) != 1:
+            errors.append(f"{label} must set exactly one retention-days")
+            continue
+        try:
+            retention_days = int(retention_values[0])
+        except ValueError:
+            errors.append(f"{label} retention-days must be a positive integer")
+            continue
+        if retention_days <= 0:
+            errors.append(f"{label} retention-days must be a positive integer")
+            continue
+        if retention_days > class_policy.max_retention_days:
+            errors.append(
+                f"{label} retention-days {retention_days} "
+                f"exceeds configured max {class_policy.max_retention_days}"
+            )
+    return errors
+
+
+def verify_artifact_retention_policy(
+    workflows: dict[str, str],
+    composite_actions: dict[str, str],
+) -> list[str]:
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+
+    policy = config["artifact_retention"]
+    if not isinstance(policy, ArtifactRetentionPolicy):
+        return ["github-actions runner config invalid: artifact_retention policy did not load"]
+
+    errors: list[str] = []
+    for file_name, workflow_text in sorted(workflows.items()):
+        for job_id, job_lines in sorted(parse_jobs(workflow_text).items()):
+            errors.extend(upload_artifact_retention_errors(policy, file_name, job_id, job_lines))
+
+    for file_name, automation_text in sorted(composite_actions.items()):
+        errors.extend(upload_artifact_retention_errors(
+            policy,
+            file_name,
+            "__composite__",
+            automation_text.splitlines(),
+        ))
+
+    return errors
 
 
 def job_has_setup_input(job_lines: list[str], name: str, value: str | None = None) -> bool:
@@ -8350,7 +8453,7 @@ def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]
     return errors
 
 
-def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) -> list[str]:
+def ci_provenance_emit_upload_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
     upload_blocks = [
         block
@@ -8362,10 +8465,6 @@ def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) 
         return errors
     if not any(block_has_input(block, "path", "ci-provenance.json") for block in upload_blocks):
         errors.append("ci-provenance-emit must upload ci-provenance.json")
-    if retention_days > 0 and not any(
-        block_has_input(block, "retention-days", str(retention_days)) for block in upload_blocks
-    ):
-        errors.append("ci-provenance-emit retention-days must match TOML")
     return errors
 
 
@@ -8843,21 +8942,6 @@ def job_permission_has(job_lines: list[str], permission: str, value: str) -> boo
 
 def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+actions:\s+read\s*$", workflow_text) is not None
-
-
-def configured_ci_provenance_retention_days() -> int:
-    try:
-        config = load_github_actions_runners_config()
-    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
-        return -1
-    ci_provenance = config.get("ci_provenance")
-    if not isinstance(ci_provenance, dict):
-        return -1
-    artifacts = ci_provenance.get("artifacts")
-    if not isinstance(artifacts, dict):
-        return -1
-    retention_days = artifacts.get("retention_days")
-    return retention_days if isinstance(retention_days, int) else -1
 
 
 def configured_ci_provenance_dispatch_input() -> str:
@@ -9606,12 +9690,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if not ci_provenance_emit_runs_emitter(emit_lines):
             errors.append("ci-provenance-emit must run provenance emitter")
         errors.extend(ci_provenance_emit_checks_needs(emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")))
-        errors.extend(
-            ci_provenance_emit_upload_errors(
-                emit_lines,
-                configured_ci_provenance_retention_days(),
-            )
-        )
+        errors.extend(ci_provenance_emit_upload_errors(emit_lines))
         if not ci_provenance_emit_records_secure_fingerprint(emit_lines):
             errors.append("ci-provenance-emit must record nextest fingerprint when present")
 
@@ -9759,13 +9838,8 @@ def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
         for block in action_blocks(build, "actions/upload-artifact@")
         if block_has_input(block, "name", BOLT_V2_BINARY_ARTIFACT_NAME)
     ]
-    if not binary_upload_blocks or any(
-        block_input_values(block, "retention-days") != [BOLT_V2_BINARY_RETENTION_DAYS]
-        for block in binary_upload_blocks
-    ):
-        errors.append(
-            f"{workflow_name} {BOLT_V2_BINARY_ARTIFACT_NAME} retention-days must be {BOLT_V2_BINARY_RETENTION_DAYS}"
-        )
+    if not binary_upload_blocks:
+        errors.append(f"{workflow_name} build must upload {BOLT_V2_BINARY_ARTIFACT_NAME}")
     return errors
 
 
@@ -10866,6 +10940,7 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
 
 def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config_text: str) -> list[str]:
     errors: list[str] = []
+    errors.extend(verify_artifact_retention_policy(workflows, {}))
     for workflow_name, workflow_text in workflows.items():
         is_managed_workflow = workflow_name in {
             "ci.yml",
@@ -10965,6 +11040,93 @@ def require_config_string_list(parent: dict[str, object], key: str, prefix: str)
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         raise ValueError(f"{prefix}.{key} must be a non-empty string list")
     return value
+
+
+def optional_config_string_list(parent: dict[str, object], key: str, prefix: str) -> list[str]:
+    value = parent.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"{prefix}.{key} must be a string list")
+    return value
+
+
+def resolve_config_positive_int_ref(data: dict[str, object], ref: str, prefix: str) -> int:
+    keys = ref.split(".")
+    if not keys or any(not key for key in keys):
+        raise ValueError(f"{prefix} must be a dotted TOML key reference")
+    current: object = data
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            raise ValueError(f"{prefix} references missing TOML key {ref!r}")
+        current = current[key]
+    if not isinstance(current, int) or current <= 0:
+        raise ValueError(f"{prefix} must reference a positive integer")
+    return current
+
+
+def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactRetentionPolicy:
+    artifact_retention = data.get("artifact_retention")
+    if not isinstance(artifact_retention, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [artifact_retention]")
+
+    raw_classes = require_config_table(artifact_retention, "classes", "artifact_retention")
+    classes: dict[str, ArtifactRetentionClass] = {}
+    for class_name, raw_class in sorted(raw_classes.items()):
+        if not isinstance(class_name, str) or not class_name:
+            raise ValueError("artifact_retention.classes keys must be non-empty strings")
+        if not isinstance(raw_class, dict):
+            raise ValueError(f"artifact_retention.classes.{class_name} must be a table")
+        prefix = f"artifact_retention.classes.{class_name}"
+        has_literal_max = "max_retention_days" in raw_class
+        has_ref_max = "max_retention_days_config_ref" in raw_class
+        if has_literal_max == has_ref_max:
+            raise ValueError(f"{prefix} must define exactly one max retention source")
+        if has_literal_max:
+            max_retention_days = require_config_positive_int(raw_class, "max_retention_days", prefix)
+        else:
+            max_retention_ref = require_config_string(raw_class, "max_retention_days_config_ref", prefix)
+            max_retention_days = resolve_config_positive_int_ref(data, max_retention_ref, f"{prefix}.max_retention_days_config_ref")
+        classes[class_name] = ArtifactRetentionClass(
+            max_retention_days=max_retention_days,
+            allowed_refs=tuple(optional_config_string_list(
+                raw_class,
+                "allowed_refs",
+                prefix,
+            )),
+        )
+
+    raw_rules = require_config_table(artifact_retention, "name_rules", "artifact_retention")
+    name_rules: dict[str, ArtifactRetentionNameRule] = {}
+    for rule_key, raw_rule in sorted(raw_rules.items()):
+        if not isinstance(rule_key, str) or not rule_key:
+            raise ValueError("artifact_retention.name_rules keys must be non-empty strings")
+        if not isinstance(raw_rule, dict):
+            raise ValueError(f"artifact_retention.name_rules.{rule_key} must be a table")
+        prefix = f"artifact_retention.name_rules.{rule_key}"
+        artifact_name = raw_rule.get("artifact_name")
+        artifact_name_prefix = raw_rule.get("artifact_name_prefix")
+        if artifact_name is None and artifact_name_prefix is None:
+            raise ValueError(f"{prefix} must define artifact_name or artifact_name_prefix")
+        if artifact_name is not None and artifact_name_prefix is not None:
+            raise ValueError(f"{prefix} must not define both artifact_name and artifact_name_prefix")
+        if artifact_name is not None and (not isinstance(artifact_name, str) or not artifact_name):
+            raise ValueError(f"{prefix}.artifact_name must be a non-empty string")
+        if artifact_name_prefix is not None and (
+            not isinstance(artifact_name_prefix, str) or not artifact_name_prefix
+        ):
+            raise ValueError(f"{prefix}.artifact_name_prefix must be a non-empty string")
+        artifact_class = require_config_string(raw_rule, "artifact_class", prefix)
+        class_policy = classes.get(artifact_class)
+        if class_policy is None:
+            raise ValueError(f"{prefix}.artifact_class must reference a configured class")
+        name_rules[rule_key] = ArtifactRetentionNameRule(
+            artifact_name=artifact_name,
+            artifact_name_prefix=artifact_name_prefix,
+            artifact_class=artifact_class,
+        )
+
+    return ArtifactRetentionPolicy(classes=classes, name_rules=name_rules)
 
 
 def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
@@ -11172,6 +11334,7 @@ def load_github_actions_runners_config(
     if not isinstance(meter, dict):
         raise ValueError("ci/github-actions-runners.toml must define [meter]")
     ci_provenance = validate_ci_provenance_config(data)
+    artifact_retention = validate_artifact_retention_config(data)
     dispatch_cancel = validate_dispatch_cancel_config(data)
     meter_workflows = meter.get("included_workflows")
     if not isinstance(meter_workflows, list) or not all(
@@ -11218,6 +11381,7 @@ def load_github_actions_runners_config(
         "variables": sorted(tier_to_var.values()),
         "workflows": workflows,
         "ci_provenance": ci_provenance,
+        "artifact_retention": artifact_retention,
         "dispatch_cancel": dispatch_cancel,
     }
 
@@ -11761,6 +11925,7 @@ def main() -> int:
     ci_workflow = workflow_texts.get(".github/workflows/ci.yml")
     if ci_workflow is not None:
         errors.extend(verify_merge_readiness_ci_job(ci_workflow))
+    errors.extend(verify_artifact_retention_policy({}, repo_automation_texts))
     errors.extend(verify_merge_readiness_finalizer_workflow(workflow_texts))
     errors.extend(verify_coverage_enforcer_workflow(workflow_texts))
     errors.extend(verify_actionlint_runner_contract(workflow_texts))

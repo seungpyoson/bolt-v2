@@ -1515,6 +1515,15 @@ def write_rust_verification_policy_fixtures(root: pathlib.Path) -> None:
     bvs_policy.write_text(BASE_BVS_RUST_VERIFICATION_POLICY, encoding="utf-8")
 
 
+def write_runner_config_fixture(root: pathlib.Path) -> None:
+    runner_config = root / "ci" / "github-actions-runners.toml"
+    runner_config.parent.mkdir(parents=True, exist_ok=True)
+    runner_config.write_text((REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(), encoding="utf-8")
+    actionlint = root / ".github" / "actionlint.yaml"
+    actionlint.parent.mkdir(parents=True, exist_ok=True)
+    actionlint.write_text((REPO_ROOT / ".github" / "actionlint.yaml").read_text(), encoding="utf-8")
+
+
 def assert_clean(
     workflow: str = BASE_WORKFLOW,
     action: str = BASE_ACTION,
@@ -7869,6 +7878,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         nextest_path.parent.mkdir(parents=True)
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
         write_rust_verification_policy_fixtures(tmp_path)
+        write_runner_config_fixture(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_action_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
@@ -8039,6 +8049,101 @@ jobs:
     expected_s3 = ".github/workflows/release.yml: S3 active mutable target cache must be rejected"
     if result == 0 or expected_raw_cargo not in output or expected_s3 not in output:
         raise AssertionError(f"additional workflow drift was silent: exit={result}, output={output!r}")
+
+
+def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
+    unexpected_upload = BASE_WORKFLOW.replace(
+        "      - name: Detect build-affecting changes\n",
+        """      - name: Upload unexpected artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unexpected-artifact
+          path: unexpected.txt
+          retention-days: 1
+
+      - name: Detect build-affecting changes
+""",
+    )
+    assert_workflows_error(
+        ".github/workflows/ci.yml detector artifact unexpected-artifact missing from artifact retention policy",
+        {".github/workflows/ci.yml": unexpected_upload},
+    )
+    assert_workflows_error(
+        ".github/workflows/ci.yml nextest-fingerprint artifact ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }} must set retention-days",
+        {
+            ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
+                "          retention-days: 30\n",
+                "",
+                1,
+            )
+        },
+    )
+    assert_workflows_error(
+        ".github/workflows/ci.yml build artifact bolt-v2-binary retention-days 30 exceeds configured max 3",
+        {
+            ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
+                "          retention-days: 3\n",
+                "          retention-days: 30\n",
+                1,
+            )
+        },
+    )
+    assert_workflows_error(
+        ".github/workflows/ci.yml build artifact bolt-v2-binary must set exactly one retention-days",
+        {
+            ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
+                "          retention-days: 3\n",
+                "          retention-days: 3\n          retention-days: 30\n",
+                1,
+            )
+        },
+    )
+
+    extra_action = """
+name: Uploading composite
+runs:
+  using: composite
+  steps:
+    - name: Upload from composite
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: composite-artifact
+        path: composite.txt
+        retention-days: 1
+"""
+    result, output = run_verifier_main_with_extra_action(textwrap.dedent(extra_action))
+    expected = (
+        ".github/actions/evade/action.yml __composite__ artifact composite-artifact "
+        "missing from artifact retention policy"
+    )
+    if result == 0 or expected not in output:
+        raise AssertionError(f"composite upload-artifact drift was silent: exit={result}, output={output!r}")
+
+
+def assert_artifact_retention_config_refs_are_validated() -> None:
+    verifier = load_verifier()
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    cases = {
+        "max_retention_days_config_ref references missing TOML key": config_text.replace(
+            'max_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+            'max_retention_days_config_ref = "ci_provenance.artifacts.missing"',
+        ),
+        "artifact_retention.classes.provenance must define exactly one max retention source": config_text.replace(
+            'max_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+            'max_retention_days = 30\nmax_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+        ),
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
+        for expected, mutated_config in cases.items():
+            config_path.write_text(mutated_config, encoding="utf-8")
+            try:
+                verifier.load_github_actions_runners_config(config_path)
+            except ValueError as exc:
+                if expected not in str(exc):
+                    raise AssertionError(f"expected {expected!r}, got {exc}") from exc
+            else:
+                raise AssertionError(f"config mutation did not fail: {expected}")
 
 
 def assert_v6_red_no_mistakes_raw_cargo_is_reported() -> None:
@@ -9709,6 +9814,8 @@ def main() -> int:
     assert_v6_red_static_path_classifier_ignores_host_filesystem_resolution()
     assert_v6_red_local_composite_actions_are_scanned()
     assert_v6_red_additional_workflows_are_scanned()
+    assert_artifact_retention_policy_spine_gaps_are_reported()
+    assert_artifact_retention_config_refs_are_validated()
     assert_shell_logical_lines_handles_crlf_continuations()
     assert_workflow_hygiene_reviewer_regressions()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
@@ -10902,11 +11009,11 @@ def main() -> int:
         ),
     )
     assert_error(
-        "ci-provenance-emit retention-days must match TOML",
+        "ci.yml ci-provenance-emit artifact ci-provenance-attempt-${{ github.run_attempt }} retention-days 31 exceeds configured max 30",
         replace_once(
             BASE_WORKFLOW,
             "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 30",
-            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 7",
+            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 31",
         ),
     )
     assert_error(
@@ -10992,7 +11099,7 @@ def main() -> int:
         BASE_WORKFLOW.replace("${{ steps.managed_artifact.outputs.stage_dir }}", "$RUNNER_TEMP/bolt-v2-binary"),
     )
     assert_error(
-        "ci.yml bolt-v2-binary retention-days must be 3",
+        "ci.yml build artifact bolt-v2-binary retention-days 30 exceeds configured max 3",
         replace_once(
             BASE_WORKFLOW,
             "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
@@ -11000,7 +11107,7 @@ def main() -> int:
         ),
     )
     assert_error(
-        "ci.yml bolt-v2-binary retention-days must be 3",
+        "ci.yml build artifact bolt-v2-binary must set retention-days",
         replace_once(
             BASE_WORKFLOW,
             "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
@@ -11008,7 +11115,7 @@ def main() -> int:
         ),
     )
     assert_error(
-        "ci.yml bolt-v2-binary retention-days must be 3",
+        "ci.yml build artifact bolt-v2-binary must set exactly one retention-days",
         replace_once(
             BASE_WORKFLOW,
             "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",

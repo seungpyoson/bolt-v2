@@ -569,6 +569,7 @@ jobs:
           name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}
           path: crates/backtesting-vertical-slice/target/issue-789-first-pl/result.json
           if-no-files-found: error
+          retention-days: 7
 
   gate:
     name: ${{ needs.ci-policy.outputs.backtester_gate_name }}

@@ -12068,20 +12068,8 @@ def verify_text_contracts(
     texts: dict[str, str],
     contracts: Iterable[TextContract],
     label: str,
-    *,
-    require_present: bool = False,
 ) -> list[str]:
-    contract_list = tuple(contracts)
-    active = require_present or any(contract.path in texts for contract in contract_list)
-    if not active:
-        return []
-
-    present_contracts = tuple(contract for contract in contract_list if contract.path in texts)
-    missing_errors = [
-        f"{label} {contract.path} must exist"
-        for contract in contract_list
-        if contract.path not in texts
-    ]
+    present_contracts = tuple(contract for contract in contracts if contract.path in texts)
     required_errors = [
         f"{label} {contract.path} must include {snippet!r}"
         for contract in present_contracts
@@ -12094,7 +12082,21 @@ def verify_text_contracts(
         for snippet in contract.forbidden
         if snippet in texts[contract.path]
     ]
-    return missing_errors + required_errors + forbidden_errors
+    return required_errors + forbidden_errors
+
+
+def verify_required_text_contracts(
+    texts: dict[str, str],
+    contracts: Iterable[TextContract],
+    label: str,
+) -> list[str]:
+    contract_list = tuple(contracts)
+    missing_errors = [
+        f"{label} {contract.path} must exist"
+        for contract in contract_list
+        if contract.path not in texts
+    ]
+    return missing_errors + verify_text_contracts(texts, contract_list, label)
 
 
 def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
@@ -12277,13 +12279,14 @@ def main() -> int:
         errors.extend(verify_merge_readiness_ci_job(ci_workflow))
     errors.extend(verify_merge_readiness_finalizer_workflow(workflow_texts))
     errors.extend(verify_coverage_enforcer_workflow(workflow_texts))
-    errors.extend(
-        verify_text_contracts(
-            workflow_texts,
-            JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS,
-            "Jules advisory workflow",
+    if any(contract.path in workflow_texts for contract in JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS):
+        errors.extend(
+            verify_required_text_contracts(
+                workflow_texts,
+                JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS,
+                "Jules advisory workflow",
+            )
         )
-    )
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())

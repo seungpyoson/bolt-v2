@@ -5679,22 +5679,20 @@ def assert_jules_advisory_workflow_gaps_are_reported() -> None:
         contract.path: repo_workflow_text(contract.path)
         for contract in verifier.JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS
     }
-    clean_errors = verifier.verify_text_contracts(
+    clean_errors = verifier.verify_required_text_contracts(
         workflows,
         verifier.JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS,
         "Jules advisory workflow",
-        require_present=True,
     )
     if clean_errors:
         raise AssertionError(f"Jules advisory workflows must satisfy their contract, got: {clean_errors}")
 
     missing = dict(workflows)
     missing.pop(".github/workflows/weekly-cleanup.yml")
-    missing_errors = verifier.verify_text_contracts(
+    missing_errors = verifier.verify_required_text_contracts(
         missing,
         verifier.JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS,
         "Jules advisory workflow",
-        require_present=True,
     )
     if not any("weekly-cleanup.yml must exist" in error for error in missing_errors):
         raise AssertionError(f"Jules contract must require all three workflows, got: {missing_errors}")
@@ -5747,11 +5745,10 @@ def assert_jules_advisory_workflow_gaps_are_reported() -> None:
         ),
     )
     for label, mutated, expected in cases:
-        errors = verifier.verify_text_contracts(
+        errors = verifier.verify_required_text_contracts(
             {**workflows, ".github/workflows/weekly-cleanup.yml": mutated},
             verifier.JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS,
             "Jules advisory workflow",
-            require_present=True,
         )
         if not any(expected in error for error in errors):
             raise AssertionError(

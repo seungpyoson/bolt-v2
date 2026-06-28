@@ -1,7 +1,7 @@
 [fail_closed_contracts]
 version = 1
 include_globs = ["scripts/**/*.py"]
-exclude_globs = ["scripts/test_*.py"]
+exclude_globs = ["scripts/test_*.py", "scripts/**/test_*.py"]
 broad_exception_names = ["Exception", "BaseException"]
 logging_call_names = ["logger.exception", "logging.exception"]
 

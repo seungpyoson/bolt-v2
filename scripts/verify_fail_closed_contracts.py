@@ -15,7 +15,9 @@ from typing import Callable, Iterable, cast
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = Path("ci/fail-closed-contracts.toml")
+DEFAULT_EXCEPTIONS_CONFIG = Path("ci/fail-closed-exceptions.toml")
 CONFIG_TABLE = "fail_closed_contracts"
+EXCEPTIONS_TABLE = "fail_closed_exceptions"
 SUPPORTED_CONFIG_VERSION = 1
 
 
@@ -45,6 +47,18 @@ class HandlerFacts:
     @property
     def catches_all(self) -> bool:
         return self.is_bare or self.is_broad
+
+
+@dataclass(frozen=True)
+class ExceptionKey:
+    rule_id: str
+    path: str
+    line: int
+
+
+@dataclass(frozen=True)
+class Exceptions:
+    entries: dict[ExceptionKey, str]
 
 
 @dataclass(frozen=True)
@@ -87,6 +101,8 @@ CONFIG_KEYS = frozenset(
     }
 )
 RULE_ID_KEYS = frozenset(rule.key for rule in RULES)
+EXCEPTIONS_KEYS = frozenset({"version", "exceptions"})
+EXCEPTION_ENTRY_KEYS = frozenset({"rule_id", "path", "line", "reason"})
 
 
 def strings(field_name: str, value: object) -> tuple[str, ...]:
@@ -118,6 +134,26 @@ def require_version(field_name: str, value: object) -> None:
         raise TypeError(f"{field_name} must be {SUPPORTED_CONFIG_VERSION}")
 
 
+def positive_int(field_name: str, value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise TypeError(f"{field_name} must be a positive integer")
+    return value
+
+
+def nonempty_string(field_name: str, value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise TypeError(f"{field_name} must be a non-empty string")
+    return value
+
+
+def relative_repo_path(field_name: str, value: object) -> str:
+    text = nonempty_string(field_name, value)
+    path = Path(text)
+    if path.is_absolute() or ".." in path.parts:
+        raise TypeError(f"{field_name} must be a repository-relative path")
+    return text
+
+
 def load_config(path: Path) -> Config:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     table = data[CONFIG_TABLE]
@@ -132,6 +168,35 @@ def load_config(path: Path) -> Config:
         logging_call_names=frozenset(strings("logging_call_names", table["logging_call_names"])),
         rule_ids=rule_ids,
     )
+
+
+def load_exceptions(path: Path, valid_rule_ids: frozenset[str]) -> Exceptions:
+    if not path.exists():
+        return Exceptions({})
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    table = data[EXCEPTIONS_TABLE]
+    require_keys(EXCEPTIONS_TABLE, frozenset(table), EXCEPTIONS_KEYS)
+    require_version("exceptions version", table["version"])
+    entries_raw = table["exceptions"]
+    if not isinstance(entries_raw, list):
+        raise TypeError("exceptions must be a list of tables")
+    entries: dict[ExceptionKey, str] = {}
+    for item in entries_raw:
+        if not isinstance(item, dict):
+            raise TypeError("exceptions must contain only tables")
+        require_keys("exception entry", frozenset(item), EXCEPTION_ENTRY_KEYS)
+        rule_id = nonempty_string("exception rule_id", item["rule_id"])
+        if rule_id not in valid_rule_ids:
+            raise TypeError(f"exception rule_id must be one of {sorted(valid_rule_ids)}")
+        key = ExceptionKey(
+            rule_id=rule_id,
+            path=relative_repo_path("exception path", item["path"]),
+            line=positive_int("exception line", item["line"]),
+        )
+        if key in entries:
+            raise TypeError(f"duplicate fail-closed exception for {key.path}:{key.line}:{key.rule_id}")
+        entries[key] = nonempty_string("exception reason", item["reason"])
+    return Exceptions(entries)
 
 
 def rel_name(path: Path, root: Path) -> str:
@@ -212,6 +277,8 @@ def sentinel_shape(node: ast.AST | None) -> str | None:
             return "empty_list"
         case ast.Dict(keys=[], values=[]):
             return "empty_dict"
+        case ast.Tuple(elts=[]):
+            return "empty_tuple"
         case ast.Constant(value=""):
             return "empty_string"
         case ast.Constant(value=False):
@@ -229,6 +296,8 @@ def sentinel_shapes(node: ast.AST | None) -> frozenset[str]:
             return sentinel_shapes(body) | sentinel_shapes(orelse)
         case ast.BoolOp(values=values):
             return frozenset().union(*(sentinel_shapes(value) for value in values))
+        case ast.Tuple(elts=elts):
+            return frozenset().union(*(sentinel_shapes(elt) for elt in elts))
         case _:
             return frozenset()
 
@@ -242,13 +311,27 @@ def sentinel_returns(handler: ast.ExceptHandler) -> frozenset[str]:
     )
 
 
+def is_silent_handler_statement(node: ast.AST) -> bool:
+    match node:
+        case ast.Pass():
+            return True
+        case ast.Expr(value=ast.Constant(value=Ellipsis)):
+            return True
+        case _:
+            return False
+
+
+def handler_body_is_silent(handler: ast.ExceptHandler) -> bool:
+    return bool(handler.body) and all(is_silent_handler_statement(stmt) for stmt in handler.body)
+
+
 def facts_for_handler(rel_path: str, handler: ast.ExceptHandler, config: Config) -> HandlerFacts:
     return HandlerFacts(
         rel_path=rel_path,
         line=handler.lineno,
         exception_names=exception_names(handler, config.broad_exception_names),
         is_bare=handler.type is None,
-        only_pass=len(handler.body) == 1 and isinstance(handler.body[0], ast.Pass),
+        only_pass=handler_body_is_silent(handler),
         has_logging=bool(config.logging_call_names.intersection(call_names(handler_body_walk(handler)))),
         sentinel_returns=sentinel_returns(handler),
     )
@@ -269,33 +352,67 @@ def finding(config: Config, facts: HandlerFacts, rule: Rule) -> str | None:
     return f"{rule_id}:{facts.rel_path}:{facts.line}: {rule.message}"
 
 
-def findings_for_facts(config: Config, facts: HandlerFacts) -> list[str]:
+def exception_key(config: Config, facts: HandlerFacts, rule: Rule) -> ExceptionKey:
+    return ExceptionKey(
+        rule_id=config.rule_ids[rule.key],
+        path=facts.rel_path,
+        line=facts.line,
+    )
+
+
+def raw_findings_for_facts(config: Config, facts: HandlerFacts) -> list[tuple[ExceptionKey, str]]:
     return [
-        result
+        (exception_key(config, facts, rule), result)
         for rule in RULES
         if rule.applies(facts)
         if (result := finding(config, facts, rule)) is not None
     ]
 
 
-def collect_findings(root: Path, config_path: Path = REPO_ROOT / DEFAULT_CONFIG) -> list[str]:
+def findings_for_facts(config: Config, facts: HandlerFacts) -> list[str]:
+    return [result for _, result in raw_findings_for_facts(config, facts)]
+
+
+def collect_findings(
+    root: Path,
+    config_path: Path = REPO_ROOT / DEFAULT_CONFIG,
+    exceptions_path: Path | None = None,
+) -> list[str]:
     root = root.resolve()
     config = load_config(config_path)
-    return [
-        finding
+    exceptions = load_exceptions(
+        exceptions_path or config_path.with_name(DEFAULT_EXCEPTIONS_CONFIG.name),
+        frozenset(config.rule_ids.values()),
+    )
+    raw_findings = [
+        raw_finding
         for path in selected_paths(root, config)
         for facts in scan_file(root, path, config)
-        for finding in findings_for_facts(config, facts)
+        for raw_finding in raw_findings_for_facts(config, facts)
     ]
+    matched_exceptions: set[ExceptionKey] = set()
+    findings: list[str] = []
+    for key, text in raw_findings:
+        if key in exceptions.entries:
+            matched_exceptions.add(key)
+        else:
+            findings.append(text)
+    stale = sorted(set(exceptions.entries) - matched_exceptions, key=lambda key: (key.path, key.line, key.rule_id))
+    findings.extend(
+        f"FLC000:{key.path}:{key.line}: stale fail-closed exception for {key.rule_id}"
+        for key in stale
+    )
+    return findings
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     parser.add_argument("--config", type=Path, default=REPO_ROOT / DEFAULT_CONFIG)
+    parser.add_argument("--exceptions-config", type=Path)
     args = parser.parse_args(argv)
 
-    findings = collect_findings(args.root, args.config)
+    findings = collect_findings(args.root, args.config, args.exceptions_config)
     if findings:
         print("FAIL: fail-closed contract violations:", file=sys.stderr)
         for item in findings:

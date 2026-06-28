@@ -1548,7 +1548,7 @@ def log_stderr(msg: str) -> None:
                 fcntl.fcntl(fd, fcntl.F_SETFL, original)
             except OSError:
                 pass
-    except (AttributeError, OSError, ValueError):  # logging must never affect exit status
+    except (AttributeError, OSError, RuntimeError, ValueError):  # logging must never affect exit status
         pass
 
 

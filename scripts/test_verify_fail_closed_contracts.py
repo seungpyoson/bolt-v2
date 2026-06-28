@@ -34,6 +34,7 @@ def write_file(root: Path, rel_path: str, text: str) -> None:
 def config_text(
     *,
     version: str = "1",
+    exclude_globs: str = "[]",
     logging_call_names: str = '["logger.exception", "logging.exception"]',
     extra_settings: str = "",
 ) -> str:
@@ -41,7 +42,7 @@ def config_text(
     [fail_closed_contracts]
     version = {version}
     include_globs = ["pkg/**/*.py"]
-    exclude_globs = []
+    exclude_globs = {exclude_globs}
     broad_exception_names = ["Exception", "BaseException"]
     logging_call_names = {logging_call_names}
     {extra_settings}
@@ -51,6 +52,15 @@ def config_text(
     broad_except_pass = "FLC002"
     broad_sentinel_return = "FLC003"
     broad_logged_sentinel_return = "FLC004"
+    """
+
+
+def exceptions_text(*entries: str) -> str:
+    body = "\n".join(entries)
+    return f"""
+    [fail_closed_exceptions]
+    version = 1
+    {body}
     """
 
 
@@ -186,6 +196,27 @@ def test_bare_except_sentinel_return_fails_closed() -> None:
     assert any(finding.startswith("FLC003:pkg/bare_except_return.py:4:") for finding in findings)
 
 
+def test_broad_except_tuple_sentinel_return_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/tuple_return.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except Exception as exc:
+                    return None, str(exc)
+            """,
+        )
+
+        findings = collect(root)
+
+    assert any(finding.startswith("FLC003:pkg/tuple_return.py:4:") for finding in findings)
+
+
 def test_conditional_sentinel_return_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -249,6 +280,49 @@ def test_conditional_broad_exception_type_fails_closed() -> None:
     assert any(finding.startswith("FLC003:pkg/conditional_except.py:4:") for finding in findings)
 
 
+def test_repeated_pass_fails_as_silent_catch_all() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/repeated_pass.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except Exception:
+                    pass
+                    pass
+            """,
+        )
+
+        findings = collect(root)
+
+    assert any(finding.startswith("FLC002:pkg/repeated_pass.py:4:") for finding in findings)
+
+
+def test_ellipsis_fails_as_silent_catch_all() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/ellipsis.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except Exception:
+                    ...
+            """,
+        )
+
+        findings = collect(root)
+
+    assert any(finding.startswith("FLC002:pkg/ellipsis.py:4:") for finding in findings)
+
+
 def test_nested_function_return_inside_handler_is_not_handler_return() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -297,6 +371,135 @@ def test_nested_precise_exception_return_inside_handler_is_not_outer_handler_ret
     assert findings == [], findings
 
 
+def test_config_excludes_nested_test_files() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "ci/fail-closed-contracts.toml",
+            config_text(exclude_globs='["pkg/test_*.py", "pkg/**/test_*.py"]'),
+        )
+        write_file(
+            root,
+            "pkg/test_top_level.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except Exception:
+                    return None
+            """,
+        )
+        write_file(
+            root,
+            "pkg/subdir/test_bad.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except Exception:
+                    return None
+            """,
+        )
+
+        findings = collect(root)
+
+    assert findings == [], findings
+
+
+def test_repo_config_excludes_nested_script_test_files() -> None:
+    verifier = load_verifier()
+    config = verifier.load_config(REPO_ROOT / "ci" / "fail-closed-contracts.toml")
+
+    assert "scripts/test_*.py" in config.exclude_globs
+    assert "scripts/**/test_*.py" in config.exclude_globs
+
+
+def test_classified_degradation_requires_central_exception() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/degraded.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except Exception as exc:
+                    return None, str(exc)
+            """,
+        )
+
+        findings_without_exception = collect(root)
+        write_file(
+            root,
+            "ci/fail-closed-exceptions.toml",
+            exceptions_text(
+                """
+                [[fail_closed_exceptions.exceptions]]
+                rule_id = "FLC003"
+                path = "pkg/degraded.py"
+                line = 4
+                reason = "Classified degradation: caller receives null payload plus explicit error."
+                """
+            ),
+        )
+        findings_with_exception = collect(root)
+
+    assert any(finding.startswith("FLC003:pkg/degraded.py:4:") for finding in findings_without_exception)
+    assert findings_with_exception == [], findings_with_exception
+
+
+def test_stale_central_exception_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "ci/fail-closed-exceptions.toml",
+            exceptions_text(
+                """
+                [[fail_closed_exceptions.exceptions]]
+                rule_id = "FLC003"
+                path = "pkg/missing.py"
+                line = 4
+                reason = "Fixture proves stale exception detection."
+                """
+            ),
+        )
+
+        findings = collect(root)
+
+    assert findings == ["FLC000:pkg/missing.py:4: stale fail-closed exception for FLC003"], findings
+
+
+def test_exception_config_rejects_invalid_shapes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "ci/fail-closed-exceptions.toml",
+            exceptions_text(
+                """
+                [[fail_closed_exceptions.exceptions]]
+                rule_id = "FLC999"
+                path = "pkg/degraded.py"
+                line = 4
+                reason = "Bad rule id must fail closed."
+                """
+            ),
+        )
+
+        try:
+            collect(root)
+        except TypeError as exc:
+            assert "exception rule_id" in str(exc)
+        else:
+            raise AssertionError("accepted invalid fail-closed exception rule id")
+
+
 def test_config_string_arrays_reject_invalid_shapes() -> None:
     for malformed_logging_names in ('"logger.exception"', "[1]"):
         with tempfile.TemporaryDirectory() as tmp:
@@ -333,7 +536,7 @@ def test_exception_suppression_config_is_rejected() -> None:
 
 
 def test_config_version_rejects_unsupported_shapes() -> None:
-    for malformed_version in ("2", "true"):
+    for malformed_version in ("2", "true", "1.0", "-1"):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_file(
@@ -393,11 +596,19 @@ def main() -> int:
         test_precise_exception_fixture_passes,
         test_bare_return_fails_as_return_from_catch_all,
         test_bare_except_sentinel_return_fails_closed,
+        test_broad_except_tuple_sentinel_return_fails_closed,
         test_conditional_sentinel_return_fails_closed,
         test_boolean_sentinel_return_fails_closed,
         test_conditional_broad_exception_type_fails_closed,
+        test_repeated_pass_fails_as_silent_catch_all,
+        test_ellipsis_fails_as_silent_catch_all,
         test_nested_function_return_inside_handler_is_not_handler_return,
         test_nested_precise_exception_return_inside_handler_is_not_outer_handler_return,
+        test_config_excludes_nested_test_files,
+        test_repo_config_excludes_nested_script_test_files,
+        test_classified_degradation_requires_central_exception,
+        test_stale_central_exception_fails_closed,
+        test_exception_config_rejects_invalid_shapes,
         test_config_string_arrays_reject_invalid_shapes,
         test_exception_suppression_config_is_rejected,
         test_config_version_rejects_unsupported_shapes,

@@ -52,6 +52,7 @@ CI_RUNNERS_RELATIVE_PATH = pathlib.Path("ci/github-actions-runners.toml")
 MAX_POLICY_BYTES = 1024 * 1024
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 LANE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 RUST_PROBE_MODES = (
     "check-lib",
@@ -272,6 +273,7 @@ def validate_policy_data(data: dict[str, Any]) -> None:
     if build.get("artifact_layout") != "cargo":
         raise PolicyError("commands.build.artifact_layout must be 'cargo'")
     validate_local_compile_policy(data)
+    validate_remote_compile_cache_policy(data)
     validate_local_lane_policy(data)
     if "remote_verification" in data:
         validate_remote_verification_policy(data)
@@ -311,6 +313,29 @@ def validate_local_compile_policy(data: dict[str, Any]) -> None:
         raise PolicyError(
             "local_compile_policy.refused_cargo_subcommands must match disk-preflight and alias subcommands"
         )
+
+
+def validate_remote_compile_cache_policy(data: dict[str, Any]) -> None:
+    policy = data.get("remote_compile_cache")
+    if policy is None:
+        return
+    if not isinstance(policy, dict):
+        raise PolicyError("remote_compile_cache table must be a table")
+    allowed_keys = {"enabled", "enable_env", "ci_env", "wrapper_env", "wrapper_program"}
+    for key in policy:
+        if key not in allowed_keys:
+            raise PolicyError(f"remote_compile_cache.{key} is not supported")
+    if policy.get("enabled") is not True:
+        raise PolicyError("remote_compile_cache.enabled must be true")
+    for key in ("enable_env", "ci_env", "wrapper_env"):
+        value = require_non_empty_string(policy, key, "remote_compile_cache")
+        if not ENV_NAME_RE.match(value):
+            raise PolicyError(f"remote_compile_cache.{key} must be an environment variable name")
+    if policy["ci_env"] != "GITHUB_ACTIONS":
+        raise PolicyError("remote_compile_cache.ci_env must be 'GITHUB_ACTIONS'")
+    wrapper_program = require_non_empty_string(policy, "wrapper_program", "remote_compile_cache")
+    if wrapper_program != "sccache":
+        raise PolicyError("remote_compile_cache.wrapper_program must be 'sccache'")
 
 
 def validate_local_lane_policy(data: dict[str, Any]) -> None:
@@ -552,12 +577,41 @@ def cache_lock(policy: dict[str, Any], *, exclusive: bool) -> Any:
 
 
 def managed_env(repo: pathlib.Path, policy: dict[str, Any] | None = None) -> dict[str, str]:
+    data = policy if policy is not None else load_policy(repo)
     env = os.environ.copy()
     for key in SCRUB_ENV_KEYS:
         env.pop(key, None)
-    env["CARGO_TARGET_DIR"] = str(target_dir(repo, policy))
+    env["CARGO_TARGET_DIR"] = str(target_dir(repo, data))
     env["RUST_VERIFICATION_PRESERVE_ROUTING_ENV"] = "1"
+    env.update(managed_remote_compile_cache_env(data))
     return env
+
+
+def managed_remote_compile_cache_env(policy: dict[str, Any]) -> dict[str, str]:
+    cache_policy = policy.get("remote_compile_cache")
+    if not isinstance(cache_policy, dict) or cache_policy.get("enabled") is not True:
+        return {}
+    if os.environ.get(str(cache_policy["enable_env"])) != "1":
+        return {}
+    if os.environ.get(str(cache_policy["ci_env"])) != "true":
+        return {}
+
+    # Fail-open: the opt-in only resolves to "1" after the CI precondition ladder
+    # has installed sccache and exported its path, so a missing or malformed
+    # wrapper here means the environment is not what we expect. Degrade to no
+    # wrapper (a normal local compile) instead of raising -- the remote compile
+    # cache must never be able to fail the build. A structurally invalid
+    # *committed* policy still fails loudly in validate_remote_compile_cache_policy;
+    # this guards only the runtime environment value.
+    wrapper_program = str(cache_policy["wrapper_program"])
+    wrapper = os.environ.get(str(cache_policy["wrapper_env"]), "")
+    if not wrapper:
+        return {}
+    if wrapper.strip() != wrapper or any(char.isspace() for char in wrapper):
+        return {}
+    if pathlib.Path(wrapper).name != wrapper_program:
+        return {}
+    return {"RUSTC_WRAPPER": wrapper}
 
 
 def scrubbed_local_env() -> dict[str, str]:

@@ -1,5 +1,17 @@
 # CI Optimization Findings — 2026-06-01
 
+> **Partially superseded (2026-06-27, #1011).** The "sccache — BLOCKED" finding
+> and the "leave CI as-is" recommendation below are out of date. The hermetic
+> env-scrub that blocked sccache is now resolved by a TOML-governed, CI-only
+> `RUSTC_WRAPPER` opt-in (`[remote_compile_cache]` in `ci/rust-verification.toml`
+> + `managed_env`), so sccache no longer silently no-ops. Measured on current code
+> (same-runner A/B): a cold `nextest archive` build drops ~30% (1516s → 1053s,
+> 100% cache hit) with zero overhead on a miss. sccache is now wired into the
+> required `test-archive` job as a cold/evicted-target backstop (writes only on
+> trusted refs; fail-open). The managed-target lint claim below — that
+> `restore-keys` is forbidden on test-archive — is also stale; that cache has
+> since been added. See #1011 for the production wiring and evidence.
+
 Investigation into whether the bolt-v2 CI pipeline can be further shortened or
 made cheaper. Five adversarially-verified passes were run: (A) per-run speed,
 (B) how often the heavy release build runs, (C) Tier-2 paid infrastructure

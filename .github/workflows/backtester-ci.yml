@@ -71,7 +71,8 @@ concurrency:
   # Merge queue and Mergify proof PR runs are never cancelled by this workflow.
   group: >-
     ${{ github.event_name == 'pull_request'
-        && startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)
         || github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
@@ -94,7 +95,8 @@ concurrency:
         || format('bvs-{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
-        && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && !(github.event.pull_request.draft == false
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
@@ -169,6 +171,7 @@ jobs:
         shell: bash
         env:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+          EVENT_SENDER_ID: ${{ github.event.sender.id }}
         run: |
           policy_script="${{ steps.policy_base.outputs.script }}"
           if [[ -z "$policy_script" ]]; then

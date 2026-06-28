@@ -1277,7 +1277,7 @@ def assert_top_level_help_is_supported() -> None:
         raise AssertionError(f"expected artifact metadata mode in help output, got {combined!r}")
 
 
-def assert_artifact_metadata_outputs_configured_name_and_retention() -> None:
+def assert_artifact_metadata_outputs_configured_name_only() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
         code, stdout, stderr = run_cli(
@@ -1294,8 +1294,8 @@ def assert_artifact_metadata_outputs_configured_name_and_retention() -> None:
     lines = stdout.strip().splitlines()
     if "artifact_name=ci-provenance-attempt-7" not in lines:
         raise AssertionError(f"artifact metadata must derive artifact name from config, got {stdout!r}")
-    if "retention_days=30" not in lines:
-        raise AssertionError(f"artifact metadata must derive retention from config, got {stdout!r}")
+    if any(line.startswith("retention_days=") for line in lines):
+        raise AssertionError(f"artifact metadata must not emit upload retention policy, got {stdout!r}")
 
 
 def assert_artifact_metadata_accepts_capture_config_without_workflows() -> None:
@@ -1326,8 +1326,8 @@ def assert_artifact_metadata_accepts_capture_config_without_workflows() -> None:
     lines = stdout.strip().splitlines()
     if "artifact_name=chainlink-reference-fixture-capture-attempt-3" not in lines:
         raise AssertionError(f"capture artifact metadata derived wrong artifact name: {stdout!r}")
-    if "retention_days=30" not in lines:
-        raise AssertionError(f"capture artifact metadata derived wrong retention: {stdout!r}")
+    if any(line.startswith("retention_days=") for line in lines):
+        raise AssertionError(f"capture artifact metadata must not emit upload retention policy: {stdout!r}")
 
 
 def assert_ci_policy_rejects_event_sender_cli_override_arguments() -> None:
@@ -4306,7 +4306,7 @@ def main() -> int:
     assert_fingerprint_reuse_api_errors_fail_closed()
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
-    assert_artifact_metadata_outputs_configured_name_and_retention()
+    assert_artifact_metadata_outputs_configured_name_only()
     assert_artifact_metadata_accepts_capture_config_without_workflows()
     assert_ci_policy_rejects_event_sender_cli_override_arguments()
     assert_ci_policy_outputs_matrix()

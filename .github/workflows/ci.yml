@@ -1028,7 +1028,7 @@ jobs:
           path: |
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
-          retention-days: 3
+          retention-days: 30
 
   capture:
     name: capture
@@ -1115,7 +1115,7 @@ jobs:
           name: ${{ steps.provenance.outputs.artifact_name }}
           path: ${{ env.CAPTURE_OUTPUT_DIR }}
           if-no-files-found: error
-          retention-days: ${{ steps.provenance.outputs.retention_days }}
+          retention-days: 30
 
   capture-gate:
     name: capture-gate

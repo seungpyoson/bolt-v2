@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 import functools
 import json
 import pathlib
@@ -24,6 +24,7 @@ from ci_provenance import (
     POLICY_ROWS,
     POLICY_VALUES,
     ProvenanceError,
+    check_lookback_le_retention,
     gate_name_collision_errors,
     github_actions_output_safe_check_name,
     policy_contract_errors,
@@ -143,16 +144,42 @@ class ArtifactRetentionClass(NamedTuple):
 
 
 class ArtifactRetentionUploadSite(NamedTuple):
-    artifact_name: str | None
-    artifact_name_prefix: str | None
+    artifact_name: str
     artifact_class: str
-    retention_days_expression: str | None
-    retention_days: int | None
+    retention_days: int
+    retention_config_file: str | None
+    retention_config_ref: str | None
+
+
+class ArtifactRetentionLookbackBinding(NamedTuple):
+    upload: str
+    config_file: str
+    retention_ref: str
+    lookback_ref: str
 
 
 class ArtifactRetentionPolicy(NamedTuple):
     classes: dict[str, ArtifactRetentionClass]
     uploads: dict[str, ArtifactRetentionUploadSite]
+    lookback_bindings: dict[str, ArtifactRetentionLookbackBinding]
+
+
+class ArtifactRetentionResolvedInt(NamedTuple):
+    value: int
+    config_file: str | None
+    config_ref: str | None
+
+
+ArtifactRetentionSourceResolver = Callable[
+    [dict[str, object], pathlib.Path, dict[str, object], str],
+    object,
+]
+
+
+class ArtifactRetentionSourceMode(NamedTuple):
+    name: str
+    keys: tuple[str, ...]
+    resolver: ArtifactRetentionSourceResolver
 
 
 REQUIRED_JOBS = (
@@ -1946,17 +1973,11 @@ def block_step_id(block: list[str]) -> str | None:
 
 
 def artifact_retention_upload_matches(site: ArtifactRetentionUploadSite, artifact_name: str) -> bool:
-    if site.artifact_name is not None and artifact_name == site.artifact_name:
-        return True
-    return site.artifact_name_prefix is not None and artifact_name.startswith(site.artifact_name_prefix)
+    return artifact_name == site.artifact_name
 
 
 def artifact_retention_upload_name_expectation(site: ArtifactRetentionUploadSite) -> str:
-    if site.artifact_name is not None:
-        return f"configured name {site.artifact_name}"
-    if site.artifact_name_prefix is not None:
-        return f"configured prefix {site.artifact_name_prefix}"
-    return "configured artifact identity"
+    return f"configured name {site.artifact_name}"
 
 
 def texts_have_upload_artifact_action(texts: Iterable[str]) -> bool:
@@ -2011,22 +2032,20 @@ def upload_artifact_retention_errors(
         if len(retention_values) != 1:
             errors.append(f"{label} must set exactly one retention-days")
             continue
-        if site.retention_days_expression is not None:
-            if retention_values[0] != site.retention_days_expression:
-                errors.append(
-                    f"{label} retention-days must match configured expression "
-                    f"{site.retention_days_expression}"
-                )
-            retention_days = site.retention_days
-        else:
-            try:
-                retention_days = int(retention_values[0])
-            except ValueError:
-                errors.append(f"{label} retention-days must be a positive integer")
-                continue
-            if retention_days <= 0:
-                errors.append(f"{label} retention-days must be a positive integer")
-                continue
+        try:
+            retention_days = int(retention_values[0])
+        except ValueError:
+            errors.append(f"{label} retention-days must be a positive integer")
+            continue
+        if retention_days <= 0:
+            errors.append(f"{label} retention-days must be a positive integer")
+            continue
+        if retention_days != site.retention_days:
+            errors.append(
+                f"{label} retention-days {retention_days} "
+                f"does not match configured retention-days {site.retention_days}"
+            )
+            continue
         if retention_days > class_policy.max_retention_days:
             errors.append(
                 f"{label} retention-days {retention_days} "
@@ -8749,17 +8768,13 @@ def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]
 
 def ci_provenance_emit_upload_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
-    expected_artifact_name = configured_ci_provenance_artifact_name()
-    if not expected_artifact_name:
-        errors.append("ci-provenance-emit must resolve configured provenance artifact")
-        return errors
     upload_blocks = [
         block
         for block in action_blocks(job_lines, "actions/upload-artifact@")
-        if block_has_input(block, "name", expected_artifact_name)
+        if block_step_id(block) == "upload-ci-provenance"
     ]
     if not upload_blocks:
-        errors.append("ci-provenance-emit must upload configured provenance artifact")
+        errors.append("ci-provenance-emit must upload ci-provenance artifact from upload-ci-provenance")
         return errors
     if not any(block_has_input(block, "path", "ci-provenance.json") for block in upload_blocks):
         errors.append("ci-provenance-emit must upload ci-provenance.json")
@@ -9286,63 +9301,6 @@ def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
 
 def workflow_permissions_have_issues_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+issues:\s+read\s*$", workflow_text) is not None
-
-
-def configured_ci_provenance_retention_days() -> int:
-    try:
-        config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError):
-        return -1
-    ci_provenance = config.get("ci_provenance")
-    if not isinstance(ci_provenance, dict):
-        return -1
-    artifacts = ci_provenance.get("artifacts")
-    if not isinstance(artifacts, dict):
-        return -1
-    retention_days = artifacts.get("retention_days")
-    return retention_days if isinstance(retention_days, int) and not isinstance(retention_days, bool) else -1
-
-
-def configured_ci_provenance_deploy_artifact_name() -> str:
-    try:
-        config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError):
-        return ""
-    ci_provenance = config.get("ci_provenance")
-    if not isinstance(ci_provenance, dict):
-        return ""
-    deploy = ci_provenance.get("deploy")
-    if not isinstance(deploy, dict):
-        return ""
-    artifact_name = deploy.get("artifact_name")
-    return artifact_name if isinstance(artifact_name, str) else ""
-
-
-def configured_ci_provenance_artifact_name() -> str:
-    try:
-        config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError):
-        return ""
-    ci_provenance = config.get("ci_provenance")
-    if not isinstance(ci_provenance, dict):
-        return ""
-    artifact_name_template = ci_provenance.get("artifact_name_template")
-    artifact_name_template_vars = ci_provenance.get("artifact_name_template_vars")
-    if not isinstance(artifact_name_template, str) or not isinstance(artifact_name_template_vars, dict):
-        return ""
-    if not all(
-        isinstance(key, str) and isinstance(value, str)
-        for key, value in artifact_name_template_vars.items()
-    ):
-        return ""
-    try:
-        return render_config_string_template(
-            artifact_name_template,
-            dict(artifact_name_template_vars),
-            "ci_provenance.artifact_name_template",
-        )
-    except ValueError:
-        return ""
 
 
 def configured_ci_provenance_dispatch_input() -> str:
@@ -10239,17 +10197,13 @@ def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
         errors.append(f"{workflow_name} build must copy the managed binary into a staged artifact directory")
     if "steps.managed_artifact.outputs.stage_dir" not in build_text:
         errors.append(f"{workflow_name} build upload must use the staged artifact directory")
-    artifact_name = configured_ci_provenance_deploy_artifact_name()
-    if not artifact_name:
-        errors.append(f"{workflow_name} build must resolve configured deploy artifact name")
-        return errors
     binary_upload_blocks = [
         block
         for block in action_blocks(build, "actions/upload-artifact@")
-        if block_has_input(block, "name", artifact_name)
+        if block_step_id(block) == "upload-bolt-v2-binary"
     ]
     if not binary_upload_blocks:
-        errors.append(f"{workflow_name} build must upload {artifact_name}")
+        errors.append(f"{workflow_name} build must upload the staged binary from upload-bolt-v2-binary")
     return errors
 
 
@@ -11512,7 +11466,7 @@ def require_config_table(parent: dict[str, object], key: str, prefix: str) -> di
 
 def require_config_string(parent: dict[str, object], key: str, prefix: str) -> str:
     value = parent.get(key)
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{prefix}.{key} must be a non-empty string")
     return value
 
@@ -11526,7 +11480,7 @@ def require_config_positive_int(parent: dict[str, object], key: str, prefix: str
 
 def require_config_string_list(parent: dict[str, object], key: str, prefix: str) -> list[str]:
     value = parent.get(key)
-    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
         raise ValueError(f"{prefix}.{key} must be a non-empty string list")
     return value
 
@@ -11535,9 +11489,9 @@ def require_config_string_map(parent: dict[str, object], key: str, prefix: str) 
     value = parent.get(key)
     if not isinstance(value, dict) or not value:
         raise ValueError(f"{prefix}.{key} must be a non-empty string table")
-    if not all(isinstance(item_key, str) and item_key for item_key in value):
+    if not all(isinstance(item_key, str) and item_key.strip() for item_key in value):
         raise ValueError(f"{prefix}.{key} keys must be non-empty strings")
-    if not all(isinstance(item_value, str) and item_value for item_value in value.values()):
+    if not all(isinstance(item_value, str) and item_value.strip() for item_value in value.values()):
         raise ValueError(f"{prefix}.{key} values must be non-empty strings")
     return dict(value)
 
@@ -11571,7 +11525,7 @@ def resolve_config_string_ref(data: dict[str, object], ref: str, prefix: str) ->
         if not isinstance(current, dict) or key not in current:
             raise ValueError(f"{prefix} references missing TOML key {ref!r}")
         current = current[key]
-    if not isinstance(current, str) or not current:
+    if not isinstance(current, str) or not current.strip():
         raise ValueError(f"{prefix} must reference a non-empty string")
     return current
 
@@ -11587,9 +11541,9 @@ def resolve_config_string_map_ref(data: dict[str, object], ref: str, prefix: str
         current = current[key]
     if not isinstance(current, dict) or not current:
         raise ValueError(f"{prefix} must reference a non-empty string table")
-    if not all(isinstance(item_key, str) and item_key for item_key in current):
+    if not all(isinstance(item_key, str) and item_key.strip() for item_key in current):
         raise ValueError(f"{prefix} must reference a table with non-empty string keys")
-    if not all(isinstance(item_value, str) and item_value for item_value in current.values()):
+    if not all(isinstance(item_value, str) and item_value.strip() for item_value in current.values()):
         raise ValueError(f"{prefix} must reference a table with non-empty string values")
     return dict(current)
 
@@ -11610,25 +11564,247 @@ def render_config_string_template(template: str, template_vars: dict[str, str], 
     return rendered
 
 
+def artifact_retention_select_source_mode(
+    raw: dict[str, object],
+    modes: tuple[ArtifactRetentionSourceMode, ...],
+    prefix: str,
+    field: str,
+) -> ArtifactRetentionSourceResolver:
+    complete_modes: list[ArtifactRetentionSourceMode] = []
+    partial_modes: list[ArtifactRetentionSourceMode] = []
+    for mode in modes:
+        present_keys = [key for key in mode.keys if key in raw]
+        if len(present_keys) == len(mode.keys):
+            complete_modes.append(mode)
+        elif present_keys:
+            partial_modes.append(mode)
+    if len(complete_modes) > 1 or (complete_modes and partial_modes):
+        raise ValueError(f"{prefix} must define exactly one {field} source")
+    if partial_modes:
+        missing_keys = [
+            key
+            for mode in partial_modes
+            for key in mode.keys
+            if key not in raw
+        ]
+        raise ValueError(
+            f"{prefix} has partial {field} source; missing {sorted(missing_keys)!r}"
+        )
+    if not complete_modes:
+        raise ValueError(f"{prefix} must define exactly one {field} source")
+    return complete_modes[0].resolver
+
+
 def resolve_repo_toml_config_file(config_path: pathlib.Path, file_ref: str, prefix: str) -> dict[str, object]:
     if not isinstance(file_ref, str) or not file_ref.strip():
         raise ValueError(f"{prefix} must be a non-empty string")
+    if "\\" in file_ref:
+        raise ValueError(f"{prefix} must be a POSIX repo-relative TOML path")
     repo_path = pathlib.PurePosixPath(file_ref)
     if repo_path.is_absolute() or any(part in {"", ".", ".."} for part in repo_path.parts):
         raise ValueError(f"{prefix} must be a repo-relative TOML path")
     if repo_path.suffix != ".toml":
         raise ValueError(f"{prefix} must reference a TOML file")
-    file_path = config_path.parent.parent.joinpath(*repo_path.parts)
+    repo_root = config_path.parent.parent.resolve()
+    file_path = repo_root.joinpath(*repo_path.parts)
     if not file_path.is_file():
         raise ValueError(f"{prefix} references missing TOML file {file_ref!r}")
+    if not file_path.resolve().is_relative_to(repo_root):
+        raise ValueError(f"{prefix} must resolve inside the repository")
     return tomllib.loads(file_path.read_text(encoding="utf-8"))
+
+
+def resolve_artifact_retention_config_ref(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    file_key: str,
+    ref_key: str,
+    prefix: str,
+) -> tuple[dict[str, object], str, str]:
+    file_ref = require_config_string(raw, file_key, prefix)
+    ref = require_config_string(raw, ref_key, prefix)
+    target_config = resolve_repo_toml_config_file(config_path, file_ref, f"{prefix}.{file_key}")
+    return target_config, file_ref, ref
+
+
+def artifact_retention_literal_name_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> str:
+    del data, config_path
+    return require_config_string(raw, "artifact_name", prefix)
+
+
+def artifact_retention_config_ref_name_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> str:
+    target_config, _file_ref, ref = resolve_artifact_retention_config_ref(
+        data,
+        config_path,
+        raw,
+        "artifact_name_config_file",
+        "artifact_name_config_ref",
+        prefix,
+    )
+    return resolve_config_string_ref(target_config, ref, f"{prefix}.artifact_name_config_ref")
+
+
+def artifact_retention_template_name_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> str:
+    template_config, _template_file_ref, template_ref = resolve_artifact_retention_config_ref(
+        data,
+        config_path,
+        raw,
+        "artifact_name_template_config_file",
+        "artifact_name_template_config_ref",
+        prefix,
+    )
+    vars_config, _vars_file_ref, vars_ref = resolve_artifact_retention_config_ref(
+        data,
+        config_path,
+        raw,
+        "artifact_name_template_vars_config_file",
+        "artifact_name_template_vars_config_ref",
+        prefix,
+    )
+    artifact_name_template = resolve_config_string_ref(
+        template_config,
+        template_ref,
+        f"{prefix}.artifact_name_template_config_ref",
+    )
+    artifact_name_template_vars = resolve_config_string_map_ref(
+        vars_config,
+        vars_ref,
+        f"{prefix}.artifact_name_template_vars_config_ref",
+    )
+    return render_config_string_template(
+        artifact_name_template,
+        artifact_name_template_vars,
+        f"{prefix}.artifact_name_template_config_ref",
+    )
+
+
+def artifact_retention_literal_days_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> ArtifactRetentionResolvedInt:
+    del data, config_path
+    return ArtifactRetentionResolvedInt(
+        value=require_config_positive_int(raw, "retention_days", prefix),
+        config_file=None,
+        config_ref=None,
+    )
+
+
+def artifact_retention_config_ref_days_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> ArtifactRetentionResolvedInt:
+    target_config, file_ref, ref = resolve_artifact_retention_config_ref(
+        data,
+        config_path,
+        raw,
+        "retention_days_config_file",
+        "retention_days_config_ref",
+        prefix,
+    )
+    return ArtifactRetentionResolvedInt(
+        value=resolve_config_positive_int_ref(target_config, ref, f"{prefix}.retention_days_config_ref"),
+        config_file=file_ref,
+        config_ref=ref,
+    )
+
+
+def artifact_retention_literal_class_ceiling_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> ArtifactRetentionResolvedInt:
+    del data, config_path
+    return ArtifactRetentionResolvedInt(
+        value=require_config_positive_int(raw, "max_retention_days", prefix),
+        config_file=None,
+        config_ref=None,
+    )
+
+
+def artifact_retention_config_ref_class_ceiling_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> ArtifactRetentionResolvedInt:
+    target_config, file_ref, ref = resolve_artifact_retention_config_ref(
+        data,
+        config_path,
+        raw,
+        "max_retention_days_config_file",
+        "max_retention_days_config_ref",
+        prefix,
+    )
+    return ArtifactRetentionResolvedInt(
+        value=resolve_config_positive_int_ref(target_config, ref, f"{prefix}.max_retention_days_config_ref"),
+        config_file=file_ref,
+        config_ref=ref,
+    )
+
+
+ARTIFACT_RETENTION_NAME_SOURCE_MODES = (
+    ArtifactRetentionSourceMode("literal", ("artifact_name",), artifact_retention_literal_name_source),
+    ArtifactRetentionSourceMode(
+        "config_ref",
+        ("artifact_name_config_file", "artifact_name_config_ref"),
+        artifact_retention_config_ref_name_source,
+    ),
+    ArtifactRetentionSourceMode(
+        "template",
+        (
+            "artifact_name_template_config_file",
+            "artifact_name_template_config_ref",
+            "artifact_name_template_vars_config_file",
+            "artifact_name_template_vars_config_ref",
+        ),
+        artifact_retention_template_name_source,
+    ),
+)
+ARTIFACT_RETENTION_RETENTION_SOURCE_MODES = (
+    ArtifactRetentionSourceMode("literal", ("retention_days",), artifact_retention_literal_days_source),
+    ArtifactRetentionSourceMode(
+        "config_ref",
+        ("retention_days_config_file", "retention_days_config_ref"),
+        artifact_retention_config_ref_days_source,
+    ),
+)
+ARTIFACT_RETENTION_CLASS_CEILING_SOURCE_MODES = (
+    ArtifactRetentionSourceMode("literal", ("max_retention_days",), artifact_retention_literal_class_ceiling_source),
+    ArtifactRetentionSourceMode(
+        "config_ref",
+        ("max_retention_days_config_file", "max_retention_days_config_ref"),
+        artifact_retention_config_ref_class_ceiling_source,
+    ),
+)
 
 
 def validate_artifact_retention_config(data: dict[str, object], config_path: pathlib.Path) -> ArtifactRetentionPolicy:
     artifact_retention = data.get("artifact_retention")
     if not isinstance(artifact_retention, dict):
         raise ValueError("ci/github-actions-runners.toml must define [artifact_retention]")
-    require_config_only_keys(artifact_retention, {"classes", "uploads"}, "artifact_retention")
+    require_config_only_keys(artifact_retention, {"classes", "uploads", "lookback_bindings"}, "artifact_retention")
 
     raw_classes = require_config_table(artifact_retention, "classes", "artifact_retention")
     classes: dict[str, ArtifactRetentionClass] = {}
@@ -11640,20 +11816,20 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
         prefix = f"artifact_retention.classes.{class_name}"
         require_config_only_keys(
             raw_class,
-            {"max_retention_days", "max_retention_days_config_ref"},
+            {"max_retention_days", "max_retention_days_config_file", "max_retention_days_config_ref"},
             prefix,
         )
-        has_literal_max = "max_retention_days" in raw_class
-        has_ref_max = "max_retention_days_config_ref" in raw_class
-        if has_literal_max == has_ref_max:
-            raise ValueError(f"{prefix} must define exactly one max retention source")
-        if has_literal_max:
-            max_retention_days = require_config_positive_int(raw_class, "max_retention_days", prefix)
-        else:
-            max_retention_ref = require_config_string(raw_class, "max_retention_days_config_ref", prefix)
-            max_retention_days = resolve_config_positive_int_ref(data, max_retention_ref, f"{prefix}.max_retention_days_config_ref")
+        max_retention_resolver = artifact_retention_select_source_mode(
+            raw_class,
+            ARTIFACT_RETENTION_CLASS_CEILING_SOURCE_MODES,
+            prefix,
+            "max retention",
+        )
+        max_retention = max_retention_resolver(data, config_path, raw_class, prefix)
+        if not isinstance(max_retention, ArtifactRetentionResolvedInt):
+            raise ValueError(f"{prefix} max retention source resolved invalid type")
         classes[class_name] = ArtifactRetentionClass(
-            max_retention_days=max_retention_days,
+            max_retention_days=max_retention.value,
         )
 
     raw_uploads = require_config_table(artifact_retention, "uploads", "artifact_retention")
@@ -11676,110 +11852,46 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
             raw_upload,
             {
                 "artifact_name",
-                "artifact_name_prefix",
+                "artifact_name_config_file",
                 "artifact_name_config_ref",
+                "artifact_name_template_config_file",
                 "artifact_name_template_config_ref",
+                "artifact_name_template_vars_config_file",
                 "artifact_name_template_vars_config_ref",
                 "artifact_class",
-                "retention_days_expression",
+                "retention_days",
                 "retention_days_config_file",
                 "retention_days_config_ref",
             },
             prefix,
         )
-        artifact_name = raw_upload.get("artifact_name")
-        artifact_name_prefix = raw_upload.get("artifact_name_prefix")
-        artifact_name_config_ref = raw_upload.get("artifact_name_config_ref")
-        artifact_name_template_config_ref = raw_upload.get("artifact_name_template_config_ref")
-        artifact_name_template_vars_config_ref = raw_upload.get("artifact_name_template_vars_config_ref")
-        retention_days_expression = raw_upload.get("retention_days_expression")
-        retention_days_config_file = raw_upload.get("retention_days_config_file")
-        retention_days_config_ref = raw_upload.get("retention_days_config_ref")
-        identity_sources = [
-            artifact_name is not None,
-            artifact_name_prefix is not None,
-            artifact_name_config_ref is not None,
-            artifact_name_template_config_ref is not None,
-        ]
-        if sum(identity_sources) != 1:
-            raise ValueError(
-                f"{prefix} must define exactly one artifact_name, artifact_name_prefix, "
-                "artifact_name_config_ref, or artifact_name_template_config_ref"
-            )
-        if artifact_name is not None and (not isinstance(artifact_name, str) or not artifact_name):
-            raise ValueError(f"{prefix}.artifact_name must be a non-empty string")
-        if artifact_name_prefix is not None and (
-            not isinstance(artifact_name_prefix, str) or not artifact_name_prefix
-        ):
-            raise ValueError(f"{prefix}.artifact_name_prefix must be a non-empty string")
-        if artifact_name_config_ref is not None:
-            if not isinstance(artifact_name_config_ref, str) or not artifact_name_config_ref:
-                raise ValueError(f"{prefix}.artifact_name_config_ref must be a non-empty string")
-            artifact_name = resolve_config_string_ref(
-                data,
-                artifact_name_config_ref,
-                f"{prefix}.artifact_name_config_ref",
-            )
-        if artifact_name_template_config_ref is not None:
-            if not isinstance(artifact_name_template_config_ref, str) or not artifact_name_template_config_ref:
-                raise ValueError(f"{prefix}.artifact_name_template_config_ref must be a non-empty string")
-            if (
-                not isinstance(artifact_name_template_vars_config_ref, str)
-                or not artifact_name_template_vars_config_ref
-            ):
-                raise ValueError(f"{prefix}.artifact_name_template_vars_config_ref must be a non-empty string")
-            artifact_name_template = resolve_config_string_ref(
-                data,
-                artifact_name_template_config_ref,
-                f"{prefix}.artifact_name_template_config_ref",
-            )
-            artifact_name_template_vars = resolve_config_string_map_ref(
-                data,
-                artifact_name_template_vars_config_ref,
-                f"{prefix}.artifact_name_template_vars_config_ref",
-            )
-            artifact_name = render_config_string_template(
-                artifact_name_template,
-                artifact_name_template_vars,
-                f"{prefix}.artifact_name_template_config_ref",
-            )
-        elif artifact_name_template_vars_config_ref is not None:
-            raise ValueError(
-                f"{prefix}.artifact_name_template_vars_config_ref requires artifact_name_template_config_ref"
-            )
+        artifact_name_resolver = artifact_retention_select_source_mode(
+            raw_upload,
+            ARTIFACT_RETENTION_NAME_SOURCE_MODES,
+            prefix,
+            "artifact name",
+        )
+        artifact_name = artifact_name_resolver(data, config_path, raw_upload, prefix)
+        if not isinstance(artifact_name, str):
+            raise ValueError(f"{prefix} artifact name source resolved invalid type")
         artifact_class = require_config_string(raw_upload, "artifact_class", prefix)
         if artifact_class not in classes:
             raise ValueError(f"{prefix}.artifact_class must reference a configured class")
-        if retention_days_expression is not None and (
-            not isinstance(retention_days_expression, str) or not retention_days_expression.strip()
-        ):
-            raise ValueError(f"{prefix}.retention_days_expression must be a non-empty string")
-        expression_retention_days = None
-        if retention_days_expression is not None:
-            if not isinstance(retention_days_config_file, str) or not retention_days_config_file.strip():
-                raise ValueError(f"{prefix}.retention_days_config_file must be a non-empty string")
-            if not isinstance(retention_days_config_ref, str) or not retention_days_config_ref.strip():
-                raise ValueError(f"{prefix}.retention_days_config_ref must be a non-empty string")
-            retention_config = resolve_repo_toml_config_file(
-                config_path,
-                retention_days_config_file,
-                f"{prefix}.retention_days_config_file",
-            )
-            expression_retention_days = resolve_config_positive_int_ref(
-                retention_config,
-                retention_days_config_ref,
-                f"{prefix}.retention_days_config_ref",
-            )
-        elif retention_days_config_file is not None or retention_days_config_ref is not None:
-            raise ValueError(
-                f"{prefix}.retention_days_config_file and retention_days_config_ref require retention_days_expression"
-            )
+        retention_resolver = artifact_retention_select_source_mode(
+            raw_upload,
+            ARTIFACT_RETENTION_RETENTION_SOURCE_MODES,
+            prefix,
+            "retention-days",
+        )
+        retention = retention_resolver(data, config_path, raw_upload, prefix)
+        if not isinstance(retention, ArtifactRetentionResolvedInt):
+            raise ValueError(f"{prefix} retention-days source resolved invalid type")
         uploads[upload_key] = ArtifactRetentionUploadSite(
             artifact_name=artifact_name,
-            artifact_name_prefix=artifact_name_prefix,
             artifact_class=artifact_class,
-            retention_days_expression=retention_days_expression,
-            retention_days=expression_retention_days,
+            retention_days=retention.value,
+            retention_config_file=retention.config_file,
+            retention_config_ref=retention.config_ref,
         )
 
     used_classes = {site.artifact_class for site in uploads.values()}
@@ -11787,7 +11899,39 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
     if unused_classes:
         raise ValueError(f"artifact_retention.classes has unused classes: {unused_classes!r}")
 
-    return ArtifactRetentionPolicy(classes=classes, uploads=uploads)
+    raw_bindings = require_config_table(artifact_retention, "lookback_bindings", "artifact_retention")
+    lookback_bindings: dict[str, ArtifactRetentionLookbackBinding] = {}
+    for binding_name, raw_binding in sorted(raw_bindings.items()):
+        if not isinstance(binding_name, str) or not binding_name.strip():
+            raise ValueError("artifact_retention.lookback_bindings keys must be non-empty strings")
+        if not isinstance(raw_binding, dict):
+            raise ValueError(f"artifact_retention.lookback_bindings.{binding_name} must be a table")
+        prefix = f"artifact_retention.lookback_bindings.{binding_name}"
+        require_config_only_keys(raw_binding, {"upload", "config_file", "retention_ref", "lookback_ref"}, prefix)
+        upload = require_config_string(raw_binding, "upload", prefix)
+        config_file = require_config_string(raw_binding, "config_file", prefix)
+        retention_ref = require_config_string(raw_binding, "retention_ref", prefix)
+        lookback_ref = require_config_string(raw_binding, "lookback_ref", prefix)
+        if upload not in uploads:
+            raise ValueError(f"{prefix}.upload must reference a configured upload")
+        site = uploads[upload]
+        if site.retention_config_file != config_file or site.retention_config_ref != retention_ref:
+            raise ValueError(f"{prefix} must match the upload retention source")
+        binding_config = resolve_repo_toml_config_file(config_path, config_file, f"{prefix}.config_file")
+        retention_days = resolve_config_positive_int_ref(binding_config, retention_ref, f"{prefix}.retention_ref")
+        max_lookback_age_seconds = resolve_config_positive_int_ref(binding_config, lookback_ref, f"{prefix}.lookback_ref")
+        try:
+            check_lookback_le_retention(retention_days, max_lookback_age_seconds)
+        except ProvenanceError as exc:
+            raise ValueError(f"{prefix}: {exc}") from exc
+        lookback_bindings[binding_name] = ArtifactRetentionLookbackBinding(
+            upload=upload,
+            config_file=config_file,
+            retention_ref=retention_ref,
+            lookback_ref=lookback_ref,
+        )
+
+    return ArtifactRetentionPolicy(classes=classes, uploads=uploads, lookback_bindings=lookback_bindings)
 
 
 def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:

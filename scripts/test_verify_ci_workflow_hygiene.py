@@ -734,7 +734,7 @@ jobs:
           path: |
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
-          retention-days: 3
+          retention-days: 30
 
   ci-provenance-emit:
     name: ci-provenance-emit
@@ -8432,16 +8432,6 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
             "artifact retention policy must fail closed without runner config, "
             f"got: {missing_config_errors}"
         )
-    with tempfile.TemporaryDirectory() as tmp:
-        verifier.DEFAULT_RUNNERS_CONFIG = pathlib.Path(tmp) / "missing-github-actions-runners.toml"
-        try:
-            build_errors = verifier.verify_build_artifacts(BASE_WORKFLOW, ".github/workflows/ci.yml")
-        finally:
-            verifier.DEFAULT_RUNNERS_CONFIG = original_config
-    expected_build_config = ".github/workflows/ci.yml build must resolve configured deploy artifact name"
-    if expected_build_config not in build_errors:
-        raise AssertionError(f"build artifact check must fail closed without config, got: {build_errors}")
-
     assert_artifact_retention_error(
         "artifact retention policy upload .github/workflows/backtester-ci.yml::issue_789::"
         "upload-issue-789-first-pl source .github/workflows/backtester-ci.yml is missing from scanned sources",
@@ -8476,11 +8466,11 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
         },
     )
     assert_artifact_retention_error(
-        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary retention-days 30 exceeds configured max 3",
+        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary retention-days 31 does not match configured retention-days 30",
         {
             ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
-                "          retention-days: 3\n",
-                "          retention-days: 30\n",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 31",
                 1,
             )
         },
@@ -8489,8 +8479,8 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
         ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary must set exactly one retention-days",
         {
             ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
-                "          retention-days: 3\n",
-                "          retention-days: 3\n          retention-days: 30\n",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30\n          retention-days: 31",
                 1,
             )
         },
@@ -8536,11 +8526,11 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
     )
     assert_artifact_retention_error(
         ".github/workflows/ci.yml capture upload-capture-artifact artifact ${{ steps.provenance.outputs.artifact_name }} "
-        "retention-days must match configured expression ${{ steps.provenance.outputs.retention_days }}",
+        "retention-days must be a positive integer",
         {
             ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml").replace(
-                "          retention-days: ${{ steps.provenance.outputs.retention_days }}\n",
-                "          retention-days: ${{ github.event.inputs.retention_days }}\n",
+                "          name: ${{ steps.provenance.outputs.artifact_name }}\n          path: ${{ env.CAPTURE_OUTPUT_DIR }}\n          if-no-files-found: error\n          retention-days: 30",
+                "          name: ${{ steps.provenance.outputs.artifact_name }}\n          path: ${{ env.CAPTURE_OUTPUT_DIR }}\n          if-no-files-found: error\n          retention-days: ${{ github.event.inputs.retention_days }}",
                 1,
             ),
             ".github/workflows/backtester-ci.yml": repo_workflow_text(".github/workflows/backtester-ci.yml"),
@@ -8623,7 +8613,7 @@ runs:
         raise AssertionError(f"nested workflow retention source must fail config load, got: {error!r}")
 
 
-def assert_artifact_retention_expression_retention_is_bounded() -> None:
+def assert_artifact_retention_config_ref_retention_is_exact() -> None:
     verifier = load_verifier()
     config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
     capture_config_text = (
@@ -8658,10 +8648,11 @@ def assert_artifact_retention_expression_retention_is_bounded() -> None:
             verifier.DEFAULT_RUNNERS_CONFIG = original_config
     expected = (
         ".github/workflows/ci.yml capture upload-capture-artifact artifact "
-        "${{ steps.provenance.outputs.artifact_name }} retention-days 365 exceeds configured max 30"
+        "${{ steps.provenance.outputs.artifact_name }} retention-days 30 "
+        "does not match configured retention-days 365"
     )
     if not any(expected in error for error in errors):
-        raise AssertionError(f"expression-backed retention must enforce class ceiling, got: {errors}")
+        raise AssertionError(f"config-ref retention must be checked exactly, got: {errors}")
 
 
 def assert_ci_provenance_upload_name_comes_from_config_template() -> None:
@@ -8696,14 +8687,14 @@ def assert_artifact_retention_config_refs_are_validated() -> None:
     verifier = load_verifier()
     config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
     cases = {
-        "artifact_retention.classes.deployable.max_retention_days must be a positive integer": config_text.replace(
-            "max_retention_days = 3",
+        "artifact_retention.classes.reuse-bound.max_retention_days must be a positive integer": config_text.replace(
+            "max_retention_days = 30",
             "max_retention_days = true",
             1,
         ),
-        "artifact_retention.classes.deployable has unexpected keys: ['allowed_refs']": config_text.replace(
-            "[artifact_retention.classes.deployable]\nmax_retention_days = 3",
-            '[artifact_retention.classes.deployable]\nmax_retention_days = 3\nallowed_refs = ["refs/heads/main"]',
+        "artifact_retention.classes.reuse-bound has unexpected keys: ['allowed_refs']": config_text.replace(
+            "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30",
+            '[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30\nallowed_refs = ["refs/heads/main"]',
             1,
         ),
         "ci_provenance.artifacts.retention_days must be a positive integer": config_text.replace(
@@ -8711,17 +8702,19 @@ def assert_artifact_retention_config_refs_are_validated() -> None:
             "retention_days = true",
             1,
         ),
-        "max_retention_days_config_ref references missing TOML key": config_text.replace(
-            'max_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
-            'max_retention_days_config_ref = "ci_provenance.artifacts.missing"',
+        "artifact_retention.classes.reuse-bound.max_retention_days_config_ref references missing TOML key": config_text.replace(
+            "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30",
+            '[artifact_retention.classes.reuse-bound]\nmax_retention_days_config_file = "ci/github-actions-runners.toml"\nmax_retention_days_config_ref = "ci_provenance.artifacts.missing"',
+            1,
         ),
-        "artifact_retention.classes.provenance must define exactly one max retention source": config_text.replace(
-            'max_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
-            'max_retention_days = 30\nmax_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+        "artifact_retention.classes.reuse-bound must define exactly one max retention source": config_text.replace(
+            "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30",
+            '[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30\nmax_retention_days_config_file = "ci/github-actions-runners.toml"\nmax_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+            1,
         ),
         "artifact_retention.classes has unused classes: ['unused']": config_text.replace(
-            "[artifact_retention.classes.deployable]\n",
-            "[artifact_retention.classes.unused]\nmax_retention_days = 1\n\n[artifact_retention.classes.deployable]\n",
+            "[artifact_retention.classes.reuse-bound]\n",
+            "[artifact_retention.classes.unused]\nmax_retention_days = 1\n\n[artifact_retention.classes.reuse-bound]\n",
             1,
         ),
         "artifact_name_template_vars_config_ref references missing TOML key": config_text.replace(
@@ -8740,19 +8733,31 @@ def assert_artifact_retention_config_refs_are_validated() -> None:
             "run_attempt = \"${{ github.run_attempt }}\"",
             "run_attempt = true",
         ),
-        "must define exactly one artifact_name, artifact_name_prefix, artifact_name_config_ref, or artifact_name_template_config_ref": config_text.replace(
+        "has partial artifact name source; missing ['artifact_name_config_file']": config_text.replace(
+            'artifact_name_config_file = "ci/github-actions-runners.toml"\n'
+            'artifact_name_config_ref = "ci_provenance.deploy.artifact_name"',
+            'artifact_name_config_ref = "ci_provenance.deploy.artifact_name"',
+            1,
+        ),
+        "has partial artifact name source; missing ['artifact_name_template_config_file']": config_text.replace(
+            'artifact_name_template_config_file = "ci/github-actions-runners.toml"\n'
+            'artifact_name_template_config_ref = "ci_provenance.artifact_name_template"',
+            'artifact_name_template_config_ref = "ci_provenance.artifact_name_template"',
+            1,
+        ),
+        "must define exactly one artifact name source": config_text.replace(
             'artifact_name_template_config_ref = "ci_provenance.artifact_name_template"',
             'artifact_name = "ci-provenance-attempt-${{ github.run_attempt }}"\nartifact_name_template_config_ref = "ci_provenance.artifact_name_template"',
             1,
         ),
-        "retention_days_expression must be a non-empty string": config_text.replace(
-            'retention_days_expression = "${{ steps.provenance.outputs.retention_days }}"',
-            "retention_days_expression = true",
+        "has unexpected keys: ['artifact_name_prefix']": config_text.replace(
+            'artifact_name_template_vars_config_ref = "backtester.issue_789.artifact_name_template_vars"',
+            'artifact_name_template_vars_config_ref = "backtester.issue_789.artifact_name_template_vars"\nartifact_name_prefix = "issue-789-first-pl-"',
             1,
         ),
-        "upload-capture-artifact.retention_days_expression must be a non-empty string": config_text.replace(
-            'retention_days_expression = "${{ steps.provenance.outputs.retention_days }}"',
-            'retention_days_expression = "   "',
+        "has unexpected keys: ['retention_days_expression']": config_text.replace(
+            'artifact_class = "capture-provenance"\nretention_days_config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"',
+            'artifact_class = "capture-provenance"\nretention_days_expression = "${{ steps.provenance.outputs.retention_days }}"\nretention_days_config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"',
             1,
         ),
         "retention_days_config_file must be a non-empty string": config_text.replace(
@@ -10448,7 +10453,7 @@ def main() -> int:
     assert_v6_red_local_composite_actions_are_scanned()
     assert_v6_red_additional_workflows_are_scanned()
     assert_artifact_retention_policy_spine_gaps_are_reported()
-    assert_artifact_retention_expression_retention_is_bounded()
+    assert_artifact_retention_config_ref_retention_is_exact()
     assert_ci_provenance_upload_name_comes_from_config_template()
     assert_artifact_retention_config_refs_are_validated()
     assert_shell_logical_lines_handles_crlf_continuations()
@@ -11648,7 +11653,7 @@ def main() -> int:
         ),
     )
     assert_artifact_retention_error(
-        ".github/workflows/ci.yml ci-provenance-emit upload-ci-provenance artifact ci-provenance-attempt-${{ github.run_attempt }} retention-days 31 exceeds configured max 30",
+        ".github/workflows/ci.yml ci-provenance-emit upload-ci-provenance artifact ci-provenance-attempt-${{ github.run_attempt }} retention-days 31 does not match configured retention-days 30",
         {
             ".github/workflows/ci.yml": replace_once(
                 BASE_WORKFLOW,
@@ -11740,12 +11745,12 @@ def main() -> int:
         BASE_WORKFLOW.replace("${{ steps.managed_artifact.outputs.stage_dir }}", "$RUNNER_TEMP/bolt-v2-binary"),
     )
     assert_artifact_retention_error(
-        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary retention-days 30 exceeds configured max 3",
+        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary retention-days 31 does not match configured retention-days 30",
         {
             ".github/workflows/ci.yml": replace_once(
                 BASE_WORKFLOW,
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
                 "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 31",
             )
         },
     )
@@ -11754,7 +11759,7 @@ def main() -> int:
         {
             ".github/workflows/ci.yml": replace_once(
                 BASE_WORKFLOW,
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
                 "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256",
             )
         },
@@ -11764,8 +11769,8 @@ def main() -> int:
         {
             ".github/workflows/ci.yml": replace_once(
                 BASE_WORKFLOW,
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3\n          retention-days: 30",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30\n          retention-days: 31",
             )
         },
     )

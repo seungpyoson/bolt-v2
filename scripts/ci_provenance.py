@@ -284,6 +284,11 @@ def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> in
     return value
 
 
+def check_lookback_le_retention(retention_days: int, max_lookback_age_seconds: int) -> None:
+    if max_lookback_age_seconds > retention_days * 24 * 60 * 60:
+        raise ProvenanceError("max lookback age must not exceed artifact retention")
+
+
 def require_bool(parent: dict[str, object], key: str, prefix: str) -> bool:
     value = parent.get(key)
     if not isinstance(value, bool):
@@ -2830,7 +2835,6 @@ def main(argv: list[str] | None = None) -> int:
         if mode == "artifact-metadata":
             run_attempt = positive_int_value(args.run_attempt, "run_attempt")
             print(f"artifact_name={provenance_artifact_name(config, run_attempt)}")
-            print(f"retention_days={config.artifact_retention_days}")
         elif mode == "ci-policy":
             result = evaluate_ci_policy(
                 config,

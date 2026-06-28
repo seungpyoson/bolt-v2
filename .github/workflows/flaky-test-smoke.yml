@@ -1,8 +1,7 @@
-name: Flaky Test Detection
+name: Flaky Test Smoke
 
 on:
-  schedule:
-    - cron: '0 */12 * * 1-5'  # Every 12 hours, Monday-Friday
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,13 +12,13 @@ env:
   RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
 
 jobs:
-  flaky-detection-rust-root:
-    name: Root Rust Tests - Flaky Detection (Run ${{ matrix.run_number }})
+  flaky-smoke-rust-root:
+    name: Root Rust Tests - Flaky Smoke (Run ${{ matrix.run_number }})
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     strategy:
       fail-fast: false
       matrix:
-        run_number: [1, 2, 3, 4, 5]
+        run_number: [1]
     env:
       CARGO_BUILD_JOBS: "2"
     steps:
@@ -85,14 +84,14 @@ jobs:
           job_name: nextest archive
           report_path: "junit-*.xml"
 
-  flaky-detection-rust-backtester:
-    name: Backtester Rust Tests - Flaky Detection (Shard ${{ matrix.shard }}, Run ${{ matrix.run_number }})
+  flaky-smoke-rust-backtester:
+    name: Backtester Rust Tests - Flaky Smoke (Shard ${{ matrix.shard }}, Run ${{ matrix.run_number }})
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     strategy:
       fail-fast: false
       matrix:
-        run_number: [1, 2, 3, 4, 5]
-        shard: [1, 2, 3, 4]
+        run_number: [1]
+        shard: [1]
     env:
       CARGO_BUILD_JOBS: "2"
     steps:
@@ -167,13 +166,13 @@ jobs:
           job_name: bvs-test archive
           report_path: "junit-*.xml"
 
-  flaky-detection-rust-backtester-issue-789:
-    name: Backtester Issue 789 - Flaky Detection (Run ${{ matrix.run_number }})
+  flaky-smoke-rust-backtester-issue-789:
+    name: Backtester Issue 789 - Flaky Smoke (Run ${{ matrix.run_number }})
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     strategy:
       fail-fast: false
       matrix:
-        run_number: [1, 2, 3, 4, 5]
+        run_number: [1]
     env:
       CARGO_BUILD_JOBS: "2"
     steps:

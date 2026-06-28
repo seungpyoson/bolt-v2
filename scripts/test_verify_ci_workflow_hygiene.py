@@ -5092,11 +5092,12 @@ def assert_runner_contract_rejects_unmapped_workflow_jobs() -> None:
 
 def assert_runner_contract_accepts_flaky_detection_workflow_mapping() -> None:
     verifier = load_verifier()
-    workflow_name = ".github/workflows/flaky-test-detection.yml"
-    workflow = """name: Flaky Test Detection
+    detection_workflow_name = ".github/workflows/flaky-test-detection.yml"
+    detection_workflow = """name: Flaky Test Detection
 
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * 1-5'
 
 jobs:
   flaky-detection-rust-root:
@@ -5114,13 +5115,42 @@ jobs:
     steps:
       - run: echo issue-789
 """
-    errors = verifier.verify_github_actions_runner_contract({workflow_name: workflow})
+    smoke_workflow_name = ".github/workflows/flaky-test-smoke.yml"
+    smoke_workflow = """name: Flaky Test Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  flaky-smoke-rust-root:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo root-smoke
+
+  flaky-smoke-rust-backtester:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo backtester-smoke
+
+  flaky-smoke-rust-backtester-issue-789:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo issue-789-smoke
+"""
+    errors = verifier.verify_github_actions_runner_contract(
+        {
+            detection_workflow_name: detection_workflow,
+            smoke_workflow_name: smoke_workflow,
+        }
+    )
     if errors:
         raise AssertionError(f"flaky detection workflow runner contract must be mapped, got: {errors}")
 
 
 def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
-    workflow = repo_workflow_text(".github/workflows/flaky-test-detection.yml")
+    detection = repo_workflow_text(".github/workflows/flaky-test-detection.yml")
+    smoke = repo_workflow_text(".github/workflows/flaky-test-smoke.yml")
+    combined = detection + "\n" + smoke
     pinned_v14_action = "uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14"
     expected_job_names = (
         "job_name: nextest archive",
@@ -5132,28 +5162,52 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
         "MERGIFY_TEST_JOB_NAME: bvs-test archive",
         "MERGIFY_TEST_JOB_NAME: bvs-test issue-789",
     )
-    if workflow.count(pinned_v14_action) != 3:
+    if "workflow_dispatch:" in detection or "schedule:" in smoke:
+        raise AssertionError("flaky full detection and smoke workflows must use separate triggers")
+    if "inputs.mode" in combined or "if: ${{" in combined:
+        raise AssertionError("flaky workflows must not use conditional full/smoke fallback selection")
+    for workflow_name, workflow in (
+        ("flaky-test-detection.yml", detection),
+        ("flaky-test-smoke.yml", smoke),
+    ):
+        if workflow.count("if: success() || failure()") != 3:
+            raise AssertionError(f"{workflow_name} must keep the required Mergify upload condition only")
+    if combined.count(pinned_v14_action) != 6:
         raise AssertionError("flaky-test-detection.yml must pin all Mergify uploads to the v14 action SHA")
-    if "flaky_test_detection:" in workflow:
+    if "flaky_test_detection:" in combined:
         raise AssertionError("flaky-test-detection.yml must not pass unsupported Mergify inputs")
-    if "MERGIFY_JOB_NAME:" in workflow:
+    if "MERGIFY_JOB_NAME:" in combined:
         raise AssertionError("flaky-test-detection.yml must pass job names through the Mergify job_name input")
     for job_name in expected_job_names:
-        if job_name not in workflow:
+        if combined.count(job_name) != 2:
             raise AssertionError(f"flaky-test-detection.yml missing Mergify upload {job_name!r}")
     for job_env in expected_cli_job_env:
-        if job_env not in workflow:
+        if combined.count(job_env) != 2:
             raise AssertionError(f"flaky-test-detection.yml missing current Mergify CLI env {job_env!r}")
-    if workflow.count("MERGIFY_TEST_EXIT_CODE=%s") != 3:
+    if combined.count("MERGIFY_TEST_EXIT_CODE=%s") != 6:
         raise AssertionError("flaky-test-detection.yml must pass test runner exit codes to Mergify")
-    if workflow.count("python3 scripts/ci_input_sets.py hash backtester_cache") != 2:
+    if combined.count("python3 scripts/ci_input_sets.py hash backtester_cache") != 4:
         raise AssertionError("flaky-test-detection.yml BVS jobs must use the shared backtester cache digest")
-    if "managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles(" in workflow:
+    if "managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles(" in combined:
         raise AssertionError("flaky-test-detection.yml BVS target cache keys must not use inline hashFiles")
-    if workflow.count("managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}") != 2:
+    if combined.count("managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}") != 4:
         raise AssertionError("flaky-test-detection.yml BVS target cache keys must use the shared digest")
-    if "managed-target-bvs-v1-" in workflow or "flaky-root-test-" in workflow:
+    if "managed-target-bvs-v1-" in combined or "flaky-root-test-" in combined:
         raise AssertionError("flaky-test-detection.yml must restore from production cache namespaces")
+    if detection.count("run_number: [1, 2, 3, 4, 5]") != 3:
+        raise AssertionError("flaky-test-detection.yml full jobs must keep five flaky-detection repeats")
+    if smoke.count("run_number: [1]") != 3 or smoke.count("shard: [1]") != 1:
+        raise AssertionError("flaky-test-detection.yml manual smoke mode must not launch the full matrix")
+    if detection.count("shard: [1, 2, 3, 4]") != 1:
+        raise AssertionError("flaky-test-detection.yml scheduled backtester job must keep the four-shard full matrix")
+    if 'cp "${{ steps.setup.outputs.managed_target_dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml"' in combined:
+        raise AssertionError("flaky-test-detection.yml root JUnit staging must not use the managed target dir")
+    if 'cp "${{ steps.crate_target.outputs.dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml"' in combined:
+        raise AssertionError("flaky-test-detection.yml BVS JUnit staging must not use the managed target dir")
+    if combined.count('cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"') != 2:
+        raise AssertionError("flaky-test-detection.yml root JUnit staging must use nextest's workspace report path")
+    if combined.count('cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"') != 4:
+        raise AssertionError("flaky-test-detection.yml BVS JUnit staging must use nextest's crate workspace report path")
 
 
 def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> None:

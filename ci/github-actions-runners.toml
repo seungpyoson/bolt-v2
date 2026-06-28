@@ -59,6 +59,11 @@ flaky-detection-rust-root = "managed_heavy"
 flaky-detection-rust-backtester = "managed_heavy"
 flaky-detection-rust-backtester-issue-789 = "managed_heavy"
 
+[workflows.flaky_test_smoke]
+flaky-smoke-rust-root = "managed_heavy"
+flaky-smoke-rust-backtester = "managed_heavy"
+flaky-smoke-rust-backtester-issue-789 = "managed_heavy"
+
 [workflows.ci_runner_debug]
 debug-heavy = "managed_heavy"
 debug-light = "managed_light"
@@ -107,6 +112,7 @@ included_workflows = [
   "ci",
   "backtester_ci",
   "flaky_test_detection",
+  "flaky_test_smoke",
   "ci_runner_debug",
   "rust_probe",
 ]

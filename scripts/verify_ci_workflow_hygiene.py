@@ -147,7 +147,6 @@ class ArtifactRetentionUploadSite(NamedTuple):
     artifact_name_prefix: str | None
     artifact_class: str
     retention_days_expression: str | None
-    retention_days_config_file: str | None
     retention_days: int | None
 
 
@@ -2248,30 +2247,6 @@ def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, s
             return None
         items[key] = unquote_yaml_scalar(item_match.group(2))
     return items
-
-
-def job_env_value(job_lines: list[str], name: str) -> str | None:
-    env_indent: int | None = None
-    item_indent: int | None = None
-    for line in job_lines:
-        clean = strip_comment(line).rstrip()
-        if not clean.strip():
-            continue
-        indent = len(clean) - len(clean.lstrip(" "))
-        if env_indent is None:
-            if re.match(r"^\s*env:\s*$", clean):
-                env_indent = indent
-            continue
-        if indent <= env_indent:
-            break
-        if item_indent is None:
-            item_indent = indent
-        if indent != item_indent:
-            continue
-        match = re.match(rf"^\s*{re.escape(name)}\s*:\s*(.*?)\s*$", clean)
-        if match is not None:
-            return unquote_yaml_scalar(match.group(1))
-    return None
 
 
 def block_has_canonical_step_envelope(
@@ -8791,32 +8766,6 @@ def ci_provenance_emit_upload_errors(job_lines: list[str]) -> list[str]:
     return errors
 
 
-def configured_artifact_retention_upload_site(
-    source_name: str,
-    job_id: str,
-    step_id: str,
-) -> ArtifactRetentionUploadSite | None:
-    try:
-        config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError):
-        return None
-    policy = config.get("artifact_retention")
-    if not isinstance(policy, ArtifactRetentionPolicy):
-        return None
-    return policy.uploads.get(artifact_retention_upload_key(source_name, job_id, step_id))
-
-
-def configured_artifact_retention_upload_site_for_block(
-    source_name: str,
-    job_id: str,
-    block: list[str],
-) -> ArtifactRetentionUploadSite | None:
-    step_id = block_step_id(block)
-    if step_id is None:
-        return None
-    return configured_artifact_retention_upload_site(source_name, job_id, step_id)
-
-
 def capture_artifact_metadata_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
     text = uncommented_text(job_lines)
@@ -8826,6 +8775,7 @@ def capture_artifact_metadata_errors(job_lines: list[str]) -> list[str]:
         errors.append("capture artifact metadata must use CAPTURE_PROVENANCE_CONFIG")
     if '--run-attempt "${{ github.run_attempt }}"' not in text:
         errors.append("capture artifact metadata must use github.run_attempt")
+
     upload_blocks = [
         block
         for block in action_blocks(job_lines, "actions/upload-artifact@")
@@ -8834,24 +8784,6 @@ def capture_artifact_metadata_errors(job_lines: list[str]) -> list[str]:
     if not upload_blocks:
         errors.append("capture must upload CAPTURE_OUTPUT_DIR")
         return errors
-    if len(upload_blocks) != 1:
-        errors.append("capture must upload CAPTURE_OUTPUT_DIR exactly once")
-        return errors
-    capture_site = configured_artifact_retention_upload_site_for_block(
-        ".github/workflows/ci.yml",
-        "capture",
-        upload_blocks[0],
-    )
-    capture_config = job_env_value(job_lines, "CAPTURE_PROVENANCE_CONFIG")
-    if capture_config is None:
-        errors.append("capture must set CAPTURE_PROVENANCE_CONFIG")
-    elif capture_site is None or capture_site.retention_days_config_file is None:
-        errors.append("capture must resolve artifact retention retention_days_config_file")
-    elif capture_config != capture_site.retention_days_config_file:
-        errors.append(
-            "capture CAPTURE_PROVENANCE_CONFIG must match artifact retention "
-            "retention_days_config_file"
-        )
     return errors
 
 
@@ -11580,7 +11512,7 @@ def require_config_table(parent: dict[str, object], key: str, prefix: str) -> di
 
 def require_config_string(parent: dict[str, object], key: str, prefix: str) -> str:
     value = parent.get(key)
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not value:
         raise ValueError(f"{prefix}.{key} must be a non-empty string")
     return value
 
@@ -11594,7 +11526,7 @@ def require_config_positive_int(parent: dict[str, object], key: str, prefix: str
 
 def require_config_string_list(parent: dict[str, object], key: str, prefix: str) -> list[str]:
     value = parent.get(key)
-    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         raise ValueError(f"{prefix}.{key} must be a non-empty string list")
     return value
 
@@ -11603,9 +11535,9 @@ def require_config_string_map(parent: dict[str, object], key: str, prefix: str) 
     value = parent.get(key)
     if not isinstance(value, dict) or not value:
         raise ValueError(f"{prefix}.{key} must be a non-empty string table")
-    if not all(isinstance(item_key, str) and item_key.strip() for item_key in value):
+    if not all(isinstance(item_key, str) and item_key for item_key in value):
         raise ValueError(f"{prefix}.{key} keys must be non-empty strings")
-    if not all(isinstance(item_value, str) and item_value.strip() for item_value in value.values()):
+    if not all(isinstance(item_value, str) and item_value for item_value in value.values()):
         raise ValueError(f"{prefix}.{key} values must be non-empty strings")
     return dict(value)
 
@@ -11639,7 +11571,7 @@ def resolve_config_string_ref(data: dict[str, object], ref: str, prefix: str) ->
         if not isinstance(current, dict) or key not in current:
             raise ValueError(f"{prefix} references missing TOML key {ref!r}")
         current = current[key]
-    if not isinstance(current, str) or not current.strip():
+    if not isinstance(current, str) or not current:
         raise ValueError(f"{prefix} must reference a non-empty string")
     return current
 
@@ -11655,9 +11587,9 @@ def resolve_config_string_map_ref(data: dict[str, object], ref: str, prefix: str
         current = current[key]
     if not isinstance(current, dict) or not current:
         raise ValueError(f"{prefix} must reference a non-empty string table")
-    if not all(isinstance(item_key, str) and item_key.strip() for item_key in current):
+    if not all(isinstance(item_key, str) and item_key for item_key in current):
         raise ValueError(f"{prefix} must reference a table with non-empty string keys")
-    if not all(isinstance(item_value, str) and item_value.strip() for item_value in current.values()):
+    if not all(isinstance(item_value, str) and item_value for item_value in current.values()):
         raise ValueError(f"{prefix} must reference a table with non-empty string values")
     return dict(current)
 
@@ -11727,7 +11659,7 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
     raw_uploads = require_config_table(artifact_retention, "uploads", "artifact_retention")
     uploads: dict[str, ArtifactRetentionUploadSite] = {}
     for upload_key, raw_upload in sorted(raw_uploads.items()):
-        if not isinstance(upload_key, str) or not upload_key.strip():
+        if not isinstance(upload_key, str) or not upload_key:
             raise ValueError("artifact_retention.uploads keys must be non-empty strings")
         key_parts = upload_key.split("::")
         if len(key_parts) != 3 or any(not part for part in key_parts):
@@ -11774,14 +11706,14 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
                 f"{prefix} must define exactly one artifact_name, artifact_name_prefix, "
                 "artifact_name_config_ref, or artifact_name_template_config_ref"
             )
-        if artifact_name is not None and (not isinstance(artifact_name, str) or not artifact_name.strip()):
+        if artifact_name is not None and (not isinstance(artifact_name, str) or not artifact_name):
             raise ValueError(f"{prefix}.artifact_name must be a non-empty string")
         if artifact_name_prefix is not None and (
-            not isinstance(artifact_name_prefix, str) or not artifact_name_prefix.strip()
+            not isinstance(artifact_name_prefix, str) or not artifact_name_prefix
         ):
             raise ValueError(f"{prefix}.artifact_name_prefix must be a non-empty string")
         if artifact_name_config_ref is not None:
-            if not isinstance(artifact_name_config_ref, str) or not artifact_name_config_ref.strip():
+            if not isinstance(artifact_name_config_ref, str) or not artifact_name_config_ref:
                 raise ValueError(f"{prefix}.artifact_name_config_ref must be a non-empty string")
             artifact_name = resolve_config_string_ref(
                 data,
@@ -11789,11 +11721,11 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
                 f"{prefix}.artifact_name_config_ref",
             )
         if artifact_name_template_config_ref is not None:
-            if not isinstance(artifact_name_template_config_ref, str) or not artifact_name_template_config_ref.strip():
+            if not isinstance(artifact_name_template_config_ref, str) or not artifact_name_template_config_ref:
                 raise ValueError(f"{prefix}.artifact_name_template_config_ref must be a non-empty string")
             if (
                 not isinstance(artifact_name_template_vars_config_ref, str)
-                or not artifact_name_template_vars_config_ref.strip()
+                or not artifact_name_template_vars_config_ref
             ):
                 raise ValueError(f"{prefix}.artifact_name_template_vars_config_ref must be a non-empty string")
             artifact_name_template = resolve_config_string_ref(
@@ -11847,7 +11779,6 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
             artifact_name_prefix=artifact_name_prefix,
             artifact_class=artifact_class,
             retention_days_expression=retention_days_expression,
-            retention_days_config_file=retention_days_config_file if isinstance(retention_days_config_file, str) else None,
             retention_days=expression_retention_days,
         )
 

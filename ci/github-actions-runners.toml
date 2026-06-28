@@ -310,9 +310,6 @@ protected_ref_globs = [
   "archive/*",
   "deploy/*",
   "tag-archive-*",
-  "issue-*",
-  "incident-*",
-  "v*",
 ]
 active_run_statuses = ["queued", "in_progress", "waiting", "requested", "pending"]
 terminal_run_statuses = ["completed"]

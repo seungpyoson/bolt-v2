@@ -226,6 +226,12 @@ def nonnegative_int(value: Any, *, default: int = 0) -> int:
     return default
 
 
+def require_nonnegative_int(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise AuditError(f"{label} must be a non-negative integer")
+    return value
+
+
 def optional_nonnegative_int(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
@@ -531,7 +537,7 @@ def cache_entry_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
         "ref": optional_text(raw.get("ref")),
         "key": optional_text(raw.get("key")),
         "last_accessed_at": optional_text(raw.get("last_accessed_at")),
-        "size_bytes": nonnegative_int(raw.get("size_in_bytes")),
+        "size_bytes": require_nonnegative_int(raw.get("size_in_bytes"), "actions/caches.size_in_bytes"),
     }
 
 
@@ -572,7 +578,7 @@ def artifact_entry_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "artifact_id": optional_nonnegative_int(raw.get("id")),
         "name": optional_text(raw.get("name")) or "",
-        "size_bytes": nonnegative_int(raw.get("size_in_bytes")),
+        "size_bytes": require_nonnegative_int(raw.get("size_in_bytes"), "actions/artifacts.size_in_bytes"),
         "created_at": optional_text(raw.get("created_at")),
         "expires_at": optional_text(raw.get("expires_at")),
         "expired": expired if isinstance(expired, bool) else None,
@@ -888,8 +894,7 @@ def should_fetch_workflow_run(
 
 def workflow_run_id_from_entry(entry: dict[str, Any]) -> int | None:
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
-    run_id = workflow_run.get("id")
-    return run_id if isinstance(run_id, int) else None
+    return optional_nonnegative_int(workflow_run.get("id"))
 
 
 def fetch_workflow_run_metadata_payload(client: GhClient, run_id: int) -> dict[str, Any] | None:
@@ -961,17 +966,21 @@ def parse_github_timestamp(value: Any) -> dt.datetime | None:
 def cleanup_self_clear_horizon(entries: list[dict[str, Any]]) -> dict[str, Any]:
     best_entry: dict[str, Any] | None = None
     best_timestamp: dt.datetime | None = None
+    saw_non_expired = False
     for entry in entries:
         if entry.get("expired") is not False:
             continue
+        saw_non_expired = True
         timestamp = parse_github_timestamp(entry.get("expires_at"))
         if timestamp is None:
-            continue
+            return {"expires_at": None, "source": "non_expired_artifact_expiry_unknown"}
         if best_timestamp is None or timestamp > best_timestamp:
             best_timestamp = timestamp
             best_entry = entry
-    if best_entry is None:
+    if not saw_non_expired:
         return {"expires_at": None, "source": "no_non_expired_artifact_expiry"}
+    if best_entry is None:
+        raise AssertionError("unreachable non-expired horizon state")
     return {
         "expires_at": best_entry.get("expires_at"),
         "source": "max_non_expired_artifact_expires_at",
@@ -984,8 +993,8 @@ def format_global_api_path(template: str, repo: str) -> str:
     owner, repo_name = repo.split("/", 1)
     try:
         return template.format(owner=owner, repo=repo_name, owner_repo=repo)
-    except KeyError as exc:
-        raise AuditError(f"unsupported billing endpoint placeholder: {exc}") from exc
+    except (IndexError, KeyError, ValueError) as exc:
+        raise AuditError(f"billing endpoint path template is invalid: {exc}") from exc
 
 
 def api_response_summary(payload: Any) -> dict[str, Any]:
@@ -1078,7 +1087,6 @@ def build_artifact_cleanup_feasibility(
         and row.get("reason") == policy.status_unavailable_keep_reason
     )
     billing = probe_billing_endpoint(client, repo=repo, policy=policy)
-    measured_billed_reclaim_bytes = None if billing.get("status") != "available" else None
     return {
         "listed_bytes": artifacts["total_bytes"],
         "expired_bytes": artifacts["expired_bytes"],
@@ -1093,7 +1101,7 @@ def build_artifact_cleanup_feasibility(
             and row.get("reason") == policy.status_unavailable_keep_reason
         ),
         "expected_reclaim_proxy_bytes": candidate_bytes,
-        "measured_billed_reclaim_bytes": measured_billed_reclaim_bytes,
+        "measured_billed_reclaim_bytes": None,
         "reclaim_basis": "listed_artifact_bytes_proxy",
         "billing": billing,
         "self_clear_horizon": cleanup_self_clear_horizon([entry for entry in entries if isinstance(entry, dict)]),

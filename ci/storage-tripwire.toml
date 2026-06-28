@@ -11,6 +11,7 @@ issue_labels = ["infra", "ops", "github_actions"]
 [storage_tripwire.issue_match]
 result_limit = 2
 max_open_matches_per_marker = 1
+page_size = 100
 
 [storage_tripwire.marker]
 prefix = "<!-- ci-storage-tripwire:"

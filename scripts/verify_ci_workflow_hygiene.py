@@ -11822,9 +11822,9 @@ def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str
     actual_permissions: dict[str, str] = {}
     for line in top_level_block(workflow_text, "permissions"):
         clean = strip_comment(line).strip()
-        match = re.fullmatch(r"([A-Za-z-]+):\s*([A-Za-z-]+)", clean)
+        match = re.fullmatch(r"([A-Za-z-]+):\s*(['\"]?)([A-Za-z-]+)\2", clean)
         if match:
-            actual_permissions[match.group(1)] = match.group(2)
+            actual_permissions[match.group(1)] = match.group(3)
     if actual_permissions != dict(workflow_contract.permissions):
         errors.append(f"{workflow_name} permissions must match storage_tripwire.workflow.permissions")
 

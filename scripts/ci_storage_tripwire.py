@@ -72,6 +72,7 @@ class WorkflowPolicy:
 class IssueMatchPolicy:
     result_limit: int
     max_open_matches_per_marker: int
+    page_size: int
 
 
 @dataclass(frozen=True)
@@ -90,8 +91,17 @@ class StorageTripwirePolicy:
     thresholds: tuple[ThresholdPolicy, ...]
 
 
+@dataclass(frozen=True)
+class CommandResult:
+    evaluation: dict[str, Any]
+    apply_result: dict[str, list[int]] | None
+    exit_code: int
+
+
 class IssueClient(Protocol):
-    def find_open_issues_by_marker(self, *, marker: str, limit: int) -> list[dict[str, Any]]:
+    def find_open_issues_by_marker(
+        self, *, marker: str, result_limit: int, page_size: int
+    ) -> list[dict[str, Any]]:
         ...
 
     def create_issue(self, *, title: str, body: str, labels: list[str]) -> dict[str, Any]:
@@ -197,6 +207,9 @@ def load_policy_text(text: str, *, source: str) -> StorageTripwirePolicy:
             issue_match_table,
             "max_open_matches_per_marker",
             "storage_tripwire.issue_match",
+        ),
+        page_size=require_positive_int(
+            issue_match_table, "page_size", "storage_tripwire.issue_match"
         ),
     )
     if issue_match.result_limit <= issue_match.max_open_matches_per_marker:
@@ -367,10 +380,6 @@ def issue_marker(policy: StorageTripwirePolicy, threshold_id: str) -> str:
     return f"{policy.marker.prefix}{threshold_id}{policy.marker.suffix}"
 
 
-def quote_search_phrase(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 def render_issue_body(
     policy: StorageTripwirePolicy,
     evaluation: Mapping[str, Any],
@@ -443,7 +452,8 @@ def apply_alerts(
         marker = issue_marker(policy, str(threshold["id"]))
         matches = client.find_open_issues_by_marker(
             marker=marker,
-            limit=policy.issue_match.result_limit,
+            result_limit=policy.issue_match.result_limit,
+            page_size=policy.issue_match.page_size,
         )
         existing = existing_issue_by_marker(policy, matches, marker)
         if existing is None:
@@ -469,8 +479,11 @@ class GhIssueClient:
         path: str,
         payload: Mapping[str, Any] | None = None,
         fields: Mapping[str, Any] | None = None,
+        paginate: bool = False,
     ) -> Any:
         cmd = ["gh", "api", "--method", method, path]
+        if paginate:
+            cmd.extend(["--paginate", "--slurp"])
         for key, value in (fields or {}).items():
             cmd.extend(["--field", f"{key}={value}"])
         input_text = None
@@ -485,33 +498,33 @@ class GhIssueClient:
         except json.JSONDecodeError as exc:
             raise TripwireError(f"gh api returned invalid JSON: {exc}") from exc
 
-    def find_open_issues_by_marker(self, *, marker: str, limit: int) -> list[dict[str, Any]]:
+    def find_open_issues_by_marker(
+        self, *, marker: str, result_limit: int, page_size: int
+    ) -> list[dict[str, Any]]:
         payload = self.api(
             "GET",
-            "search/issues",
+            f"repos/{self.repo}/issues",
             fields={
-                "q": " ".join(
-                    [
-                        f"repo:{self.repo}",
-                        "is:issue",
-                        "is:open",
-                        "in:body",
-                        quote_search_phrase(marker),
-                    ]
-                ),
-                "per_page": str(limit),
+                "state": "open",
+                "per_page": str(page_size),
             },
+            paginate=True,
         )
-        if not isinstance(payload, dict):
-            raise TripwireError("issue search response must be an object")
-        items = payload.get("items")
-        if not isinstance(items, list):
-            raise TripwireError("issue search response must include an items list")
-        return [
-            issue
-            for issue in items
-            if isinstance(issue, dict) and "pull_request" not in issue
-        ]
+        if not isinstance(payload, list):
+            raise TripwireError("issue list response must be a paginated list")
+        matches: list[dict[str, Any]] = []
+        for page in payload:
+            if not isinstance(page, list):
+                raise TripwireError("issue list response pages must be lists")
+            for issue in page:
+                if not isinstance(issue, dict) or "pull_request" in issue:
+                    continue
+                body = issue.get("body")
+                if isinstance(body, str) and marker in body:
+                    matches.append(issue)
+                    if len(matches) >= result_limit:
+                        return matches
+        return matches
 
     def create_issue(self, *, title: str, body: str, labels: list[str]) -> dict[str, Any]:
         payload = self.api(
@@ -580,28 +593,41 @@ def render_result(evaluation: Mapping[str, Any], apply_result: Mapping[str, list
 
 def run_evaluate_command(
     args: argparse.Namespace, policy: StorageTripwirePolicy
-) -> tuple[dict[str, Any], dict[str, list[int]] | None]:
+) -> CommandResult:
     audit = load_audit_json(args.audit_json)
-    return evaluate_tripwire(policy, audit), None
+    evaluation = evaluate_tripwire(policy, audit)
+    return CommandResult(
+        evaluation=evaluation,
+        apply_result=None,
+        exit_code=1 if evaluation["breached"] else 0,
+    )
 
 
 def run_apply_command(
     args: argparse.Namespace, policy: StorageTripwirePolicy
-) -> tuple[dict[str, Any], dict[str, list[int]] | None]:
+) -> CommandResult:
     audit = load_audit_json(args.audit_json)
     repo = args.repo or str(audit.get("repo", ""))
     if not repo:
         raise TripwireError("repo is required for issue alerting")
     evaluation = evaluate_tripwire(policy, audit)
-    return evaluation, apply_alerts(policy, evaluation, GhIssueClient(repo))
+    return CommandResult(
+        evaluation=evaluation,
+        apply_result=apply_alerts(policy, evaluation, GhIssueClient(repo)),
+        exit_code=0,
+    )
 
 
 def run_apply_live_command(
     args: argparse.Namespace, policy: StorageTripwirePolicy
-) -> tuple[dict[str, Any], dict[str, list[int]] | None]:
+) -> CommandResult:
     audit = build_live_audit(args.repo, args.branch)
     evaluation = evaluate_tripwire(policy, audit)
-    return evaluation, apply_alerts(policy, evaluation, GhIssueClient(args.repo))
+    return CommandResult(
+        evaluation=evaluation,
+        apply_result=apply_alerts(policy, evaluation, GhIssueClient(args.repo)),
+        exit_code=0,
+    )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -636,18 +662,18 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     repo_root = pathlib.Path.cwd()
     policy = load_policy(args.policy) if args.policy is not None else load_repo_policy(repo_root)
-    evaluation, apply_result = args.command_runner(args, policy)
+    result = args.command_runner(args, policy)
     output: str
     if args.json:
-        payload: dict[str, Any] = {"evaluation": evaluation}
-        if apply_result is not None:
-            payload["alerts"] = apply_result
+        payload: dict[str, Any] = {"evaluation": result.evaluation}
+        if result.apply_result is not None:
+            payload["alerts"] = result.apply_result
         output = json.dumps(payload, indent=2, sort_keys=True)
     else:
-        output = render_result(evaluation, apply_result)
+        output = render_result(result.evaluation, result.apply_result)
     print(output)
     write_summary(output)
-    return 1 if evaluation["breached"] else 0
+    return result.exit_code
 
 
 if __name__ == "__main__":

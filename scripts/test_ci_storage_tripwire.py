@@ -38,9 +38,13 @@ class FakeIssueClient:
         self.created: list[dict[str, Any]] = []
         self.edited: list[dict[str, Any]] = []
 
-    def find_open_issues_by_marker(self, *, marker: str, limit: int) -> list[dict[str, Any]]:
-        self.calls.append(("find_open_issues_by_marker", (marker, limit)))
-        return self.matches_by_marker.get(marker, [])[:limit]
+    def find_open_issues_by_marker(
+        self, *, marker: str, result_limit: int, page_size: int
+    ) -> list[dict[str, Any]]:
+        self.calls.append(
+            ("find_open_issues_by_marker", (marker, result_limit, page_size))
+        )
+        return self.matches_by_marker.get(marker, [])[:result_limit]
 
     def create_issue(self, *, title: str, body: str, labels: list[str]) -> dict[str, Any]:
         record = {"number": 100 + len(self.created), "title": title, "body": body, "labels": labels}
@@ -56,10 +60,12 @@ class FakeIssueClient:
 
 
 class RecordingGhIssueClient(ci_storage_tripwire.GhIssueClient):
-    def __init__(self, response: dict[str, Any]) -> None:
+    def __init__(self, response: Any) -> None:
         super().__init__("owner/repo")
         self.response = response
-        self.api_calls: list[tuple[str, str, Mapping[str, Any] | None, Mapping[str, Any] | None]] = []
+        self.api_calls: list[
+            tuple[str, str, Mapping[str, Any] | None, Mapping[str, Any] | None, bool]
+        ] = []
 
     def api(
         self,
@@ -67,8 +73,9 @@ class RecordingGhIssueClient(ci_storage_tripwire.GhIssueClient):
         path: str,
         payload: Mapping[str, Any] | None = None,
         fields: Mapping[str, Any] | None = None,
+        paginate: bool = False,
     ) -> Any:
-        self.api_calls.append((method, path, payload, fields))
+        self.api_calls.append((method, path, payload, fields, paginate))
         return self.response
 
 
@@ -92,6 +99,7 @@ class CiStorageTripwireTests(unittest.TestCase):
                 [storage_tripwire.issue_match]
                 result_limit = 2
                 max_open_matches_per_marker = 1
+                page_size = 50
 
                 [storage_tripwire.marker]
                 prefix = "<!-- ci-storage-tripwire:"
@@ -246,6 +254,42 @@ class CiStorageTripwireTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertFalse(payload["evaluation"]["breached"])
 
+    def test_apply_cli_exits_zero_after_successful_breach_alerting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            policy_path = self.write_policy(root)
+            audit_path = self.write_audit(root, 1200, 600)
+            fake = FakeIssueClient()
+            stdout = io.StringIO()
+
+            original_client = ci_storage_tripwire.GhIssueClient
+
+            def fake_client(repo: str) -> FakeIssueClient:
+                self.assertEqual(repo, "owner/repo")
+                return fake
+
+            ci_storage_tripwire.GhIssueClient = fake_client  # type: ignore[assignment]
+            try:
+                with contextlib.redirect_stdout(stdout):
+                    exit_code = ci_storage_tripwire.main(
+                        [
+                            "--policy",
+                            str(policy_path),
+                            "apply",
+                            "--audit-json",
+                            str(audit_path),
+                            "--json",
+                        ]
+                    )
+            finally:
+                ci_storage_tripwire.GhIssueClient = original_client  # type: ignore[assignment]
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload["evaluation"]["breached"])
+        self.assertEqual(payload["alerts"], {"created": [100], "updated": [], "unchanged": []})
+        self.assertEqual(len(fake.created), 1)
+
     def test_apply_updates_existing_marker_issue_and_creates_missing_breach_issue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -273,8 +317,8 @@ class CiStorageTripwireTests(unittest.TestCase):
         self.assertEqual(
             find_calls,
             [
-                ("find_open_issues_by_marker", ("<!-- ci-storage-tripwire:cache-over-cap -->", 2)),
-                ("find_open_issues_by_marker", ("<!-- ci-storage-tripwire:artifact-over-cap -->", 2)),
+                ("find_open_issues_by_marker", ("<!-- ci-storage-tripwire:cache-over-cap -->", 2, 50)),
+                ("find_open_issues_by_marker", ("<!-- ci-storage-tripwire:artifact-over-cap -->", 2, 50)),
             ],
         )
         self.assertEqual(len(fake.edited), 1)
@@ -313,28 +357,46 @@ class CiStorageTripwireTests(unittest.TestCase):
         with self.assertRaisesRegex(ci_storage_tripwire.TripwireError, "multiple open issues"):
             ci_storage_tripwire.apply_alerts(policy, evaluation, fake)
 
-    def test_github_issue_client_searches_open_issues_by_marker(self) -> None:
-        client = RecordingGhIssueClient({"items": [{"number": 7, "body": "matched"}]})
-
-        matches = client.find_open_issues_by_marker(
-            marker="<!-- ci-storage-tripwire:cache-over-cap -->",
-            limit=2,
+    def test_github_issue_client_lists_open_issues_by_marker(self) -> None:
+        marker = "<!-- ci-storage-tripwire:cache-over-cap -->"
+        client = RecordingGhIssueClient(
+            [
+                [
+                    {"number": 6, "body": "different marker"},
+                    {"number": 7, "body": marker},
+                    {
+                        "number": 8,
+                        "body": marker,
+                        "pull_request": {"url": "https://example.invalid/pr"},
+                    },
+                ],
+                [{"number": 9, "body": f"{marker}\nsecond match"}],
+            ]
         )
 
-        self.assertEqual(matches, [{"number": 7, "body": "matched"}])
+        matches = client.find_open_issues_by_marker(
+            marker=marker,
+            result_limit=2,
+            page_size=50,
+        )
+
+        self.assertEqual(
+            matches,
+            [
+                {"number": 7, "body": marker},
+                {"number": 9, "body": f"{marker}\nsecond match"},
+            ],
+        )
         self.assertEqual(len(client.api_calls), 1)
-        method, path, payload, fields = client.api_calls[0]
+        method, path, payload, fields, paginate = client.api_calls[0]
         self.assertEqual(method, "GET")
-        self.assertEqual(path, "search/issues")
+        self.assertEqual(path, "repos/owner/repo/issues")
         self.assertIsNone(payload)
         self.assertIsNotNone(fields)
         assert fields is not None
-        self.assertEqual(fields["per_page"], "2")
-        self.assertIn("repo:owner/repo", fields["q"])
-        self.assertIn("is:issue", fields["q"])
-        self.assertIn("is:open", fields["q"])
-        self.assertIn("in:body", fields["q"])
-        self.assertIn('"<!-- ci-storage-tripwire:cache-over-cap -->"', fields["q"])
+        self.assertEqual(fields["state"], "open")
+        self.assertEqual(fields["per_page"], "50")
+        self.assertTrue(paginate)
 
     def test_apply_does_not_touch_issues_when_no_threshold_crosses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -368,6 +430,7 @@ class CiStorageTripwireTests(unittest.TestCase):
                 [storage_tripwire.issue_match]
                 result_limit = 2
                 max_open_matches_per_marker = 1
+                page_size = 50
 
                 [storage_tripwire.marker]
                 prefix = "<!-- ci-storage-tripwire:"
@@ -425,6 +488,7 @@ class CiStorageTripwireTests(unittest.TestCase):
                 [storage_tripwire.issue_match]
                 result_limit = 2
                 max_open_matches_per_marker = 1
+                page_size = 50
 
                 [storage_tripwire.marker]
                 prefix = "<!-- ci-storage-tripwire:"
@@ -489,6 +553,16 @@ class CiStorageTripwireTests(unittest.TestCase):
             policy_text,
         )
         self.assertEqual(clean_errors, [])
+        quoted_permission_workflow = (
+            workflow.replace("  contents: read\n", '  contents: "read"\n')
+            .replace("  actions: read\n", "  actions: 'read'\n")
+            .replace("  issues: write\n", '  issues: "write"\n')
+        )
+        quoted_permission_errors = verify_ci_workflow_hygiene.verify_storage_tripwire_workflow(
+            {workflow_name: quoted_permission_workflow},
+            policy_text,
+        )
+        self.assertEqual(quoted_permission_errors, [])
 
         cases = [
             (

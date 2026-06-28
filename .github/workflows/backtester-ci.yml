@@ -442,6 +442,7 @@ jobs:
           key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
 
       - name: Upload BVS test payload
+        id: upload-bvs-test-payload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bvs-test-payload
@@ -563,6 +564,7 @@ jobs:
           just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl
 
       - name: Upload issue #789 first-P/L artifact
+        id: upload-issue-789-first-pl
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

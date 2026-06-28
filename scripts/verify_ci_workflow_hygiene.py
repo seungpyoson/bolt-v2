@@ -131,10 +131,9 @@ class CiPolicyResult(NamedTuple):
 
 class ArtifactRetentionClass(NamedTuple):
     max_retention_days: int
-    allowed_refs: tuple[str, ...]
 
 
-class ArtifactRetentionNameRule(NamedTuple):
+class ArtifactRetentionUploadSite(NamedTuple):
     artifact_name: str | None
     artifact_name_prefix: str | None
     artifact_class: str
@@ -142,7 +141,7 @@ class ArtifactRetentionNameRule(NamedTuple):
 
 class ArtifactRetentionPolicy(NamedTuple):
     classes: dict[str, ArtifactRetentionClass]
-    name_rules: dict[str, ArtifactRetentionNameRule]
+    uploads: dict[str, ArtifactRetentionUploadSite]
 
 
 REQUIRED_JOBS = (
@@ -653,7 +652,6 @@ JUST_LANE_RE = re.compile(
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
 BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
-BOLT_V2_BINARY_ARTIFACT_NAME = "bolt-v2-binary"
 # taiki-e/install-action must be pinned to a 40-hex commit SHA (mutable tags
 # like @v2 are rejected). The specific SHA is NOT enforced here — Dependabot
 # opens a PR with release notes for every bump and PR review is the human
@@ -1917,10 +1915,38 @@ def block_input_value(block: list[str], name: str) -> str | None:
     return None
 
 
-def artifact_retention_rule_matches(rule: ArtifactRetentionNameRule, artifact_name: str) -> bool:
-    if rule.artifact_name is not None and artifact_name == rule.artifact_name:
+def artifact_retention_upload_key(source_name: str, job_id: str, step_id: str) -> str:
+    return f"{source_name}::{job_id}::{step_id}"
+
+
+def artifact_retention_source_name(file_name: str) -> str:
+    aliases = {
+        "ci.yml": ".github/workflows/ci.yml",
+        "backtester-ci.yml": ".github/workflows/backtester-ci.yml",
+    }
+    return aliases.get(file_name, file_name)
+
+
+def block_step_id(block: list[str]) -> str | None:
+    items = block_top_level_items(block)
+    if items is None:
+        return None
+    step_id = items.get("id")
+    return step_id if step_id else None
+
+
+def artifact_retention_upload_matches(site: ArtifactRetentionUploadSite, artifact_name: str) -> bool:
+    if site.artifact_name is not None and artifact_name == site.artifact_name:
         return True
-    return rule.artifact_name_prefix is not None and artifact_name.startswith(rule.artifact_name_prefix)
+    return site.artifact_name_prefix is not None and artifact_name.startswith(site.artifact_name_prefix)
+
+
+def artifact_retention_upload_name_expectation(site: ArtifactRetentionUploadSite) -> str:
+    if site.artifact_name is not None:
+        return f"configured name {site.artifact_name}"
+    if site.artifact_name_prefix is not None:
+        return f"configured prefix {site.artifact_name_prefix}"
+    return "configured artifact identity"
 
 
 def upload_artifact_retention_errors(
@@ -1928,29 +1954,38 @@ def upload_artifact_retention_errors(
     source_name: str,
     job_id: str,
     job_lines: list[str],
+    seen_upload_keys: set[str] | None = None,
 ) -> list[str]:
     errors: list[str] = []
+    seen_step_ids: set[str] = set()
     for block in action_blocks(job_lines, "actions/upload-artifact@"):
+        step_id = block_step_id(block)
+        if step_id is None:
+            errors.append(f"{source_name} {job_id} upload-artifact step must set id for artifact retention policy")
+            continue
+        if step_id in seen_step_ids:
+            errors.append(f"{source_name} {job_id} upload-artifact step id {step_id} is duplicated")
+            continue
+        seen_step_ids.add(step_id)
+        upload_key = artifact_retention_upload_key(source_name, job_id, step_id)
+        if seen_upload_keys is not None:
+            seen_upload_keys.add(upload_key)
+        site = policy.uploads.get(upload_key)
+        if site is None:
+            errors.append(f"{upload_key} missing from artifact retention policy")
+            continue
         artifact_names = block_input_values(block, "name")
         if len(artifact_names) != 1:
-            errors.append(f"{source_name} {job_id} upload-artifact step must set exactly one name")
+            errors.append(f"{upload_key} upload-artifact step must set exactly one name")
             continue
         artifact_name = artifact_names[0]
-        label = f"{source_name} {job_id} artifact {artifact_name}"
-        matching_rules = [
-            (rule_key, rule)
-            for rule_key, rule in sorted(policy.name_rules.items())
-            if artifact_retention_rule_matches(rule, artifact_name)
-        ]
-        if not matching_rules:
-            errors.append(f"{label} missing from artifact retention policy")
+        label = f"{source_name} {job_id} {step_id} artifact {artifact_name}"
+        if not artifact_retention_upload_matches(site, artifact_name):
+            errors.append(
+                f"{label} does not match {artifact_retention_upload_name_expectation(site)}"
+            )
             continue
-        if len(matching_rules) > 1:
-            matched_rule_keys = ", ".join(rule_key for rule_key, _rule in matching_rules)
-            errors.append(f"{label} matches multiple artifact retention rules: {matched_rule_keys}")
-            continue
-        _rule_key, rule = matching_rules[0]
-        class_policy = policy.classes[rule.artifact_class]
+        class_policy = policy.classes[site.artifact_class]
         retention_values = block_input_values(block, "retention-days")
         if not retention_values:
             errors.append(f"{label} must set retention-days")
@@ -1990,17 +2025,34 @@ def verify_artifact_retention_policy(
         return ["github-actions runner config invalid: artifact_retention policy did not load"]
 
     errors: list[str] = []
+    seen_sources: set[str] = set()
+    seen_upload_keys: set[str] = set()
     for file_name, workflow_text in sorted(workflows.items()):
+        source_name = artifact_retention_source_name(file_name)
+        seen_sources.add(source_name)
         for job_id, job_lines in sorted(parse_jobs(workflow_text).items()):
-            errors.extend(upload_artifact_retention_errors(policy, file_name, job_id, job_lines))
+            errors.extend(upload_artifact_retention_errors(
+                policy,
+                source_name,
+                job_id,
+                job_lines,
+                seen_upload_keys,
+            ))
 
     for file_name, automation_text in sorted(composite_actions.items()):
+        seen_sources.add(file_name)
         errors.extend(upload_artifact_retention_errors(
             policy,
             file_name,
             "__composite__",
             automation_text.splitlines(),
+            seen_upload_keys,
         ))
+
+    for upload_key in sorted(policy.uploads):
+        source_name = upload_key.split("::", 1)[0]
+        if source_name in seen_sources and upload_key not in seen_upload_keys:
+            errors.append(f"artifact retention policy upload {upload_key} has no matching upload-artifact step")
 
     return errors
 
@@ -8944,6 +8996,21 @@ def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+actions:\s+read\s*$", workflow_text) is not None
 
 
+def configured_ci_provenance_deploy_artifact_name() -> str:
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+        return ""
+    ci_provenance = config.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        return ""
+    deploy = ci_provenance.get("deploy")
+    if not isinstance(deploy, dict):
+        return ""
+    artifact_name = deploy.get("artifact_name")
+    return artifact_name if isinstance(artifact_name, str) else ""
+
+
 def configured_ci_provenance_dispatch_input() -> str:
     try:
         config = load_github_actions_runners_config()
@@ -9833,13 +9900,16 @@ def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
         errors.append(f"{workflow_name} build must copy the managed binary into a staged artifact directory")
     if "steps.managed_artifact.outputs.stage_dir" not in build_text:
         errors.append(f"{workflow_name} build upload must use the staged artifact directory")
+    artifact_name = configured_ci_provenance_deploy_artifact_name()
+    if not artifact_name:
+        return errors
     binary_upload_blocks = [
         block
         for block in action_blocks(build, "actions/upload-artifact@")
-        if block_has_input(block, "name", BOLT_V2_BINARY_ARTIFACT_NAME)
+        if block_has_input(block, "name", artifact_name)
     ]
     if not binary_upload_blocks:
-        errors.append(f"{workflow_name} build must upload {BOLT_V2_BINARY_ARTIFACT_NAME}")
+        errors.append(f"{workflow_name} build must upload {artifact_name}")
     return errors
 
 
@@ -11042,13 +11112,10 @@ def require_config_string_list(parent: dict[str, object], key: str, prefix: str)
     return value
 
 
-def optional_config_string_list(parent: dict[str, object], key: str, prefix: str) -> list[str]:
-    value = parent.get(key)
-    if value is None:
-        return []
-    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
-        raise ValueError(f"{prefix}.{key} must be a string list")
-    return value
+def require_config_only_keys(parent: dict[str, object], allowed_keys: set[str], prefix: str) -> None:
+    unexpected_keys = sorted(set(parent) - allowed_keys)
+    if unexpected_keys:
+        raise ValueError(f"{prefix} has unexpected keys: {unexpected_keys!r}")
 
 
 def resolve_config_positive_int_ref(data: dict[str, object], ref: str, prefix: str) -> int:
@@ -11065,10 +11132,25 @@ def resolve_config_positive_int_ref(data: dict[str, object], ref: str, prefix: s
     return current
 
 
+def resolve_config_string_ref(data: dict[str, object], ref: str, prefix: str) -> str:
+    keys = ref.split(".")
+    if not keys or any(not key for key in keys):
+        raise ValueError(f"{prefix} must be a dotted TOML key reference")
+    current: object = data
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            raise ValueError(f"{prefix} references missing TOML key {ref!r}")
+        current = current[key]
+    if not isinstance(current, str) or not current:
+        raise ValueError(f"{prefix} must reference a non-empty string")
+    return current
+
+
 def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactRetentionPolicy:
     artifact_retention = data.get("artifact_retention")
     if not isinstance(artifact_retention, dict):
         raise ValueError("ci/github-actions-runners.toml must define [artifact_retention]")
+    require_config_only_keys(artifact_retention, {"classes", "uploads"}, "artifact_retention")
 
     raw_classes = require_config_table(artifact_retention, "classes", "artifact_retention")
     classes: dict[str, ArtifactRetentionClass] = {}
@@ -11078,6 +11160,11 @@ def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactReten
         if not isinstance(raw_class, dict):
             raise ValueError(f"artifact_retention.classes.{class_name} must be a table")
         prefix = f"artifact_retention.classes.{class_name}"
+        require_config_only_keys(
+            raw_class,
+            {"max_retention_days", "max_retention_days_config_ref"},
+            prefix,
+        )
         has_literal_max = "max_retention_days" in raw_class
         has_ref_max = "max_retention_days_config_ref" in raw_class
         if has_literal_max == has_ref_max:
@@ -11089,44 +11176,61 @@ def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactReten
             max_retention_days = resolve_config_positive_int_ref(data, max_retention_ref, f"{prefix}.max_retention_days_config_ref")
         classes[class_name] = ArtifactRetentionClass(
             max_retention_days=max_retention_days,
-            allowed_refs=tuple(optional_config_string_list(
-                raw_class,
-                "allowed_refs",
-                prefix,
-            )),
         )
 
-    raw_rules = require_config_table(artifact_retention, "name_rules", "artifact_retention")
-    name_rules: dict[str, ArtifactRetentionNameRule] = {}
-    for rule_key, raw_rule in sorted(raw_rules.items()):
-        if not isinstance(rule_key, str) or not rule_key:
-            raise ValueError("artifact_retention.name_rules keys must be non-empty strings")
-        if not isinstance(raw_rule, dict):
-            raise ValueError(f"artifact_retention.name_rules.{rule_key} must be a table")
-        prefix = f"artifact_retention.name_rules.{rule_key}"
-        artifact_name = raw_rule.get("artifact_name")
-        artifact_name_prefix = raw_rule.get("artifact_name_prefix")
-        if artifact_name is None and artifact_name_prefix is None:
-            raise ValueError(f"{prefix} must define artifact_name or artifact_name_prefix")
-        if artifact_name is not None and artifact_name_prefix is not None:
-            raise ValueError(f"{prefix} must not define both artifact_name and artifact_name_prefix")
+    raw_uploads = require_config_table(artifact_retention, "uploads", "artifact_retention")
+    uploads: dict[str, ArtifactRetentionUploadSite] = {}
+    for upload_key, raw_upload in sorted(raw_uploads.items()):
+        if not isinstance(upload_key, str) or not upload_key:
+            raise ValueError("artifact_retention.uploads keys must be non-empty strings")
+        key_parts = upload_key.split("::")
+        if len(key_parts) != 3 or any(not part for part in key_parts):
+            raise ValueError("artifact_retention.uploads keys must be source::job_id::step_id")
+        if not isinstance(raw_upload, dict):
+            raise ValueError(f"artifact_retention.uploads.{upload_key} must be a table")
+        prefix = f"artifact_retention.uploads.{upload_key}"
+        require_config_only_keys(
+            raw_upload,
+            {"artifact_name", "artifact_name_prefix", "artifact_name_config_ref", "artifact_class"},
+            prefix,
+        )
+        artifact_name = raw_upload.get("artifact_name")
+        artifact_name_prefix = raw_upload.get("artifact_name_prefix")
+        artifact_name_config_ref = raw_upload.get("artifact_name_config_ref")
+        identity_sources = [
+            artifact_name is not None,
+            artifact_name_prefix is not None,
+            artifact_name_config_ref is not None,
+        ]
+        if sum(identity_sources) != 1:
+            raise ValueError(
+                f"{prefix} must define exactly one artifact_name, artifact_name_prefix, "
+                "or artifact_name_config_ref"
+            )
         if artifact_name is not None and (not isinstance(artifact_name, str) or not artifact_name):
             raise ValueError(f"{prefix}.artifact_name must be a non-empty string")
         if artifact_name_prefix is not None and (
             not isinstance(artifact_name_prefix, str) or not artifact_name_prefix
         ):
             raise ValueError(f"{prefix}.artifact_name_prefix must be a non-empty string")
-        artifact_class = require_config_string(raw_rule, "artifact_class", prefix)
-        class_policy = classes.get(artifact_class)
-        if class_policy is None:
+        if artifact_name_config_ref is not None:
+            if not isinstance(artifact_name_config_ref, str) or not artifact_name_config_ref:
+                raise ValueError(f"{prefix}.artifact_name_config_ref must be a non-empty string")
+            artifact_name = resolve_config_string_ref(
+                data,
+                artifact_name_config_ref,
+                f"{prefix}.artifact_name_config_ref",
+            )
+        artifact_class = require_config_string(raw_upload, "artifact_class", prefix)
+        if artifact_class not in classes:
             raise ValueError(f"{prefix}.artifact_class must reference a configured class")
-        name_rules[rule_key] = ArtifactRetentionNameRule(
+        uploads[upload_key] = ArtifactRetentionUploadSite(
             artifact_name=artifact_name,
             artifact_name_prefix=artifact_name_prefix,
             artifact_class=artifact_class,
         )
 
-    return ArtifactRetentionPolicy(classes=classes, name_rules=name_rules)
+    return ArtifactRetentionPolicy(classes=classes, uploads=uploads)
 
 
 def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:

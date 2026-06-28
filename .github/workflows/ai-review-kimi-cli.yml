@@ -32,13 +32,23 @@ jobs:
     # this in sync with ci/ai-review.toml [kimi.workflow].job_timeout_minutes.
     timeout-minutes: 45
     env:
-      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
+      - name: Detect Kimi secret
+        id: kimi-secret
+        env:
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+        run: |
+          if [ -n "$KIMI_API_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout PR head
         id: checkout-head
-        if: env.KIMI_API_KEY != ''
+        if: steps.kimi-secret.outputs.configured == 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
@@ -104,7 +114,7 @@ jobs:
           PY
 
       - name: Notice when Kimi secret is not configured
-        if: env.KIMI_API_KEY == ''
+        if: steps.kimi-secret.outputs.configured == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -146,7 +156,7 @@ jobs:
 
       - name: Check AI review model freshness
         id: model-freshness
-        if: env.KIMI_API_KEY != ''
+        if: steps.kimi-secret.outputs.configured == 'true'
         continue-on-error: true
         run: >-
           python3 .ai-review/base/scripts/verify_ai_review_model_freshness.py
@@ -157,7 +167,7 @@ jobs:
 
       - name: Prepare Kimi review standards
         id: prepare-standards
-        if: env.KIMI_API_KEY != ''
+        if: steps.kimi-secret.outputs.configured == 'true'
         run: |
           mkdir -p .ai-review/standards
           {
@@ -183,35 +193,36 @@ jobs:
 
       - name: Capture Kimi review window
         id: review-window
-        if: env.KIMI_API_KEY != ''
+        if: steps.kimi-secret.outputs.configured == 'true'
         run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js for Kimi CLI
         id: setup-node
-        if: env.KIMI_API_KEY != ''
+        if: steps.kimi-secret.outputs.configured == 'true'
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: ${{ steps.runtime-config.outputs.kimi_node_version }}
 
       - name: Install Kimi Code CLI
         id: install-kimi
-        if: env.KIMI_API_KEY != ''
+        if: steps.kimi-secret.outputs.configured == 'true'
         env:
           KIMI_CLI_PACKAGE: ${{ steps.runtime-config.outputs.kimi_cli_package }}
         run: npm install -g "$KIMI_CLI_PACKAGE"
 
       - name: Run Kimi CLI review
         id: kimi-review
-        if: env.KIMI_API_KEY != ''
+        if: steps.kimi-secret.outputs.configured == 'true'
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.kimi_primary_timeout_minutes) }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
           KIMI_CODE_HOME: ${{ runner.temp }}/kimi-code
           KIMI_DISABLE_TELEMETRY: ${{ steps.runtime-config.outputs.kimi_disable_telemetry }}
           KIMI_MODEL_NAME: ${{ steps.runtime-config.outputs.kimi_model_name }}
-          KIMI_MODEL_API_KEY: ${{ env.KIMI_API_KEY }}
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_API_KEY }}
           KIMI_MODEL_BASE_URL: ${{ steps.runtime-config.outputs.kimi_model_base_url }}
           KIMI_MODEL_PROVIDER_TYPE: ${{ steps.runtime-config.outputs.kimi_model_provider_type }}
           KIMI_MODEL_MAX_CONTEXT_SIZE: ${{ steps.runtime-config.outputs.kimi_model_max_context_size }}
@@ -229,16 +240,17 @@ jobs:
 
       - name: Ensure Kimi deliverable or post split fallback
         id: kimi_fallback
-        if: env.KIMI_API_KEY != ''
+        if: steps.kimi-secret.outputs.configured == 'true'
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.kimi_fallback_timeout_minutes) }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
           KIMI_CODE_HOME: ${{ runner.temp }}/kimi-code
           KIMI_DISABLE_TELEMETRY: ${{ steps.runtime-config.outputs.kimi_disable_telemetry }}
           KIMI_MODEL_NAME: ${{ steps.runtime-config.outputs.kimi_model_name }}
-          KIMI_MODEL_API_KEY: ${{ env.KIMI_API_KEY }}
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_API_KEY }}
           KIMI_MODEL_BASE_URL: ${{ steps.runtime-config.outputs.kimi_model_base_url }}
           KIMI_MODEL_PROVIDER_TYPE: ${{ steps.runtime-config.outputs.kimi_model_provider_type }}
           KIMI_MODEL_MAX_CONTEXT_SIZE: ${{ steps.runtime-config.outputs.kimi_model_max_context_size }}
@@ -257,7 +269,7 @@ jobs:
       - name: Post Kimi model freshness advisory
         if: >-
           ${{
-            env.KIMI_API_KEY != ''
+            steps.kimi-secret.outputs.configured == 'true'
             && always()
             && steps.model-freshness.outputs.kimi_warning != ''
           }}
@@ -274,7 +286,7 @@ jobs:
       - name: Post Kimi fallback infrastructure failure notice
         if: >-
           ${{
-            env.KIMI_API_KEY != ''
+            steps.kimi-secret.outputs.configured == 'true'
             && always()
             && (
               steps.checkout-head.outcome == 'failure'

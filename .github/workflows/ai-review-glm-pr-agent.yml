@@ -32,10 +32,20 @@ jobs:
     # this in sync with ci/ai-review.toml [glm.workflow].job_timeout_minutes.
     timeout-minutes: 35
     env:
-      GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
+      - name: Detect GLM secret
+        id: glm-secret
+        env:
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+        run: |
+          if [ -n "$GLM_API_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout base AI review helpers
         id: base-checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -99,7 +109,7 @@ jobs:
           PY
 
       - name: Notice when Z.ai secret is not configured
-        if: env.GLM_API_KEY == ''
+        if: steps.glm-secret.outputs.configured == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -141,7 +151,7 @@ jobs:
 
       - name: Check AI review model freshness
         id: model-freshness
-        if: env.GLM_API_KEY != ''
+        if: steps.glm-secret.outputs.configured == 'true'
         continue-on-error: true
         run: >-
           python3 scripts/verify_ai_review_model_freshness.py
@@ -152,20 +162,20 @@ jobs:
 
       - name: Capture GLM review window
         id: review-window
-        if: env.GLM_API_KEY != ''
+        if: steps.glm-secret.outputs.configured == 'true'
         run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Run PR-Agent review with GLM
         id: pr-agent
-        if: env.GLM_API_KEY != ''
+        if: steps.glm-secret.outputs.configured == 'true'
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_primary_timeout_minutes) }}
         uses: the-pr-agent/pr-agent@49cb2d8ce4a6f01c238229b3770e328fe11479df # v0.34.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI__API_BASE: ${{ steps.runtime-config.outputs.glm_api_base }}
-          OPENAI__KEY: ${{ env.GLM_API_KEY }}
-          OPENAI_KEY: ${{ env.GLM_API_KEY }}
+          OPENAI__KEY: ${{ secrets.GLM_API_KEY }}
+          OPENAI_KEY: ${{ secrets.GLM_API_KEY }}
           config.model: ${{ steps.runtime-config.outputs.glm_pr_agent_model }}
           config.fallback_models: ${{ steps.runtime-config.outputs.glm_pr_agent_fallback_models }}
           config.custom_model_max_tokens: ${{ steps.runtime-config.outputs.glm_pr_agent_custom_model_max_tokens }}
@@ -177,7 +187,7 @@ jobs:
 
       - name: Stamp GLM PR-Agent review source
         id: glm_stamp
-        if: env.GLM_API_KEY != ''
+        if: steps.glm-secret.outputs.configured == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
@@ -204,7 +214,7 @@ jobs:
         id: glm_fallback
         if: >-
           ${{
-            env.GLM_API_KEY != ''
+            steps.glm-secret.outputs.configured == 'true'
             && always()
             && steps.base-checkout.outcome == 'success'
             && steps.runtime-config.outcome == 'success'
@@ -215,6 +225,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
           GLM_API_BASE: ${{ steps.runtime-config.outputs.glm_api_base }}
           GLM_MODEL: ${{ steps.runtime-config.outputs.glm_model }}
           GLM_API_TIMEOUT_SECONDS: ${{ steps.runtime-config.outputs.glm_api_timeout_seconds }}
@@ -230,7 +241,7 @@ jobs:
       - name: Post GLM model freshness advisory
         if: >-
           ${{
-            env.GLM_API_KEY != ''
+            steps.glm-secret.outputs.configured == 'true'
             && always()
             && steps.model-freshness.outputs.glm_warning != ''
           }}
@@ -247,7 +258,7 @@ jobs:
       - name: Post GLM fallback infrastructure failure notice
         if: >-
           ${{
-            env.GLM_API_KEY != ''
+            steps.glm-secret.outputs.configured == 'true'
             && always()
             && (
               steps.base-checkout.outcome == 'failure'

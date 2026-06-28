@@ -44,7 +44,7 @@ GLM_DELIVERABLE_SNIPPETS = (
     "Capture GLM review window",
     "id: pr-agent",
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_primary_timeout_minutes) }}",
-    "OPENAI_KEY: ${{ env.GLM_API_KEY }}",
+    "OPENAI_KEY: ${{ secrets.GLM_API_KEY }}",
     "Stamp GLM PR-Agent review source",
     "id: glm_stamp",
     "scripts/ai_review_deliverables.py glm-stamp",
@@ -104,7 +104,7 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "KIMI_CLI_PACKAGE: ${{ steps.runtime-config.outputs.kimi_cli_package }}",
     "KIMI_CODE_HOME: ${{ runner.temp }}/kimi-code",
     "KIMI_MODEL_NAME: ${{ steps.runtime-config.outputs.kimi_model_name }}",
-    "KIMI_MODEL_API_KEY: ${{ env.KIMI_API_KEY }}",
+    "KIMI_MODEL_API_KEY: ${{ secrets.KIMI_API_KEY }}",
     "KIMI_MODEL_BASE_URL: ${{ steps.runtime-config.outputs.kimi_model_base_url }}",
     "KIMI_DELIVERABLE_MARKER: ${{ steps.runtime-config.outputs.kimi_deliverable_marker }}",
     "AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.kimi_warning }}",
@@ -401,36 +401,50 @@ def workflow_step_block(workflow_text: str, step_name: str) -> str:
 def verify_model_freshness_step_contracts(glm_workflow: str, kimi_workflow: str) -> list[str]:
     findings: list[str] = []
     provider_steps = (
-        ("GLM workflow", glm_workflow, "glm", "GLM_API_KEY"),
-        ("Kimi workflow", kimi_workflow, "kimi", "KIMI_API_KEY"),
+        ("GLM workflow", glm_workflow, "glm", "GLM_API_KEY", "glm-secret", "Detect GLM secret"),
+        ("Kimi workflow", kimi_workflow, "kimi", "KIMI_API_KEY", "kimi-secret", "Detect Kimi secret"),
     )
-    for workflow_name, workflow_text, provider, api_key_name in provider_steps:
+    for workflow_name, workflow_text, provider, api_key_name, detector_id, detector_name in provider_steps:
+        detector = workflow_step_block(workflow_text, detector_name)
+        if not detector:
+            findings.append(f"{workflow_name} missing {detector_name} step")
+        elif f"id: {detector_id}" not in detector or f"{api_key_name}: ${{{{ secrets.{api_key_name} }}}}" not in detector:
+            findings.append(f"{workflow_name} {detector_name} step must be the only {api_key_name} secret detector")
+        if workflow_job_env_receives_provider_secret(workflow_text, api_key_name):
+            findings.append(f"{workflow_name} must not expose {api_key_name} at job scope")
         block = workflow_step_block(workflow_text, "Check AI review model freshness")
         if not block:
             findings.append(f"{workflow_name} missing Check AI review model freshness step")
             continue
-        if f"if: env.{api_key_name} != ''" not in block:
-            findings.append(f"{workflow_name} model freshness step must be gated on {api_key_name}")
+        if f"if: steps.{detector_id}.outputs.configured == 'true'" not in block:
+            findings.append(f"{workflow_name} model freshness step must be gated on {detector_id} configured output")
         if "continue-on-error: true" not in block:
             findings.append(f"{workflow_name} model freshness step must be advisory via continue-on-error")
         if f"--provider {provider}" not in block:
             findings.append(f"{workflow_name} model freshness step must check only {provider.upper()} freshness")
 
     glm_block = workflow_step_block(glm_workflow, "Check AI review model freshness")
-    if model_freshness_step_receives_kimi_secret(glm_block):
-        findings.append("GLM workflow model freshness step must not receive Kimi/Moonshot secrets")
+    if model_freshness_step_receives_provider_secret(glm_block):
+        findings.append("GLM workflow model freshness step must not receive provider API secrets")
     kimi_block = workflow_step_block(kimi_workflow, "Check AI review model freshness")
-    if model_freshness_step_receives_kimi_secret(kimi_block):
-        findings.append("Kimi workflow model freshness step must not receive Kimi/Moonshot secrets")
+    if model_freshness_step_receives_provider_secret(kimi_block):
+        findings.append("Kimi workflow model freshness step must not receive provider API secrets")
     return findings
 
 
-def model_freshness_step_receives_kimi_secret(block: str) -> bool:
+def workflow_job_env_receives_provider_secret(workflow_text: str, api_key_name: str) -> bool:
+    return f"\n    env:\n      {api_key_name}:" in workflow_text
+
+
+def model_freshness_step_receives_provider_secret(block: str) -> bool:
     secret_patterns = (
+        "GLM_API_KEY:",
         "KIMI_API_KEY:",
         "MOONSHOT_API_KEY:",
+        "secrets.GLM_API_KEY",
         "secrets.KIMI_API_KEY",
         "secrets.MOONSHOT_API_KEY",
+        "${{ env.GLM_API_KEY }}",
         "${{ env.KIMI_API_KEY }}",
         "${{ env.MOONSHOT_API_KEY }}",
     )
@@ -936,28 +950,46 @@ def run_self_tests(repo_root: Path) -> None:
         raise AssertionError(f"real repository must satisfy AI review governance check, got {baseline!r}")
 
     glm_model_freshness_step = workflow_step_block(glm, "Check AI review model freshness")
+    glm_secret_detector_step = workflow_step_block(glm, "Detect GLM secret")
+    if not glm_secret_detector_step:
+        raise AssertionError("missing GLM secret detector step")
+    if "id: glm-secret" not in glm_secret_detector_step:
+        raise AssertionError("GLM secret detector must expose glm-secret outputs")
+    if "GLM_API_KEY: ${{ secrets.GLM_API_KEY }}" not in glm_secret_detector_step:
+        raise AssertionError("GLM secret detector must be the only GLM_API_KEY secret detector")
+    if workflow_job_env_receives_provider_secret(glm, "GLM_API_KEY"):
+        raise AssertionError("GLM workflow must not expose GLM_API_KEY at job scope")
     if not glm_model_freshness_step:
         raise AssertionError("missing GLM model freshness step")
     if "continue-on-error: true" not in glm_model_freshness_step:
         raise AssertionError("GLM model freshness step must be advisory via continue-on-error")
-    if "if: env.GLM_API_KEY != ''" not in glm_model_freshness_step:
-        raise AssertionError("GLM model freshness step must be gated on GLM_API_KEY")
+    if "if: steps.glm-secret.outputs.configured == 'true'" not in glm_model_freshness_step:
+        raise AssertionError("GLM model freshness step must be gated on glm-secret configured output")
     if "--provider glm" not in glm_model_freshness_step:
         raise AssertionError("GLM model freshness step must check only GLM freshness")
-    if model_freshness_step_receives_kimi_secret(glm_model_freshness_step):
-        raise AssertionError("GLM model freshness step must not receive Kimi/Moonshot secrets")
+    if model_freshness_step_receives_provider_secret(glm_model_freshness_step):
+        raise AssertionError("GLM model freshness step must not receive provider API secrets")
 
     kimi_model_freshness_step = workflow_step_block(kimi, "Check AI review model freshness")
+    kimi_secret_detector_step = workflow_step_block(kimi, "Detect Kimi secret")
+    if not kimi_secret_detector_step:
+        raise AssertionError("missing Kimi secret detector step")
+    if "id: kimi-secret" not in kimi_secret_detector_step:
+        raise AssertionError("Kimi secret detector must expose kimi-secret outputs")
+    if "KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}" not in kimi_secret_detector_step:
+        raise AssertionError("Kimi secret detector must be the only KIMI_API_KEY secret detector")
+    if workflow_job_env_receives_provider_secret(kimi, "KIMI_API_KEY"):
+        raise AssertionError("Kimi workflow must not expose KIMI_API_KEY at job scope")
     if not kimi_model_freshness_step:
         raise AssertionError("missing Kimi model freshness step")
     if "continue-on-error: true" not in kimi_model_freshness_step:
         raise AssertionError("Kimi model freshness step must be advisory via continue-on-error")
-    if "if: env.KIMI_API_KEY != ''" not in kimi_model_freshness_step:
-        raise AssertionError("Kimi model freshness step must be gated on KIMI_API_KEY")
+    if "if: steps.kimi-secret.outputs.configured == 'true'" not in kimi_model_freshness_step:
+        raise AssertionError("Kimi model freshness step must be gated on kimi-secret configured output")
     if "--provider kimi" not in kimi_model_freshness_step:
         raise AssertionError("Kimi model freshness step must check only Kimi freshness")
-    if model_freshness_step_receives_kimi_secret(kimi_model_freshness_step):
-        raise AssertionError("Kimi model freshness step must not receive Kimi/Moonshot secrets")
+    if model_freshness_step_receives_provider_secret(kimi_model_freshness_step):
+        raise AssertionError("Kimi model freshness step must not receive provider API secrets")
 
     glm_blocking_freshness = verify_variant(
         glm_text=glm.replace(
@@ -975,21 +1007,30 @@ def run_self_tests(repo_root: Path) -> None:
 
     glm_ungated_freshness = verify_variant(
         glm_text=glm.replace(
-            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: env.GLM_API_KEY != ''\n",
+            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.glm-secret.outputs.configured == 'true'\n",
             "      - name: Check AI review model freshness\n        id: model-freshness\n",
             1,
         ),
     )
-    assert_finding("GLM ungated freshness step", glm_ungated_freshness, "must be gated on GLM_API_KEY")
+    assert_finding("GLM ungated freshness step", glm_ungated_freshness, "must be gated on glm-secret")
+
+    glm_job_scope_secret = verify_variant(
+        glm_text=glm.replace(
+            "    env:\n      PR_NUMBER:",
+            "    env:\n      GLM_API_KEY: ${{ secrets.GLM_API_KEY }}\n      PR_NUMBER:",
+            1,
+        ),
+    )
+    assert_finding("GLM job-scope secret", glm_job_scope_secret, "must not expose GLM_API_KEY at job scope")
 
     glm_secret_expansion = verify_variant(
         glm_text=glm.replace(
             "        continue-on-error: true\n        run: >-",
-            "        continue-on-error: true\n        env:\n          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}\n        run: >-",
+            "        continue-on-error: true\n        env:\n          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}\n        run: >-",
             1,
         ),
     )
-    assert_finding("GLM model freshness secret expansion", glm_secret_expansion, "must not receive Kimi/Moonshot secrets")
+    assert_finding("GLM model freshness secret expansion", glm_secret_expansion, "must not receive provider API secrets")
 
     kimi_blocking_freshness = verify_variant(
         kimi_text=kimi.replace(
@@ -1002,12 +1043,21 @@ def run_self_tests(repo_root: Path) -> None:
 
     kimi_ungated_freshness = verify_variant(
         kimi_text=kimi.replace(
-            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: env.KIMI_API_KEY != ''\n",
+            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.kimi-secret.outputs.configured == 'true'\n",
             "      - name: Check AI review model freshness\n        id: model-freshness\n",
             1,
         ),
     )
-    assert_finding("Kimi ungated freshness step", kimi_ungated_freshness, "must be gated on KIMI_API_KEY")
+    assert_finding("Kimi ungated freshness step", kimi_ungated_freshness, "must be gated on kimi-secret")
+
+    kimi_job_scope_secret = verify_variant(
+        kimi_text=kimi.replace(
+            "    env:\n      PR_NUMBER:",
+            "    env:\n      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}\n      PR_NUMBER:",
+            1,
+        ),
+    )
+    assert_finding("Kimi job-scope secret", kimi_job_scope_secret, "must not expose KIMI_API_KEY at job scope")
 
     kimi_secret_expansion = verify_variant(
         kimi_text=kimi.replace(
@@ -1016,7 +1066,7 @@ def run_self_tests(repo_root: Path) -> None:
             1,
         ),
     )
-    assert_finding("Kimi model freshness secret expansion", kimi_secret_expansion, "must not receive Kimi/Moonshot secrets")
+    assert_finding("Kimi model freshness secret expansion", kimi_secret_expansion, "must not receive provider API secrets")
 
     future_ai_review = ai_review.replace(
         current_glm_model,
@@ -1045,8 +1095,8 @@ def run_self_tests(repo_root: Path) -> None:
 
     stamp_continue_on_error = verify_variant(
         glm_text=glm.replace(
-            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: env.GLM_API_KEY != ''\n        env:",
-            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: env.GLM_API_KEY != ''\n        continue-on-error: true\n        env:",
+            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.glm-secret.outputs.configured == 'true'\n        env:",
+            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.glm-secret.outputs.configured == 'true'\n        continue-on-error: true\n        env:",
             1,
         ),
     )

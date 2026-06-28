@@ -15,6 +15,15 @@ permissions:
 jobs:
   coverage-enforcer:
     name: coverage-enforcer
+    # Skip redundant advisory runs when Mergify edits the proof PR metadata after
+    # the initial opened run. Still run on the initial opened run, on code pushes,
+    # on base-ref retargets, on merge_group, and on ordinary PRs.
+    if: >-
+      ${{ !(github.event_name == 'pull_request'
+            && github.event.action == 'edited'
+            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+            && !(github.event.changes.base.ref.from != '')) }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

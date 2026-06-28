@@ -312,6 +312,72 @@ def assert_preflight_artifact_finding_uses_classification_table() -> None:
         raise AssertionError(finding)
 
 
+def ready_contract_findings() -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "lane": lane,
+            "scope": "run",
+            "status": "ready",
+            "reason_code": f"{lane}_ready",
+            "message": "ready",
+            "evidence": {},
+        }
+        for lane in ("mergify_config", "identity", "readiness", "integration", "verifier")
+    )
+
+
+def assert_contract_evaluator_reduces_normalized_evidence() -> None:
+    module = load_preflight_module()
+    ready = ready_contract_findings()
+    no_gh_finding = {
+        "lane": "readiness",
+        "scope": "run",
+        "status": "inconclusive",
+        "reason_code": "readiness_disabled_by_no_gh",
+        "message": "--no-gh disables authoritative readiness evidence",
+        "evidence": {"use_gh": False},
+    }
+    scenarios = {
+        "clean_authoritative": (
+            module.ContractEvidence(findings=ready, artifacts=(), wave_status="ready"),
+            ("queue_as_one_wave", 0),
+        ),
+        "no_gh_inconclusive": (
+            module.ContractEvidence(findings=(*ready, no_gh_finding), artifacts=(), wave_status="ready"),
+            ("inconclusive", 3),
+        ),
+        "base_conflict_blocked": (
+            module.ContractEvidence(
+                findings=ready,
+                artifacts=({"type": "base_conflict", "pr": 2, "reason": "conflicts with base"},),
+                wave_status="ready",
+            ),
+            ("blocked", 2),
+        ),
+        "batch_conflict_split_advised": (
+            module.ContractEvidence(
+                findings=ready,
+                artifacts=({"type": "batch_conflict", "pr": 2, "against_batch": [1]},),
+                wave_status="split_advised",
+            ),
+            ("split_advised", 1),
+        ),
+        "metadata_unavailable_inconclusive": (
+            module.ContractEvidence(
+                findings=ready,
+                artifacts=({"type": "metadata_unavailable", "pr": 1, "reason": "gh unavailable"},),
+                wave_status="ready",
+            ),
+            ("inconclusive", 3),
+        ),
+    }
+    for name, (evidence, expected) in scenarios.items():
+        evaluation = module.evaluate_preflight_contract(evidence)
+        observed = (evaluation["verdict"], evaluation["exit_code"])
+        if observed != expected:
+            raise AssertionError((name, observed, expected, evaluation))
+
+
 def write_preflight_config(
     root: pathlib.Path,
     profile: str,
@@ -989,6 +1055,7 @@ def main() -> int:
     assert_mergify_config_field_handling_is_declarative()
     assert_preflight_artifact_classification_is_declarative()
     assert_preflight_artifact_finding_uses_classification_table()
+    assert_contract_evaluator_reduces_normalized_evidence()
     assert_clean_prs_batch_together()
     assert_conflicting_pr_starts_later_batch()
     assert_order_dependent_conflict_context_is_reported()

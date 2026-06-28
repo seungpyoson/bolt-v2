@@ -129,6 +129,13 @@ class PreflightError(RuntimeError):
     """Raised when preflight input or repository state is invalid."""
 
 
+@dataclasses.dataclass(frozen=True)
+class ContractEvidence:
+    findings: tuple[dict[str, object], ...]
+    artifacts: tuple[Mapping[str, object], ...]
+    wave_status: str
+
+
 def normalize_check_state(raw_state: str) -> str:
     return re.sub(r"[-\s]+", "_", str(raw_state).strip().lower())
 
@@ -201,6 +208,21 @@ def preflight_artifact_finding(artifact: Mapping[str, object]) -> dict[str, obje
         "reason_code": artifact_type,
         "message": artifact_type,
         "evidence": dict(artifact),
+    }
+
+
+def evaluate_preflight_contract(evidence: ContractEvidence) -> dict[str, object]:
+    findings = (
+        *evidence.findings,
+        *(preflight_artifact_finding(artifact) for artifact in evidence.artifacts),
+    )
+    result = contract_result(findings, wave_status=evidence.wave_status)
+    return {
+        "verdict": result["verdict"],
+        "exit_code": result["exit_code"],
+        "lane_statuses": result["lane_statuses"],
+        "findings": list(findings),
+        "wave_status": evidence.wave_status,
     }
 
 

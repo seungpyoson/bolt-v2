@@ -254,7 +254,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     "key": "nextest-key",
                     "present": True,
                     "count": 1,
-                    "count_source": "github_total_count",
+                    "count_source": "exact_enumerated_count",
                     "enumerated_count": 1,
                     "entries": [
                         {
@@ -271,7 +271,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     "key": "sidecar-key",
                     "present": False,
                     "count": 0,
-                    "count_source": "github_total_count",
+                    "count_source": "exact_enumerated_count",
                     "enumerated_count": 0,
                     "entries": [],
                 },
@@ -282,6 +282,47 @@ class CiStorageAuditTests(unittest.TestCase):
             [
                 ("actions/caches", {"key": "nextest-key", "per_page": "100"}, True),
                 ("actions/caches", {"key": "sidecar-key", "per_page": "100"}, True),
+            ],
+        )
+
+    def test_cache_key_probes_reject_prefix_only_matches(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "nextest-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 1,
+                    "actions_caches": [
+                        {
+                            "id": 301,
+                            "ref": "refs/heads/main",
+                            "key": "nextest-key-longer",
+                            "last_accessed_at": "2026-06-25T10:00:00Z",
+                            "size_in_bytes": 1024,
+                        }
+                    ],
+                },
+            }
+        )
+
+        probes = ci_storage_audit.fetch_cache_key_probes(
+            client,
+            [ci_storage_audit.CacheKeyProbeRequest("nextest-archive", "nextest-key")],
+        )
+
+        self.assertEqual(
+            probes,
+            [
+                {
+                    "label": "nextest-archive",
+                    "key": "nextest-key",
+                    "present": False,
+                    "count": 0,
+                    "count_source": "exact_enumerated_count",
+                    "enumerated_count": 0,
+                    "entries": [],
+                }
             ],
         )
 

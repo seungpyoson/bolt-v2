@@ -231,19 +231,20 @@ def fetch_cache_key_probes(
             "actions/caches",
         )
         raw_entries = list_field(payload, "actions_caches", "actions/caches")
-        entries = [
-            cache_entry_from_raw(raw)
-            for raw in raw_entries
-            if isinstance(raw, dict)
-        ]
-        count, count_source = count_with_source(payload, fallback=len(entries))
+        entries = []
+        for raw in raw_entries:
+            if not isinstance(raw, dict):
+                continue
+            entry = cache_entry_from_raw(raw)
+            if entry["key"] == request.key:
+                entries.append(entry)
         probes.append(
             {
                 "label": request.label,
                 "key": request.key,
                 "present": bool(entries),
-                "count": count,
-                "count_source": count_source,
+                "count": len(entries),
+                "count_source": "exact_enumerated_count",
                 "enumerated_count": len(entries),
                 "entries": entries,
             }
@@ -490,7 +491,7 @@ def render_cache_key_probe_text(snapshot: dict[str, Any]) -> str:
                     continue
                 lines.append(
                     f"      id={entry.get('cache_id')} ref={entry.get('ref')} "
-                    f"size={human_bytes(nonnegative_int(entry.get('size_bytes')))} "
+                    f"size={human_bytes(entry['size_bytes'])} "
                     f"last_accessed_at={entry.get('last_accessed_at')}"
                 )
     return "\n".join(lines)

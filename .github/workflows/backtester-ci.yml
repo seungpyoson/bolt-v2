@@ -197,6 +197,7 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     outputs:
       bvs_changed: ${{ steps.detect.outputs.bvs_changed }}
+      bvs_bootstrap_changed: ${{ steps.detect.outputs.bvs_bootstrap_changed }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -210,11 +211,13 @@ jobs:
           if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "push or manual dispatch event; treating crate as changed"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
+            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
             # A skipped required gate counts as passing, so queue validation must run proof lanes.
             echo "merge_group event; treating crate as changed"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
+            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           base_sha="${{ github.event.pull_request.base.sha }}"
@@ -225,6 +228,7 @@ jobs:
             echo "CI input-set bootstrap paths changed:"
             cat "$bootstrap_changed_path"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
+            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # The backtester compiles against the root bolt-v2 crate. Keep this
@@ -235,9 +239,11 @@ jobs:
             echo "crate-relevant paths changed:"
             echo "$changed"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
+            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "no crate-relevant paths changed"
             echo "bvs_changed=false" >> "$GITHUB_OUTPUT"
+            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
   # Fail-early gate: fmt is a parse-only check (no dependency compile), so a mis-formatted
@@ -293,8 +299,14 @@ jobs:
 
       - name: Compute BVS cache input hash
         id: bvs_cache_inputs
+        shell: bash
         run: |
-          echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
+          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
+            echo "CI input-set bootstrap changed; using exact-head cache namespace"
+            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -332,8 +344,14 @@ jobs:
 
       - name: Compute BVS cache input hash
         id: bvs_cache_inputs
+        shell: bash
         run: |
-          echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
+          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
+            echo "CI input-set bootstrap changed; using exact-head cache namespace"
+            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup environment
         id: setup

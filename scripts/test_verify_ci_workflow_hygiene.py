@@ -2503,6 +2503,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         "            # A skipped required gate counts as passing, so queue validation must run proof lanes.\n"
         '            echo "merge_group event; treating crate as changed"\n'
         '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"\n'
         '            exit 0\n',
         "",
     )
@@ -2520,9 +2521,11 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     backtester_detector_without_exit = replace_once(
         backtester_workflow,
         '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"\n'
         "            exit 0\n"
         "          fi\n",
         '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"\n'
         "          fi\n",
     )
     backtester_detector_exit_errors = verifier.verify_repo_automation_texts(
@@ -4049,6 +4052,16 @@ def assert_security_key_public_prefix_is_validated() -> None:
 def assert_backtester_detect_uses_ci_input_set() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    missing_bootstrap_output = replace_once(
+        workflow,
+        "      bvs_bootstrap_changed: ${{ steps.detect.outputs.bvs_bootstrap_changed }}\n",
+        "",
+    )
+    bootstrap_output_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": missing_bootstrap_output}
+    )
+    if not any("backtester detect must expose CI input-set bootstrap changes" in error for error in bootstrap_output_errors):
+        raise AssertionError(f"backtester detector must reject missing bootstrap output, got: {bootstrap_output_errors}")
     validate_required = "python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect"
     missing_validate = replace_once(workflow, f"          {validate_required}\n", "")
     validate_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_validate})
@@ -4059,6 +4072,16 @@ def assert_backtester_detect_uses_ci_input_set() -> None:
     bootstrap_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_bootstrap})
     if not any("backtester detect must force-run on CI input-set bootstrap changes" in error for error in bootstrap_errors):
         raise AssertionError(f"backtester detector must reject missing bootstrap guard, got: {bootstrap_errors}")
+    missing_bootstrap_marker = replace_once(
+        workflow,
+        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n',
+        "",
+    )
+    bootstrap_marker_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": missing_bootstrap_marker}
+    )
+    if not any("backtester detect must mark CI input-set bootstrap changes" in error for error in bootstrap_marker_errors):
+        raise AssertionError(f"backtester detector must reject missing bootstrap marker, got: {bootstrap_marker_errors}")
     required = 'changed="$(python3 scripts/ci_input_sets.py changed backtester_detect --base "$base_sha" --head HEAD)"'
     bad = replace_once(
         workflow,
@@ -7543,7 +7566,12 @@ def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
     steps:
       - name: Compute BVS cache input hash
         id: bvs_cache_inputs
-        run: python3 scripts/ci_input_sets.py hash backtester_cache
+        run: |
+          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
+            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/cache@example
         with:
           key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-clippy-${{ steps.bvs_cache_inputs.outputs.digest }}
@@ -7552,6 +7580,21 @@ def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
     assert not [
         error for error in good_errors if "backtester cache key" in error
     ], good_errors
+    missing_bootstrap_namespace = good.replace(
+        '          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then\n'
+        '            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"\n'
+        "          else\n"
+        '            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"\n'
+        "          fi",
+        '          echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"',
+    )
+    namespace_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": missing_bootstrap_namespace}
+    )
+    assert any(
+        "backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes" in error
+        for error in namespace_errors
+    ), namespace_errors
 
 
 def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
@@ -7597,7 +7640,12 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     steps:
       - name: Compute BVS cache input hash
         id: bvs_cache_inputs
-        run: python3 scripts/ci_input_sets.py hash backtester_cache
+        run: |
+          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
+            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
+          fi
       - name: Restore BVS nextest archive
         id: bvs-nextest-archive-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae

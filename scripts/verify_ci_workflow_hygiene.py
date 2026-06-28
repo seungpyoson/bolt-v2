@@ -9800,6 +9800,11 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
             errors.append("backtester cache key must include steps.bvs_cache_inputs.outputs.digest")
     if cache_key_seen and "python3 scripts/ci_input_sets.py hash backtester_cache" not in text:
         errors.append("backtester cache key digest must come from ci_input_sets backtester_cache")
+    if cache_key_seen and (
+        'if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then' not in text
+        or 'echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"' not in text
+    ):
+        errors.append("backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes")
     return errors
 
 
@@ -10327,12 +10332,16 @@ def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
     detect_job = parse_jobs(text).get("detect", [])
     errors: list[str] = []
     detect_text = "\n".join(detect_job)
+    if "bvs_bootstrap_changed: ${{ steps.detect.outputs.bvs_bootstrap_changed }}" not in detect_text:
+        errors.append("backtester detect must expose CI input-set bootstrap changes")
     validate_required = "python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect"
     if validate_required not in detect_text:
         errors.append("backtester detect must validate CI input sets before skip decisions")
     bootstrap_required = 'git diff --name-only "${base_sha}...HEAD" -- scripts/ci_input_sets.py ci/rust-ci-inputs.toml > "$bootstrap_changed_path"'
     if bootstrap_required not in detect_text:
         errors.append("backtester detect must force-run on CI input-set bootstrap changes")
+    if 'echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"' not in detect_text:
+        errors.append("backtester detect must mark CI input-set bootstrap changes")
     required = 'python3 scripts/ci_input_sets.py changed backtester_detect --base "$base_sha" --head HEAD'
     if required not in detect_text:
         errors.append("backtester detect paths must come from ci_input_sets backtester_detect")

@@ -733,17 +733,17 @@ def assert_cli_summary_write_failure_warns_without_failing_green_verdict() -> No
             "GITHUB_STEP_SUMMARY",
         )
         old_env = {key: os.environ.get(key) for key in env_keys}
-        os.environ.update(
-            {
-                "GITHUB_REPOSITORY": REPO,
-                "GITHUB_TOKEN": "token",
-                "GITHUB_EVENT_PATH": str(event_path),
-                "GITHUB_STEP_SUMMARY": str(tmpdir / "missing" / "summary.md"),
-            }
-        )
-        stdout = io.StringIO()
-        stderr = io.StringIO()
         try:
+            os.environ.update(
+                {
+                    "GITHUB_REPOSITORY": REPO,
+                    "GITHUB_TOKEN": "token",
+                    "GITHUB_EVENT_PATH": str(event_path),
+                    "GITHUB_STEP_SUMMARY": str(tmpdir / "missing" / "summary.md"),
+                }
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 code = module.main(
                     [

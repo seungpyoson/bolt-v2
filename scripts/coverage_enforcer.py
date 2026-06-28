@@ -374,8 +374,10 @@ def expected_app_runs(
     return [
         run
         for run in check_runs
-        if run.get("name") == check.context
-        if app_id_for_run(run) == check.integration_id
+        if (
+            run.get("name") == check.context
+            and app_id_for_run(run) == check.integration_id
+        )
     ]
 
 
@@ -430,8 +432,6 @@ def drift_findings_for_terminal_runs(
             )
             continue
         latest_matching = latest_check_run(matching)
-        if latest_matching is None:
-            continue
         if latest_matching.get("conclusion") != SUCCESS_CONCLUSION:
             findings.append(
                 f"{check.context} latest terminal check-run from GitHub App id "

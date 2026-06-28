@@ -2,7 +2,8 @@
 # Single source of truth for all clean-merged runtime values (NO HARDCODES).
 # Read by scripts/clean_merged_artifacts.py from the MAIN worktree path
 # (not the current worktree, which may be on a branch predating this config).
-# Missing required keys fail loud; missing optional keys use documented defaults.
+# Missing, empty, or invalid runtime keys fail loud. There are no runtime
+# defaults in code.
 
 schema_version = 1
 
@@ -11,11 +12,12 @@ schema_version = 1
 # except 0/false/no/off, case-insensitive) — bash hooks and Python agree.
 # Env: CLEAN_MERGED_DISABLED=1
 enabled = true
-# Trunk branch. Falls back to "master" dynamically if "main" is absent.
-# (When fallback engages, Lane R's baseRefName filter accepts either name.)
+# Trunk branch. Resolved exactly; no implicit main/master substitution.
 trunk_branch = "main"
 # Remote name to consider as origin for upstream/prune purposes.
 remote_name = "origin"
+# Required same-repo owner for GitHub PR cleanup authority.
+origin_owner = "seungpyoson"
 
 [clean-merged.lane_r]
 # Hard timeout for the gh subprocess call (seconds). Enforced in Python via

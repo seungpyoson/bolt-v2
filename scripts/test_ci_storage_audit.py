@@ -1160,7 +1160,7 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertIn("Cache usage: 11 active caches, 10.3 GiB (source: rest)", rendered)
         self.assertIn("present; exact_count=1", rendered)
         self.assertIn("id=501 ref=refs/heads/main size=1.0 KiB", rendered)
-        # The workflow warning grep is coupled to this exact missing-key marker.
+        # The missing-key marker is part of the human-readable audit summary.
         self.assertIn(": missing;", rendered)
         self.assertIn("missing; exact_count=0", rendered)
 

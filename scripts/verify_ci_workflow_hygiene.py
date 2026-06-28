@@ -640,7 +640,7 @@ TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS = (
     f"archive_build_target_cache_key: {TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT}",
     "nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}",
     "root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}",
-    "archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}",
+    "archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}",
 )
 TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS = (
     "nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}",
@@ -662,7 +662,6 @@ TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS = (
     "root_bin_sidecars_cache_key=",
     "archive_build_target_cache_key=",
 )
-CACHE_PERSISTENCE_AUDIT_COMMAND = "python3 scripts/ci_storage_audit.py"
 CACHE_PERSISTENCE_AUDIT_PROBE_STEP = "Probe saved cache keys"
 CACHE_PERSISTENCE_AUDIT_NEEDS = ("ci-policy", "nextest-fingerprint-reuse", "test-archive")
 CACHE_PERSISTENCE_AUDIT_CACHE_KEYS = (
@@ -10134,6 +10133,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             if output not in archive_text:
                 errors.append("test-archive must expose cache persistence audit outputs")
                 break
+        if "archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}" in archive_text:
+            errors.append("test-archive archive build target cache hit output must be explicit when restore is skipped")
         for output in TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS:
             if output not in archive_text:
                 errors.append("test-archive must expose cache persistence save outcomes")

@@ -627,12 +627,15 @@ def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> Non
     pruned: dict[str, Any] = {}
     for key, entry in cache.items():
         if "@" not in key:
-            continue
+            return
         try:
-            age = _gh_cache_entry_age(entry, now)
-            prs = _gh_cache_entry_prs(entry)
+            _gh_cache_entry_age(entry, now)
+            _gh_cache_entry_prs(entry)
         except ValueError:
-            continue
+            return
+    for key, entry in cache.items():
+        age = _gh_cache_entry_age(entry, now)
+        prs = _gh_cache_entry_prs(entry)
         if age < ttl:
             assert isinstance(entry, dict)
             pruned[key] = {"fetched_at": entry["fetched_at"], "prs": prs}
@@ -683,8 +686,12 @@ def _valid_gh_pr_payload_item(pr: Any) -> bool:
     head_oid = pr.get("headRefOid")
     base_ref = pr.get("baseRefName")
     owner = pr.get("headRepositoryOwner")
+    number = pr.get("number")
     return (
-        isinstance(head_oid, str)
+        isinstance(number, int)
+        and not isinstance(number, bool)
+        and number > 0
+        and isinstance(head_oid, str)
         and SHA_RE.fullmatch(head_oid) is not None
         and isinstance(base_ref, str)
         and base_ref != ""
@@ -703,7 +710,7 @@ def _gh_cache_entry_age(entry: Any, now: float) -> float:
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("invalid cache entry") from exc
     age = now - fetched_at
-    if not math.isfinite(age):
+    if not math.isfinite(age) or age < 0:
         raise ValueError("invalid cache entry")
     return age
 

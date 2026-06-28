@@ -33,13 +33,13 @@ Coverage map (by review finding):
                                test_sync_main_apply_refusal_stops_cleanup_lanes,
                                test_sync_main_apply_refuses_dirty_checked_out_main,
                                test_sync_main_dry_run_refuses_dirty_checked_out_main_before_cleanup_preview,
-                               test_sync_main_dry_run_recovers_when_preview_temp_ref_direct_delete_fails,
+                               test_sync_main_dry_run_refuses_when_preview_temp_ref_delete_fails,
                                test_sync_main_dry_run_refuses_when_preview_temp_ref_cannot_be_deleted,
                                test_remote_branch_gone_but_merged_to_main_is_cleaned_after_sync
   #1050 post-review safety   : test_lane_w_refuses_branch_delete_when_tip_drifts_to_unmerged_commit,
                                test_fetch_failure_reason_redacts_url_credentials,
                                test_report_error_redacts_common_secret_forms,
-                               test_live_cache_entry_with_malformed_prs_is_refetched
+                               test_live_cache_entry_with_malformed_prs_fails_closed_without_refetch
 """
 
 from __future__ import annotations
@@ -368,6 +368,24 @@ class LaneRTests(unittest.TestCase):
         state_idx = cmd.index("--state")
         self.assertEqual(cmd[state_idx + 1], "merged",
                          "closed-unmerged PRs must not be queried as cleanup authority")
+
+    def test_gh_query_rejects_pr_payload_without_number(self) -> None:
+        tip = "a" * 40
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            payload = [{
+                "headRefOid": tip,
+                "baseRefName": "main",
+                "headRepositoryOwner": {"login": "t"},
+                "isCrossRepository": False,
+            }]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+        with mock.patch.object(cm.subprocess, "run", fake_run):
+            prs, err = cm.gh_merged_pr_for_branch(self.work, "feat/no-number", 5)
+
+        self.assertIsNone(prs)
+        self.assertIn("invalid PR payload", err or "")
 
     def test_lane_r_skips_worktree_bound(self) -> None:
         # The structural P0 fix: Lane R must NEVER update-ref -d a worktree-bound branch.
@@ -1151,6 +1169,12 @@ class GhCacheTests(unittest.TestCase):
         self.assertFalse(cm._entry_is_live(["not", "a", "dict"], now, ttl))
         self.assertFalse(cm._entry_is_live(None, now, ttl))
 
+    def test_entry_is_live_rejects_future_fetched_at(self) -> None:
+        now = 1000.0
+        ttl = 300.0
+
+        self.assertFalse(cm._entry_is_live({"fetched_at": now + 1, "prs": []}, now, ttl))
+
     def test_atomic_write_text_cleans_tmp_on_crash(self) -> None:
         """round-5.5 polish (Kimi/Grok P2): if write_text or os.replace raises,
         the tmp file must be cleaned up so dot-tmp.<pid> files don't accumulate."""
@@ -1200,6 +1224,47 @@ class GhCacheTests(unittest.TestCase):
         self.assertIsNone(prs)
         self.assertIn("invalid cache entry", err or "")
         gh.assert_not_called()
+
+    def test_future_cache_entry_fails_closed_without_refetch(self) -> None:
+        config = cm.load_config(self.work)
+        branch = "feat/future-cache"
+        tip = "3" * 40
+        cache_path = cm._gh_cache_path(self.work)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps({
+            f"{branch}@{tip[:12]}": {
+                "fetched_at": time.time() + 3600,
+                "prs": [],
+            }
+        }), encoding="utf-8")
+        with mock.patch.object(cm, "gh_merged_pr_for_branch") as gh:
+            prs, err = cm.gh_merged_pr_for_branch_cached(self.work, config, branch, tip)
+
+        self.assertIsNone(prs)
+        self.assertIn("invalid cache entry", err or "")
+        gh.assert_not_called()
+
+    def test_cache_save_does_not_repair_invalid_entries(self) -> None:
+        config = cm.load_config(self.work)
+        cache_path = cm._gh_cache_path(self.work)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        cache = {
+            "bad@aaaaaaaaaaaa": {
+                "fetched_at": now,
+                "prs": {"not": "a list"},
+            },
+            "good@bbbbbbbbbbbb": {
+                "fetched_at": now,
+                "prs": [],
+            },
+        }
+        cache_path.write_text(json.dumps(cache), encoding="utf-8")
+
+        cm._save_gh_cache(cache_path, cache, config.lane_r.cache_ttl_s)
+
+        stored = json.loads(cache_path.read_text(encoding="utf-8"))
+        self.assertIn("bad@aaaaaaaaaaaa", stored)
 
     def test_gh_failure_is_not_persisted_to_cache(self) -> None:
         config = cm.load_config(self.work)

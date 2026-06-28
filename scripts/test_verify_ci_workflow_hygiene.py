@@ -1576,6 +1576,34 @@ def assert_workflows_error(
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
 
 
+def artifact_retention_policy_errors(
+    workflows: dict[str, str] | None = None,
+    composite_actions: dict[str, str] | None = None,
+    verifier=None,
+) -> list[str]:
+    if verifier is None:
+        verifier = load_verifier()
+    if workflows is None:
+        workflows = {
+            ".github/workflows/ci.yml": BASE_WORKFLOW,
+            ".github/workflows/backtester-ci.yml": repo_workflow_text(".github/workflows/backtester-ci.yml"),
+        }
+    if composite_actions is None:
+        composite_actions = {}
+    return verifier.verify_artifact_retention_policy(workflows, composite_actions)
+
+
+def assert_artifact_retention_error(
+    fragment: str,
+    workflows: dict[str, str] | None = None,
+    composite_actions: dict[str, str] | None = None,
+    verifier=None,
+) -> None:
+    errors = artifact_retention_policy_errors(workflows, composite_actions, verifier)
+    if not any(fragment in error for error in errors):
+        raise AssertionError(f"expected artifact retention error containing {fragment!r}, got: {errors}")
+
+
 def without_job(workflow: str, job: str) -> str:
     lines = workflow.splitlines()
     start = next(i for i, line in enumerate(lines) if line == f"  {job}:")
@@ -4764,6 +4792,15 @@ draft_timeline_items = 100
     if not any("meter.api_limits" in error for error in errors):
         raise AssertionError(f"runner contract must reject missing meter api limits, got: {errors}")
 
+    bool_config = original_config.read_text().replace(
+        "workflow_runs_per_page = 100",
+        "workflow_runs_per_page = true",
+        1,
+    )
+    error = runner_config_load_error(bool_config, verifier=verifier)
+    if "meter.api_limits.workflow_runs_per_page must be a positive integer" not in error:
+        raise AssertionError(f"runner contract must reject boolean meter api limit, got: {error!r}")
+
 
 def assert_runner_contract_requires_fingerprint_archive_tier_coupling() -> None:
     verifier = load_verifier()
@@ -7871,7 +7908,10 @@ def run_verifier_main_with_no_mistakes(
         return result, stdout.getvalue() + stderr.getvalue()
 
 
-def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, str]:
+def run_verifier_main_with_extra_action(
+    extra_action_text: str,
+    action_file_name: str = "action.yml",
+) -> tuple[int, str]:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
@@ -7891,7 +7931,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         action_path.parent.mkdir(parents=True)
         action_path.write_text(BASE_ACTION)
 
-        extra_action_path = tmp_path / ".github" / "actions" / "evade" / "action.yml"
+        extra_action_path = tmp_path / ".github" / "actions" / "evade" / action_file_name
         extra_action_path.parent.mkdir(parents=True)
         extra_action_path.write_text(extra_action_text)
 
@@ -8092,6 +8132,21 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
             "artifact retention policy must fail closed without runner config, "
             f"got: {missing_config_errors}"
         )
+    with tempfile.TemporaryDirectory() as tmp:
+        verifier.DEFAULT_RUNNERS_CONFIG = pathlib.Path(tmp) / "missing-github-actions-runners.toml"
+        try:
+            build_errors = verifier.verify_build_artifacts(BASE_WORKFLOW, ".github/workflows/ci.yml")
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    expected_build_config = ".github/workflows/ci.yml build must resolve configured deploy artifact name"
+    if expected_build_config not in build_errors:
+        raise AssertionError(f"build artifact check must fail closed without config, got: {build_errors}")
+
+    assert_artifact_retention_error(
+        "artifact retention policy upload .github/workflows/backtester-ci.yml::test-archive::"
+        "upload-bvs-test-payload source .github/workflows/backtester-ci.yml is missing from scanned sources",
+        workflows={".github/workflows/ci.yml": BASE_WORKFLOW},
+    )
 
     unexpected_upload = BASE_WORKFLOW.replace(
         "      - name: Detect build-affecting changes\n",
@@ -8106,11 +8161,11 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
       - name: Detect build-affecting changes
 """,
     )
-    assert_workflows_error(
+    assert_artifact_retention_error(
         ".github/workflows/ci.yml::detector::upload-unexpected-artifact missing from artifact retention policy",
         {".github/workflows/ci.yml": unexpected_upload},
     )
-    assert_workflows_error(
+    assert_artifact_retention_error(
         ".github/workflows/ci.yml nextest-fingerprint upload-nextest-fingerprint artifact ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }} must set retention-days",
         {
             ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
@@ -8120,7 +8175,7 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
             )
         },
     )
-    assert_workflows_error(
+    assert_artifact_retention_error(
         ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary retention-days 30 exceeds configured max 3",
         {
             ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
@@ -8130,7 +8185,7 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
             )
         },
     )
-    assert_workflows_error(
+    assert_artifact_retention_error(
         ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary must set exactly one retention-days",
         {
             ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
@@ -8140,7 +8195,7 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
             )
         },
     )
-    assert_workflows_error(
+    assert_artifact_retention_error(
         ".github/workflows/ci.yml build upload-artifact step must set id for artifact retention policy",
         {
             ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
@@ -8150,7 +8205,7 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
             )
         },
     )
-    assert_workflows_error(
+    assert_artifact_retention_error(
         "artifact retention policy upload .github/workflows/ci.yml::build::upload-bolt-v2-binary has no matching upload-artifact step",
         {
             ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
@@ -8159,6 +8214,25 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
                 1,
             )
         },
+    )
+    duplicate_binary_upload = BASE_WORKFLOW.replace(
+        "      - name: Upload artifact\n        id: upload-bolt-v2-binary\n",
+        f"""      - name: Duplicate binary upload id
+        id: upload-bolt-v2-binary
+        {upload_artifact_action}
+        with:
+          name: duplicate-binary
+          path: duplicate.txt
+          retention-days: 1
+
+      - name: Upload artifact
+        id: upload-bolt-v2-binary
+""",
+        1,
+    )
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml build upload-artifact step id upload-bolt-v2-binary is duplicated",
+        {".github/workflows/ci.yml": duplicate_binary_upload},
     )
 
     extra_action = f"""
@@ -8181,6 +8255,28 @@ runs:
     )
     if result == 0 or expected not in output:
         raise AssertionError(f"composite upload-artifact drift was silent: exit={result}, output={output!r}")
+    yaml_result, yaml_output = run_verifier_main_with_extra_action(
+        textwrap.dedent(extra_action),
+        "action.yaml",
+    )
+    yaml_expected = (
+        ".github/actions/evade/action.yaml::__composite__::upload-composite-artifact "
+        "missing from artifact retention policy"
+    )
+    if yaml_result == 0 or yaml_expected not in yaml_output:
+        raise AssertionError(
+            f"composite action.yaml upload-artifact drift was silent: exit={yaml_result}, output={yaml_output!r}"
+        )
+
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    noncanonical_config = config_text.replace(
+        '[artifact_retention.uploads.".github/workflows/ci.yml::build::upload-bolt-v2-binary"]',
+        '[artifact_retention.uploads."ci.yml::build::upload-bolt-v2-binary"]',
+        1,
+    )
+    error = runner_config_load_error(noncanonical_config, verifier=verifier)
+    if "artifact_retention.uploads source must use canonical repo path" not in error:
+        raise AssertionError(f"non-canonical retention source must fail config load, got: {error!r}")
 
 
 def assert_ci_provenance_upload_name_comes_from_config_template() -> None:
@@ -8246,6 +8342,19 @@ def assert_artifact_retention_config_refs_are_validated() -> None:
         "ci_provenance.artifact_name_template missing template vars": config_text.replace(
             "run_attempt = \"${{ github.run_attempt }}\"",
             "run_number = \"${{ github.run_number }}\"",
+        ),
+        "ci_provenance.artifact_name_template has unused template vars": config_text.replace(
+            "run_attempt = \"${{ github.run_attempt }}\"",
+            "run_attempt = \"${{ github.run_attempt }}\"\nrun_number = \"${{ github.run_number }}\"",
+        ),
+        "ci_provenance.artifact_name_template_vars values must be non-empty strings": config_text.replace(
+            "run_attempt = \"${{ github.run_attempt }}\"",
+            "run_attempt = true",
+        ),
+        "must define exactly one artifact_name, artifact_name_prefix, artifact_name_config_ref, or artifact_name_template_config_ref": config_text.replace(
+            'artifact_name_template_config_ref = "ci_provenance.artifact_name_template"',
+            'artifact_name = "ci-provenance-attempt-${{ github.run_attempt }}"\nartifact_name_template_config_ref = "ci_provenance.artifact_name_template"',
+            1,
         ),
     }
     with tempfile.TemporaryDirectory() as tmp:
@@ -11126,13 +11235,15 @@ def main() -> int:
             "uses: actions/upload-artifact@v7",
         ),
     )
-    assert_error(
+    assert_artifact_retention_error(
         ".github/workflows/ci.yml ci-provenance-emit upload-ci-provenance artifact ci-provenance-attempt-${{ github.run_attempt }} retention-days 31 exceeds configured max 30",
-        replace_once(
-            BASE_WORKFLOW,
-            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 30",
-            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 31",
-        ),
+        {
+            ".github/workflows/ci.yml": replace_once(
+                BASE_WORKFLOW,
+                "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 30",
+                "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 31",
+            )
+        },
     )
     assert_error(
         "gate must not read nextest_fingerprint",
@@ -11216,29 +11327,35 @@ def main() -> int:
         "ci.yml build upload must use the staged artifact directory",
         BASE_WORKFLOW.replace("${{ steps.managed_artifact.outputs.stage_dir }}", "$RUNNER_TEMP/bolt-v2-binary"),
     )
-    assert_error(
+    assert_artifact_retention_error(
         ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary retention-days 30 exceeds configured max 3",
-        replace_once(
-            BASE_WORKFLOW,
-            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
-            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
-        ),
+        {
+            ".github/workflows/ci.yml": replace_once(
+                BASE_WORKFLOW,
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
+            )
+        },
     )
-    assert_error(
+    assert_artifact_retention_error(
         ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary must set retention-days",
-        replace_once(
-            BASE_WORKFLOW,
-            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
-            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256",
-        ),
+        {
+            ".github/workflows/ci.yml": replace_once(
+                BASE_WORKFLOW,
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256",
+            )
+        },
     )
-    assert_error(
+    assert_artifact_retention_error(
         ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary must set exactly one retention-days",
-        replace_once(
-            BASE_WORKFLOW,
-            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
-            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3\n          retention-days: 30",
-        ),
+        {
+            ".github/workflows/ci.yml": replace_once(
+                BASE_WORKFLOW,
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3\n          retention-days: 30",
+            )
+        },
     )
     assert_workflows_error(
         "advisory.yml advisories must include deny version",

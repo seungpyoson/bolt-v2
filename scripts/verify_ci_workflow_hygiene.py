@@ -1920,12 +1920,14 @@ def artifact_retention_upload_key(source_name: str, job_id: str, step_id: str) -
     return f"{source_name}::{job_id}::{step_id}"
 
 
-def artifact_retention_source_name(file_name: str) -> str:
-    aliases = {
-        "ci.yml": ".github/workflows/ci.yml",
-        "backtester-ci.yml": ".github/workflows/backtester-ci.yml",
-    }
-    return aliases.get(file_name, file_name)
+def artifact_retention_source_is_canonical(source_name: str) -> bool:
+    return (
+        source_name.startswith(".github/workflows/")
+        and source_name.endswith((".yml", ".yaml"))
+    ) or (
+        source_name.startswith(".github/actions/")
+        and source_name.endswith(("/action.yml", "/action.yaml"))
+    )
 
 
 def block_step_id(block: list[str]) -> str | None:
@@ -2031,7 +2033,7 @@ def verify_artifact_retention_policy(
         return []
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return [f"github-actions runner config invalid: {exc}"]
 
     policy = config["artifact_retention"]
@@ -2042,12 +2044,11 @@ def verify_artifact_retention_policy(
     seen_sources: set[str] = set()
     seen_upload_keys: set[str] = set()
     for file_name, workflow_text in sorted(workflows.items()):
-        source_name = artifact_retention_source_name(file_name)
-        seen_sources.add(source_name)
+        seen_sources.add(file_name)
         for job_id, job_lines in sorted(parse_jobs(workflow_text).items()):
             errors.extend(upload_artifact_retention_errors(
                 policy,
-                source_name,
+                file_name,
                 job_id,
                 job_lines,
                 seen_upload_keys,
@@ -2065,7 +2066,12 @@ def verify_artifact_retention_policy(
 
     for upload_key in sorted(policy.uploads):
         source_name = upload_key.split("::", 1)[0]
-        if source_name in seen_sources and upload_key not in seen_upload_keys:
+        if source_name not in seen_sources:
+            errors.append(
+                f"artifact retention policy upload {upload_key} "
+                f"source {source_name} is missing from scanned sources"
+            )
+        elif upload_key not in seen_upload_keys:
             errors.append(f"artifact retention policy upload {upload_key} has no matching upload-artifact step")
 
     return errors
@@ -9017,7 +9023,7 @@ def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
 def configured_ci_provenance_deploy_artifact_name() -> str:
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
         return ""
     ci_provenance = config.get("ci_provenance")
     if not isinstance(ci_provenance, dict):
@@ -9032,7 +9038,7 @@ def configured_ci_provenance_deploy_artifact_name() -> str:
 def configured_ci_provenance_artifact_name() -> str:
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
         return ""
     ci_provenance = config.get("ci_provenance")
     if not isinstance(ci_provenance, dict):
@@ -9059,7 +9065,7 @@ def configured_ci_provenance_artifact_name() -> str:
 def configured_ci_provenance_dispatch_input() -> str:
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
         return ""
     ci_provenance = config.get("ci_provenance")
     if not isinstance(ci_provenance, dict):
@@ -9074,7 +9080,7 @@ def configured_ci_provenance_dispatch_input() -> str:
 def configured_ci_provenance_dispatch_names() -> dict[str, str]:
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
         return {}
     ci_provenance = config.get("ci_provenance")
     if not isinstance(ci_provenance, dict):
@@ -9947,6 +9953,7 @@ def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
         errors.append(f"{workflow_name} build upload must use the staged artifact directory")
     artifact_name = configured_ci_provenance_deploy_artifact_name()
     if not artifact_name:
+        errors.append(f"{workflow_name} build must resolve configured deploy artifact name")
         return errors
     binary_upload_blocks = [
         block
@@ -11055,7 +11062,6 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
 
 def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config_text: str) -> list[str]:
     errors: list[str] = []
-    errors.extend(verify_artifact_retention_policy(workflows, {}))
     for workflow_name, workflow_text in workflows.items():
         is_managed_workflow = workflow_name in {
             "ci.yml",
@@ -11276,6 +11282,11 @@ def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactReten
         key_parts = upload_key.split("::")
         if len(key_parts) != 3 or any(not part for part in key_parts):
             raise ValueError("artifact_retention.uploads keys must be source::job_id::step_id")
+        if not artifact_retention_source_is_canonical(key_parts[0]):
+            raise ValueError(
+                "artifact_retention.uploads source must use canonical repo path "
+                "under .github/workflows/ or .github/actions/"
+            )
         if not isinstance(raw_upload, dict):
             raise ValueError(f"artifact_retention.uploads.{upload_key} must be a table")
         prefix = f"artifact_retention.uploads.{upload_key}"
@@ -11593,7 +11604,7 @@ def load_github_actions_runners_config(
         "draft_timeline_items",
     ):
         value = meter_api_limits.get(key)
-        if not isinstance(value, int) or value <= 0:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError(f"meter.api_limits.{key} must be a positive integer")
     tier_to_var: dict[str, str] = {}
     managed_labels: list[str] = []
@@ -11687,7 +11698,7 @@ def verify_ci_runner_debug_workflow(workflows: dict[str, str]) -> list[str]:
         return []
     try:
         debug_config = load_ci_runner_debug_config()
-    except (ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return [f"ci runner debug config invalid: {exc}"]
 
     workflow_text = workflows[workflow_name]
@@ -11723,7 +11734,7 @@ def verify_dispatch_ci_cancel_workflow(workflows: dict[str, str]) -> list[str]:
         return []
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return [f"github-actions runner config invalid: {exc}"]
 
     ci_provenance = config["ci_provenance"]
@@ -11832,7 +11843,7 @@ def verify_merge_readiness_finalizer_workflow(workflows: dict[str, str]) -> list
         return []
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return [f"github-actions runner config invalid: {exc}"]
 
     ci_provenance = config["ci_provenance"]
@@ -11993,7 +12004,7 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
         return []
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return [f"github-actions runner config invalid: {exc}"]
 
     tier_to_var = config["tier_to_var"]
@@ -12107,7 +12118,7 @@ def verify_actionlint_runner_contract(
         return []
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return [f"github-actions runner config invalid: {exc}"]
     if not actionlint_path.exists():
         return [f"actionlint config missing: {actionlint_path}"]
@@ -12159,14 +12170,19 @@ def main() -> int:
             continue
         for path in sorted(directory.glob(pattern)):
             repo_automation_texts[path.relative_to(REPO_ROOT).as_posix()] = path.read_text()
+    composite_action_texts = {
+        path: text
+        for path, text in repo_automation_texts.items()
+        if path.startswith(".github/actions/") and path.endswith(("/action.yml", "/action.yaml"))
+    }
     errors = verify_workflows(workflow_texts, action_text, nextest_config_text)
+    errors.extend(verify_artifact_retention_policy(workflow_texts, composite_action_texts))
     errors.extend(verify_github_actions_runner_contract(workflow_texts))
     errors.extend(verify_ci_runner_debug_workflow(workflow_texts))
     errors.extend(verify_dispatch_ci_cancel_workflow(workflow_texts))
     ci_workflow = workflow_texts.get(".github/workflows/ci.yml")
     if ci_workflow is not None:
         errors.extend(verify_merge_readiness_ci_job(ci_workflow))
-    errors.extend(verify_artifact_retention_policy({}, repo_automation_texts))
     errors.extend(verify_merge_readiness_finalizer_workflow(workflow_texts))
     errors.extend(verify_coverage_enforcer_workflow(workflow_texts))
     errors.extend(verify_actionlint_runner_contract(workflow_texts))

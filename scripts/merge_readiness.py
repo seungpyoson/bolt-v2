@@ -199,15 +199,15 @@ def active_gate_context_pair(
         return None
     by_name = latest_check_runs_by_name(check_runs)
 
-    def variant_key(pair: tuple[str, str]) -> tuple[int, tuple[datetime.datetime, datetime.datetime, int]]:
+    def variant_key(pair: tuple[str, str]) -> tuple[tuple[datetime.datetime, datetime.datetime, int], int]:
         runs = [by_name[context] for context in pair if context in by_name]
         if not runs:
             timestamp_floor = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
-            return (0, (timestamp_floor, timestamp_floor, 0))
-        return (len(runs), max(check_run_sort_key(run) for run in runs))
+            return ((timestamp_floor, timestamp_floor, 0), 0)
+        return (max(check_run_sort_key(run) for run in runs), len(runs))
 
     best_pair = max(variants, key=variant_key)
-    if variant_key(best_pair)[0] == 0:
+    if variant_key(best_pair)[1] == 0:
         return variants[0]
     return best_pair
 

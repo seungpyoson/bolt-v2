@@ -317,6 +317,41 @@ def assert_iteration_gate_contexts_follow_observed_gate_names() -> None:
         raise AssertionError(status)
 
 
+def assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair() -> None:
+    module = load_script()
+    mixed_checks = [
+        check_run(
+            "gate",
+            id=101,
+            started_at="2026-06-27T00:00:00Z",
+            completed_at="2026-06-27T00:00:10Z",
+        ),
+        check_run(
+            "backtester-gate",
+            id=102,
+            started_at="2026-06-27T00:00:00Z",
+            completed_at="2026-06-27T00:00:10Z",
+        ),
+        check_run("host-health"),
+        check_run("actionlint"),
+        check_run(
+            "gate-iteration",
+            id=201,
+            started_at="2026-06-27T00:01:00Z",
+            completed_at="2026-06-27T00:01:10Z",
+        ),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        contexts = module.required_contexts(config, check_runs=mixed_checks)
+    expected = ("gate-iteration", "backtester-gate-iteration", "host-health", "actionlint")
+    if contexts != expected:
+        raise AssertionError(contexts)
+    status = module.evaluate_required_checks(contexts, mixed_checks)
+    if status.state != "running" or status.pending != ("backtester-gate-iteration",):
+        raise AssertionError(status)
+
+
 def assert_comment_upsert_replaces_existing_marker() -> None:
     module = load_script()
     existing = issue_comment(777, marker_body(module))
@@ -597,6 +632,7 @@ def main() -> int:
     assert_non_blocking_required_check_conclusions_do_not_fail()
     assert_registry_context_set_is_source_of_truth()
     assert_iteration_gate_contexts_follow_observed_gate_names()
+    assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair()
     assert_comment_upsert_replaces_existing_marker()
     assert_comment_upsert_finds_sticky_comment_on_second_page()
     assert_find_sticky_comment_ignores_forged_human_marker()

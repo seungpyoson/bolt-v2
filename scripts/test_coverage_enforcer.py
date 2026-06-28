@@ -266,14 +266,16 @@ def check_run(
     app_id: int = APP_ID,
     status: str = "completed",
     conclusion: str | None = "success",
+    started_at: str = "2026-06-27T00:00:00Z",
+    completed_at: str = "2026-06-27T00:00:00Z",
 ) -> dict[str, object]:
     return {
         "id": sum(ord(char) for char in name),
         "name": name,
         "status": status,
         "conclusion": conclusion,
-        "started_at": "2026-06-27T00:00:00Z",
-        "completed_at": "2026-06-27T00:00:00Z",
+        "started_at": started_at,
+        "completed_at": completed_at,
         "app": {"id": app_id},
     }
 
@@ -404,6 +406,34 @@ def assert_iteration_gate_contexts_succeed() -> None:
         raise AssertionError(result)
     posted = fake.posted_check_runs()
     if len(posted) != 1 or posted[0]["conclusion"] != "success":
+        raise AssertionError(posted)
+
+
+def assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair() -> None:
+    stale_completed_at = "2026-06-27T00:00:10Z"
+    fresh_completed_at = "2026-06-27T00:01:10Z"
+    result, fake = run_enforcer(
+        [
+            [
+                check_run("gate", completed_at=stale_completed_at),
+                check_run("backtester-gate", completed_at=stale_completed_at),
+                check_run("host-health"),
+                check_run("actionlint"),
+                check_run(
+                    "gate-iteration",
+                    started_at="2026-06-27T00:01:00Z",
+                    completed_at=fresh_completed_at,
+                ),
+            ]
+        ],
+        clock=FakeClock([0.0, 2.0]),
+    )
+    if result.conclusion != "failure":
+        raise AssertionError(result)
+    if "backtester-gate-iteration" not in result.summary or "timed out" not in result.summary:
+        raise AssertionError(result.summary)
+    posted = fake.posted_check_runs()
+    if len(posted) != 1 or posted[0]["conclusion"] != "failure":
         raise AssertionError(posted)
 
 
@@ -576,6 +606,7 @@ def main() -> int:
     assert_drift_detects_missing_and_wrong_app()
     assert_all_present_and_correct_succeeds()
     assert_iteration_gate_contexts_succeed()
+    assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair()
     assert_poll_timeout_fails_closed()
     assert_r2_derivation_mismatch_fails()
     assert_r2_derives_generic_tag_triggers()

@@ -747,6 +747,26 @@ def assert_missing_config_table_fails() -> None:
         assert_fails("missing [ci_provenance]", ["emit-full-ci", "--config", str(config)])
 
 
+def assert_positive_int_config_rejects_booleans() -> None:
+    module = load_script()
+    cases = {
+        "ci_provenance.api_limits.max_lookback_age_seconds must be a positive integer": CONFIG_TOML.replace(
+            "max_lookback_age_seconds = 2592000",
+            "max_lookback_age_seconds = true",
+            1,
+        ),
+        "ci_provenance.artifacts.retention_days must be a positive integer": CONFIG_TOML.replace(
+            "retention_days = 30",
+            "retention_days = true",
+            1,
+        ),
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        for expected, text in cases.items():
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
+
+
 def assert_emit_full_ci_records_nextest_fingerprint_argument() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -4288,6 +4308,7 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
 def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
+    assert_positive_int_config_rejects_booleans()
     assert_emit_full_ci_records_nextest_fingerprint_argument()
     assert_emit_full_ci_hashes_explicit_tested_workflow()
     assert_emit_docs_ci_record_requires_skipped_heavy_jobs()

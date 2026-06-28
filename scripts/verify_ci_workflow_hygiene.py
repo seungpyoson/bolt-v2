@@ -11963,6 +11963,18 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
             lookback_ref=lookback_ref,
         )
 
+    required_binding_uploads = sorted(
+        upload_key
+        for upload_key, site in uploads.items()
+        if site.retention_config_file is not None and site.retention_config_ref is not None
+    )
+    declared_binding_uploads = sorted(binding.upload for binding in lookback_bindings.values())
+    if declared_binding_uploads != required_binding_uploads:
+        raise ValueError(
+            "artifact_retention.lookback_bindings must exactly cover config-ref retention uploads: "
+            f"expected {required_binding_uploads!r}, got {declared_binding_uploads!r}"
+        )
+
     return ArtifactRetentionPolicy(classes=classes, uploads=uploads, lookback_bindings=lookback_bindings)
 
 

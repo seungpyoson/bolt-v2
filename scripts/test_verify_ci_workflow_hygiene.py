@@ -8776,6 +8776,14 @@ def assert_ci_provenance_upload_name_comes_from_config_template() -> None:
 def assert_artifact_retention_config_refs_are_validated() -> None:
     verifier = load_verifier()
     config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    binding_coverage_error = "artifact_retention.lookback_bindings must exactly cover config-ref retention uploads"
+    build_lookback_binding = """[artifact_retention.lookback_bindings.build_deploy]
+upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
+config_file = "ci/github-actions-runners.toml"
+retention_ref = "ci_provenance.artifacts.retention_days"
+lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
+
+"""
     cases = {
         "artifact_retention.classes.reuse-bound.max_retention_days must be a positive integer": config_text.replace(
             "max_retention_days = 30",
@@ -8865,9 +8873,27 @@ def assert_artifact_retention_config_refs_are_validated() -> None:
             '\nretention_days_config_ref = "ci_provenance.artifacts.missing"',
             1,
         ),
+        binding_coverage_error: config_text.replace(
+            build_lookback_binding,
+            "",
+            1,
+        ),
     }
+    additional_cases = [
+        (
+            binding_coverage_error,
+            config_text
+        + """
+[artifact_retention.lookback_bindings.duplicate_build]
+upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
+config_file = "ci/github-actions-runners.toml"
+retention_ref = "ci_provenance.artifacts.retention_days"
+lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
+""",
+        ),
+    ]
     with tempfile.TemporaryDirectory() as tmp:
-        for expected, mutated_config in cases.items():
+        for expected, mutated_config in (*cases.items(), *additional_cases):
             config_path = write_temp_runner_config(pathlib.Path(tmp), mutated_config)
             try:
                 verifier.load_github_actions_runners_config(config_path)

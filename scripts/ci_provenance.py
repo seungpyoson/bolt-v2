@@ -279,7 +279,7 @@ def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
 
 def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
     value = parent.get(key)
-    if not isinstance(value, int) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ProvenanceError(f"{prefix}.{key} must be a positive integer")
     return value
 

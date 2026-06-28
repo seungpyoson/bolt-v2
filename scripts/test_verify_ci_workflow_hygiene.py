@@ -4081,6 +4081,14 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             ),
         ),
         (
+            "cache-persistence-audit probe must be non-blocking",
+            replace_once(
+                workflow,
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n\n      - name: Probe saved cache keys\n        continue-on-error: true\n",
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n        continue-on-error: true\n\n      - name: Probe saved cache keys\n",
+            ),
+        ),
+        (
             "cache-persistence-audit must probe all root nextest cache keys",
             replace_once(
                 workflow,

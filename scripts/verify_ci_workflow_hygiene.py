@@ -636,6 +636,7 @@ TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS = (
     "archive_build_target_cache_key=",
 )
 CACHE_PERSISTENCE_AUDIT_COMMAND = "python3 scripts/ci_storage_audit.py"
+CACHE_PERSISTENCE_AUDIT_PROBE_STEP = "Probe saved cache keys"
 CACHE_PERSISTENCE_AUDIT_NEEDS = ("ci-policy", "nextest-fingerprint-reuse", "test-archive")
 CACHE_PERSISTENCE_AUDIT_CACHE_KEYS = (
     '--cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}"',
@@ -650,6 +651,36 @@ CACHE_PERSISTENCE_AUDIT_SAVE_SUMMARY_LINES = (
 CACHE_PERSISTENCE_AUDIT_MISSING_WARNING = (
     "::warning::one or more root nextest cache keys are missing from the Actions cache inventory "
     "after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context"
+)
+CACHE_PERSISTENCE_AUDIT_PROBE_REQUIREMENTS = (
+    (
+        "cache-persistence-audit must use the workflow token for cache API reads",
+        ('GH_TOKEN: ${{ github.token }}',),
+    ),
+    (
+        "cache-persistence-audit must run ci_storage_audit exact-key probes",
+        (CACHE_PERSISTENCE_AUDIT_COMMAND,),
+    ),
+    (
+        "cache-persistence-audit probe must be non-blocking",
+        ("continue-on-error: true",),
+    ),
+    (
+        "cache-persistence-audit must probe all root nextest cache keys",
+        CACHE_PERSISTENCE_AUDIT_CACHE_KEYS,
+    ),
+    (
+        "cache-persistence-audit must write probe results to the job summary",
+        ("$GITHUB_STEP_SUMMARY",),
+    ),
+    (
+        "cache-persistence-audit must summarize cache save outcomes",
+        CACHE_PERSISTENCE_AUDIT_SAVE_SUMMARY_LINES,
+    ),
+    (
+        "cache-persistence-audit must warn when cache keys are missing",
+        (CACHE_PERSISTENCE_AUDIT_MISSING_WARNING,),
+    ),
 )
 TEST_ARCHIVE_TEST_PROFILE_ENV = 'CARGO_PROFILE_TEST_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
@@ -1978,6 +2009,16 @@ def job_opts_into_managed_target_dir(job_lines: list[str]) -> bool:
 
 def uncommented_text(lines: list[str]) -> str:
     return "\n".join(strip_comment(line) for line in lines)
+
+
+def append_missing_text_requirements(
+    errors: list[str],
+    text: str,
+    requirements: tuple[tuple[str, tuple[str, ...]], ...],
+) -> None:
+    for error, fragments in requirements:
+        if not all(fragment in text for fragment in fragments):
+            errors.append(error)
 
 
 def normalize_script_text(text: str) -> str:
@@ -9597,6 +9638,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "cache-persistence-audit" in jobs:
         audit_lines = jobs["cache-persistence-audit"]
         audit_text = uncommented_text(audit_lines)
+        audit_probe_block = named_step_block(audit_lines, CACHE_PERSISTENCE_AUDIT_PROBE_STEP)
         audit_needs = extract_needs(audit_lines)
         for need in CACHE_PERSISTENCE_AUDIT_NEEDS:
             if need not in audit_needs:
@@ -9609,24 +9651,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("cache-persistence-audit must require test-archive success")
         if NEXTEST_REUSE_MISS_EXPR not in audit_text:
             errors.append("cache-persistence-audit must skip on validated nextest fingerprint reuse")
-        if 'GH_TOKEN: ${{ github.token }}' not in audit_text:
-            errors.append("cache-persistence-audit must use the workflow token for cache API reads")
-        if CACHE_PERSISTENCE_AUDIT_COMMAND not in audit_text:
-            errors.append("cache-persistence-audit must run ci_storage_audit exact-key probes")
-        if "continue-on-error: true" not in audit_text:
-            errors.append("cache-persistence-audit probe must be non-blocking")
-        for cache_key in CACHE_PERSISTENCE_AUDIT_CACHE_KEYS:
-            if cache_key not in audit_text:
-                errors.append("cache-persistence-audit must probe all root nextest cache keys")
-                break
-        if "$GITHUB_STEP_SUMMARY" not in audit_text:
-            errors.append("cache-persistence-audit must write probe results to the job summary")
-        for summary_line in CACHE_PERSISTENCE_AUDIT_SAVE_SUMMARY_LINES:
-            if summary_line not in audit_text:
-                errors.append("cache-persistence-audit must summarize cache save outcomes")
-                break
-        if CACHE_PERSISTENCE_AUDIT_MISSING_WARNING not in audit_text:
-            errors.append("cache-persistence-audit must warn when cache keys are missing")
+        if audit_probe_block is None:
+            errors.append(f"cache-persistence-audit must include {CACHE_PERSISTENCE_AUDIT_PROBE_STEP} step")
+        else:
+            append_missing_text_requirements(
+                errors,
+                uncommented_text(audit_probe_block),
+                CACHE_PERSISTENCE_AUDIT_PROBE_REQUIREMENTS,
+            )
 
     if "nextest-fingerprint-reuse" in jobs:
         reuse_lines = jobs["nextest-fingerprint-reuse"]

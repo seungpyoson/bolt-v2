@@ -71,8 +71,8 @@ jobs:
                   value = json.dumps(value, separators=(",", ":"))
               print(f"{name}={value}")
 
-          def notice_marker(table, marker_key):
-              marker = table["notice_marker"]
+          def notice_marker(table):
+              marker = table.get("notice_marker")
               if not isinstance(marker, str) or not marker:
                   raise RuntimeError("notice_marker is required")
               return marker
@@ -84,7 +84,7 @@ jobs:
           emit("glm_model", glm["model"])
           emit("glm_api_timeout_seconds", glm["api_timeout_seconds"])
           emit("glm_review_max_chunk_chars", glm["review_max_chunk_chars"])
-          emit("glm_notice_marker", notice_marker(glm, "comment_marker"))
+          emit("glm_notice_marker", notice_marker(glm))
           emit("glm_pr_agent_model", pr_agent["model"])
           emit("glm_pr_agent_fallback_models", pr_agent["fallback_models"])
           emit("glm_pr_agent_custom_model_max_tokens", pr_agent["custom_model_max_tokens"])

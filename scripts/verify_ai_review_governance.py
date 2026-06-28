@@ -156,8 +156,9 @@ GLM_DELIVERABLE_SNIPPETS = (
     "ref: ${{ github.event.pull_request.base.sha }}",
     'emit("expected_bot_login", github["expected_bot_login"])',
     'emit("glm_api_base", glm["api_base"])',
-    'def notice_marker(table, marker_key):',
-    'emit("glm_notice_marker", notice_marker(glm, "comment_marker"))',
+    'def notice_marker(table):',
+    'marker = table.get("notice_marker")',
+    'emit("glm_notice_marker", notice_marker(glm))',
     'raise RuntimeError("notice_marker is required")',
     'emit("glm_pr_agent_model", pr_agent["model"])',
     'emit("glm_pr_agent_fallback_models", pr_agent["fallback_models"])',
@@ -210,8 +211,9 @@ KIMI_DELIVERABLE_SNIPPETS = (
     'emit("kimi_model_name", kimi["model"])',
     'emit("kimi_model_base_url", kimi["api_base"])',
     'emit("kimi_deliverable_marker", kimi["deliverable_marker"])',
-    'def notice_marker(table, marker_key):',
-    'emit("kimi_notice_marker", notice_marker(kimi, "deliverable_marker"))',
+    'def notice_marker(table):',
+    'marker = table.get("notice_marker")',
+    'emit("kimi_notice_marker", notice_marker(kimi))',
     'raise RuntimeError("notice_marker is required")',
     'emit("kimi_node_version", workflow["node_version"])',
     "id: kimi-review",
@@ -1074,6 +1076,25 @@ def run_self_tests(repo_root: Path) -> None:
         "workflow notice marker derivation",
         workflow_notice_marker_derivation,
         "notice markers must use explicit notice_marker config",
+    )
+
+    workflow_notice_marker_keyerror = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm.replace(
+            'marker = table.get("notice_marker")',
+            'marker = table["notice_marker"]',
+            1,
+        ),
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding(
+        "workflow notice marker explicit error",
+        workflow_notice_marker_keyerror,
+        "GLM workflow missing expected snippet",
     )
 
     smoke_runtime_literal = verify_texts(

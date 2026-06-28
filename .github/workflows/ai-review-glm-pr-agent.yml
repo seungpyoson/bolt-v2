@@ -36,13 +36,13 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
-      - name: Checkout AI review helpers
+      - name: Checkout base AI review helpers
         id: base-checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.base.sha }}
           sparse-checkout: |
             .pr_agent.toml
             ci/ai-review.toml
@@ -161,10 +161,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
-        run: >-
-          python3 scripts/ai_review_deliverables.py glm-stamp
-          --started-at "${{ steps.review-window.outputs.started_at }}"
-          --config-file ci/ai-review.toml
+        run: |
+          stamp_required="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
+          pr_agent = config.get("glm", {}).get("pr_agent", {})
+          source_template = pr_agent.get("source_label_template") if isinstance(pr_agent, dict) else None
+          print("true" if isinstance(source_template, str) and source_template else "false")
+          PY
+          )"
+          if [ "$stamp_required" != "true" ]; then
+            echo "::notice::Base AI review config does not require GLM PR-Agent source stamping yet."
+            exit 0
+          fi
+          python3 scripts/ai_review_deliverables.py glm-stamp \
+            --started-at "${{ steps.review-window.outputs.started_at }}" \
+            --config-file ci/ai-review.toml
 
       - name: Ensure GLM deliverable or post split fallback
         id: glm_fallback

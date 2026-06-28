@@ -33,13 +33,9 @@ This is advisory review only; do not approve, merge, or suggest bypassing requir
 """
 
 num_max_findings = 6
-persistent_comment = false
-publish_output_no_suggestions = false
 require_tests_review = true
 require_security_review = true
-require_ticket_analysis_review = false
-require_can_be_split_review = false
+require_ticket_analysis_review = true
+require_can_be_split_review = true
 require_score_review = false
 require_todo_scan = false
-enable_review_labels_security = false
-enable_review_labels_effort = false

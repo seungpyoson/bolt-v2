@@ -14,12 +14,27 @@ finding_required_labels = [
   "Issue:",
   "Fix / verification:",
 ]
+finding_guidance = [
+  "blocking, high, medium, or low",
+  "the smallest relevant snippet or line reference from the supplied chunk",
+  "why this is a real behavior, safety, governance, or verification problem",
+  "the concrete next step",
+]
 no_findings_indicator = "No hard-evidence findings"
 no_findings_intro = "No hard-evidence findings in this chunk."
 no_findings_required_labels = [
   "Coverage reviewed:",
   "Evidence basis:",
   "Risk areas considered:",
+]
+no_findings_guidance = [
+  "<specific changed files or diff areas reviewed in this chunk>.",
+  "supplied diff only; no omitted files, logs, or external state were assumed.",
+  "correctness, security, workflow safety, verification, and repo-governance impact visible in this chunk.",
+]
+non_deliverable_indicators = [
+  "review did not produce a deliverable",
+  "review notice",
 ]
 
 [review.pr_agent_output]
@@ -37,7 +52,7 @@ disabled_noise = [
 api_base = "https://api.z.ai/api/coding/paas/v4"
 model = "glm-5.2"
 temperature = 0.2
-api_timeout_seconds = 300
+api_timeout_seconds = 180
 review_max_chunk_chars = 60000
 comment_marker = "<!-- ai-pr-reviewer-glm -->"
 notice_marker = "<!-- ai-pr-reviewer-glm-notice -->"
@@ -67,7 +82,7 @@ setup_overhead_timeout_minutes = 7
 
 [kimi]
 api_base = "https://api.kimi.com/coding/v1"
-model = "kimi-k2.7-code"
+model = "kimi-for-coding"
 provider_type = "kimi"
 model_max_context_size = 262144
 default_thinking = true

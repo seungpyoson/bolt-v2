@@ -202,9 +202,21 @@ def fallback_config(module, **overrides):
         "response_chars_per_chunk": 8000,
         "output_contract": module.ReviewOutputContract(
             finding_required_labels=("Severity:", "Evidence:", "Issue:", "Fix / verification:"),
+            finding_guidance=(
+                "blocking, high, medium, or low",
+                "the smallest relevant snippet or line reference from the supplied chunk",
+                "why this is a real behavior, safety, governance, or verification problem",
+                "the concrete next step",
+            ),
             no_findings_indicator="No hard-evidence findings",
             no_findings_intro="No hard-evidence findings in this chunk.",
             no_findings_required_labels=("Coverage reviewed:", "Evidence basis:", "Risk areas considered:"),
+            no_findings_guidance=(
+                "<specific changed files or diff areas reviewed in this chunk>.",
+                "supplied diff only; no omitted files, logs, or external state were assumed.",
+                "correctness, security, workflow safety, verification, and repo-governance impact visible in this chunk.",
+            ),
+            non_deliverable_indicators=("review did not produce a deliverable", "review notice"),
             pr_agent_deliverable_headings=("## PR Reviewer Guide", "## Incremental PR Reviewer Guide"),
             pr_agent_disabled_noise=("ticket compliance analysis", "estimated effort to review", "can be split"),
         ),
@@ -905,6 +917,7 @@ def test_kimi_fallback_uses_same_chunked_deliverable_contract() -> None:
     assert len(github.posted) == 1, github.posted
     assert github.posted[0].startswith(marker)
     assert "## Kimi PR Review" in github.posted[0]
+    assert "### Chunk 1/" in github.posted[0]
     assert "Per-chunk character budget:" not in github.posted[0]
     assert "Source: Kimi Code CLI" in github.posted[0]
 
@@ -1067,9 +1080,10 @@ def test_splits_fallback_review_across_comments_when_comment_budget_requires_it(
     assert result == "fallback-posted"
     assert len(github.posted) > 1, github.posted
     assert all(len(comment) <= 520 for comment in github.posted)
+    assert all("## GLM PR Review (part " in comment for comment in github.posted)
     joined = "\n".join(github.posted)
-    assert "## GLM PR Review (part " in joined
     assert "Chunk 1/" in joined
+    assert f"Chunk {len(glm.prompts)}/" in joined
     assert "[truncated to fit GitHub comment limit]" not in joined
 
 

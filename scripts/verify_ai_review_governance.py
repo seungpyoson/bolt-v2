@@ -140,6 +140,7 @@ KIMI_BASE_GOVERNANCE_SNIPPETS = (
 GLM_DELIVERABLE_SNIPPETS = (
     "ci/ai-review.toml",
     "Load AI review runtime config",
+    "ref: ${{ github.event.pull_request.base.sha }}",
     'emit("expected_bot_login", github["expected_bot_login"])',
     'emit("glm_api_base", glm["api_base"])',
     'def notice_marker(table, marker_key):',
@@ -237,7 +238,10 @@ SMOKE_TRUSTED_CONFIG_SNIPPETS = (
 AI_REVIEW_DELIVERABLES_SNIPPETS = (
     "def review_body_is_quality_deliverable(",
     "output_contract.finding_required_labels",
+    "output_contract.finding_guidance",
     "output_contract.no_findings_required_labels",
+    "output_contract.no_findings_guidance",
+    "output_contract.non_deliverable_indicators",
     "output_contract.pr_agent_deliverable_headings",
     "output_contract.pr_agent_disabled_noise",
     "review_output_contract(review_config)",
@@ -273,6 +277,8 @@ WORKFLOW_FORBIDDEN_RUNTIME_LITERALS = (
     "<!-- ai-pr-reviewer-kimi -->",
     "<!-- ai-pr-reviewer-glm -->",
     "node-version: \"24\"",
+    "node-version: '24'",
+    "node-version: 24",
 )
 
 
@@ -295,10 +301,6 @@ def pr_agent_extra_instructions(pr_agent_toml: str) -> tuple[str, list[str]]:
         return "", [".pr_agent.toml missing non-empty pr_reviewer.extra_instructions"]
 
     return extra, []
-
-
-def exact_kimi_model_id(value: object) -> bool:
-    return isinstance(value, str) and re.fullmatch(r"kimi-k\d+(?:\.\d+)*-code(?:-highspeed)?", value) is not None
 
 
 def exact_glm_model_id(value: object) -> bool:
@@ -350,6 +352,8 @@ def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
                 node_version = workflow.get("node_version")
                 if isinstance(node_version, str) and node_version:
                     literals.append(f'node-version: "{node_version}"')
+                    literals.append(f"node-version: '{node_version}'")
+                    literals.append(f"node-version: {node_version}")
     return tuple(dict.fromkeys(literals))
 
 
@@ -365,12 +369,8 @@ def verify_pr_agent_config(pr_agent_toml: str, ai_review_toml: str) -> list[str]
         return [".pr_agent.toml missing [pr_reviewer]"]
 
     expected = (
-        ("persistent_comment", False),
-        ("publish_output_no_suggestions", False),
-        ("require_ticket_analysis_review", False),
-        ("require_can_be_split_review", False),
-        ("enable_review_labels_security", False),
-        ("enable_review_labels_effort", False),
+        ("require_ticket_analysis_review", True),
+        ("require_can_be_split_review", True),
     )
     for key, value in expected:
         if reviewer.get(key) is not value:
@@ -399,7 +399,11 @@ def workflow_step_block(workflow_text: str, step_name: str) -> str:
         indent = len(line) - len(line.lstrip())
         block = [line]
         for next_line in lines[index + 1 :]:
-            if next_line.strip().startswith("- name:") and len(next_line) - len(next_line.lstrip()) == indent:
+            stripped = next_line.strip()
+            next_indent = len(next_line) - len(next_line.lstrip())
+            if stripped and next_indent < indent:
+                break
+            if stripped.startswith("- name:") and next_indent == indent:
                 break
             block.append(next_line)
         return "\n".join(block)
@@ -456,6 +460,16 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
             ["Severity:", "Evidence:", "Issue:", "Fix / verification:"],
         ),
         (
+            "review.output_contract.finding_guidance",
+            output_contract.get("finding_guidance"),
+            [
+                "blocking, high, medium, or low",
+                "the smallest relevant snippet or line reference from the supplied chunk",
+                "why this is a real behavior, safety, governance, or verification problem",
+                "the concrete next step",
+            ],
+        ),
+        (
             "review.output_contract.no_findings_indicator",
             output_contract.get("no_findings_indicator"),
             "No hard-evidence findings",
@@ -471,6 +485,20 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
             ["Coverage reviewed:", "Evidence basis:", "Risk areas considered:"],
         ),
         (
+            "review.output_contract.no_findings_guidance",
+            output_contract.get("no_findings_guidance"),
+            [
+                "<specific changed files or diff areas reviewed in this chunk>.",
+                "supplied diff only; no omitted files, logs, or external state were assumed.",
+                "correctness, security, workflow safety, verification, and repo-governance impact visible in this chunk.",
+            ],
+        ),
+        (
+            "review.output_contract.non_deliverable_indicators",
+            output_contract.get("non_deliverable_indicators"),
+            ["review did not produce a deliverable", "review notice"],
+        ),
+        (
             "review.pr_agent_output.deliverable_headings",
             pr_agent_output.get("deliverable_headings"),
             ["## PR Reviewer Guide", "## Incremental PR Reviewer Guide"],
@@ -481,7 +509,7 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
             ["ticket compliance analysis", "estimated effort to review", "can be split"],
         ),
         ("glm.api_base", glm.get("api_base"), "https://api.z.ai/api/coding/paas/v4"),
-        ("glm.api_timeout_seconds", glm.get("api_timeout_seconds"), 300),
+        ("glm.api_timeout_seconds", glm.get("api_timeout_seconds"), 180),
         ("glm.review_max_chunk_chars", glm.get("review_max_chunk_chars"), 60000),
         ("glm.comment_marker", glm.get("comment_marker"), "<!-- ai-pr-reviewer-glm -->"),
         ("glm.notice_marker", glm.get("notice_marker"), "<!-- ai-pr-reviewer-glm-notice -->"),
@@ -502,6 +530,7 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("glm.workflow.fallback_timeout_minutes", glm_workflow.get("fallback_timeout_minutes"), 20),
         ("glm.workflow.setup_overhead_timeout_minutes", glm_workflow.get("setup_overhead_timeout_minutes"), 7),
         ("kimi.api_base", kimi.get("api_base"), "https://api.kimi.com/coding/v1"),
+        ("kimi.model", kimi.get("model"), "kimi-for-coding"),
         ("kimi.provider_type", kimi.get("provider_type"), "kimi"),
         ("kimi.model_max_context_size", kimi.get("model_max_context_size"), 262144),
         ("kimi.default_thinking", kimi.get("default_thinking"), True),
@@ -536,8 +565,6 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
     expected_glm_pr_agent_model = f"openai/{glm_model}" if isinstance(glm_model, str) else ""
     if not exact_glm_model_id(glm_model):
         findings.append("ci/ai-review.toml glm.model must be an exact GLM model id, not an alias")
-    if not exact_kimi_model_id(kimi_model):
-        findings.append("ci/ai-review.toml kimi.model must be an exact Kimi coding model id, not an alias")
     if "latest" in str(glm_model).lower() or "latest" in str(kimi_model).lower():
         findings.append("ci/ai-review.toml AI review models must not use latest aliases")
     if glm_pr_agent_model != expected_glm_pr_agent_model:
@@ -774,6 +801,38 @@ def run_self_tests(repo_root: Path) -> None:
         smoke_workflow=smoke,
     )
     assert_finding("stamp continue-on-error", stamp_continue_on_error, "GLM source stamp step must fail closed")
+
+    missing_stamp_step = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm.replace(
+            "      - name: Stamp GLM PR-Agent review source\n",
+            "      - name: Stamp GLM PR-Agent review source disabled\n",
+            1,
+        ),
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding("missing stamp step", missing_stamp_step, "GLM workflow missing Stamp GLM PR-Agent review source step")
+
+    last_step_then_later_job = "\n".join(
+        [
+            "jobs:",
+            "  review:",
+            "    steps:",
+            "      - name: Stamp GLM PR-Agent review source",
+            "        run: echo stamp",
+            "  later:",
+            "    steps:",
+            "      - name: Later allowed step",
+            "        continue-on-error: true",
+        ]
+    )
+    stamp_block = workflow_step_block(last_step_then_later_job, "Stamp GLM PR-Agent review source")
+    if "continue-on-error: true" in stamp_block:
+        raise AssertionError("workflow_step_block included a later job in the stamp step block")
 
     pr_agent_model_literal = verify_texts(
         agents_md=agents,

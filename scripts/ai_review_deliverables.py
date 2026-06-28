@@ -33,9 +33,12 @@ class ReviewFailed(RuntimeError):
 @dataclass(frozen=True)
 class ReviewOutputContract:
     finding_required_labels: tuple[str, ...]
+    finding_guidance: tuple[str, ...]
     no_findings_indicator: str
     no_findings_intro: str
     no_findings_required_labels: tuple[str, ...]
+    no_findings_guidance: tuple[str, ...]
+    non_deliverable_indicators: tuple[str, ...]
     pr_agent_deliverable_headings: tuple[str, ...]
     pr_agent_disabled_noise: tuple[str, ...]
 
@@ -368,7 +371,7 @@ def review_body_is_quality_deliverable(body: str, output_contract: ReviewOutputC
     if not text:
         return False
     lowered = text.lower()
-    if "review did not produce a deliverable" in lowered or "review notice" in lowered:
+    if any(indicator.lower() in lowered for indicator in output_contract.non_deliverable_indicators):
         return False
     finding_labels = tuple(label.lower() for label in output_contract.finding_required_labels)
     if finding_labels and all(label in lowered for label in finding_labels):
@@ -601,24 +604,21 @@ def pack_review_chunks(files: list[ReviewFile], max_chars: int) -> list[ReviewCh
 
 
 def build_system_prompt(instructions: str, output_contract: ReviewOutputContract) -> str:
-    finding_guidance = (
-        "blocking, high, medium, or low",
-        "the smallest relevant snippet or line reference from the supplied chunk",
-        "why this is a real behavior, safety, governance, or verification problem",
-        "the concrete next step",
-    )
-    no_findings_guidance = (
-        "<specific changed files or diff areas reviewed in this chunk>.",
-        "supplied diff only; no omitted files, logs, or external state were assumed.",
-        "correctness, security, workflow safety, verification, and repo-governance impact visible in this chunk.",
-    )
     finding_lines = "\n".join(
         f"        - {label} {guidance}"
-        for label, guidance in zip(output_contract.finding_required_labels, finding_guidance, strict=True)
+        for label, guidance in zip(
+            output_contract.finding_required_labels,
+            output_contract.finding_guidance,
+            strict=True,
+        )
     )
     no_findings_lines = "\n".join(
         f"        {label} {guidance}"
-        for label, guidance in zip(output_contract.no_findings_required_labels, no_findings_guidance, strict=True)
+        for label, guidance in zip(
+            output_contract.no_findings_required_labels,
+            output_contract.no_findings_guidance,
+            strict=True,
+        )
     )
     return textwrap.dedent(
         f"""\
@@ -1116,9 +1116,12 @@ def review_output_contract(review_config: dict[str, Any]) -> ReviewOutputContrac
     pr_agent_output = config_table(review_config, "pr_agent_output")
     return ReviewOutputContract(
         finding_required_labels=config_str_tuple(contract, "finding_required_labels"),
+        finding_guidance=config_str_tuple(contract, "finding_guidance"),
         no_findings_indicator=config_str(contract, "no_findings_indicator"),
         no_findings_intro=config_str(contract, "no_findings_intro"),
         no_findings_required_labels=config_str_tuple(contract, "no_findings_required_labels"),
+        no_findings_guidance=config_str_tuple(contract, "no_findings_guidance"),
+        non_deliverable_indicators=config_str_tuple(contract, "non_deliverable_indicators"),
         pr_agent_deliverable_headings=config_str_tuple(pr_agent_output, "deliverable_headings"),
         pr_agent_disabled_noise=config_str_tuple(pr_agent_output, "disabled_noise"),
     )

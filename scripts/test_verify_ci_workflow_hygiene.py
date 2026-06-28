@@ -5066,6 +5066,72 @@ def assert_runner_contract_rejects_unmapped_workflow_jobs() -> None:
         raise AssertionError(f"runner contract must reject unmapped workflow jobs, got: {errors}")
 
 
+def assert_runner_contract_accepts_flaky_detection_workflow_mapping() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/flaky-test-detection.yml"
+    workflow = """name: Flaky Test Detection
+
+on:
+  workflow_dispatch:
+
+jobs:
+  flaky-detection-rust-root:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo root
+
+  flaky-detection-rust-backtester:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo backtester
+
+  flaky-detection-rust-backtester-issue-789:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo issue-789
+"""
+    errors = verifier.verify_github_actions_runner_contract({workflow_name: workflow})
+    if errors:
+        raise AssertionError(f"flaky detection workflow runner contract must be mapped, got: {errors}")
+
+
+def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
+    workflow = repo_workflow_text(".github/workflows/flaky-test-detection.yml")
+    pinned_v14_action = "uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14"
+    expected_job_names = (
+        "job_name: nextest archive",
+        "job_name: bvs-test archive",
+        "job_name: bvs-test issue-789",
+    )
+    expected_cli_job_env = (
+        "MERGIFY_TEST_JOB_NAME: nextest archive",
+        "MERGIFY_TEST_JOB_NAME: bvs-test archive",
+        "MERGIFY_TEST_JOB_NAME: bvs-test issue-789",
+    )
+    if workflow.count(pinned_v14_action) != 3:
+        raise AssertionError("flaky-test-detection.yml must pin all Mergify uploads to the v14 action SHA")
+    if "flaky_test_detection:" in workflow:
+        raise AssertionError("flaky-test-detection.yml must not pass unsupported Mergify inputs")
+    if "MERGIFY_JOB_NAME:" in workflow:
+        raise AssertionError("flaky-test-detection.yml must pass job names through the Mergify job_name input")
+    for job_name in expected_job_names:
+        if job_name not in workflow:
+            raise AssertionError(f"flaky-test-detection.yml missing Mergify upload {job_name!r}")
+    for job_env in expected_cli_job_env:
+        if job_env not in workflow:
+            raise AssertionError(f"flaky-test-detection.yml missing current Mergify CLI env {job_env!r}")
+    if workflow.count("MERGIFY_TEST_EXIT_CODE=%s") != 3:
+        raise AssertionError("flaky-test-detection.yml must pass test runner exit codes to Mergify")
+    if workflow.count("python3 scripts/ci_input_sets.py hash backtester_cache") != 2:
+        raise AssertionError("flaky-test-detection.yml BVS jobs must use the shared backtester cache digest")
+    if "managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles(" in workflow:
+        raise AssertionError("flaky-test-detection.yml BVS target cache keys must not use inline hashFiles")
+    if workflow.count("managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}") != 2:
+        raise AssertionError("flaky-test-detection.yml BVS target cache keys must use the shared digest")
+    if "managed-target-bvs-v1-" in workflow or "flaky-root-test-" in workflow:
+        raise AssertionError("flaky-test-detection.yml must restore from production cache namespaces")
+
+
 def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> None:
     verifier = load_verifier()
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
@@ -8828,6 +8894,25 @@ def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
     errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
     assert any("backtester cache key must use ci_input_sets digest" in error for error in errors), errors
     assert any("backtester cache key must include steps.bvs_cache_inputs.outputs.digest" in error for error in errors), errors
+    flaky_bad = """jobs:
+  flaky-detection-rust-backtester:
+    steps:
+      - uses: actions/cache/restore@example
+        with:
+          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock') }}
+"""
+    flaky_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/flaky-test-detection.yml": flaky_bad}
+    )
+    assert any("backtester cache key must use ci_input_sets digest" in error for error in flaky_errors), flaky_errors
+    assert any(
+        "backtester cache key digest must come from ci_input_sets backtester_cache" in error
+        for error in flaky_errors
+    ), flaky_errors
+    assert not any(
+        "backtester cache key digest must use exact-head namespace" in error
+        for error in flaky_errors
+    ), flaky_errors
     good = """jobs:
   clippy:
     steps:
@@ -12381,6 +12466,8 @@ def main() -> int:
     assert_ci_provenance_config_contract()
     assert_runner_contract_rejects_missing_and_extra_jobs()
     assert_runner_contract_rejects_unmapped_workflow_jobs()
+    assert_runner_contract_accepts_flaky_detection_workflow_mapping()
+    assert_flaky_detection_workflow_uses_supported_mergify_contract()
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
     assert_runner_contract_requires_meter_api_limits()
     assert_runner_contract_requires_fingerprint_archive_tier_coupling()

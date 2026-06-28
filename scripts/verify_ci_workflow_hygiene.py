@@ -70,6 +70,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/ci.yml": "ci",
     "backtester-ci.yml": "backtester_ci",
     ".github/workflows/backtester-ci.yml": "backtester_ci",
+    "flaky-test-detection.yml": "flaky_test_detection",
+    ".github/workflows/flaky-test-detection.yml": "flaky_test_detection",
     "dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     ".github/workflows/dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     "merge-readiness-finalizer.yml": "merge_readiness_finalizer",
@@ -10434,7 +10436,7 @@ def repo_automation_source_build_errors(text: str) -> list[str]:
 
 
 def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[str]:
-    if not file_name.endswith("backtester-ci.yml"):
+    if not any(prefix in text for prefix in ("managed-target-bvs-v", "bvs-nextest-archive-v", "bvs-bin-sidecars-v")):
         return []
     errors: list[str] = []
     for _job_id, job_lines in parse_jobs(text).items():
@@ -10454,7 +10456,7 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
             continue
         if "python3 scripts/ci_input_sets.py hash backtester_cache" not in job_text:
             errors.append("backtester cache key digest must come from ci_input_sets backtester_cache")
-        if (
+        if file_name.endswith("backtester-ci.yml") and (
             'if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then' not in job_text
             or 'echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"' not in job_text
         ):

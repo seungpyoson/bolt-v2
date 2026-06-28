@@ -353,6 +353,85 @@ class CiStorageAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(ci_storage_audit.AuditError, "mixed page shapes"):
             ci_storage_audit.merge_paginated_payload(payload)
 
+    def test_merge_paginated_payload_rejects_malformed_page_shape(self) -> None:
+        with self.assertRaisesRegex(ci_storage_audit.AuditError, "not an object or list"):
+            ci_storage_audit.merge_paginated_payload(["not-an-object-or-list"])
+
+    def test_merge_paginated_payload_rejects_empty_payload(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.merge_paginated_payload([])
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.EMPTY)
+        self.assertEqual(raised.exception.field, "paginated")
+
+    def test_merge_paginated_payload_rejects_scalar_drift(self) -> None:
+        payload = [
+            {
+                "total_count": 1,
+                "artifacts": [{"name": "first", "size_in_bytes": 1}],
+            },
+            {
+                "total_count": 2,
+                "artifacts": [{"name": "second", "size_in_bytes": 2}],
+            },
+        ]
+
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.merge_paginated_payload(payload)
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.AMBIGUOUS)
+        self.assertEqual(raised.exception.field, "actions/artifacts.total_count")
+
+    def test_fetch_cache_rejects_invalid_total_count_on_any_paginated_page(self) -> None:
+        client = FakeClient(
+            {
+                "actions/caches": [
+                    {
+                        "total_count": "bad",
+                        "actions_caches": [],
+                    },
+                    {
+                        "total_count": 1,
+                        "actions_caches": [
+                            {
+                                "id": 1,
+                                "ref": "refs/heads/main",
+                                "key": "cache-key",
+                                "size_in_bytes": 100,
+                            }
+                        ],
+                    },
+                ],
+            }
+        )
+
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.fetch_cache(client)
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.INVALID)
+        self.assertEqual(raised.exception.field, "actions/caches.total_count")
+
+    def test_fetch_artifacts_rejects_missing_total_count_on_any_paginated_page(self) -> None:
+        client = FakeClient(
+            {
+                "actions/artifacts": [
+                    {
+                        "artifacts": [],
+                    },
+                    {
+                        "total_count": 1,
+                        "artifacts": [{"name": "logs", "size_in_bytes": 200}],
+                    },
+                ],
+            }
+        )
+
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.fetch_artifacts(client)
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.ABSENT)
+        self.assertEqual(raised.exception.field, "actions/artifacts.total_count")
+
     def test_human_bytes_uses_binary_units(self) -> None:
         self.assertEqual(ci_storage_audit.human_bytes(0), "0 B")
         self.assertEqual(ci_storage_audit.human_bytes(999), "999 B")
@@ -1156,6 +1235,69 @@ class CiStorageAuditTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.INVALID)
         self.assertIn("size_bytes", raised.exception.field)
+
+    def test_render_cache_key_probe_text_rejects_contradictory_probe_state(self) -> None:
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "cache_usage": {
+                "available": True,
+                "active_caches_count": 1,
+                "active_caches_size_in_bytes": 1024,
+                "source": "rest",
+            },
+            "cache_refs": ["refs/heads/main"],
+            "cache_key_probes": [
+                {
+                    "label": "probe",
+                    "key": "exact-key",
+                    "available": True,
+                    "present": True,
+                    "exact_count": 1,
+                    "api_prefix_count": 1,
+                    "api_prefix_count_source": "github_total_count",
+                    "api_prefix_enumerated_count": 1,
+                    "ref_filtered_prefix_enumerated_count": 1,
+                    "prefix_only_count": 0,
+                    "entries": [
+                        {
+                            "cache_id": 501,
+                            "ref": "refs/heads/main",
+                            "key": "exact-key",
+                            "last_accessed_at": "2026-06-25T10:00:00Z",
+                            "size_bytes": 1024,
+                        }
+                    ],
+                    "ref_filter": ["refs/heads/main"],
+                }
+            ],
+        }
+        contradictions = (
+            ("cache_key_probe_snapshot.cache_key_probes.present", lambda value: value["cache_key_probes"][0].update({"exact_count": 0})),
+            ("cache_key_probe_snapshot.cache_key_probes.entries", lambda value: value["cache_key_probes"][0].update({"entries": []})),
+            (
+                "cache_key_probe_snapshot.cache_key_probes.api_prefix_count_source",
+                lambda value: value["cache_key_probes"][0].update({"api_prefix_count_source": "unavailable"}),
+            ),
+            (
+                "cache_key_probe_snapshot.cache_key_probes.prefix_only_count",
+                lambda value: value["cache_key_probes"][0].update({"prefix_only_count": 99}),
+            ),
+            (
+                "cache_key_probe_snapshot.cache_key_probes.ref_filtered_prefix_enumerated_count",
+                lambda value: value["cache_key_probes"][0].update({"ref_filtered_prefix_enumerated_count": 0}),
+            ),
+        )
+        for expected_field, mutate in contradictions:
+            with self.subTest(expected_field=expected_field):
+                candidate = json.loads(json.dumps(snapshot))
+                mutate(candidate)
+
+                with self.assertRaises(ci_storage_audit.AuditError) as raised:
+                    ci_storage_audit.render_cache_key_probe_text(candidate)
+
+                self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.INVALID)
+                self.assertEqual(raised.exception.field, expected_field)
 
     def test_render_cache_persistence_failure_text_reports_contract_failure(self) -> None:
         error = ci_storage_audit.AuditError(

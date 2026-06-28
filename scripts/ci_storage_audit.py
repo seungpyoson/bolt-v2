@@ -87,6 +87,18 @@ class FieldSpec(NamedTuple):
     default: Any = _MISSING
 
 
+class PaginatedPayloadSpec(NamedTuple):
+    label: str
+    list_field: str
+    scalar_fields: tuple[FieldSpec, ...]
+
+
+class ContractInvariant(NamedTuple):
+    field: str
+    accepts: Callable[[dict[str, Any]], bool]
+    message: str
+
+
 TEXT_RULES = (
     TextRule(FailureKind.ABSENT, lambda value: value is not None, "is required"),
     TextRule(FailureKind.INVALID, lambda value: isinstance(value, str), "must be text"),
@@ -151,30 +163,77 @@ def merge_paginated_payload(payload: Any) -> Any:
     if not isinstance(payload, list):
         return payload
 
-    merged: dict[str, Any] = {}
-    merged_items: list[Any] = []
+    object_pages: list[dict[str, Any]] = []
+    list_items: list[Any] = []
     saw_list_page = False
     for page in payload:
         if isinstance(page, list):
-            if merged:
+            if object_pages:
                 raise AuditError("paginated payload mixed page shapes")
             saw_list_page = True
-            merged_items.extend(page)
+            list_items.extend(page)
             continue
         if not isinstance(page, dict):
             raise AuditError("paginated payload page is not an object or list")
         if saw_list_page:
             raise AuditError("paginated payload mixed page shapes")
-        for key, value in page.items():
-            if isinstance(value, list):
-                merged.setdefault(key, [])
-                if not isinstance(merged[key], list):
-                    raise AuditError(f"paginated field changed type: {key}")
-                merged[key].extend(value)
-            else:
-                merged[key] = value
-    if saw_list_page and not merged:
-        return merged_items
+        object_pages.append(page)
+    if saw_list_page:
+        return list_items
+    if not object_pages:
+        raise AuditError(
+            "paginated payload must not be empty",
+            kind=FailureKind.EMPTY,
+            field="paginated",
+        )
+    return merge_paginated_object_pages(object_pages)
+
+
+def paginated_payload_spec_for_pages(pages: list[dict[str, Any]]) -> PaginatedPayloadSpec:
+    matches: list[PaginatedPayloadSpec] = []
+    for page in pages:
+        for spec in PAGINATED_PAYLOAD_SPECS.values():
+            if spec.list_field in page and spec not in matches:
+                matches.append(spec)
+    if not matches:
+        raise AuditError(
+            "paginated object payload has no contract",
+            kind=FailureKind.INVALID,
+            field="paginated",
+        )
+    if len(matches) > 1:
+        raise AuditError(
+            "paginated object payload matches multiple contracts",
+            kind=FailureKind.AMBIGUOUS,
+            field="paginated",
+        )
+    return matches[0]
+
+
+def merge_paginated_object_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
+    spec = paginated_payload_spec_for_pages(pages)
+    merged: dict[str, Any] = {spec.list_field: []}
+    scalar_names = {field.source for field in spec.scalar_fields}
+    for page in pages:
+        parsed_scalars = parse_contract_object(page, spec.label, spec.scalar_fields)
+        page_items = list_field(page, spec.list_field, spec.label)
+        for key in page:
+            if key == spec.list_field or key in scalar_names:
+                continue
+            raise AuditError(
+                f"{spec.label}.{key} is not part of the paginated payload contract",
+                kind=FailureKind.INVALID,
+                field=f"{spec.label}.{key}",
+            )
+        for key, value in parsed_scalars.items():
+            if key in merged and merged[key] != value:
+                raise AuditError(
+                    f"{spec.label}.{key} differs across paginated pages",
+                    kind=FailureKind.AMBIGUOUS,
+                    field=f"{spec.label}.{key}",
+                )
+            merged[key] = value
+        merged[spec.list_field].extend(page_items)
     return merged
 
 
@@ -331,6 +390,20 @@ def require_total_count(payload: dict[str, Any], label: str) -> int:
     return require_nonnegative_int(require_field(payload, "total_count", f"{label}.total_count"), f"{label}.total_count")
 
 
+PAGINATED_PAYLOAD_SPECS = {
+    "actions/caches": PaginatedPayloadSpec(
+        label="actions/caches",
+        list_field="actions_caches",
+        scalar_fields=(FieldSpec("total_count", "total_count", require_nonnegative_int),),
+    ),
+    "actions/artifacts": PaginatedPayloadSpec(
+        label="actions/artifacts",
+        list_field="artifacts",
+        scalar_fields=(FieldSpec("total_count", "total_count", require_nonnegative_int),),
+    ),
+}
+
+
 CACHE_API_ENTRY_CONTRACT = (
     FieldSpec("id", "cache_id", require_nonnegative_int),
     FieldSpec("ref", "ref", require_ref),
@@ -388,10 +461,90 @@ def cache_usage_from_raw(raw: Any, label: str = "cache_usage") -> dict[str, Any]
     return parse_contract_object(raw, label, CACHE_USAGE_CONTRACT)
 
 
+CACHE_KEY_PROBE_INVARIANTS = (
+    ContractInvariant(
+        "api_prefix_count_source",
+        lambda probe: not probe["available"] or probe["api_prefix_count_source"] == "github_total_count",
+        "available probe must use the GitHub total_count source",
+    ),
+    ContractInvariant(
+        "api_prefix_count_source",
+        lambda probe: probe["available"] or probe["api_prefix_count_source"] == "unavailable",
+        "unavailable probe must use the unavailable count source",
+    ),
+    ContractInvariant(
+        "present",
+        lambda probe: probe["available"] or not probe["present"],
+        "unavailable probe must not report a present key",
+    ),
+    ContractInvariant(
+        "exact_count",
+        lambda probe: probe["available"] or probe["exact_count"] == 0,
+        "unavailable probe must not report exact entries",
+    ),
+    ContractInvariant(
+        "entries",
+        lambda probe: probe["available"] or not probe["entries"],
+        "unavailable probe must not include entries",
+    ),
+    ContractInvariant(
+        "present",
+        lambda probe: probe["present"] == (probe["exact_count"] > 0),
+        "probe present flag must match exact_count",
+    ),
+    ContractInvariant(
+        "entries",
+        lambda probe: len(probe["entries"]) == probe["exact_count"],
+        "probe entries length must match exact_count",
+    ),
+    ContractInvariant(
+        "ref_filtered_prefix_enumerated_count",
+        lambda probe: probe["exact_count"] <= probe["ref_filtered_prefix_enumerated_count"],
+        "exact_count must not exceed ref-filtered prefix enumeration",
+    ),
+    ContractInvariant(
+        "ref_filtered_prefix_enumerated_count",
+        lambda probe: probe["ref_filtered_prefix_enumerated_count"] <= probe["api_prefix_enumerated_count"],
+        "ref-filtered prefix enumeration must not exceed API prefix enumeration",
+    ),
+    ContractInvariant(
+        "api_prefix_enumerated_count",
+        lambda probe: probe["api_prefix_enumerated_count"] <= probe["api_prefix_count"],
+        "API prefix enumeration must not exceed API prefix count",
+    ),
+    ContractInvariant(
+        "prefix_only_count",
+        lambda probe: probe["prefix_only_count"] == probe["ref_filtered_prefix_enumerated_count"] - probe["exact_count"],
+        "prefix_only_count must match ref-filtered prefix entries minus exact entries",
+    ),
+    ContractInvariant(
+        "entries",
+        lambda probe: all(entry["key"] == probe["key"] for entry in probe["entries"]),
+        "probe entries must match the exact probe key",
+    ),
+    ContractInvariant(
+        "entries",
+        lambda probe: not probe["ref_filter"] or all(entry["ref"] in probe["ref_filter"] for entry in probe["entries"]),
+        "probe entries must match the configured ref filter",
+    ),
+)
+
+
+def validate_contract_invariants(
+    payload: dict[str, Any],
+    label: str,
+    invariants: tuple[ContractInvariant, ...],
+) -> dict[str, Any]:
+    for invariant in invariants:
+        if not invariant.accepts(payload):
+            raise AuditError(invariant.message, kind=FailureKind.INVALID, field=f"{label}.{invariant.field}")
+    return payload
+
+
 def cache_key_probe_from_raw(raw: Any, label: str = "cache_key_probes") -> dict[str, Any]:
     probe = parse_contract_object(raw, label, CACHE_KEY_PROBE_CONTRACT)
     probe["entries"] = parse_contract_items(probe["entries"], f"{label}.entries", cache_snapshot_entry_from_raw)
-    return probe
+    return validate_contract_invariants(probe, label, CACHE_KEY_PROBE_INVARIANTS)
 
 
 def cache_key_probe_list_from_raw(value: Any, field: str) -> list[dict[str, Any]]:
@@ -591,11 +744,11 @@ def fetch_cache_key_probes(
         accessible_prefix_entries = [
             entry
             for entry in prefix_entries
-            if not ref_filter_set or entry.get("ref") in ref_filter_set
+            if not ref_filter_set or entry["ref"] in ref_filter_set
         ]
         exact_entries = [
             entry for entry in accessible_prefix_entries
-            if entry.get("key") == request.key
+            if entry["key"] == request.key
         ]
         api_prefix_count = require_total_count(payload, "actions/caches")
         probes.append(

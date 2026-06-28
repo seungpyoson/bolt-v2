@@ -365,6 +365,7 @@ class CiStorageAuditTests(unittest.TestCase):
             default_decision = "KEEP"
             default_keep_reason = "artifact is outside configured cleanup candidate classes"
             protected_ref_keep_reason = "protected deploy ref is excluded from cleanup"
+            artifact_metadata_unavailable_keep_reason = "artifact metadata is unavailable"
             active_run_keep_reason = "workflow run is still active"
             status_unavailable_keep_reason = "workflow run status is unavailable"
             expiration_unknown_keep_reason = "artifact expiration status is unavailable"
@@ -626,6 +627,30 @@ class CiStorageAuditTests(unittest.TestCase):
             },
         )
 
+    def test_cleanup_self_clear_horizon_is_unknown_when_expiration_status_is_unknown(self) -> None:
+        horizon = ci_storage_audit.cleanup_self_clear_horizon(
+            [
+                {
+                    "artifact_id": 1,
+                    "expired": False,
+                    "expires_at": "2026-07-20T00:00:00Z",
+                },
+                {
+                    "artifact_id": 2,
+                    "expired": None,
+                    "expires_at": "2026-07-21T00:00:00Z",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            horizon,
+            {
+                "expires_at": None,
+                "source": "artifact_expiration_status_unknown",
+            },
+        )
+
     def test_cleanup_feasibility_marks_rows_when_workflow_status_is_not_fetched(self) -> None:
         policy = ci_storage_audit.load_cleanup_policy_text(
             """
@@ -635,6 +660,7 @@ class CiStorageAuditTests(unittest.TestCase):
             default_decision = "KEEP"
             default_keep_reason = "ambiguous artifact is not a cleanup candidate"
             protected_ref_keep_reason = "protected deploy ref is excluded from cleanup"
+            artifact_metadata_unavailable_keep_reason = "artifact metadata is unavailable"
             active_run_keep_reason = "workflow run is still active"
             status_unavailable_keep_reason = "workflow run status is unavailable"
             expiration_unknown_keep_reason = "artifact expiration status is unavailable"
@@ -721,6 +747,7 @@ class CiStorageAuditTests(unittest.TestCase):
             default_decision = "KEEP"
             default_keep_reason = "ambiguous artifact is not a cleanup candidate"
             protected_ref_keep_reason = "protected deploy ref is excluded from cleanup"
+            artifact_metadata_unavailable_keep_reason = "artifact metadata is unavailable"
             active_run_keep_reason = "workflow run is still active"
             status_unavailable_keep_reason = "workflow run status is unavailable"
             expiration_unknown_keep_reason = "artifact expiration status is unavailable"
@@ -784,6 +811,162 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(cleanup["rows"][0]["workflow_run"]["status_source"], "missing_run_id")
         self.assertEqual(client.calls, [])
 
+    def test_cleanup_feasibility_keeps_candidate_when_artifact_identity_is_missing(self) -> None:
+        policy = ci_storage_audit.load_cleanup_policy_text(
+            """
+            [storage_audit.cleanup_feasibility]
+            schema_version = 1
+            default_class = "ambiguous"
+            default_decision = "KEEP"
+            default_keep_reason = "ambiguous artifact is not a cleanup candidate"
+            protected_ref_keep_reason = "protected deploy ref is excluded from cleanup"
+            artifact_metadata_unavailable_keep_reason = "artifact metadata is unavailable"
+            active_run_keep_reason = "workflow run is still active"
+            status_unavailable_keep_reason = "workflow run status is unavailable"
+            expiration_unknown_keep_reason = "artifact expiration status is unavailable"
+            not_expired_keep_reason = "artifact has not expired"
+            billing_impact_unverifiable = "billing impact unverifiable from API"
+            wait_and_remeasure = "wait and remeasure natural expiry before deletion"
+            protected_refs = ["main"]
+            protected_ref_prefixes = []
+            protected_ref_globs = []
+            active_run_statuses = ["queued"]
+            terminal_run_statuses = ["completed"]
+            workflow_run_fetch_limit = 1
+            billing_probe_paths = []
+
+            [[storage_audit.cleanup_feasibility.classes]]
+            id = "nextest_archive"
+            name_equals = ["nextest-archive"]
+            name_prefixes = []
+            expired_decision = "DELETE-CANDIDATE"
+            candidate_reason = "expired test archive outside protected refs"
+            keep_reason = "test archive is retained until it expires"
+            """,
+            label="missing-artifact-id-policy",
+        )
+        client = FakeClient({"actions/artifacts": {"total_count": 0, "artifacts": []}})
+        artifacts = {
+            "total_bytes": 100,
+            "expired_bytes": 100,
+            "non_expired_bytes": 0,
+            "unknown_expiration_bytes": 0,
+            "entries": [
+                {
+                    "artifact_id": None,
+                    "name": "nextest-archive",
+                    "size_bytes": 100,
+                    "created_at": "2026-06-01T00:00:00Z",
+                    "expires_at": "2026-06-15T00:00:00Z",
+                    "expired": True,
+                    "workflow_run": {
+                        "id": 501,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "ref": "feature/missing-artifact-id",
+                        "head_branch": "feature/missing-artifact-id",
+                        "head_sha": "a" * 40,
+                        "event": None,
+                        "status_source": "artifact_payload",
+                    },
+                },
+            ],
+        }
+
+        cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+            client,
+            repo="owner/repo",
+            artifacts=artifacts,
+            policy=policy,
+        )
+
+        self.assertEqual(cleanup["candidate_count"], 0)
+        self.assertEqual(cleanup["candidate_bytes"], 0)
+        self.assertEqual(cleanup["rows"][0]["decision"], "KEEP")
+        self.assertEqual(cleanup["rows"][0]["reason"], "artifact metadata is unavailable")
+
+    def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_is_missing(self) -> None:
+        policy = ci_storage_audit.load_cleanup_policy_text(
+            """
+            [storage_audit.cleanup_feasibility]
+            schema_version = 1
+            default_class = "ambiguous"
+            default_decision = "KEEP"
+            default_keep_reason = "ambiguous artifact is not a cleanup candidate"
+            protected_ref_keep_reason = "protected deploy ref is excluded from cleanup"
+            artifact_metadata_unavailable_keep_reason = "artifact metadata is unavailable"
+            active_run_keep_reason = "workflow run is still active"
+            status_unavailable_keep_reason = "workflow run status is unavailable"
+            expiration_unknown_keep_reason = "artifact expiration status is unavailable"
+            not_expired_keep_reason = "artifact has not expired"
+            billing_impact_unverifiable = "billing impact unverifiable from API"
+            wait_and_remeasure = "wait and remeasure natural expiry before deletion"
+            protected_refs = ["main"]
+            protected_ref_prefixes = []
+            protected_ref_globs = []
+            active_run_statuses = ["queued"]
+            terminal_run_statuses = ["completed"]
+            workflow_run_fetch_limit = 1
+            billing_probe_paths = []
+
+            [[storage_audit.cleanup_feasibility.classes]]
+            id = "nextest_archive"
+            name_equals = ["nextest-archive"]
+            name_prefixes = []
+            expired_decision = "DELETE-CANDIDATE"
+            candidate_reason = "expired test archive outside protected refs"
+            keep_reason = "test archive is retained until it expires"
+            """,
+            label="missing-ref-policy",
+        )
+        client = FakeClient(
+            {
+                "actions/runs/501": {
+                    "id": 501,
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+            }
+        )
+        artifacts = {
+            "total_bytes": 100,
+            "expired_bytes": 100,
+            "non_expired_bytes": 0,
+            "unknown_expiration_bytes": 0,
+            "entries": [
+                {
+                    "artifact_id": 1,
+                    "name": "nextest-archive",
+                    "size_bytes": 100,
+                    "created_at": "2026-06-01T00:00:00Z",
+                    "expires_at": "2026-06-15T00:00:00Z",
+                    "expired": True,
+                    "workflow_run": {
+                        "id": 501,
+                        "status": None,
+                        "conclusion": None,
+                        "ref": None,
+                        "head_branch": None,
+                        "head_sha": None,
+                        "event": None,
+                        "status_source": "not_fetched",
+                    },
+                },
+            ],
+        }
+
+        cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+            client,
+            repo="owner/repo",
+            artifacts=artifacts,
+            policy=policy,
+        )
+
+        self.assertEqual(cleanup["candidate_count"], 0)
+        self.assertEqual(cleanup["candidate_bytes"], 0)
+        self.assertEqual(cleanup["rows"][0]["decision"], "KEEP")
+        self.assertEqual(cleanup["rows"][0]["reason"], "artifact metadata is unavailable")
+
     def test_billing_probe_records_reachability_without_raw_payload(self) -> None:
         policy = ci_storage_audit.load_cleanup_policy_text(
             """
@@ -793,6 +976,7 @@ class CiStorageAuditTests(unittest.TestCase):
             default_decision = "KEEP"
             default_keep_reason = "ambiguous artifact is not a cleanup candidate"
             protected_ref_keep_reason = "protected deploy ref is excluded from cleanup"
+            artifact_metadata_unavailable_keep_reason = "artifact metadata is unavailable"
             active_run_keep_reason = "workflow run is still active"
             status_unavailable_keep_reason = "workflow run status is unavailable"
             expiration_unknown_keep_reason = "artifact expiration status is unavailable"
@@ -853,6 +1037,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 default_decision = "KEEP"
                 default_keep_reason = "default keep"
                 protected_ref_keep_reason = "protected keep"
+                artifact_metadata_unavailable_keep_reason = "metadata keep"
                 active_run_keep_reason = "active keep"
                 status_unavailable_keep_reason = "status keep"
                 expiration_unknown_keep_reason = "expiration keep"

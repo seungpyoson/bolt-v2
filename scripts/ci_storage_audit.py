@@ -59,6 +59,7 @@ class ArtifactCleanupPolicy(NamedTuple):
     default_decision: str
     default_keep_reason: str
     protected_ref_keep_reason: str
+    artifact_metadata_unavailable_keep_reason: str
     active_run_keep_reason: str
     status_unavailable_keep_reason: str
     expiration_unknown_keep_reason: str
@@ -431,6 +432,11 @@ def load_cleanup_policy_text(raw: str, *, label: str) -> ArtifactCleanupPolicy:
         protected_ref_keep_reason=require_policy_string(
             table,
             "protected_ref_keep_reason",
+            "storage_audit.cleanup_feasibility",
+        ),
+        artifact_metadata_unavailable_keep_reason=require_policy_string(
+            table,
+            "artifact_metadata_unavailable_keep_reason",
             "storage_audit.cleanup_feasibility",
         ),
         active_run_keep_reason=require_policy_string(table, "active_run_keep_reason", "storage_audit.cleanup_feasibility"),
@@ -874,6 +880,14 @@ def ref_is_protected(policy: ArtifactCleanupPolicy, ref: str | None) -> bool:
     )
 
 
+def artifact_identity_is_known(entry: dict[str, Any]) -> bool:
+    return optional_nonnegative_int(entry.get("artifact_id")) is not None
+
+
+def artifact_ref_is_known(entry: dict[str, Any]) -> bool:
+    return artifact_ref(entry) is not None
+
+
 def should_fetch_workflow_run(
     policy: ArtifactCleanupPolicy,
     rule: ArtifactClassRule | None,
@@ -917,6 +931,10 @@ def cleanup_decision_for_entry(
         return class_id, KEEP_DECISION, policy.expiration_unknown_keep_reason
     if expired is False:
         return class_id, KEEP_DECISION, rule.keep_reason or policy.not_expired_keep_reason
+    if rule.expired_decision == DELETE_CANDIDATE_DECISION and (
+        not artifact_identity_is_known(entry) or not artifact_ref_is_known(entry)
+    ):
+        return class_id, KEEP_DECISION, policy.artifact_metadata_unavailable_keep_reason
     ref = artifact_ref(entry)
     if ref_is_protected(policy, ref):
         return class_id, KEEP_DECISION, policy.protected_ref_keep_reason
@@ -968,8 +986,13 @@ def cleanup_self_clear_horizon(entries: list[dict[str, Any]]) -> dict[str, Any]:
     best_timestamp: dt.datetime | None = None
     saw_non_expired = False
     for entry in entries:
-        if entry.get("expired") is not False:
+        expired = entry.get("expired")
+        if expired is None:
+            return {"expires_at": None, "source": "artifact_expiration_status_unknown"}
+        if expired is True:
             continue
+        if expired is not False:
+            return {"expires_at": None, "source": "artifact_expiration_status_unknown"}
         saw_non_expired = True
         timestamp = parse_github_timestamp(entry.get("expires_at"))
         if timestamp is None:

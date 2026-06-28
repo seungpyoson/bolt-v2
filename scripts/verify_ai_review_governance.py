@@ -421,9 +421,11 @@ def verify_pr_agent_config(pr_agent_toml: str, ai_review_toml: str) -> list[str]
     extra = reviewer.get("extra_instructions", "")
     if expected_source not in extra:
         findings.append(".pr_agent.toml extra_instructions must delegate source/model stamping to ci/ai-review.toml")
-    expected_severity_label = "include a line starting exactly with `Severity:`"
-    if expected_severity_label not in extra:
-        findings.append(".pr_agent.toml extra_instructions must require the literal Severity: finding label")
+    expected_finding_labels = (
+        "include lines starting exactly with `Severity:`, `Evidence:`, `Issue:`, and `Fix / verification:`",
+    )
+    if not all(snippet in extra for snippet in expected_finding_labels):
+        findings.append(".pr_agent.toml extra_instructions must require the literal finding evidence labels")
     for snippet in (
         "No hard-evidence findings",
         "Coverage reviewed:",
@@ -1039,9 +1041,12 @@ def run_self_tests(repo_root: Path) -> None:
     )
     assert_finding("PR-Agent model literal", pr_agent_model_literal, ".pr_agent.toml extra_instructions must read AI review runtime value")
 
-    pr_agent_missing_severity_label = verify_texts(
+    pr_agent_missing_finding_labels = verify_texts(
         agents_md=agents,
-        pr_agent_toml=pr_agent.replace("include a line starting exactly with `Severity:`", "include severity"),
+        pr_agent_toml=pr_agent.replace(
+            "include lines starting exactly with `Severity:`, `Evidence:`, `Issue:`, and `Fix / verification:`",
+            "include severity",
+        ),
         ai_review_toml=ai_review,
         ai_review_deliverables=deliverables,
         glm_workflow=glm,
@@ -1049,9 +1054,9 @@ def run_self_tests(repo_root: Path) -> None:
         smoke_workflow=smoke,
     )
     assert_finding(
-        "PR-Agent missing severity label",
-        pr_agent_missing_severity_label,
-        "must require the literal Severity: finding label",
+        "PR-Agent missing finding labels",
+        pr_agent_missing_finding_labels,
+        "must require the literal finding evidence labels",
     )
 
     pr_agent_missing_no_findings_contract = verify_texts(

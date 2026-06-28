@@ -43,6 +43,17 @@ def valid_finding_response(issue: str = "example issue") -> str:
     )
 
 
+def valid_bulleted_finding_response(issue: str = "example issue") -> str:
+    return "\n".join(
+        [
+            "- Severity: medium",
+            "- Evidence: `+change`",
+            f"- Issue: {issue}",
+            "- Fix / verification: add a targeted verification.",
+        ]
+    )
+
+
 def default_pr_agent_review_body() -> str:
     return "\n".join(
         [
@@ -841,6 +852,47 @@ def test_generated_low_quality_review_is_not_posted_as_deliverable() -> None:
     assert "did not meet the hard-evidence output contract" in github.posted[0]
 
 
+def test_system_prompt_uses_line_start_finding_labels() -> None:
+    module = load_script()
+    contract = fallback_config(module).output_contract
+
+    prompt = module.build_system_prompt("review hard evidence only", contract)
+    prompt_lines = prompt.splitlines()
+
+    for label in contract.finding_required_labels:
+        assert any(line.startswith(f"{label} ") for line in prompt_lines), prompt
+        assert f"- {label}" not in prompt, prompt
+
+
+def test_bulleted_finding_response_is_not_prompt_compliant() -> None:
+    module = load_script()
+    contract = fallback_config(module).output_contract
+
+    try:
+        module.validate_review_responses([valid_bulleted_finding_response()], contract)
+    except RuntimeError as exc:
+        assert "did not meet the hard-evidence output contract" in str(exc)
+    else:
+        raise AssertionError("bulleted finding labels must not satisfy the line-start contract")
+
+
+def test_prompt_compliant_finding_review_is_posted_as_deliverable() -> None:
+    module = load_script()
+    github = FakeGitHub(files=[file_payload("src/lib.rs", "+change")])
+    glm = FakeGLM(response=valid_finding_response("prompt-compliant finding."))
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=fallback_config(module),
+    )
+
+    assert result == "fallback-posted"
+    assert len(github.posted) == 1
+    assert "prompt-compliant finding." in github.posted[0]
+    assert "review did not produce a deliverable" not in github.posted[0]
+
+
 def test_github_client_upserts_marker_comments_through_http_api() -> None:
     module = load_script()
     comments = [
@@ -1554,6 +1606,7 @@ def test_notice_env_fails_closed_without_notice_marker() -> None:
 def test_pr_agent_prompt_pins_no_findings_contract() -> None:
     prompt = (REPO_ROOT / ".pr_agent.toml").read_text(encoding="utf-8")
 
+    assert "include lines starting exactly with `Severity:`, `Evidence:`, `Issue:`, and `Fix / verification:`" in prompt
     assert "No hard-evidence findings" in prompt
     assert "Coverage reviewed:" in prompt
     assert "Evidence basis:" in prompt
@@ -1580,6 +1633,9 @@ def main() -> int:
     test_same_round_marker_comment_is_updated_instead_of_posting_new_comment()
     test_previous_round_marker_comment_does_not_get_overwritten()
     test_generated_low_quality_review_is_not_posted_as_deliverable()
+    test_system_prompt_uses_line_start_finding_labels()
+    test_bulleted_finding_response_is_not_prompt_compliant()
+    test_prompt_compliant_finding_review_is_posted_as_deliverable()
     test_github_client_upserts_marker_comments_through_http_api()
     test_github_client_keeps_paginated_marker_comments_distinct()
     test_posts_failure_notice_when_glm_fallback_fails()

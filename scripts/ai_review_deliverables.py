@@ -661,7 +661,7 @@ def pack_review_chunks(files: list[ReviewFile], max_chars: int) -> list[ReviewCh
 
 def build_system_prompt(instructions: str, output_contract: ReviewOutputContract) -> str:
     finding_lines = "\n".join(
-        f"        - {label} {guidance}"
+        f"        {label} {guidance}"
         for label, guidance in zip(
             output_contract.finding_required_labels,
             output_contract.finding_guidance,

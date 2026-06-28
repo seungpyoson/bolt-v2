@@ -2183,6 +2183,14 @@ def command_argv_has_prefix(command: str, expected_prefix: tuple[str, ...]) -> b
     return tuple(argv[: len(expected_prefix)]) == expected_prefix
 
 
+CACHE_PERSISTENCE_AUDIT_FAILURE_MASKING_OPERATORS = {";", "&", "&&", "||", "|"}
+
+
+def command_has_failure_masking_shell_control(command: str) -> bool:
+    tokens = command_tokens_with_line_boundaries(command)
+    return any(token in CACHE_PERSISTENCE_AUDIT_FAILURE_MASKING_OPERATORS for token in tokens)
+
+
 def append_missing_cache_persistence_probe_structure(
     errors: list[str],
     run_lines: list[str],
@@ -2202,7 +2210,7 @@ def append_missing_cache_persistence_probe_structure(
             ),
             (
                 "cache-persistence-audit must not suppress audit contract failures",
-                "|| true" not in "\n".join(run_lines),
+                len(commands) == 1 and not command_has_failure_masking_shell_control(command_text),
             ),
         ),
     )

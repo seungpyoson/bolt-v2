@@ -4567,6 +4567,30 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             ),
         ),
         (
+            "cache-persistence-audit must not suppress audit contract failures",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" || echo suppressed\n',
+            ),
+        ),
+        (
+            "cache-persistence-audit must not suppress audit contract failures",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"; true\n',
+            ),
+        ),
+        (
+            "cache-persistence-audit must not suppress audit contract failures",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" | cat\n',
+            ),
+        ),
+        (
             "cache-persistence-audit must delegate audit policy to ci_storage_audit",
             replace_once(
                 workflow,

@@ -8,9 +8,10 @@ the raw source shape, so rulesets entries are objects such as
 fallback entries may be strings or objects such as ``{"context": "...",
 "app_id": ...}``.
 
-``cache.count`` and ``artifacts.count`` are GitHub's ``total_count`` when that
-field is available. ``enumerated_count`` is derived from the paginated rows this
-audit actually read; the two may differ under live CI churn.
+``cache.count`` and ``artifacts.count`` are GitHub's ``total_count``. Missing or
+malformed ``total_count`` is a contract failure, not an enumerated-row fallback.
+``enumerated_count`` is derived from the paginated rows this audit actually read;
+the two may differ under live CI churn.
 """
 
 from __future__ import annotations
@@ -74,6 +75,16 @@ class TextRule(NamedTuple):
 
 class EventRefSpec(NamedTuple):
     base_ref_contract: str
+
+
+_MISSING = object()
+
+
+class FieldSpec(NamedTuple):
+    source: str
+    output: str
+    parser: Callable[[Any, str], Any]
+    default: Any = _MISSING
 
 
 TEXT_RULES = (
@@ -151,7 +162,7 @@ def merge_paginated_payload(payload: Any) -> Any:
             merged_items.extend(page)
             continue
         if not isinstance(page, dict):
-            continue
+            raise AuditError("paginated payload page is not an object or list")
         if saw_list_page:
             raise AuditError("paginated payload mixed page shapes")
         for key, value in page.items():
@@ -216,52 +227,36 @@ def human_bytes(size: int) -> str:
 
 def require_object(payload: Any, label: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
-        raise AuditError(f"{label} payload is not an object")
+        raise AuditError(f"{label} payload is not an object", kind=FailureKind.INVALID, field=label)
     return payload
 
 
-def list_field(payload: dict[str, Any], field: str, label: str) -> list[Any]:
-    value = payload.get(field)
+def require_field(payload: dict[str, Any], key: str, field: str) -> Any:
+    if key not in payload:
+        raise AuditError(f"{field} is required", kind=FailureKind.ABSENT, field=field)
+    return payload[key]
+
+
+def require_contract_list(value: Any, field: str) -> list[Any]:
     if not isinstance(value, list):
-        raise AuditError(f"{label}.{field} is not a list")
+        raise AuditError(f"{field} must be a list", kind=FailureKind.INVALID, field=field)
     return value
 
 
-def optional_text(value: Any) -> str | None:
-    return value if isinstance(value, str) else None
+def list_field(payload: dict[str, Any], field: str, label: str) -> list[Any]:
+    return require_contract_list(require_field(payload, field, f"{label}.{field}"), f"{label}.{field}")
 
 
-def nonnegative_int(value: Any, *, default: int = 0) -> int:
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int) and value >= 0:
-        return value
-    return default
+def require_bool(value: Any, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise AuditError(f"{field} must be a boolean", kind=FailureKind.INVALID, field=field)
+    return value
 
 
 def require_nonnegative_int(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise AuditError(f"{field} must be a non-negative integer", kind=FailureKind.INVALID, field=field)
     return value
-
-
-def count_with_source(payload: dict[str, Any], *, fallback: int) -> tuple[int, str]:
-    value = payload.get("total_count")
-    if isinstance(value, bool):
-        return fallback, "enumerated_count_fallback"
-    if isinstance(value, int) and value >= 0:
-        return value, "github_total_count"
-    return fallback, "enumerated_count_fallback"
-
-
-def cache_entry_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "cache_id": raw.get("id"),
-        "ref": require_ref(raw.get("ref"), "actions/caches.ref"),
-        "key": require_text(raw.get("key"), "actions/caches.key"),
-        "last_accessed_at": optional_text(raw.get("last_accessed_at")),
-        "size_bytes": require_nonnegative_int(raw.get("size_in_bytes"), "actions/caches.size_in_bytes"),
-    }
 
 
 def require_contract_text(value: Any, field: str, contract_name: str) -> str:
@@ -281,6 +276,139 @@ def require_ref(value: Any, field: str) -> str:
 
 def require_branch(value: Any, field: str) -> str:
     return require_contract_text(value, field, "branch")
+
+
+def require_optional_text(value: Any, field: str) -> str | None:
+    if value is None:
+        return None
+    return require_text(value, field)
+
+
+def require_source_value(value: Any, field: str, allowed: tuple[str, ...]) -> str:
+    source = require_text(value, field)
+    if source not in allowed:
+        allowed_text = ", ".join(allowed)
+        raise AuditError(f"{field} must be one of: {allowed_text}", kind=FailureKind.INVALID, field=field)
+    return source
+
+
+def require_probe_count_source(value: Any, field: str) -> str:
+    return require_source_value(value, field, ("github_total_count", "unavailable"))
+
+
+def require_ref_list(value: Any, field: str) -> list[str]:
+    refs = require_contract_list(value, field)
+    return [require_ref(raw, f"{field}[{index}]") for index, raw in enumerate(refs)]
+
+
+def parse_contract_object(raw: Any, label: str, specs: tuple[FieldSpec, ...]) -> dict[str, Any]:
+    payload = require_object(raw, label)
+    parsed: dict[str, Any] = {}
+    for spec in specs:
+        field = f"{label}.{spec.source}"
+        value = payload[spec.source] if spec.source in payload else spec.default
+        if value is _MISSING:
+            raise AuditError(f"{field} is required", kind=FailureKind.ABSENT, field=field)
+        parsed[spec.output] = spec.parser(value, field)
+    return parsed
+
+
+def parse_contract_items(
+    raw_items: list[Any],
+    label: str,
+    parser: Callable[[Any, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    parsed: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_items):
+        if not isinstance(raw, dict):
+            field = f"{label}[{index}]"
+            raise AuditError(f"{field} must be an object", kind=FailureKind.INVALID, field=field)
+        parsed.append(parser(raw, label))
+    return parsed
+
+
+def require_total_count(payload: dict[str, Any], label: str) -> int:
+    return require_nonnegative_int(require_field(payload, "total_count", f"{label}.total_count"), f"{label}.total_count")
+
+
+CACHE_API_ENTRY_CONTRACT = (
+    FieldSpec("id", "cache_id", require_nonnegative_int),
+    FieldSpec("ref", "ref", require_ref),
+    FieldSpec("key", "key", require_text),
+    FieldSpec("last_accessed_at", "last_accessed_at", require_optional_text, None),
+    FieldSpec("size_in_bytes", "size_bytes", require_nonnegative_int),
+)
+CACHE_SNAPSHOT_ENTRY_CONTRACT = (
+    FieldSpec("cache_id", "cache_id", require_nonnegative_int),
+    FieldSpec("ref", "ref", require_ref),
+    FieldSpec("key", "key", require_text),
+    FieldSpec("last_accessed_at", "last_accessed_at", require_optional_text, None),
+    FieldSpec("size_bytes", "size_bytes", require_nonnegative_int),
+)
+ARTIFACT_ENTRY_CONTRACT = (
+    FieldSpec("name", "name", require_text),
+    FieldSpec("size_in_bytes", "size_bytes", require_nonnegative_int),
+)
+CACHE_USAGE_CONTRACT = (
+    FieldSpec("available", "available", require_bool),
+    FieldSpec("active_caches_count", "active_caches_count", require_nonnegative_int),
+    FieldSpec("active_caches_size_in_bytes", "active_caches_size_in_bytes", require_nonnegative_int),
+    FieldSpec("source", "source", require_text),
+)
+CACHE_KEY_PROBE_CONTRACT = (
+    FieldSpec("label", "label", require_text),
+    FieldSpec("key", "key", require_text),
+    FieldSpec("available", "available", require_bool),
+    FieldSpec("present", "present", require_bool),
+    FieldSpec("exact_count", "exact_count", require_nonnegative_int),
+    FieldSpec("api_prefix_count", "api_prefix_count", require_nonnegative_int),
+    FieldSpec("api_prefix_count_source", "api_prefix_count_source", require_probe_count_source),
+    FieldSpec("api_prefix_enumerated_count", "api_prefix_enumerated_count", require_nonnegative_int),
+    FieldSpec("ref_filtered_prefix_enumerated_count", "ref_filtered_prefix_enumerated_count", require_nonnegative_int),
+    FieldSpec("prefix_only_count", "prefix_only_count", require_nonnegative_int),
+    FieldSpec("entries", "entries", require_contract_list),
+    FieldSpec("ref_filter", "ref_filter", require_ref_list),
+    FieldSpec("reason", "reason", require_optional_text, None),
+)
+
+
+def cache_entry_from_raw(raw: Any, label: str = "actions/caches") -> dict[str, Any]:
+    return parse_contract_object(raw, label, CACHE_API_ENTRY_CONTRACT)
+
+
+def cache_snapshot_entry_from_raw(raw: Any, label: str = "cache_key_probes.entries") -> dict[str, Any]:
+    return parse_contract_object(raw, label, CACHE_SNAPSHOT_ENTRY_CONTRACT)
+
+
+def artifact_entry_from_raw(raw: Any, label: str = "actions/artifacts") -> dict[str, Any]:
+    return parse_contract_object(raw, label, ARTIFACT_ENTRY_CONTRACT)
+
+
+def cache_usage_from_raw(raw: Any, label: str = "cache_usage") -> dict[str, Any]:
+    return parse_contract_object(raw, label, CACHE_USAGE_CONTRACT)
+
+
+def cache_key_probe_from_raw(raw: Any, label: str = "cache_key_probes") -> dict[str, Any]:
+    probe = parse_contract_object(raw, label, CACHE_KEY_PROBE_CONTRACT)
+    probe["entries"] = parse_contract_items(probe["entries"], f"{label}.entries", cache_snapshot_entry_from_raw)
+    return probe
+
+
+def cache_key_probe_list_from_raw(value: Any, field: str) -> list[dict[str, Any]]:
+    return parse_contract_items(require_contract_list(value, field), field, cache_key_probe_from_raw)
+
+
+CACHE_KEY_PROBE_SNAPSHOT_CONTRACT = (
+    FieldSpec("snapshot_utc", "snapshot_utc", require_text),
+    FieldSpec("repo", "repo", require_text),
+    FieldSpec("cache_refs", "cache_refs", require_ref_list),
+    FieldSpec("cache_usage", "cache_usage", cache_usage_from_raw),
+    FieldSpec("cache_key_probes", "cache_key_probes", cache_key_probe_list_from_raw),
+)
+
+
+def cache_key_probe_snapshot_from_raw(raw: Any) -> dict[str, Any]:
+    return parse_contract_object(raw, "cache_key_probe_snapshot", CACHE_KEY_PROBE_SNAPSHOT_CONTRACT)
 
 
 def require_labeled_pair(raw: str, field: str) -> tuple[str, str]:
@@ -450,25 +578,16 @@ def fetch_cache_key_probes(
     ref_filter = normalize_cache_ref_inputs(cache_refs=cache_refs, cache_branches=cache_branches)
     ref_filter_set = set(ref_filter)
     for request in requests:
-        try:
-            payload = require_object(
-                client.api(
-                    "actions/caches",
-                    params={"key": request.key, "per_page": "100"},
-                    paginate=True,
-                ),
+        payload = require_object(
+            client.api(
                 "actions/caches",
-            )
-            raw_entries = list_field(payload, "actions_caches", "actions/caches")
-        except GhApiError:
-            raise
-        except AuditError as exc:
-            raise AuditError(str(exc), kind=FailureKind.UNAVAILABLE, field="actions/caches") from exc
-        prefix_entries = [
-            cache_entry_from_raw(raw)
-            for raw in raw_entries
-            if isinstance(raw, dict)
-        ]
+                params={"key": request.key, "per_page": "100"},
+                paginate=True,
+            ),
+            "actions/caches",
+        )
+        raw_entries = list_field(payload, "actions_caches", "actions/caches")
+        prefix_entries = parse_contract_items(raw_entries, "actions/caches", cache_entry_from_raw)
         accessible_prefix_entries = [
             entry
             for entry in prefix_entries
@@ -478,7 +597,7 @@ def fetch_cache_key_probes(
             entry for entry in accessible_prefix_entries
             if entry.get("key") == request.key
         ]
-        api_prefix_count, count_source = count_with_source(payload, fallback=len(prefix_entries))
+        api_prefix_count = require_total_count(payload, "actions/caches")
         probes.append(
             {
                 "label": request.label,
@@ -487,7 +606,7 @@ def fetch_cache_key_probes(
                 "present": bool(exact_entries),
                 "exact_count": len(exact_entries),
                 "api_prefix_count": api_prefix_count,
-                "api_prefix_count_source": count_source,
+                "api_prefix_count_source": "github_total_count",
                 "api_prefix_enumerated_count": len(prefix_entries),
                 "ref_filtered_prefix_enumerated_count": len(accessible_prefix_entries),
                 "prefix_only_count": max(0, len(accessible_prefix_entries) - len(exact_entries)),
@@ -499,24 +618,11 @@ def fetch_cache_key_probes(
 
 
 def fetch_cache_usage(client: GhClient) -> dict[str, Any]:
-    try:
-        payload = require_object(client.api("actions/cache/usage"), "actions/cache/usage")
-    except GhApiError:
-        raise
-    except AuditError as exc:
-        raise AuditError(str(exc), kind=FailureKind.UNAVAILABLE, field="actions/cache/usage") from exc
-    return {
-        "available": True,
-        "active_caches_count": require_nonnegative_int(
-            payload.get("active_caches_count"),
-            "actions/cache/usage",
-        ),
-        "active_caches_size_in_bytes": require_nonnegative_int(
-            payload.get("active_caches_size_in_bytes"),
-            "actions/cache/usage",
-        ),
-        "source": "rest",
-    }
+    payload = require_object(client.api("actions/cache/usage"), "actions/cache/usage")
+    contract_payload = dict(payload)
+    contract_payload["available"] = True
+    contract_payload["source"] = "rest"
+    return cache_usage_from_raw(contract_payload, "actions/cache/usage")
 
 
 def fetch_cache(client: GhClient) -> dict[str, Any]:
@@ -525,20 +631,15 @@ def fetch_cache(client: GhClient) -> dict[str, Any]:
         "actions/caches",
     )
     raw_entries = list_field(payload, "actions_caches", "actions/caches")
-    entries: list[dict[str, Any]] = []
+    entries = parse_contract_items(raw_entries, "actions/caches", cache_entry_from_raw)
     total_bytes = 0
-    for raw in raw_entries:
-        if not isinstance(raw, dict):
-            continue
-        entry = cache_entry_from_raw(raw)
+    for entry in entries:
         total_bytes += entry["size_bytes"]
-        entries.append(entry)
 
-    count, count_source = count_with_source(payload, fallback=len(entries))
     return {
         "total_bytes": total_bytes,
-        "count": count,
-        "count_source": count_source,
+        "count": require_total_count(payload, "actions/caches"),
+        "count_source": "github_total_count",
         "enumerated_count": len(entries),
         "enumeration_consistency": "live_churn_possible",
         "entries": entries,
@@ -551,17 +652,14 @@ def fetch_artifacts(client: GhClient) -> dict[str, Any]:
         "actions/artifacts",
     )
     raw_artifacts = list_field(payload, "artifacts", "actions/artifacts")
+    artifacts = parse_contract_items(raw_artifacts, "actions/artifacts", artifact_entry_from_raw)
     by_name: dict[str, dict[str, int]] = collections.defaultdict(lambda: {"total_bytes": 0, "count": 0})
     total_bytes = 0
-    artifact_count = 0
 
-    for raw in raw_artifacts:
-        if not isinstance(raw, dict):
-            continue
-        name = optional_text(raw.get("name")) or ""
-        size_bytes = nonnegative_int(raw.get("size_in_bytes"))
+    for artifact in artifacts:
+        name = artifact["name"]
+        size_bytes = artifact["size_bytes"]
         total_bytes += size_bytes
-        artifact_count += 1
         by_name[name]["total_bytes"] += size_bytes
         by_name[name]["count"] += 1
 
@@ -570,12 +668,11 @@ def fetch_artifacts(client: GhClient) -> dict[str, Any]:
         for name, values in by_name.items()
     ]
     grouped.sort(key=lambda entry: (-entry["total_bytes"], entry["name"]))
-    count, count_source = count_with_source(payload, fallback=artifact_count)
     return {
         "total_bytes": total_bytes,
-        "count": count,
-        "count_source": count_source,
-        "enumerated_count": artifact_count,
+        "count": require_total_count(payload, "actions/artifacts"),
+        "count_source": "github_total_count",
+        "enumerated_count": len(artifacts),
         "enumeration_consistency": "live_churn_possible",
         "by_name": grouped,
     }
@@ -689,82 +786,72 @@ def append_step_summary(path: str, text: str) -> None:
 
 
 def render_cache_key_probe_text(snapshot: dict[str, Any]) -> str:
-    probes = list_field(snapshot, "cache_key_probes", "cache_key_probes")
+    parsed = cache_key_probe_snapshot_from_raw(snapshot)
+    probes = parsed["cache_key_probes"]
     lines = [
-        f"CI cache key probe for {snapshot['repo']}",
-        f"Snapshot: {snapshot['snapshot_utc']}",
+        f"CI cache key probe for {parsed['repo']}",
+        f"Snapshot: {parsed['snapshot_utc']}",
         "",
     ]
-    cache_refs = snapshot.get("cache_refs")
-    if isinstance(cache_refs, list) and cache_refs:
+    cache_refs = parsed["cache_refs"]
+    if cache_refs:
         lines.append(f"Cache refs: {', '.join(str(ref) for ref in cache_refs)}")
         lines.append("")
-    usage = snapshot.get("cache_usage")
-    if isinstance(usage, dict):
-        if usage.get("available"):
-            lines.append(
-                "Cache usage: "
-                f"{usage.get('active_caches_count')} active caches, "
-                f"{human_bytes(nonnegative_int(usage.get('active_caches_size_in_bytes')))} "
-                f"(source: {usage.get('source')})"
-            )
-        else:
-            raise AuditError(
-                "cache usage is unavailable in a successful probe snapshot",
-                kind=FailureKind.UNAVAILABLE,
-                field="cache_usage",
-            )
-        lines.append("")
+    usage = parsed["cache_usage"]
+    if not usage["available"]:
+        raise AuditError(
+            "cache usage is unavailable in a successful probe snapshot",
+            kind=FailureKind.UNAVAILABLE,
+            field="cache_usage",
+        )
+    lines.append(
+        "Cache usage: "
+        f"{usage['active_caches_count']} active caches, "
+        f"{human_bytes(usage['active_caches_size_in_bytes'])} "
+        f"(source: {usage['source']})"
+    )
+    lines.append("")
     lines.append("Cache key probes:")
     for raw in probes:
-        if not isinstance(raw, dict):
-            continue
-        if raw.get("available") is False:
+        if not raw["available"]:
             raise AuditError(
                 "cache key probe is unavailable in a successful probe snapshot",
                 kind=FailureKind.UNAVAILABLE,
                 field="cache_key_probes",
             )
-        status = "present" if raw.get("present") else "missing"
-        reason = optional_text(raw.get("reason"))
+        status = "present" if raw["present"] else "missing"
+        reason = raw["reason"]
         reason_fragment = f" reason={reason}" if reason else ""
-        ref_filtered_count = raw.get("ref_filtered_prefix_enumerated_count")
-        ref_filtered_fragment = ""
-        if isinstance(ref_filtered_count, int) and not isinstance(ref_filtered_count, bool):
-            ref_filtered_fragment = f" ref_filtered_prefix_enumerated={ref_filtered_count}"
-        ref_filter = raw.get("ref_filter")
+        ref_filtered_fragment = f" ref_filtered_prefix_enumerated={raw['ref_filtered_prefix_enumerated_count']}"
+        ref_filter = raw["ref_filter"]
         ref_fragment = ""
-        if isinstance(ref_filter, list) and ref_filter:
+        if ref_filter:
             ref_fragment = f" ref_filter={','.join(str(ref) for ref in ref_filter)}"
         lines.append(
-            f"  - {raw.get('label')}: {status}; "
-            f"exact_count={raw.get('exact_count')} "
-            f"api_prefix_count={raw.get('api_prefix_count')} "
-            f"api_prefix_enumerated={raw.get('api_prefix_enumerated_count')} "
-            f"key={raw.get('key')}"
+            f"  - {raw['label']}: {status}; "
+            f"exact_count={raw['exact_count']} "
+            f"api_prefix_count={raw['api_prefix_count']} "
+            f"api_prefix_enumerated={raw['api_prefix_enumerated_count']} "
+            f"key={raw['key']}"
             f"{ref_filtered_fragment}"
             f"{ref_fragment}"
             f"{reason_fragment}"
         )
         if (
-            raw.get("exact_count") == 0
-            and raw.get("ref_filter")
-            and raw.get("api_prefix_enumerated_count", 0)
-            > raw.get("ref_filtered_prefix_enumerated_count", 0)
+            raw["exact_count"] == 0
+            and raw["ref_filter"]
+            and raw["api_prefix_enumerated_count"]
+            > raw["ref_filtered_prefix_enumerated_count"]
         ):
             lines.append("      note=API returned matches outside the configured cache refs")
-        elif raw.get("exact_count") == 0 and raw.get("api_prefix_enumerated_count", 0) > 0:
+        elif raw["exact_count"] == 0 and raw["api_prefix_enumerated_count"] > 0:
             lines.append("      note=API returned prefix matches, but no exact key matched")
-        entries = raw.get("entries")
-        if isinstance(entries, list):
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                lines.append(
-                    f"      id={entry.get('cache_id')} ref={entry.get('ref')} "
-                    f"size={human_bytes(nonnegative_int(entry.get('size_bytes')))} "
-                    f"last_accessed_at={entry.get('last_accessed_at')}"
-                )
+        for entry in raw["entries"]:
+            lines.append(
+                f"      id={entry['cache_id']} ref={entry['ref']} "
+                f"size={human_bytes(entry['size_bytes'])} "
+                f"last_accessed_at={entry['last_accessed_at']}"
+            )
     return "\n".join(lines)
 
 
@@ -784,17 +871,14 @@ def render_cache_persistence_audit_text(
 
 
 def cache_persistence_annotations(snapshot: dict[str, Any]) -> list[str]:
-    probes = list_field(snapshot, "cache_key_probes", "cache_key_probes")
-    if any(isinstance(raw, dict) and raw.get("available") is False for raw in probes):
+    probes = cache_key_probe_snapshot_from_raw(snapshot)["cache_key_probes"]
+    if any(not raw["available"] for raw in probes):
         raise AuditError(
             "cache key probe is unavailable in a successful probe snapshot",
             kind=FailureKind.UNAVAILABLE,
             field="cache_key_probes",
         )
-    has_missing = any(
-        isinstance(raw, dict) and raw.get("available") is not False and not raw.get("present")
-        for raw in probes
-    )
+    has_missing = any(not raw["present"] for raw in probes)
     annotations: list[str] = []
     if has_missing:
         annotations.append(CACHE_PERSISTENCE_MISSING_WARNING)

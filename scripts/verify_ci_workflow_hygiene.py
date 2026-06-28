@@ -5227,6 +5227,7 @@ MERGIFY_REQUIRED_MERGE_CONDITIONS = frozenset(
 
 MERGIFY_REQUIRED_QUEUE_RULES = ("hotfix", "default")
 MERGIFY_REQUIRED_PRIORITY_RULES = ("hotfix",)
+MERGIFY_TOP_LEVEL_KEYS = frozenset({"merge_queue", "queue_rules", "priority_rules"})
 MERGIFY_MERGE_QUEUE_KEYS = frozenset({"max_parallel_checks", "reset_on_external_merge"})
 MERGIFY_QUEUE_RULE_KEYS = frozenset(
     {
@@ -5257,6 +5258,26 @@ def top_level_yaml_block(config_text: str, key: str) -> str | None:
                 block.append(nested)
             return "\n".join(block)
     return None
+
+
+def ordered_duplicates(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for value in values:
+        if value in seen and value not in duplicates:
+            duplicates.append(value)
+        seen.add(value)
+    return duplicates
+
+
+def matching_yaml_keys(lines: Iterable[str], pattern: str, keys: frozenset[str]) -> list[str]:
+    matches = (re.match(pattern, line) for line in lines)
+    return [match.group(1) for match in matches if match is not None and match.group(1) in keys]
+
+
+def duplicate_top_level_yaml_keys(config_text: str, keys: frozenset[str]) -> list[str]:
+    lines = (strip_comment(line).rstrip() for line in config_text.splitlines())
+    return ordered_duplicates(matching_yaml_keys(lines, r"^([A-Za-z0-9_-]+)\s*:", keys))
 
 
 def yaml_scalar_value(block_text: str, key: str) -> str | None:
@@ -5292,19 +5313,9 @@ def yaml_nested_scalar_values(block_text: str, key: str) -> dict[str, str] | Non
 
 
 def duplicate_yaml_keys(block_text: str, keys: frozenset[str]) -> list[str]:
-    seen: set[str] = set()
-    duplicates: list[str] = []
-    for line in block_text.splitlines():
-        match = re.match(r"^\s*(?:-\s*)?([A-Za-z0-9_-]+)\s*:", line)
-        if match is None:
-            continue
-        key = match.group(1)
-        if key not in keys:
-            continue
-        if key in seen and key not in duplicates:
-            duplicates.append(key)
-        seen.add(key)
-    return duplicates
+    return ordered_duplicates(
+        matching_yaml_keys(block_text.splitlines(), r"^\s*(?:-\s*)?([A-Za-z0-9_-]+)\s*:", keys)
+    )
 
 
 def yaml_nested_block(block_text: str, key: str) -> str | None:
@@ -5386,6 +5397,8 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
     for key in forbidden_keys:
         if re.search(rf"(?m)^\s*{re.escape(key)}\s*:", uncommented):
             errors.append(f"{config_name} must keep manual queueing only; remove {key}")
+    for key in duplicate_top_level_yaml_keys(config_text, MERGIFY_TOP_LEVEL_KEYS):
+        errors.append(f"{config_name} must not duplicate top-level {key}")
 
     merge_queue = top_level_yaml_block(config_text, "merge_queue")
     if merge_queue is None:

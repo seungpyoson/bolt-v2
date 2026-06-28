@@ -3806,6 +3806,11 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "manual queueing only",
         ),
         (
+            "duplicate queue_rules top level",
+            mergify_config + "\nqueue_rules:\n  - name: default\n",
+            "must not duplicate top-level queue_rules",
+        ),
+        (
             "queue rule order swapped",
             swapped_queue_rules,
             "queue_rules must define exactly hotfix followed by default",

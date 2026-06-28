@@ -4046,31 +4046,39 @@ def assert_security_key_public_prefix_is_validated() -> None:
     raise AssertionError("validate_public_key must reject the invalid ssh-ed25519-sk@ prefix")
 
 
-def assert_backtester_detect_includes_runner_config() -> None:
+def assert_backtester_detect_uses_ci_input_set() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
-    if "            ci/github-actions-runners.toml \\\n" not in workflow:
-        workflow = replace_once(
-            workflow,
-            "            rust-toolchain.toml \\\n",
-            "            rust-toolchain.toml \\\n            ci/github-actions-runners.toml \\\n",
-        )
-    bad = workflow.replace("            ci/github-actions-runners.toml \\\n", "")
-    bad_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
-    if not any("backtester detect paths must include ci/github-actions-runners.toml" in error for error in bad_errors):
-        raise AssertionError(f"backtester detector must reject missing runner config path, got: {bad_errors}")
-    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": workflow})
-    if any("backtester detect paths must include ci/github-actions-runners.toml" in error for error in good_errors):
-        raise AssertionError(f"backtester detector path check must pass when present, got: {good_errors}")
-    missing_policy_script = replace_once_after(
+    required = 'changed="$(python3 scripts/ci_input_sets.py changed backtester_detect --base "$base_sha" --head HEAD)"'
+    bad = replace_once(
         workflow,
-        "scripts/command_understanding.py",
-        "scripts/ci_provenance.py",
-        "",
+        required,
+        'changed="$(git diff --name-only "${base_sha}...HEAD" -- ci/github-actions-runners.toml scripts/ci_provenance.py)"',
     )
-    policy_script_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_policy_script})
-    if not any("backtester detect paths must include scripts/ci_provenance.py" in error for error in policy_script_errors):
-        raise AssertionError(f"backtester detector must reject missing ci_provenance.py path, got: {policy_script_errors}")
+    bad_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
+    if not any("backtester detect paths must come from ci_input_sets backtester_detect" in error for error in bad_errors):
+        raise AssertionError(f"backtester detector must reject non-systematic path detection, got: {bad_errors}")
+    if not any("backtester detect paths must not be duplicated inline" in error for error in bad_errors):
+        raise AssertionError(f"backtester detector must reject inline duplicated path lists, got: {bad_errors}")
+    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": workflow})
+    if any("backtester detect paths must" in error for error in good_errors):
+        raise AssertionError(f"backtester detector path check must pass when present, got: {good_errors}")
+
+
+def assert_backtester_ci_input_set_config_covers_systematic_inputs() -> None:
+    verifier = load_verifier()
+    config_path = "ci/rust-ci-inputs.toml"
+    config = (REPO_ROOT / config_path).read_text(encoding="utf-8")
+    missing_manifest = config.replace('  "gated_source_roots.manifest",\n', "")
+    manifest_errors = verifier.verify_repo_automation_texts({config_path: missing_manifest})
+    if not any("backtester_cache input set must include gated_source_roots.manifest" in error for error in manifest_errors):
+        raise AssertionError(f"CI input set config must reject missing root build manifest, got: {manifest_errors}")
+    missing_helper = config.replace('  "scripts/rust_test_targets.py",\n', "")
+    helper_errors = verifier.verify_repo_automation_texts({config_path: missing_helper})
+    if not any("backtester_cache input set must include scripts/rust_test_targets.py" in error for error in helper_errors):
+        raise AssertionError(f"CI input set config must reject missing target discovery helper cache input, got: {helper_errors}")
+    if not any("backtester_detect input set must include scripts/rust_test_targets.py" in error for error in helper_errors):
+        raise AssertionError(f"CI input set config must reject missing target discovery helper detect input, got: {helper_errors}")
 
 
 def assert_backtester_ci_requires_pr_event_types() -> None:
@@ -7507,20 +7515,21 @@ def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
           key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml') }}
 """
     errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
-    assert any("backtester cache key must include 'Cargo.lock'" in error for error in errors), errors
-    assert any("backtester cache key must include 'Cargo.toml'" in error for error in errors), errors
-    assert any("backtester cache key must include 'build.rs'" in error for error in errors), errors
-    assert any("backtester cache key must include 'src/**'" in error for error in errors), errors
-    assert any("backtester cache key must include 'tests/**'" in error for error in errors), errors
-    assert any("backtester cache key must include crates/backtesting-vertical-slice/src/**" in error for error in errors), errors
-    assert any("backtester cache key must include crates/backtesting-vertical-slice/tests/**" in error for error in errors), errors
-    good = bad.replace(
-        "'crates/backtesting-vertical-slice/Cargo.toml'",
-        "'crates/backtesting-vertical-slice/Cargo.toml', 'Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'scripts/rust_test_targets.py'",
-    )
+    assert any("backtester cache key must use ci_input_sets digest" in error for error in errors), errors
+    assert any("backtester cache key must include steps.bvs_cache_inputs.outputs.digest" in error for error in errors), errors
+    good = """jobs:
+  clippy:
+    steps:
+      - name: Compute BVS cache input hash
+        id: bvs_cache_inputs
+        run: python3 scripts/ci_input_sets.py hash backtester_cache
+      - uses: actions/cache@example
+        with:
+          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-clippy-${{ steps.bvs_cache_inputs.outputs.digest }}
+"""
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [
-        error for error in good_errors if "backtester cache key must include" in error
+        error for error in good_errors if "backtester cache key" in error
     ], good_errors
 
 
@@ -7565,16 +7574,19 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BVS_NEXTEST_SHARDS: "4"
     steps:
+      - name: Compute BVS cache input hash
+        id: bvs_cache_inputs
+        run: python3 scripts/ci_input_sets.py hash backtester_cache
       - name: Restore BVS nextest archive
         id: bvs-nextest-archive-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
-          key: bvs-nextest-archive-v3-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'scripts/rust_test_targets.py') }}
+          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
       - name: Restore BVS binary sidecars
         id: bvs-bin-sidecars-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
-          key: bvs-bin-sidecars-v3-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'scripts/rust_test_targets.py') }}
+          key: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
       - name: Resolve crate managed target dir
         id: crate_target
       - uses: Swatinem/rust-cache@example
@@ -10976,7 +10988,8 @@ def main() -> int:
     assert_sync_errors_redact_command_arguments()
     assert_sync_public_key_uses_stdin()
     assert_security_key_public_prefix_is_validated()
-    assert_backtester_detect_includes_runner_config()
+    assert_backtester_detect_uses_ci_input_set()
+    assert_backtester_ci_input_set_config_covers_systematic_inputs()
     assert_backtester_ci_requires_pr_event_types()
     assert_backtester_ci_defers_managed_heavy_on_draft_prs()
     assert_actionlint_rejects_stale_config_variables()

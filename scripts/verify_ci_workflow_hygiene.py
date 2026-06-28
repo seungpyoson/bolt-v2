@@ -89,7 +89,10 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/stale.yml": "stale",
 }
 SSH_RUNNER_ACTION_RE = re.compile(r"^ubicloud/ssh-runner@[0-9a-f]{40}$")
-DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
+DEFAULT_REPO_AUTOMATION_FILES = (
+    REPO_ROOT / "justfile",
+    REPO_ROOT / "ci" / "rust-ci-inputs.toml",
+)
 DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
     (REPO_ROOT / "tests", "*.sh"),
@@ -9784,23 +9787,19 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
     if not file_name.endswith("backtester-ci.yml"):
         return []
     errors: list[str] = []
+    cache_key_seen = False
     for line in text.splitlines():
         if not any(prefix in line for prefix in ("managed-target-bvs-v", "bvs-nextest-archive-v", "bvs-bin-sidecars-v")):
             continue
-        if "hashFiles(" not in line:
+        if "key:" not in line:
             continue
-        for required in [
-            "'Cargo.lock'",
-            "'Cargo.toml'",
-            "'build.rs'",
-            "'src/**'",
-            "'tests/**'",
-            "crates/backtesting-vertical-slice/src/**",
-            "crates/backtesting-vertical-slice/tests/**",
-            "scripts/rust_test_targets.py",
-        ]:
-            if required not in line:
-                errors.append(f"backtester cache key must include {required}")
+        cache_key_seen = True
+        if "hashFiles(" in line:
+            errors.append("backtester cache key must use ci_input_sets digest, not inline hashFiles")
+        if "${{ steps.bvs_cache_inputs.outputs.digest }}" not in line:
+            errors.append("backtester cache key must include steps.bvs_cache_inputs.outputs.digest")
+    if cache_key_seen and "python3 scripts/ci_input_sets.py hash backtester_cache" not in text:
+        errors.append("backtester cache key digest must come from ci_input_sets backtester_cache")
     return errors
 
 
@@ -9871,6 +9870,10 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ("backtester bvs-test archive must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
         ("backtester bvs-test archive must declare four archive partitions", 'BVS_NEXTEST_SHARDS: "4"'),
         (
+            "backtester bvs-test archive must compute the shared BVS cache input digest",
+            "python3 scripts/ci_input_sets.py hash backtester_cache",
+        ),
+        (
             "backtester bvs-test archive must restore nextest archive cache explicitly",
             "id: bvs-nextest-archive-cache",
         ),
@@ -9880,7 +9883,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive cache key must be exact and content-addressed",
-            "key: bvs-nextest-archive-v3-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ hashFiles(",
+            "key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}",
         ),
         (
             "backtester bvs-test archive must restore binary sidecar cache",
@@ -9888,7 +9891,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test sidecar cache key must be exact and content-addressed",
-            "key: bvs-bin-sidecars-v3-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ hashFiles(",
+            "key: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}",
         ),
         (
             "backtester bvs-test archive must resolve the crate managed target directory",
@@ -10323,9 +10326,83 @@ def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
         return []
     detect_job = parse_jobs(text).get("detect", [])
     errors: list[str] = []
-    for required in ("ci/github-actions-runners.toml", "scripts/ci_provenance.py"):
-        if not any(required in line for line in detect_job):
-            errors.append(f"backtester detect paths must include {required}")
+    detect_text = "\n".join(detect_job)
+    required = 'python3 scripts/ci_input_sets.py changed backtester_detect --base "$base_sha" --head HEAD'
+    if required not in detect_text:
+        errors.append("backtester detect paths must come from ci_input_sets backtester_detect")
+    if 'git diff --name-only "${base_sha}...HEAD" --' in detect_text:
+        errors.append("backtester detect paths must not be duplicated inline")
+    return errors
+
+
+def ci_input_set_config_errors(file_name: str, text: str) -> list[str]:
+    if file_name != "ci/rust-ci-inputs.toml" and not file_name.endswith("/ci/rust-ci-inputs.toml"):
+        return []
+    try:
+        config = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return [f"CI input set config is invalid TOML: {exc}"]
+    sets = config.get("sets")
+    if not isinstance(sets, dict):
+        return ["CI input set config must define [sets.<name>] tables"]
+
+    def string_list(value: object, *, label: str) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+            raise ValueError(f"{label} must be a list of non-empty strings")
+        return value
+
+    def resolve_set(name: str, stack: tuple[str, ...] = ()) -> list[str]:
+        if name in stack:
+            raise ValueError("input set cycle: " + " -> ".join((*stack, name)))
+        table = sets.get(name)
+        if not isinstance(table, dict):
+            raise ValueError(f"unknown input set: {name}")
+        paths: list[str] = []
+        for parent in string_list(table.get("include_sets"), label=f"sets.{name}.include_sets"):
+            paths.extend(resolve_set(parent, (*stack, name)))
+        paths.extend(string_list(table.get("paths"), label=f"sets.{name}.paths"))
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for path in paths:
+            if path not in seen:
+                seen.add(path)
+                deduped.append(path)
+        return deduped
+
+    try:
+        cache = set(resolve_set("backtester_cache"))
+        detect = set(resolve_set("backtester_detect"))
+    except ValueError as exc:
+        return [str(exc)]
+
+    errors: list[str] = []
+    for required in [
+        "Cargo.lock",
+        "Cargo.toml",
+        "build.rs",
+        "gated_source_roots.manifest",
+        "src/**",
+        "tests/**",
+        "crates/backtesting-vertical-slice/Cargo.lock",
+        "crates/backtesting-vertical-slice/Cargo.toml",
+        "crates/backtesting-vertical-slice/src/**",
+        "crates/backtesting-vertical-slice/tests/**",
+        "scripts/rust_test_targets.py",
+        "scripts/ci_input_sets.py",
+        "ci/rust-ci-inputs.toml",
+    ]:
+        if required not in cache:
+            errors.append(f"backtester_cache input set must include {required}")
+    for required in [
+        "scripts/ci_provenance.py",
+        "ci/github-actions-runners.toml",
+        ".github/workflows/backtester-ci.yml",
+        "scripts/rust_test_targets.py",
+    ]:
+        if required not in detect:
+            errors.append(f"backtester_detect input set must include {required}")
     return errors
 
 
@@ -10353,6 +10430,12 @@ def backtester_nextest_archive_recipe_errors(file_name: str, text: str) -> list[
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
+        if file_name == "ci/rust-ci-inputs.toml" or file_name.endswith("/ci/rust-ci-inputs.toml"):
+            add_unique_errors(
+                errors,
+                (f"{file_name}: {error}" for error in ci_input_set_config_errors(file_name, text)),
+            )
+            continue
         errors.extend(f"{file_name}: {error}" for error in raw_rust_storage_errors(text))
         add_unique_errors(
             errors,

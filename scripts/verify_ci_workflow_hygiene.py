@@ -629,12 +629,15 @@ TEST_ARCHIVE_TARGET_CACHE_KEY = (
     "'.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', "
     "'src/**', 'tests/**') }}"
 )
-TEST_ARCHIVE_CACHE_AUDIT_STEP = "Emit cache persistence audit keys"
-TEST_ARCHIVE_CACHE_AUDIT_STEP_ID = "id: cache-audit-keys"
+TEST_ARCHIVE_CACHE_AUDIT_STEP = "Resolve root nextest cache keys"
+TEST_ARCHIVE_CACHE_AUDIT_STEP_ID = "id: root-nextest-cache-keys"
+TEST_ARCHIVE_CACHE_KEY_OUTPUT = "${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}"
+TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT = "${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}"
+TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT = "${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}"
 TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS = (
-    "nextest_archive_cache_key: ${{ steps.cache-audit-keys.outputs.nextest_archive_cache_key }}",
-    "root_bin_sidecars_cache_key: ${{ steps.cache-audit-keys.outputs.root_bin_sidecars_cache_key }}",
-    "archive_build_target_cache_key: ${{ steps.cache-audit-keys.outputs.archive_build_target_cache_key }}",
+    f"nextest_archive_cache_key: {TEST_ARCHIVE_CACHE_KEY_OUTPUT}",
+    f"root_bin_sidecars_cache_key: {TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT}",
+    f"archive_build_target_cache_key: {TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT}",
     "nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}",
     "root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}",
     "archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}",
@@ -2607,9 +2610,13 @@ def nextest_fingerprint_errors(fingerprint_lines: list[str], archive_lines: list
         or min(upload_block_indices) >= min(repo_controlled_indices)
     ):
         return ["nextest-fingerprint must publish nextest fingerprint before repo-controlled steps"]
-    if not cache_blocks or not all(block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY) for block in cache_blocks):
+    cache_key_step = named_step_block(archive_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
+    cache_key_step_text = uncommented_text(cache_key_step) if cache_key_step is not None else ""
+    if not cache_blocks or not all(block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY_OUTPUT) for block in cache_blocks):
         return ["nextest archive cache key must use nextest fingerprint output"]
     if any("hashFiles(" in (block_input_value(block, "key") or "") for block in cache_blocks):
+        return ["nextest archive cache key must use nextest fingerprint output"]
+    if TEST_ARCHIVE_CACHE_KEY not in cache_key_step_text:
         return ["nextest archive cache key must use nextest fingerprint output"]
     return []
 
@@ -2668,10 +2675,21 @@ def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
     expected_prefix = (
         f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-"
     )
-    # The exact `key:` value must carry the job-specific prefix. Checking the
-    # whole block's text would also match a prefix that only appears in
+    # The exact key source must carry the job-specific prefix. Checking the
+    # whole cache block's text would also match a prefix that only appears in
     # `restore-keys:`, masking key/restore-keys drift.
-    if not any(block_key_value_has_prefix(block, expected_prefix) for block in target_blocks):
+    key_sources = [
+        block_input_value(block, "key") or ""
+        for block in target_blocks
+    ]
+    if job == "test-archive" and all(
+        block_has_input(block, "key", TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT)
+        for block in target_blocks
+    ):
+        cache_key_step = named_step_block(job_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
+        if cache_key_step is not None:
+            key_sources.append(uncommented_text(cache_key_step))
+    if not any(expected_prefix in key_source for key_source in key_sources):
         return [f"{job} managed target cache key must isolate {expected_key}"]
 
     # #400: each managed-target cache MUST declare a restore-keys prefix fallback
@@ -10003,27 +10021,35 @@ def verify_workflow(workflow_text: str) -> list[str]:
             for block in action_blocks(archive_lines, "actions/cache/save@")
             if block_has_input(block, "path", "${{ steps.setup.outputs.managed_target_dir }}")
         ]
+        cache_key_step = named_step_block(archive_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
+        cache_key_step_text = uncommented_text(cache_key_step) if cache_key_step is not None else ""
         target_cache_keys = [
             block_input_value(block, "key") or ""
             for block in target_restore_blocks + target_save_blocks
         ]
+        if cache_key_step_text:
+            target_cache_keys.append(cache_key_step_text)
         if TEST_ARCHIVE_PATH not in archive_text:
             errors.append("test-archive must declare nextest archive path")
         if TEST_ARCHIVE_SIDECAR_PATH not in archive_text:
             errors.append("test-archive must declare root binary sidecar path")
         if not archive_cache_blocks or not all(
-            block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY)
+            block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY_OUTPUT)
             for block in archive_cache_blocks
         ):
             errors.append("nextest archive cache key must use nextest fingerprint output")
         if any("hashFiles(" in (block_input_value(block, "key") or "") for block in archive_cache_blocks):
             errors.append("nextest archive cache key must use nextest fingerprint output")
+        if TEST_ARCHIVE_CACHE_KEY not in cache_key_step_text:
+            errors.append("nextest archive cache key must use nextest fingerprint output")
         if not sidecar_cache_blocks or not all(
-            block_has_input(block, "key", TEST_ARCHIVE_SIDECAR_CACHE_KEY)
+            block_has_input(block, "key", TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT)
             for block in sidecar_cache_blocks
         ):
             errors.append("root binary sidecar cache key must use nextest fingerprint output")
         if any("hashFiles(" in (block_input_value(block, "key") or "") for block in sidecar_cache_blocks):
+            errors.append("root binary sidecar cache key must use nextest fingerprint output")
+        if TEST_ARCHIVE_SIDECAR_CACHE_KEY not in cache_key_step_text:
             errors.append("root binary sidecar cache key must use nextest fingerprint output")
         if not job_has_setup_input(archive_lines, "include-managed-target-dir", '"true"'):
             errors.append("test-archive must opt into managed target dir")
@@ -10042,10 +10068,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
         ):
             errors.append("test-archive must save target cache only on target cache miss")
         if not target_restore_blocks or not target_save_blocks or not all(
-            block_has_input(block, "key", TEST_ARCHIVE_TARGET_CACHE_KEY)
+            block_has_input(block, "key", TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT)
             for block in target_restore_blocks + target_save_blocks
         ):
-            errors.append("test-archive managed target cache key must mirror cache persistence audit key")
+            errors.append("test-archive managed target cache key must use root nextest cache key output")
+        if TEST_ARCHIVE_TARGET_CACHE_KEY not in cache_key_step_text:
+            errors.append("test-archive cache persistence keys must come from single-source cache key outputs")
         for required in ("src/**", "tests/**"):
             if not any(required in key for key in target_cache_keys):
                 errors.append(f"test-archive managed target cache key must include {required}")
@@ -10120,16 +10148,17 @@ def verify_workflow(workflow_text: str) -> list[str]:
             if block is None or step_id not in uncommented_text(block):
                 errors.append("test-archive cache restore steps must have stable ids for persistence evidence")
                 break
-        cache_audit_step = named_step_block(archive_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
-        if cache_audit_step is None or TEST_ARCHIVE_CACHE_AUDIT_STEP_ID not in uncommented_text(cache_audit_step):
-            errors.append("test-archive must emit cache persistence audit keys")
+        if "id: cache-audit-keys" in archive_text or "Emit cache persistence audit keys" in archive_text:
+            errors.append("test-archive cache persistence keys must come from single-source cache key outputs")
+        if cache_key_step is None or TEST_ARCHIVE_CACHE_AUDIT_STEP_ID not in cache_key_step_text:
+            errors.append("test-archive must resolve root nextest cache keys")
         elif (
-            TEST_ARCHIVE_CACHE_KEY not in uncommented_text(cache_audit_step)
-            or TEST_ARCHIVE_SIDECAR_CACHE_KEY not in uncommented_text(cache_audit_step)
-            or TEST_ARCHIVE_TARGET_CACHE_KEY not in uncommented_text(cache_audit_step)
-            or not all(output in uncommented_text(cache_audit_step) for output in TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS)
+            TEST_ARCHIVE_CACHE_KEY not in cache_key_step_text
+            or TEST_ARCHIVE_SIDECAR_CACHE_KEY not in cache_key_step_text
+            or TEST_ARCHIVE_TARGET_CACHE_KEY not in cache_key_step_text
+            or not all(output in cache_key_step_text for output in TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS)
         ):
-            errors.append("test-archive cache persistence audit keys must mirror cache action keys")
+            errors.append("test-archive cache persistence keys must come from single-source cache key outputs")
         # Fail-open contract for the S3 sccache compile cache (#1011): when the
         # opt-in is wired, the cache must never be able to fail the required build,
         # and cache use must be gated to trusted refs (the IAM trust scope is the

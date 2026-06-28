@@ -3801,9 +3801,23 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "manual queueing only",
         ),
         (
+            "defaults override enabled",
+            mergify_config + "\ndefaults:\n  queue_rule:\n    batch_size: 1\n",
+            "manual queueing only",
+        ),
+        (
             "queue rule order swapped",
             swapped_queue_rules,
             "queue_rules must define exactly hotfix followed by default",
+        ),
+        (
+            "duplicate default queue conditions",
+            replace_once(
+                mergify_config,
+                "  - name: default\n    queue_conditions: []\n",
+                "  - name: default\n    queue_conditions: []\n    queue_conditions:\n      - check-success = gate\n",
+            ),
+            "default must not duplicate queue_conditions",
         ),
         (
             "queue conditions require gate",
@@ -3869,6 +3883,11 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "default batch_size must be min 2 max 10",
         ),
         (
+            "default batch max duplicated",
+            replace_once(mergify_config, "      max: 10\n", "      max: 10\n      max: 5\n"),
+            "default batch_size must not duplicate max",
+        ),
+        (
             "hotfix batch widened",
             replace_once(mergify_config, "    batch_size: 1\n", "    batch_size: 2\n"),
             "hotfix batch_size must be 1",
@@ -3884,13 +3903,33 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "hotfix batch_max_wait_time must be 30 seconds",
         ),
         (
-            "failure split enabled",
+            "hotfix failure split enabled",
             replace_once(
                 mergify_config,
                 "    batch_max_failure_resolution_attempts: 0\n",
                 "    batch_max_failure_resolution_attempts: 3\n",
             ),
             "hotfix batch_max_failure_resolution_attempts must be 0",
+        ),
+        (
+            "default failure split enabled",
+            replace_once_after(
+                mergify_config,
+                "  - name: default\n",
+                "    batch_max_failure_resolution_attempts: 0\n",
+                "    batch_max_failure_resolution_attempts: 3\n",
+            ),
+            "default batch_max_failure_resolution_attempts must be 0",
+        ),
+        (
+            "duplicate default wait",
+            replace_once_after(
+                mergify_config,
+                "  - name: default\n",
+                "    batch_max_wait_time: 5 minutes\n",
+                "    batch_max_wait_time: 5 minutes\n    batch_max_wait_time: 30 seconds\n",
+            ),
+            "default must not duplicate batch_max_wait_time",
         ),
         (
             "unbounded timeout",
@@ -3924,6 +3963,15 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "non-squash merge",
             replace_once(mergify_config, "    merge_method: squash\n", "    merge_method: merge\n"),
             "hotfix merge_method must be squash",
+        ),
+        (
+            "duplicate hotfix merge method",
+            replace_once(
+                mergify_config,
+                "    merge_method: squash\n",
+                "    merge_method: squash\n    merge_method: merge\n",
+            ),
+            "hotfix must not duplicate merge_method",
         ),
         (
             "priority rules removed",

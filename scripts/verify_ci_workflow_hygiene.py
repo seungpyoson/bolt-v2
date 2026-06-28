@@ -10381,10 +10381,12 @@ def ci_input_set_config_errors(file_name: str, text: str) -> list[str]:
     for required in [
         "Cargo.lock",
         "Cargo.toml",
+        ".gitignore",
         "build.rs",
         "gated_source_roots.manifest",
         "src/**",
         "tests/**",
+        "specs/023-nt-research-analytics-platform/reference/**",
         "crates/backtesting-vertical-slice/Cargo.lock",
         "crates/backtesting-vertical-slice/Cargo.toml",
         "crates/backtesting-vertical-slice/src/**",

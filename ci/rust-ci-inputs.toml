@@ -2,10 +2,12 @@
 paths = [
   "Cargo.lock",
   "Cargo.toml",
+  ".gitignore",
   "build.rs",
   "gated_source_roots.manifest",
   "src/**",
   "tests/**",
+  "specs/023-nt-research-analytics-platform/reference/**",
   "crates/backtesting-vertical-slice/Cargo.lock",
   "crates/backtesting-vertical-slice/Cargo.toml",
   "crates/backtesting-vertical-slice/src/**",

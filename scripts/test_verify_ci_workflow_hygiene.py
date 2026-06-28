@@ -4073,6 +4073,17 @@ def assert_backtester_ci_input_set_config_covers_systematic_inputs() -> None:
     manifest_errors = verifier.verify_repo_automation_texts({config_path: missing_manifest})
     if not any("backtester_cache input set must include gated_source_roots.manifest" in error for error in manifest_errors):
         raise AssertionError(f"CI input set config must reject missing root build manifest, got: {manifest_errors}")
+    missing_gitignore = config.replace('  ".gitignore",\n', "")
+    gitignore_errors = verifier.verify_repo_automation_texts({config_path: missing_gitignore})
+    if not any("backtester_cache input set must include .gitignore" in error for error in gitignore_errors):
+        raise AssertionError(f"CI input set config must reject missing .gitignore input, got: {gitignore_errors}")
+    missing_reference = config.replace('  "specs/023-nt-research-analytics-platform/reference/**",\n', "")
+    reference_errors = verifier.verify_repo_automation_texts({config_path: missing_reference})
+    if not any(
+        "backtester_cache input set must include specs/023-nt-research-analytics-platform/reference/**" in error
+        for error in reference_errors
+    ):
+        raise AssertionError(f"CI input set config must reject missing BVS reference fixture input, got: {reference_errors}")
     missing_helper = config.replace('  "scripts/rust_test_targets.py",\n', "")
     helper_errors = verifier.verify_repo_automation_texts({config_path: missing_helper})
     if not any("backtester_cache input set must include scripts/rust_test_targets.py" in error for error in helper_errors):

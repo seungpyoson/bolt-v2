@@ -87,6 +87,37 @@ def assert_hash_changes_when_tracked_inputs_change() -> None:
         raise AssertionError("input hash must change when a tracked input changes")
 
 
+def assert_hash_changes_when_exact_input_is_deleted() -> None:
+    with TemporaryDirectory() as tmp:
+        repo = fixture_repo(Path(tmp))
+        before = subprocess.check_output(
+            [sys.executable, str(SCRIPT), "--repo", str(repo), "hash", "cache"],
+            text=True,
+        ).strip()
+        run_git(repo, "rm", "Cargo.toml")
+        run_git(repo, "commit", "--no-verify", "-m", "delete exact input")
+        after = subprocess.check_output(
+            [sys.executable, str(SCRIPT), "--repo", str(repo), "hash", "cache"],
+            text=True,
+        ).strip()
+    if before == after:
+        raise AssertionError("input hash must change when an exact input is deleted")
+
+
+def assert_changed_reports_deleted_exact_inputs() -> None:
+    with TemporaryDirectory() as tmp:
+        repo = fixture_repo(Path(tmp))
+        base = run_git(repo, "rev-parse", "HEAD").strip()
+        run_git(repo, "rm", "Cargo.toml")
+        run_git(repo, "commit", "--no-verify", "-m", "delete exact input")
+        changed = subprocess.check_output(
+            [sys.executable, str(SCRIPT), "--repo", str(repo), "changed", "cache", "--base", base, "--head", "HEAD"],
+            text=True,
+        ).splitlines()
+    if changed != ["Cargo.toml"]:
+        raise AssertionError(f"deleted exact inputs must be reported as changed, got {changed!r}")
+
+
 def assert_changed_uses_named_input_set() -> None:
     with TemporaryDirectory() as tmp:
         repo = fixture_repo(Path(tmp))
@@ -110,10 +141,12 @@ def assert_backtester_sets_cover_cache_and_detector_inputs() -> None:
     for required in {
         "Cargo.lock",
         "Cargo.toml",
+        ".gitignore",
         "build.rs",
         "gated_source_roots.manifest",
         "src/**",
         "tests/**",
+        "specs/023-nt-research-analytics-platform/reference/**",
         "crates/backtesting-vertical-slice/Cargo.lock",
         "crates/backtesting-vertical-slice/Cargo.toml",
         "crates/backtesting-vertical-slice/src/**",
@@ -135,6 +168,8 @@ def assert_backtester_sets_cover_cache_and_detector_inputs() -> None:
 def main() -> int:
     assert_set_expansion_is_recursive_and_stable()
     assert_hash_changes_when_tracked_inputs_change()
+    assert_hash_changes_when_exact_input_is_deleted()
+    assert_changed_reports_deleted_exact_inputs()
     assert_changed_uses_named_input_set()
     assert_backtester_sets_cover_cache_and_detector_inputs()
     print("OK: CI input set self-tests passed.")

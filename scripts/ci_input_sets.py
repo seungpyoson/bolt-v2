@@ -70,14 +70,18 @@ def tracked_files(repo: Path, pathspecs: list[str]) -> list[str]:
     if not pathspecs:
         return []
     output = subprocess.check_output(["git", "ls-files", "-z", "--", *pathspecs], cwd=repo)
-    files = sorted(path for path in output.decode("utf-8").split("\0") if path)
+    return sorted(path for path in output.decode("utf-8").split("\0") if path)
+
+
+def absent_exact_pathspecs(repo: Path, pathspecs: list[str], files: list[str]) -> list[str]:
     matched = set(files)
+    absent: list[str] = []
     for pathspec in pathspecs:
         if any(char in pathspec for char in GLOB_CHARS):
             continue
         if pathspec not in matched and not (repo / pathspec).exists():
-            raise SystemExit(f"input path does not exist: {pathspec}")
-    return files
+            absent.append(pathspec)
+    return absent
 
 
 def digest_input_set(repo: Path, pathspecs: list[str]) -> str:
@@ -86,7 +90,12 @@ def digest_input_set(repo: Path, pathspecs: list[str]) -> str:
         digest.update(b"pathspec\0")
         digest.update(pathspec.encode("utf-8"))
         digest.update(b"\0")
-    for relative in tracked_files(repo, pathspecs):
+    files = tracked_files(repo, pathspecs)
+    for relative in absent_exact_pathspecs(repo, pathspecs, files):
+        digest.update(b"absent\0")
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+    for relative in files:
         path = repo / relative
         digest.update(b"file\0")
         digest.update(relative.encode("utf-8"))

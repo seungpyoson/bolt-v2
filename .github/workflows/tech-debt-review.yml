@@ -22,7 +22,6 @@ jobs:
         env:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           JULES_STARTING_BRANCH: ${{ github.event.repository.default_branch }}
-          JULES_TITLE: Jules Advisory Tech Debt Review
           JULES_PROMPT: |
             You are Jules running code-maintenance automation for this repository.
 
@@ -44,19 +43,15 @@ jobs:
             - Keep changes scoped and include verification evidence in the draft PR body.
         run: |
           jq -n \
-            --arg owner "${GITHUB_REPOSITORY%/*}" \
-            --arg repo "${GITHUB_REPOSITORY#*/}" \
+            --arg repo_full_name "$GITHUB_REPOSITORY" \
             --arg branch "$JULES_STARTING_BRANCH" \
-            --arg title "$JULES_TITLE" \
             --arg prompt "$JULES_PROMPT" \
             '{
-              title: $title,
               prompt: $prompt,
               sourceContext: {
+                source: "sources/github/\($repo_full_name)",
                 githubRepoContext: {
-                  owner: $owner,
-                  repo: $repo,
-                  baseBranch: $branch
+                  startingBranch: $branch
                 }
               },
               automationMode: "AUTO_CREATE_PR",

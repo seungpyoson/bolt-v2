@@ -5722,6 +5722,11 @@ def assert_jules_advisory_workflow_gaps_are_reported() -> None:
             "jq -e '.name and .id'",
         ),
         (
+            "wrong upstream payload source",
+            replace_once(weekly, 'source: "sources/github/\\($repo_full_name)"', "owner: $repo_full_name"),
+            'source: "sources/github/\\\\($repo_full_name)"',
+        ),
+        (
             "missing unavailable notice",
             replace_once(
                 weekly,

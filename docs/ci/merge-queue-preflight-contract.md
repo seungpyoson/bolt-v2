@@ -219,6 +219,8 @@ The Mergify config lane verifies:
 - the selected queue rule's merge method is supported.
 - the selected queue rule's batch-size minimum and maximum are modeled.
 - merge conditions identify the authoritative Mergify proof checks.
+- the workflow check-production source used for check mapping is read at the
+  expected base SHA and has a recorded identity.
 - queue-relevant PR metadata, including labels used by queue conditions, is
   snapshotted for the run.
 
@@ -246,6 +248,9 @@ The source for classifying a Mergify `check-success` merge condition as
 in-place mapped, proof-only, or unsupported is the workflow check-production
 source at the expected base SHA. A check cannot be classified as proof-only by
 absence from PR-head checks. Positive evidence from that source is required.
+Each classification record must include the proof check name, classification
+type, source workflow or registry blob SHA, producer workflow and job identity,
+and mapped in-place check identity when applicable.
 
 The implementation must classify each `.mergify.yml` field present in this repo:
 
@@ -440,7 +445,8 @@ not prove. At minimum:
 - remote runner availability and environment.
 - flaky checks and external services.
 - base or PR head drift after preflight.
-- `.mergify.yml` changes introduced by a selected PR and applied after merge.
+- Mergify config or workflow check-production changes introduced by a selected
+  PR and applied after merge.
 - queue-relevant label or PR metadata drift after preflight.
 - live Mergify queue ordering changing after preflight.
 - reset-on-external-merge invalidation after preflight.
@@ -495,8 +501,8 @@ An implementation of this contract must include tests for:
   waves.
 - hotfix queue routing wins over a later catch-all default queue by file order.
 - queue-condition metadata unavailable or changed during the run.
-- selected PR changes `.mergify.yml` and reports post-merge config residual
-  risk.
+- selected PR changes `.mergify.yml` or workflow check production and reports
+  post-merge residual risk.
 - selected wave larger than queue batch-size maximum.
 - selected wave smaller than queue batch-size minimum.
 - mixed queue split recommendations respect each queue's batch bounds.

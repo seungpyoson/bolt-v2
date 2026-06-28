@@ -164,6 +164,22 @@ def mergify_config_valid_finding(base_sha: str, blob_sha: str) -> dict[str, obje
     }
 
 
+def mergify_queue_route_finding(pr: int, queue_rule: str, labels: list[str], queue_conditions: list[str]) -> dict[str, object]:
+    return {
+        "lane": "mergify_config",
+        "scope": "pr",
+        "status": "ready",
+        "reason_code": "mergify_queue_route_selected",
+        "message": f"PR #{pr} routes to Mergify queue rule {queue_rule}",
+        "evidence": {
+            "pr": pr,
+            "queue_rule": queue_rule,
+            "labels": labels,
+            "queue_conditions": queue_conditions,
+        },
+    }
+
+
 def load_preflight_module() -> object:
     spec = importlib.util.spec_from_file_location("merge_queue_preflight", SCRIPT_PATH)
     if spec is None or spec.loader is None:
@@ -509,7 +525,7 @@ def write_fake_gh(
     return bin_dir
 
 
-def approved_pr_view(head: str, *, base: str = "main") -> dict[str, object]:
+def approved_pr_view(head: str, *, base: str = "main", labels: tuple[str, ...] = ()) -> dict[str, object]:
     return {
         "number": 1,
         "state": "OPEN",
@@ -518,6 +534,7 @@ def approved_pr_view(head: str, *, base: str = "main") -> dict[str, object]:
         "reviewDecision": "APPROVED",
         "headRefOid": head,
         "baseRefName": base,
+        "labels": [{"name": label} for label in labels],
         "title": "one",
         "url": "https://example.invalid/pull/1",
     }
@@ -571,6 +588,26 @@ def assert_mergify_config_snapshot_uses_base_blob() -> None:
         payload = parse_json(stdout)
         assert mergify_config_finding(fixture.base, base_blob) in payload["findings"], payload["findings"]
         assert mergify_config_valid_finding(fixture.base, base_blob) in payload["findings"], payload["findings"]
+
+
+def assert_mergify_queue_routing_uses_pr_labels() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        hotfix_head = fixture.make_pr(1, {"hotfix.txt": "hotfix\n"})
+        default_head = fixture.make_pr(2, {"default.txt": "default\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={
+                1: approved_pr_view(hotfix_head, labels=("hotfix",)),
+                2: approved_pr_view(default_head),
+            },
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1", "2")
+        assert_equal(result.returncode, 3, "queue routing rc")
+        payload = parse_json(result.stdout)
+        assert mergify_queue_route_finding(1, "hotfix", ["hotfix"], ["label = hotfix"]) in payload["findings"], payload["findings"]
+        assert mergify_queue_route_finding(2, "default", [], []) in payload["findings"], payload["findings"]
 
 
 def assert_clean_prs_batch_together() -> None:
@@ -1186,6 +1223,7 @@ def main() -> int:
     assert_preflight_artifact_finding_uses_classification_table()
     assert_contract_evaluator_reduces_normalized_evidence()
     assert_mergify_config_snapshot_uses_base_blob()
+    assert_mergify_queue_routing_uses_pr_labels()
     assert_clean_prs_batch_together()
     assert_conflicting_pr_starts_later_batch()
     assert_order_dependent_conflict_context_is_reported()

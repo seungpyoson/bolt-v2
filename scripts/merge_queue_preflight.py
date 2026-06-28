@@ -15,8 +15,9 @@ import sys
 import tempfile
 import tomllib
 from collections.abc import Mapping, Sequence
+from typing import Any
 
-from verify_ci_workflow_hygiene import verify_mergify_config
+from verify_ci_workflow_hygiene import parse_mergify_yaml, verify_mergify_config
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -104,6 +105,10 @@ MERGIFY_CONFIG_VALIDATION_STATES = {
         "mergify_config_invalid",
         ".mergify.yml snapshot does not satisfy Mergify config contract",
     ),
+}
+MERGIFY_QUEUE_CONDITION_LABELS = {
+    (): frozenset(),
+    ("label = hotfix",): frozenset({"hotfix"}),
 }
 MERGIFY_CONFIG_FIELD_HANDLING = {
     "merge_queue.max_parallel_checks": "residual_cost_impact",
@@ -261,14 +266,106 @@ def mergify_config_validation_finding(
     }
 
 
-def mergify_config_findings(*, repo: pathlib.Path, base_sha: str) -> tuple[dict[str, object], ...]:
+def mergify_config_data(*, repo: pathlib.Path, blob_sha: str) -> Any:
+    result = git(repo, "cat-file", "-p", blob_sha, check=False)
+    config, _ = parse_mergify_yaml(result.stdout, MERGIFY_CONFIG_PATH)
+    return config
+
+
+def readiness_label_names(readiness: Mapping[str, object]) -> tuple[str, ...]:
+    metadata = dict(readiness["metadata"])
+    labels = tuple(metadata["labels"])
+    return tuple(sorted(str(dict(label)["name"]) for label in labels))
+
+
+def mergify_queue_rule_matches(rule: Mapping[str, object], labels: frozenset[str]) -> bool:
+    condition_labels = MERGIFY_QUEUE_CONDITION_LABELS[tuple(rule["queue_conditions"])]
+    return condition_labels.issubset(labels)
+
+
+def selected_mergify_queue_rule(
+    config: Mapping[str, object],
+    labels: tuple[str, ...],
+) -> Mapping[str, object]:
+    return next(
+        filter(
+            lambda rule: mergify_queue_rule_matches(rule, frozenset(labels)),
+            tuple(config["queue_rules"]),
+        )
+    )
+
+
+def mergify_queue_route_finding(
+    readiness: Mapping[str, object],
+    rule: Mapping[str, object],
+    labels: tuple[str, ...],
+) -> dict[str, object]:
+    pr = int(readiness["pr"])
+    queue_rule = str(rule["name"])
+    queue_conditions = [str(condition) for condition in tuple(rule["queue_conditions"])]
+    return {
+        "lane": LANE_MERGIFY_CONFIG,
+        "scope": "pr",
+        "status": STATUS_READY,
+        "reason_code": "mergify_queue_route_selected",
+        "message": f"PR #{pr} routes to Mergify queue rule {queue_rule}",
+        "evidence": {
+            "pr": pr,
+            "queue_rule": queue_rule,
+            "labels": list(labels),
+            "queue_conditions": queue_conditions,
+        },
+    }
+
+
+def available_mergify_queue_route_findings(
+    *,
+    config: Mapping[str, object],
+    readiness: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    return tuple(
+        mergify_queue_route_finding(
+            item,
+            selected_mergify_queue_rule(config, labels),
+            labels,
+        )
+        for item in filter(lambda candidate: "metadata" in candidate, readiness)
+        for labels in (readiness_label_names(item),)
+    )
+
+
+def unavailable_mergify_queue_route_findings(
+    *,
+    config: object,
+    readiness: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    return ()
+
+
+MERGIFY_QUEUE_ROUTE_FINDING_BUILDERS = {
+    True: available_mergify_queue_route_findings,
+    False: unavailable_mergify_queue_route_findings,
+}
+
+
+def mergify_config_findings(
+    *,
+    repo: pathlib.Path,
+    base_sha: str,
+    readiness: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
     snapshot = mergify_config_snapshot_finding(repo=repo, base_sha=base_sha)
+    config = mergify_config_data(repo=repo, blob_sha=str(snapshot["evidence"]["blob_sha"]))
     return (
         snapshot,
         mergify_config_validation_finding(
             repo=repo,
             base_sha=base_sha,
             blob_sha=str(snapshot["evidence"]["blob_sha"]),
+        ),
+        *MERGIFY_QUEUE_ROUTE_FINDING_BUILDERS[isinstance(config, Mapping)](
+            config=config,
+            readiness=readiness,
         ),
     )
 
@@ -902,7 +999,7 @@ def pr_readiness(
             "view",
             str(pr_number),
             "--json",
-            "number,state,isDraft,mergeable,reviewDecision,headRefOid,baseRefName,title,url",
+            "number,state,isDraft,mergeable,reviewDecision,headRefOid,baseRefName,labels,title,url",
         ]
     )
     if not isinstance(payload, dict):
@@ -1136,7 +1233,7 @@ def preflight(
     contract_evaluation = evaluate_preflight_contract(
         ContractEvidence(
             findings=(
-                *mergify_config_findings(repo=repo, base_sha=base_sha),
+                *mergify_config_findings(repo=repo, base_sha=base_sha, readiness=readiness),
                 *preflight_mode_findings(use_gh=use_gh),
             ),
             artifacts=(*blocked_prs, *conflicts),

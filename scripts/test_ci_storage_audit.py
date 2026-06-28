@@ -48,6 +48,52 @@ class FakeClient:
         return value
 
 
+def cleanup_candidate_policy(label: str) -> ci_storage_audit.ArtifactCleanupPolicy:
+    return ci_storage_audit.load_cleanup_policy_text(
+        """
+        [storage_audit.cleanup_feasibility]
+        schema_version = 1
+        default_class = "ambiguous"
+        default_decision = "KEEP"
+        default_keep_reason = "ambiguous artifact is not a cleanup candidate"
+        protected_ref_keep_reason = "protected deploy ref is excluded from cleanup"
+        artifact_metadata_unavailable_keep_reason = "artifact metadata is unavailable"
+        active_run_keep_reason = "workflow run is still active"
+        status_unavailable_keep_reason = "workflow run status is unavailable"
+        expiration_unknown_keep_reason = "artifact expiration status is unavailable"
+        not_expired_keep_reason = "artifact has not expired"
+        billing_impact_unverifiable = "billing impact unverifiable from API"
+        wait_and_remeasure = "wait and remeasure natural expiry before deletion"
+        protected_refs = ["main"]
+        protected_ref_prefixes = []
+        protected_ref_globs = []
+        active_run_statuses = ["queued"]
+        terminal_run_statuses = ["completed"]
+        workflow_run_fetch_limit = 1
+        billing_probe_paths = []
+
+        [[storage_audit.cleanup_feasibility.classes]]
+        id = "nextest_archive"
+        name_equals = ["nextest-archive"]
+        name_prefixes = []
+        expired_decision = "DELETE-CANDIDATE"
+        candidate_reason = "expired test archive outside protected refs"
+        keep_reason = "test archive is retained until it expires"
+        """,
+        label=label,
+    )
+
+
+def cleanup_artifacts_with_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "total_bytes": entry["size_bytes"],
+        "expired_bytes": entry["size_bytes"],
+        "non_expired_bytes": 0,
+        "unknown_expiration_bytes": 0,
+        "entries": [entry],
+    }
+
+
 class CiStorageAuditTests(unittest.TestCase):
     def test_parse_cache_key_probe_parses_label_and_key(self) -> None:
         self.assertEqual(
@@ -929,6 +975,127 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(rows_by_id[2]["workflow_run"]["status_source"], "fetch_limit")
         self.assertEqual(cleanup["unverified_candidate_bytes"], 200)
         self.assertEqual(cleanup["workflow_run_metadata"]["fetch_limit_reached"], True)
+
+    def test_cleanup_feasibility_does_not_refetch_after_invalid_artifact_status(self) -> None:
+        policy = cleanup_candidate_policy("invalid-artifact-status-policy")
+        entry = ci_storage_audit.artifact_entry_from_raw(
+            {
+                "id": 1,
+                "name": "nextest-archive",
+                "size_in_bytes": 100,
+                "created_at": "2026-06-01T00:00:00Z",
+                "expires_at": "2026-06-15T00:00:00Z",
+                "expired": True,
+                "workflow_run": {
+                    "id": 501,
+                    "status": True,
+                    "head_branch": "feature/invalid-status",
+                    "head_sha": "a" * 40,
+                },
+            }
+        )
+        client = FakeClient(
+            {
+                "actions/runs/501": {
+                    "id": 501,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "head_branch": "feature/invalid-status",
+                },
+            }
+        )
+
+        cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+            client,
+            repo="owner/repo",
+            artifacts=cleanup_artifacts_with_entry(entry),
+            policy=policy,
+        )
+
+        self.assertEqual(cleanup["candidate_count"], 0)
+        self.assertEqual(cleanup["unverified_candidate_count"], 1)
+        self.assertEqual(cleanup["rows"][0]["decision"], "KEEP")
+        self.assertEqual(cleanup["rows"][0]["reason_code"], "workflow_status_unavailable")
+        self.assertEqual(
+            cleanup["rows"][0]["workflow_run"]["status_failure"],
+            {
+                "field": "workflow_run.status",
+                "state": "invalid",
+                "code": "workflow_status_invalid",
+            },
+        )
+        self.assertEqual(client.calls, [])
+
+    def test_cleanup_feasibility_classifies_workflow_run_fetch_failures(self) -> None:
+        cases = [
+            (
+                {
+                    "id": 501,
+                    "head_branch": "feature/status-absent",
+                },
+                "workflow_run.status",
+                "absent",
+                "workflow_status_absent",
+            ),
+            (
+                ci_storage_audit.GhApiError("actions/runs/501", "network unavailable"),
+                "workflow_run.api",
+                "unavailable",
+                "workflow_run_api_unavailable",
+            ),
+            (
+                ci_storage_audit.GhApiError("actions/runs/501", "request timed out"),
+                "workflow_run.api",
+                "timeout",
+                "workflow_run_api_timeout",
+            ),
+            (
+                "not-an-object",
+                "workflow_run.api",
+                "invalid",
+                "workflow_run_api_invalid",
+            ),
+        ]
+
+        for response, expected_field, expected_state, expected_code in cases:
+            with self.subTest(expected_state=expected_state):
+                policy = cleanup_candidate_policy(f"run-api-{expected_state}-policy")
+                entry = ci_storage_audit.artifact_entry_from_raw(
+                    {
+                        "id": 1,
+                        "name": "nextest-archive",
+                        "size_in_bytes": 100,
+                        "created_at": "2026-06-01T00:00:00Z",
+                        "expires_at": "2026-06-15T00:00:00Z",
+                        "expired": True,
+                        "workflow_run": {
+                            "id": 501,
+                            "head_branch": f"feature/{expected_state}",
+                            "head_sha": "a" * 40,
+                        },
+                    }
+                )
+                client = FakeClient({"actions/runs/501": response})
+
+                cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+                    client,
+                    repo="owner/repo",
+                    artifacts=cleanup_artifacts_with_entry(entry),
+                    policy=policy,
+                )
+
+                self.assertEqual(cleanup["candidate_count"], 0)
+                self.assertEqual(cleanup["unverified_candidate_count"], 1)
+                self.assertEqual(cleanup["rows"][0]["decision"], "KEEP")
+                self.assertEqual(cleanup["rows"][0]["reason_code"], "workflow_status_unavailable")
+                self.assertEqual(
+                    cleanup["rows"][0]["workflow_run"]["status_failure"],
+                    {
+                        "field": expected_field,
+                        "state": expected_state,
+                        "code": expected_code,
+                    },
+                )
 
     def test_cleanup_feasibility_treats_bool_workflow_run_id_as_missing(self) -> None:
         policy = ci_storage_audit.load_cleanup_policy_text(

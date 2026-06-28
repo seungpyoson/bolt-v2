@@ -106,15 +106,23 @@ class CleanupDecision(NamedTuple):
     metadata_failure: InputFailure | None
 
 
+class WorkflowRunFetchResult(NamedTuple):
+    payload: dict[str, Any] | None
+    failure: InputFailure | None
+
+
 KEEP_DECISION = "KEEP"
 DELETE_CANDIDATE_DECISION = "DELETE-CANDIDATE"
 CLEANUP_POLICY_SECTION_MARKER = "[storage_audit.cleanup_feasibility]"
 STATE_ABSENT = "absent"
 STATE_EMPTY = "empty"
 STATE_INVALID = "invalid"
+STATE_UNAVAILABLE = "unavailable"
+STATE_TIMEOUT = "timeout"
 FIELD_ARTIFACT_ID = "artifact_id"
 FIELD_ARTIFACT_EXPIRED = "expired"
 FIELD_ARTIFACT_REF = "workflow_run.ref"
+FIELD_WORKFLOW_RUN_API = "workflow_run.api"
 FIELD_WORKFLOW_RUN_ID = "workflow_run.id"
 FIELD_WORKFLOW_STATUS = "workflow_run.status"
 INPUT_FAILURE_CODES = {
@@ -128,6 +136,10 @@ INPUT_FAILURE_CODES = {
     (FIELD_ARTIFACT_REF, STATE_INVALID): "artifact_ref_invalid",
     (FIELD_WORKFLOW_RUN_ID, STATE_ABSENT): "workflow_run_id_absent",
     (FIELD_WORKFLOW_RUN_ID, STATE_INVALID): "workflow_run_id_invalid",
+    (FIELD_WORKFLOW_RUN_API, STATE_INVALID): "workflow_run_api_invalid",
+    (FIELD_WORKFLOW_RUN_API, STATE_UNAVAILABLE): "workflow_run_api_unavailable",
+    (FIELD_WORKFLOW_RUN_API, STATE_TIMEOUT): "workflow_run_api_timeout",
+    (FIELD_WORKFLOW_STATUS, STATE_ABSENT): "workflow_status_absent",
     (FIELD_WORKFLOW_STATUS, STATE_EMPTY): "workflow_status_empty",
     (FIELD_WORKFLOW_STATUS, STATE_INVALID): "workflow_status_invalid",
 }
@@ -373,6 +385,12 @@ def classify_required_bool(value: Any, field: str) -> ClassifiedBool:
     if value == "":
         return ClassifiedBool(value=None, failure=input_failure(field, STATE_EMPTY))
     return ClassifiedBool(value=None, failure=input_failure(field, STATE_INVALID))
+
+
+def classify_api_unavailable_failure(exc: GhApiError, field: str) -> InputFailure:
+    message = exc.message.lower()
+    state = STATE_TIMEOUT if "timeout" in message or "timed out" in message else STATE_UNAVAILABLE
+    return input_failure(field, state)
 
 
 def require_policy_table(payload: dict[str, Any], key: str, label: str) -> dict[str, Any]:
@@ -698,10 +716,17 @@ def classify_workflow_ref(workflow_run: dict[str, Any]) -> ClassifiedText:
     return ClassifiedText(value=None, failure=input_failure(FIELD_ARTIFACT_REF, STATE_ABSENT))
 
 
-def workflow_run_from_raw(raw: Any) -> dict[str, Any]:
-    data = require_object(raw, "actions/artifacts.workflow_run")
+def workflow_run_from_raw(
+    raw: Any,
+    *,
+    label: str = "actions/artifacts.workflow_run",
+    require_status: bool = False,
+) -> dict[str, Any]:
+    data = require_object(raw, label)
     run_id = classify_positive_int(data.get("id"), FIELD_WORKFLOW_RUN_ID)
     status = classify_optional_text(data.get("status"), FIELD_WORKFLOW_STATUS)
+    if require_status and status.value is None and status.failure is None:
+        status = ClassifiedText(value=None, failure=input_failure(FIELD_WORKFLOW_STATUS, STATE_ABSENT))
     ref = classify_workflow_ref(data)
     head_sha = optional_text(data.get("head_sha"))
     return {
@@ -721,7 +746,11 @@ def workflow_run_from_raw(raw: Any) -> dict[str, Any]:
 
 def merge_workflow_run_metadata(entry: dict[str, Any], payload: dict[str, Any]) -> None:
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
-    refreshed = workflow_run_from_raw(payload)
+    refreshed = workflow_run_from_raw(
+        payload,
+        label="actions/runs workflow_run",
+        require_status=True,
+    )
     for key, value in refreshed.items():
         if value is not None and key != "status_source":
             workflow_run[key] = value
@@ -1059,6 +1088,13 @@ def artifact_metadata_failure(entry: dict[str, Any]) -> InputFailure | None:
     return classify_workflow_ref(workflow_run).failure
 
 
+def workflow_status_failure(workflow_run: dict[str, Any]) -> InputFailure | None:
+    stored_failure = parsed_failure(workflow_run.get("status_failure"), "artifact workflow_run.status_failure")
+    if stored_failure is not None:
+        return stored_failure
+    return classify_optional_text(workflow_run.get("status"), FIELD_WORKFLOW_STATUS).failure
+
+
 def should_fetch_workflow_run(
     policy: ArtifactCleanupPolicy,
     rule: ArtifactClassRule | None,
@@ -1075,6 +1111,8 @@ def should_fetch_workflow_run(
     if ref_is_protected(policy, artifact_ref(entry)):
         return False
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
+    if workflow_status_failure(workflow_run) is not None:
+        return False
     status = classify_optional_text(workflow_run.get("status"), FIELD_WORKFLOW_STATUS)
     return status.value is None
 
@@ -1087,11 +1125,35 @@ def workflow_run_id_from_entry(entry: dict[str, Any]) -> ClassifiedInt:
     return classify_positive_int(workflow_run.get("id"), FIELD_WORKFLOW_RUN_ID)
 
 
-def fetch_workflow_run_metadata_payload(client: GhClient, run_id: int) -> dict[str, Any] | None:
+def fetch_workflow_run_metadata_payload(client: GhClient, run_id: int) -> WorkflowRunFetchResult:
     try:
-        return require_object(client.api(f"actions/runs/{run_id}"), f"actions/runs/{run_id}")
-    except (GhApiError, AuditError):
-        return None
+        payload = client.api(f"actions/runs/{run_id}")
+    except GhApiError as exc:
+        return WorkflowRunFetchResult(
+            payload=None,
+            failure=classify_api_unavailable_failure(exc, FIELD_WORKFLOW_RUN_API),
+        )
+    if not isinstance(payload, dict):
+        return WorkflowRunFetchResult(
+            payload=None,
+            failure=input_failure(FIELD_WORKFLOW_RUN_API, STATE_INVALID),
+        )
+    return WorkflowRunFetchResult(payload=payload, failure=None)
+
+
+def set_workflow_run_status_failure(entry: dict[str, Any], failure: InputFailure) -> None:
+    workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
+    workflow_run["status_failure"] = serialized_failure(failure)
+    workflow_run["status_source"] = failure.code
+
+
+def apply_workflow_run_fetch_result(entry: dict[str, Any], result: WorkflowRunFetchResult) -> None:
+    if result.failure is not None:
+        set_workflow_run_status_failure(entry, result.failure)
+        return
+    if result.payload is None:
+        raise AssertionError("workflow run fetch result has neither payload nor failure")
+    merge_workflow_run_metadata(entry, result.payload)
 
 
 def cleanup_decision_for_entry(
@@ -1153,6 +1215,14 @@ def cleanup_decision_for_entry(
             metadata_failure=None,
         )
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
+    if workflow_status_failure(workflow_run) is not None:
+        return CleanupDecision(
+            class_id=class_id,
+            decision=KEEP_DECISION,
+            reason_code=REASON_WORKFLOW_STATUS_UNAVAILABLE,
+            reason=policy.status_unavailable_keep_reason,
+            metadata_failure=None,
+        )
     status = classify_optional_text(workflow_run.get("status"), FIELD_WORKFLOW_STATUS)
     if status.value in policy.active_run_statuses:
         return CleanupDecision(
@@ -1313,7 +1383,7 @@ def build_artifact_cleanup_feasibility(
     rows: list[dict[str, Any]] = []
     workflow_run_fetches = 0
     workflow_run_fetch_limit_reached = False
-    workflow_run_metadata_cache: dict[int, dict[str, Any] | None] = {}
+    workflow_run_metadata_cache: dict[int, WorkflowRunFetchResult] = {}
 
     for entry in entries:
         artifact_name = require_nonempty_text(entry.get("name"), "artifacts.entries.name")
@@ -1323,21 +1393,14 @@ def build_artifact_cleanup_feasibility(
             if run_id.failure is not None:
                 set_workflow_run_status_source(entry, WORKFLOW_RUN_ID_STATUS_SOURCES[run_id.failure.state])
             elif run_id.value in workflow_run_metadata_cache:
-                payload = workflow_run_metadata_cache[run_id.value]
-                if payload is not None:
-                    merge_workflow_run_metadata(entry, payload)
-                else:
-                    set_workflow_run_status_source(entry, "run_api_unavailable")
+                apply_workflow_run_fetch_result(entry, workflow_run_metadata_cache[run_id.value])
             elif workflow_run_fetches < policy.workflow_run_fetch_limit:
                 workflow_run_fetches += 1
                 if run_id.value is None:
                     raise AssertionError("workflow run id classifier returned no value without failure")
-                payload = fetch_workflow_run_metadata_payload(client, run_id.value)
-                workflow_run_metadata_cache[run_id.value] = payload
-                if payload is not None:
-                    merge_workflow_run_metadata(entry, payload)
-                else:
-                    set_workflow_run_status_source(entry, "run_api_unavailable")
+                result = fetch_workflow_run_metadata_payload(client, run_id.value)
+                workflow_run_metadata_cache[run_id.value] = result
+                apply_workflow_run_fetch_result(entry, result)
             else:
                 workflow_run_fetch_limit_reached = True
                 set_workflow_run_status_source(entry, "fetch_limit")

@@ -63,6 +63,9 @@ workflow_name = "CI"
 workflow_path = ".github/workflows/ci.yml"
 fingerprint_source = "meter"
 
+[ci_provenance.artifact_name_template_vars]
+run_attempt = "${{ github.run_attempt }}"
+
 [ci_provenance.full_ci]
 required_jobs = [
   "detector",
@@ -7819,6 +7822,12 @@ def write_base_workflows(workflow_dir: pathlib.Path) -> None:
     (workflow_dir / "coverage-enforcer.yml").write_text(BASE_COVERAGE_ENFORCER_WORKFLOW)
 
 
+def write_repo_workflows(workflow_dir: pathlib.Path) -> None:
+    workflow_dir.mkdir(parents=True)
+    for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.y*ml")):
+        (workflow_dir / path.name).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+
+
 def run_verifier_main_with_no_mistakes(
     no_mistakes_text: str,
     *,
@@ -7831,7 +7840,7 @@ def run_verifier_main_with_no_mistakes(
         verifier_path.write_text(VERIFIER_PATH.read_text())
 
         workflow_dir = tmp_path / ".github" / "workflows"
-        write_base_workflows(workflow_dir)
+        write_repo_workflows(workflow_dir)
         write_test_harness_fixture(
             tmp_path,
             manifest=base_test_harness_manifest(),
@@ -7851,6 +7860,7 @@ def run_verifier_main_with_no_mistakes(
         if write_mergify_config:
             (tmp_path / ".mergify.yml").write_text((REPO_ROOT / ".mergify.yml").read_text())
         write_rust_verification_policy_fixtures(tmp_path)
+        write_runner_config_fixture(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
@@ -7869,7 +7879,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         verifier_path.write_text(VERIFIER_PATH.read_text())
 
         workflow_dir = tmp_path / ".github" / "workflows"
-        write_base_workflows(workflow_dir)
+        write_repo_workflows(workflow_dir)
         write_test_harness_fixture(
             tmp_path,
             manifest=base_test_harness_manifest(),
@@ -7908,7 +7918,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         verifier_path.write_text(VERIFIER_PATH.read_text())
 
         workflow_dir = tmp_path / ".github" / "workflows"
-        write_base_workflows(workflow_dir)
+        write_repo_workflows(workflow_dir)
         (workflow_dir / workflow_name).write_text(workflow_text)
         write_test_harness_fixture(
             tmp_path,
@@ -7925,6 +7935,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         nextest_path.parent.mkdir(parents=True)
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
         write_rust_verification_policy_fixtures(tmp_path)
+        write_runner_config_fixture(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_workflow_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
@@ -8064,6 +8075,24 @@ jobs:
 
 def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
     upload_artifact_action = base_upload_artifact_action_line()
+    verifier = load_verifier()
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        verifier.DEFAULT_RUNNERS_CONFIG = pathlib.Path(tmp) / "missing-github-actions-runners.toml"
+        try:
+            missing_config_errors = verifier.verify_artifact_retention_policy(
+                {".github/workflows/ci.yml": BASE_WORKFLOW},
+                {},
+            )
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    expected_missing_config = "managed runner config missing"
+    if not any(expected_missing_config in error for error in missing_config_errors):
+        raise AssertionError(
+            "artifact retention policy must fail closed without runner config, "
+            f"got: {missing_config_errors}"
+        )
+
     unexpected_upload = BASE_WORKFLOW.replace(
         "      - name: Detect build-affecting changes\n",
         f"""      - name: Upload unexpected artifact
@@ -8154,6 +8183,35 @@ runs:
         raise AssertionError(f"composite upload-artifact drift was silent: exit={result}, output={output!r}")
 
 
+def assert_ci_provenance_upload_name_comes_from_config_template() -> None:
+    verifier = load_verifier()
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    configured_config = (
+        config_text.replace(
+            'artifact_name_template = "ci-provenance-attempt-{run_attempt}"',
+            'artifact_name_template = "proof-bundle-{run_attempt}"',
+            1,
+        )
+    )
+    configured_workflow = BASE_WORKFLOW.replace(
+        "          name: ci-provenance-attempt-${{ github.run_attempt }}",
+        "          name: proof-bundle-${{ github.run_attempt }}",
+        1,
+    )
+    emit_lines = verifier.parse_jobs(configured_workflow)["ci-provenance-emit"]
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
+        config_path.write_text(configured_config, encoding="utf-8")
+        verifier.DEFAULT_RUNNERS_CONFIG = config_path
+        try:
+            errors = verifier.ci_provenance_emit_upload_errors(emit_lines)
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    if errors:
+        raise AssertionError(f"ci provenance upload name must come from config template, got: {errors}")
+
+
 def assert_artifact_retention_config_refs_are_validated() -> None:
     verifier = load_verifier()
     config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
@@ -8180,6 +8238,14 @@ def assert_artifact_retention_config_refs_are_validated() -> None:
         "artifact_retention.classes.provenance must define exactly one max retention source": config_text.replace(
             'max_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
             'max_retention_days = 30\nmax_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+        ),
+        "artifact_name_template_vars_config_ref references missing TOML key": config_text.replace(
+            'artifact_name_template_vars_config_ref = "ci_provenance.artifact_name_template_vars"',
+            'artifact_name_template_vars_config_ref = "ci_provenance.missing_artifact_name_template_vars"',
+        ),
+        "ci_provenance.artifact_name_template missing template vars": config_text.replace(
+            "run_attempt = \"${{ github.run_attempt }}\"",
+            "run_number = \"${{ github.run_number }}\"",
         ),
     }
     with tempfile.TemporaryDirectory() as tmp:
@@ -9866,6 +9932,7 @@ def main() -> int:
     assert_v6_red_local_composite_actions_are_scanned()
     assert_v6_red_additional_workflows_are_scanned()
     assert_artifact_retention_policy_spine_gaps_are_reported()
+    assert_ci_provenance_upload_name_comes_from_config_template()
     assert_artifact_retention_config_refs_are_validated()
     assert_shell_logical_lines_handles_crlf_continuations()
     assert_workflow_hygiene_reviewer_regressions()

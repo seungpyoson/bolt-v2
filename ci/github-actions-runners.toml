@@ -114,6 +114,9 @@ workflow_name = "CI"
 workflow_path = ".github/workflows/ci.yml"
 fingerprint_source = "meter"
 
+[ci_provenance.artifact_name_template_vars]
+run_attempt = "${{ github.run_attempt }}"
+
 [ci_provenance.full_ci]
 required_jobs = [
   "detector",
@@ -304,7 +307,8 @@ artifact_name_config_ref = "ci_provenance.deploy.artifact_name"
 artifact_class = "deployable"
 
 [artifact_retention.uploads.".github/workflows/ci.yml::ci-provenance-emit::upload-ci-provenance"]
-artifact_name = "ci-provenance-attempt-${{ github.run_attempt }}"
+artifact_name_template_config_ref = "ci_provenance.artifact_name_template"
+artifact_name_template_vars_config_ref = "ci_provenance.artifact_name_template_vars"
 artifact_class = "provenance"
 
 [artifact_retention.uploads.".github/workflows/backtester-ci.yml::test-archive::upload-bvs-test-payload"]

@@ -64,6 +64,7 @@ DEFAULT_ACTIONLINT_CONFIG = REPO_ROOT / ".github" / "actionlint.yaml"
 DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
 DEFAULT_BVS_RUST_VERIFICATION_POLICY = REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
 JOB_RUNS_ON_VAR_RE = re.compile(r"^    runs-on:\s*\$\{\{\s*vars\.([A-Z0-9_]+)\s*\}\}\s*$")
+CONFIG_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 WORKFLOW_RUNNER_CONFIG_KEYS = {
     "ci.yml": "ci",
     ".github/workflows/ci.yml": "ci",
@@ -1949,6 +1950,14 @@ def artifact_retention_upload_name_expectation(site: ArtifactRetentionUploadSite
     return "configured artifact identity"
 
 
+def texts_have_upload_artifact_action(texts: Iterable[str]) -> bool:
+    return any(
+        "actions/upload-artifact@" in strip_comment(line)
+        for text in texts
+        for line in text.splitlines()
+    )
+
+
 def upload_artifact_retention_errors(
     policy: ArtifactRetentionPolicy,
     source_name: str,
@@ -2014,6 +2023,11 @@ def verify_artifact_retention_policy(
     composite_actions: dict[str, str],
 ) -> list[str]:
     if not DEFAULT_RUNNERS_CONFIG.exists():
+        if texts_have_upload_artifact_action((*workflows.values(), *composite_actions.values())):
+            return [
+                "github-actions runner config invalid: "
+                f"managed runner config missing: {DEFAULT_RUNNERS_CONFIG}"
+            ]
         return []
     try:
         config = load_github_actions_runners_config()
@@ -8507,10 +8521,14 @@ def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]
 
 def ci_provenance_emit_upload_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
+    expected_artifact_name = configured_ci_provenance_artifact_name()
+    if not expected_artifact_name:
+        errors.append("ci-provenance-emit must resolve configured provenance artifact")
+        return errors
     upload_blocks = [
         block
         for block in action_blocks(job_lines, "actions/upload-artifact@")
-        if block_has_input(block, "name", "ci-provenance-attempt-${{ github.run_attempt }}")
+        if block_has_input(block, "name", expected_artifact_name)
     ]
     if not upload_blocks:
         errors.append("ci-provenance-emit must upload configured provenance artifact")
@@ -9009,6 +9027,33 @@ def configured_ci_provenance_deploy_artifact_name() -> str:
         return ""
     artifact_name = deploy.get("artifact_name")
     return artifact_name if isinstance(artifact_name, str) else ""
+
+
+def configured_ci_provenance_artifact_name() -> str:
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+        return ""
+    ci_provenance = config.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        return ""
+    artifact_name_template = ci_provenance.get("artifact_name_template")
+    artifact_name_template_vars = ci_provenance.get("artifact_name_template_vars")
+    if not isinstance(artifact_name_template, str) or not isinstance(artifact_name_template_vars, dict):
+        return ""
+    if not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in artifact_name_template_vars.items()
+    ):
+        return ""
+    try:
+        return render_config_string_template(
+            artifact_name_template,
+            dict(artifact_name_template_vars),
+            "ci_provenance.artifact_name_template",
+        )
+    except ValueError:
+        return ""
 
 
 def configured_ci_provenance_dispatch_input() -> str:
@@ -11112,6 +11157,17 @@ def require_config_string_list(parent: dict[str, object], key: str, prefix: str)
     return value
 
 
+def require_config_string_map(parent: dict[str, object], key: str, prefix: str) -> dict[str, str]:
+    value = parent.get(key)
+    if not isinstance(value, dict) or not value:
+        raise ValueError(f"{prefix}.{key} must be a non-empty string table")
+    if not all(isinstance(item_key, str) and item_key for item_key in value):
+        raise ValueError(f"{prefix}.{key} keys must be non-empty strings")
+    if not all(isinstance(item_value, str) and item_value for item_value in value.values()):
+        raise ValueError(f"{prefix}.{key} values must be non-empty strings")
+    return dict(value)
+
+
 def require_config_only_keys(parent: dict[str, object], allowed_keys: set[str], prefix: str) -> None:
     unexpected_keys = sorted(set(parent) - allowed_keys)
     if unexpected_keys:
@@ -11144,6 +11200,40 @@ def resolve_config_string_ref(data: dict[str, object], ref: str, prefix: str) ->
     if not isinstance(current, str) or not current:
         raise ValueError(f"{prefix} must reference a non-empty string")
     return current
+
+
+def resolve_config_string_map_ref(data: dict[str, object], ref: str, prefix: str) -> dict[str, str]:
+    keys = ref.split(".")
+    if not keys or any(not key for key in keys):
+        raise ValueError(f"{prefix} must be a dotted TOML key reference")
+    current: object = data
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            raise ValueError(f"{prefix} references missing TOML key {ref!r}")
+        current = current[key]
+    if not isinstance(current, dict) or not current:
+        raise ValueError(f"{prefix} must reference a non-empty string table")
+    if not all(isinstance(item_key, str) and item_key for item_key in current):
+        raise ValueError(f"{prefix} must reference a table with non-empty string keys")
+    if not all(isinstance(item_value, str) and item_value for item_value in current.values()):
+        raise ValueError(f"{prefix} must reference a table with non-empty string values")
+    return dict(current)
+
+
+def render_config_string_template(template: str, template_vars: dict[str, str], prefix: str) -> str:
+    placeholders = set(CONFIG_TEMPLATE_PLACEHOLDER_RE.findall(template))
+    if not placeholders:
+        raise ValueError(f"{prefix} must include at least one template placeholder")
+    missing_vars = sorted(placeholders - set(template_vars))
+    if missing_vars:
+        raise ValueError(f"{prefix} missing template vars: {missing_vars!r}")
+    unused_vars = sorted(set(template_vars) - placeholders)
+    if unused_vars:
+        raise ValueError(f"{prefix} has unused template vars: {unused_vars!r}")
+    rendered = template
+    for name in sorted(placeholders):
+        rendered = rendered.replace(f"{{{name}}}", template_vars[name])
+    return rendered
 
 
 def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactRetentionPolicy:
@@ -11191,21 +11281,31 @@ def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactReten
         prefix = f"artifact_retention.uploads.{upload_key}"
         require_config_only_keys(
             raw_upload,
-            {"artifact_name", "artifact_name_prefix", "artifact_name_config_ref", "artifact_class"},
+            {
+                "artifact_name",
+                "artifact_name_prefix",
+                "artifact_name_config_ref",
+                "artifact_name_template_config_ref",
+                "artifact_name_template_vars_config_ref",
+                "artifact_class",
+            },
             prefix,
         )
         artifact_name = raw_upload.get("artifact_name")
         artifact_name_prefix = raw_upload.get("artifact_name_prefix")
         artifact_name_config_ref = raw_upload.get("artifact_name_config_ref")
+        artifact_name_template_config_ref = raw_upload.get("artifact_name_template_config_ref")
+        artifact_name_template_vars_config_ref = raw_upload.get("artifact_name_template_vars_config_ref")
         identity_sources = [
             artifact_name is not None,
             artifact_name_prefix is not None,
             artifact_name_config_ref is not None,
+            artifact_name_template_config_ref is not None,
         ]
         if sum(identity_sources) != 1:
             raise ValueError(
                 f"{prefix} must define exactly one artifact_name, artifact_name_prefix, "
-                "or artifact_name_config_ref"
+                "artifact_name_config_ref, or artifact_name_template_config_ref"
             )
         if artifact_name is not None and (not isinstance(artifact_name, str) or not artifact_name):
             raise ValueError(f"{prefix}.artifact_name must be a non-empty string")
@@ -11220,6 +11320,33 @@ def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactReten
                 data,
                 artifact_name_config_ref,
                 f"{prefix}.artifact_name_config_ref",
+            )
+        if artifact_name_template_config_ref is not None:
+            if not isinstance(artifact_name_template_config_ref, str) or not artifact_name_template_config_ref:
+                raise ValueError(f"{prefix}.artifact_name_template_config_ref must be a non-empty string")
+            if (
+                not isinstance(artifact_name_template_vars_config_ref, str)
+                or not artifact_name_template_vars_config_ref
+            ):
+                raise ValueError(f"{prefix}.artifact_name_template_vars_config_ref must be a non-empty string")
+            artifact_name_template = resolve_config_string_ref(
+                data,
+                artifact_name_template_config_ref,
+                f"{prefix}.artifact_name_template_config_ref",
+            )
+            artifact_name_template_vars = resolve_config_string_map_ref(
+                data,
+                artifact_name_template_vars_config_ref,
+                f"{prefix}.artifact_name_template_vars_config_ref",
+            )
+            artifact_name = render_config_string_template(
+                artifact_name_template,
+                artifact_name_template_vars,
+                f"{prefix}.artifact_name_template_config_ref",
+            )
+        elif artifact_name_template_vars_config_ref is not None:
+            raise ValueError(
+                f"{prefix}.artifact_name_template_vars_config_ref requires artifact_name_template_config_ref"
             )
         artifact_class = require_config_string(raw_upload, "artifact_class", prefix)
         if artifact_class not in classes:
@@ -11255,6 +11382,16 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
     )
     if "{run_attempt}" not in artifact_name_template:
         raise ValueError("ci_provenance.artifact_name_template must include {run_attempt}")
+    artifact_name_template_vars = require_config_string_map(
+        ci_provenance,
+        "artifact_name_template_vars",
+        "ci_provenance",
+    )
+    render_config_string_template(
+        artifact_name_template,
+        artifact_name_template_vars,
+        "ci_provenance.artifact_name_template",
+    )
     if require_config_string(ci_provenance, "workflow_key", "ci_provenance") != "ci":
         raise ValueError("ci_provenance.workflow_key must be ci")
     require_config_string(ci_provenance, "workflow_name", "ci_provenance")

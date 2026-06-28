@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LEDGER_PATH = Path("ci/doc-decoupling-residuals.toml")
 VERIFY_SCRIPT_GLOB = "verify_*.py"
 MARKDOWN_EXTENSION = "." + "md"
+DOCS_WIDE_GLOB = "docs/**" + "/*"
 VALID_KINDS = {
     "workflow_snippet_false_positive",
     "docstring_pointer_false_positive",
@@ -24,6 +25,12 @@ VALID_READ_PURPOSES = {
     "rename_guard",
     "doc_sync_exception",
 }
+KIND_READ_PURPOSE = {
+    "workflow_snippet_false_positive": "none",
+    "docstring_pointer_false_positive": "none",
+    "deliberate_guard": "rename_guard",
+    "doc_sync_exception": "doc_sync_exception",
+}
 
 
 def non_empty_string(value: object) -> bool:
@@ -32,6 +39,13 @@ def non_empty_string(value: object) -> bool:
 
 def non_empty_string_list(value: object) -> bool:
     return isinstance(value, list) and bool(value) and all(non_empty_string(item) for item in value)
+
+
+def prose_reference_count(text: str) -> int:
+    markdown_count = text.count(MARKDOWN_EXTENSION)
+    if markdown_count:
+        return markdown_count
+    return 1 if DOCS_WIDE_GLOB in text else 0
 
 
 def load_ledger(root: Path, findings: list[str]) -> list[dict[str, Any]]:
@@ -79,6 +93,10 @@ def validate_entry(entry: dict[str, Any], index: int, findings: list[str]) -> No
     snippets = entry.get("snippets")
     if not non_empty_string_list(snippets):
         findings.append(f"{prefix}.snippets must be a non-empty string list")
+    else:
+        for snippet in snippets:
+            if prose_reference_count(str(snippet)) != 1:
+                findings.append(f"{prefix}.snippets entries must contain exactly one prose reference")
 
     tracking_issue = entry.get("tracking_issue")
     if not non_empty_string(tracking_issue) or not str(tracking_issue).startswith("#"):
@@ -88,8 +106,9 @@ def validate_entry(entry: dict[str, Any], index: int, findings: list[str]) -> No
         findings.append(f"{prefix}: doc_sync_exception must declare owner_issue #559")
     if kind == "deliberate_guard" and entry.get("owner_issue") != "#711":
         findings.append(f"{prefix}: deliberate_guard must declare owner_issue #711")
-    if kind in {"workflow_snippet_false_positive", "docstring_pointer_false_positive"} and read_purpose != "none":
-        findings.append(f"{prefix}: false positives must declare read_purpose none")
+    expected_read_purpose = KIND_READ_PURPOSE.get(str(kind))
+    if expected_read_purpose is not None and read_purpose != expected_read_purpose:
+        findings.append(f"{prefix}: {kind} must declare read_purpose {expected_read_purpose}")
 
 
 def verify_script_paths(root: Path) -> list[Path]:
@@ -99,7 +118,7 @@ def verify_script_paths(root: Path) -> list[Path]:
     return sorted(scripts.glob(VERIFY_SCRIPT_GLOB))
 
 
-def markdown_reference_lines(root: Path) -> list[tuple[str, int, str]]:
+def prose_reference_lines(root: Path) -> list[tuple[str, int, str]]:
     lines: list[tuple[str, int, str]] = []
     for path in verify_script_paths(root):
         rel = path.relative_to(root).as_posix()
@@ -108,7 +127,7 @@ def markdown_reference_lines(root: Path) -> list[tuple[str, int, str]]:
         except OSError:
             continue
         for line_number, line in enumerate(text.splitlines(), 1):
-            if MARKDOWN_EXTENSION in line:
+            if prose_reference_count(line):
                 lines.append((rel, line_number, line.strip()))
     return lines
 
@@ -124,7 +143,7 @@ def collect_findings(root: Path = REPO_ROOT) -> list[str]:
         path = entry.get("path")
         snippets = entry.get("snippets")
         if non_empty_string(path) and non_empty_string_list(snippets):
-            allowed.setdefault(str(path), []).extend(str(snippet) for snippet in snippets)
+            allowed.setdefault(str(path), []).extend(str(snippet).strip() for snippet in snippets)
 
     for rel, snippets in sorted(allowed.items()):
         path = root / rel
@@ -132,14 +151,15 @@ def collect_findings(root: Path = REPO_ROOT) -> list[str]:
             findings.append(f"{LEDGER_PATH}: residual ledger path is missing: {rel}")
             continue
         text = path.read_text(encoding="utf-8")
+        source_lines = {line.strip() for line in text.splitlines()}
         for snippet in snippets:
-            if snippet not in text:
+            if snippet not in source_lines:
                 findings.append(f"{LEDGER_PATH}: stale residual ledger snippet for {rel}: {snippet!r}")
 
-    for rel, line_number, line in markdown_reference_lines(root):
+    for rel, line_number, line in prose_reference_lines(root):
         snippets = allowed.get(rel, [])
-        if not any(snippet in line for snippet in snippets):
-            findings.append(f"{rel}:{line_number}: unclassified markdown reference: {line}")
+        if line not in snippets:
+            findings.append(f"{rel}:{line_number}: unclassified prose reference: {line}")
 
     return findings
 

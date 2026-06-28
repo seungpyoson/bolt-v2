@@ -10,8 +10,8 @@ response_chars_per_chunk = 8000
 [pr_agent_mirror]
 required_note_snippets = [
   "Review against AGENTS.md as the repository governance source",
-  "This mirror is checked by scripts/verify_ai_review_governance.py",
-  "update this block when the mirrored AGENTS.md rules change",
+  "This mirror is checked against ci/ai-review.toml by scripts/verify_ai_review_governance.py",
+  "update ci/ai-review.toml and this block when the mirrored AGENTS.md rules change",
 ]
 
 [[pr_agent_mirror.rules]]

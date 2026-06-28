@@ -303,6 +303,14 @@ SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\
 FULL_CI_REQUIRED_EXPR = "needs.ci-policy.outputs.full_ci_required == 'true'"
 DOCS_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'docs'"
 TAG_REUSE_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'tag_reuse'"
+SOURCE_FENCE_JOB_IF_VALUE = f"${{{{ {FULL_CI_REQUIRED_EXPR} || {DOCS_POLICY_EXPR} }}}}"
+SOURCE_FENCE_POLICY_SWITCH = """
+if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+  just source-fence
+else
+  just source-fence-static
+fi
+"""
 NEXTEST_REUSE_MISS_EXPR = "needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'"
 MAIN_BRANCH_SKIP_EXPR = "github.ref != 'refs/heads/main'"
 BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
@@ -7902,8 +7910,11 @@ def job_gates_on_full_ci_required(job_lines: list[str]) -> bool:
 
 
 def source_fence_runs_on_full_ci_or_docs(job_lines: list[str]) -> bool:
-    text = uncommented_text(job_lines)
-    return FULL_CI_REQUIRED_EXPR in text and DOCS_POLICY_EXPR in text
+    return job_if_value(job_lines) == SOURCE_FENCE_JOB_IF_VALUE
+
+
+def source_fence_uses_policy_switch(job_lines: list[str]) -> bool:
+    return any(block_run_body_matches(block, SOURCE_FENCE_POLICY_SWITCH) for block in step_blocks(job_lines))
 
 
 def check_aarch64_runs_on_full_or_tag_reuse(job_lines: list[str]) -> bool:
@@ -8931,8 +8942,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("source-fence needs ci-policy")
         if not source_fence_runs_on_full_ci_or_docs(jobs["source-fence"]):
             errors.append("source-fence must run for full_ci_required or docs policy")
-        if not job_runs_command(jobs["source-fence"], "just source-fence-static"):
-            errors.append("source-fence must run just source-fence-static for docs policy")
+        if not source_fence_uses_policy_switch(jobs["source-fence"]):
+            errors.append("source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy")
 
     for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):

@@ -7,9 +7,9 @@ kind = "workflow_snippet_false_positive"
 tracking_issue = "#1027"
 read_purpose = "none"
 snippets = [
-  '"AGENTS.md"',
-  '"cat .ai-review/base/AGENTS.md"',
-  '"--instructions-file .ai-review/standards/kimi-review-standards.md"',
+  '"AGENTS.md",',
+  '"cat .ai-review/base/AGENTS.md",',
+  '"--instructions-file .ai-review/standards/kimi-review-standards.md",',
 ]
 
 [[doc_decoupling_residuals.allowed_markdown_references]]
@@ -18,7 +18,7 @@ kind = "docstring_pointer_false_positive"
 tracking_issue = "#1027"
 read_purpose = "none"
 snippets = [
-  "architecture-contract.md",
+  "(`specs/522-decompose-strategy-monolith/architecture-contract.md` \u00a72) requires a",
 ]
 
 [[doc_decoupling_residuals.allowed_markdown_references]]
@@ -28,10 +28,10 @@ owner_issue = "#711"
 tracking_issue = "#1027"
 read_purpose = "rename_guard"
 snippets = [
-  '"docs/bolt-v3/*.md"',
-  '"docs/**/*"',
-  '"specs/**/*.md"',
-  '".md"',
+  '"docs/bolt-v3/*.md",',
+  '"docs/**/*",',
+  '"specs/**/*.md",',
+  '".md",',
 ]
 
 [[doc_decoupling_residuals.allowed_markdown_references]]

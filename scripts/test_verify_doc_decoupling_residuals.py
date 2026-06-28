@@ -28,7 +28,7 @@ path = "scripts/verify_ai_review_governance.py"
 kind = "workflow_snippet_false_positive"
 tracking_issue = "#1027"
 read_purpose = "none"
-snippets = ['"AGENTS.md"']
+snippets = ['"AGENTS.md",']
 
 [[doc_decoupling_residuals.allowed_markdown_references]]
 path = "scripts/verify_bolt_v3_naming.py"
@@ -36,7 +36,7 @@ kind = "deliberate_guard"
 owner_issue = "#711"
 tracking_issue = "#1027"
 read_purpose = "rename_guard"
-snippets = ['"docs/bolt-v3/*.md"']
+snippets = ['"docs/bolt-v3/*.md",', '"docs/**/*",', '".md",']
 
 [[doc_decoupling_residuals.allowed_markdown_references]]
 path = "scripts/verify_bolt_v3_schema_current.py"
@@ -48,7 +48,14 @@ snippets = ['SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/schema.md"']
 """
 
 
-def write_fixture(root: Path, *, ledger_text: str = LEDGER_TEXT, extra_script: str = "") -> None:
+def write_fixture(
+    root: Path,
+    *,
+    ledger_text: str = LEDGER_TEXT,
+    extra_script: str = "",
+    naming_script_suffix: str = "",
+    schema_script: str = 'SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/schema.md"\n',
+) -> None:
     (root / "ci").mkdir(parents=True)
     (root / "ci" / "doc-decoupling-residuals.toml").write_text(
         textwrap.dedent(ledger_text).lstrip(),
@@ -57,25 +64,56 @@ def write_fixture(root: Path, *, ledger_text: str = LEDGER_TEXT, extra_script: s
     scripts = root / "scripts"
     scripts.mkdir()
     (scripts / "verify_ai_review_governance.py").write_text(
-        'KIMI = ("AGENTS.md",)\n',
+        textwrap.dedent(
+            """
+            KIMI = (
+                "AGENTS.md",
+            )
+            """
+        ).lstrip(),
         encoding="utf-8",
     )
     (scripts / "verify_bolt_v3_naming.py").write_text(
-        'SCAN_GLOBS = ["docs/bolt-v3/*.md"]\n',
+        textwrap.dedent(
+            f"""
+            SCAN_GLOBS = [
+                "docs/bolt-v3/*.md",
+            ]
+            MISNOMER_SCAN_GLOBS = [
+                "docs/**/*",
+            ]
+            MISNOMER_TEXT_SUFFIXES = {{
+                ".md",
+            }}
+            {naming_script_suffix}
+            """
+        ).lstrip(),
         encoding="utf-8",
     )
     (scripts / "verify_bolt_v3_schema_current.py").write_text(
-        'SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/schema.md"\n',
+        schema_script,
         encoding="utf-8",
     )
     if extra_script:
         (scripts / "verify_new_doc_reader.py").write_text(extra_script, encoding="utf-8")
 
 
-def collect(*, ledger_text: str = LEDGER_TEXT, extra_script: str = "") -> list[str]:
+def collect(
+    *,
+    ledger_text: str = LEDGER_TEXT,
+    extra_script: str = "",
+    naming_script_suffix: str = "",
+    schema_script: str = 'SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/schema.md"\n',
+) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_fixture(root, ledger_text=ledger_text, extra_script=extra_script)
+        write_fixture(
+            root,
+            ledger_text=ledger_text,
+            extra_script=extra_script,
+            naming_script_suffix=naming_script_suffix,
+            schema_script=schema_script,
+        )
         return VERIFIER.collect_findings(root)
 
 
@@ -92,7 +130,27 @@ def test_known_residuals_pass() -> None:
 
 def test_unledgered_markdown_reference_fails() -> None:
     findings = collect(extra_script='DOC = "docs/new-truth.md"\n')
-    assert_finding(findings, "unclassified markdown reference")
+    assert_finding(findings, "unclassified prose reference")
+
+
+def test_unledgered_docs_wide_glob_fails() -> None:
+    findings = collect(extra_script='SCAN = ["docs/**/*"]\n')
+    assert_finding(findings, "unclassified prose reference")
+
+
+def test_same_line_extra_markdown_reference_fails() -> None:
+    findings = collect(
+        schema_script=(
+            'SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/schema.md"; '
+            'NEW_DOC = REPO_ROOT / "docs/prose-authority.md"\n'
+        )
+    )
+    assert_finding(findings, "unclassified prose reference")
+
+
+def test_exact_line_matching_does_not_allow_other_md_suffix_line() -> None:
+    findings = collect(naming_script_suffix='EXT = ".md"\n')
+    assert_finding(findings, "unclassified prose reference")
 
 
 def test_stale_ledger_snippet_fails() -> None:
@@ -110,13 +168,34 @@ def test_deliberate_guard_requires_owner_issue() -> None:
     assert_finding(findings, "deliberate_guard must declare owner_issue #711")
 
 
+def test_deliberate_guard_requires_rename_guard_purpose() -> None:
+    findings = collect(ledger_text=LEDGER_TEXT.replace('read_purpose = "rename_guard"', 'read_purpose = "none"', 1))
+    assert_finding(findings, "deliberate_guard must declare read_purpose rename_guard")
+
+
+def test_doc_sync_exception_requires_doc_sync_purpose() -> None:
+    findings = collect(
+        ledger_text=LEDGER_TEXT.replace(
+            'read_purpose = "doc_sync_exception"',
+            'read_purpose = "rename_guard"',
+            1,
+        )
+    )
+    assert_finding(findings, "doc_sync_exception must declare read_purpose doc_sync_exception")
+
+
 def main() -> int:
     tests = [
         test_known_residuals_pass,
         test_unledgered_markdown_reference_fails,
+        test_unledgered_docs_wide_glob_fails,
+        test_same_line_extra_markdown_reference_fails,
+        test_exact_line_matching_does_not_allow_other_md_suffix_line,
         test_stale_ledger_snippet_fails,
         test_doc_sync_exception_requires_owner_issue,
         test_deliberate_guard_requires_owner_issue,
+        test_deliberate_guard_requires_rename_guard_purpose,
+        test_doc_sync_exception_requires_doc_sync_purpose,
     ]
     for test in tests:
         test()

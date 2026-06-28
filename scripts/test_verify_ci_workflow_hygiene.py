@@ -3578,6 +3578,14 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             ),
         ),
         (
+            "source-fence must run for full_ci_required or docs policy",
+            replace_once(
+                workflow,
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}",
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.ci-policy.outputs.ci_policy_path == 'docs' }}",
+            ),
+        ),
+        (
             "test-archive needs ci-policy",
             replace_once(
                 workflow,
@@ -10275,8 +10283,25 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, "            just source-fence", "            echo source-fence"),
     )
     assert_error(
-        "source-fence must run just source-fence-static for docs policy",
+        "source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy",
         replace_once(BASE_WORKFLOW, "            just source-fence-static", "            echo source-fence-static"),
+    )
+    assert_error(
+        "source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy",
+        replace_once(
+            BASE_WORKFLOW,
+            """          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence
+          else
+            just source-fence-static
+          fi""",
+            """          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence
+            just source-fence-static
+          else
+            echo docs policy skipped
+          fi""",
+        ),
     )
     for job in ("deny", "clippy", "source-fence", "nextest-fingerprint", "test-archive", "nextest-fingerprint-reuse", "test"):
         assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))

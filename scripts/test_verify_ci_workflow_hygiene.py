@@ -3754,6 +3754,18 @@ def assert_mergify_config_gaps_are_reported() -> None:
     if result == 0 or ".mergify.yml is required for Mergify queue governance" not in output:
         raise AssertionError(f"verifier main must reject a missing .mergify.yml, got: {result}, {output!r}")
 
+    hotfix_rule_start = mergify_config.index("  # Exceptional path only. Normal merge sessions use the default queue below.\n")
+    default_rule_start = mergify_config.index("  - name: default\n")
+    priority_rules_start = mergify_config.index("\npriority_rules:\n")
+    hotfix_rule_block = mergify_config[hotfix_rule_start:default_rule_start]
+    default_rule_block = mergify_config[default_rule_start:priority_rules_start]
+    swapped_queue_rules = (
+        mergify_config[:hotfix_rule_start]
+        + default_rule_block
+        + hotfix_rule_block
+        + mergify_config[priority_rules_start:]
+    )
+
     mutations = [
         (
             "missing max_parallel_checks",
@@ -3787,6 +3799,11 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "merge protections enabled",
             mergify_config + "\nmerge_protections:\n  - name: autoqueue\n",
             "manual queueing only",
+        ),
+        (
+            "queue rule order swapped",
+            swapped_queue_rules,
+            "queue_rules must define exactly hotfix followed by default",
         ),
         (
             "queue conditions require gate",

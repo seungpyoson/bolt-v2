@@ -5225,8 +5225,8 @@ MERGIFY_REQUIRED_MERGE_CONDITIONS = frozenset(
 )
 
 
-MERGIFY_REQUIRED_QUEUE_RULES = frozenset({"default", "hotfix"})
-MERGIFY_REQUIRED_PRIORITY_RULES = frozenset({"hotfix"})
+MERGIFY_REQUIRED_QUEUE_RULES = ("hotfix", "default")
+MERGIFY_REQUIRED_PRIORITY_RULES = ("hotfix",)
 
 
 def top_level_yaml_block(config_text: str, key: str) -> str | None:
@@ -5346,12 +5346,12 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
     default_rule = queue_rule_block(queue_rules, "default") if queue_rules is not None else None
     if queue_rules is None:
         errors.append(f"{config_name} must define queue_rules")
-    queue_rule_names = {
+    queue_rule_names = [
         unquote_yaml_scalar(match.group(1))
         for match in re.finditer(r"(?m)^\s*-\s*name\s*:\s*(.*?)\s*$", queue_rules or "")
-    }
-    if queue_rule_names != MERGIFY_REQUIRED_QUEUE_RULES:
-        errors.append(f"{config_name} queue_rules must define exactly default and hotfix")
+    ]
+    if tuple(queue_rule_names) != MERGIFY_REQUIRED_QUEUE_RULES:
+        errors.append(f"{config_name} queue_rules must define exactly hotfix followed by default")
     hotfix_rule = queue_rule_block(queue_rules, "hotfix") if queue_rules is not None else None
     if default_rule is None or hotfix_rule is None:
         return errors
@@ -5391,11 +5391,11 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
     if priority_rules is None:
         errors.append(f"{config_name} must define priority_rules")
         return errors
-    priority_rule_names = {
+    priority_rule_names = [
         unquote_yaml_scalar(match.group(1))
         for match in re.finditer(r"(?m)^\s*-\s*name\s*:\s*(.*?)\s*$", priority_rules)
-    }
-    if priority_rule_names != MERGIFY_REQUIRED_PRIORITY_RULES:
+    ]
+    if tuple(priority_rule_names) != MERGIFY_REQUIRED_PRIORITY_RULES:
         errors.append(f"{config_name} priority_rules must define exactly hotfix")
     hotfix_priority = queue_rule_block(priority_rules, "hotfix")
     if hotfix_priority is None:

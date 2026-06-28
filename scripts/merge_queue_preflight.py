@@ -137,7 +137,11 @@ MERGIFY_QUEUE_PROOF_SOURCE_STATES = {
     ),
 }
 BASE_IDENTITY_FINDING_STATES = {
-    True: (),
+    True: (
+        STATUS_READY,
+        "base_identity_ready",
+        "expected base SHA matches live base branch",
+    ),
     False: (
         STATUS_INCONCLUSIVE,
         "stale_base",
@@ -145,7 +149,11 @@ BASE_IDENTITY_FINDING_STATES = {
     ),
 }
 HEAD_IDENTITY_FINDING_STATES = {
-    True: (),
+    True: (
+        STATUS_READY,
+        "head_identity_ready",
+        "expected PR head SHA matches fetched PR head",
+    ),
     False: (
         STATUS_BLOCKED,
         "stale_head",
@@ -289,7 +297,20 @@ def matching_base_identity_findings(
     expected_base_sha: str,
     actual_base_sha: str,
 ) -> tuple[dict[str, object], ...]:
-    return ()
+    status, reason_code, message = BASE_IDENTITY_FINDING_STATES[True]
+    return (
+        {
+            "lane": LANE_IDENTITY,
+            "scope": "run",
+            "status": status,
+            "reason_code": reason_code,
+            "message": message,
+            "evidence": {
+                "expected_base_sha": expected_base_sha,
+                "actual_base_sha": actual_base_sha,
+            },
+        },
+    )
 
 
 def stale_base_identity_findings(
@@ -336,7 +357,21 @@ def matching_head_identity_findings(
     expected_head_sha: str,
     actual_head_sha: str,
 ) -> tuple[dict[str, object], ...]:
-    return ()
+    status, reason_code, message = HEAD_IDENTITY_FINDING_STATES[True]
+    return (
+        {
+            "lane": LANE_IDENTITY,
+            "scope": "pr",
+            "status": status,
+            "reason_code": reason_code,
+            "message": message,
+            "evidence": {
+                "pr": pr,
+                "expected_head_sha": expected_head_sha,
+                "actual_head_sha": actual_head_sha,
+            },
+        },
+    )
 
 
 def stale_head_identity_findings(

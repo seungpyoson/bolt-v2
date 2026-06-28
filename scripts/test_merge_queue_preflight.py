@@ -294,6 +294,35 @@ def stale_base_finding(expected_base_sha: str, actual_base_sha: str) -> dict[str
     }
 
 
+def matching_base_finding(base_sha: str) -> dict[str, object]:
+    return {
+        "lane": "identity",
+        "scope": "run",
+        "status": "ready",
+        "reason_code": "base_identity_ready",
+        "message": "expected base SHA matches live base branch",
+        "evidence": {
+            "expected_base_sha": base_sha,
+            "actual_base_sha": base_sha,
+        },
+    }
+
+
+def matching_head_finding(pr: int, head_sha: str) -> dict[str, object]:
+    return {
+        "lane": "identity",
+        "scope": "pr",
+        "status": "ready",
+        "reason_code": "head_identity_ready",
+        "message": "expected PR head SHA matches fetched PR head",
+        "evidence": {
+            "pr": pr,
+            "expected_head_sha": head_sha,
+            "actual_head_sha": head_sha,
+        },
+    }
+
+
 def stale_head_finding(pr: int, expected_head_sha: str, actual_head_sha: str) -> dict[str, object]:
     return {
         "lane": "identity",
@@ -895,6 +924,9 @@ def assert_clean_prs_batch_together() -> None:
         assert_equal(
             payload["findings"],
             [
+                matching_base_finding(payload["base_sha"]),
+                matching_head_finding(1, payload["pr_heads"]["1"]),
+                matching_head_finding(2, payload["pr_heads"]["2"]),
                 mergify_config_finding(
                     payload["base_sha"],
                     git(fixture.repo, "rev-parse", f"{payload['base_sha']}:.mergify.yml"),
@@ -1019,6 +1051,9 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
         assert_equal(
             payload["findings"],
             [
+                matching_base_finding(payload["base_sha"]),
+                matching_head_finding(1, payload["pr_heads"]["1"]),
+                matching_head_finding(2, payload["pr_heads"]["2"]),
                 mergify_config_finding(
                     payload["base_sha"],
                     git(fixture.repo, "rev-parse", f"{payload['base_sha']}:.mergify.yml"),

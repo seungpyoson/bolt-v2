@@ -474,6 +474,39 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(probes[0]["ref_filtered_prefix_enumerated_count"], 0)
         self.assertEqual(probes[0]["ref_filter"], ["refs/pull/986/merge", "refs/heads/main"])
 
+    def test_fetch_cache_key_probes_accepts_cache_branch_filters(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "exact-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 1,
+                    "actions_caches": [
+                        {
+                            "id": 404,
+                            "ref": "refs/heads/release/train",
+                            "key": "exact-key",
+                            "last_accessed_at": "2026-06-25T10:00:00Z",
+                            "size_in_bytes": 2048,
+                        }
+                    ],
+                },
+            }
+        )
+
+        probes = ci_storage_audit.fetch_cache_key_probes(
+            client,
+            [ci_storage_audit.CacheKeyProbeRequest("release", "exact-key")],
+            cache_refs=["refs/pull/986/merge"],
+            cache_branches=["release/train"],
+        )
+
+        self.assertTrue(probes[0]["available"])
+        self.assertTrue(probes[0]["present"])
+        self.assertEqual(probes[0]["exact_count"], 1)
+        self.assertEqual(probes[0]["ref_filter"], ["refs/pull/986/merge", "refs/heads/release/train"])
+
     def test_normalize_cache_refs_drops_empty_values_and_duplicates(self) -> None:
         refs = ci_storage_audit.normalize_cache_ref_inputs(
             cache_refs=[" refs/pull/986/merge ", "", "refs/pull/986/merge"],

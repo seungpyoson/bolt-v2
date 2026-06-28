@@ -356,60 +356,6 @@ def pr_agent_extra_instructions(pr_agent_toml: str) -> tuple[str, list[str]]:
     return extra, []
 
 
-def exact_glm_model_id(value: object) -> bool:
-    return isinstance(value, str) and re.fullmatch(r"glm-\d+(?:\.\d+)*", value) is not None
-
-
-def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
-    try:
-        parsed = tomllib.loads(ai_review_toml)
-    except tomllib.TOMLDecodeError:
-        return ()
-    literals: list[str] = []
-    github = parsed.get("github")
-    if isinstance(github, dict):
-        value = github.get("expected_bot_login")
-        if isinstance(value, str) and value:
-            literals.append(value)
-    for table_name in ("glm", "kimi"):
-        table = parsed.get(table_name)
-        if isinstance(table, dict):
-            for key in (
-                "api_base",
-                "model",
-                "deliverable_marker",
-                "deliverable_markers",
-                "comment_marker",
-                "notice_marker",
-                "source_label_template",
-                "cli_package",
-            ):
-                value = table.get(key)
-                if isinstance(value, str) and value:
-                    literals.append(value)
-                elif isinstance(value, list):
-                    literals.extend(item for item in value if isinstance(item, str) and item)
-            pr_agent = table.get("pr_agent")
-            if isinstance(pr_agent, dict):
-                value = pr_agent.get("model")
-                if isinstance(value, str) and value:
-                    literals.append(value)
-                value = pr_agent.get("source_label_template")
-                if isinstance(value, str) and value:
-                    literals.append(value)
-                fallback_models = pr_agent.get("fallback_models")
-                if isinstance(fallback_models, list):
-                    literals.extend(value for value in fallback_models if isinstance(value, str) and value)
-            workflow = table.get("workflow")
-            if isinstance(workflow, dict):
-                node_version = workflow.get("node_version")
-                if isinstance(node_version, str) and node_version:
-                    literals.append(f'node-version: "{node_version}"')
-                    literals.append(f"node-version: '{node_version}'")
-                    literals.append(f"node-version: {node_version}")
-    return tuple(dict.fromkeys(literals))
-
-
 def verify_pr_agent_config(pr_agent_toml: str, ai_review_toml: str) -> list[str]:
     findings: list[str] = []
     try:

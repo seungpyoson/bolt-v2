@@ -14,8 +14,6 @@ const SCAN_ROOTS: &[&str] = &[
     "Cargo.toml",
     "justfile",
     "scripts",
-    "docs/bolt-v3",
-    "specs/023-nt-order-intent-layer",
 ];
 
 fn repo_text(relative_path: &str) -> String {

@@ -53,6 +53,7 @@ def write_fixture(
     *,
     ledger_text: str = LEDGER_TEXT,
     extra_script: str = "",
+    extra_rust_test: str = "",
     naming_script_suffix: str = "",
     schema_script: str = 'SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/schema.md"\n',
 ) -> None:
@@ -96,12 +97,17 @@ def write_fixture(
     )
     if extra_script:
         (scripts / "verify_new_doc_reader.py").write_text(extra_script, encoding="utf-8")
+    if extra_rust_test:
+        tests = root / "tests"
+        tests.mkdir()
+        (tests / "doc_reader.rs").write_text(extra_rust_test, encoding="utf-8")
 
 
 def collect(
     *,
     ledger_text: str = LEDGER_TEXT,
     extra_script: str = "",
+    extra_rust_test: str = "",
     naming_script_suffix: str = "",
     schema_script: str = 'SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/schema.md"\n',
 ) -> list[str]:
@@ -111,6 +117,7 @@ def collect(
             root,
             ledger_text=ledger_text,
             extra_script=extra_script,
+            extra_rust_test=extra_rust_test,
             naming_script_suffix=naming_script_suffix,
             schema_script=schema_script,
         )
@@ -133,8 +140,20 @@ def test_unledgered_markdown_reference_fails() -> None:
     assert_finding(findings, "unclassified prose reference")
 
 
+def test_unledgered_rust_markdown_reference_fails() -> None:
+    findings = collect(
+        extra_rust_test='const DOC: &str = include_str!("../docs/new-truth.md");\n'
+    )
+    assert_finding(findings, "unclassified prose reference")
+
+
 def test_unledgered_docs_wide_glob_fails() -> None:
     findings = collect(extra_script='SCAN = ["docs/**/*"]\n')
+    assert_finding(findings, "unclassified prose reference")
+
+
+def test_unledgered_rust_docs_directory_reference_fails() -> None:
+    findings = collect(extra_rust_test='const SCAN_ROOTS: &[&str] = &["docs/bolt-v3"];\n')
     assert_finding(findings, "unclassified prose reference")
 
 
@@ -210,7 +229,9 @@ def main() -> int:
     tests = [
         test_known_residuals_pass,
         test_unledgered_markdown_reference_fails,
+        test_unledgered_rust_markdown_reference_fails,
         test_unledgered_docs_wide_glob_fails,
+        test_unledgered_rust_docs_directory_reference_fails,
         test_same_line_extra_markdown_reference_fails,
         test_adjacent_literal_markdown_reference_fails,
         test_split_suffix_helper_markdown_reference_fails,

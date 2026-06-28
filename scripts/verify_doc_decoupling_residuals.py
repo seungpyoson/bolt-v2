@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify prose-reading verifier residuals are explicitly classified."""
+"""Verify CI prose-reference residuals are explicitly classified."""
 
 from __future__ import annotations
 
@@ -15,8 +15,10 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LEDGER_PATH = Path("ci/doc-decoupling-residuals.toml")
 VERIFY_SCRIPT_GLOB = "verify_*.py"
+RUST_TEST_GLOB = "*.rs"
 MARKDOWN_EXTENSION = chr(46) + chr(109) + chr(100)
 DOCS_WIDE_GLOB = "/".join(("docs", "**", "*"))
+PROSE_DIRECTORY_PREFIXES = ("/".join(("docs", "")), "/".join(("specs", "")))
 VALID_KINDS = {
     "workflow_snippet_false_positive",
     "docstring_pointer_false_positive",
@@ -63,15 +65,32 @@ def string_literal_values(line: str) -> list[str]:
 
 
 def prose_reference_count(text: str) -> int:
-    markdown_count = text.count(MARKDOWN_EXTENSION)
-    docs_wide_count = text.count(DOCS_WIDE_GLOB)
-    if markdown_count or docs_wide_count:
-        return markdown_count + docs_wide_count
-
-    literal_text = "".join(string_literal_values(text))
+    raw_count = text.count(MARKDOWN_EXTENSION) + text.count(DOCS_WIDE_GLOB)
+    literal_values = string_literal_values(text)
+    literal_text = "".join(literal_values)
+    directory_count = sum(1 for value in literal_values if prose_directory_literal(value))
     if not literal_text:
-        return 0
-    return literal_text.count(MARKDOWN_EXTENSION) + literal_text.count(DOCS_WIDE_GLOB)
+        return raw_count + directory_count
+    split_literal_count = (
+        0
+        if raw_count
+        else literal_text.count(MARKDOWN_EXTENSION) + literal_text.count(DOCS_WIDE_GLOB)
+    )
+    return raw_count + split_literal_count + directory_count
+
+
+def prose_directory_literal(value: str) -> bool:
+    normalized = value.replace("\\", "/").strip()
+    if not normalized.startswith(PROSE_DIRECTORY_PREFIXES):
+        return False
+    if normalized.startswith(PROSE_DIRECTORY_PREFIXES[1]) and "/reference" in normalized:
+        return False
+    if normalized.startswith(PROSE_DIRECTORY_PREFIXES[0]) and "/research" in normalized:
+        return False
+    if any(char in normalized for char in "*?[]"):
+        return False
+    suffix = Path(normalized).suffix
+    return suffix == ""
 
 
 def load_ledger(root: Path, findings: list[str]) -> list[dict[str, Any]]:
@@ -105,8 +124,8 @@ def validate_entry(entry: dict[str, Any], index: int, findings: list[str]) -> No
         findings.append(f"{prefix}.path must be non-empty")
     else:
         path_text = str(path)
-        if not path_text.startswith("scripts/verify_") or not path_text.endswith(".py"):
-            findings.append(f"{prefix}.path must target scripts/verify_*.py")
+        if not allowed_residual_path(path_text):
+            findings.append(f"{prefix}.path must target scripts/verify_*.py or tests/*.rs")
 
     kind = entry.get("kind")
     if kind not in VALID_KINDS:
@@ -137,16 +156,32 @@ def validate_entry(entry: dict[str, Any], index: int, findings: list[str]) -> No
         findings.append(f"{prefix}: {kind} must declare read_purpose {expected_read_purpose}")
 
 
-def verify_script_paths(root: Path) -> list[Path]:
+def allowed_residual_path(path_text: str) -> bool:
+    return (
+        path_text.startswith("scripts/verify_")
+        and path_text.endswith(".py")
+        and "/" not in path_text.removeprefix("scripts/")
+    ) or (
+        path_text.startswith("tests/")
+        and path_text.endswith(".rs")
+        and "/" not in path_text.removeprefix("tests/")
+    )
+
+
+def scanned_source_paths(root: Path) -> list[Path]:
+    paths: list[Path] = []
     scripts = root / "scripts"
-    if not scripts.is_dir():
-        return []
-    return sorted(scripts.glob(VERIFY_SCRIPT_GLOB))
+    if scripts.is_dir():
+        paths.extend(scripts.glob(VERIFY_SCRIPT_GLOB))
+    tests = root / "tests"
+    if tests.is_dir():
+        paths.extend(tests.glob(RUST_TEST_GLOB))
+    return sorted(paths)
 
 
 def prose_reference_lines(root: Path) -> list[tuple[str, int, str]]:
     lines: list[tuple[str, int, str]] = []
-    for path in verify_script_paths(root):
+    for path in scanned_source_paths(root):
         rel = path.relative_to(root).as_posix()
         try:
             text = path.read_text(encoding="utf-8")

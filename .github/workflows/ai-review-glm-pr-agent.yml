@@ -71,6 +71,15 @@ jobs:
                   value = json.dumps(value, separators=(",", ":"))
               print(f"{name}={value}")
 
+          def notice_marker(table, marker_key):
+              configured = table.get("notice_marker")
+              if isinstance(configured, str) and configured:
+                  return configured
+              marker = table[marker_key]
+              if not isinstance(marker, str) or not marker.endswith(" -->"):
+                  raise RuntimeError(f"{marker_key} cannot provide a rollout notice marker")
+              return f"{marker[:-4]}-notice -->"
+
           emit("github_api_url", github["api_url"])
           emit("expected_bot_login", github["expected_bot_login"])
           emit("ai_review_max_comment_chars", review["max_comment_chars"])
@@ -78,7 +87,7 @@ jobs:
           emit("glm_model", glm["model"])
           emit("glm_api_timeout_seconds", glm["api_timeout_seconds"])
           emit("glm_review_max_chunk_chars", glm["review_max_chunk_chars"])
-          emit("glm_notice_marker", glm["notice_marker"])
+          emit("glm_notice_marker", notice_marker(glm, "comment_marker"))
           emit("glm_pr_agent_model", pr_agent["model"])
           emit("glm_pr_agent_fallback_models", pr_agent["fallback_models"])
           emit("glm_pr_agent_custom_model_max_tokens", pr_agent["custom_model_max_tokens"])

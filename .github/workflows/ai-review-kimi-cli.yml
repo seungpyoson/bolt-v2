@@ -77,6 +77,15 @@ jobs:
                   value = "true" if value else "false"
               print(f"{name}={value}")
 
+          def notice_marker(table, marker_key):
+              configured = table.get("notice_marker")
+              if isinstance(configured, str) and configured:
+                  return configured
+              marker = table[marker_key]
+              if not isinstance(marker, str) or not marker.endswith(" -->"):
+                  raise RuntimeError(f"{marker_key} cannot provide a rollout notice marker")
+              return f"{marker[:-4]}-notice -->"
+
           emit("github_api_url", github["api_url"])
           emit("expected_bot_login", github["expected_bot_login"])
           emit("ai_review_max_comment_chars", review["max_comment_chars"])
@@ -88,7 +97,7 @@ jobs:
           emit("kimi_model_max_context_size", kimi["model_max_context_size"])
           emit("kimi_model_default_thinking", kimi["default_thinking"])
           emit("kimi_deliverable_marker", kimi["deliverable_marker"])
-          emit("kimi_notice_marker", kimi["notice_marker"])
+          emit("kimi_notice_marker", notice_marker(kimi, "deliverable_marker"))
           emit("kimi_review_max_chunk_chars", kimi["review_max_chunk_chars"])
           emit("kimi_cli_timeout_seconds", kimi["cli_timeout_seconds"])
           emit("kimi_node_version", workflow["node_version"])

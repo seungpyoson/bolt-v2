@@ -2501,9 +2501,11 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         backtester_workflow,
         '          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then\n'
         "            # A skipped required gate counts as passing, so queue validation must run proof lanes.\n"
-        '            echo "merge_group event; treating crate as changed"\n'
+        "            # The merge queue is proof-bearing, so avoid opaque archive reuse when this path\n"
+        "            # cannot use the pull_request bootstrap diff.\n"
+        '            echo "merge_group event; treating crate as changed with exact-head cache namespace"\n'
         '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
-        '            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n'
         '            exit 0\n',
         "",
     )
@@ -2521,11 +2523,11 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     backtester_detector_without_exit = replace_once(
         backtester_workflow,
         '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
-        '            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n'
         "            exit 0\n"
         "          fi\n",
         '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
-        '            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n'
         "          fi\n",
     )
     backtester_detector_exit_errors = verifier.verify_repo_automation_texts(
@@ -2538,6 +2540,48 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         raise AssertionError(
             "expected backtester merge_group detector short-circuit error, "
             f"got: {backtester_detector_exit_errors}"
+        )
+
+    backtester_merge_group_without_exact_namespace = replace_once(
+        backtester_workflow,
+        '            echo "merge_group event; treating crate as changed with exact-head cache namespace"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n',
+        '            echo "merge_group event; treating crate as changed"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"\n',
+    )
+    backtester_merge_group_namespace_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_merge_group_without_exact_namespace}
+    )
+    if not any(
+        "backtester forced detect events must use exact-head cache namespace" in error
+        for error in backtester_merge_group_namespace_errors
+    ):
+        raise AssertionError(
+            "expected backtester merge_group exact-head namespace error, "
+            f"got: {backtester_merge_group_namespace_errors}"
+        )
+
+    backtester_dispatch_without_exact_namespace = replace_once(
+        backtester_workflow,
+        '            echo "push or manual dispatch event; treating crate as changed with exact-head cache namespace"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n',
+        '            echo "push or manual dispatch event; treating crate as changed"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"\n',
+    )
+    backtester_dispatch_namespace_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_dispatch_without_exact_namespace}
+    )
+    if not any(
+        "backtester forced detect events must use exact-head cache namespace" in error
+        for error in backtester_dispatch_namespace_errors
+    ):
+        raise AssertionError(
+            "expected backtester push/dispatch exact-head namespace error, "
+            f"got: {backtester_dispatch_namespace_errors}"
         )
 
     # Detector must force build on merge_group (a skipped required build is a hole).
@@ -4074,8 +4118,13 @@ def assert_backtester_detect_uses_ci_input_set() -> None:
         raise AssertionError(f"backtester detector must reject missing bootstrap guard, got: {bootstrap_errors}")
     missing_bootstrap_marker = replace_once(
         workflow,
+        '            echo "CI input-set bootstrap paths changed:"\n'
+        '            cat "$bootstrap_changed_path"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
         '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n',
-        "",
+        '            echo "CI input-set bootstrap paths changed:"\n'
+        '            cat "$bootstrap_changed_path"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n',
     )
     bootstrap_marker_errors = verifier.verify_repo_automation_texts(
         {".github/workflows/backtester-ci.yml": missing_bootstrap_marker}

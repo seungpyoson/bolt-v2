@@ -209,15 +209,17 @@ jobs:
         run: |
           python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect
           if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "push or manual dispatch event; treating crate as changed"
+            echo "push or manual dispatch event; treating crate as changed with exact-head cache namespace"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
-            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"
+            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
             # A skipped required gate counts as passing, so queue validation must run proof lanes.
-            echo "merge_group event; treating crate as changed"
+            # The merge queue is proof-bearing, so avoid opaque archive reuse when this path
+            # cannot use the pull_request bootstrap diff.
+            echo "merge_group event; treating crate as changed with exact-head cache namespace"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
-            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"
+            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           base_sha="${{ github.event.pull_request.base.sha }}"

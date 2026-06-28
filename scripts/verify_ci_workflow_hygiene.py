@@ -8364,6 +8364,27 @@ def backtester_detect_forces_bvs_changed_on_merge_group(job_lines: list[str]) ->
     )
 
 
+def backtester_detect_forced_events_use_exact_head_namespace(job_lines: list[str]) -> bool:
+    # Events that bypass the PR diff detector must not trust the head-controlled
+    # cache input helper/config for opaque archive cache keys. They run the proof
+    # lanes and use the exact-head bootstrap namespace instead.
+    text = uncommented_text(job_lines)
+    for branch_type, condition in (
+        ("if", '"${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch"'),
+        ("elif", '"${{ github.event_name }}" == "merge_group"'),
+    ):
+        branch = branch_body(text, branch_type, condition)
+        if branch is None:
+            return False
+        if 'echo "bvs_changed=true" >> "$GITHUB_OUTPUT"' not in branch:
+            return False
+        if 'echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"' not in branch:
+            return False
+        if not body_exits_zero(branch):
+            return False
+    return True
+
+
 def git_diff_pathspecs(block_text: str) -> tuple[str, ...] | None:
     normalized = re.sub(r"\\\s*\n\s*", " ", block_text)
     matches = [
@@ -10340,7 +10361,13 @@ def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
     bootstrap_required = 'git diff --name-only "${base_sha}...HEAD" -- scripts/ci_input_sets.py ci/rust-ci-inputs.toml > "$bootstrap_changed_path"'
     if bootstrap_required not in detect_text:
         errors.append("backtester detect must force-run on CI input-set bootstrap changes")
-    if 'echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"' not in detect_text:
+    bootstrap_branch = branch_body(detect_text, "if", '-s "$bootstrap_changed_path"')
+    if (
+        bootstrap_branch is None
+        or 'echo "bvs_changed=true" >> "$GITHUB_OUTPUT"' not in bootstrap_branch
+        or 'echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"' not in bootstrap_branch
+        or "exit 0" not in bootstrap_branch
+    ):
         errors.append("backtester detect must mark CI input-set bootstrap changes")
     required = 'python3 scripts/ci_input_sets.py changed backtester_detect --base "$base_sha" --head HEAD'
     if required not in detect_text:
@@ -10526,6 +10553,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
             if "detect" in jobs and not backtester_detect_forces_bvs_changed_on_merge_group(jobs["detect"]):
                 errors.append(
                     f"{file_name}: backtester detect must force bvs_changed=true for merge_group"
+                )
+            if "detect" in jobs and not backtester_detect_forced_events_use_exact_head_namespace(jobs["detect"]):
+                errors.append(
+                    f"{file_name}: backtester forced detect events must use exact-head cache namespace"
                 )
             add_unique_errors(
                 errors,

@@ -97,14 +97,17 @@ permissions:
 jobs:
   merge-readiness-progress:
     name: merge-readiness-progress
-    # Skip redundant advisory runs when Mergify edits the proof PR metadata after
-    # the initial opened run. Still run on the initial opened run, on code pushes,
-    # on base-ref retargets, and on ordinary PRs.
+    # Run only where required full-gate proof can exist: Mergify proof PRs.
+    # Ordinary source PRs and drafts are queue-covered, so running this advisory
+    # waiter there only burns minutes waiting for absent proof gates. Also skip
+    # redundant runs when Mergify edits proof PR metadata after the initial opened
+    # run.
     if: >-
       ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == false
+          && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+              || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
           && !(github.event.action == 'edited'
-               && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-                   || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
                && !(github.event.changes.base.ref.from != '')) }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     permissions:

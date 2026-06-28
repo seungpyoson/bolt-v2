@@ -501,6 +501,28 @@ def integration_batch_ready_findings(batches: Sequence[Batch]) -> tuple[dict[str
     return tuple(integration_batch_ready_finding(batch) for batch in batches)
 
 
+def verifier_batch_ready_finding(batch: Batch, output_policy: OutputPolicy) -> dict[str, object]:
+    return {
+        "lane": LANE_VERIFIER,
+        "scope": "batch",
+        "status": STATUS_READY,
+        "reason_code": "verifier_batch_ready",
+        "message": f"batch {batch.index} verifier commands passed",
+        "evidence": {
+            "index": batch.index,
+            "prs": list(batch.prs),
+            "verifiers": [result.as_public_json(output_policy) for result in batch.verifiers],
+        },
+    }
+
+
+def verifier_batch_ready_findings(
+    batches: Sequence[Batch],
+    output_policy: OutputPolicy,
+) -> tuple[dict[str, object], ...]:
+    return tuple(verifier_batch_ready_finding(batch, output_policy) for batch in batches)
+
+
 def mergify_config_snapshot_finding(*, repo: pathlib.Path, base_sha: str) -> dict[str, object]:
     result = git(repo, "rev-parse", f"{base_sha}:{MERGIFY_CONFIG_PATH}", check=False)
     blob_sha = result.stdout.strip()
@@ -1765,6 +1787,7 @@ def preflight(
         *preflight_mode_findings(use_gh=use_gh),
         *residual_risk_findings(),
         *integration_batch_ready_findings(batches),
+        *verifier_batch_ready_findings(batches, output_policy),
     )
     contract_evaluation = evaluate_preflight_contract(
         ContractEvidence(

@@ -909,6 +909,12 @@ def positive_pr_number(value: str) -> int:
     return int(value)
 
 
+def commit_sha(value: str) -> str:
+    if SHA_RE.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("commit SHAs must be 40 lowercase hex characters")
+    return value
+
+
 def unique_preserving_order(values: Sequence[int]) -> tuple[int, ...]:
     seen: set[int] = set()
     ordered: list[int] = []
@@ -1245,6 +1251,7 @@ def preflight(
     repo: pathlib.Path,
     origin: str,
     base: str,
+    expected_base_sha: str,
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
     output_policy: OutputPolicy,
@@ -1372,6 +1379,7 @@ def preflight(
     payload = {
         "base": base,
         "base_sha": base_sha,
+        "expected_base_sha": expected_base_sha,
         "requested_prs": list(requested),
         "pr_heads": {str(number): head.sha for number, head in heads.items()},
         "readiness": readiness,
@@ -1507,6 +1515,7 @@ def parser() -> argparse.ArgumentParser:
     root = PreflightArgumentParser(prog="merge_queue_preflight.py")
     root.add_argument("prs", nargs="+", type=positive_pr_number)
     root.add_argument("--base")
+    root.add_argument("--expected-base-sha", required=True, type=commit_sha)
     root.add_argument("--origin")
     root.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
     root.add_argument("--verifier-profile")
@@ -1531,6 +1540,7 @@ def main(argv: list[str] | None = None) -> int:
             repo=pathlib.Path.cwd(),
             origin=args.origin or config.origin,
             base=args.base or config.base,
+            expected_base_sha=args.expected_base_sha,
             pr_numbers=args.prs,
             verifier_commands=verifier_commands(config, args.verifier_profile, args.run_verifier),
             output_policy=config.output_policy,

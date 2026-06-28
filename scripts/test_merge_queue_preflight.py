@@ -75,6 +75,7 @@ def run_preflight(
     origin: pathlib.Path,
     *args: str,
     expect_success: bool = True,
+    expected_base_sha: str | None = None,
 ) -> tuple[int, str, str]:
     command = [
         sys.executable,
@@ -83,6 +84,8 @@ def run_preflight(
         str(origin),
         "--base",
         "main",
+        "--expected-base-sha",
+        expected_base_sha or git(repo, "rev-parse", "main"),
         "--no-gh",
         "--verifier-profile",
         "none",
@@ -561,6 +564,7 @@ def run_preflight_with_gh(
     origin: pathlib.Path,
     bin_dir: pathlib.Path,
     *prs: str,
+    expected_base_sha: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     command = [
         sys.executable,
@@ -569,6 +573,8 @@ def run_preflight_with_gh(
         str(origin),
         "--base",
         "main",
+        "--expected-base-sha",
+        expected_base_sha or git(repo, "rev-parse", "main"),
         "--verifier-profile",
         "none",
         "--json",
@@ -840,6 +846,8 @@ def assert_verifier_failure_blocks_bad_pr_before_batching() -> None:
             str(fixture.remote),
             "--base",
             "main",
+            "--expected-base-sha",
+            fixture.base,
             "--no-gh",
             "--verifier-profile",
             "none",
@@ -892,6 +900,8 @@ def assert_configured_verifier_profile_blocks_bad_pr() -> None:
             str(fixture.remote),
             "--base",
             "main",
+            "--expected-base-sha",
+            fixture.base,
             "--no-gh",
             "--config",
             str(config),
@@ -937,6 +947,8 @@ def assert_plain_output_includes_verifier_failure_details() -> None:
             str(fixture.remote),
             "--base",
             "main",
+            "--expected-base-sha",
+            fixture.base,
             "--no-gh",
             "--verifier-profile",
             "none",
@@ -976,6 +988,8 @@ def assert_plain_output_omits_successful_verifier_streams() -> None:
             str(fixture.remote),
             "--base",
             "main",
+            "--expected-base-sha",
+            fixture.base,
             "--no-gh",
             "--verifier-profile",
             "none",
@@ -1025,6 +1039,8 @@ def assert_plain_output_bounds_failed_verifier_streams() -> None:
             str(fixture.remote),
             "--base",
             "main",
+            "--expected-base-sha",
+            fixture.base,
             "--no-gh",
             "--config",
             str(config),
@@ -1074,6 +1090,8 @@ def assert_json_output_uses_bounded_verifier_previews() -> None:
             str(fixture.remote),
             "--base",
             "main",
+            "--expected-base-sha",
+            fixture.base,
             "--no-gh",
             "--config",
             str(config),
@@ -1207,6 +1225,36 @@ def assert_invalid_pr_input_is_rejected() -> None:
         assert "PR numbers must be positive integers" in stderr, stderr
 
 
+def assert_missing_expected_base_sha_is_rejected() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        fixture.make_pr(1, {"one.txt": "one\n"})
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 4, "missing expected base sha rc")
+        assert "--expected-base-sha" in result.stderr, result.stderr
+
+
 def assert_missing_gh_reports_inconclusive_metadata() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -1225,6 +1273,8 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
             str(fixture.remote),
             "--base",
             "main",
+            "--expected-base-sha",
+            fixture.base,
             "--verifier-profile",
             "none",
             "--json",
@@ -1281,6 +1331,7 @@ def main() -> int:
     assert_required_check_pending_is_inconclusive()
     assert_partial_gh_metadata_failure_preserves_other_readiness()
     assert_invalid_pr_input_is_rejected()
+    assert_missing_expected_base_sha_is_rejected()
     assert_missing_gh_reports_inconclusive_metadata()
     print("OK: merge_queue_preflight tests passed.")
     return 0

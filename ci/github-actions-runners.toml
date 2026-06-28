@@ -54,6 +54,11 @@ test-archive = "managed_heavy"
 issue_789 = "managed_heavy"
 gate = "github_hosted"
 
+[workflows.flaky_test_detection]
+flaky-detection-rust-root = "managed_heavy"
+flaky-detection-rust-backtester = "managed_heavy"
+flaky-detection-rust-backtester-issue-789 = "managed_heavy"
+
 [workflows.ci_runner_debug]
 debug-heavy = "managed_heavy"
 debug-light = "managed_light"
@@ -104,6 +109,7 @@ debug_workflow = "ci_runner_debug"
 included_workflows = [
   "ci",
   "backtester_ci",
+  "flaky_test_detection",
   "ci_runner_debug",
   "rust_probe",
 ]

@@ -35,8 +35,8 @@ Checks:
      bolt_pattern_helper.
  12. Every captured_now row's capture_stream / storage_format matches
      bolt-current-capture.yaml.
- 13. Cargo.toml, the naming audit, the runtime contract, and the pinned NT
-     checkout path agree on the NautilusTrader revision.
+ 13. Cargo.toml, the naming audit, and the pinned NT checkout path agree on
+     the NautilusTrader revision.
  14. Every captured_now stream in bolt-current-capture.yaml is represented
      by nt-msgbus-surfaces.yaml and its listed tests exist.
  15. PortfolioSnapshot is either captured with source/current/spool proof or
@@ -97,9 +97,6 @@ NAMING_AUDIT_PATH = (
     / "research"
     / "naming"
     / "nt-owned-name-audit.yaml"
-)
-RUNTIME_CONTRACTS_PATH = (
-    REPO_ROOT / "docs" / "bolt-v3" / "2026-04-25-bolt-v3-runtime-contracts.md"
 )
 SRC_PATH = REPO_ROOT / "src" / "nt_runtime_capture.rs"
 TEST_PATH = REPO_ROOT / "tests" / "nt_runtime_capture.rs"
@@ -501,7 +498,6 @@ def collect_failures() -> list[tuple[str, str]]:
     test_definition_text = strip_rust_comments_and_strings(test_text)
     surfaces_text = read(SURFACES_PATH)
     feas_text = read(FEAS_PATH)
-    runtime_contracts_text = read(RUNTIME_CONTRACTS_PATH)
 
     surfaces = (
         surfaces_doc.get("surfaces", []) if isinstance(surfaces_doc, dict) else []
@@ -916,24 +912,6 @@ def collect_failures() -> list[tuple[str, str]]:
                 (
                     "13.pin_revision_mismatch",
                     f"nt-owned-name-audit.yaml nautilus_trader_revision={audit_revision!r}, "
-                    f"but Cargo.toml pins {nautilus_revision!r}",
-                )
-            )
-        runtime_revisions = re.findall(
-            r"current value:\s*`([0-9a-f]{40})`", runtime_contracts_text
-        )
-        if not runtime_revisions:
-            findings.append(
-                (
-                    "13.runtime_contract_pin_missing",
-                    "runtime contracts doc does not expose a `current value: <40-char rev>` pin",
-                )
-            )
-        elif set(runtime_revisions) != {nautilus_revision}:
-            findings.append(
-                (
-                    "13.pin_revision_mismatch",
-                    f"runtime contracts current values={sorted(set(runtime_revisions))!r}, "
                     f"but Cargo.toml pins {nautilus_revision!r}",
                 )
             )

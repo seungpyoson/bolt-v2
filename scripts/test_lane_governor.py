@@ -164,8 +164,15 @@ def _valid_lane_policy() -> dict:
             "local-gate:fmt-check",
             "local-gate:source-fence-static",
             "local-gate:ci-lint-workflow",
-            "test_lane_governor.py",
-            "verify_lane_governance.py",
+            "test_clean_merged_artifacts.py",
+            "test_developer_tool_storage_hygiene.py",
+            "test_leadlag_clock_alignment.py",
+            "verify_runtime_capture_yaml.py",
+        ],
+        "cheap_lane_just_recipes": [
+            "source-fence-static-inner",
+            "ci-lint-workflow-inner",
+            "cargo-shim-tests",
         ],
         "cheap_lane_max_concurrent": 0,
     }
@@ -235,6 +242,38 @@ def test_cheap_lane_labels_must_be_a_string_list() -> None:
         policy = _valid_lane_policy()
         policy["cheap_lane_labels"] = bad
         _expect_policy_error({"local_lane_policy": policy}, "cheap_lane_labels")
+
+
+def test_cheap_lane_just_recipes_must_be_safe_recipe_names() -> None:
+    for bad in ("source-fence-static-inner", [True], [""], ["../source-fence-static-inner"]):
+        policy = _valid_lane_policy()
+        policy["cheap_lane_just_recipes"] = bad
+        _expect_policy_error({"local_lane_policy": policy}, "cheap_lane_just_recipes")
+
+
+def test_cheap_lane_just_recipes_accept_private_recipe_names() -> None:
+    assert RV.just_recipe_name("_source_fence:") == "_source_fence"
+    assert RV.validate_cheap_lane_just_recipe("_source-fence") == "_source-fence"
+
+
+def test_cheap_lane_labels_resolve_just_recipes() -> None:
+    policy = _valid_lane_policy()
+    labels = RV.resolve_cheap_lane_labels(REPO_ROOT, policy)
+    assert "test_lane_governor.py" in labels
+    assert "verify_lane_governance.py" in labels
+    assert "test_cargo_shim.py" in labels
+    assert "test_developer_tool_storage_hygiene.py" in labels
+    assert "test_host_health_sampler.py" not in labels
+    assert "local-gate:source-fence-static" in labels
+    subcrate_labels = RV.resolve_cheap_lane_labels(REPO_ROOT / "crates/backtesting-vertical-slice", policy)
+    assert subcrate_labels == labels
+
+
+def test_cheap_lane_label_resolution_deduplicates_explicit_recipe_overlap() -> None:
+    policy = _valid_lane_policy()
+    policy["cheap_lane_labels"] = [*policy["cheap_lane_labels"], "test_lane_governor.py"]
+    labels = RV.resolve_cheap_lane_labels(REPO_ROOT, policy)
+    assert labels.count("test_lane_governor.py") == 1
 
 
 def test_cheap_lane_max_concurrent_must_be_a_non_negative_integer() -> None:
@@ -744,13 +783,18 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
 
 def _cheap_lane_labels() -> list[str]:
     policy = RV.load_policy(REPO_ROOT)["local_lane_policy"]
+    return RV.resolve_cheap_lane_labels(REPO_ROOT, policy)
+
+
+def _direct_cheap_lane_labels() -> list[str]:
+    policy = RV.load_policy(REPO_ROOT)["local_lane_policy"]
     labels = policy.get("cheap_lane_labels", [])
     assert isinstance(labels, list), "cheap_lane_labels must be a list"
     return labels
 
 
 def _cheap_labeled_python_scripts(labels: list[str] | None = None) -> set[Path]:
-    labels = _cheap_lane_labels() if labels is None else labels
+    labels = _direct_cheap_lane_labels() if labels is None else labels
     missing = sorted(
         label
         for label in labels
@@ -2571,11 +2615,11 @@ def _discover_cheap_lane_scripts() -> set[Path]:
     if _DISCOVERY_CACHE is not None:
         return set(_DISCOVERY_CACHE)
     labels = _cheap_lane_labels()
-    labeled_scripts = _cheap_labeled_python_scripts(labels)
+    resolved_scripts = _cheap_labeled_python_scripts(labels)
     dump = _just_dump()
     label_set = {label for label in labels if isinstance(label, str)}
     closure, _gates = _cheap_gate_closure(dump, label_set)
-    scripts = set(labeled_scripts) | _closure_python_scripts(dump, closure)
+    scripts = set(resolved_scripts) | _closure_python_scripts(dump, closure)
     failures: list[str] = []
     scanned: set[Path] = set()
     queue = list(sorted(scripts))
@@ -2728,8 +2772,8 @@ def test_cheap_lane_discovery_manifest_floor_and_required_edges() -> None:
 
 
 def test_manifest_floor_does_not_accept_labeled_seed_only() -> None:
-    labeled_only = {SCRIPTS_DIR / "test_lane_governor.py"}
-    manifest = {"scripts/test_lane_governor.py"}
+    labeled_only = {SCRIPTS_DIR / "test_developer_tool_storage_hygiene.py"}
+    manifest = {"scripts/test_developer_tool_storage_hygiene.py"}
     assert _manifest_floor_missing(labeled_only, manifest) == manifest
 
 
@@ -4160,6 +4204,10 @@ def _registered_self_tests():
         test_poll_interval_must_not_exceed_heartbeat,
         test_non_positive_intervals_rejected,
         test_cheap_lane_labels_must_be_a_string_list,
+        test_cheap_lane_just_recipes_must_be_safe_recipe_names,
+        test_cheap_lane_just_recipes_accept_private_recipe_names,
+        test_cheap_lane_labels_resolve_just_recipes,
+        test_cheap_lane_label_resolution_deduplicates_explicit_recipe_overlap,
         test_cheap_lane_max_concurrent_must_be_a_non_negative_integer,
         test_unknown_lane_policy_keys_rejected,
         test_repo_policy_file_declares_lane_policy,

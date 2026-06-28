@@ -111,6 +111,10 @@ def parse_json(stdout: str) -> dict[str, object]:
     return payload
 
 
+def assert_equal(actual: object, expected: object, label: str) -> None:
+    assert actual == expected, (label, actual, expected)
+
+
 def load_preflight_module() -> object:
     spec = importlib.util.spec_from_file_location("merge_queue_preflight", SCRIPT_PATH)
     if spec is None or spec.loader is None:
@@ -490,13 +494,13 @@ def assert_clean_prs_batch_together() -> None:
         _, stdout, _ = run_preflight(fixture.repo, fixture.remote, "1", "2")
         payload = parse_json(stdout)
 
-        batches = payload["batches"]
-        if batches != [{"index": 1, "prs": [1, 2], "status": "ready", "verifiers": []}]:
-            raise AssertionError(batches)
-        if payload["blocked_prs"] != []:
-            raise AssertionError(payload["blocked_prs"])
-        if payload["conflicts"] != []:
-            raise AssertionError(payload["conflicts"])
+        assert_equal(
+            payload["batches"],
+            [{"index": 1, "prs": [1, 2], "status": "ready", "verifiers": []}],
+            "clean batches",
+        )
+        assert_equal(payload["blocked_prs"], [], "clean blocked_prs")
+        assert_equal(payload["conflicts"], [], "clean conflicts")
 
 
 def assert_conflicting_pr_starts_later_batch() -> None:
@@ -512,22 +516,21 @@ def assert_conflicting_pr_starts_later_batch() -> None:
             "2",
             expect_success=False,
         )
-        if rc != 1:
-            raise AssertionError(rc)
+        assert_equal(rc, 1, "batch conflict rc")
         payload = parse_json(stdout)
 
-        batches = payload["batches"]
-        if [batch["prs"] for batch in batches] != [[1], [2]]:
-            raise AssertionError(batches)
-        conflicts = payload["conflicts"]
         expected = {
             "pr": 2,
             "against_batch": [1],
             "files": ["shared.txt"],
             "type": "batch_conflict",
         }
-        if conflicts != [expected]:
-            raise AssertionError(conflicts)
+        assert_equal(
+            [batch["prs"] for batch in payload["batches"]],
+            [[1], [2]],
+            "batch conflict batches",
+        )
+        assert_equal(payload["conflicts"], [expected], "batch conflict artifacts")
 
 
 def assert_order_dependent_conflict_context_is_reported() -> None:
@@ -545,23 +548,26 @@ def assert_order_dependent_conflict_context_is_reported() -> None:
             "3",
             expect_success=False,
         )
-        if rc != 1:
-            raise AssertionError(rc)
+        assert_equal(rc, 1, "order-dependent conflict rc")
         payload = parse_json(stdout)
 
-        batches = payload["batches"]
-        if [batch["prs"] for batch in batches] != [[1, 2], [3]]:
-            raise AssertionError(batches)
-        conflicts = payload["conflicts"]
-        if conflicts != [
-            {
-                "pr": 3,
-                "against_batch": [1, 2],
-                "files": ["shared.txt"],
-                "type": "batch_conflict",
-            }
-        ]:
-            raise AssertionError(conflicts)
+        assert_equal(
+            [batch["prs"] for batch in payload["batches"]],
+            [[1, 2], [3]],
+            "order-dependent conflict batches",
+        )
+        assert_equal(
+            payload["conflicts"],
+            [
+                {
+                    "pr": 3,
+                    "against_batch": [1, 2],
+                    "files": ["shared.txt"],
+                    "type": "batch_conflict",
+                }
+            ],
+            "order-dependent conflict artifacts",
+        )
 
 
 def assert_pr_that_conflicts_with_base_is_blocked() -> None:
@@ -581,37 +587,36 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
             "2",
             expect_success=False,
         )
-        if rc != 1:
-            raise AssertionError(rc)
+        assert_equal(rc, 1, "base conflict rc")
         payload = parse_json(stdout)
 
-        if [batch["prs"] for batch in payload["batches"]] != [[1]]:
-            raise AssertionError(payload["batches"])
         blocked = payload["blocked_prs"]
-        if blocked != [
+        expected_blocked = [
             {
                 "pr": 2,
                 "reason": "conflicts with base",
                 "files": ["shared.txt"],
                 "type": "base_conflict",
             }
-        ]:
-            raise AssertionError(blocked)
-        if payload["findings"] != [
-            {
-                "lane": "integration",
-                "scope": "pr",
-                "status": "blocked",
-                "reason_code": "base_conflict",
-                "message": "base_conflict",
-                "evidence": blocked[0],
-            }
-        ]:
-            raise AssertionError(payload["findings"])
-        if (payload["verdict"], payload["contract_exit_code"]) != ("blocked", 2):
-            raise AssertionError(payload)
-        if payload["lane_statuses"]["integration"] != "blocked":
-            raise AssertionError(payload["lane_statuses"])
+        ]
+        assert_equal([batch["prs"] for batch in payload["batches"]], [[1]], "base conflict batches")
+        assert_equal(blocked, expected_blocked, "base conflict blocked_prs")
+        assert_equal(
+            payload["findings"],
+            [
+                {
+                    "lane": "integration",
+                    "scope": "pr",
+                    "status": "blocked",
+                    "reason_code": "base_conflict",
+                    "message": "base_conflict",
+                    "evidence": blocked[0],
+                }
+            ],
+            "base conflict findings",
+        )
+        assert_equal((payload["verdict"], payload["contract_exit_code"]), ("blocked", 2), "base conflict contract")
+        assert_equal(payload["lane_statuses"]["integration"], "blocked", "base conflict integration lane")
 
 
 def assert_verifier_failure_blocks_bad_pr_before_batching() -> None:

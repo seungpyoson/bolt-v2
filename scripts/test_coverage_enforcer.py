@@ -409,6 +409,26 @@ def assert_iteration_gate_contexts_succeed() -> None:
         raise AssertionError(posted)
 
 
+def assert_retriggered_same_app_check_runs_succeed() -> None:
+    result, fake = run_enforcer(
+        [
+            [
+                check_run("gate"),
+                check_run("backtester-gate"),
+                check_run("host-health"),
+                check_run("host-health"),
+                check_run("actionlint"),
+                check_run("actionlint"),
+            ]
+        ]
+    )
+    if result.conclusion != "success" or result.findings:
+        raise AssertionError(result)
+    posted = fake.posted_check_runs()
+    if len(posted) != 1 or posted[0]["conclusion"] != "success":
+        raise AssertionError(posted)
+
+
 def assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair() -> None:
     stale_completed_at = "2026-06-27T00:00:10Z"
     fresh_completed_at = "2026-06-27T00:01:10Z"
@@ -606,6 +626,7 @@ def main() -> int:
     assert_drift_detects_missing_and_wrong_app()
     assert_all_present_and_correct_succeeds()
     assert_iteration_gate_contexts_succeed()
+    assert_retriggered_same_app_check_runs_succeed()
     assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair()
     assert_poll_timeout_fails_closed()
     assert_r2_derivation_mismatch_fails()

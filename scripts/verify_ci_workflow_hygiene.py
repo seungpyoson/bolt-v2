@@ -844,26 +844,29 @@ MERGIFY_PROOF_PR_HEAD_REF_PREDICATE = (
 MERGIFY_PROOF_PR_CANCEL_GUARD = f"!{MERGIFY_PROOF_PR_HEAD_REF_PREDICATE}"
 MERGIFY_PROOF_PR_GROUP_TOKEN = "mergify-proof"
 
-# Shared predicate used by advisory jobs to skip redundant runs on Mergify proof
-# PR metadata-only edits (title/body) after the initial opened run. It is true
-# only for pull_request edited events where the head ref is a Mergify queue
-# proof branch and the base ref did not change. It must NOT be used for required
-# merge-proof jobs.
-MERGIFY_METADATA_EDIT_SKIP_PREDICATE = (
+# Shared predicates used by advisory jobs only. Draft and ordinary source PRs
+# are queue-covered and do not produce full-gate proof, so advisory waiters that
+# require proof gates must not run there. These predicates must NOT be used for
+# required merge-proof jobs.
+MERGIFY_PROOF_PR_READY_PREDICATE = (
+    "github.event_name == 'pull_request' "
+    "&& github.event.pull_request.draft == false "
+    "&& " + MERGIFY_PROOF_PR_HEAD_REF_PREDICATE
+)
+MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE = (
     "github.event.action == 'edited' "
-    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
-    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
     "&& !(github.event.changes.base.ref.from != '')"
 )
 
 EXPECTED_MERGE_READINESS_PROGRESS_IF = (
-    "${{ github.event_name == 'pull_request' "
-    "&& !(" + MERGIFY_METADATA_EDIT_SKIP_PREDICATE + ") }}"
+    "${{ " + MERGIFY_PROOF_PR_READY_PREDICATE + " "
+    "&& !(" + MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE + ") }}"
 )
 
 EXPECTED_COVERAGE_ENFORCER_IF = (
-    "${{ !(github.event_name == 'pull_request' "
-    "&& " + MERGIFY_METADATA_EDIT_SKIP_PREDICATE + ") }}"
+    "${{ github.event_name == 'merge_group' "
+    "|| (" + MERGIFY_PROOF_PR_READY_PREDICATE + " "
+    "&& !(" + MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE + ")) }}"
 )
 
 
@@ -11410,8 +11413,8 @@ def verify_merge_readiness_ci_job(workflow_text: str) -> list[str]:
     job_if = job_if_value(job)
     if _normalize_concurrency_text(job_if) != EXPECTED_MERGE_READINESS_PROGRESS_IF:
         errors.append(
-            "merge-readiness-progress job if-condition must skip Mergify proof PR "
-            "metadata-only edited events while preserving all other pull_request runs"
+            "merge-readiness-progress job if-condition must run only on non-draft "
+            "Mergify proof PRs while skipping metadata-only proof PR edits"
         )
     for required in (
         "      contents: read",
@@ -11570,9 +11573,9 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     job_if = job_if_value(job)
     if _normalize_concurrency_text(job_if) != EXPECTED_COVERAGE_ENFORCER_IF:
         errors.append(
-            f"{workflow_name} coverage-enforcer job if-condition must skip Mergify "
-            "proof PR metadata-only edited events while preserving merge_group and "
-            "all other pull_request runs"
+            f"{workflow_name} coverage-enforcer job if-condition must run only on "
+            "merge_group and non-draft Mergify proof PRs while skipping "
+            "metadata-only proof PR edits"
         )
     trusted_base_ref = (
         "          ref: ${{ github.event.pull_request.base.sha || "

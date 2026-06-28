@@ -26,6 +26,7 @@ DEFAULT_CONFIG = REPO_ROOT / "ci" / "rust-verification.toml"
 MERGIFY_CONFIG_PATH = ".mergify.yml"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 EXPECTED_HEAD_SHA_RE = re.compile(r"^(?P<pr>[1-9][0-9]*)=(?P<sha>[0-9a-f]{40})$")
+MERGIFY_REQUIRED_REVIEWER_RE = re.compile(r"(?:^|\n)approved-reviews-by = (?P<reviewer>[^\n]+)")
 CONFLICT_LINE_RE = re.compile(r"^\d{6} [0-9a-f]{40} [123]\t(.+)$")
 PR_REF_PREFIX = "refs/pull/"
 FETCH_HEAD = "FETCH_HEAD"
@@ -592,6 +593,36 @@ def selected_mergify_queue_proof_source_findings(
     )
 
 
+def mergify_required_reviewer_finding(rule: Mapping[str, object]) -> dict[str, object]:
+    queue_rule = str(rule["name"])
+    merge_conditions = [str(condition) for condition in tuple(rule["merge_conditions"])]
+    reviewers = MERGIFY_REQUIRED_REVIEWER_RE.findall("\n".join(merge_conditions))
+    return {
+        "lane": LANE_MERGIFY_CONFIG,
+        "scope": "queue",
+        "status": STATUS_READY,
+        "reason_code": "mergify_required_reviewer",
+        "message": f"Mergify queue rule {queue_rule} requires review from {', '.join(reviewers)}",
+        "evidence": {
+            "queue_rule": queue_rule,
+            "reviewers": reviewers,
+            "merge_conditions": merge_conditions,
+        },
+    }
+
+
+def selected_mergify_required_reviewer_findings(
+    *,
+    config: Mapping[str, object],
+    route_findings: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    rules_by_name = mergify_queue_rules_by_name(config)
+    return tuple(
+        mergify_required_reviewer_finding(rules_by_name[queue_rule])
+        for queue_rule in sorted(mergify_route_queue_rules(route_findings))
+    )
+
+
 def mergify_queue_rules_by_name(config: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
     return {
         str(rule["name"]): rule
@@ -699,6 +730,10 @@ def available_mergify_config_route_and_batch_findings(
     return (
         *route_findings,
         *selected_mergify_queue_proof_source_findings(
+            config=config,
+            route_findings=route_findings,
+        ),
+        *selected_mergify_required_reviewer_findings(
             config=config,
             route_findings=route_findings,
         ),

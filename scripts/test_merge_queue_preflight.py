@@ -245,6 +245,25 @@ def mergify_queue_proof_source_finding(
     }
 
 
+def mergify_required_reviewer_finding(
+    queue_rule: str,
+    reviewers: list[str],
+    merge_conditions: list[str],
+) -> dict[str, object]:
+    return {
+        "lane": "mergify_config",
+        "scope": "queue",
+        "status": "ready",
+        "reason_code": "mergify_required_reviewer",
+        "message": f"Mergify queue rule {queue_rule} requires review from {', '.join(reviewers)}",
+        "evidence": {
+            "queue_rule": queue_rule,
+            "reviewers": reviewers,
+            "merge_conditions": merge_conditions,
+        },
+    }
+
+
 def mergify_queue_batch_above_max_finding(queue_rule: str, prs: list[int], max_batch_size: int) -> dict[str, object]:
     return {
         "lane": "mergify_config",
@@ -733,9 +752,31 @@ def assert_mergify_queue_routing_uses_pr_labels() -> None:
                 "check-success = host-health",
             ],
         ) in payload["findings"], payload["findings"]
+        assert mergify_required_reviewer_finding(
+            "hotfix",
+            ["sp-reviewer"],
+            [
+                "approved-reviews-by = sp-reviewer",
+                "check-success = gate",
+                "check-success = backtester-gate",
+                "check-success = actionlint",
+                "check-success = host-health",
+            ],
+        ) in payload["findings"], payload["findings"]
         assert mergify_queue_proof_source_finding(
             "default",
             [],
+            [
+                "approved-reviews-by = sp-reviewer",
+                "check-success = gate",
+                "check-success = backtester-gate",
+                "check-success = actionlint",
+                "check-success = host-health",
+            ],
+        ) in payload["findings"], payload["findings"]
+        assert mergify_required_reviewer_finding(
+            "default",
+            ["sp-reviewer"],
             [
                 "approved-reviews-by = sp-reviewer",
                 "check-success = gate",

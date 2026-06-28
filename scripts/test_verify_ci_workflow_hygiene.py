@@ -1127,7 +1127,7 @@ on:
     types: [checks_requested]
 
 permissions:
-  checks: write
+  checks: read
   contents: read
   pull-requests: read
 
@@ -1135,13 +1135,11 @@ jobs:
   coverage-enforcer:
     name: coverage-enforcer
     if: >-
-      ${{ github.event_name == 'merge_group'
-          || (github.event_name == 'pull_request'
-              && github.event.pull_request.draft == false
-              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-              && !(github.event.action == 'edited'
-                   && !(github.event.changes.base.ref.from != ''))) }}
+      ${{ !(github.event_name == 'pull_request'
+            && github.event.action == 'edited'
+            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+            && !(github.event.changes.base.ref.from != '')) }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1161,6 +1159,10 @@ jobs:
         run: |
           if [ ! -f scripts/coverage_enforcer.py ]; then
             echo "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py"
+            exit 0
+          fi
+          if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then
+            echo "coverage-enforcer bootstrap: trusted base tree lacks event-aware scripts/coverage_enforcer.py"
             exit 0
           fi
           python3 scripts/coverage_enforcer.py
@@ -3801,6 +3803,18 @@ def assert_mergify_config_gaps_are_reported() -> None:
     if result == 0 or ".mergify.yml is required for Mergify queue governance" not in output:
         raise AssertionError(f"verifier main must reject a missing .mergify.yml, got: {result}, {output!r}")
 
+    hotfix_rule_start = mergify_config.index("  # Exceptional path only. Normal merge sessions use the default queue below.\n")
+    default_rule_start = mergify_config.index("  - name: default\n")
+    priority_rules_start = mergify_config.index("\npriority_rules:\n")
+    hotfix_rule_block = mergify_config[hotfix_rule_start:default_rule_start]
+    default_rule_block = mergify_config[default_rule_start:priority_rules_start]
+    swapped_queue_rules = (
+        mergify_config[:hotfix_rule_start]
+        + default_rule_block
+        + hotfix_rule_block
+        + mergify_config[priority_rules_start:]
+    )
+
     mutations = [
         (
             "missing max_parallel_checks",
@@ -3820,10 +3834,10 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "autoqueue enabled",
             replace_once(
                 mergify_config,
-                "    batch_size: 1\n",
-                "    autoqueue: true\n    batch_size: 1\n",
+                "  - name: default\n",
+                "  - name: default\n    autoqueue: true\n",
             ),
-            "manual queueing only",
+            "default must not define unsupported key autoqueue",
         ),
         (
             "pull request rules enabled",
@@ -3836,23 +3850,169 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "manual queueing only",
         ),
         (
+            "defaults override enabled",
+            mergify_config + "\ndefaults:\n  queue_rule:\n    batch_size: 1\n",
+            "manual queueing only",
+        ),
+        (
+            "remote config inheritance enabled",
+            mergify_config + "\nextends: shared/mergify-config\n",
+            "manual queueing only",
+        ),
+        (
+            "commands restrictions inheritance enabled",
+            mergify_config + "\ncommands_restrictions:\n  queue:\n    conditions: []\n",
+            "manual queueing only",
+        ),
+        (
+            "unknown top-level key enabled",
+            mergify_config + "\nshared:\n  queue_branch_prefix: custom/merge-queue/\n",
+            "unsupported top-level key shared",
+        ),
+        (
+            "yaml merge key enabled",
+            replace_once_after(
+                mergify_config,
+                "  - name: default\n",
+                "    queue_conditions: []\n",
+                "    <<: *default_queue\n    queue_conditions: []\n",
+            ),
+            "YAML merge key is forbidden",
+        ),
+        (
+            "duplicate queue_rules top level",
+            mergify_config + "\nqueue_rules:\n  - name: default\n",
+            "duplicate key queue_rules",
+        ),
+        (
+            "queue rule order swapped",
+            swapped_queue_rules,
+            "queue_rules must define exactly hotfix followed by default",
+        ),
+        (
+            "quoted-name extra queue rule",
+            replace_once(
+                mergify_config,
+                "  - name: default\n",
+                "  - \"name\": sneaky\n"
+                "    queue_conditions: []\n"
+                "    merge_conditions: []\n"
+                "    branch_protection_injection_mode: merge\n"
+                "    batch_size: 1\n"
+                "    batch_max_wait_time: 30 seconds\n"
+                "    batch_max_failure_resolution_attempts: 0\n"
+                "    checks_timeout: 150 minutes\n"
+                "    draft_bot_account: null\n"
+                "    merge_method: squash\n\n"
+                "  - name: default\n",
+            ),
+            "queue_rules must define exactly hotfix followed by default",
+        ),
+        (
+            "name-not-first extra queue rule",
+            replace_once(
+                mergify_config,
+                "  - name: default\n",
+                "  - queue_conditions: []\n"
+                "    name: sneaky\n"
+                "    merge_conditions: []\n"
+                "    branch_protection_injection_mode: merge\n"
+                "    batch_size: 1\n"
+                "    batch_max_wait_time: 30 seconds\n"
+                "    batch_max_failure_resolution_attempts: 0\n"
+                "    checks_timeout: 150 minutes\n"
+                "    draft_bot_account: null\n"
+                "    merge_method: squash\n\n"
+                "  - name: default\n",
+            ),
+            "queue_rules must define exactly hotfix followed by default",
+        ),
+        (
+            "duplicate default queue conditions",
+            replace_once(
+                mergify_config,
+                "  - name: default\n    queue_conditions: []\n",
+                "  - name: default\n    queue_conditions: []\n    queue_conditions:\n      - check-success = gate\n",
+            ),
+            "duplicate key queue_conditions",
+        ),
+        (
+            "quoted duplicate default queue conditions",
+            replace_once(
+                mergify_config,
+                "  - name: default\n    queue_conditions: []\n",
+                "  - name: default\n    queue_conditions: []\n    \"queue_conditions\":\n      - check-success = gate\n",
+            ),
+            "duplicate key queue_conditions",
+        ),
+        (
+            "wide-indent merge queue unsupported key",
+            replace_once(
+                mergify_config,
+                "merge_queue:\n  max_parallel_checks: 1\n  reset_on_external_merge: always\n",
+                "merge_queue:\n    max_parallel_checks: 1\n    reset_on_external_merge: always\n    skip_intermediate_results: true\n",
+            ),
+            "merge_queue must not define unsupported key skip_intermediate_results",
+        ),
+        (
+            "default custom queue branch prefix",
+            replace_once_after(
+                mergify_config,
+                "  - name: default\n",
+                "    queue_conditions: []\n",
+                "    queue_conditions: []\n    queue_branch_prefix: custom/merge-queue/\n",
+            ),
+            "default must not define unsupported key queue_branch_prefix",
+        ),
+        (
+            "default editable queue branch",
+            replace_once_after(
+                mergify_config,
+                "  - name: default\n",
+                "    queue_conditions: []\n",
+                "    queue_conditions: []\n    allow_queue_branch_edit: true\n",
+            ),
+            "default must not define unsupported key allow_queue_branch_edit",
+        ),
+        (
             "queue conditions require gate",
             replace_once(
                 mergify_config,
                 "    queue_conditions: []\n",
                 "    queue_conditions:\n      - check-success = gate\n",
             ),
-            "default queue_conditions must be empty",
+            "default queue_conditions must be []",
         ),
         (
-            "missing gate merge condition",
-            replace_once(mergify_config, "      - check-success = gate\n", ""),
+            "hotfix queue conditions changed",
+            replace_once_after(
+                mergify_config,
+                "  - name: hotfix\n    queue_conditions:\n",
+                "      - label = hotfix\n",
+                "      - label = urgent\n",
+            ),
+            "hotfix queue_conditions must be ['label = hotfix']",
+        ),
+        (
+            "default missing gate merge condition",
+            replace_once_after(
+                mergify_config,
+                "  - name: default\n",
+                "      - check-success = gate\n",
+                "",
+            ),
             "default merge_conditions must require sp-reviewer and all four gates",
         ),
         (
-            "extra merge condition",
-            replace_once(
+            "hotfix missing gate merge condition",
+            replace_once(mergify_config, "      - check-success = gate\n", ""),
+            "hotfix merge_conditions must require sp-reviewer and all four gates",
+        ),
+        (
+            "default extra merge condition",
+            replace_once_after(
                 mergify_config,
+                "  - name: default\n",
                 "      - check-success = host-health\n",
                 "      - check-success = host-health\n      - label = queue-proof\n",
             ),
@@ -3865,30 +4025,90 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "    branch_protection_injection_mode: merge\n",
                 "    branch_protection_injection_mode: queue\n",
             ),
-            "default branch_protection_injection_mode must be merge",
+            "hotfix branch_protection_injection_mode must be merge",
         ),
         (
-            "batch size widened",
+            "default batch min lowered",
+            replace_once(mergify_config, "      min: 2\n", "      min: 1\n"),
+            "default batch_size must be min 2 max 10",
+        ),
+        (
+            "default batch max narrowed",
+            replace_once(mergify_config, "      max: 10\n", "      max: 5\n"),
+            "default batch_size must be min 2 max 10",
+        ),
+        (
+            "default batch max duplicated",
+            replace_once(mergify_config, "      max: 10\n", "      max: 10\n      max: 5\n"),
+            "duplicate key max",
+        ),
+        (
+            "default batch unknown nested key",
+            replace_once(mergify_config, "      max: 10\n", "      max: 10\n      spread: true\n"),
+            "default batch_size must not define unsupported key spread",
+        ),
+        (
+            "hotfix batch widened",
             replace_once(mergify_config, "    batch_size: 1\n", "    batch_size: 2\n"),
-            "default batch_size must be 1",
+            "hotfix batch_size must be 1",
+        ),
+        (
+            "default wait shortened",
+            replace_once(mergify_config, "    batch_max_wait_time: 5 minutes\n", "    batch_max_wait_time: 30 seconds\n"),
+            "default batch_max_wait_time must be 5 minutes",
+        ),
+        (
+            "hotfix wait lengthened",
+            replace_once(mergify_config, "    batch_max_wait_time: 30 seconds\n", "    batch_max_wait_time: 60 minutes\n"),
+            "hotfix batch_max_wait_time must be 30 seconds",
+        ),
+        (
+            "hotfix failure split enabled",
+            replace_once(
+                mergify_config,
+                "    batch_max_failure_resolution_attempts: 0\n",
+                "    batch_max_failure_resolution_attempts: 3\n",
+            ),
+            "hotfix batch_max_failure_resolution_attempts must be 0",
+        ),
+        (
+            "default failure split enabled",
+            replace_once_after(
+                mergify_config,
+                "  - name: default\n",
+                "    batch_max_failure_resolution_attempts: 0\n",
+                "    batch_max_failure_resolution_attempts: 3\n",
+            ),
+            "default batch_max_failure_resolution_attempts must be 0",
+        ),
+        (
+            "duplicate default wait",
+            replace_once_after(
+                mergify_config,
+                "  - name: default\n",
+                "    batch_max_wait_time: 5 minutes\n",
+                "    batch_max_wait_time: 5 minutes\n    batch_max_wait_time: 30 seconds\n",
+            ),
+            "duplicate key batch_max_wait_time",
         ),
         (
             "unbounded timeout",
             replace_once(
                 mergify_config,
-                "    checks_timeout: 60 minutes\n",
+                "    checks_timeout: 150 minutes\n",
                 "    checks_timeout: auto\n",
             ),
-            "default checks_timeout must be 60 minutes",
+            "hotfix checks_timeout must be 150 minutes",
         ),
         (
-            "zero timeout",
-            replace_once(
+            "default timeout lowered",
+            replace_once_after(
                 mergify_config,
+                "  - name: default\n",
+                "    checks_timeout: 150 minutes\n",
                 "    checks_timeout: 60 minutes\n",
-                "    checks_timeout: 0 minutes\n",
             ),
-            "default checks_timeout must be 60 minutes",
+            "default checks_timeout must be 150 minutes",
         ),
         (
             "draft impersonation",
@@ -3897,12 +4117,64 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "    draft_bot_account: null\n",
                 '    draft_bot_account: "{{ author }}"\n',
             ),
-            "default draft_bot_account must be null",
+            "hotfix draft_bot_account must be null",
         ),
         (
             "non-squash merge",
             replace_once(mergify_config, "    merge_method: squash\n", "    merge_method: merge\n"),
-            "default merge_method must be squash",
+            "hotfix merge_method must be squash",
+        ),
+        (
+            "duplicate hotfix merge method",
+            replace_once(
+                mergify_config,
+                "    merge_method: squash\n",
+                "    merge_method: squash\n    merge_method: merge\n",
+            ),
+            "duplicate key merge_method",
+        ),
+        (
+            "priority rules removed",
+            replace_once(
+                mergify_config,
+                "\npriority_rules:\n  - name: hotfix\n    conditions:\n      - label = hotfix\n    priority: 10000\n    allow_checks_interruption: true\n",
+                "\n",
+            ),
+            "must define priority_rules",
+        ),
+        (
+            "hotfix priority condition changed",
+            replace_once_after(
+                mergify_config,
+                "priority_rules:\n  - name: hotfix\n    conditions:\n",
+                "      - label = hotfix\n",
+                "      - label = urgent\n",
+            ),
+            "hotfix priority conditions must be ['label = hotfix']",
+        ),
+        (
+            "hotfix priority lowered",
+            replace_once(mergify_config, "    priority: 10000\n", "    priority: high\n"),
+            "hotfix priority must be 10000",
+        ),
+        (
+            "hotfix interruption disabled",
+            replace_once(mergify_config, "    allow_checks_interruption: true\n", "    allow_checks_interruption: false\n"),
+            "hotfix allow_checks_interruption must be true",
+        ),
+        (
+            "quoted extra priority rule",
+            replace_once(
+                mergify_config,
+                "priority_rules:\n  - name: hotfix\n",
+                "priority_rules:\n  - \"name\": sneaky\n"
+                "    conditions:\n"
+                "      - label = hotfix\n"
+                "    priority: 1\n"
+                "    allow_checks_interruption: false\n"
+                "  - name: hotfix\n",
+            ),
+            "priority_rules must define exactly hotfix",
         ),
     ]
     for label, mutated, expected in mutations:
@@ -4587,8 +4859,12 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "    types: [checks_requested]\n", "    types: [requested]\n")},
         ),
         (
-            "permissions must include checks: write",
-            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  checks: write\n", "  checks: read\n")},
+            "permissions must include checks: read",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  checks: read\n", "")},
+        ),
+        (
+            "permissions must not include checks: write",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  checks: read\n", "  checks: write\n")},
         ),
         (
             "permissions must include pull-requests: read",
@@ -4643,43 +4919,36 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             },
         ),
         (
-            "coverage-enforcer job if-condition must run only on merge_group",
+            "coverage-enforcer job if-condition must run on ordinary PRs",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "      ${{ github.event_name == 'merge_group'\n"
-                    "          || (github.event_name == 'pull_request'\n",
-                    "      ${{ github.event_name == 'pull_request'\n",
-                )
-            },
-        ),
-        (
-            "coverage-enforcer job if-condition must run only on merge_group",
-            {
-                workflow_name: replace_once(
-                    BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "              && github.event.pull_request.draft == false\n",
+                    "            && github.event.action == 'edited'\n",
                     "",
                 )
             },
         ),
         (
-            "coverage-enforcer job if-condition must run only on merge_group",
+            "coverage-enforcer job if-condition must run on ordinary PRs",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-                    "                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
+                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
                     "",
                 )
             },
         ),
         (
-            "coverage-enforcer job if-condition must run only on merge_group",
+            "coverage-enforcer job if-condition must run on ordinary PRs",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "    if: >-\n"
+                    "      ${{ !(github.event_name == 'pull_request'\n"
+                    "            && github.event.action == 'edited'\n"
+                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+                    "            && !(github.event.changes.base.ref.from != '')) }}\n",
                     "      ${{ github.event_name == 'merge_group'\n"
                     "          || (github.event_name == 'pull_request'\n"
                     "              && github.event.pull_request.draft == false\n"
@@ -4687,6 +4956,20 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
                     "                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
                     "              && !(github.event.action == 'edited'\n"
                     "                   && !(github.event.changes.base.ref.from != ''))) }}\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job if-condition must run on ordinary PRs",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "    if: >-\n"
+                    "      ${{ !(github.event_name == 'pull_request'\n"
+                    "            && github.event.action == 'edited'\n"
+                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+                    "            && !(github.event.changes.base.ref.from != '')) }}\n",
                     "",
                 )
             },
@@ -4696,6 +4979,19 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
         errors = verifier.verify_coverage_enforcer_workflow(workflows)
         if not any(fragment in error for error in errors):
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_coverage_enforcer_bootstrap_marker_matches_script() -> None:
+    workflow = repo_workflow_text(".github/workflows/coverage-enforcer.yml")
+    script = repo_workflow_text("scripts/coverage_enforcer.py")
+    match = re.search(r'if ! grep -q "([^"]+)" scripts/coverage_enforcer\.py; then', workflow)
+    if match is None:
+        raise AssertionError("coverage-enforcer workflow must define event-aware bootstrap marker")
+    marker = match.group(1)
+    if marker not in script:
+        raise AssertionError(
+            "coverage-enforcer event-aware bootstrap marker must match scripts/coverage_enforcer.py"
+        )
 
 
 def assert_runner_contract_rejects_missing_and_extra_jobs() -> None:
@@ -12096,6 +12392,7 @@ def main() -> int:
     assert_merge_readiness_progress_gaps_are_reported()
     assert_merge_readiness_finalizer_gaps_are_reported()
     assert_coverage_enforcer_workflow_gaps_are_reported()
+    assert_coverage_enforcer_bootstrap_marker_matches_script()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

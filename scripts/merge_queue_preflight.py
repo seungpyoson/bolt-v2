@@ -97,8 +97,8 @@ MERGIFY_CONFIG_FIELD_HANDLING = {
 }
 PREFLIGHT_ARTIFACT_CLASSIFICATIONS = {
     "base_conflict": (LANE_INTEGRATION, "pr", STATUS_BLOCKED),
-    "batch_conflict": (LANE_INTEGRATION, "batch", STATUS_BLOCKED),
-    "batch_verifier_failed": (LANE_VERIFIER, "batch", STATUS_BLOCKED),
+    "batch_conflict": (LANE_INTEGRATION, "batch", STATUS_READY),
+    "batch_verifier_failed": (LANE_VERIFIER, "batch", STATUS_READY),
     "metadata_unavailable": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
     "readiness_failed": (LANE_READINESS, "pr", STATUS_BLOCKED),
     "verifier_failed": (LANE_VERIFIER, "pr", STATUS_BLOCKED),

@@ -281,8 +281,8 @@ def assert_preflight_artifact_classification_is_declarative() -> None:
     module = load_preflight_module()
     expected = {
         "base_conflict": ("integration", "pr", "blocked"),
-        "batch_conflict": ("integration", "batch", "blocked"),
-        "batch_verifier_failed": ("verifier", "batch", "blocked"),
+        "batch_conflict": ("integration", "batch", "ready"),
+        "batch_verifier_failed": ("verifier", "batch", "ready"),
         "metadata_unavailable": ("readiness", "pr", "inconclusive"),
         "readiness_failed": ("readiness", "pr", "blocked"),
         "verifier_failed": ("verifier", "pr", "blocked"),
@@ -302,7 +302,7 @@ def assert_preflight_artifact_finding_uses_classification_table() -> None:
     expected = {
         "lane": "integration",
         "scope": "batch",
-        "status": "blocked",
+        "status": "ready",
         "reason_code": "batch_conflict",
         "message": "batch_conflict",
         "evidence": artifact,

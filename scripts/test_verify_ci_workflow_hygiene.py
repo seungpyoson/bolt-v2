@@ -3828,16 +3828,54 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "    queue_conditions: []\n",
                 "    <<: *default_queue\n    queue_conditions: []\n",
             ),
-            "must not use YAML merge keys",
+            "YAML merge key is forbidden",
         ),
         (
             "duplicate queue_rules top level",
             mergify_config + "\nqueue_rules:\n  - name: default\n",
-            "must not duplicate top-level queue_rules",
+            "duplicate key queue_rules",
         ),
         (
             "queue rule order swapped",
             swapped_queue_rules,
+            "queue_rules must define exactly hotfix followed by default",
+        ),
+        (
+            "quoted-name extra queue rule",
+            replace_once(
+                mergify_config,
+                "  - name: default\n",
+                "  - \"name\": sneaky\n"
+                "    queue_conditions: []\n"
+                "    merge_conditions: []\n"
+                "    branch_protection_injection_mode: merge\n"
+                "    batch_size: 1\n"
+                "    batch_max_wait_time: 30 seconds\n"
+                "    batch_max_failure_resolution_attempts: 0\n"
+                "    checks_timeout: 150 minutes\n"
+                "    draft_bot_account: null\n"
+                "    merge_method: squash\n\n"
+                "  - name: default\n",
+            ),
+            "queue_rules must define exactly hotfix followed by default",
+        ),
+        (
+            "name-not-first extra queue rule",
+            replace_once(
+                mergify_config,
+                "  - name: default\n",
+                "  - queue_conditions: []\n"
+                "    name: sneaky\n"
+                "    merge_conditions: []\n"
+                "    branch_protection_injection_mode: merge\n"
+                "    batch_size: 1\n"
+                "    batch_max_wait_time: 30 seconds\n"
+                "    batch_max_failure_resolution_attempts: 0\n"
+                "    checks_timeout: 150 minutes\n"
+                "    draft_bot_account: null\n"
+                "    merge_method: squash\n\n"
+                "  - name: default\n",
+            ),
             "queue_rules must define exactly hotfix followed by default",
         ),
         (
@@ -3847,7 +3885,7 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "  - name: default\n    queue_conditions: []\n",
                 "  - name: default\n    queue_conditions: []\n    queue_conditions:\n      - check-success = gate\n",
             ),
-            "default must not duplicate queue_conditions",
+            "duplicate key queue_conditions",
         ),
         (
             "quoted duplicate default queue conditions",
@@ -3856,7 +3894,16 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "  - name: default\n    queue_conditions: []\n",
                 "  - name: default\n    queue_conditions: []\n    \"queue_conditions\":\n      - check-success = gate\n",
             ),
-            "default must not duplicate queue_conditions",
+            "duplicate key queue_conditions",
+        ),
+        (
+            "wide-indent merge queue unsupported key",
+            replace_once(
+                mergify_config,
+                "merge_queue:\n  max_parallel_checks: 1\n  reset_on_external_merge: always\n",
+                "merge_queue:\n    max_parallel_checks: 1\n    reset_on_external_merge: always\n    skip_intermediate_results: true\n",
+            ),
+            "merge_queue must not define unsupported key skip_intermediate_results",
         ),
         (
             "default custom queue branch prefix",
@@ -3944,7 +3991,7 @@ def assert_mergify_config_gaps_are_reported() -> None:
         (
             "default batch max duplicated",
             replace_once(mergify_config, "      max: 10\n", "      max: 10\n      max: 5\n"),
-            "default batch_size must not duplicate max",
+            "duplicate key max",
         ),
         (
             "default batch unknown nested key",
@@ -3993,7 +4040,7 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "    batch_max_wait_time: 5 minutes\n",
                 "    batch_max_wait_time: 5 minutes\n    batch_max_wait_time: 30 seconds\n",
             ),
-            "default must not duplicate batch_max_wait_time",
+            "duplicate key batch_max_wait_time",
         ),
         (
             "unbounded timeout",
@@ -4035,7 +4082,7 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "    merge_method: squash\n",
                 "    merge_method: squash\n    merge_method: merge\n",
             ),
-            "hotfix must not duplicate merge_method",
+            "duplicate key merge_method",
         ),
         (
             "priority rules removed",
@@ -4065,6 +4112,20 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "hotfix interruption disabled",
             replace_once(mergify_config, "    allow_checks_interruption: true\n", "    allow_checks_interruption: false\n"),
             "hotfix allow_checks_interruption must be true",
+        ),
+        (
+            "quoted extra priority rule",
+            replace_once(
+                mergify_config,
+                "priority_rules:\n  - name: hotfix\n",
+                "priority_rules:\n  - \"name\": sneaky\n"
+                "    conditions:\n"
+                "      - label = hotfix\n"
+                "    priority: 1\n"
+                "    allow_checks_interruption: false\n"
+                "  - name: hotfix\n",
+            ),
+            "priority_rules must define exactly hotfix",
         ),
     ]
     for label, mutated, expected in mutations:

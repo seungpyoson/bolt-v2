@@ -352,6 +352,24 @@ def verifier_batch_ready_finding(batch: dict[str, object]) -> dict[str, object]:
     }
 
 
+def readiness_ready_finding(pr: int, head: str) -> dict[str, object]:
+    return {
+        "lane": "readiness",
+        "scope": "pr",
+        "status": "ready",
+        "reason_code": "readiness_ready",
+        "message": f"PR #{pr} has authoritative readiness metadata with no warnings",
+        "evidence": {
+            "pr": pr,
+            "baseRefName": "main",
+            "headRefOid": head,
+            "mergeable": "MERGEABLE",
+            "reviewDecision": "APPROVED",
+            "checks": [],
+        },
+    }
+
+
 def stale_head_finding(pr: int, expected_head_sha: str, actual_head_sha: str) -> dict[str, object]:
     return {
         "lane": "identity",
@@ -795,8 +813,10 @@ def assert_mergify_queue_routing_uses_pr_labels() -> None:
             },
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1", "2")
-        assert_equal(result.returncode, 3, "queue routing rc")
+        assert_equal(result.returncode, 1, "queue routing rc")
         payload = parse_json(result.stdout)
+        assert readiness_ready_finding(1, hotfix_head) in payload["findings"], payload["findings"]
+        assert readiness_ready_finding(2, default_head) in payload["findings"], payload["findings"]
         assert mergify_queue_route_finding(1, "hotfix", ["hotfix"], ["label = hotfix"]) in payload["findings"], payload["findings"]
         assert mergify_queue_route_finding(2, "default", [], []) in payload["findings"], payload["findings"]
         assert mergify_queue_proof_source_finding(
@@ -864,7 +884,7 @@ def assert_default_queue_above_max_is_split_advised() -> None:
             bin_dir,
             *(str(pr) for pr in heads),
         )
-        assert_equal(result.returncode, 3, "default queue above max rc")
+        assert_equal(result.returncode, 1, "default queue above max rc")
         payload = parse_json(result.stdout)
         assert_equal(payload["wave_status"], "split_advised", "default queue above max wave status")
         assert mergify_queue_batch_above_max_finding("default", list(heads), 10) in payload["findings"], payload["findings"]

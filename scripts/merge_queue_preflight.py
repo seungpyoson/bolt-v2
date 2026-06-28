@@ -1652,6 +1652,48 @@ def readiness_blocks(readiness: Sequence[dict[str, object]]) -> list[dict[str, o
     return blocks
 
 
+def available_readiness_ready_findings(item: Mapping[str, object]) -> tuple[dict[str, object], ...]:
+    metadata = dict(item["metadata"])
+    pr = int(item["pr"])
+    return (
+        {
+            "lane": LANE_READINESS,
+            "scope": "pr",
+            "status": STATUS_READY,
+            "reason_code": "readiness_ready",
+            "message": f"PR #{pr} has authoritative readiness metadata with no warnings",
+            "evidence": {
+                "pr": pr,
+                "baseRefName": metadata["baseRefName"],
+                "headRefOid": metadata["headRefOid"],
+                "mergeable": metadata["mergeable"],
+                "reviewDecision": metadata["reviewDecision"],
+                "checks": list(item["checks"]),
+            },
+        },
+    )
+
+
+def no_readiness_ready_findings(item: Mapping[str, object]) -> tuple[dict[str, object], ...]:
+    return ()
+
+
+READINESS_READY_FINDING_BUILDERS = {
+    True: available_readiness_ready_findings,
+    False: no_readiness_ready_findings,
+}
+
+
+def readiness_ready_findings(readiness: Sequence[Mapping[str, object]]) -> tuple[dict[str, object], ...]:
+    return tuple(
+        finding
+        for item in readiness
+        for finding in READINESS_READY_FINDING_BUILDERS[
+            "metadata" in item and not tuple(item["warning_details"])
+        ](item)
+    )
+
+
 def preflight(
     *,
     repo: pathlib.Path,
@@ -1785,6 +1827,7 @@ def preflight(
         *head_identity_findings(expected_heads=expected_heads, actual_heads=heads),
         *mergify_config_findings(repo=repo, base_sha=base_sha, readiness=readiness),
         *preflight_mode_findings(use_gh=use_gh),
+        *readiness_ready_findings(readiness),
         *residual_risk_findings(),
         *integration_batch_ready_findings(batches),
         *verifier_batch_ready_findings(batches, output_policy),

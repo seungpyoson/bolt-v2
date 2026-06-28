@@ -1030,6 +1030,56 @@ class CiStorageAuditTests(unittest.TestCase):
             ["actions/caches", "actions/cache/usage"],
         )
 
+    def test_build_cache_key_probe_snapshot_validates_json_snapshot_contract(self) -> None:
+        original_fetch_cache_key_probes = ci_storage_audit.fetch_cache_key_probes
+        original_fetch_cache_usage = ci_storage_audit.fetch_cache_usage
+
+        def fake_fetch_cache_key_probes(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            return [
+                {
+                    "label": "probe",
+                    "key": "exact-key",
+                    "available": True,
+                    "present": True,
+                    "exact_count": 0,
+                    "api_prefix_count": 0,
+                    "api_prefix_count_source": "github_total_count",
+                    "api_prefix_enumerated_count": 0,
+                    "ref_filtered_prefix_enumerated_count": 0,
+                    "prefix_only_count": 0,
+                    "entries": [],
+                    "ref_filter": ["refs/heads/main"],
+                }
+            ]
+
+        def fake_fetch_cache_usage(client: Any) -> dict[str, Any]:
+            return {
+                "available": True,
+                "active_caches_count": 1,
+                "active_caches_size_in_bytes": 1024,
+                "source": "rest",
+            }
+
+        try:
+            ci_storage_audit.fetch_cache_key_probes = fake_fetch_cache_key_probes
+            ci_storage_audit.fetch_cache_usage = fake_fetch_cache_usage
+
+            with self.assertRaises(ci_storage_audit.AuditError) as raised:
+                ci_storage_audit.build_cache_key_probe_snapshot(
+                    FakeClient({}),
+                    repo="owner/repo",
+                    snapshot_utc="2026-06-28T10:37:43+00:00",
+                    requests=[ci_storage_audit.CacheKeyProbeRequest("probe", "exact-key")],
+                    cache_refs=["refs/heads/main"],
+                )
+
+        finally:
+            ci_storage_audit.fetch_cache_key_probes = original_fetch_cache_key_probes
+            ci_storage_audit.fetch_cache_usage = original_fetch_cache_usage
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.INVALID)
+        self.assertEqual(raised.exception.field, "cache_key_probe_snapshot.cache_key_probes.present")
+
     def test_render_text_limits_artifact_name_details(self) -> None:
         snapshot = {
             "snapshot_utc": "2026-06-23T00:00:00+00:00",

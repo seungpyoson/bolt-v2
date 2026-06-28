@@ -918,7 +918,7 @@ def build_cache_key_probe_snapshot(
         cache_refs=cache_refs,
         cache_branches=cache_branches,
     )
-    return {
+    snapshot = {
         "snapshot_utc": snapshot_utc,
         "repo": repo,
         "cache_key_probes": fetch_cache_key_probes(
@@ -929,6 +929,7 @@ def build_cache_key_probe_snapshot(
         "cache_refs": normalized_cache_refs,
         "cache_usage": fetch_cache_usage(client),
     }
+    return cache_key_probe_snapshot_from_raw(snapshot)
 
 
 def append_step_summary(path: str, text: str) -> None:

@@ -657,7 +657,7 @@ def run_self_test() -> None:
     assert parse_kimi_chat_docs_latest(kimi_doc) == current_kimi
     kimi_alias_doc = "Available options: `kimi-k2.7-code` `kimi-k2.7-code-highspeed` `kimi-k27-code`"
     assert parse_kimi_chat_docs_latest(kimi_alias_doc) == "kimi-k2.7-code"
-    glm_index = f"[GLM-{old_glm_version}](/guides/llm/glm-old.md) [GLM-{current_glm_version}](/guides/llm/glm-current.md)"
+    glm_index = f"Legacy GLM-{old_glm_version}; current GLM-{current_glm_version}"
     assert parse_glm_docs_latest(glm_index) == current_glm
     assert parse_glm_docs_latest("Variants: GLM-5.2-flash GLM-4.5-Air GLM-4.5V") is None
     assert parse_glm_docs_latest("Variants: GLM-5.2-flash; current standalone GLM-4.6") == "glm-4.6"
@@ -821,7 +821,7 @@ model = "{current_kimi}"
             if url == sources.kimi_chat_docs_url:
                 return f"default:{current_kimi}"
             if url == sources.glm_docs_index_url:
-                return f"Archive: [GLM-99.0](/legacy/unavailable.md) Current migration: [GLM-{current_glm_version}](/current.md)"
+                return f"Archive: GLM-99.0. Current migration: GLM-{current_glm_version}"
             if url == sources.glm_migration_docs_url:
                 return f"Migration Checklist\n* Update model identifier to `{current_glm}`"
             raise AssertionError(f"unexpected URL {url}")
@@ -860,7 +860,7 @@ model = "{current_kimi}"
             if url == sources.kimi_chat_docs_url:
                 return f"default:{current_kimi}"
             if url == sources.glm_docs_index_url:
-                return f"[GLM-{current_glm_version}](/current.md)"
+                return f"Current model: GLM-{current_glm_version}"
             if url == sources.glm_migration_docs_url:
                 return f"Migration Checklist\n* Update model identifier to `{current_glm}`"
             raise AssertionError(f"unexpected URL {url}")
@@ -1136,4 +1136,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     raise SystemExit(main())

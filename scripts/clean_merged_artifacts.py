@@ -338,7 +338,7 @@ def load_config(repo_root: pathlib.Path) -> Config:
         )
     try:
         data = _load_toml(cfg_path)
-    except (OSError, ValueError) as exc:
+    except (tomllib.TOMLDecodeError if _HAS_TOMLLIB else ValueError) as exc:
         raise ConfigError(f"invalid TOML in {cfg_path}: {exc}") from exc
 
     enabled = bool(_get_nested(data, "clean-merged.enabled", True))

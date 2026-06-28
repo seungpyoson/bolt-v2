@@ -2676,8 +2676,12 @@ def repo_cargo_aliases(repo: pathlib.Path) -> set[str]:
         if not path.exists():
             continue
         try:
-            config = load_toml(path)
-        except (OSError, PolicyError) as exc:
+            if _toml is None:
+                config = parse_minimal_toml(path)
+            else:
+                with path.open("rb") as handle:
+                    config = _toml.load(handle)
+        except (OSError, PolicyError, _toml.TOMLDecodeError if _toml is not None else ValueError) as exc:
             raise PolicyError(f"unable to inspect Cargo alias config {display_path}: {exc}") from exc
         alias_table = config.get("alias")
         if isinstance(alias_table, dict):

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Publish an advisory check proving required CI check coverage has not drifted."""
+"""Enforce advisory required CI check coverage without publishing a custom check-run."""
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import os
 import pathlib
 import re
 import sys
@@ -23,7 +24,6 @@ import merge_readiness
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
 DEFAULT_WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
-COVERAGE_CHECK_NAME = ci_provenance.TARGET_REQUIRED_CHECK_CONTEXT
 SUCCESS_CONCLUSION = "success"
 FAILURE_CONCLUSION = "failure"
 
@@ -44,8 +44,9 @@ class CoverageEnforcementResult:
     head_sha: str
     findings: tuple[str, ...]
     summary: str
-    published: bool
-    publish_reason: str
+    expected_contexts: tuple[str, ...]
+    event_class: str
+    policy_reason: str
 
 
 def load_registry_checks(
@@ -59,28 +60,141 @@ def load_registry_checks(
     return {check.context: check for check in checks.values()}
 
 
-def required_registry_checks(
-    config_path: pathlib.Path = DEFAULT_CONFIG,
+def event_name_for_policy(event: dict[str, object]) -> str:
+    if event_pull_request(event) is not None:
+        return "pull_request"
+    merge_group = event.get("merge_group")
+    if isinstance(merge_group, dict):
+        return "merge_group"
+    raise CoverageEnforcerError("event must be pull_request or merge_group")
+
+
+def event_action_for_policy(event: dict[str, object]) -> str:
+    action = event.get("action")
+    if isinstance(action, str):
+        return action
+    return ""
+
+
+def event_sender_id_for_policy(event: dict[str, object]) -> int:
+    sender = event.get("sender")
+    if not isinstance(sender, dict):
+        return -1
+    sender_id = sender.get("id")
+    if isinstance(sender_id, int) and not isinstance(sender_id, bool):
+        return sender_id
+    return -1
+
+
+def pull_request_base_changed_for_policy(event: dict[str, object]) -> bool:
+    changes = event.get("changes")
+    if not isinstance(changes, dict):
+        return False
+    base = changes.get("base")
+    if not isinstance(base, dict):
+        return False
+    ref = base.get("ref")
+    if not isinstance(ref, dict):
+        return False
+    return isinstance(ref.get("from"), str)
+
+
+def pull_request_head_ref_for_policy(pr: dict[str, object] | None) -> str:
+    if pr is None:
+        return ""
+    head = pr.get("head")
+    if not isinstance(head, dict):
+        return ""
+    head_ref = head.get("ref")
+    if isinstance(head_ref, str):
+        return head_ref
+    return ""
+
+
+def policy_result_for_event(
     *,
-    check_runs: list[dict[str, object]] | None = None,
-) -> tuple[ci_provenance.RequiredCheckConfig, ...]:
-    checks = load_registry_checks(config_path)
-    static_contexts = merge_readiness.required_contexts(config_path)
-    active_contexts = merge_readiness.required_contexts(
-        config_path,
-        check_runs=check_runs,
+    config: ci_provenance.ProvenanceConfig,
+    event: dict[str, object],
+    docs_only: bool = False,
+) -> ci_provenance.CiPolicyResult:
+    pr = event_pull_request(event)
+    event_name = event_name_for_policy(event)
+    return ci_provenance.evaluate_ci_policy(
+        config,
+        event_name=event_name,
+        event_action=event_action_for_policy(event),
+        pull_request_draft=bool(pr.get("draft")) if pr is not None else False,
+        pull_request_head_ref=pull_request_head_ref_for_policy(pr),
+        pull_request_base_changed=pull_request_base_changed_for_policy(event),
+        docs_only=docs_only,
+        event_sender_id=event_sender_id_for_policy(event),
+        ref=str(event.get("ref", "")),
     )
-    required = []
-    for static_context, active_context in zip(static_contexts, active_contexts, strict=True):
-        check = checks.get(static_context)
-        if check is None:
-            raise CoverageEnforcerError(
-                f"required context {static_context!r} is missing from registry"
-            )
-        if active_context != static_context:
-            check = dataclasses.replace(check, context=active_context)
-        required.append(check)
-    return tuple(required)
+
+
+def expected_registry_checks_for_policy(
+    *,
+    config: ci_provenance.ProvenanceConfig,
+    policy_result: ci_provenance.CiPolicyResult,
+) -> tuple[ci_provenance.RequiredCheckConfig, ...]:
+    expected: list[ci_provenance.RequiredCheckConfig] = []
+    for check in config.required_checks.values():
+        if not check.target or check.reporter == "self":
+            continue
+        applicable = ci_provenance.required_check_applicable_event_classes(
+            check=check,
+            policy=config.policy,
+            gate_names=config.gate_names,
+        )
+        carry_forward = ci_provenance.required_check_carry_forward_event_classes(
+            check=check,
+            policy=config.policy,
+            applicable=applicable,
+        )
+        if policy_result.expected_event_class in applicable - carry_forward:
+            expected.append(check)
+    return tuple(expected)
+
+
+def expected_registry_checks(
+    *,
+    config_path: pathlib.Path = DEFAULT_CONFIG,
+    event: dict[str, object],
+    docs_only: bool = False,
+) -> tuple[ci_provenance.RequiredCheckConfig, ...]:
+    config = ci_provenance.load_config(config_path)
+    policy_result = policy_result_for_event(
+        config=config,
+        event=event,
+        docs_only=docs_only,
+    )
+    return expected_registry_checks_for_policy(config=config, policy_result=policy_result)
+
+
+def expected_registry_contexts(
+    checks: tuple[ci_provenance.RequiredCheckConfig, ...],
+) -> tuple[str, ...]:
+    return tuple(check.context for check in checks)
+
+
+def active_expected_registry_checks(
+    *,
+    checks: tuple[ci_provenance.RequiredCheckConfig, ...],
+    config: ci_provenance.ProvenanceConfig,
+    check_runs: list[dict[str, object]] | None,
+) -> tuple[ci_provenance.RequiredCheckConfig, ...]:
+    active_contexts = merge_readiness.resolve_required_contexts(
+        expected_registry_contexts(checks),
+        {"gate_names": config.gate_names},
+        check_runs,
+    )
+    active_checks: list[ci_provenance.RequiredCheckConfig] = []
+    for check, active_context in zip(checks, active_contexts, strict=True):
+        if active_context == check.context:
+            active_checks.append(check)
+        else:
+            active_checks.append(dataclasses.replace(check, context=active_context))
+    return tuple(active_checks)
 
 
 def workflow_path_for_check(check: ci_provenance.RequiredCheckConfig) -> str:
@@ -273,6 +387,33 @@ def terminal_runs_for_context(
     ]
 
 
+def expected_app_runs(
+    check_runs: list[dict[str, object]],
+    check: ci_provenance.RequiredCheckConfig,
+) -> list[dict[str, object]]:
+    return [
+        run
+        for run in check_runs
+        if (
+            run.get("name") == check.context
+            and app_id_for_run(run) == check.integration_id
+        )
+    ]
+
+
+def check_run_attempt_sort_key(run: dict[str, object]) -> tuple[object, int]:
+    return (
+        merge_readiness.parse_timestamp(run.get("started_at")),
+        merge_readiness.positive_int(run.get("id"), "check run id"),
+    )
+
+
+def latest_check_run(runs: list[dict[str, object]]) -> dict[str, object] | None:
+    if not runs:
+        return None
+    return max(runs, key=check_run_attempt_sort_key)
+
+
 def pending_contexts(
     *,
     checks: tuple[ci_provenance.RequiredCheckConfig, ...],
@@ -280,7 +421,8 @@ def pending_contexts(
 ) -> tuple[str, ...]:
     pending: list[str] = []
     for check in checks:
-        if not terminal_runs_for_context(check_runs, check.context):
+        latest = latest_check_run(expected_app_runs(check_runs, check))
+        if latest is None or latest.get("status") != "completed":
             pending.append(check.context)
     return tuple(pending)
 
@@ -306,13 +448,14 @@ def drift_findings_for_terminal_runs(
             )
         if not matching:
             findings.append(
-                f"{check.context} must have at least one terminal check-run from "
-                f"GitHub App id {expected}; found 0"
+                f"{check.context} has no terminal check-run from GitHub App id {expected}"
             )
-        distinct_app_ids = list(dict.fromkeys(app_ids))
-        if len(distinct_app_ids) != 1:
+            continue
+        latest_matching = latest_check_run(matching)
+        if latest_matching.get("conclusion") != SUCCESS_CONCLUSION:
             findings.append(
-                f"{check.context} has unexpected duplicate terminal reporters: app ids {app_ids!r}"
+                f"{check.context} latest terminal check-run from GitHub App id "
+                f"{expected} was not successful: {latest_matching.get('conclusion')!r}"
             )
     return tuple(findings)
 
@@ -323,7 +466,7 @@ def poll_required_check_runs(
     token: str,
     head_sha: str,
     checks: tuple[ci_provenance.RequiredCheckConfig, ...],
-    config_path: pathlib.Path,
+    config: ci_provenance.ProvenanceConfig,
     settings: merge_readiness.MergeReadinessSettings,
     api_json=merge_readiness.github_api_json,
     monotonic: Callable[[], float] = time.monotonic,
@@ -341,7 +484,11 @@ def poll_required_check_runs(
             settings=settings,
             api_json=api_json,
         )
-        latest_checks = required_registry_checks(config_path, check_runs=latest_runs)
+        latest_checks = active_expected_registry_checks(
+            checks=checks,
+            config=config,
+            check_runs=latest_runs,
+        )
         latest_pending = pending_contexts(checks=latest_checks, check_runs=latest_runs)
         if not latest_pending:
             return latest_runs, (), latest_checks
@@ -356,31 +503,38 @@ def summary_for_findings(findings: tuple[str, ...]) -> str:
     return "\n".join(f"- {finding}" for finding in findings)
 
 
-def publish_coverage_check_run(
+def step_summary_text(
     *,
-    repo: str,
-    token: str,
-    head_sha: str,
-    conclusion: str,
-    summary: str,
-    api_json=merge_readiness.github_api_json,
-) -> None:
-    api_json(
-        repo,
-        token,
-        "check-runs",
-        method="POST",
-        data={
-            "name": COVERAGE_CHECK_NAME,
-            "head_sha": head_sha,
-            "status": "completed",
-            "conclusion": conclusion,
-            "output": {
-                "title": "Coverage enforcer",
-                "summary": summary,
-            },
-        },
+    result: CoverageEnforcementResult,
+) -> str:
+    expected = ", ".join(result.expected_contexts) or "(none)"
+    return "\n".join(
+        (
+            "# coverage-enforcer",
+            "",
+            f"- conclusion: {result.conclusion}",
+            f"- head SHA: {result.head_sha}",
+            f"- event class: {result.event_class}",
+            f"- policy reason: {result.policy_reason}",
+            f"- expected contexts: {expected}",
+            "- mode: advisory native job; no custom check-run is published",
+            "",
+            result.summary,
+            "",
+        )
     )
+
+
+def write_step_summary(result: CoverageEnforcementResult) -> str | None:
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return None
+    try:
+        with pathlib.Path(summary_path).open("a", encoding="utf-8") as handle:
+            handle.write(step_summary_text(result=result))
+    except OSError as exc:
+        return f"coverage-enforcer warning: could not write GITHUB_STEP_SUMMARY: {exc}"
+    return None
 
 
 def event_pull_request(event: dict[str, object]) -> dict[str, object] | None:
@@ -407,11 +561,6 @@ def head_sha_from_event(event: dict[str, object]) -> str:
     raise CoverageEnforcerError("event must be pull_request or merge_group")
 
 
-def is_fork_event(event: dict[str, object]) -> bool:
-    pr = event_pull_request(event)
-    return pr is not None and merge_readiness.is_fork_pull_request(pr)
-
-
 def enforce_coverage(
     *,
     repo: str,
@@ -425,7 +574,12 @@ def enforce_coverage(
 ) -> CoverageEnforcementResult:
     head_sha = head_sha_from_event(event)
     all_checks = load_registry_checks(config_path)
-    required_checks = required_registry_checks(config_path)
+    ci_config = ci_provenance.load_config(config_path)
+    policy_result = policy_result_for_event(config=ci_config, event=event)
+    required_checks = expected_registry_checks_for_policy(
+        config=ci_config,
+        policy_result=policy_result,
+    )
     settings = merge_readiness.merge_settings(config_path)
 
     findings = list(
@@ -439,7 +593,7 @@ def enforce_coverage(
         token=token,
         head_sha=head_sha,
         checks=required_checks,
-        config_path=config_path,
+        config=ci_config,
         settings=settings,
         api_json=api_json,
         monotonic=monotonic,
@@ -455,37 +609,20 @@ def enforce_coverage(
 
     conclusion = FAILURE_CONCLUSION if findings else SUCCESS_CONCLUSION
     summary = summary_for_findings(tuple(findings))
-    if is_fork_event(event):
-        return CoverageEnforcementResult(
-            conclusion=conclusion,
-            head_sha=head_sha,
-            findings=tuple(findings),
-            summary=summary,
-            published=False,
-            publish_reason="skipping coverage-enforcer check-run publish for fork PR",
-        )
-
-    publish_coverage_check_run(
-        repo=repo,
-        token=token,
-        head_sha=head_sha,
-        conclusion=conclusion,
-        summary=summary,
-        api_json=api_json,
-    )
     return CoverageEnforcementResult(
         conclusion=conclusion,
         head_sha=head_sha,
         findings=tuple(findings),
         summary=summary,
-        published=True,
-        publish_reason="published coverage-enforcer check-run",
+        expected_contexts=expected_registry_contexts(active_required_checks),
+        event_class=policy_result.expected_event_class,
+        policy_reason=policy_result.reason,
     )
 
 
 def parser() -> argparse.ArgumentParser:
     argument_parser = argparse.ArgumentParser(
-        description="Publish advisory coverage-enforcer check-run"
+        description="Enforce advisory required-check coverage"
     )
     argument_parser.add_argument(
         "--config",
@@ -521,7 +658,9 @@ def main(argv: list[str] | None = None, *, api_json=merge_readiness.github_api_j
         print(f"coverage-enforcer failed: {exc}", file=sys.stderr)
         return 1
 
-    print(result.publish_reason)
+    summary_warning = write_step_summary(result)
+    if summary_warning is not None:
+        print(summary_warning, file=sys.stderr)
     print(result.summary)
     return 0 if result.conclusion == SUCCESS_CONCLUSION else 1
 

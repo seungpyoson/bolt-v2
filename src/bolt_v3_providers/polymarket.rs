@@ -46,7 +46,6 @@ use std::{
 
 use nautilus_core::string::secret::REDACTED;
 use nautilus_model::identifiers::AccountId;
-use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
     common::consts::{HTTP_RATE_LIMIT, LOT_SIZE_SCALE},
     common::credential::{EvmPrivateKey, Secrets as PolymarketSecrets},
@@ -86,6 +85,7 @@ use crate::{
         ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    bolt_v3_wire_boundary::TransportBackend,
     strategies::registry::FeeProvider,
 };
 

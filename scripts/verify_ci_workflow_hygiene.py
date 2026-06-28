@@ -98,7 +98,10 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/stale.yml": "stale",
 }
 SSH_RUNNER_ACTION_RE = re.compile(r"^ubicloud/ssh-runner@[0-9a-f]{40}$")
-DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
+DEFAULT_REPO_AUTOMATION_FILES = (
+    REPO_ROOT / "justfile",
+    REPO_ROOT / "ci" / "rust-ci-inputs.toml",
+)
 DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
     (REPO_ROOT / "tests", "*.sh"),
@@ -5595,6 +5598,8 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
 CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/test_ci_storage_audit.py",
     "python3 scripts/test_root_bin_sidecars.py",
+    "python3 scripts/test_ci_input_sets.py",
+    "python3 scripts/test_rust_test_targets.py",
 )
 
 
@@ -8577,6 +8582,34 @@ def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) 
     return errors
 
 
+def capture_artifact_metadata_errors(job_lines: list[str]) -> list[str]:
+    errors: list[str] = []
+    text = uncommented_text(job_lines)
+    if "ci_provenance.py artifact-metadata" not in text:
+        errors.append("capture must derive artifact metadata from ci_provenance.py artifact-metadata")
+    if '--config "$CAPTURE_PROVENANCE_CONFIG"' not in text:
+        errors.append("capture artifact metadata must use CAPTURE_PROVENANCE_CONFIG")
+    if '--run-attempt "${{ github.run_attempt }}"' not in text:
+        errors.append("capture artifact metadata must use github.run_attempt")
+
+    upload_blocks = [
+        block
+        for block in action_blocks(job_lines, "actions/upload-artifact@")
+        if block_has_input(block, "path", "${{ env.CAPTURE_OUTPUT_DIR }}")
+    ]
+    if not upload_blocks:
+        errors.append("capture must upload CAPTURE_OUTPUT_DIR")
+        return errors
+    if not any(block_has_input(block, "name", "${{ steps.provenance.outputs.artifact_name }}") for block in upload_blocks):
+        errors.append("capture upload artifact name must come from provenance config")
+    if not any(
+        block_has_input(block, "retention-days", "${{ steps.provenance.outputs.retention_days }}")
+        for block in upload_blocks
+    ):
+        errors.append("capture upload retention-days must come from provenance config")
+    return errors
+
+
 def ci_provenance_emit_records_secure_fingerprint(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return (
@@ -8895,6 +8928,27 @@ def backtester_detect_forces_bvs_changed_on_merge_group(job_lines: list[str]) ->
     )
 
 
+def backtester_detect_forced_events_use_exact_head_namespace(job_lines: list[str]) -> bool:
+    # Events that bypass the PR diff detector must not trust the head-controlled
+    # cache input helper/config for opaque archive cache keys. They run the proof
+    # lanes and use the exact-head bootstrap namespace instead.
+    text = uncommented_text(job_lines)
+    for branch_type, condition in (
+        ("if", '"${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch"'),
+        ("elif", '"${{ github.event_name }}" == "merge_group"'),
+    ):
+        branch = branch_body(text, branch_type, condition)
+        if branch is None:
+            return False
+        if 'echo "bvs_changed=true" >> "$GITHUB_OUTPUT"' not in branch:
+            return False
+        if 'echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"' not in branch:
+            return False
+        if not body_exits_zero(branch):
+            return False
+    return True
+
+
 def git_diff_pathspecs(block_text: str) -> tuple[str, ...] | None:
     normalized = re.sub(r"\\\s*\n\s*", " ", block_text)
     matches = [
@@ -9051,6 +9105,10 @@ def job_permission_has(job_lines: list[str], permission: str, value: str) -> boo
 
 def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+actions:\s+read\s*$", workflow_text) is not None
+
+
+def workflow_permissions_have_issues_read(workflow_text: str) -> bool:
+    return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+issues:\s+read\s*$", workflow_text) is not None
 
 
 def configured_ci_provenance_retention_days() -> int:
@@ -9388,6 +9446,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if not workflow_permissions_have_actions_read(workflow_text):
         errors.append("workflow permissions must include actions: read")
+    if not workflow_permissions_have_issues_read(workflow_text):
+        errors.append("workflow permissions must include issues: read")
 
     for job in REQUIRED_JOBS:
         if job not in jobs:
@@ -9403,6 +9463,9 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if "ci-policy" in jobs:
         errors.extend(ci_policy_job_errors(jobs["ci-policy"]))
+
+    if "capture" in jobs:
+        errors.extend(capture_artifact_metadata_errors(jobs["capture"]))
 
     for job in TAG_SKIP_REQUIRED_JOBS:
         if job in jobs and not job_skips_tag_reuse(jobs[job]):
@@ -10376,15 +10439,28 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
     if not file_name.endswith("backtester-ci.yml"):
         return []
     errors: list[str] = []
-    for line in text.splitlines():
-        if "managed-target-bvs-v1-" not in line or "hashFiles(" not in line:
+    for _job_id, job_lines in parse_jobs(text).items():
+        job_text = "\n".join(job_lines)
+        cache_key_seen = False
+        for line in job_text.splitlines():
+            if not any(prefix in line for prefix in ("managed-target-bvs-v", "bvs-nextest-archive-v", "bvs-bin-sidecars-v")):
+                continue
+            if "key:" not in line:
+                continue
+            cache_key_seen = True
+            if "hashFiles(" in line:
+                errors.append("backtester cache key must use ci_input_sets digest, not inline hashFiles")
+            if "${{ steps.bvs_cache_inputs.outputs.digest }}" not in line:
+                errors.append("backtester cache key must include steps.bvs_cache_inputs.outputs.digest")
+        if not cache_key_seen:
             continue
-        for required in [
-            "crates/backtesting-vertical-slice/src/**",
-            "crates/backtesting-vertical-slice/tests/**",
-        ]:
-            if required not in line:
-                errors.append(f"backtester managed-target cache key must include {required}")
+        if "python3 scripts/ci_input_sets.py hash backtester_cache" not in job_text:
+            errors.append("backtester cache key digest must come from ci_input_sets backtester_cache")
+        if (
+            'if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then' not in job_text
+            or 'echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"' not in job_text
+        ):
+            errors.append("backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes")
     return errors
 
 
@@ -10416,26 +10492,34 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     errors: list[str] = []
     if archive_job is None:
         errors.append("backtester bvs-test must define archive producer job")
-    if test_job is None:
-        errors.append("backtester bvs-test must define matrix shard job")
+    if test_job is not None:
+        errors.append("backtester bvs-test must run partitions in the archive producer, not a matrix shard job")
     if issue_job is None:
-        errors.append("backtester bvs-test must define dedicated issue-789 job")
-    if archive_job is None or test_job is None:
+        errors.append("backtester bvs-test must define manual issue-789 diagnostic job")
+    if archive_job is None:
         return errors
     archive_text = uncommented_text(archive_job)
-    job_text = uncommented_text(test_job)
+    job_text = uncommented_text(test_job) if test_job is not None else ""
     issue_text = uncommented_text(issue_job) if issue_job is not None else ""
     gate_text = uncommented_text(gate_job) if gate_job is not None else ""
     consumer_text = f"{job_text}\n{issue_text}"
     combined_text = f"{archive_text}\n{consumer_text}"
     if "just bte-test --partition" in combined_text:
         errors.append("backtester bvs-test must not run direct per-shard target builds")
-    if "for shard in $(seq" in archive_text or "just bte-test-archive-run" in archive_text:
-        errors.append("backtester bvs-test archive producer must not run partitions serially")
-    if "build --locked --bins" in consumer_text:
-        errors.append("backtester bvs-test consumers must not build binary sidecars")
-    if "managed-target-bvs-v1-" in consumer_text or "test-target-cache" in consumer_text:
+    if "for shard in $(seq 1 \"$BVS_NEXTEST_SHARDS\")" not in archive_text:
+        errors.append("backtester bvs-test archive producer must run every BVS partition")
+    if "build --locked --bins" in combined_text:
+        errors.append("backtester bvs-test sidecars must not build every binary")
+    if "find debug -maxdepth 1 -type f -perm -111" in combined_text:
+        errors.append("backtester bvs-test sidecars must not blanket-pack target/debug executables")
+    if "name: bvs-test-payload" in combined_text:
+        errors.append("backtester bvs-test must not publish or consume the legacy fan-out payload")
+    if action_blocks(archive_job, "actions/download-artifact@"):
+        errors.append("backtester required bvs-test path must not download a test payload artifact")
+    if "managed-target-bvs-v" in consumer_text or "test-target-cache" in consumer_text:
         errors.append("backtester bvs-test consumers must not restore the managed target cache")
+    if 'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" --lib --test' in archive_text:
+        errors.append("backtester bvs-test archive targets must be discovered, not hardcoded in workflow YAML")
     if gate_job is not None and (
         "issue_789" in extract_needs(gate_job) or "needs.issue_789.result" in gate_text
     ):
@@ -10445,6 +10529,11 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ("backtester bvs-test archive must use archive job name", "name: bvs-test archive"),
         ("backtester bvs-test archive must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
         ("backtester bvs-test archive must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
+        ("backtester bvs-test archive must declare four archive partitions", 'BVS_NEXTEST_SHARDS: "4"'),
+        (
+            "backtester bvs-test archive must compute the shared BVS cache input digest",
+            "python3 scripts/ci_input_sets.py hash backtester_cache",
+        ),
         (
             "backtester bvs-test archive must restore nextest archive cache explicitly",
             "id: bvs-nextest-archive-cache",
@@ -10455,35 +10544,19 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive cache key must be exact and content-addressed",
-            "key: bvs-nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
+            "key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}",
         ),
         (
             "backtester bvs-test archive must restore binary sidecar cache",
             "id: bvs-bin-sidecars-cache",
         ),
         (
-            "backtester bvs-test archive must upload the run-scoped test payload artifact",
-            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-        ),
-        (
-            "backtester bvs-test archive must publish the bvs-test-payload artifact",
-            "name: bvs-test-payload",
-        ),
-        (
-            "backtester bvs-test archive payload upload must include hidden files (.nextest-archive dot-dir)",
-            "include-hidden-files: true",
-        ),
-        (
-            "backtester bvs-test archive payload upload must fail closed when the payload is empty",
-            "if-no-files-found: error",
-        ),
-        (
             "backtester bvs-test sidecar cache key must be exact and content-addressed",
-            "key: bvs-bin-sidecars-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
+            "key: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}",
         ),
         (
-            "backtester bvs-test archive must resolve target only for cache misses",
-            "if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'",
+            "backtester bvs-test archive must resolve the crate managed target directory",
+            "id: crate_target",
         ),
         (
             "backtester bvs-test archive must save shared registry cache from the archive producer only",
@@ -10494,8 +10567,12 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'",
         ),
         (
-            "backtester bvs-test archive must build a nextest archive",
-            'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH"',
+            "backtester bvs-test archive must derive archive targets from source",
+            "python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice",
+        ),
+        (
+            "backtester bvs-test archive must build a nextest archive from discovered targets",
+            'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"',
         ),
         (
             "backtester bvs-test archive must save nextest archive cache explicitly",
@@ -10510,12 +10587,16 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "Build BVS binary sidecars",
         ),
         (
-            "backtester bvs-test archive sidecars must use managed cargo",
-            'python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- build --locked --bins',
+            "backtester bvs-test archive sidecars must derive from CARGO_BIN_EXE references",
+            "python3 scripts/rust_test_targets.py sidecars --crate crates/backtesting-vertical-slice",
         ),
         (
-            "backtester bvs-test archive must pack sidecars from target debug",
-            "find debug -maxdepth 1 -type f -perm -111 -print0",
+            "backtester bvs-test archive sidecars must use managed cargo",
+            'python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- "${cargo_args[@]}"',
+        ),
+        (
+            "backtester bvs-test archive must pack only required sidecars",
+            'tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -',
         ),
         (
             "backtester bvs-test archive must save binary sidecar cache",
@@ -10529,78 +10610,69 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "backtester bvs-test archive must save target cache only after archive/sidecar misses",
             "if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
         ),
-    ]
-    test_fragments = [
-        ("backtester bvs-test shards must name matrix shards", "name: bvs-test ${{ matrix.shard }} of 4"),
         (
-            "backtester bvs-test shards must depend on archive producer",
-            "needs: [ci-policy, detect, fmt, test-archive]",
+            "backtester bvs-test archive must fail closed on missing local payload",
+            'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }',
         ),
         (
-            "backtester bvs-test shards must only run after archive producer succeeds",
-            "needs.test-archive.result == 'success'",
-        ),
-        ("backtester bvs-test shards must keep fail-fast disabled", "fail-fast: false"),
-        ("backtester bvs-test shards must define four nextest shards", "shard: [1, 2, 3, 4]"),
-        ("backtester bvs-test shards must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
-        ("backtester bvs-test shards must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
-        ("backtester bvs-test shards must declare four archive partitions", 'BVS_NEXTEST_SHARDS: "4"'),
-        (
-            "backtester bvs-test shards must download the run-scoped test payload artifact",
-            "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+            "backtester bvs-test archive must fail closed on missing sidecars",
+            'test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty"; exit 1; }',
         ),
         (
-            "backtester bvs-test shards must download the bvs-test-payload artifact by name",
-            "name: bvs-test-payload",
+            "backtester bvs-test archive must log payload sizes",
+            "stat -c 'bvs-payload-size %n %s'",
         ),
         (
-            "backtester bvs-test shards must extract binary sidecars",
+            "backtester bvs-test archive must extract sidecars locally",
             'tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"',
         ),
         (
-            "backtester bvs-test shards must create archive extract root",
+            "backtester bvs-test archive must list scoped archive tests",
+            'nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH"',
+        ),
+        (
+            "backtester bvs-test archive must create archive extract root",
             'mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"',
         ),
         (
-            "backtester bvs-test shards must exclude dedicated issue-789 lane",
+            "backtester bvs-test archive must exclude dedicated issue-789 lane",
             "-- --skip issue_789_first_real_free_data_taker_pl",
         ),
         (
-            "backtester bvs-test shards must run one partition from local archive",
-            'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${{ matrix.shard }}/${{ env.BVS_NEXTEST_SHARDS }}" -- --skip issue_789_first_real_free_data_taker_pl',
+            "backtester bvs-test archive must run partitioned tests from the local archive",
+            'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl',
         ),
     ]
     issue_fragments = [
         ("backtester bvs-test issue-789 must use dedicated job name", "name: bvs-test issue-789"),
         (
-            "backtester bvs-test issue-789 must depend on archive producer and backtester-gate",
-            "needs: [ci-policy, detect, test-archive, gate]",
+            "backtester bvs-test issue-789 must depend on backtester-gate",
+            "needs: [ci-policy, detect, gate]",
         ),
         (
-            "backtester bvs-test issue-789 must only run after archive producer succeeds",
-            "needs.test-archive.result == 'success'",
+            "backtester bvs-test issue-789 must be manual workflow_dispatch only",
+            "github.event_name == 'workflow_dispatch'",
+        ),
+        (
+            "backtester bvs-test issue-789 must require explicit issue_789 input",
+            "github.event.inputs.issue_789 == 'true'",
         ),
         (
             "backtester bvs-test issue-789 must only run after required gate succeeds",
             "needs.gate.result == 'success'",
         ),
-        ("backtester bvs-test issue-789 must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
-        ("backtester bvs-test issue-789 must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
+        ("backtester bvs-test issue-789 must declare lib archive path", "BVS_ISSUE_789_ARCHIVE_PATH: .nextest-archive/bvs-issue-789-lib.tar.zst"),
         (
             "backtester bvs-test issue-789 must write the first-P/L artifact path",
             "BOLT_ISSUE_789_RESULT_PATH:",
         ),
         (
-            "backtester bvs-test issue-789 must download the run-scoped test payload artifact",
-            "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+            "backtester bvs-test issue-789 must build a dedicated lib archive",
+            'just bte-test-archive "$BVS_ISSUE_789_ARCHIVE_PATH" --lib',
         ),
         (
-            "backtester bvs-test issue-789 must download the bvs-test-payload artifact by name",
-            "name: bvs-test-payload",
-        ),
-        (
-            "backtester bvs-test issue-789 must extract binary sidecars",
-            'tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"',
+            "backtester bvs-test issue-789 must log lib archive size",
+            "stat -c 'bvs-issue-789-archive-size %n %s'",
         ),
         (
             "backtester bvs-test issue-789 must create archive extract root",
@@ -10608,7 +10680,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test issue-789 must run only the dedicated long test",
-            'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl',
+            'just bte-test-archive-run "$BVS_ISSUE_789_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl',
         ),
         (
             "backtester bvs-test issue-789 artifact name must be deterministic",
@@ -10622,38 +10694,6 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     for message, fragment in archive_fragments:
         if fragment not in archive_text:
             errors.append(message)
-    for message, fragment in test_fragments:
-        if fragment not in job_text:
-            errors.append(message)
-    for scope_name, scope_job in (("bvs-test shards", test_job), ("bvs-test issue-789", issue_job)):
-        if scope_job is None:
-            continue
-        for var_name, payload_name in (
-            ("BVS_NEXTEST_ARCHIVE_PATH", "archive"),
-            ("BVS_BIN_SIDECARS_PATH", "sidecars"),
-        ):
-            guard_prefix = f'test -s "${var_name}"'
-            guard_lines: list[str] = []
-            for block in step_blocks(scope_job):
-                for line in block_run_body(block).splitlines():
-                    guard_line = strip_comment(line).strip()
-                    if guard_line.startswith(guard_prefix) and (
-                        len(guard_line) == len(guard_prefix)
-                        or guard_line[len(guard_prefix)] in " \t;|&)"
-                    ):
-                        guard_lines.append(guard_line)
-            if not guard_lines:
-                errors.append(
-                    f"backtester consumer must fail closed if the downloaded {payload_name} "
-                    f"is missing or empty ({scope_name})"
-                )
-                continue
-            for guard_line in guard_lines:
-                if not EXIT_ONE_RE.search(guard_line):
-                    errors.append(
-                        f"backtester consumer guard is not fail-closed for downloaded "
-                        f"{payload_name} ({scope_name}): {guard_line}"
-                    )
     if issue_job is not None:
         for message, fragment in issue_fragments:
             if fragment not in issue_text:
@@ -10861,7 +10901,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
                 errors.append(f"backtester draft deferral ci-policy job must include {required}")
         errors.extend(ci_policy_event_sender_command_errors(policy))
 
-    for heavy_job in ("clippy", "test-archive", "test"):
+    for heavy_job in ("clippy", "test-archive"):
         job = jobs.get(heavy_job)
         if job is None:
             continue
@@ -10902,7 +10942,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             "--job fmt=${{ needs.fmt.result }}",
             "--job clippy=${{ needs.clippy.result }}",
             "--job test-archive=${{ needs.test-archive.result }}",
-            "--job test=${{ needs.test.result }}",
+            "--job test=${{ needs.test-archive.result }}",
         ):
             if required not in gate_text:
                 errors.append(f"backtester draft deferral shared gate call must include {required}")
@@ -10949,9 +10989,102 @@ def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
         return []
     detect_job = parse_jobs(text).get("detect", [])
     errors: list[str] = []
-    for required in ("ci/github-actions-runners.toml", "scripts/ci_provenance.py"):
-        if not any(required in line for line in detect_job):
-            errors.append(f"backtester detect paths must include {required}")
+    detect_text = "\n".join(detect_job)
+    if "bvs_bootstrap_changed: ${{ steps.detect.outputs.bvs_bootstrap_changed }}" not in detect_text:
+        errors.append("backtester detect must expose CI input-set bootstrap changes")
+    validate_required = "python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect"
+    if validate_required not in detect_text:
+        errors.append("backtester detect must validate CI input sets before skip decisions")
+    bootstrap_required = 'git diff --name-only "${base_sha}...HEAD" -- scripts/ci_input_sets.py ci/rust-ci-inputs.toml > "$bootstrap_changed_path"'
+    if bootstrap_required not in detect_text:
+        errors.append("backtester detect must force-run on CI input-set bootstrap changes")
+    bootstrap_branch = branch_body(detect_text, "if", '-s "$bootstrap_changed_path"')
+    if (
+        bootstrap_branch is None
+        or 'echo "bvs_changed=true" >> "$GITHUB_OUTPUT"' not in bootstrap_branch
+        or 'echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"' not in bootstrap_branch
+        or "exit 0" not in bootstrap_branch
+    ):
+        errors.append("backtester detect must mark CI input-set bootstrap changes")
+    required = 'python3 scripts/ci_input_sets.py changed backtester_detect --base "$base_sha" --head HEAD'
+    if required not in detect_text:
+        errors.append("backtester detect paths must come from ci_input_sets backtester_detect")
+    non_bootstrap_detect_text = detect_text.replace(bootstrap_required, "")
+    if 'git diff --name-only "${base_sha}...HEAD" --' in non_bootstrap_detect_text:
+        errors.append("backtester detect paths must not be duplicated inline")
+    return errors
+
+
+def ci_input_set_config_errors(file_name: str, text: str) -> list[str]:
+    if file_name != "ci/rust-ci-inputs.toml" and not file_name.endswith("/ci/rust-ci-inputs.toml"):
+        return []
+    try:
+        config = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return [f"CI input set config is invalid TOML: {exc}"]
+    sets = config.get("sets")
+    if not isinstance(sets, dict):
+        return ["CI input set config must define [sets.<name>] tables"]
+
+    def string_list(value: object, *, label: str) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+            raise ValueError(f"{label} must be a list of non-empty strings")
+        return value
+
+    def resolve_set(name: str, stack: tuple[str, ...] = ()) -> list[str]:
+        if name in stack:
+            raise ValueError("input set cycle: " + " -> ".join((*stack, name)))
+        table = sets.get(name)
+        if not isinstance(table, dict):
+            raise ValueError(f"unknown input set: {name}")
+        paths: list[str] = []
+        for parent in string_list(table.get("include_sets"), label=f"sets.{name}.include_sets"):
+            paths.extend(resolve_set(parent, (*stack, name)))
+        paths.extend(string_list(table.get("paths"), label=f"sets.{name}.paths"))
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for path in paths:
+            if path not in seen:
+                seen.add(path)
+                deduped.append(path)
+        return deduped
+
+    try:
+        cache = set(resolve_set("backtester_cache"))
+        detect = set(resolve_set("backtester_detect"))
+    except ValueError as exc:
+        return [str(exc)]
+
+    errors: list[str] = []
+    for required in [
+        "Cargo.lock",
+        "Cargo.toml",
+        ".gitignore",
+        "build.rs",
+        "gated_source_roots.manifest",
+        "src/**",
+        "tests/**",
+        "specs/023-nt-research-analytics-platform/reference/**",
+        "crates/backtesting-vertical-slice/Cargo.lock",
+        "crates/backtesting-vertical-slice/Cargo.toml",
+        "crates/backtesting-vertical-slice/src/**",
+        "crates/backtesting-vertical-slice/tests/**",
+        "scripts/rust_test_targets.py",
+        "scripts/ci_input_sets.py",
+        "ci/rust-ci-inputs.toml",
+    ]:
+        if required not in cache:
+            errors.append(f"backtester_cache input set must include {required}")
+    for required in [
+        "scripts/ci_provenance.py",
+        "ci/github-actions-runners.toml",
+        ".github/workflows/backtester-ci.yml",
+        "scripts/rust_test_targets.py",
+    ]:
+        if required not in detect:
+            errors.append(f"backtester_detect input set must include {required}")
     return errors
 
 
@@ -10979,6 +11112,12 @@ def backtester_nextest_archive_recipe_errors(file_name: str, text: str) -> list[
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
+        if file_name == "ci/rust-ci-inputs.toml" or file_name.endswith("/ci/rust-ci-inputs.toml"):
+            add_unique_errors(
+                errors,
+                (f"{file_name}: {error}" for error in ci_input_set_config_errors(file_name, text)),
+            )
+            continue
         errors.extend(f"{file_name}: {error}" for error in raw_rust_storage_errors(text))
         add_unique_errors(
             errors,
@@ -11051,6 +11190,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
             if "detect" in jobs and not backtester_detect_forces_bvs_changed_on_merge_group(jobs["detect"]):
                 errors.append(
                     f"{file_name}: backtester detect must force bvs_changed=true for merge_group"
+                )
+            if "detect" in jobs and not backtester_detect_forced_events_use_exact_head_namespace(jobs["detect"]):
+                errors.append(
+                    f"{file_name}: backtester forced detect events must use exact-head cache namespace"
                 )
             add_unique_errors(
                 errors,

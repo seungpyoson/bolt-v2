@@ -180,6 +180,22 @@ def mergify_queue_route_finding(pr: int, queue_rule: str, labels: list[str], que
     }
 
 
+def mergify_queue_batch_above_max_finding(queue_rule: str, prs: list[int], max_batch_size: int) -> dict[str, object]:
+    return {
+        "lane": "mergify_config",
+        "scope": "queue",
+        "status": "ready",
+        "reason_code": "mergify_queue_batch_above_max",
+        "message": f"Mergify queue rule {queue_rule} selected {len(prs)} PRs above max batch size {max_batch_size}",
+        "evidence": {
+            "queue_rule": queue_rule,
+            "prs": prs,
+            "selected_count": len(prs),
+            "max_batch_size": max_batch_size,
+        },
+    }
+
+
 def load_preflight_module() -> object:
     spec = importlib.util.spec_from_file_location("merge_queue_preflight", SCRIPT_PATH)
     if spec is None or spec.loader is None:
@@ -609,6 +625,30 @@ def assert_mergify_queue_routing_uses_pr_labels() -> None:
         assert mergify_queue_route_finding(1, "hotfix", ["hotfix"], ["label = hotfix"]) in payload["findings"], payload["findings"]
         assert mergify_queue_route_finding(2, "default", [], []) in payload["findings"], payload["findings"]
         assert_equal(payload["wave_status"], "split_advised", "mixed queue wave status")
+
+
+def assert_default_queue_above_max_is_split_advised() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        heads = {
+            pr: fixture.make_pr(pr, {f"default-{pr}.txt": f"default {pr}\n"})
+            for pr in range(1, 12)
+        }
+        bin_dir = write_fake_gh(
+            root,
+            views={pr: approved_pr_view(head) for pr, head in heads.items()},
+        )
+        result = run_preflight_with_gh(
+            fixture.repo,
+            fixture.remote,
+            bin_dir,
+            *(str(pr) for pr in heads),
+        )
+        assert_equal(result.returncode, 3, "default queue above max rc")
+        payload = parse_json(result.stdout)
+        assert_equal(payload["wave_status"], "split_advised", "default queue above max wave status")
+        assert mergify_queue_batch_above_max_finding("default", list(heads), 10) in payload["findings"], payload["findings"]
 
 
 def assert_clean_prs_batch_together() -> None:
@@ -1225,6 +1265,7 @@ def main() -> int:
     assert_contract_evaluator_reduces_normalized_evidence()
     assert_mergify_config_snapshot_uses_base_blob()
     assert_mergify_queue_routing_uses_pr_labels()
+    assert_default_queue_above_max_is_split_advised()
     assert_clean_prs_batch_together()
     assert_conflicting_pr_starts_later_batch()
     assert_order_dependent_conflict_context_is_reported()

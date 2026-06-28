@@ -110,10 +110,15 @@ MERGIFY_QUEUE_CONDITION_LABELS = {
     (): frozenset(),
     ("label = hotfix",): frozenset({"hotfix"}),
 }
+MERGIFY_BATCH_SIZE_EXTRACTORS = {
+    True: lambda batch_size: int(batch_size["max"]),
+    False: int,
+}
 MERGIFY_QUEUE_WAVE_STATUSES = {
     False: STATUS_READY,
     True: VERDICT_SPLIT_ADVISED,
 }
+MERGIFY_SPLIT_REASON_CODES = frozenset({"mergify_queue_batch_above_max"})
 MERGIFY_CONFIG_FIELD_HANDLING = {
     "merge_queue.max_parallel_checks": "residual_cost_impact",
     "merge_queue.reset_on_external_merge": "residual_post_preflight_invalidation",
@@ -322,6 +327,96 @@ def mergify_queue_route_finding(
     }
 
 
+def mergify_route_queue_groups(route_findings: Sequence[Mapping[str, object]]) -> dict[str, list[int]]:
+    groups: dict[str, list[int]] = {}
+    for finding in route_findings:
+        evidence = dict(finding["evidence"])
+        groups.setdefault(str(evidence["queue_rule"]), []).append(int(evidence["pr"]))
+    return groups
+
+
+def mergify_queue_rules_by_name(config: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
+    return {
+        str(rule["name"]): rule
+        for rule in tuple(config["queue_rules"])
+    }
+
+
+def mergify_queue_batch_max(rule: Mapping[str, object]) -> int:
+    batch_size = rule["batch_size"]
+    return MERGIFY_BATCH_SIZE_EXTRACTORS[isinstance(batch_size, Mapping)](batch_size)
+
+
+def mergify_queue_batch_above_max_finding(
+    *,
+    queue_rule: str,
+    prs: Sequence[int],
+    max_batch_size: int,
+) -> dict[str, object]:
+    return {
+        "lane": LANE_MERGIFY_CONFIG,
+        "scope": "queue",
+        "status": STATUS_READY,
+        "reason_code": "mergify_queue_batch_above_max",
+        "message": f"Mergify queue rule {queue_rule} selected {len(prs)} PRs above max batch size {max_batch_size}",
+        "evidence": {
+            "queue_rule": queue_rule,
+            "prs": list(prs),
+            "selected_count": len(prs),
+            "max_batch_size": max_batch_size,
+        },
+    }
+
+
+def selected_mergify_queue_batch_above_max_findings(
+    *,
+    queue_rule: str,
+    prs: Sequence[int],
+    max_batch_size: int,
+) -> tuple[dict[str, object], ...]:
+    return (
+        mergify_queue_batch_above_max_finding(
+            queue_rule=queue_rule,
+            prs=prs,
+            max_batch_size=max_batch_size,
+        ),
+    )
+
+
+def selected_mergify_queue_batch_within_max_findings(
+    *,
+    queue_rule: str,
+    prs: Sequence[int],
+    max_batch_size: int,
+) -> tuple[dict[str, object], ...]:
+    return ()
+
+
+MERGIFY_BATCH_SIZE_FINDING_BUILDERS = {
+    True: selected_mergify_queue_batch_above_max_findings,
+    False: selected_mergify_queue_batch_within_max_findings,
+}
+
+
+def mergify_queue_batch_size_findings(
+    *,
+    config: Mapping[str, object],
+    route_findings: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    rules_by_name = mergify_queue_rules_by_name(config)
+    groups = mergify_route_queue_groups(route_findings)
+    return tuple(
+        finding
+        for queue_rule, prs in groups.items()
+        for max_batch_size in (mergify_queue_batch_max(rules_by_name[queue_rule]),)
+        for finding in MERGIFY_BATCH_SIZE_FINDING_BUILDERS[len(prs) > max_batch_size](
+            queue_rule=queue_rule,
+            prs=prs,
+            max_batch_size=max_batch_size,
+        )
+    )
+
+
 def available_mergify_queue_route_findings(
     *,
     config: Mapping[str, object],
@@ -338,6 +433,18 @@ def available_mergify_queue_route_findings(
     )
 
 
+def available_mergify_config_route_and_batch_findings(
+    *,
+    config: Mapping[str, object],
+    readiness: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    route_findings = available_mergify_queue_route_findings(config=config, readiness=readiness)
+    return (
+        *route_findings,
+        *mergify_queue_batch_size_findings(config=config, route_findings=route_findings),
+    )
+
+
 def unavailable_mergify_queue_route_findings(
     *,
     config: object,
@@ -347,7 +454,7 @@ def unavailable_mergify_queue_route_findings(
 
 
 MERGIFY_QUEUE_ROUTE_FINDING_BUILDERS = {
-    True: available_mergify_queue_route_findings,
+    True: available_mergify_config_route_and_batch_findings,
     False: unavailable_mergify_queue_route_findings,
 }
 
@@ -462,7 +569,10 @@ def mergify_route_queue_rules(findings: Sequence[Mapping[str, object]]) -> froze
 
 
 def mergify_wave_status(findings: Sequence[Mapping[str, object]]) -> str:
-    return MERGIFY_QUEUE_WAVE_STATUSES[len(mergify_route_queue_rules(findings)) > 1]
+    return MERGIFY_QUEUE_WAVE_STATUSES[
+        len(mergify_route_queue_rules(findings)) > 1
+        or bool(MERGIFY_SPLIT_REASON_CODES & frozenset(str(finding["reason_code"]) for finding in findings))
+    ]
 
 
 @dataclasses.dataclass(frozen=True)

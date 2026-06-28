@@ -21,7 +21,7 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "ai_review_deliverables.py"
 def valid_no_findings_response() -> str:
     return "\n".join(
         [
-            "No hard-evidence findings in this chunk based only on the supplied diff.",
+            "No hard-evidence findings in this chunk.",
             "Coverage reviewed: changed files in this chunk.",
             "Evidence basis: supplied diff only; no omitted files, logs, or external state were assumed.",
             "Risk areas considered: correctness, security, workflow safety, verification, and repo-governance impact visible in this chunk.",
@@ -301,6 +301,42 @@ def test_skips_fallback_when_pr_agent_deliverable_exists_after_start() -> None:
             max_chunk_chars=260,
             run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
         ),
+    )
+
+    assert result == "existing-review-deliverable"
+    assert glm.prompts == []
+    assert github.posted == []
+
+
+def test_pr_agent_severity_review_without_fallback_labels_suppresses_fallback() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "body": "\n".join(
+                    [
+                        "## PR Reviewer Guide",
+                        "",
+                        "### Security Review",
+                        "",
+                        "Severity: low",
+                        "",
+                        "No blocking concern found in the changed workflow.",
+                    ]
+                ),
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+    glm = FakeGLM()
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=fallback_config(module),
     )
 
     assert result == "existing-review-deliverable"
@@ -1247,6 +1283,7 @@ def main() -> int:
     test_splits_one_oversized_file_patch_into_multiple_review_chunks()
     test_truncated_file_fragment_keeps_markdown_fence_closed()
     test_skips_fallback_when_pr_agent_deliverable_exists_after_start()
+    test_pr_agent_severity_review_without_fallback_labels_suppresses_fallback()
     test_plain_pr_agent_phrase_does_not_suppress_fallback()
     test_human_pr_agent_marker_comment_does_not_suppress_fallback()
     test_human_kimi_marker_comment_does_not_suppress_fallback()

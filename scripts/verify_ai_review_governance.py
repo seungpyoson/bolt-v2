@@ -353,21 +353,6 @@ def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(literals))
 
 
-def ai_review_model_values(ai_review_toml: str) -> tuple[object, object, object]:
-    try:
-        parsed = tomllib.loads(ai_review_toml)
-    except tomllib.TOMLDecodeError:
-        return None, None, None
-    glm = parsed.get("glm")
-    kimi = parsed.get("kimi")
-    if not isinstance(glm, dict) or not isinstance(kimi, dict):
-        return None, None, None
-    pr_agent = glm.get("pr_agent")
-    if not isinstance(pr_agent, dict):
-        return glm.get("model"), kimi.get("model"), None
-    return glm.get("model"), kimi.get("model"), pr_agent.get("model")
-
-
 def verify_pr_agent_config(pr_agent_toml: str, ai_review_toml: str) -> list[str]:
     findings: list[str] = []
     try:
@@ -391,7 +376,6 @@ def verify_pr_agent_config(pr_agent_toml: str, ai_review_toml: str) -> list[str]
         if reviewer.get(key) is not value:
             findings.append(f".pr_agent.toml pr_reviewer.{key} must be {value!r}")
 
-    _glm_model, _kimi_model, _glm_pr_agent_model = ai_review_model_values(ai_review_toml)
     expected_source = "workflow stamps the authoritative configured source/model from `ci/ai-review.toml`"
     extra = reviewer.get("extra_instructions", "")
     if expected_source not in extra:

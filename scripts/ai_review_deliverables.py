@@ -360,8 +360,8 @@ def review_body_is_quality_deliverable(body: str, output_contract: ReviewOutputC
     if "review did not produce a deliverable" in lowered or "review notice" in lowered:
         return False
     finding_labels = tuple(label.lower() for label in output_contract.finding_required_labels)
-    if finding_labels and finding_labels[0] in lowered:
-        return all(label in lowered for label in finding_labels)
+    if finding_labels and all(label in lowered for label in finding_labels):
+        return True
     if output_contract.no_findings_indicator.lower() in lowered:
         return all(label.lower() in lowered for label in output_contract.no_findings_required_labels)
     pr_agent_headings = tuple(heading.lower() for heading in output_contract.pr_agent_deliverable_headings)

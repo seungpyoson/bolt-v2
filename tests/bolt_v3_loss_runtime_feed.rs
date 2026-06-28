@@ -1,10 +1,10 @@
-mod support;
+use crate::support;
 
 use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-    BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
-    BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
-    BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+    BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
+    BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
+    BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
     BoltV3RequoteThrottleEvidence, BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
     BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
 };
@@ -1115,9 +1115,9 @@ impl BoltV3DecisionEvidenceWriter for RecordingLossHaltEvidenceWriter {
         Ok(())
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> anyhow::Result<()> {
         self.increment_other_evidence_channel();
         Ok(())
@@ -1223,7 +1223,7 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
-        position_sizing: None,
+        admission_evidence: None,
     }
 }
 

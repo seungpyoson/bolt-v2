@@ -6,6 +6,8 @@ pub mod bolt_v3_basket_execution;
 pub mod bolt_v3_basket_store;
 pub mod bolt_v3_binary_outcome_edge;
 pub mod bolt_v3_book_sizing;
+pub mod bolt_v3_capital_admission;
+pub mod bolt_v3_capital_admission_runtime_feed;
 pub mod bolt_v3_capital_reservation;
 pub mod bolt_v3_client_registration;
 pub mod bolt_v3_config;
@@ -60,8 +62,6 @@ pub mod bolt_v3_outcome_group_scanner;
 pub mod bolt_v3_outcome_group_sources;
 pub mod bolt_v3_outcome_groups;
 pub mod bolt_v3_position_contract;
-pub mod bolt_v3_position_sizer;
-pub mod bolt_v3_position_sizer_runtime_feed;
 pub mod bolt_v3_prod_profile;
 pub mod bolt_v3_providers;
 pub mod bolt_v3_quote_lifecycle;
@@ -71,16 +71,17 @@ pub mod bolt_v3_realized_volatility;
 pub mod bolt_v3_realized_volatility_runtime;
 pub mod bolt_v3_reference_price;
 pub mod bolt_v3_reference_price_health;
+pub mod bolt_v3_risk_reservation_substrate;
 // Re-exported at crate root so backtesting consumers can name these
 // reconstruction types without writing the snake_case module path. The
 // backtesting-vertical-slice sample-venue source fence forbids the literal
 // "reference_price" token in its production Rust; the CamelCase type names are
 // fence-clean, the module path is not.
 pub use bolt_v3_reference_price::{ReferencePriceUpdate, ReferenceQuoteProvenance};
+pub mod bolt_v3_capital_admission_state;
 pub mod bolt_v3_requote_budget;
 pub mod bolt_v3_secrets;
 pub mod bolt_v3_sizing;
-pub mod bolt_v3_sizing_state;
 pub mod bolt_v3_source_integrity;
 pub mod bolt_v3_strategy_registration;
 pub mod bolt_v3_submit_admission;

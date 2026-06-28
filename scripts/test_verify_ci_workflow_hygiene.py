@@ -7,12 +7,15 @@ import contextlib
 import dataclasses
 import io
 import importlib.util
+import os
 import pathlib
 import re
 import subprocess
 import sys
 import tempfile
 import textwrap
+
+from ci_test_manifest import CiTestManifest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -117,15 +120,32 @@ proof_gate_job = "gate"
 
 [ci_provenance.gate_names]
 gate_required = "gate"
-gate_defer = "gate-deferred"
 gate_iteration = "gate-iteration"
-gate_noop = "gate-noop"
 gate_dispatch_full = "gate-dispatch"
 backtester_required = "backtester-gate"
-backtester_defer = "backtester-gate-deferred"
 backtester_iteration = "backtester-gate-iteration"
-backtester_noop = "backtester-gate-noop"
 backtester_dispatch_full = "backtester-gate-dispatch"
+
+[ci_provenance.docs]
+safe_paths = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "GEMINI.md",
+  "REASONIX.md",
+  "LICENSE",
+  "SECURITY.md",
+  ".github/ISSUE_TEMPLATE/**",
+  ".claude/**",
+  ".codex/**",
+  ".gemini/**",
+  ".opencode/**",
+  ".pi/**",
+  ".specify/**",
+]
+forbidden_ignored_build_paths = [
+  ".claude/rust-verification.toml",
+]
+non_heavy_required_jobs = ["detector"]
 
 [ci_provenance.api_limits]
 workflow_runs_per_page = 100
@@ -138,21 +158,27 @@ max_lookback_age_seconds = 2592000
 retention_days = 30
 
 [ci_provenance.policy]
-draft_pr_synchronize = "defer"
-draft_pr_opened = "defer"
-draft_pr_reopened = "defer"
-draft_pr_edited = "defer"
-converted_to_draft = "defer"
-ready_pr = "full"
-ready_pr_edited_no_base = "noop"
-ready_pr_reopened = "noop"
-ready_for_review = "full"
+draft_pr_synchronize = "iteration"
+draft_pr_opened = "iteration"
+draft_pr_reopened = "iteration"
+draft_pr_edited = "iteration"
+converted_to_draft = "iteration"
+ready_pr = "iteration"
+ready_pr_edited_no_base = "iteration"
+ready_pr_reopened = "iteration"
+ready_for_review = "iteration"
+docs = "docs"
 workflow_dispatch = "iteration"
 workflow_dispatch_full_ci = "full"
 main_push = "full"
 merge_group = "full"
+mergify_temp_pr = "full"
 tag = "tag_reuse"
 unknown_event = "full"
+
+[ci_provenance.mergify]
+temp_pr_head_ref_prefix = "mergify/merge-queue/"
+mergify_temp_pr_actor_id = 37929162
 
 [ci_provenance.policy.override]
 force_full_ci = false
@@ -168,6 +194,8 @@ def load_verifier(
         raise AssertionError("could not load verify_ci_workflow_hygiene.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    if hasattr(module, "build_test_manifest"):
+        module.build_test_manifest = lambda _manifest_path, _tests_root: all_standalone_live_node_manifest(module)
     return module
 
 
@@ -209,20 +237,6 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
-    paths-ignore:
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - 'GEMINI.md'
-      - 'REASONIX.md'
-      - 'LICENSE'
-      - 'SECURITY.md'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.claude/**'
-      - '.codex/**'
-      - '.gemini/**'
-      - '.opencode/**'
-      - '.pi/**'
-      - '.specify/**'
   push:
     branches: [main]
     tags: ["v*"]
@@ -238,6 +252,10 @@ on:
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
+        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+        && format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)
+        || github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
@@ -258,6 +276,8 @@ concurrency:
         || format('{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && !(github.event.pull_request.draft == false
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
@@ -268,8 +288,48 @@ permissions:
   actions: read
 
 jobs:
+  merge-readiness-progress:
+    name: merge-readiness-progress
+    if: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == false
+          && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+              || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+          && !(github.event.action == 'edited'
+               && !(github.event.changes.base.ref.from != '')) }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Watch merge-readiness progress
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ ! -f scripts/merge_readiness.py ]]; then
+            echo "merge_readiness.py is not present on the PR base; skipping"
+            exit 0
+          fi
+          python3 scripts/merge_readiness.py comment "$PR_NUMBER" \
+            --head-sha "$PR_HEAD_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --watch
+
   ci-policy:
     name: ci-policy
+    needs: detector
     outputs:
       ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
       full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
@@ -277,7 +337,6 @@ jobs:
       gate_name: ${{ steps.policy.outputs.gate_name }}
       backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}
       expected_event_class: ${{ steps.policy.outputs.expected_event_class }}
-      is_mergify_temp_pr: ${{ steps.policy.outputs.is_mergify_temp_pr }}
       reason: ${{ steps.policy.outputs.reason }}
       ignore_emit_failure: ${{ steps.policy.outputs.ignore_emit_failure }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
@@ -286,27 +345,86 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
+      - name: Prepare trusted base policy tree
+        id: policy_base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+        run: |
+          base_ref="refs/remotes/origin/ci-policy-base-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}"
+          git check-ref-format "refs/heads/$base_branch"
+          base_tree="$RUNNER_TEMP/ci-policy-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
+          echo "config=$base_tree/ci/github-actions-runners.toml" >> "$GITHUB_OUTPUT"
       - name: Compute CI policy
         id: policy
         shell: bash
-        run: >
-          python3 scripts/ci_provenance.py ci-policy
-          --event-name "${{ github.event_name }}"
-          --event-action "${{ github.event.action || '' }}"
-          --pull-request-draft "${{ github.event.pull_request.draft || false }}"
-          --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}"
-          --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}"
-          --ref "${{ github.ref }}"
-          | tee -a "$GITHUB_OUTPUT"
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+          EVENT_SENDER_ID: ${{ github.event.sender.id }}
+        run: |
+          policy_script="${{ steps.policy_base.outputs.script }}"
+          if [[ -z "$policy_script" ]]; then
+            policy_script="scripts/ci_provenance.py"
+          fi
+          policy_config="${{ steps.policy_base.outputs.config }}"
+          if [[ -z "$policy_config" ]]; then
+            policy_config="ci/github-actions-runners.toml"
+          fi
+          python3 "$policy_script" ci-policy \
+            --config "$policy_config" \
+            --event-name "${{ github.event_name }}" \
+            --event-action "${{ github.event.action || '' }}" \
+            --pull-request-draft "${{ github.event.pull_request.draft || false }}" \
+            --pull-request-head-ref "$PR_HEAD_REF" \
+            --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}" \
+            --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}" \
+            --docs-only "${{ needs.detector.outputs.docs_only || 'false' }}" \
+            --ref "${{ github.ref }}" \
+            | tee -a "$GITHUB_OUTPUT"
 
   detector:
     name: detector
     outputs:
       build_required: ${{ steps.build_required.outputs.value }}
       fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}
+      docs_only: ${{ steps.docs_only.outputs.docs_only }}
     runs-on: ubuntu-latest
     steps:
       # detector probe insertion point
+      - name: Fetch PR base/head refs
+        id: pr_refs
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
+          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin \
+            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
+            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
+          echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Detect docs-only safe changes
+        id: docs_only
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="${{ steps.pr_refs.outputs.base_ref }}"
+          head_ref="${{ steps.pr_refs.outputs.head_ref }}"
+          changed_files="$RUNNER_TEMP/docs-safe-changed-files.txt"
+          git diff --name-only "${base_ref}...${head_ref}" > "$changed_files"
+          base_tree="$RUNNER_TEMP/ci-policy-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ ci/rust-verification.toml ci/github-actions-runners.toml .github/workflows/ci.yml | tar -x -C "$base_tree"
+          python3 "$base_tree/scripts/verify_ci_path_filters.py" \
+            --changed-files "$changed_files" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Detect build-affecting changes
         id: build_inputs_changed
         if: github.event_name == 'pull_request'
@@ -318,11 +436,8 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
-          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
-          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
-          git fetch --no-tags origin \
-            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
-            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          base_ref="${{ steps.pr_refs.outputs.base_ref }}"
+          head_ref="${{ steps.pr_refs.outputs.head_ref }}"
           changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
             .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
@@ -330,6 +445,8 @@ jobs:
             ci/github-actions-runners.toml \
             scripts/nextest_fingerprint.py \
             scripts/test_nextest_fingerprint.py \
+            scripts/root_bin_sidecars.py \
+            scripts/test_root_bin_sidecars.py \
             scripts/ci_provenance.py \
             scripts/test_ci_provenance.py \
             scripts/verify_ci_workflow_hygiene.py \
@@ -547,12 +664,14 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+      ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
     steps:
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
           cache-on-failure: true
@@ -566,19 +685,31 @@ jobs:
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+      - name: Restore root binary sidecars
+        id: root-bin-sidecars-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
+          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+      - name: Restore archive build target cache
+        id: test-target-cache
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
-      - name: Build nextest archive binary sidecars
-        if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
-        env:
-          CARGO_PROFILE_DEV_DEBUG: "0"
-        run: |
-          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
           just test-archive "$NEXTEST_ARCHIVE_PATH"
@@ -588,6 +719,42 @@ jobs:
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+      - name: Extract root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
+        run: |
+          mkdir -p "${{ steps.setup.outputs.managed_target_dir }}"
+          tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"
+      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+      - name: Save root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
+          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+      - name: Save archive build target cache
+        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
       - name: Run nextest archive partitions
         shell: bash
         run: |
@@ -701,24 +868,58 @@ jobs:
   ci-provenance-emit:
     name: ci-provenance-emit
     needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Prepare trusted base provenance tree
+        id: provenance_base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        env:
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+        run: |
+          git check-ref-format "refs/heads/$base_branch"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml
+          tested_workflow="$GITHUB_WORKSPACE/.github/workflows/ci.yml"
+          echo "tested workflow file is missing or not a regular file"
+          cp "$tested_workflow" "$base_tree/.github/workflows/ci.yml"
+          {
+            echo "script=$base_tree/scripts/ci_provenance.py"
+            echo "config=$base_tree/ci/github-actions-runners.toml"
+            echo "workflow=$base_tree/.github/workflows/ci.yml"
+          } >> "$GITHUB_OUTPUT"
       - name: Emit CI provenance
-        run: >
-          python3 scripts/ci_provenance.py emit-full-ci
-          --output ci-provenance.json
-          --required-job detector=${{ needs.detector.result }}
-          --required-job deny=${{ needs.deny.result }}
-          --required-job clippy=${{ needs.clippy.result }}
-          --required-job check-aarch64=${{ needs.check-aarch64.result }}
-          --required-job source-fence=${{ needs.source-fence.result }}
-          --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }}
-          --required-job test-archive=${{ needs.test-archive.result }}
-          --required-job test=${{ needs.test.result }}
-          --conditional-job build.required=${{ needs.detector.outputs.build_required }}
-          --conditional-job build.result=${{ needs.build.result }}
-          --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
+        run: |
+          provenance_script="${{ steps.provenance_base.outputs.script }}"
+          provenance_config="${{ steps.provenance_base.outputs.config }}"
+          provenance_workflow="${{ steps.provenance_base.outputs.workflow }}"
+          ci_policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
+          policy_args=()
+          if python3 "$provenance_script" emit-full-ci --help | grep -q -- "--ci-policy-path"; then
+            policy_args+=(--ci-policy-path "$ci_policy_path")
+          elif [[ "$ci_policy_path" != "full" ]]; then
+            echo "trusted base provenance emitter does not support ci_policy_path=$ci_policy_path" >&2
+            exit 1
+          fi
+          workflow_args=()
+          if python3 "$provenance_script" emit-full-ci --help | grep -q -- "--workflow-file"; then
+            workflow_args+=(--workflow-file "$provenance_workflow")
+          fi
+          python3 "$provenance_script" emit-full-ci \
+            --config "$provenance_config" \
+            "${policy_args[@]}" \
+            "${workflow_args[@]}" \
+            --output ci-provenance.json \
+            --required-job detector=${{ needs.detector.result }} \
+            --required-job deny=${{ needs.deny.result }} \
+            --required-job clippy=${{ needs.clippy.result }} \
+            --required-job check-aarch64=${{ needs.check-aarch64.result }} \
+            --required-job source-fence=${{ needs.source-fence.result }} \
+            --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
+            --required-job test-archive=${{ needs.test-archive.result }} \
+            --required-job test=${{ needs.test.result }} \
+            --conditional-job build.required=${{ needs.detector.outputs.build_required }} \
+            --conditional-job build.result=${{ needs.build.result }} \
+            --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
       - name: Upload CI provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -748,158 +949,70 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
-          full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
-          expected_event_class="${{ needs.ci-policy.outputs.expected_event_class }}"
-          ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
-          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
-          if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
-            exit 1
+      - name: Prepare trusted base verdict tree
+        id: verdict_base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+        run: |
+          base_ref="refs/remotes/origin/ci-gate-base-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}"
+          git check-ref-format "refs/heads/$base_branch"
+          base_tree="$RUNNER_TEMP/ci-gate-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
+      - name: Resolve gate carry-forward
+        id: carry_forward
+        if: ${{ needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true' }}
+        shell: bash
+        run: |
+          verdict_script="${{ steps.verdict_base.outputs.script }}"
+          if [[ -z "$verdict_script" ]]; then
+            verdict_script="scripts/ci_provenance.py"
           fi
-          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            exit 1
+          python3 "$verdict_script" resolve-gate-carry-forward \
+            --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --base-sha "${{ github.event.pull_request.base.sha || '' }}" \
+            --current-run-id "${{ github.run_id }}" \
+            --gate-name "${{ needs.ci-policy.outputs.gate_name }}" \
+            --workflow-path ".github/workflows/ci.yml" \
+            --require-provenance-base true \
+            | tee -a "$GITHUB_OUTPUT"
+      - name: Check required lanes
+        shell: bash
+        run: |
+          verdict_script="${{ steps.verdict_base.outputs.script }}"
+          if [[ -z "$verdict_script" ]]; then
+            verdict_script="scripts/ci_provenance.py"
           fi
-          if [[ "$policy_path" == "tag_reuse" ]]; then
-            if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.check-aarch64.result }}" != "success" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            exit 0
+          carry_forward_args=()
+          carry_forward_verified="${{ steps.carry_forward.outputs.carry_forward_verified }}"
+          if [[ -n "$carry_forward_verified" ]]; then
+            carry_forward_args+=(--carry-forward-verified "$carry_forward_verified")
           fi
-          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
-            exit 1
-          fi
-          if [[ "$policy_path" == "iteration" ]]; then
-            if [[ "$expected_event_class" != "iteration" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            echo "iteration CI policy; no required full proof published by this run"
-            exit 0
-          fi
-          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
-            if [[ "$expected_event_class" != "defer" ]]; then
-              echo "deferred CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote for full feedback or mark ready for merge proof"
-            exit 0
-          fi
-          if [[ "$policy_path" == "noop" ]]; then
-            if [[ "$expected_event_class" != "noop" ]]; then
-              echo "noop CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            echo "no code-change CI event; preserving prior required same-SHA gate conclusion"
-            exit 0
-          fi
-          if [[ "$policy_path" == "full" ]]; then
-            echo "full CI required"
-          else
-            exit 1
-          fi
-          if [[ "$reuse_found" == "true" ]]; then
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
-              echo "nextest fingerprint reuse resolver did not succeed"
-              exit 1
-            fi
-            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
-              echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
-              exit 1
-            fi
-            echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
-          else
-            if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
-              if [[ "$ignore_emit_failure" == "true" ]]; then
-                echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
-              else
-                exit 1
-              fi
-            fi
-          fi
-          if [[ "${{ needs.deny.result }}" != "success" ]]; then
-            exit 1
-          fi
-          if [[ "${{ needs.clippy.result }}" != "success" ]]; then
-            exit 1
-          fi
-          if [[ "${{ needs.check-aarch64.result }}" != "success" ]]; then
-            exit 1
-          fi
-          if [[ "${{ needs.source-fence.result }}" != "success" ]]; then
-            exit 1
-          fi
-          if [[ "${{ needs.test.result }}" != "success" ]]; then
-            exit 1
-          fi
-          build_required="${{ needs.detector.outputs.build_required }}"
-          build_result="${{ needs.build.result }}"
-          if [[ "$build_required" == "true" ]]; then
-            if [[ "$build_result" != "success" ]]; then
-              exit 1
-            fi
-          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-          fi
+          python3 "$verdict_script" check-ci-gate \
+            --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \
+            --expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}" \
+            --full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}" \
+            --ignore-emit-failure "${{ needs.ci-policy.outputs.ignore_emit_failure }}" \
+            --reuse-found "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}" \
+            "${carry_forward_args[@]}" \
+            --build-required "${{ needs.detector.outputs.build_required || 'false' }}" \
+            --job ci-policy=${{ needs.ci-policy.result }} \
+            --job detector=${{ needs.detector.result }} \
+            --job deny=${{ needs.deny.result }} \
+            --job clippy=${{ needs.clippy.result }} \
+            --job check-aarch64=${{ needs.check-aarch64.result }} \
+            --job source-fence=${{ needs.source-fence.result }} \
+            --job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
+            --job test-archive=${{ needs.test-archive.result }} \
+            --job nextest-fingerprint-reuse=${{ needs.nextest-fingerprint-reuse.result }} \
+            --job test=${{ needs.test.result }} \
+            --job build=${{ needs.build.result }} \
+            --job ci-provenance-emit=${{ needs.ci-provenance-emit.result }} \
+            --job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}
 
   deploy:
     name: deploy
@@ -961,6 +1074,96 @@ jobs:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python3 scripts/cancel_obsolete_dispatch_runs.py
+"""
+
+
+BASE_MERGE_READINESS_FINALIZER_WORKFLOW = """
+name: Merge Readiness Finalizer
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+  checks: read
+  actions: read
+  pull-requests: write
+
+jobs:
+  mark-stalled:
+    name: mark-stalled
+    if: >-
+      ${{ github.event.workflow_run.event == 'pull_request'
+          && github.event.workflow_run.path == '.github/workflows/ci.yml' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Mark stalled merge-readiness comment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/merge_readiness.py finalize-stalled
+"""
+
+
+BASE_COVERAGE_ENFORCER_WORKFLOW = """
+name: Coverage Enforcer
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  checks: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  coverage-enforcer:
+    name: coverage-enforcer
+    if: >-
+      ${{ github.event_name == 'merge_group'
+          || (github.event_name == 'pull_request'
+              && github.event.pull_request.draft == false
+              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+              && !(github.event.action == 'edited'
+                   && !(github.event.changes.base.ref.from != ''))) }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Enforce coverage map
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ ! -f scripts/coverage_enforcer.py ]; then
+            echo "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py"
+            exit 0
+          fi
+          python3 scripts/coverage_enforcer.py
 """
 
 
@@ -1090,6 +1293,172 @@ test-group = 'live-node'
 filter = 'binary(=bolt_v3_adapter_mapping) | binary(=bolt_v3_client_registration) | binary(=bolt_v3_controlled_connect) | binary(=bolt_v3_credential_log_suppression) | binary(=bolt_v3_readiness) | binary(=bolt_v3_strategy_registration) | binary(=bolt_v3_submit_admission) | binary(=config_parsing) | binary(=lake_batch) | binary(=nt_runtime_capture) | binary(=venue_contract)'
 test-group = 'live-node'
 """
+
+
+def all_standalone_live_node_manifest(verifier=None) -> CiTestManifest:
+    if verifier is None:
+        verifier = load_verifier()
+    member_to_harness = {member: member for member in verifier.LIVE_NODE_NEXTEST_BINARIES}
+    harness_to_members = {member: (member,) for member in verifier.LIVE_NODE_NEXTEST_BINARIES}
+    return CiTestManifest(member_to_harness=member_to_harness, harness_to_members=harness_to_members)
+
+
+def live_node_manifest_with(
+    verifier,
+    *,
+    consolidated: dict[str, str] | None = None,
+) -> CiTestManifest:
+    member_to_harness = {member: member for member in verifier.LIVE_NODE_NEXTEST_BINARIES}
+    for member, harness in (consolidated or {}).items():
+        member_to_harness[member] = harness
+        member_to_harness.setdefault(harness, harness)
+
+    harness_members: dict[str, list[str]] = {}
+    for member, harness in member_to_harness.items():
+        harness_members.setdefault(harness, []).append(member)
+    harness_to_members = {
+        harness: tuple(members)
+        for harness, members in harness_members.items()
+    }
+    return CiTestManifest(member_to_harness=member_to_harness, harness_to_members=harness_to_members)
+
+
+def assert_nextest_clean(nextest_config: str, manifest: CiTestManifest) -> None:
+    verifier = load_verifier()
+    errors = verifier.verify_nextest_config(nextest_config, manifest=manifest)
+    if errors:
+        raise AssertionError(f"expected no nextest errors, got: {errors}")
+
+
+def assert_nextest_error(fragment: str, nextest_config: str, manifest: CiTestManifest) -> None:
+    verifier = load_verifier()
+    errors = verifier.verify_nextest_config(nextest_config, manifest=manifest)
+    if not any(fragment in error for error in errors):
+        raise AssertionError(f"expected nextest error containing {fragment!r}, got: {errors}")
+
+
+TEST_HARNESS_NAMES = (
+    "iv",
+    "outcome_groups",
+    "maker_taker",
+    "kill_switch_loss",
+    "pricing",
+    "admission_orders",
+    "platform_config",
+    "runtime_capture_io",
+    "wiring_registration",
+    "bolt_v3_risk_reservation_substrate",
+    "bolt_v3_risk_reservation_epoch_manager",
+)
+TEST_HARNESS_MEMBER = "bolt_v3_fixture_member"
+
+
+def base_test_harness_manifest(
+    harness_to_members: dict[str, tuple[str, ...]] | None = None,
+) -> CiTestManifest:
+    if harness_to_members is None:
+        harness_to_members = {
+            harness: ((harness, TEST_HARNESS_MEMBER) if harness == "iv" else (harness,))
+            for harness in TEST_HARNESS_NAMES
+        }
+    member_to_harness: dict[str, str] = {}
+    for harness, members in harness_to_members.items():
+        for member in members:
+            member_to_harness.setdefault(member, harness)
+    return CiTestManifest(member_to_harness=member_to_harness, harness_to_members=harness_to_members)
+
+
+def write_test_harness_fixture(
+    root: pathlib.Path,
+    *,
+    manifest: CiTestManifest | None = None,
+    cargo_autotests: str = "false",
+    test_files: dict[str, str] | None = None,
+    workflow_text: str = "jobs:\n  test:\n    steps:\n      - run: cargo test --test pricing\n",
+    justfile_text: str = "ci-test:\n    cargo test --test iv\n",
+    write_workflow: bool = True,
+    write_justfile: bool = True,
+) -> None:
+    cargo_lines = [
+        "[package]",
+        'name = "bolt-v2-fixture"',
+        'version = "0.0.0"',
+        'edition = "2021"',
+        f"autotests = {cargo_autotests}",
+        "",
+    ]
+    for harness in TEST_HARNESS_NAMES:
+        cargo_lines.extend(
+            [
+                "[[test]]",
+                f'name = "{harness}"',
+                f'path = "tests/{harness}.rs"',
+                "",
+            ]
+        )
+    (root / "Cargo.toml").write_text("\n".join(cargo_lines), encoding="utf-8")
+    tests_root = root / "tests"
+    tests_root.mkdir()
+    fixture_files = {harness: "" for harness in TEST_HARNESS_NAMES}
+    manifest_members = manifest.harness_to_members if manifest is not None else base_test_harness_manifest().harness_to_members
+    for harness, members in manifest_members.items():
+        for member in members:
+            if member != harness:
+                fixture_files[member] = "#[test]\nfn fixture_member_runs() {}\n"
+    if test_files:
+        fixture_files.update(test_files)
+    for stem, text in fixture_files.items():
+        path = tests_root / f"{stem}.rs"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    if write_workflow:
+        workflow_path = root / ".github" / "workflows" / "ci.yml"
+        workflow_path.parent.mkdir(parents=True)
+        workflow_path.write_text(workflow_text, encoding="utf-8")
+    if write_justfile:
+        (root / "justfile").write_text(justfile_text, encoding="utf-8")
+
+
+def test_harness_manifest_errors(
+    *,
+    manifest: CiTestManifest | None = None,
+    cargo_autotests: str = "false",
+    test_files: dict[str, str] | None = None,
+    workflow_text: str = "jobs:\n  test:\n    steps:\n      - run: cargo test --test pricing\n",
+    justfile_text: str = "ci-test:\n    cargo test --test iv\n",
+) -> list[str]:
+    verifier = load_verifier()
+    manifest = manifest or base_test_harness_manifest()
+    verifier.build_test_manifest = lambda _manifest_path, _tests_root: manifest
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        write_test_harness_fixture(
+            root,
+            manifest=manifest,
+            cargo_autotests=cargo_autotests,
+            test_files=test_files,
+            workflow_text=workflow_text,
+            justfile_text=justfile_text,
+        )
+        return verifier.verify_test_harness_manifest(
+            cargo_manifest_path=root / "Cargo.toml",
+            tests_root=root / "tests",
+            workflow_path=root / ".github" / "workflows" / "ci.yml",
+            justfile_path=root / "justfile",
+        )
+
+
+def assert_test_harness_manifest_clean(**kwargs) -> None:
+    errors = test_harness_manifest_errors(**kwargs)
+    if errors:
+        raise AssertionError(f"expected no test harness manifest errors, got: {errors}")
+
+
+def assert_test_harness_manifest_error(fragment: str, **kwargs) -> None:
+    errors = test_harness_manifest_errors(**kwargs)
+    if not any(fragment in error for error in errors):
+        raise AssertionError(f"expected test harness manifest error containing {fragment!r}, got: {errors}")
+
 
 LOCAL_COMPILE_POLICY_TOML = """
 [local_compile_policy]
@@ -1312,24 +1681,24 @@ check_name = "test"
             valid.replace('gate_required = "gate"', 'gate_required = "renamed-gate"'),
         ),
         (
+            "ci_provenance.gate_names.gate_iteration must not equal backtester_required",
+            valid.replace('gate_iteration = "gate-iteration"', 'gate_iteration = "backtester-gate"'),
+        ),
+        (
+            "ci_provenance.gate_names.gate_iteration must not equal gate_required",
+            valid.replace('gate_iteration = "gate-iteration"', 'gate_iteration = "gate"'),
+        ),
+        (
+            "ci_provenance.gate_names.backtester_iteration must not equal backtester_required",
+            valid.replace('backtester_iteration = "backtester-gate-iteration"', 'backtester_iteration = "backtester-gate"'),
+        ),
+        (
             "ci_provenance.gate_names.gate_dispatch_full must not equal gate_required",
             valid.replace('gate_dispatch_full = "gate-dispatch"', 'gate_dispatch_full = "gate"'),
         ),
         (
-            "ci_provenance.gate_names.gate_noop must not equal gate_iteration",
-            valid.replace('gate_noop = "gate-noop"', 'gate_noop = "gate-iteration"'),
-        ),
-        (
-            "ci_provenance.gate_names.backtester_noop must not equal backtester_iteration",
-            valid.replace('backtester_noop = "backtester-gate-noop"', 'backtester_noop = "backtester-gate-iteration"'),
-        ),
-        (
-            "ci_provenance.gate_names.gate_noop must not equal backtester_required",
-            valid.replace('gate_noop = "gate-noop"', 'gate_noop = "backtester-gate"'),
-        ),
-        (
-            "ci_provenance.gate_names.backtester_noop must not equal gate_required",
-            valid.replace('backtester_noop = "backtester-gate-noop"', 'backtester_noop = "gate"'),
+            "ci_provenance.gate_names.backtester_dispatch_full must not equal backtester_required",
+            valid.replace('backtester_dispatch_full = "backtester-gate-dispatch"', 'backtester_dispatch_full = "backtester-gate"'),
         ),
         (
             "ci_provenance.gate_names.gate_dispatch_full must be a GitHub Actions output-safe check name",
@@ -1352,11 +1721,11 @@ check_name = "test"
         ),
         (
             "ci_provenance.policy.ready_pr is proof-affecting",
-            valid.replace('ready_pr = "full"', 'ready_pr = "defer"'),
+            valid.replace('ready_pr = "iteration"', 'ready_pr = "defer"'),
         ),
         (
             "ci_provenance.policy.ready_for_review is proof-affecting",
-            valid.replace('ready_for_review = "full"', 'ready_for_review = "defer"'),
+            valid.replace('ready_for_review = "iteration"', 'ready_for_review = "defer"'),
         ),
         (
             "ci_provenance.policy.main_push is proof-affecting",
@@ -1375,6 +1744,10 @@ check_name = "test"
             valid.replace('merge_group = "full"', 'merge_group = "tag_reuse"'),
         ),
         (
+            "ci_provenance.policy.mergify_temp_pr is proof-affecting",
+            valid.replace('mergify_temp_pr = "full"', 'mergify_temp_pr = "defer"'),
+        ),
+        (
             "ci_provenance.policy.unknown_event is proof-affecting",
             valid.replace('unknown_event = "full"', 'unknown_event = "defer"'),
         ),
@@ -1391,22 +1764,30 @@ check_name = "test"
             valid.replace('workflow_dispatch = "iteration"', 'workflow_dispatch = "full"'),
         ),
         (
-            "ci_provenance.policy.draft_pr_synchronize must be defer",
-            valid.replace('draft_pr_synchronize = "defer"', 'draft_pr_synchronize = "full"'),
+            "ci_provenance.policy.draft_pr_synchronize must be iteration",
+            valid.replace('draft_pr_synchronize = "iteration"', 'draft_pr_synchronize = "full"'),
         ),
         (
-            "ci_provenance.policy.converted_to_draft must be defer",
-            valid.replace('converted_to_draft = "defer"', 'converted_to_draft = "full"'),
+            "ci_provenance.policy.converted_to_draft must be iteration",
+            valid.replace('converted_to_draft = "iteration"', 'converted_to_draft = "full"'),
         ),
         (
-            "ci_provenance.policy.ready_pr must be full",
-            valid.replace('ready_pr = "full"', 'ready_pr = "iteration"'),
+            "ci_provenance.policy.ready_pr must be iteration",
+            valid.replace('ready_pr = "iteration"', 'ready_pr = "full"'),
+        ),
+        (
+            "ci_provenance.policy.ready_pr_edited_no_base must be iteration",
+            valid.replace('ready_pr_edited_no_base = "iteration"', 'ready_pr_edited_no_base = "full"'),
+        ),
+        (
+            "ci_provenance.policy.ready_pr_reopened must be iteration",
+            valid.replace('ready_pr_reopened = "iteration"', 'ready_pr_reopened = "full"'),
         ),
         (
             "ci_provenance.policy has unexpected keys",
             valid.replace(
-                "[ci_provenance.policy.override]",
-                'unexpected_policy_row = "defer"\n\n[ci_provenance.policy.override]',
+                "[ci_provenance.mergify]",
+                'unexpected_policy_row = "defer"\n\n[ci_provenance.mergify]',
             ),
         ),
     ]
@@ -1416,12 +1797,6 @@ check_name = "test"
             raise AssertionError(f"expected {fragment!r}, got {error!r}")
 
     verifier = load_verifier()
-    noop_full_config = valid.replace('ready_pr_edited_no_base = "noop"', 'ready_pr_edited_no_base = "full"')
-    if runner_config_load_error(noop_full_config):
-        raise AssertionError("proof-preserving ready_pr_edited_no_base must not be rejected as proof-affecting")
-    reopened_full_config = valid.replace('ready_pr_reopened = "noop"', 'ready_pr_reopened = "full"')
-    if runner_config_load_error(reopened_full_config):
-        raise AssertionError("proof-preserving ready_pr_reopened must not be rejected as proof-affecting")
 
     queue_covered_policy = {
         "draft_pr_synchronize": "defer",
@@ -1433,10 +1808,12 @@ check_name = "test"
         "ready_pr_edited_no_base": "noop",
         "ready_pr_reopened": "noop",
         "ready_for_review": "iteration",
+        "docs": "docs",
         "workflow_dispatch": "iteration",
         "workflow_dispatch_full_ci": "full",
         "main_push": "full",
         "merge_group": "full",
+        "mergify_temp_pr": "full",
         "tag": "tag_reuse",
         "unknown_event": "full",
     }
@@ -1456,8 +1833,8 @@ check_name = "test"
     }
     try:
         synthetic = valid.replace(
-            "[ci_provenance.policy.override]",
-            'synthetic_proof_affecting = "iteration"\n\n[ci_provenance.policy.override]',
+            "[ci_provenance.mergify]",
+            'synthetic_proof_affecting = "iteration"\n\n[ci_provenance.mergify]',
         )
         error = runner_config_load_error(synthetic, verifier=verifier)
         fragment = "ci_provenance.policy.synthetic_proof_affecting is proof-affecting"
@@ -1475,20 +1852,26 @@ def assert_ci_policy_matrix() -> None:
     )
     policy = config["policy"]
     gate_names = config["gate_names"]
+    mergify_prefix = str(config["mergify"]["temp_pr_head_ref_prefix"])
+    actor_id = int(config["mergify"]["mergify_temp_pr_actor_id"])
+    # Queue-only rework (#981): every ordinary pull_request defers heavy lanes to
+    # ci_policy_path == "iteration"; only the merge boundary (merge_group, push to
+    # main, tag) stays "full". The actor-bound mergify temp PR is covered separately
+    # below because it depends on the event sender id.
     cases = [
         ("push", "", False, False, "", "refs/heads/main", "full"),
         ("push", "", False, False, "true", "refs/heads/main", "full"),
         ("push", "", False, False, "", "refs/tags/v1.2.3", "tag_reuse"),
-        ("pull_request", "opened", True, False, "", "refs/pull/1/merge", "defer"),
-        ("pull_request", "synchronize", True, False, "", "refs/pull/1/merge", "defer"),
-        ("pull_request", "reopened", True, False, "", "refs/pull/1/merge", "defer"),
-        ("pull_request", "edited", True, False, "", "refs/pull/1/merge", "defer"),
-        ("pull_request", "converted_to_draft", True, False, "", "refs/pull/1/merge", "defer"),
-        ("pull_request", "opened", False, False, "", "refs/pull/1/merge", "full"),
-        ("pull_request", "edited", False, False, "", "refs/pull/1/merge", "noop"),
-        ("pull_request", "edited", False, True, "", "refs/pull/1/merge", "full"),
-        ("pull_request", "reopened", False, False, "", "refs/pull/1/merge", "noop"),
-        ("pull_request", "ready_for_review", True, False, "", "refs/pull/1/merge", "full"),
+        ("pull_request", "opened", True, False, "", "refs/pull/1/merge", "iteration"),
+        ("pull_request", "synchronize", True, False, "", "refs/pull/1/merge", "iteration"),
+        ("pull_request", "reopened", True, False, "", "refs/pull/1/merge", "iteration"),
+        ("pull_request", "edited", True, False, "", "refs/pull/1/merge", "iteration"),
+        ("pull_request", "converted_to_draft", True, False, "", "refs/pull/1/merge", "iteration"),
+        ("pull_request", "opened", False, False, "", "refs/pull/1/merge", "iteration"),
+        ("pull_request", "edited", False, False, "", "refs/pull/1/merge", "iteration"),
+        ("pull_request", "edited", False, True, "", "refs/pull/1/merge", "iteration"),
+        ("pull_request", "reopened", False, False, "", "refs/pull/1/merge", "iteration"),
+        ("pull_request", "ready_for_review", False, False, "", "refs/pull/1/merge", "iteration"),
         ("workflow_dispatch", "", True, False, "true", "refs/heads/codex/branch", "full"),
         ("workflow_dispatch", "", True, False, "false", "refs/heads/codex/branch", "iteration"),
         ("workflow_dispatch", "", True, False, "", "refs/heads/codex/branch", "iteration"),
@@ -1498,6 +1881,12 @@ def assert_ci_policy_matrix() -> None:
         ("merge_group", "checks_requested", False, False, "", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full"),
         ("unknown_event", "", True, False, "", "refs/heads/codex/branch", "full"),
     ]
+    # Queue-only rework (#981): the policy table pins every row to a non-"defer" value,
+    # so no matrix row can exercise full_ci_deferred's True branch. Assert that invariant
+    # explicitly; the deferred branch is exercised by dedicated VALIDATOR tests that feed
+    # policy_path="defer" directly (verify_ci_provenance / backtester), not via this table.
+    if any(expected == "defer" for *_, expected in cases):
+        raise AssertionError("policy matrix must not expect 'defer' — defer is unreachable via the table")
     for event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref, expected in cases:
         result = verifier.evaluate_ci_policy(
             policy,
@@ -1507,17 +1896,133 @@ def assert_ci_policy_matrix() -> None:
             pull_request_draft=draft,
             pull_request_base_changed=base_changed,
             workflow_dispatch_full_ci=workflow_dispatch_full_ci,
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
             ref=ref,
         )
         if result.ci_policy_path != expected:
             raise AssertionError((event_name, action, draft, ref, expected, result))
         if result.full_ci_required != (expected == "full"):
             raise AssertionError(f"full_ci_required must derive from {expected}: {result}")
-        if result.full_ci_deferred != (expected == "defer"):
-            raise AssertionError(f"full_ci_deferred must derive from {expected}: {result}")
+        if result.full_ci_deferred is not False:
+            raise AssertionError(f"every policy-table row must resolve full_ci_deferred False: {result}")
         if event_name == "workflow_dispatch" and workflow_dispatch_full_ci == "true":
             if result.gate_name != "gate-dispatch" or result.backtester_gate_name != "backtester-gate-dispatch":
                 raise AssertionError(f"workflow_dispatch full CI must publish non-required gate names: {result}")
+
+    try:
+        verifier.evaluate_ci_policy(
+            policy,
+            gate_names,
+            event_name="pull_request",
+            action="ready_for_review",
+            pull_request_draft=True,
+            pull_request_base_changed=False,
+            workflow_dispatch_full_ci="",
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
+            ref="refs/pull/1/merge",
+        )
+    except ValueError as exc:
+        if "ready_for_review cannot be on a draft PR" not in str(exc):
+            raise AssertionError(f"unexpected ready_for_review draft error: {exc}") from exc
+    else:
+        raise AssertionError("ready_for_review draft event must fail closed")
+
+    # The actor-bound mergify temp PR (draft head ref + sender == bound actor) is the
+    # SOLE pull_request that earns the required gate, and only for full-CI actions.
+    mergify_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="opened",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        mergify_result.ci_policy_path != "full"
+        or mergify_result.gate_name != "gate"
+        or mergify_result.backtester_gate_name != "backtester-gate"
+        or mergify_result.reason != "mergify_temp_pr"
+    ):
+        raise AssertionError(f"Mergify temp PR must resolve to required full CI: {mergify_result}")
+
+    mergify_sync_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="synchronize",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        mergify_sync_result.ci_policy_path != "full"
+        or mergify_sync_result.gate_name != "gate"
+        or mergify_sync_result.backtester_gate_name != "backtester-gate"
+        or mergify_sync_result.reason != "mergify_temp_pr"
+    ):
+        raise AssertionError(f"Mergify temp PR synchronize must resolve to required full CI: {mergify_sync_result}")
+
+    # A metadata edit (no base change) is not a full-CI action, so even the bound
+    # actor's temp PR falls through to the ordinary draft path -> iteration.
+    mergify_edited_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="edited",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        mergify_edited_result.ci_policy_path != "iteration"
+        or mergify_edited_result.gate_name != "gate-iteration"
+        or mergify_edited_result.backtester_gate_name != "backtester-gate-iteration"
+        or mergify_edited_result.reason != "draft_pr_edited"
+    ):
+        raise AssertionError(
+            f"Mergify temp PR metadata edits must defer to iteration: {mergify_edited_result}"
+        )
+
+    # GAP-1: a spoofed mergify head ref from a NON-actor sender must never earn the
+    # required gate; it fails closed to the ordinary draft path -> gate-iteration.
+    mergify_spoof_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="opened",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=actor_id + 1,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        mergify_spoof_result.reason == "mergify_temp_pr"
+        or mergify_spoof_result.gate_name != "gate-iteration"
+        or mergify_spoof_result.ci_policy_path != "iteration"
+    ):
+        raise AssertionError(
+            f"spoofed mergify head ref must fail closed to gate-iteration: {mergify_spoof_result}"
+        )
 
     forced = dict(policy)
     forced["override"] = dict(policy["override"])
@@ -1551,6 +2056,8 @@ def assert_ci_policy_resolvers_agree() -> None:
     verifier_config = verifier.validate_ci_provenance_config(verifier.tomllib.loads(config_text))
     policy = verifier_config["policy"]
     gate_names = verifier_config["gate_names"]
+    mergify_prefix = str(verifier_config["mergify"]["temp_pr_head_ref_prefix"])
+    actor_id = int(verifier_config["mergify"]["mergify_temp_pr_actor_id"])
     prov_config = provenance.load_config(config_path)
     cases = [
         ("push", "", False, False, "", "refs/heads/main"),
@@ -1565,7 +2072,7 @@ def assert_ci_policy_resolvers_agree() -> None:
         ("pull_request", "edited", False, False, "", "refs/pull/1/merge"),
         ("pull_request", "edited", False, True, "", "refs/pull/1/merge"),
         ("pull_request", "reopened", False, False, "", "refs/pull/1/merge"),
-        ("pull_request", "ready_for_review", True, False, "", "refs/pull/1/merge"),
+        ("pull_request", "ready_for_review", False, False, "", "refs/pull/1/merge"),
         ("workflow_dispatch", "", True, False, "true", "refs/heads/codex/branch"),
         ("workflow_dispatch", "", True, False, "false", "refs/heads/codex/branch"),
         ("workflow_dispatch", "", True, False, "", "refs/heads/codex/branch"),
@@ -1574,8 +2081,7 @@ def assert_ci_policy_resolvers_agree() -> None:
         ("merge_group", "checks_requested", False, False, "", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef"),
         ("unknown_event", "", True, False, "", "refs/heads/codex/branch"),
     ]
-    saw_full = saw_defer = False
-    saw_noop = False
+    saw_full = saw_iteration = False
     for event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref in cases:
         ver = verifier.evaluate_ci_policy(
             policy,
@@ -1585,6 +2091,7 @@ def assert_ci_policy_resolvers_agree() -> None:
             pull_request_draft=draft,
             pull_request_base_changed=base_changed,
             workflow_dispatch_full_ci=workflow_dispatch_full_ci,
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
             ref=ref,
         )
         prov = provenance.evaluate_ci_policy(
@@ -1603,7 +2110,6 @@ def assert_ci_policy_resolvers_agree() -> None:
             ver.gate_name,
             ver.backtester_gate_name,
             ver.expected_event_class,
-            ver.is_mergify_temp_pr,
             ver.reason,
         )
         prov_tuple = (
@@ -1613,7 +2119,6 @@ def assert_ci_policy_resolvers_agree() -> None:
             prov.gate_name,
             prov.backtester_gate_name,
             prov.expected_event_class,
-            prov.is_mergify_temp_pr,
             prov.reason,
         )
         if ver_tuple != prov_tuple:
@@ -1622,12 +2127,13 @@ def assert_ci_policy_resolvers_agree() -> None:
                 f"verifier={ver_tuple} provenance={prov_tuple}"
             )
         saw_full = saw_full or ver.ci_policy_path == "full"
-        saw_defer = saw_defer or ver.ci_policy_path == "defer"
-        saw_noop = saw_noop or ver.ci_policy_path == "noop"
-    # Non-vacuous: the matrix must exercise both a full and a deferred resolution
-    # so the parity assertion compares real divergent branches, not a constant.
-    if not (saw_full and saw_defer and saw_noop):
-        raise AssertionError("parity matrix must cover full, defer, and noop resolutions")
+        saw_iteration = saw_iteration or ver.ci_policy_path == "iteration"
+    # Non-vacuous: the matrix must exercise both a full (merge boundary) and an
+    # iteration (ordinary PR defer) resolution so the parity assertion compares real
+    # divergent branches, not a constant. Under the #981 queue-only rework no event
+    # resolves to defer/noop any more.
+    if not (saw_full and saw_iteration):
+        raise AssertionError("parity matrix must cover full and iteration resolutions")
     # The merge_group row #848 adds must resolve to full on both sides.
     if not any(
         event_name == "merge_group"
@@ -1639,6 +2145,7 @@ def assert_ci_policy_resolvers_agree() -> None:
             pull_request_draft=draft,
             pull_request_base_changed=base_changed,
             workflow_dispatch_full_ci=workflow_dispatch_full_ci,
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
             ref=ref,
         ).ci_policy_path
         == "full"
@@ -1668,6 +2175,7 @@ def assert_ci_policy_resolvers_agree() -> None:
             pull_request_draft=draft,
             pull_request_base_changed=base_changed,
             workflow_dispatch_full_ci="",
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
             ref=ref,
         )
         prov = provenance.evaluate_ci_policy(
@@ -1686,7 +2194,6 @@ def assert_ci_policy_resolvers_agree() -> None:
             ver.gate_name,
             ver.backtester_gate_name,
             ver.expected_event_class,
-            ver.is_mergify_temp_pr,
             ver.reason,
         )
         prov_tuple = (
@@ -1696,7 +2203,6 @@ def assert_ci_policy_resolvers_agree() -> None:
             prov.gate_name,
             prov.backtester_gate_name,
             prov.expected_event_class,
-            prov.is_mergify_temp_pr,
             prov.reason,
         )
         if ver_tuple != prov_tuple:
@@ -1704,10 +2210,420 @@ def assert_ci_policy_resolvers_agree() -> None:
                 f"ci_policy resolver drift under force_full_ci for {event_name}/{action!r}: "
                 f"verifier={ver_tuple} provenance={prov_tuple}"
             )
-        if ver_tuple != ("full", True, False, "gate", "backtester-gate", "full", False, "force_full_ci"):
+        # Queue-only rework (#981): force_full_ci keeps ci_policy_path == "full" (heavy
+        # lanes still run) but a pull_request head run is never proof of the merged
+        # commit, so the gate name demotes to the non-required gate-iteration.
+        if ver_tuple != ("full", True, False, "gate-iteration", "backtester-gate-iteration", "full", "force_full_ci"):
             raise AssertionError(
-                f"force_full_ci must short-circuit {event_name}/{action!r} to full CI; got {ver_tuple}"
+                f"force_full_ci must keep {event_name}/{action!r} full but demote the gate; got {ver_tuple}"
             )
+
+    ver = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="opened",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    prov = provenance.evaluate_ci_policy(
+        prov_config,
+        event_name="pull_request",
+        event_action="opened",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        event_sender_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    ver_tuple = (
+        ver.ci_policy_path,
+        ver.full_ci_required,
+        ver.full_ci_deferred,
+        ver.gate_name,
+        ver.backtester_gate_name,
+        ver.expected_event_class,
+        ver.reason,
+    )
+    prov_tuple = (
+        prov.ci_policy_path,
+        prov.full_ci_required,
+        prov.full_ci_deferred,
+        prov.gate_name,
+        prov.backtester_gate_name,
+        prov.expected_event_class,
+        prov.reason,
+    )
+    if ver_tuple != prov_tuple:
+        raise AssertionError(f"ci_policy resolver drift for Mergify temp PR: verifier={ver_tuple} provenance={prov_tuple}")
+
+    ver = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="edited",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    prov = provenance.evaluate_ci_policy(
+        prov_config,
+        event_name="pull_request",
+        event_action="edited",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        event_sender_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    ver_tuple = (
+        ver.ci_policy_path,
+        ver.full_ci_required,
+        ver.full_ci_deferred,
+        ver.gate_name,
+        ver.backtester_gate_name,
+        ver.expected_event_class,
+        ver.reason,
+    )
+    prov_tuple = (
+        prov.ci_policy_path,
+        prov.full_ci_required,
+        prov.full_ci_deferred,
+        prov.gate_name,
+        prov.backtester_gate_name,
+        prov.expected_event_class,
+        prov.reason,
+    )
+    if ver_tuple != prov_tuple:
+        raise AssertionError(
+            f"ci_policy resolver drift for Mergify temp PR metadata edit: verifier={ver_tuple} provenance={prov_tuple}"
+        )
+    # A metadata edit (no base change) is not a full-CI action, so even the bound
+    # actor's temp PR falls through to the ordinary draft path -> iteration.
+    if ver_tuple != (
+        "iteration",
+        False,
+        False,
+        "gate-iteration",
+        "backtester-gate-iteration",
+        "iteration",
+        "draft_pr_edited",
+    ):
+        raise AssertionError(f"Mergify temp PR metadata edits must defer to iteration: {ver_tuple}")
+    for string_base_changed, expected in [
+        (
+            "false",
+            (
+                "iteration",
+                False,
+                False,
+                "gate-iteration",
+                "backtester-gate-iteration",
+                "iteration",
+                "draft_pr_edited",
+            ),
+        ),
+        (
+            "true",
+            (
+                "full",
+                True,
+                False,
+                "gate",
+                "backtester-gate",
+                "full",
+                "mergify_temp_pr",
+            ),
+        ),
+    ]:
+        ver = verifier.evaluate_ci_policy(
+            policy,
+            gate_names,
+            event_name="pull_request",
+            action="edited",
+            pull_request_draft=True,
+            pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+            pull_request_base_changed=string_base_changed,
+            workflow_dispatch_full_ci="",
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
+            mergify_temp_pr_actor_id=actor_id,
+            event_sender_id=actor_id,
+            ref="refs/pull/965/merge",
+        )
+        prov = provenance.evaluate_ci_policy(
+            prov_config,
+            event_name="pull_request",
+            event_action="edited",
+            pull_request_draft=True,
+            pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+            pull_request_base_changed=string_base_changed,
+            workflow_dispatch_full_ci="",
+            event_sender_id=actor_id,
+            ref="refs/pull/965/merge",
+        )
+        ver_tuple = (
+            ver.ci_policy_path,
+            ver.full_ci_required,
+            ver.full_ci_deferred,
+            ver.gate_name,
+            ver.backtester_gate_name,
+            ver.expected_event_class,
+            ver.reason,
+        )
+        prov_tuple = (
+            prov.ci_policy_path,
+            prov.full_ci_required,
+            prov.full_ci_deferred,
+            prov.gate_name,
+            prov.backtester_gate_name,
+            prov.expected_event_class,
+            prov.reason,
+        )
+        if ver_tuple != prov_tuple:
+            raise AssertionError(
+                f"ci_policy resolver drift for string base_changed={string_base_changed!r}: "
+                f"verifier={ver_tuple} provenance={prov_tuple}"
+            )
+        if ver_tuple != expected:
+            raise AssertionError(
+                f"Mergify temp PR string base_changed={string_base_changed!r} resolved incorrectly: {ver_tuple}"
+            )
+
+
+def assert_ci_policy_rejects_literal_event_sender_id_argument() -> None:
+    ci_ref_arg = '            --ref "${{ github.ref }}"'
+    backtester_literal_arg = '            --event-sender-id 37929162 \\\n'
+    backtester_ref_arg = """            --ref "${{ github.ref }}" \\
+"""
+    ci_mutated = replace_once(
+        BASE_WORKFLOW,
+        ci_ref_arg,
+        ci_ref_arg + " --event-sender-id 37929162",
+    )
+    assert_error(
+        "ci-policy must not pass --event-sender-id on the resolver command line",
+        workflow=ci_mutated,
+    )
+
+    verifier = load_verifier()
+    backtester = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    backtester_mutated = replace_once(
+        backtester,
+        backtester_ref_arg,
+        backtester_ref_arg + backtester_literal_arg,
+    )
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": backtester_mutated})
+    if not any("ci-policy must not pass --event-sender-id on the resolver command line" in error for error in errors):
+        raise AssertionError(f"backtester ci-policy literal event sender id must be rejected, got: {errors}")
+
+
+def assert_ci_policy_rejects_inline_event_sender_id_override() -> None:
+    command = '          python3 "$policy_script" ci-policy'
+    mutated = replace_once(
+        BASE_WORKFLOW,
+        command,
+        '          EVENT_SENDER_ID=37929162 python3 "$policy_script" ci-policy',
+    )
+    assert_error(
+        "ci-policy must not override EVENT_SENDER_ID inline on the resolver command line",
+        workflow=mutated,
+    )
+
+    verifier = load_verifier()
+    backtester = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    backtester_mutated = replace_once(
+        backtester,
+        command,
+        '          EVENT_SENDER_ID=37929162 python3 "$policy_script" ci-policy',
+    )
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": backtester_mutated})
+    if not any(
+        "ci-policy must not override EVENT_SENDER_ID inline on the resolver command line" in error
+        for error in errors
+    ):
+        raise AssertionError(f"backtester inline EVENT_SENDER_ID override must be rejected, got: {errors}")
+
+
+def assert_ci_policy_rejects_backslash_split_event_sender_id_argument() -> None:
+    ci_ref_arg = '            --ref "${{ github.ref }}"'
+    split_arg = "            --event-\\\n            sender-id 37929162 \\"
+    mutated = replace_once(
+        BASE_WORKFLOW,
+        ci_ref_arg,
+        f"{split_arg}\n{ci_ref_arg}",
+    )
+    assert_error(
+        "ci-policy must not pass --event-sender-id on the resolver command line",
+        workflow=mutated,
+    )
+
+    verifier = load_verifier()
+    backtester = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    backtester_ref_arg = """            --ref "${{ github.ref }}" \\
+"""
+    backtester_mutated = replace_once(
+        backtester,
+        backtester_ref_arg,
+        backtester_ref_arg + split_arg + "\n",
+    )
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": backtester_mutated})
+    if not any("ci-policy must not pass --event-sender-id on the resolver command line" in error for error in errors):
+        raise AssertionError(f"backtester backslash-split event sender id must be rejected, got: {errors}")
+
+
+def assert_ci_policy_rejects_env_command_event_sender_id_override() -> None:
+    command = '          python3 "$policy_script" ci-policy'
+    mutated = replace_once(
+        BASE_WORKFLOW,
+        command,
+        '          env EVENT_SENDER_ID=37929162 python3 "$policy_script" ci-policy',
+    )
+    assert_error(
+        "ci-policy must not override EVENT_SENDER_ID inline on the resolver command line",
+        workflow=mutated,
+    )
+
+    verifier = load_verifier()
+    backtester = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    backtester_mutated = replace_once(
+        backtester,
+        command,
+        '          env EVENT_SENDER_ID=37929162 python3 "$policy_script" ci-policy',
+    )
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": backtester_mutated})
+    if not any(
+        "ci-policy must not override EVENT_SENDER_ID inline on the resolver command line" in error
+        for error in errors
+    ):
+        raise AssertionError(f"backtester env EVENT_SENDER_ID override must be rejected, got: {errors}")
+
+
+def assert_ci_policy_rejects_prior_event_sender_id_exports() -> None:
+    command = '          python3 "$policy_script" ci-policy'
+    for label, prefix in (
+        ("standalone", "          EVENT_SENDER_ID=37929162\n"),
+        ("export", "          export EVENT_SENDER_ID=37929162\n"),
+    ):
+        mutated = replace_once(BASE_WORKFLOW, command, prefix + command)
+        assert_error(
+            "ci-policy must not override EVENT_SENDER_ID before the resolver command",
+            workflow=mutated,
+        )
+
+        verifier = load_verifier()
+        backtester = repo_workflow_text(".github/workflows/backtester-ci.yml")
+        backtester_mutated = replace_once(backtester, command, prefix + command)
+        errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": backtester_mutated})
+        if not any("ci-policy must not override EVENT_SENDER_ID before the resolver command" in error for error in errors):
+            raise AssertionError(f"backtester {label} EVENT_SENDER_ID override must be rejected, got: {errors}")
+
+
+def assert_ci_policy_rejects_event_sender_id_append_assignment() -> None:
+    command = '          python3 "$policy_script" ci-policy'
+    mutated = replace_once(
+        BASE_WORKFLOW,
+        command,
+        '          EVENT_SENDER_ID+=37929162 python3 "$policy_script" ci-policy',
+    )
+    assert_error(
+        "ci-policy must not override EVENT_SENDER_ID inline on the resolver command line",
+        workflow=mutated,
+    )
+
+
+def assert_ci_policy_rejects_alternate_python_event_sender_id_argument() -> None:
+    command = '          python3 "$policy_script" ci-policy'
+    ref_arg = '            --ref "${{ github.ref }}"'
+    decoy = '          : \'python3 "$policy_script" ci-policy\'\n'
+    mutated = replace_once(BASE_WORKFLOW, command, decoy + '          /usr/bin/python3 "$policy_script" ci-policy')
+    mutated = replace_once(mutated, ref_arg, ref_arg + " --event-sender-id 37929162")
+    assert_error(
+        "ci-policy must not pass --event-sender-id on the resolver command line",
+        workflow=mutated,
+    )
+
+    verifier = load_verifier()
+    backtester = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    backtester_ref_arg = """            --ref "${{ github.ref }}" \\
+"""
+    backtester_mutated = replace_once(
+        backtester,
+        command,
+        decoy + '          python3.12 "$policy_script" ci-policy',
+    )
+    backtester_mutated = replace_once(
+        backtester_mutated,
+        backtester_ref_arg,
+        backtester_ref_arg + "            --event-sender-id 37929162 \\\n",
+    )
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": backtester_mutated})
+    if not any("ci-policy must not pass --event-sender-id on the resolver command line" in error for error in errors):
+        raise AssertionError(f"backtester alternate Python event sender id argument must be rejected, got: {errors}")
+
+
+def assert_ci_policy_rejects_split_and_boundary_event_sender_id_arguments() -> None:
+    ci_ref_arg = '            --ref "${{ github.ref }}"'
+    mid_token_split = "            --event-send\\\n            er-id 37929162 \\"
+    mutated = replace_once(
+        BASE_WORKFLOW,
+        ci_ref_arg,
+        f"{mid_token_split}\n{ci_ref_arg}",
+    )
+    assert_error(
+        "ci-policy must not pass --event-sender-id on the resolver command line",
+        workflow=mutated,
+    )
+
+    boundary_arg = "            --event-name if --event-sender-id 37929162"
+    mutated = replace_once(
+        BASE_WORKFLOW,
+        '            --event-name "${{ github.event_name }}"',
+        boundary_arg,
+    )
+    assert_error(
+        "ci-policy must not pass --event-sender-id on the resolver command line",
+        workflow=mutated,
+    )
+
+
+def assert_ci_policy_counts_structural_event_sender_id_env_keys() -> None:
+    env_line = "          EVENT_SENDER_ID: ${{ github.event.sender.id }}"
+    duplicate = replace_once(BASE_WORKFLOW, env_line, env_line + "\n          EVENT_SENDER_ID : 37929162")
+    assert_error(
+        "ci-policy must declare EVENT_SENDER_ID env exactly once",
+        workflow=duplicate,
+    )
+
+    command = '          python3 "$policy_script" ci-policy'
+    diagnostic = (
+        '          : "${EVENT_SENDER_ID:?missing sender id}"\n'
+        '          echo "EVENT_SENDER_ID: ${EVENT_SENDER_ID}" >> "$GITHUB_STEP_SUMMARY"\n'
+    )
+    assert_clean(workflow=replace_once(BASE_WORKFLOW, command, diagnostic + command))
+
+
+def assert_ci_policy_real_workflows_keep_event_sender_binding_clean() -> None:
+    verifier = load_verifier()
+    workflows = {
+        ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml"),
+        ".github/workflows/backtester-ci.yml": repo_workflow_text(".github/workflows/backtester-ci.yml"),
+    }
+    errors = verifier.verify_workflows(workflows, BASE_ACTION, BASE_NEXTEST_CONFIG)
+    if errors:
+        raise AssertionError(f"real ci-policy workflows must remain clean, got: {errors}")
 
 
 def assert_pull_request_type_parser_accepts_block_list_indentation() -> None:
@@ -1776,6 +2692,269 @@ def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
 
+def assert_test_archive_sccache_fail_open_contract() -> None:
+    # #1011: the S3 sccache compile cache must never be able to fail the required
+    # test-archive build. Lock the fail-open invariants so a future edit can't
+    # silently make the cache fatal.
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    clean = [error for error in verifier.verify_workflow(workflow) if "sccache" in error]
+    if clean:
+        raise AssertionError(f"real ci.yml must satisfy the sccache fail-open contract, got: {clean}")
+    required_pr_read_fragments = [
+        '[[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]]',
+        "PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}",
+        'if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then',
+        'cache_mode="read_only"',
+        'role_arn="$PR_READONLY_ROLE_ARN"',
+        "echo \"cache_mode=$cache_mode\" >> \"$GITHUB_OUTPUT\"",
+        "role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}",
+    ]
+    for fragment in required_pr_read_fragments:
+        if fragment not in workflow:
+            raise AssertionError(f"real ci.yml must configure PR read-only sccache role path: missing {fragment!r}")
+    cases = [
+        (
+            "test-archive sccache opt-in must stay conditional",
+            replace_once(
+                workflow,
+                "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}",
+                'BOLT_RUST_VERIFICATION_SCCACHE: "1"',
+            ),
+        ),
+        (
+            "Resolve sccache eligibility' must be continue-on-error",
+            replace_once(
+                workflow,
+                "        id: sccache-eligible\n"
+                "        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n"
+                "        continue-on-error: true\n",
+                "        id: sccache-eligible\n"
+                "        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n",
+            ),
+        ),
+        (
+            "Configure AWS credentials for sccache' must be continue-on-error",
+            replace_once(
+                workflow,
+                "        id: sccache-aws\n"
+                "        if: steps.sccache-eligible.outputs.eligible == 'true'\n"
+                "        continue-on-error: true\n",
+                "        id: sccache-aws\n"
+                "        if: steps.sccache-eligible.outputs.eligible == 'true'\n",
+            ),
+        ),
+        (
+            "Resolve sccache enablement' must be continue-on-error",
+            replace_once(
+                workflow,
+                "        id: sccache\n"
+                "        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n"
+                "        continue-on-error: true\n",
+                "        id: sccache\n"
+                "        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n",
+            ),
+        ),
+        (
+            "must set SCCACHE_IGNORE_SERVER_IO_ERROR",
+            replace_once(workflow, '      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"\n', ""),
+        ),
+        (
+            # Value spoof: flipping the flag to "0" disables in-flight fail-open.
+            "must set SCCACHE_IGNORE_SERVER_IO_ERROR",
+            replace_once(
+                workflow,
+                '      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"\n',
+                '      SCCACHE_IGNORE_SERVER_IO_ERROR: "0"\n',
+            ),
+        ),
+        (
+            # Dropping the without-sccache retry removes the only cover for a
+            # mid-build sccache server crash.
+            "must retry the build without sccache",
+            replace_once(
+                workflow,
+                'BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive "$NEXTEST_ARCHIVE_PATH"',
+                "true",
+            ),
+        ),
+        (
+            "must require CI_SCCACHE_S3_KEY_PREFIX",
+            replace_once(
+                workflow,
+                ' && -n "$PREFIX"',
+                "",
+            ),
+        ),
+        (
+            "must gate write-cache use exactly to main push/dispatch refs",
+            replace_once(
+                workflow,
+                '          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi\n',
+                '          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then trusted=true; fi\n',
+            ),
+        ),
+        (
+            # Adding a fourth trusted arm must fail even if the required arms
+            # remain present.
+            "must gate write-cache use exactly to main push/dispatch refs",
+            replace_once(
+                workflow,
+                "          trusted=false\n",
+                '          trusted=false\n'
+                '          if [[ "$GITHUB_EVENT_NAME" == "pull_request_target" ]];'
+                ' then trusted=true; fi\n',
+            ),
+        ),
+        (
+            "must pin bucket/region/prefix to the bolt-v2 CI cache",
+            replace_once(
+                workflow,
+                '"bolt-v2-ci-cache-675819144420-us-east-2"',
+                '"some-other-cache"',
+            ),
+        ),
+        (
+            "must configure PR read-only sccache role path",
+            replace_once(
+                workflow,
+                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+                "",
+            ),
+        ),
+        (
+            "must configure PR read-only sccache role path",
+            replace_once(
+                workflow,
+                '          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then\n'
+                '            cache_mode="read_only"\n'
+                '            role_arn="$PR_READONLY_ROLE_ARN"\n'
+                "          fi\n",
+                "",
+            ),
+        ),
+        (
+            "must assume the resolved sccache role",
+            replace_once(
+                workflow,
+                "          role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}\n",
+                "          role-to-assume: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n",
+            ),
+        ),
+        (
+            "BOLT_RUST_VERIFICATION_SCCACHE opt-in must stay scoped",
+            replace_once(
+                workflow,
+                "  detector:\n    name: detector\n",
+                "  detector:\n    name: detector\n    env:\n      BOLT_RUST_VERIFICATION_SCCACHE: \"1\"\n",
+            ),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def _test_archive_build_script(verifier) -> str:
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    archive_job = verifier.parse_jobs(workflow).get("test-archive")
+    if archive_job is None:
+        raise AssertionError("test-archive job missing")
+    build_block = verifier.named_step_block(archive_job, "Build nextest archive")
+    if build_block is None:
+        raise AssertionError("Build nextest archive step missing")
+    script = verifier.block_run_body(build_block)
+    if not script:
+        raise AssertionError("Build nextest archive run body missing")
+    return script
+
+
+def _run_test_archive_build_script(script: str, *, sccache: str, fake_just_mode: str) -> tuple[int, int]:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        counter = root / "just-count"
+        fake_just = root / "just"
+        fake_just.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                count=0
+                if [[ -f "$JUST_COUNT_FILE" ]]; then
+                  count="$(cat "$JUST_COUNT_FILE")"
+                fi
+                count=$((count + 1))
+                echo "$count" > "$JUST_COUNT_FILE"
+                case "$JUST_MODE" in
+                  transient-cache-failure)
+                    if [[ "$count" -eq 1 ]]; then exit 86; fi
+                    exit 0
+                    ;;
+                  compile-error)
+                    exit 42
+                    ;;
+                  no-cache-failure)
+                    exit 43
+                    ;;
+                  *)
+                    echo "unknown JUST_MODE=$JUST_MODE" >&2
+                    exit 99
+                    ;;
+                esac
+                """
+            ),
+            encoding="utf-8",
+        )
+        fake_just.chmod(0o755)
+        env = {
+            **os.environ,
+            "PATH": f"{root}:{os.environ['PATH']}",
+            "JUST_COUNT_FILE": str(counter),
+            "JUST_MODE": fake_just_mode,
+            "NEXTEST_ARCHIVE_PATH": "out/nextest-archive.tar.zst",
+            "BOLT_RUST_VERIFICATION_SCCACHE": sccache,
+        }
+        result = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+            cwd=root,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        count = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
+        return result.returncode, count
+
+
+def assert_test_archive_sccache_retry_preserves_compile_failures() -> None:
+    verifier = load_verifier()
+    script = _test_archive_build_script(verifier)
+    rc, count = _run_test_archive_build_script(
+        script,
+        sccache="1",
+        fake_just_mode="transient-cache-failure",
+    )
+    if (rc, count) != (0, 2):
+        raise AssertionError(f"sccache transient failure must retry once and pass, got rc={rc} count={count}")
+
+    rc, count = _run_test_archive_build_script(
+        script,
+        sccache="1",
+        fake_just_mode="compile-error",
+    )
+    if (rc, count) != (42, 2):
+        raise AssertionError(f"compile failure with sccache must fail after retry, got rc={rc} count={count}")
+
+    rc, count = _run_test_archive_build_script(
+        script,
+        sccache="0",
+        fake_just_mode="no-cache-failure",
+    )
+    if (rc, count) != (43, 1):
+        raise AssertionError(f"without sccache, build failure must not retry, got rc={rc} count={count}")
+
+
 def assert_ci_workflow_run_name_matches_dispatch_config() -> None:
     workflow = repo_workflow_text(".github/workflows/ci.yml")
     assert_error(
@@ -1810,6 +2989,43 @@ def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
         raise AssertionError(f"expected workflow_dispatch detector guard error, got: {errors}")
 
 
+def assert_ci_base_ref_archives_use_scripts_directory() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    marker = 'git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"'
+    for replacement in (
+        'git archive "$base_ref" scripts/ci_provenance.py scripts/rust_verification.py ci/github-actions-runners.toml | tar -x -C "$base_tree"',
+        'git archive "$base_ref" scripts/ scripts/ci_provenance.py ci/github-actions-runners.toml | tar -x -C "$base_tree"',
+    ):
+        mutated = replace_once(workflow, marker, replacement)
+        errors = verifier.verify_workflow(mutated)
+        if not any(
+            "base_ref git archive must archive scripts/ wholesale" in error
+            for error in errors
+        ):
+            raise AssertionError(f"expected base_ref scripts/ archive error for {replacement!r}, got: {errors}")
+
+
+def assert_ci_detector_docs_only_archive_includes_lane_policy() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    archive_without_policy = (
+        'git archive "$base_ref" scripts/ ci/github-actions-runners.toml .github/workflows/ci.yml | tar -x -C "$base_tree"'
+    )
+    archive_with_policy = (
+        'git archive "$base_ref" scripts/ ci/rust-verification.toml ci/github-actions-runners.toml .github/workflows/ci.yml | tar -x -C "$base_tree"'
+    )
+    if archive_without_policy in workflow:
+        workflow = replace_once(workflow, archive_without_policy, archive_with_policy)
+    mutated = replace_once(workflow, " ci/rust-verification.toml", "")
+    errors = verifier.verify_workflow(mutated)
+    if not any(
+        "detector docs-only classifier base archive must include ci/rust-verification.toml" in error
+        for error in errors
+    ):
+        raise AssertionError(f"expected detector docs-only lane policy archive error, got: {errors}")
+
+
 def assert_merge_group_support_gaps_are_reported() -> None:
     # Non-vacuous mutation tests for the merge queue (merge_group) lane:
     # the real workflows/config must be clean, and each mutation must surface
@@ -1818,6 +3034,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     verifier = load_verifier()
     ci_workflow = repo_workflow_text(".github/workflows/ci.yml")
     actionlint_workflow = repo_workflow_text(".github/workflows/actionlint.yml")
+    backtester_workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
 
     # Baseline: real workflows declare merge_group and resolve clean.
     if verifier.verify_workflow(ci_workflow):
@@ -1830,6 +3047,13 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     if any("merge_group" in error for error in actionlint_baseline):
         raise AssertionError(
             f"real actionlint.yml must be merge_group-clean, got: {actionlint_baseline}"
+        )
+    backtester_baseline = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_workflow}
+    )
+    if any("merge_group" in error for error in backtester_baseline):
+        raise AssertionError(
+            f"real backtester-ci.yml must be merge_group-clean, got: {backtester_baseline}"
         )
 
     # (i) merge_group policy value flipped away from required proof → config contract error.
@@ -1866,6 +3090,64 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     ):
         raise AssertionError(
             f"expected actionlint.yml merge_group trigger error, got: {actionlint_errors}"
+        )
+
+    # (ii-c) merge_group trigger removed from backtester-ci.yml → Backtester CI error.
+    backtester_without_merge_group = replace_once(
+        backtester_workflow,
+        "  merge_group:\n    types: [checks_requested]\n",
+        "",
+    )
+    backtester_trigger_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_without_merge_group}
+    )
+    if not any(
+        "on must define merge_group for merge queue" in error for error in backtester_trigger_errors
+    ):
+        raise AssertionError(
+            f"expected backtester-ci.yml merge_group trigger error, got: {backtester_trigger_errors}"
+        )
+
+    # Backtester detect must force proof lanes on merge_group. A no-op required
+    # gate counts as passing and would poison the live queue evidence.
+    backtester_without_detector_arm = replace_once(
+        backtester_workflow,
+        '          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then\n'
+        "            # A skipped required gate counts as passing, so queue validation must run proof lanes.\n"
+        '            echo "merge_group event; treating crate as changed"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            exit 0\n',
+        "",
+    )
+    backtester_detector_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_without_detector_arm}
+    )
+    if not any(
+        "backtester detect must force bvs_changed=true for merge_group" in error
+        for error in backtester_detector_errors
+    ):
+        raise AssertionError(
+            f"expected backtester merge_group detector error, got: {backtester_detector_errors}"
+        )
+
+    backtester_detector_without_exit = replace_once(
+        backtester_workflow,
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        "            exit 0\n"
+        "          fi\n",
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        "          fi\n",
+    )
+    backtester_detector_exit_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_detector_without_exit}
+    )
+    if not any(
+        "backtester detect must force bvs_changed=true for merge_group" in error
+        for error in backtester_detector_exit_errors
+    ):
+        raise AssertionError(
+            "expected backtester merge_group detector short-circuit error, "
+            f"got: {backtester_detector_exit_errors}"
         )
 
     # Detector must force build on merge_group (a skipped required build is a hole).
@@ -1907,6 +3189,38 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     ):
         raise AssertionError(f"expected merge_group cancel-scope error, got: {cancel_errors}")
 
+    backtester_without_concurrency_arm = replace_once(
+        backtester_workflow,
+        "        || github.event_name == 'merge_group'\n        && format('bvs-mq-{0}', github.ref)\n",
+        "",
+    )
+    backtester_concurrency_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_without_concurrency_arm}
+    )
+    if not any(
+        "approved merge_group-safe form" in error
+        for error in backtester_concurrency_errors
+    ):
+        raise AssertionError(
+            f"expected backtester merge_group concurrency error, got: {backtester_concurrency_errors}"
+        )
+
+    backtester_cancelling_merge_group = replace_once(
+        backtester_workflow,
+        "        || github.event_name == 'workflow_dispatch' }}",
+        "        || github.event_name == 'workflow_dispatch'\n        || github.event_name == 'merge_group' }}",
+    )
+    backtester_cancel_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_cancelling_merge_group}
+    )
+    if not any(
+        "cancel-in-progress must not cancel merge_group queue validations" in error
+        for error in backtester_cancel_errors
+    ):
+        raise AssertionError(
+            f"expected backtester merge_group cancel-scope error, got: {backtester_cancel_errors}"
+        )
+
     # Decoupled merge_group arm (ci.yml): a merge_group arm must be caught even
     # when 'mq-{0}'/'github.ref' still appear elsewhere. Swap the merge_group and
     # workflow_dispatch format strings so both substrings remain present but the
@@ -1944,8 +3258,8 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     # actionlint's merge_group concurrency arm must be reported.
     actionlint_no_concurrency_arm = replace_once(
         actionlint_workflow,
-        "      || github.event_name == 'merge_group'\n"
-        "      && format('mq-{0}', github.ref)\n",
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n",
         "",
     )
     if actionlint_no_concurrency_arm == actionlint_workflow:
@@ -1964,9 +3278,15 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     # actionlint cancel-in-progress must never cancel merge_group queue runs.
     actionlint_cancel_merge_group = replace_once(
         actionlint_workflow,
-        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-        "  cancel-in-progress: ${{ github.event_name == 'pull_request'"
-        " || github.event_name == 'merge_group' }}",
+        "  cancel-in-progress: >-\n"
+        "    ${{ github.event_name == 'pull_request'\n"
+        "        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+        "             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) }}",
+        "  cancel-in-progress: >-\n"
+        "    ${{ github.event_name == 'pull_request'\n"
+        "        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+        "             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+        "      || github.event_name == 'merge_group' }}",
     )
     if actionlint_cancel_merge_group == actionlint_workflow:
         raise AssertionError("actionlint cancel-in-progress fixture fragment not found")
@@ -1986,7 +3306,10 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     # fail-open class: GPT/GLM.) The positive allowlist must reject it.
     actionlint_cancel_true = replace_once(
         actionlint_workflow,
-        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+        "  cancel-in-progress: >-\n"
+        "    ${{ github.event_name == 'pull_request'\n"
+        "        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+        "             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) }}",
         "  cancel-in-progress: true",
     )
     if actionlint_cancel_true == actionlint_workflow:
@@ -2006,7 +3329,10 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     # no event literally — also fail-open under a substring deny-list.
     actionlint_cancel_negation = replace_once(
         actionlint_workflow,
-        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+        "  cancel-in-progress: >-\n"
+        "    ${{ github.event_name == 'pull_request'\n"
+        "        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+        "             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) }}",
         "  cancel-in-progress: ${{ github.event_name != 'push' }}",
     )
     if actionlint_cancel_negation == actionlint_workflow:
@@ -2283,20 +3609,34 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         actionlint_workflow,
         "  group: >-\n"
         "    actionlint-${{ github.event_name == 'pull_request'\n"
-        "      && format('pr-{0}', github.event.number)\n"
-        "      || github.event_name == 'merge_group'\n"
-        "      && format('mq-{0}', github.ref)\n"
-        "      || format('{0}-{1}', github.ref_name, github.sha) }}\n"
-        "  # cancel-in-progress is true only for PR runs; merge_group queue validations\n"
-        "  # must never be cancelled, so they fall through to the default (false).\n"
-        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n"
+        "        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+        "            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+        "        && format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)\n"
+        "        || github.event_name == 'pull_request'\n"
+        "        && format('pr-{0}', github.event.number)\n"
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}\n"
+        "  # cancel-in-progress is true only for ordinary PR runs; merge_group and Mergify\n"
+        "  # proof PR validations must never be cancelled.\n"
+        "  cancel-in-progress: >-\n"
+        "    ${{ github.event_name == 'pull_request'\n"
+        "        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+        "             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) }}",
+        "  cancel-in-progress: >-\n"
+        "    ${{ github.event_name == 'pull_request'\n"
+        "        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+        "             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) }}\n"
         "  group: >-\n"
         "    actionlint-${{ github.event_name == 'pull_request'\n"
-        "      && format('pr-{0}', github.event.number)\n"
-        "      || github.event_name == 'merge_group'\n"
-        "      && format('mq-{0}', github.ref)\n"
-        "      || format('{0}-{1}', github.ref_name, github.sha) }}",
+        "        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+        "            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+        "        && format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)\n"
+        "        || github.event_name == 'pull_request'\n"
+        "        && format('pr-{0}', github.event.number)\n"
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}",
     )
     if actionlint_reversed == actionlint_workflow:
         raise AssertionError("actionlint reversed key-order fixture fragment not found")
@@ -2400,6 +3740,132 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         verifier.merge_group_concurrency_workflow_errors = original_whole_workflow
 
 
+def assert_mergify_config_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    mergify_config = (REPO_ROOT / ".mergify.yml").read_text()
+    baseline_errors = verifier.verify_mergify_config(mergify_config)
+    if baseline_errors:
+        raise AssertionError(f"real .mergify.yml must be clean, got: {baseline_errors}")
+
+    result, output = run_verifier_main_with_no_mistakes(
+        "commands:\n  test: just source-fence-static\n",
+        write_mergify_config=False,
+    )
+    if result == 0 or ".mergify.yml is required for Mergify queue governance" not in output:
+        raise AssertionError(f"verifier main must reject a missing .mergify.yml, got: {result}, {output!r}")
+
+    mutations = [
+        (
+            "missing max_parallel_checks",
+            replace_once(mergify_config, "  max_parallel_checks: 1\n", ""),
+            "merge_queue.max_parallel_checks must be 1",
+        ),
+        (
+            "reset disabled",
+            replace_once(
+                mergify_config,
+                "  reset_on_external_merge: always\n",
+                "  reset_on_external_merge: never\n",
+            ),
+            "merge_queue.reset_on_external_merge must be always",
+        ),
+        (
+            "autoqueue enabled",
+            replace_once(
+                mergify_config,
+                "    batch_size: 1\n",
+                "    autoqueue: true\n    batch_size: 1\n",
+            ),
+            "manual queueing only",
+        ),
+        (
+            "pull request rules enabled",
+            mergify_config + "\npull_request_rules:\n  - name: autoqueue\n",
+            "manual queueing only",
+        ),
+        (
+            "merge protections enabled",
+            mergify_config + "\nmerge_protections:\n  - name: autoqueue\n",
+            "manual queueing only",
+        ),
+        (
+            "queue conditions require gate",
+            replace_once(
+                mergify_config,
+                "    queue_conditions: []\n",
+                "    queue_conditions:\n      - check-success = gate\n",
+            ),
+            "default queue_conditions must be empty",
+        ),
+        (
+            "missing gate merge condition",
+            replace_once(mergify_config, "      - check-success = gate\n", ""),
+            "default merge_conditions must require sp-reviewer and all four gates",
+        ),
+        (
+            "extra merge condition",
+            replace_once(
+                mergify_config,
+                "      - check-success = host-health\n",
+                "      - check-success = host-health\n      - label = queue-proof\n",
+            ),
+            "default merge_conditions must require sp-reviewer and all four gates",
+        ),
+        (
+            "queue-time injection",
+            replace_once(
+                mergify_config,
+                "    branch_protection_injection_mode: merge\n",
+                "    branch_protection_injection_mode: queue\n",
+            ),
+            "default branch_protection_injection_mode must be merge",
+        ),
+        (
+            "batch size widened",
+            replace_once(mergify_config, "    batch_size: 1\n", "    batch_size: 2\n"),
+            "default batch_size must be 1",
+        ),
+        (
+            "unbounded timeout",
+            replace_once(
+                mergify_config,
+                "    checks_timeout: 60 minutes\n",
+                "    checks_timeout: auto\n",
+            ),
+            "default checks_timeout must be 60 minutes",
+        ),
+        (
+            "zero timeout",
+            replace_once(
+                mergify_config,
+                "    checks_timeout: 60 minutes\n",
+                "    checks_timeout: 0 minutes\n",
+            ),
+            "default checks_timeout must be 60 minutes",
+        ),
+        (
+            "draft impersonation",
+            replace_once(
+                mergify_config,
+                "    draft_bot_account: null\n",
+                '    draft_bot_account: "{{ author }}"\n',
+            ),
+            "default draft_bot_account must be null",
+        ),
+        (
+            "non-squash merge",
+            replace_once(mergify_config, "    merge_method: squash\n", "    merge_method: merge\n"),
+            "default merge_method must be squash",
+        ),
+    ]
+    for label, mutated, expected in mutations:
+        errors = verifier.verify_mergify_config(mutated)
+        if not any(expected in error for error in errors):
+            raise AssertionError(
+                f"expected .mergify.yml {label} error containing {expected!r}, got: {errors}"
+            )
+
+
 def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
@@ -2464,7 +3930,7 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "ci-provenance-emit must gate on full_ci_required",
             replace_once(
                 workflow,
-                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
                 "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
             ),
         ),
@@ -2512,104 +3978,72 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
             replace_once(workflow, GATE_NAME, "name: gate"),
         ),
         (
-            "gate must check needs.ci-policy.result",
+            "gate shared verdict call must include --job ci-policy=${{ needs.ci-policy.result }}",
             replace_once(
                 workflow,
-                '"${{ needs.ci-policy.result }}" != "success"',
-                '"${{ omitted.ci-policy.result }}" != "success"',
+                "--job ci-policy=${{ needs.ci-policy.result }}",
+                "--job ci-policy=${{ needs.omitted.result }}",
             ),
         ),
         (
-            "gate must pass resolver-permitted iteration runs",
-            replace_once(workflow, 'if [[ "$policy_path" == "iteration" ]]; then', 'if [[ "$policy_path" == "iter" ]]; then'),
+            "gate shared verdict call must include --policy-path",
+            replace_once(workflow, '--policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}"', '--policy-path "full"'),
         ),
         (
-            "gate must read resolver expected_event_class",
+            "gate shared verdict call must include --expected-event-class",
             replace_once(
                 workflow,
-                GATE_EXPECTED_EVENT_CLASS_ASSIGNMENT,
-                'expected_event_class="iteration"',
+                '--expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}"',
+                '--expected-event-class "iteration"',
             ),
         ),
         (
-            "gate must fail iteration policy outside resolver-permitted event class",
-            replace_once(workflow, '"$expected_event_class" != "iteration"', '"$expected_event_class" == "iteration"'),
-        ),
-        (
-            "gate must require nextest-fingerprint skipped on iteration",
+            "gate shared verdict call must include --full-ci-deferred",
             replace_once(
                 workflow,
-                """            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
-              echo "nextest-fingerprint unexpectedly ran during iteration"
-              exit 1
-            fi
-""",
-                "",
+                '--full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}"',
+                '--full-ci-deferred "false"',
             ),
         ),
         (
-            "gate must require test-archive skipped on iteration",
+            "gate shared verdict call must include carry_forward_args=()",
             replace_once(
                 workflow,
-                """            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
-              echo "test-archive unexpectedly ran during iteration"
-              exit 1
-            fi
-""",
-                "",
+                "carry_forward_args=()",
+                "carry_forward_args=(--carry-forward-verified false)",
             ),
         ),
         (
-            "gate must require nextest-fingerprint skipped on tag reuse",
+            "gate shared verdict call must include --job nextest-fingerprint=${{ needs.nextest-fingerprint.result }}",
             replace_once(
                 workflow,
-                """            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
-              echo "nextest-fingerprint unexpectedly ran during tag reuse"
-              exit 1
-            fi
-""",
-                "",
+                "--job nextest-fingerprint=${{ needs.nextest-fingerprint.result }}",
+                "--job nextest-fingerprint=${{ needs.omitted.result }}",
             ),
         ),
         (
-            "gate must require test-archive skipped on tag reuse",
+            "gate shared verdict call must include --job test-archive=${{ needs.test-archive.result }}",
             replace_once(
                 workflow,
-                """            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
-              echo "test-archive unexpectedly ran during tag reuse"
-              exit 1
-            fi
-""",
-                "",
+                "--job test-archive=${{ needs.test-archive.result }}",
+                "--job test-archive=${{ needs.omitted.result }}",
             ),
         ),
         (
-            "gate must pass deferred full CI without failing stale draft checks",
-            replace_once(workflow, GATE_DEFER_BLOCK, ""),
+            "gate shared verdict call must include --job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}",
+            replace_once(
+                workflow,
+                "--job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}",
+                "--job same-sha-main-evidence=${{ needs.omitted.result }}",
+            ),
         ),
         (
-            "gate must pass deferred full CI without failing stale draft checks",
-            replace_once(workflow, GATE_DEFER_BLOCK, GATE_DEFER_BLOCK.replace("            exit 0\n", "            exit 1\n")),
-        ),
-        (
-            "gate must fail deferred policy outside resolver-permitted event class",
-            replace_once(workflow, GATE_DEFER_CONTEXT_GUARD, ""),
-        ),
-        (
-            "gate must fail deferred policy outside resolver-permitted event class",
-            replace_once(workflow, '"$expected_event_class" != "defer"', '"$expected_event_class" == "defer"'),
-        ),
-        (
-            "gate must branch on ci_policy_path full",
-            replace_once(workflow, 'if [[ "$policy_path" == "full" ]]; then', 'if [[ "$policy_path" != "defer" ]]; then'),
-        ),
-        (
-            "gate must branch on ci_policy_path tag_reuse",
-            replace_once(workflow, 'if [[ "$policy_path" == "tag_reuse" ]]; then', 'if [[ "$tag_ref" == "true" ]]; then'),
-        ),
-        (
-            "gate must read ignore_emit_failure only for ci-provenance-emit",
-            replace_once(workflow, '            if [[ "$ignore_emit_failure" == "true" ]]; then\n', ""),
+            "gate shared verdict call must include --ignore-emit-failure",
+            replace_once(
+                workflow,
+                '--ignore-emit-failure "${{ needs.ci-policy.outputs.ignore_emit_failure }}"',
+                '--ignore-emit-failure "false"',
+            ),
         ),
     ]
     for fragment, mutated_workflow in cases:
@@ -2623,6 +4057,8 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
     workflow = repo_workflow_text(".github/workflows/ci.yml")
     cancel_in_progress_for_pr_and_dispatch = """  cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && !(github.event.pull_request.draft == false
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
@@ -2630,6 +4066,8 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
 """
     cancel_in_progress_for_draft_pr_and_dispatch = """  cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         || github.event_name == 'workflow_dispatch' }}
@@ -2700,6 +4138,129 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
         errors = verifier.verify_workflow(mutated_workflow)
         if not any(fragment in error for error in errors):
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_mergify_proof_prefix_alignment_holds() -> None:
+    # The resolver and workflow concurrency layer must agree on both documented
+    # Mergify proof-PR head-ref forms, so either form gets the required gate only
+    # when the workflow also isolates it from cancellation.
+    verifier = load_verifier()
+    provenance = load_provenance()
+    config = provenance.load_config(REPO_ROOT / "ci" / "github-actions-runners.toml")
+    errors = verifier.mergify_proof_prefix_alignment_errors(config)
+    if errors:
+        raise AssertionError(f"real config must keep resolver/workflow prefixes aligned: {errors}")
+
+
+def assert_mergify_proof_prefix_alignment_detects_drift() -> None:
+    verifier = load_verifier()
+    provenance = load_provenance()
+    config = provenance.load_config(REPO_ROOT / "ci" / "github-actions-runners.toml")
+
+    original_predicate = verifier.MERGIFY_PROOF_PR_HEAD_REF_PREDICATE
+    try:
+        verifier.MERGIFY_PROOF_PR_HEAD_REF_PREDICATE = (
+            "startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')"
+        )
+        resolver_only_tmp_errors = verifier.mergify_proof_prefix_alignment_errors(config)
+    finally:
+        verifier.MERGIFY_PROOF_PR_HEAD_REF_PREDICATE = original_predicate
+    if not resolver_only_tmp_errors:
+        raise AssertionError("resolver-only tmp Mergify proof-PR handling must be reported")
+    if not any("workflow concurrency layer does not isolate" in error for error in resolver_only_tmp_errors):
+        raise AssertionError(f"resolver-only tmp drift must name workflow isolation gap: {resolver_only_tmp_errors}")
+
+    original_matcher = verifier.mergify_temp_pr_matches
+
+    def bare_only_matcher(
+        *,
+        event_name: str,
+        pull_request_draft: bool,
+        pull_request_head_ref: str,
+        temp_pr_head_ref_prefix: str,
+        event_sender_id: int,
+        temp_pr_actor_id: int,
+    ) -> bool:
+        return (
+            event_name == "pull_request"
+            and pull_request_draft
+            and pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
+            and event_sender_id == temp_pr_actor_id
+        )
+
+    try:
+        verifier.mergify_temp_pr_matches = bare_only_matcher
+        workflow_only_tmp_errors = verifier.mergify_proof_prefix_alignment_errors(config)
+    finally:
+        verifier.mergify_temp_pr_matches = original_matcher
+    if not workflow_only_tmp_errors:
+        raise AssertionError("workflow-only tmp Mergify proof-PR handling must be reported")
+    if not any("resolver does not promote" in error for error in workflow_only_tmp_errors):
+        raise AssertionError(f"workflow-only tmp drift must name resolver promotion gap: {workflow_only_tmp_errors}")
+
+
+def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    cases = [
+        (
+            ".github/workflows/ci.yml",
+            "format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)",
+            "format('pr-{0}-deferred', github.event.number)",
+            "        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+            "             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
+            "",
+            "concurrency group must isolate Mergify proof PR runs",
+        ),
+        (
+            ".github/workflows/backtester-ci.yml",
+            "format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)",
+            "format('bvs-pr-{0}-deferred', github.event.number)",
+            "        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+            "             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
+            "",
+            "concurrency group must isolate Mergify proof PR runs",
+        ),
+        (
+            ".github/workflows/actionlint.yml",
+            "format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)",
+            "format('pr-{0}-deferred', github.event.number)",
+            "        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+            "             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) }}\n",
+            " }}\n",
+            "concurrency group must isolate Mergify proof PR runs",
+        ),
+    ]
+    for workflow_name, group_fragment, group_replacement, cancel_guard, cancel_replacement, expected_error in cases:
+        workflow = repo_workflow_text(workflow_name)
+        if group_fragment not in workflow:
+            raise AssertionError(f"{workflow_name} must isolate Mergify proof PR runs")
+        missing_group = replace_once_after(
+            workflow,
+            "concurrency:",
+            group_fragment,
+            group_replacement,
+        )
+        group_errors = (
+            verifier.verify_workflow(missing_group)
+            if workflow_name.endswith("/ci.yml")
+            else verifier.verify_repo_automation_texts({workflow_name: missing_group})
+        )
+        if not any(expected_error in error for error in group_errors):
+            raise AssertionError(f"{workflow_name} must reject missing Mergify proof PR group, got: {group_errors}")
+
+        missing_cancel_guard = replace_once_after(
+            workflow,
+            "cancel-in-progress:",
+            cancel_guard,
+            cancel_replacement,
+        )
+        cancel_errors = (
+            verifier.verify_workflow(missing_cancel_guard)
+            if workflow_name.endswith("/ci.yml")
+            else verifier.verify_repo_automation_texts({workflow_name: missing_cancel_guard})
+        )
+        if not any("cancel-in-progress must not cancel Mergify proof PR validations" in error for error in cancel_errors):
+            raise AssertionError(f"{workflow_name} must reject cancelling Mergify proof PRs, got: {cancel_errors}")
 
 
 def assert_dispatch_cancel_watchdog_gaps_are_reported() -> None:
@@ -2799,6 +4360,293 @@ def assert_dispatch_cancel_watchdog_gaps_are_reported() -> None:
         errors = verifier.verify_dispatch_ci_cancel_workflow(
             {".github/workflows/dispatch-ci-cancel.yml": mutated_workflow}
         )
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_merge_readiness_progress_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    missing_job_workflow = workflow
+    if "  merge-readiness-progress:\n" in workflow:
+        missing_job_workflow = replace_once(
+            workflow,
+            "  merge-readiness-progress:\n",
+            "  merge-readiness-progress-renamed:\n",
+        )
+    missing_job_errors = verifier.verify_merge_readiness_ci_job(
+        missing_job_workflow
+    )
+    if not any("ci.yml must define merge-readiness-progress job" in error for error in missing_job_errors):
+        raise AssertionError(f"expected missing progress job error, got: {missing_job_errors}")
+
+    cases = [
+        (
+            "merge-readiness-progress permissions must include checks: read",
+            replace_once(workflow, "      checks: read\n", ""),
+        ),
+        (
+            "merge-readiness-progress permissions must include pull-requests: write",
+            replace_once(workflow, "      pull-requests: write\n", "      pull-requests: read\n"),
+        ),
+        (
+            "merge-readiness-progress must not request issues: write",
+            replace_once(
+                workflow,
+                "      pull-requests: write\n",
+                "      pull-requests: write\n      issues: write\n",
+            ),
+        ),
+        (
+            "merge-readiness-progress must check out the PR base SHA only",
+            replace_once(
+                workflow,
+                "          ref: ${{ github.event.pull_request.base.sha }}\n",
+                "          ref: ${{ github.event.pull_request.head.sha }}\n",
+            ),
+        ),
+        (
+            "merge-readiness-progress must run merge_readiness.py comment",
+            replace_once(
+                workflow,
+                "python3 scripts/merge_readiness.py comment",
+                "python3 scripts/merge_readiness.py status",
+            ),
+        ),
+        (
+            "merge-readiness-progress job if-condition must run only on non-draft Mergify proof PRs",
+            replace_once(
+                workflow,
+                "          && github.event.pull_request.draft == false\n",
+                "",
+            ),
+        ),
+        (
+            "merge-readiness-progress job if-condition must run only on non-draft Mergify proof PRs",
+            replace_once(
+                workflow,
+                "          && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                "              || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
+                "",
+            ),
+        ),
+        (
+            "merge-readiness-progress job if-condition must run only on non-draft Mergify proof PRs",
+            replace_once(
+                workflow,
+                "    if: >-\n"
+                "      ${{ github.event_name == 'pull_request'\n"
+                "          && github.event.pull_request.draft == false\n"
+                "          && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                "              || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+                "          && !(github.event.action == 'edited'\n"
+                "               && !(github.event.changes.base.ref.from != '')) }}\n",
+                "    if: ${{ github.event_name == 'pull_request' }}\n",
+            ),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_merge_readiness_ci_job(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_merge_readiness_finalizer_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    clean_errors = verifier.verify_merge_readiness_finalizer_workflow(
+        {".github/workflows/merge-readiness-finalizer.yml": BASE_MERGE_READINESS_FINALIZER_WORKFLOW}
+    )
+    if clean_errors:
+        raise AssertionError(f"expected clean finalizer workflow, got: {clean_errors}")
+
+    cases = [
+        (
+            "workflow_run trigger must use completed only",
+            replace_once(BASE_MERGE_READINESS_FINALIZER_WORKFLOW, "    types: [completed]\n", "    types: [requested]\n"),
+        ),
+        (
+            "permissions must include checks: read",
+            replace_once(BASE_MERGE_READINESS_FINALIZER_WORKFLOW, "  checks: read\n", ""),
+        ),
+        (
+            "permissions must include actions: read",
+            replace_once(BASE_MERGE_READINESS_FINALIZER_WORKFLOW, "  actions: read\n", ""),
+        ),
+        (
+            "permissions must include pull-requests: write",
+            replace_once(BASE_MERGE_READINESS_FINALIZER_WORKFLOW, "  pull-requests: write\n", "  pull-requests: read\n"),
+        ),
+        (
+            "permissions must not include actions: write",
+            replace_once(
+                BASE_MERGE_READINESS_FINALIZER_WORKFLOW,
+                "  actions: read\n",
+                "  actions: write\n",
+            ),
+        ),
+        (
+            "job must filter pull_request runs",
+            replace_once(
+                BASE_MERGE_READINESS_FINALIZER_WORKFLOW,
+                "github.event.workflow_run.event == 'pull_request'",
+                "github.event.workflow_run.event == 'workflow_dispatch'",
+            ),
+        ),
+        (
+            "job must run scripts/merge_readiness.py finalize-stalled",
+            replace_once(
+                BASE_MERGE_READINESS_FINALIZER_WORKFLOW,
+                "python3 scripts/merge_readiness.py finalize-stalled",
+                "python3 scripts/merge_readiness.py comment",
+            ),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_merge_readiness_finalizer_workflow(
+            {".github/workflows/merge-readiness-finalizer.yml": mutated_workflow}
+        )
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/coverage-enforcer.yml"
+    clean_errors = verifier.verify_coverage_enforcer_workflow(
+        {workflow_name: BASE_COVERAGE_ENFORCER_WORKFLOW}
+    )
+    if clean_errors:
+        raise AssertionError(f"expected clean coverage-enforcer workflow, got: {clean_errors}")
+
+    cases = [
+        (
+            "must exist as its own workflow",
+            {},
+        ),
+        (
+            "must trigger only on pull_request and merge_group",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  merge_group:\n", "  workflow_dispatch:\n")},
+        ),
+        (
+            "pull_request types must include converted_to_draft",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "converted_to_draft, ", "")},
+        ),
+        (
+            "on.pull_request must not define paths filters",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "    branches: [main]\n", "    branches: [main]\n    paths: ['src/**']\n")},
+        ),
+        (
+            "merge_group trigger must use checks_requested",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "    types: [checks_requested]\n", "    types: [requested]\n")},
+        ),
+        (
+            "permissions must include checks: write",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  checks: write\n", "  checks: read\n")},
+        ),
+        (
+            "permissions must include pull-requests: read",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  pull-requests: read\n", "")},
+        ),
+        (
+            "permissions must not include contents: write",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  contents: read\n", "  contents: write\n")},
+        ),
+        (
+            "must define coverage-enforcer job",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  coverage-enforcer:\n", "  renamed:\n")},
+        ),
+        (
+            "must check out only the trusted base tree",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}\n", "")},
+        ),
+        (
+            "must not check out PR head code",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "github.event.pull_request.base.sha", "github.event.pull_request.head.sha")},
+        ),
+        (
+            "checkout must not persist credentials",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "          persist-credentials: false\n", "")},
+        ),
+        (
+            "job must run scripts/coverage_enforcer.py",
+            {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "python3 scripts/coverage_enforcer.py", "python3 scripts/merge_readiness.py status")},
+        ),
+        (
+            "job must guard first-run trusted-base bootstrap",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n"
+                    "            echo \"coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
+                    "            exit 0\n"
+                    "          fi\n",
+                    "",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer must not be defined inside another workflow",
+            {
+                workflow_name: BASE_COVERAGE_ENFORCER_WORKFLOW,
+                ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
+                    "jobs:\n",
+                    "jobs:\n  coverage-enforcer:\n    name: coverage-enforcer\n    steps:\n      - run: python3 scripts/coverage_enforcer.py\n",
+                    1,
+                ),
+            },
+        ),
+        (
+            "coverage-enforcer job if-condition must run only on merge_group",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "      ${{ github.event_name == 'merge_group'\n"
+                    "          || (github.event_name == 'pull_request'\n",
+                    "      ${{ github.event_name == 'pull_request'\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job if-condition must run only on merge_group",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "              && github.event.pull_request.draft == false\n",
+                    "",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job if-condition must run only on merge_group",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                    "                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
+                    "",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job if-condition must run only on merge_group",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "    if: >-\n"
+                    "      ${{ github.event_name == 'merge_group'\n"
+                    "          || (github.event_name == 'pull_request'\n"
+                    "              && github.event.pull_request.draft == false\n"
+                    "              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+                    "                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+                    "              && !(github.event.action == 'edited'\n"
+                    "                   && !(github.event.changes.base.ref.from != ''))) }}\n",
+                    "",
+                )
+            },
+        ),
+    ]
+    for fragment, workflows in cases:
+        errors = verifier.verify_coverage_enforcer_workflow(workflows)
         if not any(fragment in error for error in errors):
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
@@ -3113,8 +4961,7 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
 
     missing_required_gate_note = replace_once(
         workflow,
-        "`backtester-gate` is required-capable; `backtester-gate-deferred` and\n"
-        "# `backtester-gate-iteration` are feedback-only and must not be marked required. ",
+        verifier.BACKTESTER_REQUIRED_GATE_COMMENT,
         "",
     )
     missing_required_gate_note_errors = verifier.verify_repo_automation_texts({workflow_name: missing_required_gate_note})
@@ -3138,21 +4985,12 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
 
     missing_policy_gate = replace_once(
         workflow,
-        "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}",
+        "if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true') }}",
         "if: ${{ needs.detect.outputs.bvs_changed == 'true' }}",
     )
     missing_policy_errors = verifier.verify_repo_automation_texts({workflow_name: missing_policy_gate})
     if not any("backtester draft deferral managed-heavy jobs must require full CI policy" in error for error in missing_policy_errors):
         raise AssertionError(f"backtester-ci workflow must reject unmanaged heavy policy gates, got: {missing_policy_errors}")
-
-    missing_gate_message = replace_once(
-        workflow,
-        "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for full feedback or mark ready for merge proof",
-        "backtester proof deferred",
-    )
-    missing_gate_errors = verifier.verify_repo_automation_texts({workflow_name: missing_gate_message})
-    if not any("backtester draft deferral gate must explain how to request proof" in error for error in missing_gate_errors):
-        raise AssertionError(f"backtester-ci workflow must reject vague deferred proof messages, got: {missing_gate_errors}")
 
     static_gate_name = replace_once(
         workflow,
@@ -3165,89 +5003,60 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
 
     missing_expected_event_class = replace_once(
         workflow,
-        verifier.BACKTESTER_EXPECTED_EVENT_CLASS_ASSIGNMENT,
-        'expected_event_class="iteration"',
+        '--expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}"',
+        '--expected-event-class "iteration"',
     )
     missing_expected_event_class_errors = verifier.verify_repo_automation_texts({workflow_name: missing_expected_event_class})
     if not any(
-        "backtester draft deferral gate must read resolver expected_event_class" in error
+        "backtester draft deferral shared gate call must include --expected-event-class" in error
         for error in missing_expected_event_class_errors
     ):
         raise AssertionError(
             f"backtester-ci workflow must reject missing resolver event class, got: {missing_expected_event_class_errors}"
         )
 
-    missing_iteration_branch = replace_once(
+    missing_shared_gate = replace_once(
         workflow,
-        'if [[ "$policy_path" == "iteration" ]]; then',
-        'if [[ "$policy_path" == "iter" ]]; then',
+        'python3 "$verdict_script" check-backtester-gate',
+        'python3 "$verdict_script" check-not-backtester-gate',
     )
-    missing_iteration_branch_errors = verifier.verify_repo_automation_texts({workflow_name: missing_iteration_branch})
-    if not any("backtester draft deferral gate must pass resolver-permitted iteration runs" in error for error in missing_iteration_branch_errors):
+    missing_shared_gate_errors = verifier.verify_repo_automation_texts({workflow_name: missing_shared_gate})
+    if not any("backtester draft deferral gate must use trusted base-tree check-backtester-gate verdict" in error for error in missing_shared_gate_errors):
         raise AssertionError(
-            f"backtester-ci workflow must reject missing iteration branch, got: {missing_iteration_branch_errors}"
+            f"backtester-ci workflow must reject missing shared gate command, got: {missing_shared_gate_errors}"
         )
 
-    backtester_iteration_context_guard = """            if [[ "$expected_event_class" != "iteration" ]]; then
-              echo "backtester iteration CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-"""
-    missing_iteration_guard = replace_once(workflow, backtester_iteration_context_guard, "")
-    missing_iteration_guard_errors = verifier.verify_repo_automation_texts({workflow_name: missing_iteration_guard})
-    if not any(
-        "backtester draft deferral gate must fail iteration policy outside resolver-permitted event class" in error
-        for error in missing_iteration_guard_errors
-    ):
-        raise AssertionError(
-            f"backtester-ci workflow must reject missing iteration context guard, got: {missing_iteration_guard_errors}"
-        )
-
-    backtester_noop_context_guard = """            if [[ "$expected_event_class" != "noop" ]]; then
-              echo "backtester noop CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-"""
-    backtester_noop_block = f"""          if [[ "$policy_path" == "noop" ]]; then
-{backtester_noop_context_guard}            echo "backtester no code-change CI event; preserving prior required same-SHA gate conclusion"
-            exit 0
-          fi
-"""
-    failing_noop_block = replace_once(
+    carry_forward_reintroduced = replace_once(
         workflow,
-        backtester_noop_block,
-        backtester_noop_block.replace("            exit 0\n", "            exit 1\n"),
+        'python3 "$verdict_script" check-backtester-gate',
+        'python3 "$verdict_script" resolve-gate-carry-forward\n          python3 "$verdict_script" check-backtester-gate',
     )
-    failing_noop_block_errors = verifier.verify_repo_automation_texts({workflow_name: failing_noop_block})
+    missing_carry_forward_errors = verifier.verify_repo_automation_texts({workflow_name: carry_forward_reintroduced})
     if not any(
-        "backtester draft deferral gate must pass ready PR no-code runs under backtester-gate-noop" in error
-        for error in failing_noop_block_errors
+        "backtester draft deferral gate must recompute instead of carrying forward unavailable provenance" in error
+        for error in missing_carry_forward_errors
     ):
         raise AssertionError(
-            f"backtester-ci workflow must reject failing noop gate branches, got: {failing_noop_block_errors}"
+            f"backtester-ci workflow must reject carry-forward resolver, got: {missing_carry_forward_errors}"
         )
 
-    missing_noop_guard = replace_once(workflow, backtester_noop_context_guard, "")
-    missing_noop_guard_errors = verifier.verify_repo_automation_texts({workflow_name: missing_noop_guard})
-    if not any(
-        "backtester draft deferral gate must fail noop policy outside resolver-permitted event class" in error
-        for error in missing_noop_guard_errors
-    ):
+    issue_gate_workflow = workflow
+    if "needs: [ci-policy, detect, fmt, clippy, test-archive, test, issue_789]" not in issue_gate_workflow:
+        issue_gate_workflow = replace_once(
+            issue_gate_workflow,
+            "needs: [ci-policy, detect, fmt, clippy, test-archive, test]",
+            "needs: [ci-policy, detect, fmt, clippy, test-archive, test, issue_789]",
+        )
+    issue_gate_workflow = replace_once(
+        issue_gate_workflow,
+        "--job test=${{ needs.test.result }}",
+        "--job test=${{ needs.test.result }} \\\n            --job issue_789=${{ needs.issue_789.result }}",
+    )
+    issue_gate_errors = verifier.verify_repo_automation_texts({workflow_name: issue_gate_workflow})
+    if not any("backtester diagnostic issue-789 lane must not gate merge proof" in error for error in issue_gate_errors):
         raise AssertionError(
-            f"backtester-ci workflow must reject missing noop context guards, got: {missing_noop_guard_errors}"
+            f"backtester-ci workflow must reject issue-789 as a merge-gating lane, got: {issue_gate_errors}"
         )
-
-    for job, display_name in (("fmt", "bvs-fmt"), ("clippy", "bvs-clippy"), ("test", "bvs-test")):
-        result_check = (
-            f'          if [[ "${{{{ needs.{job}.result }}}}" != "success" ]]; then\n'
-            f'            echo "{display_name} did not succeed (${{{{ needs.{job}.result }}}})"\n'
-            "            exit 1\n"
-            "          fi\n"
-        )
-        missing_result = replace_once(workflow, result_check, "")
-        missing_result_errors = verifier.verify_repo_automation_texts({workflow_name: missing_result})
-        if not any(f"backtester draft deferral gate must require {job} success on full proof path" in error for error in missing_result_errors):
-            raise AssertionError(f"backtester-ci workflow must reject missing full-proof {job} gate checks, got: {missing_result_errors}")
 
     broken_concurrency = replace_once(
         replace_once(
@@ -3341,23 +5150,10 @@ def assert_actionlint_requires_pr_event_types() -> None:
             )
 
 
-def assert_ci_docs_pass_stub_requires_pr_event_types() -> None:
-    verifier = load_verifier()
-    workflow_name = ".github/workflows/ci-docs-pass-stub.yml"
-    workflow = repo_workflow_text(workflow_name)
-    errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
-    if any("pull_request types must include" in error for error in errors):
-        raise AssertionError(f"ci-docs-pass-stub workflow must satisfy PR type policy, got: {errors}")
-    for missing_type, fragment in (
-        ("ready_for_review", "types: [opened, synchronize, reopened, edited]"),
-        ("edited", "types: [opened, synchronize, reopened, ready_for_review]"),
-    ):
-        bad = replace_once(workflow, "types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
-        bad_errors = verifier.verify_repo_automation_texts({workflow_name: bad})
-        if not any(f"pull_request types must include {missing_type}" in error for error in bad_errors):
-            raise AssertionError(
-                f"ci-docs-pass-stub workflow must require {missing_type} in pull_request types, got: {bad_errors}"
-            )
+def assert_ci_docs_pass_stub_is_absent() -> None:
+    workflow_path = REPO_ROOT / ".github/workflows/ci-docs-pass-stub.yml"
+    if workflow_path.exists():
+        raise AssertionError("ci-docs-pass-stub workflow must stay deleted")
 
 
 def assert_source_fence_static_ignores_comments() -> None:
@@ -3452,10 +5248,27 @@ ci-lint-workflow:
 
 ci-lint-workflow-inner: require-local-verification-gate
     python3 scripts/test_verify_ci_workflow_hygiene.py
+    python3 scripts/test_ci_storage_audit.py
+    python3 scripts/test_root_bin_sidecars.py
 """
     errors = verifier.verify_local_verification_gate_recipes(justfile_text)
     if errors:
         raise AssertionError(f"local gate recipe wiring should pass, got: {errors}")
+
+    missing_storage_audit_test = justfile_text.replace("    python3 scripts/test_ci_storage_audit.py\n", "")
+    missing_storage_audit_test_errors = verifier.verify_local_verification_gate_recipes(missing_storage_audit_test)
+    if not any(
+        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in missing_storage_audit_test_errors
+    ):
+        raise AssertionError(
+            f"ci storage audit test wiring drift was silent, got: {missing_storage_audit_test_errors}"
+        )
+
+    missing_sidecar_test = justfile_text.replace("    python3 scripts/test_root_bin_sidecars.py\n", "")
+    missing_sidecar_test_errors = verifier.verify_local_verification_gate_recipes(missing_sidecar_test)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_root_bin_sidecars.py" in error for error in missing_sidecar_test_errors):
+        raise AssertionError(f"root bin sidecar test wiring drift was silent, got: {missing_sidecar_test_errors}")
 
     ungated = justfile_text.replace(
         "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner",
@@ -3504,6 +5317,17 @@ ci-lint-workflow-inner: require-local-verification-gate
         raise AssertionError(f"ci-lint-workflow inner guard drift was silent, got: {missing_guard_errors}")
 
 
+def assert_nextest_fingerprint_reuse_governance_covers_sidecar_helper() -> None:
+    verifier = load_verifier()
+    required_paths = (
+        "scripts/root_bin_sidecars.py",
+        "scripts/test_root_bin_sidecars.py",
+    )
+    missing = [path for path in required_paths if path not in verifier.FINGERPRINT_REUSE_GOVERNANCE_PATHS]
+    if missing:
+        raise AssertionError(f"fingerprint-reuse governance pathspec must include root sidecar helper files: {missing}")
+
+
 def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -3524,6 +5348,10 @@ def without_pr_concurrency(workflow: str) -> str:
         """concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
+        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+        && format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)
+        || github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
@@ -3544,6 +5372,8 @@ def without_pr_concurrency(workflow: str) -> str:
         || format('{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && !(github.event.pull_request.draft == false
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
@@ -3846,41 +5676,257 @@ def assert_body_exits_requires_top_level_exit() -> None:
 
 
 def assert_nextest_live_node_group_required() -> None:
-    assert_error(
+    verifier = load_verifier()
+    manifest = all_standalone_live_node_manifest(verifier)
+    assert_nextest_error(
         "nextest config missing live-node test group",
-        nextest_config=BASE_NEXTEST_CONFIG.replace("live-node = { max-threads = 1 }", ""),
+        BASE_NEXTEST_CONFIG.replace("live-node = { max-threads = 1 }", ""),
+        manifest,
     )
-    assert_error(
+    assert_nextest_error(
         "nextest live-node test group max-threads must be 1",
-        nextest_config=BASE_NEXTEST_CONFIG.replace("max-threads = 1", "max-threads = 2"),
+        BASE_NEXTEST_CONFIG.replace("max-threads = 1", "max-threads = 2"),
+        manifest,
     )
-    assert_error(
+    assert_nextest_error(
         "nextest config must assign LiveNode test paths to live-node group",
-        nextest_config=BASE_NEXTEST_CONFIG.replace("binary(=venue_contract)", "binary(=config_schema)"),
+        BASE_NEXTEST_CONFIG.replace("binary(=venue_contract)", "binary(=config_schema)"),
+        manifest,
     )
-    assert_error(
+    assert_nextest_error(
         "nextest config must assign LiveNode test paths to live-node group",
-        nextest_config=BASE_NEXTEST_CONFIG.replace("test-group = 'live-node'", "test-group = 'other'"),
+        BASE_NEXTEST_CONFIG.replace("test-group = 'live-node'", "test-group = 'other'"),
+        manifest,
     )
-    assert_error(
+    assert_nextest_error(
         "missing test(~bolt_v3_live_node::tests::)",
-        nextest_config=BASE_NEXTEST_CONFIG.replace(
+        BASE_NEXTEST_CONFIG.replace(
             " | test(~bolt_v3_live_node::tests::)",
             "",
         ),
+        manifest,
     )
 
 
 def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
     verifier = load_verifier()
+    manifest = all_standalone_live_node_manifest(verifier)
     for binary in verifier.LIVE_NODE_NEXTEST_BINARIES:
-        assert_error(
+        assert_nextest_error(
             f"missing binary(={binary})",
-            nextest_config=BASE_NEXTEST_CONFIG.replace(f"binary(={binary}) | ", "").replace(
+            BASE_NEXTEST_CONFIG.replace(f"binary(={binary}) | ", "").replace(
                 f" | binary(={binary})",
                 "",
             ),
+            manifest,
         )
+
+
+def assert_nextest_live_node_group_uses_manifest_harness_scope() -> None:
+    verifier = load_verifier()
+    member = "bolt_v3_client_registration"
+    harness = "wiring_registration"
+    manifest = live_node_manifest_with(verifier, consolidated={member: harness})
+    expected_clause = f"(binary(={harness}) & test(/^{member}::/))"
+    canonical_config = BASE_NEXTEST_CONFIG.replace(
+        f"binary(={member})",
+        expected_clause,
+    )
+    assert_nextest_clean(canonical_config, manifest)
+    assert_nextest_error(
+        f"missing {expected_clause}",
+        BASE_NEXTEST_CONFIG,
+        manifest,
+    )
+    assert_nextest_error(
+        f"missing {expected_clause}",
+        BASE_NEXTEST_CONFIG.replace(f"binary(={member})", f"binary(={harness})"),
+        manifest,
+    )
+
+
+def assert_nextest_live_node_group_accepts_manifest_standalone_member() -> None:
+    verifier = load_verifier()
+    manifest = live_node_manifest_with(
+        verifier,
+        consolidated={"bolt_v3_client_registration": "bolt_v3_client_registration"},
+    )
+    assert_nextest_clean(BASE_NEXTEST_CONFIG, manifest)
+
+
+def test_harness_manifest_requires_autotests_false() -> None:
+    assert_test_harness_manifest_clean()
+    assert_test_harness_manifest_error(
+        "Cargo.toml [package].autotests must be false",
+        cargo_autotests="true",
+    )
+
+
+def test_harness_manifest_rejects_orphan_test_members() -> None:
+    assert_test_harness_manifest_clean()
+    assert_test_harness_manifest_error(
+        "tests/bolt_v3_orphan.rs has #[test] but is not registered in any explicit test harness",
+        test_files={"bolt_v3_orphan": "#[test]\nfn orphan_runs() {}\n"},
+    )
+
+
+def test_harness_manifest_rejects_double_modded_members() -> None:
+    assert_test_harness_manifest_clean()
+    harness_to_members = {
+        harness: ((harness, TEST_HARNESS_MEMBER) if harness in {"iv", "pricing"} else (harness,))
+        for harness in TEST_HARNESS_NAMES
+    }
+    assert_test_harness_manifest_error(
+        f"tests/{TEST_HARNESS_MEMBER}.rs is registered by multiple harnesses: iv, pricing",
+        manifest=base_test_harness_manifest(harness_to_members),
+    )
+
+
+def test_harness_manifest_rejects_unreferenced_top_level_files() -> None:
+    assert_test_harness_manifest_clean()
+    assert_test_harness_manifest_error(
+        "tests/bolt_v3_unreferenced.rs is neither a harness root, a #[test]-bearing registered member, nor a declared test helper",
+        test_files={"bolt_v3_unreferenced": "pub fn helper_only() {}\n"},
+    )
+
+
+def test_harness_manifest_enforces_expected_harness_count() -> None:
+    assert_test_harness_manifest_clean()
+    harness_to_members = {
+        **base_test_harness_manifest().harness_to_members,
+        "extra_harness": ("extra_harness",),
+    }
+    expected_count = load_verifier().EXPECTED_HARNESS_COUNT
+    actual_count = len(harness_to_members)
+    assert_test_harness_manifest_error(
+        f"Cargo.toml explicit test harness count must be {expected_count}, got {actual_count}",
+        manifest=base_test_harness_manifest(harness_to_members),
+    )
+
+
+def test_harness_manifest_rejects_harness_roots_as_members() -> None:
+    assert_test_harness_manifest_clean()
+    harness_to_members = dict(base_test_harness_manifest().harness_to_members)
+    harness_to_members["iv"] = ("iv", TEST_HARNESS_MEMBER, "pricing")
+    assert_test_harness_manifest_error(
+        "tests/pricing.rs is a harness root and must not be mod-ed by harness iv",
+        manifest=base_test_harness_manifest(harness_to_members),
+    )
+
+
+def test_harness_manifest_masks_inner_attrs_and_rejects_crate_attrs() -> None:
+    source = (REPO_ROOT / "tests" / "bolt_v3_binary_oracle_edge_taker_a10_structure.rs").read_text(encoding="utf-8")
+    harness_to_members = {
+        harness: ((harness, "bolt_v3_binary_oracle_edge_taker_a10_structure") if harness == "maker_taker" else (harness,))
+        for harness in TEST_HARNESS_NAMES
+    }
+    assert_test_harness_manifest_clean(
+        manifest=base_test_harness_manifest(harness_to_members),
+        test_files={"bolt_v3_binary_oracle_edge_taker_a10_structure": source},
+    )
+    assert_test_harness_manifest_error(
+        "tests/bolt_v3_fixture_member.rs uses banned module-level inner attribute #![feature(...)]",
+        test_files={TEST_HARNESS_MEMBER: "#![feature(test)]\n#[test]\nfn fixture_member_runs() {}\n"},
+    )
+
+
+def test_harness_manifest_rejects_retired_member_test_filters() -> None:
+    assert_test_harness_manifest_clean()
+    assert_test_harness_manifest_error(
+        f"justfile references retired integration-test member {TEST_HARNESS_MEMBER!r} with --test; use harness 'iv'",
+        justfile_text=f"ci-test:\n    cargo test --test {TEST_HARNESS_MEMBER}\n",
+    )
+
+
+def test_harness_manifest_rejects_typo_positional_test_filter() -> None:
+    assert_test_harness_manifest_clean(
+        justfile_text=f"ci-test:\n    cargo test --test iv -- {TEST_HARNESS_MEMBER}:: --nocapture\n",
+    )
+    assert_test_harness_manifest_error(
+        "does not belong to --test harness 'iv'",
+        justfile_text="ci-test:\n    cargo test --test iv -- bolt_v3_fixture_TYPO:: --nocapture\n",
+    )
+
+
+def test_harness_manifest_rejects_quoted_retired_member_test_flag() -> None:
+    assert_test_harness_manifest_error(
+        f"references retired integration-test member {TEST_HARNESS_MEMBER!r}",
+        justfile_text=f"ci-test:\n    cargo test '--test' {TEST_HARNESS_MEMBER}\n",
+    )
+
+
+def test_nextest_config_rejects_surprise_binary_overrides() -> None:
+    verifier = load_verifier()
+    manifest = all_standalone_live_node_manifest(verifier)
+    assert_nextest_clean(BASE_NEXTEST_CONFIG, manifest)
+    assert_nextest_error(
+        "nextest config has unregistered per-binary override",
+        BASE_NEXTEST_CONFIG
+        + """
+
+[[profile.default.overrides]]
+filter = 'binary(=platform_config)'
+retries = 2
+""",
+        manifest,
+    )
+
+
+def test_nextest_config_rejects_regex_form_binary_overrides() -> None:
+    # findings 2+3: a regex-form binary(/.../) filter parses to an empty binary set,
+    # so with a non-sensitive key it slips past the skip-guard entirely.
+    verifier = load_verifier()
+    manifest = all_standalone_live_node_manifest(verifier)
+    assert_nextest_clean(BASE_NEXTEST_CONFIG, manifest)
+    assert_nextest_error(
+        "nextest config has unregistered per-binary override",
+        BASE_NEXTEST_CONFIG
+        + """
+
+[[profile.default.overrides]]
+filter = 'binary(/^venue_contract/)'
+threads-required = 4
+""",
+        manifest,
+    )
+
+
+def test_nextest_config_rejects_regex_binary_smuggled_into_live_node_override() -> None:
+    # finding 3: a regex-form binary appended to an otherwise-valid live-node filter
+    # is invisible to the <= whitelist (empty set), so the override is wrongly accepted.
+    verifier = load_verifier()
+    manifest = all_standalone_live_node_manifest(verifier)
+    smuggled = BASE_NEXTEST_CONFIG.replace(
+        "binary(=venue_contract)'",
+        "binary(=venue_contract) | binary(/^retired_test_binary$/)'",
+    )
+    assert_nextest_error(
+        "nextest config has unregistered per-binary override",
+        smuggled,
+        manifest,
+    )
+
+
+def test_nextest_config_rejects_foreign_test_prefix_in_live_node_override() -> None:
+    # finding 5: a non-live-node member's tests smuggled into the serialization group
+    # via an already-recognized harness binary adds no new binary, so only exact
+    # test-prefix-set equality catches it.
+    verifier = load_verifier()
+    member = "bolt_v3_client_registration"
+    harness = "wiring_registration"
+    manifest = live_node_manifest_with(verifier, consolidated={member: harness})
+    expected_clause = f"(binary(={harness}) & test(/^{member}::/))"
+    canonical = BASE_NEXTEST_CONFIG.replace(f"binary(={member})", expected_clause)
+    assert_nextest_clean(canonical, manifest)
+    smuggled = canonical.replace(
+        expected_clause,
+        f"{expected_clause} | (binary(={harness}) & test(/^cli::/))",
+    )
+    assert_nextest_error(
+        "nextest config has unregistered per-binary override",
+        smuggled,
+        manifest,
+    )
 
 
 # Pin-consistency fixtures. The base SHA already appears throughout BASE_WORKFLOW
@@ -5749,9 +7795,15 @@ def write_base_workflows(workflow_dir: pathlib.Path) -> None:
     workflow_dir.mkdir(parents=True)
     (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
     (workflow_dir / "dispatch-ci-cancel.yml").write_text(BASE_DISPATCH_CI_CANCEL_WORKFLOW)
+    (workflow_dir / "merge-readiness-finalizer.yml").write_text(BASE_MERGE_READINESS_FINALIZER_WORKFLOW)
+    (workflow_dir / "coverage-enforcer.yml").write_text(BASE_COVERAGE_ENFORCER_WORKFLOW)
 
 
-def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]:
+def run_verifier_main_with_no_mistakes(
+    no_mistakes_text: str,
+    *,
+    write_mergify_config: bool = True,
+) -> tuple[int, str]:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
@@ -5760,6 +7812,12 @@ def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]
 
         workflow_dir = tmp_path / ".github" / "workflows"
         write_base_workflows(workflow_dir)
+        write_test_harness_fixture(
+            tmp_path,
+            manifest=base_test_harness_manifest(),
+            write_workflow=False,
+            write_justfile=False,
+        )
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
@@ -5770,9 +7828,12 @@ def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
 
         (tmp_path / ".no-mistakes.yaml").write_text(no_mistakes_text)
+        if write_mergify_config:
+            (tmp_path / ".mergify.yml").write_text((REPO_ROOT / ".mergify.yml").read_text())
         write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
+        temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
         stdout = io.StringIO()
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -5789,6 +7850,12 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
 
         workflow_dir = tmp_path / ".github" / "workflows"
         write_base_workflows(workflow_dir)
+        write_test_harness_fixture(
+            tmp_path,
+            manifest=base_test_harness_manifest(),
+            write_workflow=False,
+            write_justfile=False,
+        )
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
@@ -5804,6 +7871,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_action_entrypoint")
+        temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
         stdout = io.StringIO()
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -5821,6 +7889,12 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         workflow_dir = tmp_path / ".github" / "workflows"
         write_base_workflows(workflow_dir)
         (workflow_dir / workflow_name).write_text(workflow_text)
+        write_test_harness_fixture(
+            tmp_path,
+            manifest=base_test_harness_manifest(),
+            write_workflow=False,
+            write_justfile=False,
+        )
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
@@ -5832,6 +7906,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_workflow_entrypoint")
+        temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
         stdout = io.StringIO()
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -6282,6 +8357,9 @@ def assert_v6_red_workflow_policy_gaps() -> None:
         assert_v6_red_exact_head_governance_inputs_are_cache_keyed,
         assert_v6_red_backtester_cache_keys_include_crate_sources,
         assert_v6_red_backtester_gate_fails_when_detect_fails,
+        assert_v6_red_backtester_test_uses_nextest_archive,
+        assert_cache_as_same_run_transport_is_banned,
+        assert_v6_red_backtester_nextest_archive_recipes_absolutize_paths,
     ]
     failures: list[str] = []
     for check in checks:
@@ -6317,38 +8395,574 @@ def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
 
 def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
     verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    bad = replace_once(
+        workflow,
+        "--job detect=${{ needs.detect.result }}",
+        "--job detect=${{ needs.detect.outputs.bvs_changed }}",
+    )
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
+    assert any("backtester-gate shared verdict call must include needs.detect.result" in error for error in errors), errors
+    assert any(
+        "backtester draft deferral shared gate call must include --job detect=${{ needs.detect.result }}" in error
+        for error in errors
+    ), errors
+
+
+def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
+    verifier = load_verifier()
     bad = """jobs:
-  detect:
-    name: bvs-detect
-    outputs:
-      bvs_changed: ${{ steps.detect.outputs.bvs_changed }}
+  test-archive:
+    name: bvs-test archive
+  test:
+    name: bvs-test
     steps:
-      - id: detect
-        run: echo "bvs_changed=false" >> "$GITHUB_OUTPUT"
-  gate:
-    name: backtester-gate
-    needs: [detect, fmt, clippy, test]
-    if: ${{ always() }}
-    steps:
-      - run: |
-          if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then
-            echo "no crate changes; gate is a no-op"
-            exit 0
-          fi
+      - name: test
+        run: just bte-test --partition "count:${{ matrix.shard }}/4"
 """
     errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
-    assert any("backtester-gate must check needs.detect.result" in error for error in errors), errors
-    good = bad.replace(
-        '          if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then',
-        '          if [[ "${{ needs.detect.result }}" != "success" ]]; then\n'
-        '            echo "bvs-detect did not succeed (${{ needs.detect.result }})"\n'
-        "            exit 1\n"
-        "          fi\n"
-        '          if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then',
-    )
+    assert any("backtester bvs-test must not run direct per-shard target builds" in error for error in errors), errors
+    assert any("backtester bvs-test shards must name matrix shards" in error for error in errors), errors
+    assert any("backtester bvs-test must define dedicated issue-789 job" in error for error in errors), errors
+
+    good = """jobs:
+  test-archive:
+    name: bvs-test archive
+    needs: [ci-policy, detect, fmt]
+    env:
+      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
+      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+    steps:
+      - name: Restore BVS nextest archive
+        id: bvs-nextest-archive-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          key: bvs-nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**') }}
+      - name: Restore BVS binary sidecars
+        id: bvs-bin-sidecars-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          key: bvs-bin-sidecars-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**') }}
+      - name: Resolve crate managed target dir
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+      - uses: Swatinem/rust-cache@example
+        with:
+          save-if: ${{ github.job == 'test-archive' }}
+      - name: Restore archive build target cache
+        id: test-target-cache
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      - name: Build BVS nextest archive
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
+        run: just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH"
+      - name: Save BVS nextest archive
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      - name: Build BVS binary sidecars
+        if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- build --locked --bins
+          find debug -maxdepth 1 -type f -perm -111 -print0
+      - name: Save BVS binary sidecars
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      - name: Save archive build target cache
+        if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      - name: Upload BVS test payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bvs-test-payload
+          path: .nextest-archive
+          include-hidden-files: true
+          if-no-files-found: error
+  test:
+    name: bvs-test ${{ matrix.shard }} of 4
+    needs: [ci-policy, detect, fmt, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.test-archive.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
+      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+      BVS_NEXTEST_SHARDS: "4"
+    steps:
+      - name: Download BVS test payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bvs-test-payload
+          path: .nextest-archive
+      - name: Require BVS test payload
+        run: |
+          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }
+          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }
+      - name: Extract BVS binary sidecars
+        run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
+      - name: test
+        run: |
+          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
+          just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${{ matrix.shard }}/${{ env.BVS_NEXTEST_SHARDS }}" -- --skip issue_789_first_real_free_data_taker_pl
+  issue_789:
+    name: bvs-test issue-789
+    needs: [ci-policy, detect, test-archive, gate]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.test-archive.result == 'success' && needs.gate.result == 'success' }}
+    env:
+      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
+      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+      BOLT_ISSUE_789_RESULT_PATH: result.json
+    steps:
+      - name: Download BVS test payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bvs-test-payload
+          path: .nextest-archive
+      - name: Require BVS test payload
+        run: |
+          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }
+          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }
+      - name: Extract BVS binary sidecars
+        run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
+      - name: test issue-789
+        run: |
+          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
+          just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl
+      - name: Upload issue #789 first-P/L artifact
+        uses: actions/upload-artifact@example
+        with:
+          name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+"""
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
+    assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
+
+    weakened_archive_guard = good.replace(
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }',
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || true',
+        1,
+    )
+    weakened_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": weakened_archive_guard}
+    )
+    assert any("not fail-closed" in error and 'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || true' in error for error in weakened_errors), weakened_errors
+
+    missing_archive_guard = good.replace(
+        '          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }\n',
+        "",
+        1,
+    )
+    def assert_missing_consumer_guard(workflow: str, payload_name: str, scope_name: str) -> None:
+        expected_error = (
+            f"backtester consumer must fail closed if the downloaded {payload_name} "
+            f"is missing or empty ({scope_name})"
+        )
+        workflow_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/backtester-ci.yml": workflow}
+        )
+        assert any(expected_error in error for error in workflow_errors), workflow_errors
+
+    def assert_missing_shards_archive_guard(workflow: str) -> None:
+        assert_missing_consumer_guard(workflow, "archive", "bvs-test shards")
+
+    missing_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": missing_archive_guard}
+    )
+    assert any(
+        "backtester consumer must fail closed if the downloaded archive is missing or empty" in error
+        for error in missing_errors
+    ), missing_errors
+    assert_missing_shards_archive_guard(
+        missing_archive_guard.replace(
+            '      BVS_NEXTEST_SHARDS: "4"\n',
+            '      BVS_NEXTEST_SHARDS: "4"\n'
+            '      ARCHIVE_DECOY: \'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\'\n',
+            1,
+        )
+    )
+    assert_missing_shards_archive_guard(
+        missing_archive_guard.replace(
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
+            '          echo \'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\'\n',
+            1,
+        )
+    )
+    assert_missing_shards_archive_guard(
+        missing_archive_guard.replace(
+            '      BVS_NEXTEST_SHARDS: "4"\n',
+            '      BVS_NEXTEST_SHARDS: "4"\n'
+            "      DECOY: |\n"
+            "        ignored\n"
+            '        test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\n',
+            1,
+        )
+    )
+    assert_missing_consumer_guard(
+        replace_once(
+            missing_archive_guard,
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
+            '          test -s "$BVS_NEXTEST_ARCHIVE_PATH".decoy || exit 1\n',
+        ),
+        "archive",
+        "bvs-test shards",
+    )
+
+    missing_sidecars_guard = good.replace(
+        '          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }\n',
+        "",
+        1,
+    )
+    assert_missing_consumer_guard(
+        replace_once(
+            missing_sidecars_guard,
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
+            '          test -s "$BVS_BIN_SIDECARS_PATH".decoy || exit 1\n',
+        ),
+        "sidecars",
+        "bvs-test shards",
+    )
+
+    missing_issue_archive_guard = without_once_after(
+        good,
+        "  issue_789:\n",
+        '          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }\n',
+    )
+    assert_missing_consumer_guard(
+        replace_once_after(
+            missing_issue_archive_guard,
+            "      - name: test issue-789\n",
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
+            '          test -s "$BVS_NEXTEST_ARCHIVE_PATH".decoy || exit 1\n',
+        ),
+        "archive",
+        "bvs-test issue-789",
+    )
+
+    exit_one_archive_guard = good.replace(
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }',
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1',
+        1,
+    )
+    exit_one_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": exit_one_archive_guard}
+    )
+    assert not [error for error in exit_one_errors if "backtester consumer" in error], exit_one_errors
+
+
+def assert_cache_as_same_run_transport_is_banned() -> None:
+    verifier = load_verifier()
+    fail_on_miss_message = verifier.CACHE_SAME_RUN_TRANSPORT_FAIL_ON_MISS_MESSAGE
+    def has_fail_on_miss_message(errors: list[str]) -> bool:
+        return any(fail_on_miss_message in error for error in errors)
+
+    bad_hand_rolled = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Require payload cache
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "payload cache unavailable"
+          exit 1
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/example-ci.yml": bad_hand_rolled})
+    assert any("must not fail a job on a cache miss" in error for error in errors), errors
+
+    bad_builtin = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: true
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/example-ci.yml": bad_builtin})
+    assert any("fail-closed same-run transport" in error for error in errors), errors
+
+    # Quoted/case variants are the same fail-closed directive; the old exact
+    # substring check missed `'true'`, so the ban must catch these too.
+    for variant in ("'true'", '"true"', "True"):
+        bad_builtin_variant = f"""jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: {variant}
+"""
+        variant_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/example-ci.yml": bad_builtin_variant}
+        )
+        assert any(
+            "fail-closed same-run transport" in error for error in variant_errors
+        ), (variant, variant_errors)
+
+    bad_builtin_flow = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with: { path: payload, key: payload-key, fail-on-cache-miss: true }
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_builtin_flow}
+    )
+    assert any("fail-closed same-run transport" in error for error in errors), errors
+
+    bad_builtin_bool_tag = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: !!bool true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_builtin_bool_tag}
+    )
+    assert has_fail_on_miss_message(errors), errors
+
+    bad_folded_true = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: >-
+            true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_folded_true}
+    )
+    assert has_fail_on_miss_message(errors), errors
+
+    bad_block_literal_true = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: |
+            true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_block_literal_true}
+    )
+    assert has_fail_on_miss_message(errors), errors
+
+    ok_commented_block_scalar_key = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          # fail-on-cache-miss: >-
+            true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": ok_commented_block_scalar_key}
+    )
+    assert not has_fail_on_miss_message(errors), errors
+
+    ok_block_multiline_string = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: |
+            some line
+            true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": ok_block_multiline_string}
+    )
+    assert not has_fail_on_miss_message(errors), errors
+
+    ok_folded_false = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: >-
+            false
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": ok_folded_false}
+    )
+    assert not has_fail_on_miss_message(errors), errors
+
+    for variant in ("yes", "on"):
+        bad_builtin_truthy = f"""jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: {variant}
+"""
+        truthy_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/example-ci.yml": bad_builtin_truthy}
+        )
+        assert any(
+            "fail-closed same-run transport" in error for error in truthy_errors
+        ), (variant, truthy_errors)
+
+    for run_body in (
+        "test -s payload || exit 1",
+        "test -s payload && exit 1",
+        "test -s payload || { echo m; exit 1; }",
+    ):
+        bad_guarded_chain = f"""jobs:
+  test:
+    steps:
+      - name: Restore payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Require payload cache
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: {run_body}
+"""
+        chain_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/example-ci.yml": bad_guarded_chain}
+        )
+        assert any(
+            "must not fail a job on a cache miss" in error for error in chain_errors
+        ), (run_body, chain_errors)
+
+    good = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Build payload on miss
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: just build-payload
+      - name: Validate unrelated invariant
+        run: |
+          echo "unrelated failure path"
+          exit 1
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/example-ci.yml": good})
     assert not [
-        error for error in good_errors if "backtester-gate must check needs.detect.result" in error
+        error for error in errors if "cache" in error and "same-run" in error
+    ], errors
+
+    producer_nested_exit = """jobs:
+  test:
+    steps:
+      - name: Build payload on miss
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: |
+          if [[ "$n" == "0" ]]; then
+            echo none
+            exit 1
+          fi
+          echo ok
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": producer_nested_exit}
+    )
+    assert not [
+        error for error in errors if "cache" in error and "same-run" in error
+    ], errors
+
+    bad_both_arms = """jobs:
+  test:
+    steps:
+      - name: Restore builtin payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: true
+      - name: Restore hand rolled payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Require hand rolled payload cache
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: exit 1
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_both_arms}
+    )
+    assert any("fail-closed same-run transport" in error for error in errors), errors
+    assert any("must not fail a job on a cache miss" in error for error in errors), errors
+
+    bad_double_quoted_false_guard = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Require payload cache
+        if: steps.x-cache.outputs.cache-hit == "false"
+        run: exit 1
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_double_quoted_false_guard}
+    )
+    assert any("must not fail a job on a cache miss" in error for error in errors), errors
+
+    # The guard's if-matcher must tolerate zero leading whitespace; the old
+    # anchor required at least one leading space and would miss a stripped or
+    # pre-processed line.
+    assert verifier.step_has_cache_miss_guard(
+        ["if: steps.x.outputs.cache-hit != 'true'"]
+    ), "zero-indent cache-miss guard must be detected"
+
+
+def assert_v6_red_backtester_nextest_archive_recipes_absolutize_paths() -> None:
+    verifier = load_verifier()
+    bad = """bte-test-archive archive *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest archive --locked --archive-file "{{archive}}" {{args}}
+
+bte-test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}/crates/backtesting-vertical-slice" {{args}}
+"""
+    errors = verifier.verify_repo_automation_texts({"justfile": bad})
+    assert any("backtester nextest archive recipes must absolutize archive paths" in error for error in errors), errors
+    assert any("backtester nextest archive recipes must not pass crate-relative archive paths" in error for error in errors), errors
+
+    good = """bte-test-archive archive *args: check-workspace require-rust-verification-owner
+    archive_path="{{archive}}"; \\
+      case "$archive_path" in /*) ;; *) archive_path="{{repo_root}}/$archive_path";; esac; \\
+      mkdir -p "$(dirname "$archive_path")"; \\
+      python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest archive --locked --archive-file "$archive_path" {{args}}
+
+bte-test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
+    archive_path="{{archive}}"; \\
+      case "$archive_path" in /*) ;; *) archive_path="{{repo_root}}/$archive_path";; esac; \\
+      python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --archive-file "$archive_path" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}/crates/backtesting-vertical-slice" {{args}}
+"""
+    good_errors = verifier.verify_repo_automation_texts({"justfile": good})
+    assert not [
+        error for error in good_errors if "backtester nextest archive recipes" in error
     ], good_errors
 
 
@@ -6545,9 +9159,9 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     narrowed_pathspec = replace_once_after(
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
-        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
         """.github/workflows/ci.yml)
-          echo "decoy paths: .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py\"""",
+          echo "decoy paths: .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py\"""",
     )
     assert_error(
         "detector must detect fingerprint-reuse governance changes",
@@ -6557,13 +9171,13 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
         """          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
-        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
+        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
           changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
     )
     git_diff_decoy_pathspec = replace_once_after(
         git_diff_decoy_pathspec,
         "      - name: Detect fingerprint-reuse governance changes",
-        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
         """.github/workflows/ci.yml)""",
     )
     assert_error("detector must detect fingerprint-reuse governance changes", git_diff_decoy_pathspec)
@@ -6714,44 +9328,27 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     )
 
     assert_error(
-        "gate must require nextest fingerprint reuse resolver success",
-        replace_once_after(
+        "gate shared verdict call must include --job nextest-fingerprint-reuse=${{ needs.nextest-fingerprint-reuse.result }}",
+        replace_once(
             BASE_WORKFLOW,
-            "  gate:",
-            """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
-              echo "nextest fingerprint reuse resolver did not succeed"
-              exit 1
-            fi""",
-            """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
-            fi""",
+            "--job nextest-fingerprint-reuse=${{ needs.nextest-fingerprint-reuse.result }}",
+            "--job nextest-fingerprint-reuse=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
-        "gate must require nextest fingerprint reuse resolver success",
-        replace_once_after(
+        "gate shared verdict call must include --reuse-found",
+        replace_once(
             BASE_WORKFLOW,
-            "  gate:",
-            """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
-              echo "nextest fingerprint reuse resolver did not succeed"
-              exit 1
-            fi""",
-            """            false || exit 0
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
-              echo "nextest fingerprint reuse resolver did not succeed"
-              exit 1
-            fi""",
+            '--reuse-found "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || \'false\' }}"',
+            '--reuse-omitted "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || \'false\' }}"',
         ),
     )
     assert_error(
-        "gate must use canonical nextest fingerprint reuse branch",
-        replace_once_after(
+        "gate shared verdict call must include needs.nextest-fingerprint-reuse.outputs.reuse_found",
+        replace_once(
             BASE_WORKFLOW,
-            "  gate:",
-            """          if [[ "$reuse_found" == "true" ]]; then
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then""",
-            """          if [[ "$reuse_found" == "true" ]]; then
-            eval 'exit 0'
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then""",
+            '--reuse-found "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || \'false\' }}"',
+            '--reuse-found "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"',
         ),
     )
 
@@ -6961,6 +9558,15 @@ def assert_ci_lint_runs_cancel_obsolete_dispatch_tests() -> None:
         raise AssertionError("ci-lint-workflow must run dispatch cancellation self-tests")
 
 
+def test_ci_test_manifest_self_tests_are_gated() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    if "scripts/test_ci_test_manifest.py" not in justfile:
+        raise AssertionError(
+            "ci-lint-workflow must invoke scripts/test_ci_test_manifest.py so the "
+            "manifest parser's self-tests are gated"
+        )
+
+
 def assert_github_scripts_are_repo_automation_fenced() -> None:
     verifier = load_verifier()
     expected_glob = (verifier.REPO_ROOT / ".github" / "scripts", "*.sh")
@@ -7075,6 +9681,7 @@ def main() -> int:
     assert_ci_lint_runs_command_understanding_tests()
     assert_ci_lint_runs_rust_probe_tests()
     assert_ci_lint_runs_cancel_obsolete_dispatch_tests()
+    test_ci_test_manifest_self_tests_are_gated()
     assert_github_scripts_are_repo_automation_fenced()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()
@@ -7114,21 +9721,58 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, GATE_NAME, "name: gate"),
     )
     assert_error(
-        "gate must read resolver expected_event_class",
-        replace_once(BASE_WORKFLOW, GATE_EXPECTED_EVENT_CLASS_ASSIGNMENT, 'expected_event_class="noop"'),
-    )
-    assert_error(
-        "gate must pass ready PR no-code runs under gate-noop",
+        "gate shared verdict call must include --expected-event-class",
         replace_once(
             BASE_WORKFLOW,
-            GATE_NOOP_BLOCK,
-            GATE_NOOP_BLOCK.replace("            exit 0\n", "            exit 1\n"),
+            '--expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}"',
+            '--expected-event-class "noop"',
         ),
     )
     assert_error(
-        "gate must fail noop policy outside resolver-permitted event class",
-        replace_once(BASE_WORKFLOW, GATE_NOOP_CONTEXT_GUARD, ""),
+        "gate shared verdict call must include carry_forward_args=()",
+        replace_once(
+            BASE_WORKFLOW,
+            "carry_forward_args=()",
+            "carry_forward_args=(--carry-forward-verified false)",
+        ),
     )
+    assert_error(
+        "gate must verify carry-forward through trusted base-tree ci_provenance.py",
+        replace_once(BASE_WORKFLOW, 'python3 "$verdict_script" resolve-gate-carry-forward', 'python3 "$verdict_script" skip-carry-forward'),
+    )
+    for marker, replacement in (
+        (
+            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+            "if: github.event_name == 'pull_request'",
+        ),
+        (
+            "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
+            "MERGE_GROUP_BASE_REF: ''",
+        ),
+        (
+            'git check-ref-format "refs/heads/$base_branch"',
+            "echo skip-base-ref-format-check",
+        ),
+        (
+            'git archive "$base_ref" scripts/ ci/github-actions-runners.toml',
+            'git archive "$base_ref" scripts/',
+        ),
+        (
+            "steps.verdict_base.outputs.script",
+            "steps.verdict_base.outputs.local_script",
+        ),
+        (
+            'python3 "$verdict_script" check-ci-gate',
+            'python3 "$verdict_script" unchecked-ci-gate',
+        ),
+    ):
+        mutated_workflow = replace_once_after(BASE_WORKFLOW, "  gate:\n", marker, replacement)
+        if marker == "steps.verdict_base.outputs.script":
+            mutated_workflow = replace_once_after(mutated_workflow, "  gate:\n", marker, replacement)
+        assert_error(
+            f"gate must use trusted base-tree ci_provenance.py check-ci-gate verdict ({marker})",
+            mutated_workflow,
+        )
     assert_error(
         "concurrency group must split deferred PR runs from full CI runs",
         replace_once(BASE_WORKFLOW, "format('pr-{0}-deferred', github.event.number)", "github.ref_name"),
@@ -7143,6 +9787,8 @@ def main() -> int:
             BASE_WORKFLOW,
             """cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && !(github.event.pull_request.draft == false
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
@@ -7156,6 +9802,8 @@ def main() -> int:
             BASE_WORKFLOW,
             """cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && !(github.event.pull_request.draft == false
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
@@ -7173,6 +9821,10 @@ def main() -> int:
             BASE_WORKFLOW,
             """  group: >-
     ${{ github.event_name == 'pull_request'
+        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+        && format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)
+        || github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
@@ -7217,6 +9869,22 @@ def main() -> int:
     assert_body_exits_requires_top_level_exit()
     assert_nextest_live_node_group_required()
     assert_nextest_live_node_group_covers_bolt_v3_builders()
+    assert_nextest_live_node_group_uses_manifest_harness_scope()
+    assert_nextest_live_node_group_accepts_manifest_standalone_member()
+    test_harness_manifest_requires_autotests_false()
+    test_harness_manifest_rejects_orphan_test_members()
+    test_harness_manifest_rejects_double_modded_members()
+    test_harness_manifest_rejects_unreferenced_top_level_files()
+    test_harness_manifest_enforces_expected_harness_count()
+    test_harness_manifest_rejects_harness_roots_as_members()
+    test_harness_manifest_masks_inner_attrs_and_rejects_crate_attrs()
+    test_harness_manifest_rejects_retired_member_test_filters()
+    test_harness_manifest_rejects_typo_positional_test_filter()
+    test_harness_manifest_rejects_quoted_retired_member_test_flag()
+    test_nextest_config_rejects_surprise_binary_overrides()
+    test_nextest_config_rejects_regex_form_binary_overrides()
+    test_nextest_config_rejects_regex_binary_smuggled_into_live_node_override()
+    test_nextest_config_rejects_foreign_test_prefix_in_live_node_override()
     for job in (
         "detector",
         "deny",
@@ -7234,23 +9902,12 @@ def main() -> int:
         assert_error(f"missing required job {job}", without_job(BASE_WORKFLOW, job))
     for job in ("detector", "deny", "clippy", "check-aarch64", "source-fence", "test", "build"):
         assert_error("gate needs " + job, replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, job)))
-        if job == "build":
-            continue
-        if job == "check-aarch64":
-            assert_error(
-                f"gate must check needs.{job}.result",
-                BASE_WORKFLOW.replace(
-                    f'"${{{{ needs.{job}.result }}}}" != "success"',
-                    f'"${{{{ omitted.{job}.result }}}}" != "success"',
-                ),
-            )
-            continue
         assert_error(
-            f"gate must check needs.{job}.result",
+            f"gate shared verdict call must include --job {job}=${{{{ needs.{job}.result }}}}",
             replace_once(
                 BASE_WORKFLOW,
-                f'"${{{{ needs.{job}.result }}}}" != "success"',
-                f'"${{{{ omitted.{job}.result }}}}" != "success"',
+                f"--job {job}=${{{{ needs.{job}.result }}}}",
+                f"--job {job}=${{{{ omitted.{job}.result }}}}",
             ),
         )
     for job in (
@@ -7509,12 +10166,62 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive must not opt into managed target dir",
+        "test-archive must opt into managed target dir",
         replace_once(
             BASE_WORKFLOW,
-            '          include-nextest-version: "true"',
-            '          include-nextest-version: "true"\n          include-managed-target-dir: "true"',
+            '          include-nextest-version: "true"\n'
+            '          include-managed-target-dir: "true"\n'
+            "      - uses: Swatinem/rust-cache@example",
+            '          include-nextest-version: "true"\n'
+            "      - uses: Swatinem/rust-cache@example",
         ),
+    )
+    assert_error(
+        "test-archive must restore archive build target cache",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Restore archive build target cache
+        id: test-target-cache
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must save archive build target cache",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Save archive build target cache
+        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must save target cache only on target cache miss",
+        replace_once(
+            BASE_WORKFLOW,
+            "        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive managed target cache key must include src/**",
+        BASE_WORKFLOW.replace("'src/**', ", ""),
+    )
+    assert_error(
+        "test-archive managed target cache key must include tests/**",
+        BASE_WORKFLOW.replace(", 'tests/**'", ""),
     )
     assert_error(
         "test-archive must not save a second archive-build cache",
@@ -7554,8 +10261,8 @@ def main() -> int:
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n      - name: Install cargo-nextest",
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n          restore-keys: nextest-archive-v2-\n      - name: Install cargo-nextest",
+            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n      - name: Restore root binary sidecars",
+            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n          restore-keys: nextest-archive-v2-\n      - name: Restore root binary sidecars",
         ),
     )
     # #400: every managed-target cache must declare a restore-keys prefix fallback.
@@ -7565,6 +10272,14 @@ def main() -> int:
             BASE_WORKFLOW,
             "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
             "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just fmt-check\n      - run: just clippy",
+        ),
+    )
+    assert_error(
+        "test-archive managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-\n      - name: Install cargo-nextest",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}\n      - name: Install cargo-nextest",
         ),
     )
     assert_error(
@@ -7666,25 +10381,129 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive must build CARGO_BIN_EXE sidecars on archive cache hit",
+        "test-archive must extract cached root binary sidecars",
         replace_once(
             BASE_WORKFLOW,
-            """      - name: Build nextest archive binary sidecars
-        if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
-        env:
-          CARGO_PROFILE_DEV_DEBUG: "0"
+            """      - name: Extract root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
         run: |
-          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          mkdir -p "${{ steps.setup.outputs.managed_target_dir }}"
+          tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"
 """,
             "",
         ),
     )
     assert_error(
+        "test-archive must build CARGO_BIN_EXE sidecars on sidecar cache miss",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must pack root binary sidecars from archive builds on archive-cache miss",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive archive-miss sidecar pack must use tracked root binary sidecar helper",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+""",
+            """      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          find "$target_dir/debug" -maxdepth 1 -type f -perm -111 -print0
+""",
+        ),
+    )
+    sidecar_build_guard_regression_workflow = BASE_WORKFLOW
+    if (
+        "        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'\n"
+        in BASE_WORKFLOW
+    ):
+        sidecar_build_guard_regression_workflow = replace_once(
+            BASE_WORKFLOW,
+            "        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'\n",
+            "        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'\n",
+        )
+    assert_error(
+        "test-archive sidecar cargo build must run only on archive-cache hit and sidecar-cache miss",
+        sidecar_build_guard_regression_workflow,
+    )
+    assert_error(
         "test-archive sidecar build must use dev profile debug knob",
         replace_once(
             BASE_WORKFLOW,
-            '          CARGO_PROFILE_DEV_DEBUG: "0"',
-            '          CARGO_PROFILE_TEST_DEBUG: "0"',
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+""",
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+""",
+        ),
+    )
+    assert_error(
+        "test-archive sidecar build must use tracked root binary sidecar helper",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+""",
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          find "$target_dir/debug" -maxdepth 1 -type f -perm -111 -print0
+""",
         ),
     )
     assert_error(
@@ -7821,6 +10640,8 @@ def main() -> int:
         ("ci/github-actions-runners.toml", "ci/not-github-actions-runners.toml"),
         ("scripts/nextest_fingerprint.py", "scripts/not_nextest_fingerprint.py"),
         ("scripts/test_nextest_fingerprint.py", "scripts/not_test_nextest_fingerprint.py"),
+        ("scripts/root_bin_sidecars.py", "scripts/not_root_bin_sidecars.py"),
+        ("scripts/test_root_bin_sidecars.py", "scripts/not_test_root_bin_sidecars.py"),
     ):
         assert_error(
             "detector must detect fingerprint-reuse governance changes",
@@ -7963,27 +10784,13 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, "- run: just build", "- run: echo skip build"),
     )
     assert_error(
-        "pull_request paths-ignore must match baseline",
+        "on.pull_request must have no paths-ignore",
         replace_once(
             BASE_WORKFLOW,
-            "      - '.specify/**'\n",
-            "      - '.specify/**'\n      - 'docs/**'\n",
-        ),
-    )
-    assert_error(
-        "pull_request paths-ignore must match baseline",
-        replace_once(BASE_WORKFLOW, "      - '.claude/**'\n", ""),
-    )
-    assert_error(
-        "pull_request paths-ignore must match baseline",
-        replace_once(BASE_WORKFLOW, "      - '.specify/**'\n", ""),
-    )
-    assert_error(
-        "pull_request paths-ignore must match baseline",
-        replace_once(
-            BASE_WORKFLOW,
-            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]\n    paths-ignore:\n",
-            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]\n    # paths-ignore:\n",
+            "    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]\n",
+            "    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]\n"
+            "    paths-ignore:\n"
+            "      - 'AGENTS.md'\n",
         ),
     )
     assert_error(
@@ -8034,8 +10841,16 @@ def main() -> int:
         "ci-provenance-emit must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
             "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must run provenance emitter",
+        replace_once(
+            BASE_WORKFLOW,
+            'python3 "$provenance_script" emit-full-ci',
+            "python3 scripts/ci_provenance.py emit-full-ci",
         ),
     )
     assert_error(
@@ -8098,8 +10913,8 @@ def main() -> int:
         "gate must not read nextest_fingerprint",
         replace_once(
             BASE_WORKFLOW,
-            '          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then\n',
-            '          if [[ "${{ needs.ci-provenance-emit.outputs.nextest_fingerprint }}" != "" ]]; then\n',
+            "--job ci-provenance-emit=${{ needs.ci-provenance-emit.result }}",
+            "--job ci-provenance-emit=${{ needs.ci-provenance-emit.outputs.nextest_fingerprint }}",
         ),
     )
     assert_error("same-sha-main-evidence needs detector", replace_once(BASE_WORKFLOW, "    needs: detector\n    if: startsWith(github.ref, 'refs/tags/v')", "    if: startsWith(github.ref, 'refs/tags/v')"))
@@ -8117,81 +10932,43 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, "same-sha-main-evidence")),
     )
     assert_error(
-        "gate must check same-sha-main-evidence success",
+        "gate shared verdict call must include --job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}",
         replace_once(
             BASE_WORKFLOW,
-            '"${{ needs.same-sha-main-evidence.result }}" != "success"',
-            '"${{ needs.same-sha-main-evidence.result }}" != "skipped"',
+            "--job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}",
+            "--job same-sha-main-evidence=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
-        "gate must require build skipped on tag reuse",
+        "gate shared verdict call must include --job build=${{ needs.build.result }}",
         replace_once(
             BASE_WORKFLOW,
-            '"${{ needs.build.result }}" != "skipped"',
-            '"${{ needs.build.result }}" != "success"',
+            "--job build=${{ needs.build.result }}",
+            "--job build=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
-        "gate must check same-sha-main-evidence success",
+        "gate shared verdict call must include --job deny=${{ needs.deny.result }}",
         replace_once(
             BASE_WORKFLOW,
-            '          if [[ "$policy_path" == "tag_reuse" ]]; then\n',
-            '          if [[ "$policy_path" == "tag_reuse" ]]; then\n            exit 0\n',
+            "--job deny=${{ needs.deny.result }}",
+            "--job deny=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
-        "gate must check same-sha-main-evidence skip on non-tag",
+        "gate shared verdict call must include --job check-aarch64=${{ needs.check-aarch64.result }}",
         replace_once(
             BASE_WORKFLOW,
-            '          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
-            '          exit 0\n          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
+            "--job check-aarch64=${{ needs.check-aarch64.result }}",
+            "--job check-aarch64=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
-        "gate must require deny skipped on tag reuse",
+        "gate shared verdict call must include --job ci-provenance-emit=${{ needs.ci-provenance-emit.result }}",
         replace_once(
             BASE_WORKFLOW,
-            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
-            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              echo "deny failed" && exit 0\n              exit 1\n',
-        ),
-    )
-    assert_error(
-        "gate must require deny skipped on tag reuse",
-        replace_once(
-            BASE_WORKFLOW,
-            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
-            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              true || exit 1\n',
-        ),
-    )
-    assert_error(
-        "gate must require deny skipped on tag reuse",
-        replace_once(
-            BASE_WORKFLOW,
-            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
-            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              echo \\\n              exit 1\n',
-        ),
-    )
-    assert_error(
-        "gate must check same-sha-main-evidence skip on non-tag",
-        replace_once(
-            BASE_WORKFLOW,
-            '          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
-            '          true && exit 0\n          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
-        ),
-    )
-    check_aarch64_condition = '"${{ needs.check-aarch64.result }}" != "success"'
-    tag_check = BASE_WORKFLOW.find(check_aarch64_condition)
-    standard_check = BASE_WORKFLOW.find(check_aarch64_condition, tag_check + len(check_aarch64_condition))
-    if tag_check < 0 or standard_check < 0:
-        raise AssertionError("gate check-aarch64 fixture must include tag and standard topology checks")
-    assert_error(
-        "gate must check needs.check-aarch64.result",
-        BASE_WORKFLOW[:standard_check]
-        + BASE_WORKFLOW[standard_check:].replace(
-            check_aarch64_condition,
-            '"${{ omitted.check-aarch64.result }}" != "success"',
-            1,
+            "--job ci-provenance-emit=${{ needs.ci-provenance-emit.result }}",
+            "--job ci-provenance-emit=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
@@ -8744,8 +11521,8 @@ def main() -> int:
         "ci.yml test-archive install-action fallback must be none",
         replace_once(
             BASE_WORKFLOW,
-            '          fallback: none\n      - name: Build nextest archive binary sidecars',
-            '          fallback: cargo-install\n      - name: Build nextest archive binary sidecars',
+            '          fallback: none\n      - name: Build nextest archive',
+            '          fallback: cargo-install\n      - name: Build nextest archive',
         ),
     )
     assert_error(
@@ -8914,130 +11691,32 @@ def main() -> int:
                 f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}\n",
                 f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n",
             ),
-            f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - run: |",
-            f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - if: ${{{{ always() }}}}\n        run: |",
+            "    runs-on: ubuntu-latest\n    steps:\n      - name: Prepare trusted base verdict tree",
+            "    runs-on: ubuntu-latest\n    steps:\n      - if: ${{ always() }}\n      - name: Prepare trusted base verdict tree",
         ),
     )
     assert_error(
-        "gate must check needs.detector.result",
+        "gate shared verdict call must include --job detector=${{ needs.detector.result }}",
         replace_once(
             BASE_WORKFLOW,
-            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            exit 1
-          fi
-""",
-            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            echo "detector failed"
-          fi
-""",
+            "--job detector=${{ needs.detector.result }}",
+            "--job detector=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
-        "gate must check needs.detector.result",
+        "gate shared verdict call must include --build-required",
         replace_once(
             BASE_WORKFLOW,
-            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            exit 1
-          fi
-""",
-            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            exit 0
-            exit 1
-          fi
-""",
+            '--build-required "${{ needs.detector.outputs.build_required || \'false\' }}"',
+            '--build-required "false"',
         ),
     )
     assert_error(
-        "gate must check needs.detector.result",
+        "gate shared verdict call must include --job build=${{ needs.build.result }}",
         replace_once(
             BASE_WORKFLOW,
-            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            exit 1
-          fi
-""",
-            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            if [[ "$inner_result" != "success" ]]; then
-              exit 1
-            fi
-          fi
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """            if [[ "$build_result" != "success" ]]; then
-              exit 1
-            fi
-""",
-            """            if [[ "$build_result" != "success" ]]; then
-              echo "build failed"
-            fi
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """            if [[ "$build_result" != "success" ]]; then
-              exit 1
-            fi
-""",
-            """            if [[ "$build_result" != "success" ]]; then
-              exit 0
-              exit 1
-            fi
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-""",
-            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            echo "build failed"
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-""",
-            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 0
-            exit 1
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """          if [[ "$build_required" == "true" ]]; then
-            if [[ "$build_result" != "success" ]]; then
-              exit 1
-            fi
-          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-          fi
-""",
-            """          if [[ "$build_required" == "true" ]]; then
-            echo "build required"
-          fi
-          if [[ "$build_result" != "success" ]]; then
-            exit 1
-          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-          fi
-""",
+            "--job build=${{ needs.build.result }}",
+            "--job build=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
@@ -9272,20 +11951,42 @@ def main() -> int:
     assert_backtester_ci_defers_managed_heavy_on_draft_prs()
     assert_actionlint_rejects_stale_config_variables()
     assert_actionlint_requires_pr_event_types()
-    assert_ci_docs_pass_stub_requires_pr_event_types()
+    assert_ci_docs_pass_stub_is_absent()
     assert_source_fence_static_ignores_comments()
     assert_local_verification_gate_recipes_are_enforced()
+    assert_nextest_fingerprint_reuse_governance_covers_sidecar_helper()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
     assert_ci_policy_matrix()
     assert_ci_policy_resolvers_agree()
+    assert_ci_policy_rejects_literal_event_sender_id_argument()
+    assert_ci_policy_rejects_inline_event_sender_id_override()
+    assert_ci_policy_rejects_backslash_split_event_sender_id_argument()
+    assert_ci_policy_rejects_env_command_event_sender_id_override()
+    assert_ci_policy_rejects_prior_event_sender_id_exports()
+    assert_ci_policy_rejects_event_sender_id_append_assignment()
+    assert_ci_policy_rejects_alternate_python_event_sender_id_argument()
+    assert_ci_policy_rejects_split_and_boundary_event_sender_id_arguments()
+    assert_ci_policy_counts_structural_event_sender_id_env_keys()
+    assert_ci_policy_real_workflows_keep_event_sender_binding_clean()
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
+    assert_test_archive_sccache_fail_open_contract()
+    assert_test_archive_sccache_retry_preserves_compile_failures()
     assert_ci_detector_forces_build_on_workflow_dispatch()
+    assert_ci_base_ref_archives_use_scripts_directory()
+    assert_ci_detector_docs_only_archive_includes_lane_policy()
     assert_merge_group_support_gaps_are_reported()
+    assert_mergify_config_gaps_are_reported()
     assert_ci_policy_heavy_lane_gaps_are_reported()
     assert_gate_policy_truth_table_gaps_are_reported()
     assert_ci_concurrency_split_gaps_are_reported()
+    assert_mergify_proof_pr_concurrency_gaps_are_reported()
+    assert_mergify_proof_prefix_alignment_holds()
+    assert_mergify_proof_prefix_alignment_detects_drift()
     assert_dispatch_cancel_watchdog_gaps_are_reported()
+    assert_merge_readiness_progress_gaps_are_reported()
+    assert_merge_readiness_finalizer_gaps_are_reported()
+    assert_coverage_enforcer_workflow_gaps_are_reported()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"
@@ -9297,6 +11998,12 @@ def main() -> int:
     assert not actionlint_errors, actionlint_errors
     dispatch_cancel_errors = verifier.verify_dispatch_ci_cancel_workflow(real_workflows)
     assert not dispatch_cancel_errors, dispatch_cancel_errors
+    progress_errors = verifier.verify_merge_readiness_ci_job(
+        real_workflows[".github/workflows/ci.yml"]
+    )
+    assert not progress_errors, progress_errors
+    finalizer_errors = verifier.verify_merge_readiness_finalizer_workflow(real_workflows)
+    assert not finalizer_errors, finalizer_errors
 
     print("OK: CI workflow hygiene verifier self-tests passed.")
     return 0

@@ -26,7 +26,7 @@
 //! same values the production binary would receive; only the venue
 //! client factories are swapped for mocks.
 
-mod support;
+use crate::support;
 
 use std::sync::{Mutex, MutexGuard};
 

@@ -1,5 +1,3 @@
-#![recursion_limit = "256"]
-
 use backtesting_vertical_slice::{
     source_proof::{
         CONTRACT_VERSION, CheckOutcome, FixtureType, NtMappingStatus, RequiredCheck,

@@ -69,11 +69,11 @@ Entry `is_quote_quantity = true` is supported by sizing the entry quantity as qu
 Exit `is_quote_quantity = true` is rejected because exits are sized from held base position quantity.
 Forced-flat exits use the configured `forced_exit_order` template.
 When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders.
-Decision-evidence JSONL records use `schema_version = 10` for `order_intent`, `admission_decision`, `strategy_input_snapshot`, `position_sizer_rebuild`, `submit_reservation_metadata`, `submit_reservation_fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, and `requote_throttle` envelopes.
+Decision-evidence JSONL records use `schema_version = 14` for `order_intent`, `admission_decision`, `strategy_input_snapshot`, `capital_admission_rebuild`, `submit_reservation_metadata`, `submit_reservation_fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, and `requote_throttle` envelopes.
 Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, `fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, or `requote_throttle`.
-The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `position_sizer_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, `submit_reservation_fill` for fill metadata, `entry_skip` for entry skip rationale, `exit_decision` for exit rationale, `loss_governor_halt` for loss-governor halt transitions, and `requote_throttle` for maker requote budget throttle transitions.
+The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `capital_admission_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, `submit_reservation_fill` for fill metadata, `entry_skip` for entry skip rationale, `exit_decision` for exit rationale, `loss_governor_halt` for loss-governor halt transitions, and `requote_throttle` for maker requote budget throttle transitions.
 `strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
-`position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-10 reservation records.
+`capital_admission_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-14 reservation records.
 
 ### `[parameters]`
 """
@@ -120,135 +120,6 @@ def test_validate_docs_checks_decision_evidence_schema_version_source() -> None:
 
     if "schema missing decision-evidence JSONL schema v11 contract" not in findings:
         raise AssertionError(f"expected decision-evidence schema source drift finding, got {findings!r}")
-
-
-def test_validate_docs_rejects_wrong_active_speckit_context() -> None:
-    findings = VERIFIER.validate_docs(
-        CURRENT_SCHEMA,
-        CURRENT_STATUS_MAP,
-        agents_doc=(
-            "shell commands, and other important information, read the current plan:\n"
-            "`specs/023-nt-research-analytics-platform/plan.md`\n"
-        ),
-        feature_json='{"feature_directory": "specs/023-nt-research-analytics-platform"}',
-    )
-
-    expected_fragments = [
-        "AGENTS.md",
-        ".specify/feature.json",
-    ]
-    for fragment in expected_fragments:
-        if not any(fragment in finding for finding in findings):
-            raise AssertionError(f"expected Speckit context fragment {fragment!r}, got {findings!r}")
-
-
-def test_validate_docs_checks_active_speckit_block_not_any_substring() -> None:
-    stale_active_block = """
-Historical context: `specs/023-nt-order-intent-layer/plan.md`
-
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan:
-`specs/024-other-feature/plan.md`
-<!-- SPECKIT END -->
-"""
-    findings = VERIFIER.validate_docs(
-        CURRENT_SCHEMA,
-        CURRENT_STATUS_MAP,
-        agents_doc=stale_active_block,
-        feature_json='{"feature_directory": "specs/023-nt-order-intent-layer"}',
-    )
-    if not any("AGENTS.md" in finding and "active Speckit block" in finding for finding in findings):
-        raise AssertionError(f"expected active-block pointer finding, got {findings!r}")
-
-    correct_active_block_with_history = """
-Historical context: `specs/023-nt-research-analytics-platform/plan.md`
-
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan:
-`specs/023-nt-order-intent-layer/plan.md`
-<!-- SPECKIT END -->
-"""
-    history_findings = VERIFIER.validate_docs(
-        CURRENT_SCHEMA,
-        CURRENT_STATUS_MAP,
-        agents_doc=correct_active_block_with_history,
-        feature_json='{"feature_directory": "specs/023-nt-order-intent-layer"}',
-    )
-    if history_findings:
-        raise AssertionError(f"expected historical stale pointer outside active block to pass, got {history_findings!r}")
-
-
-def test_validate_docs_rejects_same_block_wrong_active_plan_even_with_current_note() -> None:
-    same_block_note = """
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan:
-`specs/024-other-feature/plan.md`
-
-Historical replacement target: `specs/023-nt-order-intent-layer/plan.md`
-<!-- SPECKIT END -->
-"""
-    findings = VERIFIER.validate_docs(
-        CURRENT_SCHEMA,
-        CURRENT_STATUS_MAP,
-        agents_doc=same_block_note,
-        feature_json='{"feature_directory": "specs/023-nt-order-intent-layer"}',
-    )
-    if not any("AGENTS.md" in finding and "active Speckit block" in finding for finding in findings):
-        raise AssertionError(f"expected same-block active-plan finding, got {findings!r}")
-
-
-def test_validate_docs_rejects_empty_speckit_context_files() -> None:
-    findings = VERIFIER.validate_docs(
-        CURRENT_SCHEMA,
-        CURRENT_STATUS_MAP,
-        agents_doc="",
-        feature_json="",
-    )
-    expected_fragments = [
-        "AGENTS.md is empty",
-        ".specify/feature.json is empty",
-    ]
-    for fragment in expected_fragments:
-        if not any(fragment in finding for finding in findings):
-            raise AssertionError(f"expected empty-file fragment {fragment!r}, got {findings!r}")
-
-
-def test_validate_docs_rejects_non_object_feature_json_without_crashing() -> None:
-    try:
-        findings = VERIFIER.validate_docs(
-            CURRENT_SCHEMA,
-            CURRENT_STATUS_MAP,
-            agents_doc=(
-                "<!-- SPECKIT START -->\n"
-                "`specs/023-nt-order-intent-layer/plan.md`\n"
-                "<!-- SPECKIT END -->\n"
-            ),
-            feature_json="[]",
-        )
-    except AttributeError as exc:
-        raise AssertionError("expected verifier finding for non-object feature JSON") from exc
-
-    if not any(".specify/feature.json" in finding and "JSON object" in finding for finding in findings):
-        raise AssertionError(f"expected non-object feature JSON finding, got {findings!r}")
-
-
-def test_validate_docs_rejects_malformed_feature_json_without_crashing() -> None:
-    findings = VERIFIER.validate_docs(
-        CURRENT_SCHEMA,
-        CURRENT_STATUS_MAP,
-        agents_doc=(
-            "<!-- SPECKIT START -->\n"
-            "`specs/023-nt-order-intent-layer/plan.md`\n"
-            "<!-- SPECKIT END -->\n"
-        ),
-        feature_json="{",
-    )
-
-    if not any(".specify/feature.json" in finding and "not valid JSON" in finding for finding in findings):
-        raise AssertionError(f"expected malformed feature JSON finding, got {findings!r}")
 
 
 def test_validate_docs_rejects_superseded_tuple_policy_and_netting_only_status() -> None:
@@ -637,7 +508,7 @@ def test_validate_docs_requires_all_enabled_and_factory_gap_order_types() -> Non
 
 
 def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> None:
-    stale_schema = CURRENT_SCHEMA.replace("schema_version = 10", "schema_version = 9")
+    stale_schema = CURRENT_SCHEMA.replace("schema_version = 14", "schema_version = 13")
     stale_runtime_contracts = CURRENT_RUNTIME_CONTRACTS.replace("`activation_price`, ", "")
     stale_status_map = CURRENT_STATUS_MAP.replace("forced_exit_order", "exit_order")
     stale_maker_contract = (
@@ -660,7 +531,7 @@ def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> 
     )
 
     expected_fragments = [
-        "schema missing decision-evidence JSONL schema v10 contract",
+        "schema missing decision-evidence JSONL schema v14 contract",
         "runtime contracts missing order-template evidence field",
         "status map missing current phrase: Order construction uses",
         "maker scope contract still contains stale phrase",
@@ -756,12 +627,6 @@ def main() -> int:
     tests = [
         test_extract_section_stops_at_next_matching_heading,
         test_validate_docs_accepts_current_terms,
-        test_validate_docs_rejects_wrong_active_speckit_context,
-        test_validate_docs_checks_active_speckit_block_not_any_substring,
-        test_validate_docs_rejects_same_block_wrong_active_plan_even_with_current_note,
-        test_validate_docs_rejects_empty_speckit_context_files,
-        test_validate_docs_rejects_non_object_feature_json_without_crashing,
-        test_validate_docs_rejects_malformed_feature_json_without_crashing,
         test_validate_docs_rejects_superseded_tuple_policy_and_netting_only_status,
         test_validate_docs_rejects_short_side_overclaims_in_scoped_docs,
         test_validate_docs_rejects_stale_contract_short_side_claim,

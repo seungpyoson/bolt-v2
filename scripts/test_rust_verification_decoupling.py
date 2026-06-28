@@ -30,7 +30,6 @@ RUNTIME_SURFACE_EXCLUDES = (
     "scripts/test_rust_verification_decoupling.py",
 )
 REQUIRED_RUNTIME_SURFACES = (
-    ".github/workflows/ci-docs-pass-stub.yml",
     ".github/workflows/stale.yml",
     ".github/workflows/summary.yml",
     ".githooks/post-checkout",

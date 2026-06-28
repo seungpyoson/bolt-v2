@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use std::fs;
 
@@ -4075,7 +4075,7 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("minimal v3 config should load");
 
-    assert_eq!(loaded.root.schema_version, 1);
+    assert_eq!(loaded.root.schema_version, 2);
     assert_eq!(
         loaded.root.trader_id,
         nautilus_model::identifiers::TraderId::from("BOLT-001")
@@ -4120,8 +4120,8 @@ fn rejects_unknown_bolt_v3_config_fields() {
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = fixture.replace(
-        "schema_version = 1",
-        "schema_version = 1\nunexpected_root_field = \"nope\"",
+        "schema_version = 2",
+        "schema_version = 2\nunexpected_root_field = \"nope\"",
     );
 
     let error = toml::from_str::<BoltV3RootConfig>(&mutated)
@@ -5474,7 +5474,7 @@ fn rejects_polymarket_execution_client_missing_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let toml_text = r#"
-schema_version = 1
+schema_version = 2
 trader_id = "BOLT-001"
 strategy_files = ["strategies/binary_oracle.toml"]
 
@@ -5900,7 +5900,7 @@ fn rejects_polymarket_client_numeric_fields_at_zero() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let toml_text = r#"
-schema_version = 1
+schema_version = 2
 trader_id = "BOLT-001"
 strategy_files = ["strategies/binary_oracle.toml"]
 
@@ -6086,14 +6086,14 @@ fn rejects_unsupported_root_and_strategy_schema_versions() {
     let mutated_root =
         std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
             .expect("fixture should be readable")
-            .replace("schema_version = 1", "schema_version = 2");
+            .replace("schema_version = 2", "schema_version = 1");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated_root).expect("mutated root should parse with raw u32");
     let root_messages = validate_root_only(&root);
     assert!(
         root_messages
             .iter()
-            .any(|m| m.contains("root schema_version=2 is unsupported")),
+            .any(|m| m.contains("root schema_version=1 is unsupported")),
         "expected unsupported root schema version, got: {root_messages:#?}"
     );
 
@@ -7268,6 +7268,47 @@ fn enforced_submit_admission_accepts_positive_recovery_evidence_max_bytes() {
 }
 
 #[test]
+fn rejects_enabled_risk_reservation_substrate_until_live_arming_exists() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = format!(
+        "{}\n{}",
+        replace_in_fixture_root(
+            "enforce_submit_admission = false",
+            "enforce_submit_admission = true",
+        )
+        .replace(
+            "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
+            "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"\nrecovery_evidence_max_bytes = 1048576",
+        ),
+        r#"
+[risk.risk_reservation_substrate]
+enabled = true
+
+[risk.risk_reservation_substrate.pool_lease_authority]
+backend = "dynamo_db_conditional_write"
+dependency_name = "risk-reservation-pool-leases"
+
+[risk.risk_reservation_substrate.work_bounds]
+max_current_position_count = 8
+max_buckets_per_exposure = 8
+max_terminal_cash_flow_count_per_exposure = 8
+"#
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("enabled substrate fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.risk_reservation_substrate.enabled")
+                && message.contains("live admission arming")
+        }),
+        "enabled substrate must fail closed while live arming is deferred: {messages:#?}"
+    );
+}
+
+#[test]
 fn enforced_submit_admission_rejects_zero_dedupe_retention() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -7306,20 +7347,20 @@ fn capital_pool_rejects_non_positive_thresholds() {
             "max_snapshot_age_ns = 0",
         ),
         (
-            "[risk.capital_pools.sizing_policy]",
-            "risk.capital_pools[polymarket-prediction-live].sizing_policy.min_remaining_pool_balance",
+            "[risk.capital_pools.capital_admission_policy]",
+            "risk.capital_pools[polymarket-prediction-live].capital_admission_policy.min_remaining_pool_balance",
             "min_remaining_pool_balance = \"1.00\"",
             "min_remaining_pool_balance = \"0\"",
         ),
         (
-            "[risk.capital_pools.sizing_policy.fee_slippage]",
-            "risk.capital_pools[polymarket-prediction-live].sizing_policy.fee_slippage.max_fee_liability",
+            "[risk.capital_pools.capital_admission_policy.fee_slippage]",
+            "risk.capital_pools[polymarket-prediction-live].capital_admission_policy.fee_slippage.max_fee_liability",
             "max_fee_liability = \"0.10\"",
             "max_fee_liability = \"0\"",
         ),
         (
-            "[risk.capital_pools.sizing_policy.fee_slippage]",
-            "risk.capital_pools[polymarket-prediction-live].sizing_policy.fee_slippage.max_slippage_liability",
+            "[risk.capital_pools.capital_admission_policy.fee_slippage]",
+            "risk.capital_pools[polymarket-prediction-live].capital_admission_policy.fee_slippage.max_slippage_liability",
             "max_slippage_liability = \"0.20\"",
             "max_slippage_liability = \"0\"",
         ),
@@ -7367,10 +7408,10 @@ yes_instrument_id = "condition-secondary-yes.POLYMARKET"
 no_instrument_id = "condition-secondary-no.POLYMARKET"
 collateral_coupled_group_id = "condition-secondary"
 
-[risk.capital_pools.sizing_policy]
+[risk.capital_pools.capital_admission_policy]
 min_remaining_pool_balance = "1.00"
 
-[risk.capital_pools.sizing_policy.fee_slippage]
+[risk.capital_pools.capital_admission_policy.fee_slippage]
 max_fee_liability = "0.10"
 max_slippage_liability = "0.20"
 "#

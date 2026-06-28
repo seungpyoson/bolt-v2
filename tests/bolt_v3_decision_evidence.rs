@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -14,14 +14,14 @@ use bolt_v2::{
         BOLT_V3_REQUOTE_THROTTLE_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
-        BoltV3DecisionEvidenceWriter, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
-        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory, BoltV3ExitDecisionEvidence,
-        BoltV3ExitDecisionOutcome, BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult,
-        BoltV3ExitRvSnapshotBlocker, BoltV3ExitTriggerSource, BoltV3ForcedFlatReason,
-        BoltV3LossGovernorHaltEvidence, BoltV3LossSnapshotSource, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3OrderRejectEvidence,
-        BoltV3OrderRejectReason, BoltV3OutcomeSide, BoltV3PositionSizerRebuildAuditEvidence,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RejectSource,
+        BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
+        BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason, BoltV3EntrySkipEvidence,
+        BoltV3EntrySkipReasonCategory, BoltV3ExitDecisionEvidence, BoltV3ExitDecisionOutcome,
+        BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker,
+        BoltV3ExitTriggerSource, BoltV3ForcedFlatReason, BoltV3LossGovernorHaltEvidence,
+        BoltV3LossSnapshotSource, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+        BoltV3OrderIntentOrderFields, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
+        BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RejectSource,
         BoltV3RequoteActionCostClass, BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
         BoltV3RequoteThrottleEvidence, BoltV3RvGateResult, BoltV3StaleLossReason,
         BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
@@ -44,7 +44,7 @@ use rust_decimal::Decimal;
 
 struct NoopFeeProvider;
 
-const EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 13;
+const EXPECTED_CAPITAL_ADMISSION_RECOVERY_SCHEMA_VERSION: u32 = 14;
 
 impl FeeProvider for NoopFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
@@ -57,10 +57,10 @@ impl FeeProvider for NoopFeeProvider {
 }
 
 #[test]
-fn decision_evidence_schema_version_tracks_reference_price_and_position_sizer_records() {
+fn decision_evidence_schema_version_tracks_reference_price_and_capital_admission_records() {
     assert_eq!(
         BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION
+        EXPECTED_CAPITAL_ADMISSION_RECOVERY_SCHEMA_VERSION
     );
 }
 
@@ -456,7 +456,7 @@ fn submit_reservation_recovery_skips_legacy_v9_non_recovery_lines() {
         line["schema_version"] = serde_json::json!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION - 1);
     }
     lines.push(serde_json::json!({
-        "schema_version": EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION,
+        "schema_version": EXPECTED_CAPITAL_ADMISSION_RECOVERY_SCHEMA_VERSION,
         "recorded_at_utc_ns": 4_i64,
         "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -537,7 +537,7 @@ fn submit_reservation_recovery_skips_basket_admission_records() {
         &[
             sample_basket_admission_decision_line(),
             serde_json::json!({
-                "schema_version": EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION,
+                "schema_version": EXPECTED_CAPITAL_ADMISSION_RECOVERY_SCHEMA_VERSION,
                 "recorded_at_utc_ns": 2_i64,
                 "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
                 "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -636,7 +636,10 @@ fn entry_skip_evidence_writes_one_durable_line_and_readers_skip_it() {
 
     let lines = read_decision_evidence_json_lines(&evidence_path);
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0]["schema_version"], 13);
+    assert_eq!(
+        lines[0]["schema_version"],
+        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+    );
     assert_eq!(lines[0]["kind"], "entry_skip");
     let decoded: BoltV3EntrySkipEvidence =
         serde_json::from_value(lines[0]["entry_skip"].clone()).expect("entry skip should decode");
@@ -666,7 +669,10 @@ fn exit_decision_evidence_writes_one_durable_line_and_readers_skip_it() {
 
     let lines = read_decision_evidence_json_lines(&evidence_path);
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0]["schema_version"], 13);
+    assert_eq!(
+        lines[0]["schema_version"],
+        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+    );
     assert_eq!(lines[0]["kind"], "exit_decision");
     let decoded: BoltV3ExitDecisionEvidence =
         serde_json::from_value(lines[0]["exit_decision"].clone())
@@ -700,7 +706,10 @@ fn requote_throttle_evidence_writes_one_durable_line_and_readers_skip_it() {
 
     let lines = read_decision_evidence_json_lines(&evidence_path);
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0]["schema_version"], 13);
+    assert_eq!(
+        lines[0]["schema_version"],
+        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+    );
     assert_eq!(lines[0]["kind"], "requote_throttle");
     let decoded: BoltV3RequoteThrottleEvidence =
         serde_json::from_value(lines[0]["requote_throttle"].clone())
@@ -1446,9 +1455,9 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> Result<()> {
         Ok(())
     }

@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use anyhow::Result;
 use bolt_v2::{
@@ -783,7 +783,7 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
-        position_sizing: None,
+        admission_evidence: None,
     }
 }
 

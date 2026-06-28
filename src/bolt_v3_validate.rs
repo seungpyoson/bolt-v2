@@ -105,7 +105,7 @@ impl std::fmt::Display for BoltV3ValidationError {
 
 impl std::error::Error for BoltV3ValidationError {}
 
-pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 1;
+pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 2;
 pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;
 const CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD: &str = "feed_bindings";
 const CHAINLINK_DATA_STREAMS_ENDPOINT_ID_FIELD: &str = "endpoint_id";
@@ -187,7 +187,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_order_rate_within_venue_egress(root));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(crate::bolt_v3_providers::validate_reference_live_probe_block(root));
-    errors.extend(validate_position_sizer_recovery_evidence(root));
+    errors.extend(validate_capital_admission_recovery_evidence(root));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(root));
     errors.extend(validate_realized_volatility_surfaces(root));
@@ -1414,6 +1414,23 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     if let Some(capital_pools) = block.capital_pools.as_ref() {
         errors.extend(validate_capital_pools(capital_pools));
     }
+    let risk_reservation_substrate_enabled = block
+        .risk_reservation_substrate
+        .as_ref()
+        .is_some_and(|substrate| substrate.enabled);
+    if risk_reservation_substrate_enabled {
+        errors.push(
+            "risk.risk_reservation_substrate.enabled must remain false until live admission arming is implemented; current live submit admission is controlled by risk.capital_pools[].enforce_submit_admission"
+                .to_string(),
+        );
+    }
+    if risk_reservation_substrate_enabled && block.capital_pools.as_ref().is_none_or(Vec::is_empty)
+    {
+        errors.push(
+            "risk.risk_reservation_substrate requires at least one configured capital pool when enabled"
+                .to_string(),
+        );
+    }
     let nt_risk_default = nautilus_live::config::LiveRiskEngineConfig::default();
     if block.nautilus.qsize != nt_risk_default.qsize {
         errors.push(format!(
@@ -1521,23 +1538,28 @@ fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
             ));
         }
         validate_venue_spendability_source_binding(pool, &label, &mut errors);
-        if let Some(min_remaining_pool_balance) =
-            pool.sizing_policy.min_remaining_pool_balance.as_ref()
+        if let Some(min_remaining_pool_balance) = pool
+            .capital_admission_policy
+            .min_remaining_pool_balance
+            .as_ref()
         {
             validate_positive_decimal(
-                &format!("{label}.sizing_policy.min_remaining_pool_balance"),
+                &format!("{label}.capital_admission_policy.min_remaining_pool_balance"),
                 min_remaining_pool_balance,
                 &mut errors,
             );
         }
         validate_positive_decimal(
-            &format!("{label}.sizing_policy.fee_slippage.max_fee_liability"),
-            &pool.sizing_policy.fee_slippage.max_fee_liability,
+            &format!("{label}.capital_admission_policy.fee_slippage.max_fee_liability"),
+            &pool.capital_admission_policy.fee_slippage.max_fee_liability,
             &mut errors,
         );
         validate_positive_decimal(
-            &format!("{label}.sizing_policy.fee_slippage.max_slippage_liability"),
-            &pool.sizing_policy.fee_slippage.max_slippage_liability,
+            &format!("{label}.capital_admission_policy.fee_slippage.max_slippage_liability"),
+            &pool
+                .capital_admission_policy
+                .fee_slippage
+                .max_slippage_liability,
             &mut errors,
         );
     }
@@ -2144,7 +2166,7 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
     errors
 }
 
-fn validate_position_sizer_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
+fn validate_capital_admission_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
     let enforced_submit_admission = root
         .risk

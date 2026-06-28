@@ -3,6 +3,8 @@ use std::fs::File;
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 
+use crate::support;
+use crate::support::fast_test_live_node;
 use arrow::{
     datatypes::{Field, Schema},
     ipc::writer::StreamWriter,
@@ -16,7 +18,6 @@ use bolt_v2::{
         ScheduledMaintenanceWindow, SettlementKind, StreamContract, VenueContract, Weekday,
     },
 };
-mod support;
 use nautilus_common::msgbus::{
     publish_any, publish_deltas, publish_mark_price, publish_quote, publish_trade, switchboard,
 };
@@ -26,7 +27,6 @@ use nautilus_model::{
     identifiers::{InstrumentId, TradeId},
     types::{Price, Quantity},
 };
-use support::fast_test_live_node;
 use tempfile::tempdir;
 use tokio::task::LocalSet;
 

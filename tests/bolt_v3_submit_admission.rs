@@ -1,14 +1,15 @@
-mod support;
+use crate::support;
 
+use bolt_v2::bolt_v3_capital_admission::{CapitalAdmissionPolicy, FeeSlippagePolicy, ProductKind};
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
-    BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
-    BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
-    BoltV3OrderIntentKind, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
-    BoltV3PositionSizerRebuildAuditEvidence, BoltV3RejectSource, BoltV3RequoteThrottleEvidence,
-    BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
+    BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
+    BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
+    BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+    BoltV3OrderRejectEvidence, BoltV3OrderRejectReason, BoltV3RejectSource,
+    BoltV3RequoteThrottleEvidence, BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
     BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
@@ -16,16 +17,16 @@ use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_loss_governor::{
     LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
 };
-use bolt_v2::bolt_v3_position_sizer::{FeeSlippagePolicy, ProductKind, SizingPolicy};
 use bolt_v2::bolt_v3_submit_admission::{
-    BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
-    BoltV3LiveSubmitApprovalLimits, BoltV3OrderLifecycleIntent, BoltV3PositionSizerRejectReason,
-    BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof,
-    BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput,
-    BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-    BoltV3SubmitPositionSizerConfig, build_submit_admission_request_from_order,
-    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
-    market_style_admission_ceiling_notional, rounded_order_admission_notional,
+    BoltV3CapitalAdmissionRejectReason, BoltV3KillSwitchForcedReductionClaim,
+    BoltV3KillSwitchForcedReductionPolicy, BoltV3LiveSubmitApprovalLimits,
+    BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderSide,
+    BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
+    BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState,
+    BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+    build_submit_admission_request_from_order, conservative_quote_quantity_admission_notional,
+    fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
+    rounded_order_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
@@ -924,7 +925,7 @@ fn submit_request_with_kind_policy_and_exit_proof(
         lifecycle_policy,
         risk_reducing_exit_proof,
         kill_switch_forced_reduction: None,
-        position_sizing: None,
+        admission_evidence: None,
     }
 }
 
@@ -964,12 +965,12 @@ fn limited_admission_with_writer(
     )
 }
 
-fn position_sized_admission_with_writer(
+fn capital_admission_configured_admission_with_writer(
     writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> BoltV3SubmitAdmissionState {
-    BoltV3SubmitAdmissionState::new_with_position_sizer(
+    BoltV3SubmitAdmissionState::new_with_capital_admission(
         writer,
-        BoltV3SubmitPositionSizerConfig {
+        BoltV3SubmitCapitalAdmissionConfig {
             venue_id: "POLYMARKET".to_string(),
             account_id: "POLYMARKET-001".to_string(),
             product_kind: ProductKind::PredictionMarketBinary,
@@ -982,7 +983,7 @@ fn position_sized_admission_with_writer(
                 committed_liability: Decimal::ZERO,
                 max_snapshot_age_ns: 1_000,
             },
-            policy: SizingPolicy {
+            policy: CapitalAdmissionPolicy {
                 min_remaining_pool_balance: None,
                 fee_slippage_policy: Some(FeeSlippagePolicy {
                     max_fee_liability: Decimal::new(10, 2),
@@ -1110,9 +1111,9 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1252,9 +1253,9 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
         Ok(())
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1372,9 +1373,9 @@ impl BoltV3DecisionEvidenceWriter for OrderRejectFailingDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1493,9 +1494,9 @@ impl BoltV3DecisionEvidenceWriter for LossHaltFailingDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -2299,21 +2300,21 @@ fn replace_submit_uses_replace_slot_after_entry_and_exit_slots_are_consumed() {
 }
 
 #[test]
-fn configured_position_sizer_rejects_replace_submit_before_admission() {
+fn configured_capital_admission_rejects_replace_submit_before_admission() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = position_sized_admission_with_writer(writer.clone());
+    let admission = capital_admission_configured_admission_with_writer(writer.clone());
 
     let error = admission
         .admit(&submit_request_with_kind(
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::ReplaceSubmit,
         ))
-        .expect_err("replace-submit must enter the position-sizer reject path");
+        .expect_err("replace-submit must enter the capital-admission reject path");
 
     assert!(matches!(
         error,
-        BoltV3SubmitAdmissionError::PositionSizingRejected {
-            reason: BoltV3PositionSizerRejectReason::ReplaceSubmitUnsupported
+        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+            reason: BoltV3CapitalAdmissionRejectReason::ReplaceSubmitUnsupported
         }
     ));
     assert_eq!(admission.admitted_order_count(), 0);
@@ -2321,7 +2322,7 @@ fn configured_position_sizer_rejects_replace_submit_before_admission() {
     assert_eq!(decisions.len(), 1);
     assert_eq!(
         decisions[0].outcome,
-        BoltV3AdmissionOutcome::RejectedPositionSizing
+        BoltV3AdmissionOutcome::RejectedCapitalAdmission
     );
     assert_eq!(
         decisions[0].intent_kind,

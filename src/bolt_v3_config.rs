@@ -201,6 +201,9 @@ pub struct RiskBlock {
     pub default_max_notional_per_order: String,
     pub loss_governor: Option<LossGovernorBlock>,
     pub capital_pools: Option<Vec<CapitalPoolBlock>>,
+    pub risk_reservation_substrate: Option<
+        crate::bolt_v3_risk_reservation_substrate::contracts::RiskReservationSubstrateConfig,
+    >,
     pub nautilus: NautilusRiskBlock,
     pub kill_switch: Option<KillSwitchConfigBlock>,
     pub basket_execution: Option<BasketExecutionRiskBlock>,
@@ -240,7 +243,7 @@ pub struct CapitalPoolBlock {
     pub venue_spendability_source_sha256: Option<String>,
     pub venue_spendability_source_max_bytes: Option<u64>,
     pub prediction_market_binary: Option<PredictionMarketBinaryProductBlock>,
-    pub sizing_policy: CapitalPoolSizingPolicyBlock,
+    pub capital_admission_policy: CapitalAdmissionPolicyBlock,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -253,7 +256,7 @@ pub struct PredictionMarketBinaryProductBlock {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct CapitalPoolSizingPolicyBlock {
+pub struct CapitalAdmissionPolicyBlock {
     pub min_remaining_pool_balance: Option<String>,
     pub fee_slippage: FeeSlippagePolicyBlock,
 }
@@ -361,7 +364,7 @@ pub struct DecisionEvidenceBlock {
     /// after a restart. The path is owned by this block
     /// (`order_intents_relative_path` via `decision_evidence_path`), so its
     /// read bound lives here too. `None` opts startup reservation recovery
-    /// out: the position sizer then fails closed if any open orders exist at
+    /// out: capital admission then fails closed if any open orders exist at
     /// boot (it cannot attribute them without recovered metadata).
     pub recovery_evidence_max_bytes: Option<u64>,
 }
@@ -1465,7 +1468,7 @@ canonical_quote_asset = "<QUOTE_ASSET>"
     #[test]
     fn parses_minimal_root_block() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
-        assert_eq!(root.schema_version, 1);
+        assert_eq!(root.schema_version, 2);
         assert_eq!(root.trader_id, TraderId::from("BOLT-001"));
         assert_eq!(root.runtime.mode, Environment::Live);
         assert!(root.clients.contains_key("polymarket_main"));

@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -57,6 +57,23 @@ fn loaded_with_enabled_kill_switch(
     // startup behavior is covered by its #658 tests.
     loaded.root.risk.loss_governor = None;
     (loaded, temp)
+}
+
+#[test]
+fn temp_case_dir_name_includes_process_id() {
+    let label = "bolt-v3-kill-switch-runtime";
+    let temp = support::TempCaseDir::new(label);
+    let file_name = temp
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("temp case dir should have a UTF-8 file name");
+    let expected_prefix = format!("bolt-v2-{label}-{}-", std::process::id());
+
+    assert!(
+        file_name.starts_with(&expected_prefix),
+        "temp case dir name {file_name:?} should start with {expected_prefix:?}"
+    );
 }
 
 #[test]

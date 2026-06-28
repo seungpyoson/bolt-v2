@@ -119,6 +119,14 @@ MERGIFY_QUEUE_WAVE_STATUSES = {
     True: VERDICT_SPLIT_ADVISED,
 }
 MERGIFY_SPLIT_REASON_CODES = frozenset({"mergify_queue_batch_above_max"})
+BASE_IDENTITY_FINDING_STATES = {
+    True: (),
+    False: (
+        STATUS_INCONCLUSIVE,
+        "stale_base",
+        "expected base SHA differs from live base branch",
+    ),
+}
 MERGIFY_CONFIG_FIELD_HANDLING = {
     "merge_queue.max_parallel_checks": "residual_cost_impact",
     "merge_queue.reset_on_external_merge": "residual_post_preflight_invalidation",
@@ -221,6 +229,52 @@ def preflight_mode_findings(*, use_gh: bool) -> tuple[dict[str, object], ...]:
             "evidence": dict(finding["evidence"]),
         }
         for finding in PREFLIGHT_MODE_FINDINGS[use_gh]
+    )
+
+
+def matching_base_identity_findings(
+    *,
+    expected_base_sha: str,
+    actual_base_sha: str,
+) -> tuple[dict[str, object], ...]:
+    return ()
+
+
+def stale_base_identity_findings(
+    *,
+    expected_base_sha: str,
+    actual_base_sha: str,
+) -> tuple[dict[str, object], ...]:
+    status, reason_code, message = BASE_IDENTITY_FINDING_STATES[False]
+    return (
+        {
+            "lane": LANE_IDENTITY,
+            "scope": "run",
+            "status": status,
+            "reason_code": reason_code,
+            "message": message,
+            "evidence": {
+                "expected_base_sha": expected_base_sha,
+                "actual_base_sha": actual_base_sha,
+            },
+        },
+    )
+
+
+BASE_IDENTITY_FINDING_BUILDERS = {
+    True: matching_base_identity_findings,
+    False: stale_base_identity_findings,
+}
+
+
+def base_identity_findings(
+    *,
+    expected_base_sha: str,
+    actual_base_sha: str,
+) -> tuple[dict[str, object], ...]:
+    return BASE_IDENTITY_FINDING_BUILDERS[expected_base_sha == actual_base_sha](
+        expected_base_sha=expected_base_sha,
+        actual_base_sha=actual_base_sha,
     )
 
 
@@ -1258,7 +1312,8 @@ def preflight(
     use_gh: bool,
 ) -> tuple[dict[str, object], int]:
     requested = unique_preserving_order(pr_numbers)
-    base_sha = fetch_base(repo, origin, base)
+    actual_base_sha = fetch_base(repo, origin, base)
+    base_sha = expected_base_sha
     heads = {head.number: head for head in (fetch_pr_head(repo, origin, pr) for pr in requested)}
     readiness, metadata_warnings = readiness_for_wave(
         requested,
@@ -1366,6 +1421,10 @@ def preflight(
             )
         )
     contract_findings = (
+        *base_identity_findings(
+            expected_base_sha=expected_base_sha,
+            actual_base_sha=actual_base_sha,
+        ),
         *mergify_config_findings(repo=repo, base_sha=base_sha, readiness=readiness),
         *preflight_mode_findings(use_gh=use_gh),
     )
@@ -1379,6 +1438,7 @@ def preflight(
     payload = {
         "base": base,
         "base_sha": base_sha,
+        "actual_base_sha": actual_base_sha,
         "expected_base_sha": expected_base_sha,
         "requested_prs": list(requested),
         "pr_heads": {str(number): head.sha for number, head in heads.items()},

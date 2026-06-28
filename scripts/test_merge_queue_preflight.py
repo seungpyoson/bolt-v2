@@ -199,6 +199,20 @@ def mergify_queue_batch_above_max_finding(queue_rule: str, prs: list[int], max_b
     }
 
 
+def stale_base_finding(expected_base_sha: str, actual_base_sha: str) -> dict[str, object]:
+    return {
+        "lane": "identity",
+        "scope": "run",
+        "status": "inconclusive",
+        "reason_code": "stale_base",
+        "message": "expected base SHA differs from live base branch",
+        "evidence": {
+            "expected_base_sha": expected_base_sha,
+            "actual_base_sha": actual_base_sha,
+        },
+    }
+
+
 def load_preflight_module() -> object:
     spec = importlib.util.spec_from_file_location("merge_queue_preflight", SCRIPT_PATH)
     if spec is None or spec.loader is None:
@@ -655,6 +669,28 @@ def assert_default_queue_above_max_is_split_advised() -> None:
         payload = parse_json(result.stdout)
         assert_equal(payload["wave_status"], "split_advised", "default queue above max wave status")
         assert mergify_queue_batch_above_max_finding("default", list(heads), 10) in payload["findings"], payload["findings"]
+
+
+def assert_stale_base_sha_is_inconclusive() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        fixture.make_pr(1, {"one.txt": "one\n"})
+        expected_base = fixture.base
+        write(fixture.repo / "advance-main.txt", "advance\n")
+        actual_base = commit(fixture.repo, "advance main")
+        git(fixture.repo, "push", "origin", "main")
+
+        rc, stdout, _ = run_preflight(
+            fixture.repo,
+            fixture.remote,
+            "1",
+            expect_success=False,
+            expected_base_sha=expected_base,
+        )
+        payload = parse_json(stdout)
+        assert_equal(rc, 3, "stale base rc")
+        assert stale_base_finding(expected_base, actual_base) in payload["findings"], payload["findings"]
+        assert_equal(payload["lane_statuses"]["identity"], "inconclusive", "stale base identity lane")
 
 
 def assert_clean_prs_batch_together() -> None:
@@ -1316,6 +1352,7 @@ def main() -> int:
     assert_mergify_config_snapshot_uses_base_blob()
     assert_mergify_queue_routing_uses_pr_labels()
     assert_default_queue_above_max_is_split_advised()
+    assert_stale_base_sha_is_inconclusive()
     assert_clean_prs_batch_together()
     assert_conflicting_pr_starts_later_batch()
     assert_order_dependent_conflict_context_is_reported()

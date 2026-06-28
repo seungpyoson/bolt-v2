@@ -183,6 +183,12 @@ def fallback_config(module, **overrides):
         "max_chunk_chars": 260,
         "max_comment_chars": 60000,
         "response_chars_per_chunk": 8000,
+        "output_contract": module.ReviewOutputContract(
+            finding_required_labels=("Severity:", "Evidence:", "Issue:", "Fix / verification:"),
+            no_findings_indicator="No hard-evidence findings",
+            no_findings_intro="No hard-evidence findings in this chunk based only on the supplied diff.",
+            no_findings_required_labels=("Coverage reviewed:", "Evidence basis:", "Risk areas considered:"),
+        ),
         "run_url": "https://github.com/seungpyoson/bolt-v2/actions/runs/1",
         "provider": "GLM",
         "deliverable_markers": (
@@ -655,6 +661,69 @@ def test_github_client_upserts_marker_comments_through_http_api() -> None:
     assert "new round body" in str(CommentApiHandler.comments[1]["body"])
 
 
+def test_github_client_keeps_paginated_marker_comments_distinct() -> None:
+    module = load_script()
+    CommentApiHandler.comments = [
+        {
+            "id": 42,
+            "body": (
+                "<!-- ai-pr-reviewer-glm -->\n\n"
+                "## GLM PR Review (part 1/2)\n\n"
+                "- Action run: https://github.com/seungpyoson/bolt-v2/actions/runs/1\n"
+                "- Comment part: 1/2\n\n"
+                "old part one\n"
+            ),
+            "created_at": "2026-06-22T12:22:00Z",
+            "updated_at": "2026-06-22T12:22:00Z",
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+        }
+    ]
+    CommentApiHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), CommentApiHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        api_url = f"http://127.0.0.1:{server.server_port}"
+        github = module.GitHubClient(
+            repo="seungpyoson/bolt-v2",
+            pr_number=895,
+            token="test-token",
+            api_url=api_url,
+        )
+        config = fallback_config(module)
+        module.post_or_update_marker_comment(
+            github=github,
+            config=config,
+            body=(
+                "<!-- ai-pr-reviewer-glm -->\n\n"
+                "## GLM PR Review (part 1/2)\n\n"
+                "- Action run: https://github.com/seungpyoson/bolt-v2/actions/runs/1\n"
+                "- Comment part: 1/2\n\n"
+                "updated part one\n"
+            ),
+        )
+        module.post_or_update_marker_comment(
+            github=github,
+            config=config,
+            body=(
+                "<!-- ai-pr-reviewer-glm -->\n\n"
+                "## GLM PR Review (part 2/2)\n\n"
+                "- Action run: https://github.com/seungpyoson/bolt-v2/actions/runs/1\n"
+                "- Comment part: 2/2\n\n"
+                "new part two\n"
+            ),
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    methods = [method for method, _, _ in CommentApiHandler.requests]
+    assert methods == ["GET", "PATCH", "GET", "POST"], CommentApiHandler.requests
+    assert len(CommentApiHandler.comments) == 2
+    assert "updated part one" in str(CommentApiHandler.comments[0]["body"])
+    assert "new part two" in str(CommentApiHandler.comments[1]["body"])
+
+
 def test_posts_failure_notice_when_glm_fallback_fails() -> None:
     module = load_script()
     github = FakeGitHub(files=[file_payload("src/lib.rs", "+change")])
@@ -802,7 +871,36 @@ def test_stamping_preserves_existing_marker_as_first_line() -> None:
     assert "**Source:** GLM PR-Agent (`configured-pr-agent-model`)" in stamped
 
 
-def test_truncates_fallback_review_to_one_comment_when_comment_budget_requires_it() -> None:
+def test_stamping_detects_existing_source_lines_past_initial_comment_window() -> None:
+    module = load_script()
+    source_line = "**Source:** GLM PR-Agent (`configured-pr-agent-model`)"
+    run_line = "**Action run:** https://github.com/seungpyoson/bolt-v2/actions/runs/1"
+    body = "\n".join(
+        [
+            "<!-- ai-pr-reviewer-glm -->",
+            "",
+            "## PR Reviewer Guide",
+            "",
+            "x" * 1200,
+            source_line,
+            run_line,
+            "",
+            "Body.",
+        ]
+    )
+
+    stamped = module.add_source_line(
+        body,
+        marker="<!-- ai-pr-reviewer-glm -->",
+        source_label="GLM PR-Agent (`configured-pr-agent-model`)",
+        run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+    )
+
+    assert stamped.count(source_line) == 1
+    assert stamped.count(run_line) == 1
+
+
+def test_splits_fallback_review_across_comments_when_comment_budget_requires_it() -> None:
     module = load_script()
     files = [file_payload(f"src/file_{idx}.rs", "+" + ("x" * 80)) for idx in range(7)]
     github = FakeGitHub(files=files)
@@ -824,12 +922,12 @@ def test_truncates_fallback_review_to_one_comment_when_comment_budget_requires_i
     )
 
     assert result == "fallback-posted"
-    assert len(github.posted) == 1, github.posted
-    assert len(github.posted[0]) <= 520, len(github.posted[0])
-    assert "## GLM PR Review" in github.posted[0]
-    assert "## GLM PR Review (part " not in github.posted[0]
-    assert "Chunk 1/" in github.posted[0]
-    assert "[truncated to fit GitHub comment limit]" in github.posted[0]
+    assert len(github.posted) > 1, github.posted
+    assert all(len(comment) <= 520 for comment in github.posted)
+    joined = "\n".join(github.posted)
+    assert "## GLM PR Review (part " in joined
+    assert "Chunk 1/" in joined
+    assert "[truncated to fit GitHub comment limit]" not in joined
 
 
 def test_large_model_response_is_split_without_truncating_content() -> None:
@@ -1091,12 +1189,14 @@ def main() -> int:
     test_previous_round_marker_comment_does_not_get_overwritten()
     test_generated_low_quality_review_is_not_posted_as_deliverable()
     test_github_client_upserts_marker_comments_through_http_api()
+    test_github_client_keeps_paginated_marker_comments_distinct()
     test_posts_failure_notice_when_glm_fallback_fails()
     test_sets_failure_notice_output_after_posting_failure_notice()
     test_kimi_fallback_uses_same_chunked_deliverable_contract()
     test_stamps_pr_agent_review_source_model()
     test_stamping_preserves_existing_marker_as_first_line()
-    test_truncates_fallback_review_to_one_comment_when_comment_budget_requires_it()
+    test_stamping_detects_existing_source_lines_past_initial_comment_window()
+    test_splits_fallback_review_across_comments_when_comment_budget_requires_it()
     test_large_model_response_is_split_without_truncating_content()
     test_split_model_response_keeps_markdown_fences_balanced()
     test_posts_failure_notice_when_kimi_fallback_fails()

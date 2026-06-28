@@ -7,6 +7,21 @@ expected_bot_login = "github-actions[bot]"
 max_comment_chars = 60000
 response_chars_per_chunk = 8000
 
+[review.output_contract]
+finding_required_labels = [
+  "Severity:",
+  "Evidence:",
+  "Issue:",
+  "Fix / verification:",
+]
+no_findings_indicator = "No hard-evidence findings"
+no_findings_intro = "No hard-evidence findings in this chunk based only on the supplied diff."
+no_findings_required_labels = [
+  "Coverage reviewed:",
+  "Evidence basis:",
+  "Risk areas considered:",
+]
+
 [glm]
 api_base = "https://api.z.ai/api/coding/paas/v4"
 model = "glm-5.2"

@@ -140,6 +140,7 @@ KIMI_BASE_GOVERNANCE_SNIPPETS = (
 GLM_DELIVERABLE_SNIPPETS = (
     "ci/ai-review.toml",
     "Load AI review runtime config",
+    'emit("expected_bot_login", github["expected_bot_login"])',
     'emit("glm_api_base", glm["api_base"])',
     'emit("glm_pr_agent_model", pr_agent["model"])',
     'emit("glm_pr_agent_fallback_models", pr_agent["fallback_models"])',
@@ -181,6 +182,7 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "name: Kimi CLI review",
     "ci/ai-review.toml",
     "Load AI review runtime config",
+    'emit("expected_bot_login", github["expected_bot_login"])',
     'emit("kimi_model_name", kimi["model"])',
     'emit("kimi_model_base_url", kimi["api_base"])',
     'emit("kimi_deliverable_marker", kimi["deliverable_marker"])',
@@ -230,12 +232,12 @@ SMOKE_TRUSTED_CONFIG_SNIPPETS = (
 
 AI_REVIEW_DELIVERABLES_SNIPPETS = (
     "def review_body_is_quality_deliverable(",
-    "coverage reviewed:",
-    "evidence basis:",
-    "risk areas considered:",
+    "output_contract.finding_required_labels",
+    "output_contract.no_findings_required_labels",
+    "review_output_contract(review_config)",
     "def validate_review_responses(",
     "did not meet the hard-evidence output contract",
-    "validate_review_responses(responses)",
+    "validate_review_responses(responses, config.output_contract)",
 )
 
 KIMI_FORBIDDEN_INPUTS = (
@@ -301,13 +303,20 @@ def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
     except tomllib.TOMLDecodeError:
         return ()
     literals: list[str] = []
+    github = parsed.get("github")
+    if isinstance(github, dict):
+        value = github.get("expected_bot_login")
+        if isinstance(value, str) and value:
+            literals.append(value)
     for table_name in ("glm", "kimi"):
         table = parsed.get(table_name)
         if isinstance(table, dict):
-            for key in ("api_base", "model", "deliverable_marker", "comment_marker", "cli_package"):
+            for key in ("api_base", "model", "deliverable_marker", "deliverable_markers", "comment_marker", "cli_package"):
                 value = table.get(key)
                 if isinstance(value, str) and value:
                     literals.append(value)
+                elif isinstance(value, list):
+                    literals.extend(item for item in value if isinstance(item, str) and item)
             pr_agent = table.get("pr_agent")
             if isinstance(pr_agent, dict):
                 value = pr_agent.get("model")
@@ -362,13 +371,14 @@ def verify_pr_agent_config(pr_agent_toml: str, ai_review_toml: str) -> list[str]
         if reviewer.get(key) is not value:
             findings.append(f".pr_agent.toml pr_reviewer.{key} must be {value!r}")
 
-    glm_model, _kimi_model, glm_pr_agent_model = ai_review_model_values(ai_review_toml)
-    expected_source = f"GLM PR-Agent ({glm_pr_agent_model})" if isinstance(glm_pr_agent_model, str) else ""
+    _glm_model, _kimi_model, _glm_pr_agent_model = ai_review_model_values(ai_review_toml)
+    expected_source = "workflow stamps the authoritative configured GLM PR-Agent source/model from `ci/ai-review.toml`"
     extra = reviewer.get("extra_instructions", "")
     if expected_source not in extra:
-        findings.append(".pr_agent.toml extra_instructions must require explicit GLM PR-Agent source/model")
-    if isinstance(glm_model, str) and isinstance(glm_pr_agent_model, str) and glm_pr_agent_model != f"openai/{glm_model}":
-        findings.append(".pr_agent.toml source/model must match ci/ai-review.toml glm.pr_agent.model")
+        findings.append(".pr_agent.toml extra_instructions must delegate GLM PR-Agent source/model stamping to ci/ai-review.toml")
+    for literal in configured_runtime_literals(ai_review_toml):
+        if literal in extra:
+            findings.append(f".pr_agent.toml extra_instructions must read AI review runtime value from ci/ai-review.toml, not {literal!r}")
 
     return findings
 
@@ -393,6 +403,9 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
 
     github = table("github")
     review = table("review")
+    output_contract = review.get("output_contract")
+    if not isinstance(output_contract, dict):
+        output_contract = {}
     glm = table("glm")
     glm_pr_agent = glm.get("pr_agent")
     if not isinstance(glm_pr_agent, dict):
@@ -415,6 +428,26 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("github.expected_bot_login", github.get("expected_bot_login"), "github-actions[bot]"),
         ("review.max_comment_chars", review.get("max_comment_chars"), 60000),
         ("review.response_chars_per_chunk", review.get("response_chars_per_chunk"), 8000),
+        (
+            "review.output_contract.finding_required_labels",
+            output_contract.get("finding_required_labels"),
+            ["Severity:", "Evidence:", "Issue:", "Fix / verification:"],
+        ),
+        (
+            "review.output_contract.no_findings_indicator",
+            output_contract.get("no_findings_indicator"),
+            "No hard-evidence findings",
+        ),
+        (
+            "review.output_contract.no_findings_intro",
+            output_contract.get("no_findings_intro"),
+            "No hard-evidence findings in this chunk based only on the supplied diff.",
+        ),
+        (
+            "review.output_contract.no_findings_required_labels",
+            output_contract.get("no_findings_required_labels"),
+            ["Coverage reviewed:", "Evidence basis:", "Risk areas considered:"],
+        ),
         ("glm.api_base", glm.get("api_base"), "https://api.z.ai/api/coding/paas/v4"),
         ("glm.api_timeout_seconds", glm.get("api_timeout_seconds"), 300),
         ("glm.review_max_chunk_chars", glm.get("review_max_chunk_chars"), 60000),
@@ -652,6 +685,42 @@ def run_self_tests(repo_root: Path) -> None:
         smoke_workflow=smoke,
     )
     assert_finding("workflow runtime literal", workflow_runtime_literal, "must read AI review runtime value")
+
+    workflow_bot_literal = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm + "\n          EXPECTED_BOT_LOGIN: github-actions[bot]\n",
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding("workflow bot login literal", workflow_bot_literal, "must read AI review runtime value")
+
+    workflow_glm_marker_literal = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm + "\n          GLM_MARKER: <!-- ai-pr-reviewer-glm -->\n",
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding("workflow GLM marker literal", workflow_glm_marker_literal, "must read AI review runtime value")
+
+    pr_agent_model_literal = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent.replace(
+            "the workflow stamps the authoritative configured GLM PR-Agent source/model from `ci/ai-review.toml`",
+            "the workflow stamps the authoritative configured GLM PR-Agent source/model from `ci/ai-review.toml` (`openai/glm-5.2`)",
+        ),
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding("PR-Agent model literal", pr_agent_model_literal, ".pr_agent.toml extra_instructions must read AI review runtime value")
 
     smoke_runtime_literal = verify_texts(
         agents_md=agents,

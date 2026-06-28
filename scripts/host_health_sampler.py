@@ -365,14 +365,14 @@ def collect_service(unit: str) -> CollectorResult:
         # still-wedged host.
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except Exception:  # pragma: no cover - no group / child already gone
+        except (AttributeError, OSError):  # pragma: no cover - no group / child already gone
             try:
                 proc.kill()
-            except Exception:  # pragma: no cover - child may already be gone
+            except OSError:  # pragma: no cover - child may already be gone
                 pass
         try:
             proc.poll()
-        except Exception:  # pragma: no cover - poll is non-blocking, defensive
+        except OSError:  # pragma: no cover - poll is non-blocking, defensive
             pass
         with _COLLECTOR_CHILDREN_LOCK:
             _COLLECTOR_CHILDREN[unit] = proc
@@ -1056,7 +1056,7 @@ def release_fd_best_effort(fd: int) -> None:
         # a prior cleanup is wedged. CLEANUP_TIMEOUT_SECONDS stays < the outer
         # SINK_TIMEOUT_SECONDS so a committed write is never reclassified.
         run_with_deadline(_release, CLEANUP_TIMEOUT_SECONDS, breaker_key="sink:file:cleanup")
-    except Exception:  # noqa: BLE001 - a stalled/failed cleanup must not change the outcome
+    except (OSError, RuntimeError):  # a stalled/failed cleanup must not change the outcome
         # TimeoutError (stall -> worker abandoned, fd/flock leaked) or any other
         # error: the record is already committed, so cleanup never fails the write.
         pass
@@ -1548,7 +1548,7 @@ def log_stderr(msg: str) -> None:
                 fcntl.fcntl(fd, fcntl.F_SETFL, original)
             except OSError:
                 pass
-    except Exception:  # noqa: BLE001 - logging must never affect exit status
+    except (AttributeError, OSError, ValueError):  # logging must never affect exit status
         pass
 
 
@@ -1706,7 +1706,7 @@ def neutralize_stdout_for_shutdown() -> None:
     # variant survives fd exhaustion. Guarded so it can never itself raise.
     try:
         sys.stdout = _NullStream()
-    except Exception:  # noqa: BLE001 - clean-exit fail-safe must never raise
+    except (AttributeError, RuntimeError):  # clean-exit fail-safe must never raise
         pass
 
 

@@ -1413,7 +1413,7 @@ def run_lane_w(
                 records.append(rec)
                 try:
                     write_audit(repo_root, config, rec)
-                except Exception:
+                except OSError:
                     pass
     finally:
         _release_lock(fd)

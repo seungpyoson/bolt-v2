@@ -64,8 +64,6 @@ DEFAULT_RUNNERS_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
 DEFAULT_ACTIONLINT_CONFIG = REPO_ROOT / ".github" / "actionlint.yaml"
 DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
 DEFAULT_BVS_RUST_VERIFICATION_POLICY = REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
-
-
 JOB_RUNS_ON_VAR_RE = re.compile(r"^    runs-on:\s*\$\{\{\s*vars\.([A-Z0-9_]+)\s*\}\}\s*$")
 WORKFLOW_RUNNER_CONFIG_KEYS = {
     "ci.yml": "ci",
@@ -105,7 +103,6 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     "tech-debt-review.yml": "tech_debt_review",
     ".github/workflows/tech-debt-review.yml": "tech_debt_review",
 }
-
 SSH_RUNNER_ACTION_RE = re.compile(r"^ubicloud/ssh-runner@[0-9a-f]{40}$")
 DEFAULT_REPO_AUTOMATION_FILES = (
     REPO_ROOT / "justfile",

@@ -125,6 +125,79 @@ def write_preflight_config(root: pathlib.Path, profile: str, commands: list[str]
     return path
 
 
+def write_fake_gh(
+    root: pathlib.Path,
+    *,
+    views: dict[int, dict[str, object]],
+    checks: dict[int, list[dict[str, object]]] | None = None,
+) -> pathlib.Path:
+    bin_dir = root / "bin"
+    bin_dir.mkdir()
+    path = bin_dir / "gh"
+    write(
+        path,
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import sys\n"
+        f"views = {views!r}\n"
+        f"checks = {(checks or {})!r}\n"
+        "args = sys.argv[1:]\n"
+        "if len(args) >= 3 and args[0:2] == ['pr', 'view']:\n"
+        "    print(json.dumps(views[int(args[2])]))\n"
+        "elif len(args) >= 3 and args[0:2] == ['pr', 'checks']:\n"
+        "    print(json.dumps(checks.get(int(args[2]), [])))\n"
+        "else:\n"
+        "    raise SystemExit(f'unexpected gh args: {args}')\n",
+    )
+    path.chmod(0o755)
+    return bin_dir
+
+
+def approved_pr_view(head: str, *, base: str = "main") -> dict[str, object]:
+    return {
+        "number": 1,
+        "state": "OPEN",
+        "isDraft": False,
+        "mergeable": "MERGEABLE",
+        "reviewDecision": "APPROVED",
+        "headRefOid": head,
+        "baseRefName": base,
+        "title": "one",
+        "url": "https://example.invalid/pull/1",
+    }
+
+
+def run_preflight_with_gh(
+    repo: pathlib.Path,
+    origin: pathlib.Path,
+    bin_dir: pathlib.Path,
+    *prs: str,
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        sys.executable,
+        str(SCRIPT_PATH),
+        "--origin",
+        str(origin),
+        "--base",
+        "main",
+        "--verifier-profile",
+        "none",
+        "--json",
+        *prs,
+    ]
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    return subprocess.run(
+        command,
+        cwd=repo,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
 def assert_clean_prs_batch_together() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
@@ -337,12 +410,100 @@ def assert_configured_verifier_profile_blocks_bad_pr() -> None:
             check=False,
         )
         if result.returncode != 1:
-            raise AssertionError(f"expected configured verifier failure, got {result.returncode}\n{result.stdout}\n{result.stderr}")
+            raise AssertionError(
+                f"expected configured verifier failure, got {result.returncode}\n{result.stdout}\n{result.stderr}"
+            )
         payload = parse_json(result.stdout)
         blocked = payload["blocked_prs"]
         if len(blocked) != 1 or blocked[0]["pr"] != 2 or blocked[0]["type"] != "verifier_failed":
             raise AssertionError(blocked)
         if "configured verifier rejected fail.txt" not in blocked[0]["stdout"]:
+            raise AssertionError(blocked)
+
+
+def assert_plain_output_includes_verifier_failure_details() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        fixture.make_pr(1, {"fail.txt": "fail\n"})
+        verifier = root / "reject_fail_file.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            "if Path('fail.txt').exists():\n"
+            "    print('plain verifier rejected fail.txt')\n"
+            "    sys.exit(7)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 1:
+            raise AssertionError(f"expected verifier rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}")
+        if f"verifier {sys.executable} {verifier}: exit 7" not in result.stdout:
+            raise AssertionError(result.stdout)
+        if "plain verifier rejected fail.txt" not in result.stdout:
+            raise AssertionError(result.stdout)
+
+
+def assert_head_oid_mismatch_blocks_pr() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view("0" * 40)},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        if result.returncode != 1:
+            raise AssertionError(
+                f"expected head mismatch rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}"
+            )
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "readiness_failed":
+            raise AssertionError(blocked)
+        if "does not match fetched PR head" not in blocked[0]["reason"]:
+            raise AssertionError(blocked)
+
+
+def assert_wrong_base_ref_blocks_pr() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head, base="release")},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        if result.returncode != 1:
+            raise AssertionError(f"expected wrong base rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "readiness_failed":
+            raise AssertionError(blocked)
+        if "PR targets base 'release', expected 'main'" not in blocked[0]["reason"]:
             raise AssertionError(blocked)
 
 
@@ -397,7 +558,9 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
             check=False,
         )
         if result.returncode != 1:
-            raise AssertionError(f"expected inconclusive metadata rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}")
+            raise AssertionError(
+                f"expected inconclusive metadata rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}"
+            )
         payload = parse_json(result.stdout)
         warnings = payload.get("metadata_warnings")
         if not isinstance(warnings, list) or not warnings:
@@ -416,6 +579,9 @@ def main() -> int:
     assert_pr_that_conflicts_with_base_is_blocked()
     assert_verifier_failure_blocks_bad_pr_before_batching()
     assert_configured_verifier_profile_blocks_bad_pr()
+    assert_plain_output_includes_verifier_failure_details()
+    assert_head_oid_mismatch_blocks_pr()
+    assert_wrong_base_ref_blocks_pr()
     assert_invalid_pr_input_is_rejected()
     assert_missing_gh_reports_inconclusive_metadata()
     print("OK: merge_queue_preflight tests passed.")

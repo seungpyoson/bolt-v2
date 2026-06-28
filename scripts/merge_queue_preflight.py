@@ -76,6 +76,62 @@ class VerifierResult:
 
 
 @dataclasses.dataclass(frozen=True)
+class ReadinessIssue:
+    code: str
+    message: str
+
+    def as_json(self) -> dict[str, str]:
+        return {
+            "code": self.code,
+            "message": self.message,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class MetadataExpectation:
+    code: str
+    field: str
+    expected: object
+    message: str
+    warn_when_missing: bool = True
+
+    def evaluate(self, payload: dict[str, object]) -> ReadinessIssue | None:
+        actual = payload.get(self.field)
+        if actual == self.expected:
+            return None
+        if actual is None and not self.warn_when_missing:
+            return None
+        return ReadinessIssue(
+            code=self.code,
+            message=self.message.format(actual=actual, expected=self.expected),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class DynamicExpectation:
+    code: str
+    field: str
+    expected_name: str
+    message: str
+
+    def evaluate(
+        self,
+        payload: dict[str, object],
+        expected_values: dict[str, str | None],
+    ) -> ReadinessIssue | None:
+        expected = expected_values[self.expected_name]
+        if expected is None:
+            return None
+        actual = payload.get(self.field)
+        if actual == expected:
+            return None
+        return ReadinessIssue(
+            code=self.code,
+            message=self.message.format(actual=actual, expected=expected),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class Batch:
     index: int
     commit: str
@@ -97,6 +153,43 @@ class PreflightConfig:
     base: str
     default_verifier_profile: str
     verifier_profiles: dict[str, tuple[str, ...]]
+
+
+STATIC_READINESS_EXPECTATIONS = (
+    MetadataExpectation("not_open", "state", "OPEN", "PR is not open"),
+    MetadataExpectation("draft", "isDraft", False, "PR is draft", warn_when_missing=False),
+    MetadataExpectation(
+        "not_mergeable",
+        "mergeable",
+        "MERGEABLE",
+        "PR mergeable state is {actual}",
+    ),
+    MetadataExpectation(
+        "review_not_approved",
+        "reviewDecision",
+        "APPROVED",
+        "review decision is {actual}",
+    ),
+)
+DYNAMIC_READINESS_EXPECTATIONS = (
+    DynamicExpectation(
+        "base_mismatch",
+        "baseRefName",
+        "expected_base",
+        "PR targets base {actual!r}, expected {expected!r}",
+    ),
+    DynamicExpectation(
+        "head_mismatch",
+        "headRefOid",
+        "fetched_head",
+        "GitHub headRefOid {actual} does not match fetched PR head {expected}",
+    ),
+)
+CHECK_BUCKET_ISSUES = {
+    "fail": ("required_check_failed", "required check failed: {name}"),
+    "cancel": ("required_check_failed", "required check failed: {name}"),
+    "pending": ("required_check_pending", "required check pending: {name}"),
+}
 
 
 def run_command(
@@ -367,10 +460,53 @@ def gh_json(args: Sequence[str]) -> object:
         raise PreflightError(f"gh {' '.join(args)} returned invalid JSON") from exc
 
 
-def pr_readiness(pr_number: int, *, use_gh: bool) -> dict[str, object]:
+def readiness_issues(
+    payload: dict[str, object],
+    checks: Sequence[object],
+    *,
+    expected_base: str | None,
+    fetched_head: str | None,
+) -> tuple[ReadinessIssue, ...]:
+    expected_values = {
+        "expected_base": expected_base,
+        "fetched_head": fetched_head,
+    }
+    issues = [
+        issue
+        for rule in STATIC_READINESS_EXPECTATIONS
+        if (issue := rule.evaluate(payload)) is not None
+    ]
+    issues.extend(
+        issue
+        for rule in DYNAMIC_READINESS_EXPECTATIONS
+        if (issue := rule.evaluate(payload, expected_values)) is not None
+    )
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        bucket = check.get("bucket")
+        issue_template = CHECK_BUCKET_ISSUES.get(bucket)
+        if issue_template is None:
+            continue
+        code, message = issue_template
+        issues.append(
+            ReadinessIssue(
+                code=code,
+                message=message.format(name=check.get("name")),
+            )
+        )
+    return tuple(issues)
+
+
+def pr_readiness(
+    pr_number: int,
+    *,
+    use_gh: bool,
+    expected_base: str | None = None,
+    fetched_head: str | None = None,
+) -> dict[str, object]:
     if not use_gh:
-        return {"pr": pr_number, "warnings": [], "checks": []}
-    warnings: list[str] = []
+        return {"pr": pr_number, "warnings": [], "warning_details": [], "checks": []}
     payload = gh_json(
         [
             "pr",
@@ -382,14 +518,6 @@ def pr_readiness(pr_number: int, *, use_gh: bool) -> dict[str, object]:
     )
     if not isinstance(payload, dict):
         raise PreflightError(f"gh pr view {pr_number} did not return an object")
-    if payload.get("state") != "OPEN":
-        warnings.append("PR is not open")
-    if payload.get("isDraft") is True:
-        warnings.append("PR is draft")
-    if payload.get("mergeable") != "MERGEABLE":
-        warnings.append(f"PR mergeable state is {payload.get('mergeable')}")
-    if payload.get("reviewDecision") != "APPROVED":
-        warnings.append(f"review decision is {payload.get('reviewDecision')}")
     checks = gh_json(
         [
             "pr",
@@ -402,17 +530,16 @@ def pr_readiness(pr_number: int, *, use_gh: bool) -> dict[str, object]:
     )
     if not isinstance(checks, list):
         raise PreflightError(f"gh pr checks {pr_number} did not return a list")
-    for check in checks:
-        if not isinstance(check, dict):
-            continue
-        bucket = check.get("bucket")
-        if bucket in {"fail", "cancel"}:
-            warnings.append(f"required check failed: {check.get('name')}")
-        elif bucket == "pending":
-            warnings.append(f"required check pending: {check.get('name')}")
+    issues = readiness_issues(
+        payload,
+        checks,
+        expected_base=expected_base,
+        fetched_head=fetched_head,
+    )
     return {
         "pr": pr_number,
-        "warnings": warnings,
+        "warnings": [issue.message for issue in issues],
+        "warning_details": [issue.as_json() for issue in issues],
         "metadata": payload,
         "checks": checks,
     }
@@ -422,17 +549,28 @@ def readiness_for_wave(
     pr_numbers: Sequence[int],
     *,
     use_gh: bool,
+    base: str,
+    heads: dict[int, PrHead],
 ) -> tuple[list[dict[str, object]], list[str]]:
     if not use_gh:
         return [pr_readiness(pr, use_gh=False) for pr in pr_numbers], []
     try:
-        return [pr_readiness(pr, use_gh=True) for pr in pr_numbers], []
+        return [
+            pr_readiness(
+                pr,
+                use_gh=True,
+                expected_base=base,
+                fetched_head=heads[pr].sha,
+            )
+            for pr in pr_numbers
+        ], []
     except PreflightError as exc:
         warning = f"GitHub metadata unavailable; readiness checks skipped: {exc}"
         readiness = [
             {
                 "pr": pr,
                 "warnings": [],
+                "warning_details": [],
                 "checks": [],
                 "metadata_unavailable": True,
             }
@@ -453,7 +591,12 @@ def preflight(
     requested = unique_preserving_order(pr_numbers)
     base_sha = fetch_base(repo, origin, base)
     heads = {head.number: head for head in (fetch_pr_head(repo, origin, pr) for pr in requested)}
-    readiness, metadata_warnings = readiness_for_wave(requested, use_gh=use_gh)
+    readiness, metadata_warnings = readiness_for_wave(
+        requested,
+        use_gh=use_gh,
+        base=base,
+        heads=heads,
+    )
     readiness_blocks = [
         {
             "pr": item["pr"],
@@ -577,6 +720,22 @@ def preflight(
     return payload, exit_code
 
 
+def append_verifier_result(lines: list[str], verifier: dict[str, object], *, indent: str) -> None:
+    lines.append(
+        "{indent}verifier {command}: exit {returncode}".format(
+            indent=indent,
+            command=verifier["command"],
+            returncode=verifier["returncode"],
+        )
+    )
+    for stream in ("stdout", "stderr"):
+        output = str(verifier.get(stream, ""))
+        if not output:
+            continue
+        lines.append(f"{indent}  {stream}:")
+        lines.extend(f"{indent}    {line}" for line in output.rstrip().splitlines())
+
+
 def plain_text(payload: dict[str, object]) -> str:
     lines = [
         f"base: {payload['base']} {payload['base_sha']}",
@@ -589,15 +748,15 @@ def plain_text(payload: dict[str, object]) -> str:
             prs=", ".join(f"#{pr}" for pr in batch["prs"]),
         ))
         for verifier in batch["verifiers"]:
-            lines.append(
-                "    verifier {command}: exit {returncode}".format(**verifier)
-            )
+            append_verifier_result(lines, verifier, indent="    ")
     if payload["blocked_prs"]:
         lines.append("blocked PRs:")
         for item in payload["blocked_prs"]:
             lines.append(f"  #{item['pr']}: {item['reason']}")
             if item.get("files"):
                 lines.append("    files: " + ", ".join(item["files"]))
+            if "command" in item:
+                append_verifier_result(lines, item, indent="    ")
     if payload["metadata_warnings"]:
         lines.append("metadata warnings:")
         for warning in payload["metadata_warnings"]:
@@ -609,6 +768,8 @@ def plain_text(payload: dict[str, object]) -> str:
             lines.append(f"  #{item['pr']} vs [{context}]: {item['type']}")
             if item.get("files"):
                 lines.append("    files: " + ", ".join(item["files"]))
+            if "command" in item:
+                append_verifier_result(lines, item, indent="    ")
     warnings = [
         (item["pr"], warning)
         for item in payload["readiness"]

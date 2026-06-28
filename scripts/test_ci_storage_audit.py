@@ -41,13 +41,8 @@ class CiStorageAuditTests(unittest.TestCase):
             ci_storage_audit.parse_cache_key_probe("nextest=exact-key"),
             ci_storage_audit.CacheKeyProbeRequest("nextest", "exact-key"),
         )
-        self.assertEqual(
-            ci_storage_audit.parse_cache_key_probe(" cargo = v0-rust-cache "),
-            ci_storage_audit.CacheKeyProbeRequest("cargo", "v0-rust-cache"),
-        )
-
     def test_parse_cache_key_probe_rejects_invalid_inputs(self) -> None:
-        for raw in ("nokey", "=key", "label=", " "):
+        for raw in ("nokey", "=key", "label=", " ", " cargo=v0-rust-cache", "cargo =v0-rust-cache"):
             with self.subTest(raw=raw):
                 with self.assertRaises(ci_storage_audit.AuditError):
                     ci_storage_audit.parse_cache_key_probe(raw)
@@ -311,6 +306,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 ci_storage_audit.CacheKeyProbeRequest("present", "exact-key"),
                 ci_storage_audit.CacheKeyProbeRequest("missing", "missing-key"),
             ],
+            cache_refs=["refs/heads/main", "refs/pull/2/merge"],
         )
 
         self.assertTrue(probes[0]["present"])
@@ -349,6 +345,7 @@ class CiStorageAuditTests(unittest.TestCase):
         probes = ci_storage_audit.fetch_cache_key_probes(
             client,
             [ci_storage_audit.CacheKeyProbeRequest("probe", "foo")],
+            cache_refs=["refs/heads/main"],
         )
 
         self.assertFalse(probes[0]["present"])
@@ -385,6 +382,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 ci_storage_audit.CacheKeyProbeRequest("first", "shared-key"),
                 ci_storage_audit.CacheKeyProbeRequest("second", "shared-key"),
             ],
+            cache_refs=["refs/heads/main"],
         )
 
         self.assertTrue(probes[0]["present"])
@@ -396,7 +394,7 @@ class CiStorageAuditTests(unittest.TestCase):
             ["actions/caches", "actions/caches"],
         )
 
-    def test_fetch_cache_key_probes_keeps_later_probes_after_api_error(self) -> None:
+    def test_fetch_cache_key_probes_fails_closed_on_api_error(self) -> None:
         client = FakeClient(
             {
                 (
@@ -421,22 +419,22 @@ class CiStorageAuditTests(unittest.TestCase):
             }
         )
 
-        probes = ci_storage_audit.fetch_cache_key_probes(
-            client,
-            [
-                ci_storage_audit.CacheKeyProbeRequest("unavailable", "unavailable-key"),
-                ci_storage_audit.CacheKeyProbeRequest("present", "present-key"),
-            ],
-        )
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.fetch_cache_key_probes(
+                client,
+                [
+                    ci_storage_audit.CacheKeyProbeRequest("unavailable", "unavailable-key"),
+                    ci_storage_audit.CacheKeyProbeRequest("present", "present-key"),
+                ],
+                cache_refs=["refs/pull/986/merge"],
+            )
 
-        self.assertFalse(probes[0]["available"])
-        self.assertFalse(probes[0]["present"])
-        self.assertIn("rate limited", probes[0]["reason"])
-        self.assertTrue(probes[1]["available"])
-        self.assertTrue(probes[1]["present"])
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.UNAVAILABLE)
+        self.assertEqual(raised.exception.field, "actions/caches")
+        self.assertIn("rate limited", str(raised.exception))
         self.assertEqual(
             [call[0] for call in client.calls],
-            ["actions/caches", "actions/caches"],
+            ["actions/caches"],
         )
 
     def test_fetch_cache_key_probes_ignores_exact_keys_on_unusable_refs(self) -> None:
@@ -507,10 +505,77 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(probes[0]["exact_count"], 1)
         self.assertEqual(probes[0]["ref_filter"], ["refs/pull/986/merge", "refs/heads/release/train"])
 
-    def test_normalize_cache_refs_drops_empty_values_and_duplicates(self) -> None:
+    def test_normalize_cache_refs_rejects_absent_filter(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.normalize_cache_ref_inputs()
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.ABSENT)
+        self.assertEqual(raised.exception.field, "cache_ref_filter")
+
+    def test_normalize_cache_refs_rejects_empty_ref(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.normalize_cache_ref_inputs(cache_refs=["refs/pull/986/merge", ""])
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.EMPTY)
+        self.assertEqual(raised.exception.field, "--cache-ref")
+
+    def test_normalize_cache_refs_rejects_invalid_ref(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.normalize_cache_ref_inputs(cache_refs=["main"])
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.INVALID)
+        self.assertEqual(raised.exception.field, "--cache-ref")
+
+    def test_normalize_cache_refs_rejects_whitespace_padded_ref(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.normalize_cache_ref_inputs(cache_refs=[" refs/pull/986/merge "])
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.INVALID)
+        self.assertEqual(raised.exception.field, "--cache-ref")
+
+    def test_normalize_cache_refs_rejects_duplicate_ref(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.normalize_cache_ref_inputs(
+                cache_refs=["refs/pull/986/merge", "refs/pull/986/merge"],
+            )
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.DUPLICATE)
+        self.assertEqual(raised.exception.field, "cache_ref_filter")
+
+    def test_normalize_cache_refs_rejects_empty_branch(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.normalize_cache_ref_inputs(
+                cache_refs=["refs/pull/986/merge"],
+                cache_branches=[""],
+            )
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.EMPTY)
+        self.assertEqual(raised.exception.field, "--cache-branch")
+
+    def test_normalize_cache_refs_rejects_full_ref_branch(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.normalize_cache_ref_inputs(
+                cache_refs=["refs/pull/986/merge"],
+                cache_branches=["refs/heads/main"],
+            )
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.INVALID)
+        self.assertEqual(raised.exception.field, "--cache-branch")
+
+    def test_normalize_cache_refs_rejects_duplicate_branch_ref(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.normalize_cache_ref_inputs(
+                cache_refs=["refs/heads/main"],
+                cache_branches=["main"],
+            )
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.DUPLICATE)
+        self.assertEqual(raised.exception.field, "cache_ref_filter")
+
+    def test_normalize_cache_refs_accepts_explicit_refs_and_branches(self) -> None:
         refs = ci_storage_audit.normalize_cache_ref_inputs(
-            cache_refs=[" refs/pull/986/merge ", "", "refs/pull/986/merge"],
-            cache_branches=["main", "", "main", "release/train"],
+            cache_refs=["refs/pull/986/merge"],
+            cache_branches=["main", "release/train"],
         )
 
         self.assertEqual(
@@ -518,7 +583,67 @@ class CiStorageAuditTests(unittest.TestCase):
             ["refs/pull/986/merge", "refs/heads/main", "refs/heads/release/train"],
         )
 
-    def test_fetch_cache_usage_unavailable_keeps_reason(self) -> None:
+    def test_resolve_cache_refs_accepts_pull_request_github_context(self) -> None:
+        refs = ci_storage_audit.resolve_cache_ref_inputs(
+            github_event_name="pull_request",
+            github_ref="refs/pull/986/merge",
+            github_base_ref="release/train",
+            github_default_branch="main",
+        )
+
+        self.assertEqual(
+            refs,
+            ["refs/pull/986/merge", "refs/heads/release/train", "refs/heads/main"],
+        )
+
+    def test_resolve_cache_refs_deduplicates_matching_base_and_default_branch(self) -> None:
+        refs = ci_storage_audit.resolve_cache_ref_inputs(
+            github_event_name="pull_request",
+            github_ref="refs/pull/986/merge",
+            github_base_ref="main",
+            github_default_branch="main",
+        )
+
+        self.assertEqual(refs, ["refs/pull/986/merge", "refs/heads/main"])
+
+    def test_resolve_cache_refs_rejects_pull_request_without_base_ref(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.resolve_cache_ref_inputs(
+                github_event_name="pull_request",
+                github_ref="refs/pull/986/merge",
+                github_base_ref="",
+                github_default_branch="main",
+            )
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.EMPTY)
+        self.assertEqual(raised.exception.field, "--github-base-ref")
+
+    def test_resolve_cache_refs_rejects_ambiguous_explicit_and_github_inputs(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.resolve_cache_ref_inputs(
+                cache_refs=["refs/pull/986/merge"],
+                github_event_name="pull_request",
+                github_ref="refs/pull/986/merge",
+                github_base_ref="main",
+                github_default_branch="main",
+            )
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.AMBIGUOUS)
+        self.assertEqual(raised.exception.field, "cache_ref_filter")
+
+    def test_resolve_cache_refs_rejects_unsupported_github_event(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.resolve_cache_ref_inputs(
+                github_event_name="schedule",
+                github_ref="refs/heads/main",
+                github_base_ref="",
+                github_default_branch="main",
+            )
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.INVALID)
+        self.assertEqual(raised.exception.field, "--github-event-name")
+
+    def test_fetch_cache_usage_fails_closed_when_unavailable(self) -> None:
         client = FakeClient(
             {
                 "actions/cache/usage": ci_storage_audit.GhApiError(
@@ -528,18 +653,12 @@ class CiStorageAuditTests(unittest.TestCase):
             }
         )
 
-        usage = ci_storage_audit.fetch_cache_usage(client)
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.fetch_cache_usage(client)
 
-        self.assertEqual(
-            usage,
-            {
-                "available": False,
-                "active_caches_count": 0,
-                "active_caches_size_in_bytes": 0,
-                "source": "unavailable",
-                "reason": "actions/cache/usage: secondary rate limit",
-            },
-        )
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.UNAVAILABLE)
+        self.assertEqual(raised.exception.field, "actions/cache/usage")
+        self.assertIn("secondary rate limit", str(raised.exception))
 
     def test_build_cache_key_probe_snapshot_includes_cache_usage(self) -> None:
         client = FakeClient(
@@ -563,6 +682,7 @@ class CiStorageAuditTests(unittest.TestCase):
             repo="owner/repo",
             snapshot_utc="2026-06-28T10:37:43+00:00",
             requests=[ci_storage_audit.CacheKeyProbeRequest("missing", "missing-key")],
+            cache_refs=["refs/heads/main"],
         )
 
         self.assertEqual(
@@ -656,16 +776,15 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertIn(": missing;", rendered)
         self.assertIn("missing; exact_count=0", rendered)
 
-    def test_render_cache_key_probe_text_reports_unavailable_probe(self) -> None:
+    def test_render_cache_key_probe_text_rejects_unavailable_probe_snapshot(self) -> None:
         snapshot = {
             "snapshot_utc": "2026-06-23T00:00:00+00:00",
             "repo": "owner/repo",
             "cache_usage": {
-                "available": False,
+                "available": True,
                 "active_caches_count": 0,
                 "active_caches_size_in_bytes": 0,
-                "source": "unavailable",
-                "reason": "actions/cache/usage: secondary rate limit",
+                "source": "rest",
             },
             "cache_key_probes": [
                 {
@@ -684,14 +803,79 @@ class CiStorageAuditTests(unittest.TestCase):
             ],
         }
 
-        rendered = ci_storage_audit.render_cache_key_probe_text(snapshot)
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.render_cache_key_probe_text(snapshot)
 
-        self.assertIn(
-            "Cache usage: unavailable (source: unavailable; reason=actions/cache/usage: secondary rate limit)",
-            rendered,
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.UNAVAILABLE)
+        self.assertEqual(raised.exception.field, "cache_key_probes")
+
+    def test_render_cache_persistence_failure_text_reports_contract_failure(self) -> None:
+        error = ci_storage_audit.AuditError(
+            "actions/caches: rate limited",
+            kind=ci_storage_audit.FailureKind.UNAVAILABLE,
+            field="actions/caches",
         )
-        self.assertIn(": unavailable;", rendered)
-        self.assertIn("reason=actions/caches: rate limited", rendered)
+
+        rendered = ci_storage_audit.render_cache_persistence_failure_text(error)
+
+        self.assertIn("- contract failure kind: `unavailable`", rendered)
+        self.assertIn("- contract failure field: `actions/caches`", rendered)
+        self.assertIn("ERROR: unavailable actions/caches: actions/caches: rate limited", rendered)
+
+    def test_render_cache_persistence_audit_text_includes_evidence_and_probe_text(self) -> None:
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "cache_usage": {
+                "available": True,
+                "active_caches_count": 11,
+                "active_caches_size_in_bytes": 11_044_557_069,
+                "source": "rest",
+            },
+            "cache_key_probes": [
+                {
+                    "label": "nextest-archive",
+                    "key": "exact-key",
+                    "present": False,
+                    "exact_count": 0,
+                    "api_prefix_count": 0,
+                    "api_prefix_count_source": "github_total_count",
+                    "api_prefix_enumerated_count": 0,
+                    "prefix_only_count": 0,
+                    "entries": [],
+                },
+            ],
+        }
+
+        rendered = ci_storage_audit.render_cache_persistence_audit_text(
+            snapshot,
+            restore_hits=[
+                ci_storage_audit.LabeledValue("nextest archive", "false"),
+            ],
+            save_outcomes=[
+                ci_storage_audit.LabeledValue("nextest archive", "success"),
+            ],
+        )
+
+        self.assertIn("### Cache persistence audit", rendered)
+        self.assertIn("- nextest archive restore hit: `false`", rendered)
+        self.assertIn("- nextest archive save outcome: `success`", rendered)
+        self.assertIn("```text", rendered)
+        self.assertIn(": missing;", rendered)
+
+    def test_cache_persistence_annotations_report_missing_keys(self) -> None:
+        snapshot = {
+            "cache_key_probes": [
+                {"label": "probe", "present": False, "available": True},
+            ],
+        }
+
+        self.assertEqual(
+            ci_storage_audit.cache_persistence_annotations(snapshot),
+            [
+                "::warning::one or more root nextest cache keys are missing from the Actions cache inventory after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context",
+            ],
+        )
 
     def test_render_cache_key_probe_text_warns_on_prefix_only_match(self) -> None:
         snapshot = {

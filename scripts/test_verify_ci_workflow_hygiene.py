@@ -814,39 +814,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          audit_log="$RUNNER_TEMP/cache-persistence-audit.txt"
-          : > "$audit_log"
-          set +e
           python3 scripts/ci_storage_audit.py \
             --repo "$GITHUB_REPOSITORY" \
-            --cache-ref "$GITHUB_REF" \
-            --cache-branch "$GITHUB_BASE_REF" \
-            --cache-branch "${{ github.event.repository.default_branch }}" \
+            --github-event-name "$GITHUB_EVENT_NAME" \
+            --github-ref "$GITHUB_REF" \
+            --github-base-ref "$GITHUB_BASE_REF" \
+            --github-default-branch "${{ github.event.repository.default_branch }}" \
+            --github-step-summary "$GITHUB_STEP_SUMMARY" \
+            --github-annotations \
+            --restore-hit "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_hit }}" \
+            --restore-hit "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}" \
+            --restore-hit "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_hit }}" \
+            --save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}" \
+            --save-outcome "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}" \
+            --save-outcome "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}" \
             --cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}" \
             --cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}" \
-            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" \
-            > "$audit_log" 2>&1
-          audit_rc=$?
-          set -e
-          {
-            echo "### Cache persistence audit"
-            echo
-            echo "- nextest archive restore hit: `${{ needs.test-archive.outputs.nextest_archive_cache_hit }}`"
-            echo "- root binary sidecars restore hit: `${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}`"
-            echo "- archive build target restore hit: `${{ needs.test-archive.outputs.archive_build_target_cache_hit }}`"
-            echo "- nextest archive save outcome: \\`${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}\\`"
-            echo "- root binary sidecars save outcome: \\`${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}\\`"
-            echo "- archive build target save outcome: \\`${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}\\`"
-            [[ "$audit_rc" -eq 0 ]] || echo "- probe exit status: \\`$audit_rc\\`"
-            echo
-            echo '```text'
-            cat "$audit_log" || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY" || true
-          [[ "$audit_rc" -eq 0 ]] || echo "::warning::cache persistence audit probe could not query the cache API; inspect the audit summary for failure context"
-          grep -q ': unavailable;' "$audit_log" && echo "::warning::cache persistence audit could not query one or more cache keys; inspect the audit summary for API error context" || true
-          grep -q ': missing;' "$audit_log" && echo "::warning::one or more root nextest cache keys are missing from the Actions cache inventory after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context" || true
-          exit "$audit_rc"
+            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"
 
   test:
     name: test
@@ -4474,8 +4458,8 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
                     "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    permissions:\n      contents: read\n      actions: read\n",
                     "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    permissions:\n      contents: read\n",
                 ),
-                "          set -e\n\n          {\n",
-                "          set -e\n          echo \"actions: read\" >/dev/null\n\n          {\n",
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          echo \"actions: read\" >/dev/null\n          python3 scripts/ci_storage_audit.py \\\n",
             ),
         ),
         (
@@ -4527,46 +4511,42 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             ),
         ),
         (
-            "cache-persistence-audit must write probe output directly to the audit log",
+            "cache-persistence-audit must delegate audit policy to ci_storage_audit",
             replace_once(
                 workflow,
-                '            > "$audit_log" 2>&1\n',
-                '            2>&1 | tee "$audit_log"\n',
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          echo preparing cache audit\n          python3 scripts/ci_storage_audit.py \\\n",
             ),
         ),
         (
-            "cache-persistence-audit must preserve probe exit status before reporting",
-            replace_once(workflow, "          audit_rc=$?\n", ""),
-        ),
-        (
-            "cache-persistence-audit must preserve probe exit status before reporting",
+            "cache-persistence-audit must not suppress audit contract failures",
             replace_once(
                 workflow,
-                "          audit_rc=$?\n",
-                '          echo "audit_rc=$?" >/dev/null\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" || true\n',
             ),
         ),
         (
-            "cache-persistence-audit probe exit must remain terminal",
+            "cache-persistence-audit must delegate audit policy to ci_storage_audit",
             replace_once(
                 workflow,
-                "          set -e\n\n          {\n",
-                "          set -e\n          exit 0\n\n          {\n",
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          grep -q ': missing;' \"$audit_log\"\n          python3 scripts/ci_storage_audit.py \\\n",
             ),
         ),
         (
-            "cache-persistence-audit probe exit must remain terminal",
+            "cache-persistence-audit must delegate audit policy to ci_storage_audit",
             replace_once(
                 workflow,
-                '            echo "### Cache persistence audit"\n',
-                '            echo "### Cache persistence audit"\n            if [[ "$audit_rc" -eq 0 ]]; then\n              exit 0\n            fi\n',
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          set +e\n          python3 scripts/ci_storage_audit.py \\\n",
             ),
         ),
         (
             "cache-persistence-audit must probe all root nextest cache keys",
             replace_once(
                 workflow,
-                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" \\\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
                 "",
             ),
         ),
@@ -4574,55 +4554,31 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             "cache-persistence-audit must limit exact-key probes to restorable cache refs",
             replace_once(
                 workflow,
-                '            --cache-branch "${{ github.event.repository.default_branch }}" \\\n',
+                '            --github-ref "$GITHUB_REF" \\\n',
                 "",
             ),
         ),
         (
             "cache-persistence-audit must write probe results to the job summary",
-            replace_once(workflow, '          } >> "$GITHUB_STEP_SUMMARY" || true\n', "          } > /dev/null\n"),
+            replace_once(workflow, '            --github-step-summary "$GITHUB_STEP_SUMMARY" \\\n', ""),
         ),
         (
-            "cache-persistence-audit must write probe results to the job summary",
-            replace_once(workflow, '          } >> "$GITHUB_STEP_SUMMARY" || true\n', '          echo "$GITHUB_STEP_SUMMARY" >/dev/null\n'),
+            "cache-persistence-audit must emit audit annotations from ci_storage_audit",
+            replace_once(workflow, "            --github-annotations \\\n", ""),
+        ),
+        (
+            "cache-persistence-audit must summarize cache restore hits",
+            replace_once(
+                workflow,
+                '            --restore-hit "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_hit }}" \\\n',
+                "",
+            ),
         ),
         (
             "cache-persistence-audit must summarize cache save outcomes",
             replace_once(
                 workflow,
-                '            echo "- nextest archive save outcome: \\`${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}\\`"\n',
-                "",
-            ),
-        ),
-        (
-            "cache-persistence-audit must warn when cache keys are missing",
-            replace_once(
-                workflow,
-                "          grep -q ': missing;' \"$audit_log\" && echo \"::warning::one or more root nextest cache keys are missing from the Actions cache inventory after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context\" || true\n",
-                "",
-            ),
-        ),
-        (
-            "cache-persistence-audit must warn when cache keys are missing",
-            replace_once(
-                workflow,
-                "          grep -q ': missing;' \"$audit_log\" && echo \"::warning::one or more root nextest cache keys are missing from the Actions cache inventory after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context\" || true\n",
-                "          if false; then\n            grep -q ': missing;' \"$audit_log\" && echo \"::warning::one or more root nextest cache keys are missing from the Actions cache inventory after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context\" || true\n          fi\n",
-            ),
-        ),
-        (
-            "cache-persistence-audit must warn when cache key probes are unavailable",
-            replace_once(
-                workflow,
-                "          grep -q ': unavailable;' \"$audit_log\" && echo \"::warning::cache persistence audit could not query one or more cache keys; inspect the audit summary for API error context\" || true\n",
-                "",
-            ),
-        ),
-        (
-            "cache-persistence-audit must warn when probe execution fails",
-            replace_once(
-                workflow,
-                "          [[ \"$audit_rc\" -eq 0 ]] || echo \"::warning::cache persistence audit probe could not query the cache API; inspect the audit summary for failure context\"\n",
+                '            --save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}" \\\n',
                 "",
             ),
         ),

@@ -653,60 +653,27 @@ CACHE_PERSISTENCE_AUDIT_CACHE_KEYS = (
     '--cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"',
 )
 CACHE_PERSISTENCE_AUDIT_CACHE_REFS = (
-    '--cache-ref "$GITHUB_REF"',
-    '--cache-branch "$GITHUB_BASE_REF"',
-    '--cache-branch "${{ github.event.repository.default_branch }}"',
+    '--github-event-name "$GITHUB_EVENT_NAME"',
+    '--github-ref "$GITHUB_REF"',
+    '--github-base-ref "$GITHUB_BASE_REF"',
+    '--github-default-branch "${{ github.event.repository.default_branch }}"',
 )
-CACHE_PERSISTENCE_AUDIT_SAVE_SUMMARY_LINES = (
-    'echo "- nextest archive save outcome: \\`${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}\\`"',
-    'echo "- root binary sidecars save outcome: \\`${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}\\`"',
-    'echo "- archive build target save outcome: \\`${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}\\`"',
+CACHE_PERSISTENCE_AUDIT_SUMMARY_ARG = '--github-step-summary "$GITHUB_STEP_SUMMARY"'
+CACHE_PERSISTENCE_AUDIT_ANNOTATIONS_ARG = "--github-annotations"
+CACHE_PERSISTENCE_AUDIT_RESTORE_HIT_ARGS = (
+    '--restore-hit "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_hit }}"',
+    '--restore-hit "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}"',
+    '--restore-hit "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_hit }}"',
 )
-CACHE_PERSISTENCE_AUDIT_MISSING_WARNING = (
-    "::warning::one or more root nextest cache keys are missing from the Actions cache inventory "
-    "after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context"
-)
-CACHE_PERSISTENCE_AUDIT_PROBE_FAILURE_WARNING = (
-    "::warning::cache persistence audit probe could not query the cache API; "
-    "inspect the audit summary for failure context"
-)
-CACHE_PERSISTENCE_AUDIT_UNAVAILABLE_WARNING = (
-    "::warning::cache persistence audit could not query one or more cache keys; "
-    "inspect the audit summary for API error context"
-)
-CACHE_PERSISTENCE_AUDIT_PROBE_FAILURE_WARNING_COMMAND = (
-    f'[[ "$audit_rc" -eq 0 ]] || echo "{CACHE_PERSISTENCE_AUDIT_PROBE_FAILURE_WARNING}"'
-)
-CACHE_PERSISTENCE_AUDIT_MISSING_WARNING_COMMAND = (
-    f"""grep -q ': missing;' "$audit_log" && echo "{CACHE_PERSISTENCE_AUDIT_MISSING_WARNING}" || true"""
-)
-CACHE_PERSISTENCE_AUDIT_UNAVAILABLE_WARNING_COMMAND = (
-    f"""grep -q ': unavailable;' "$audit_log" && echo "{CACHE_PERSISTENCE_AUDIT_UNAVAILABLE_WARNING}" || true"""
+CACHE_PERSISTENCE_AUDIT_SAVE_OUTCOME_ARGS = (
+    '--save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}"',
+    '--save-outcome "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}"',
+    '--save-outcome "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}"',
 )
 CACHE_PERSISTENCE_AUDIT_PROBE_BLOCK_REQUIREMENTS = (
     (
         "cache-persistence-audit must use the workflow token for cache API reads",
         ('GH_TOKEN: ${{ github.token }}',),
-    ),
-)
-CACHE_PERSISTENCE_AUDIT_PROBE_RUN_REQUIREMENTS = (
-    (
-        "cache-persistence-audit must summarize cache save outcomes",
-        CACHE_PERSISTENCE_AUDIT_SAVE_SUMMARY_LINES,
-    ),
-)
-CACHE_PERSISTENCE_AUDIT_WARNING_COMMAND_REQUIREMENTS = (
-    (
-        "cache-persistence-audit must warn when probe execution fails",
-        CACHE_PERSISTENCE_AUDIT_PROBE_FAILURE_WARNING_COMMAND,
-    ),
-    (
-        "cache-persistence-audit must warn when cache keys are missing",
-        CACHE_PERSISTENCE_AUDIT_MISSING_WARNING_COMMAND,
-    ),
-    (
-        "cache-persistence-audit must warn when cache key probes are unavailable",
-        CACHE_PERSISTENCE_AUDIT_UNAVAILABLE_WARNING_COMMAND,
     ),
 )
 TEST_ARCHIVE_TEST_PROFILE_ENV = 'CARGO_PROFILE_TEST_DEBUG: "0"'
@@ -2166,55 +2133,29 @@ def append_missing_cache_persistence_probe_structure(
     run_lines: list[str],
 ) -> None:
     commands = top_level_shell_commands(run_lines)
-    log_assignment = 'audit_log="$RUNNER_TEMP/cache-persistence-audit.txt"'
-    direct_log_redirect = '> "$audit_log" 2>&1'
     probe_command = next(
         (command for command in commands if command.startswith(CACHE_PERSISTENCE_AUDIT_COMMAND)),
         None,
     )
+    if len(commands) != 1 or probe_command is None:
+        errors.append("cache-persistence-audit must delegate audit policy to ci_storage_audit")
+    if any("|| true" in line for line in run_lines):
+        errors.append("cache-persistence-audit must not suppress audit contract failures")
     if probe_command is None:
         errors.append("cache-persistence-audit must run ci_storage_audit exact-key probes")
     else:
-        if direct_log_redirect not in probe_command:
-            errors.append("cache-persistence-audit must write probe output directly to the audit log")
         if not all(cache_key in probe_command for cache_key in CACHE_PERSISTENCE_AUDIT_CACHE_KEYS):
             errors.append("cache-persistence-audit must probe all root nextest cache keys")
         if not all(cache_ref in probe_command for cache_ref in CACHE_PERSISTENCE_AUDIT_CACHE_REFS):
             errors.append("cache-persistence-audit must limit exact-key probes to restorable cache refs")
-    if not any(CACHE_PERSISTENCE_AUDIT_CACHE_REFS[0] in command for command in commands):
-        errors.append("cache-persistence-audit must limit exact-key probes to restorable cache refs")
-
-    if not ordered_command_match(
-        commands,
-        (
-            lambda command: command == log_assignment,
-            lambda command: command == ': > "$audit_log"',
-            lambda command: command == "set +e",
-            lambda command: command.startswith(CACHE_PERSISTENCE_AUDIT_COMMAND)
-            and direct_log_redirect in command,
-            lambda command: command == "audit_rc=$?",
-            lambda command: command == "set -e",
-            lambda command: command == 'exit "$audit_rc"',
-        ),
-    ):
-        errors.append("cache-persistence-audit must preserve probe exit status before reporting")
-
-    if not run_body_has_single_terminal_exit(run_lines, 'exit "$audit_rc"'):
-        errors.append("cache-persistence-audit probe exit must remain terminal")
-
-    if not run_body_has_top_level_command(run_lines, '} >> "$GITHUB_STEP_SUMMARY" || true'):
-        errors.append("cache-persistence-audit must write probe results to the job summary")
-
-
-def append_missing_warning_command_requirements(
-    errors: list[str],
-    run_lines: list[str],
-    requirements: tuple[tuple[str, str], ...],
-) -> None:
-    commands = top_level_shell_commands(run_lines)
-    for error, command in requirements:
-        if command not in commands:
-            errors.append(error)
+        if CACHE_PERSISTENCE_AUDIT_SUMMARY_ARG not in probe_command:
+            errors.append("cache-persistence-audit must write probe results to the job summary")
+        if CACHE_PERSISTENCE_AUDIT_ANNOTATIONS_ARG not in probe_command:
+            errors.append("cache-persistence-audit must emit audit annotations from ci_storage_audit")
+        if not all(arg in probe_command for arg in CACHE_PERSISTENCE_AUDIT_RESTORE_HIT_ARGS):
+            errors.append("cache-persistence-audit must summarize cache restore hits")
+        if not all(arg in probe_command for arg in CACHE_PERSISTENCE_AUDIT_SAVE_OUTCOME_ARGS):
+            errors.append("cache-persistence-audit must summarize cache save outcomes")
 
 
 def normalize_script_text(text: str) -> str:
@@ -10159,17 +10100,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 audit_probe_text,
                 CACHE_PERSISTENCE_AUDIT_PROBE_BLOCK_REQUIREMENTS,
             )
-            append_missing_text_requirements(
-                errors,
-                audit_probe_run_text,
-                CACHE_PERSISTENCE_AUDIT_PROBE_RUN_REQUIREMENTS,
-            )
             append_missing_cache_persistence_probe_structure(errors, audit_probe_run_lines)
-            append_missing_warning_command_requirements(
-                errors,
-                audit_probe_run_lines,
-                CACHE_PERSISTENCE_AUDIT_WARNING_COMMAND_REQUIREMENTS,
-            )
 
     if "nextest-fingerprint-reuse" in jobs:
         reuse_lines = jobs["nextest-fingerprint-reuse"]

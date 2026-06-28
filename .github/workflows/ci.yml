@@ -957,41 +957,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          audit_log="$RUNNER_TEMP/cache-persistence-audit.txt"
-          : > "$audit_log"
-          set +e
           python3 scripts/ci_storage_audit.py \
             --repo "$GITHUB_REPOSITORY" \
-            --cache-ref "$GITHUB_REF" \
-            --cache-branch "$GITHUB_BASE_REF" \
-            --cache-branch "${{ github.event.repository.default_branch }}" \
+            --github-event-name "$GITHUB_EVENT_NAME" \
+            --github-ref "$GITHUB_REF" \
+            --github-base-ref "$GITHUB_BASE_REF" \
+            --github-default-branch "${{ github.event.repository.default_branch }}" \
+            --github-step-summary "$GITHUB_STEP_SUMMARY" \
+            --github-annotations \
+            --restore-hit "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_hit }}" \
+            --restore-hit "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}" \
+            --restore-hit "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_hit }}" \
+            --save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}" \
+            --save-outcome "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}" \
+            --save-outcome "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}" \
             --cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}" \
             --cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}" \
-            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" \
-            > "$audit_log" 2>&1
-          audit_rc=$?
-          set -e
-
-          {
-            echo "### Cache persistence audit"
-            echo
-            echo "- nextest archive restore hit: \`${{ needs.test-archive.outputs.nextest_archive_cache_hit }}\`"
-            echo "- root binary sidecars restore hit: \`${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}\`"
-            echo "- archive build target restore hit: \`${{ needs.test-archive.outputs.archive_build_target_cache_hit }}\`"
-            echo "- nextest archive save outcome: \`${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}\`"
-            echo "- root binary sidecars save outcome: \`${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}\`"
-            echo "- archive build target save outcome: \`${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}\`"
-            [[ "$audit_rc" -eq 0 ]] || echo "- probe exit status: \`$audit_rc\`"
-            echo
-            echo '```text'
-            cat "$audit_log" || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY" || true
-
-          [[ "$audit_rc" -eq 0 ]] || echo "::warning::cache persistence audit probe could not query the cache API; inspect the audit summary for failure context"
-          grep -q ': unavailable;' "$audit_log" && echo "::warning::cache persistence audit could not query one or more cache keys; inspect the audit summary for API error context" || true
-          grep -q ': missing;' "$audit_log" && echo "::warning::one or more root nextest cache keys are missing from the Actions cache inventory after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context" || true
-          exit "$audit_rc"
+            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"
 
   test:
     name: test

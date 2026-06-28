@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import collections
 import datetime as dt
+import enum
 import json
 import subprocess
 import sys
@@ -25,20 +26,50 @@ import urllib.parse
 from typing import Any, NamedTuple
 
 
+class FailureKind(enum.StrEnum):
+    ABSENT = "absent"
+    EMPTY = "empty"
+    INVALID = "invalid"
+    DUPLICATE = "duplicate"
+    UNAVAILABLE = "unavailable"
+    AMBIGUOUS = "ambiguous"
+
+
 class AuditError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: FailureKind = FailureKind.INVALID,
+        field: str = "audit",
+    ) -> None:
+        self.kind = kind
+        self.field = field
+        super().__init__(f"{kind.value} {field}: {message}")
 
 
 class GhApiError(AuditError):
     def __init__(self, path: str, message: str) -> None:
         self.path = path
         self.message = message
-        super().__init__(f"{path}: {message}")
+        super().__init__(message, kind=FailureKind.UNAVAILABLE, field=path)
 
 
 class CacheKeyProbeRequest(NamedTuple):
     label: str
     key: str
+
+
+class LabeledValue(NamedTuple):
+    label: str
+    value: str
+
+
+CACHE_PERSISTENCE_MISSING_WARNING = (
+    "::warning::one or more root nextest cache keys are missing from the Actions cache inventory "
+    "after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context"
+)
+SUPPORTED_GITHUB_CACHE_EVENTS = frozenset({"pull_request", "push", "workflow_dispatch", "merge_group"})
 
 
 class GhClient:
@@ -192,24 +223,54 @@ def cache_entry_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
 
 def parse_cache_key_probe(raw: str) -> CacheKeyProbeRequest:
     if "=" not in raw:
-        raise AuditError("--cache-key must be LABEL=KEY")
+        raise AuditError("--cache-key must be LABEL=KEY", kind=FailureKind.INVALID, field="--cache-key")
     label, key = raw.split("=", 1)
-    label = label.strip()
-    key = key.strip()
-    if not label:
-        raise AuditError("--cache-key label must not be empty")
-    if not key:
-        raise AuditError("--cache-key key must not be empty")
+    label = require_text(label, "--cache-key label")
+    key = require_text(key, "--cache-key key")
     return CacheKeyProbeRequest(label=label, key=key)
+
+
+def parse_labeled_value(raw: str, field: str) -> LabeledValue:
+    if "=" not in raw:
+        raise AuditError(f"{field} must be LABEL=VALUE", kind=FailureKind.INVALID, field=field)
+    label, value = raw.split("=", 1)
+    label = require_text(label, f"{field} label")
+    value = require_text(value, f"{field} value")
+    return LabeledValue(label=label, value=value)
+
+
+def require_text(value: str | None, field: str) -> str:
+    if value is None:
+        raise AuditError(f"{field} is required", kind=FailureKind.ABSENT, field=field)
+    if value == "":
+        raise AuditError(f"{field} must not be empty", kind=FailureKind.EMPTY, field=field)
+    if value != value.strip():
+        raise AuditError(f"{field} must not contain surrounding whitespace", kind=FailureKind.INVALID, field=field)
+    return value
+
+
+def require_ref(value: str | None, field: str) -> str:
+    ref = require_text(value, field)
+    if not ref.startswith("refs/"):
+        raise AuditError(f"{field} must be a refs/ value", kind=FailureKind.INVALID, field=field)
+    return ref
+
+
+def require_branch(value: str | None, field: str) -> str:
+    branch = require_text(value, field)
+    if branch.startswith("refs/"):
+        raise AuditError(f"{field} must be a branch name, not a refs/ value", kind=FailureKind.INVALID, field=field)
+    return branch
 
 
 def normalize_cache_refs(cache_refs: list[str] | None) -> list[str]:
     refs: list[str] = []
     seen: set[str] = set()
-    for raw in cache_refs or []:
-        ref = raw.strip()
-        if not ref or ref in seen:
-            continue
+    raw_refs = [] if cache_refs is None else cache_refs
+    for raw in raw_refs:
+        ref = require_ref(raw, "--cache-ref")
+        if ref in seen:
+            raise AuditError(f"duplicate cache ref: {ref}", kind=FailureKind.DUPLICATE, field="cache_ref_filter")
         seen.add(ref)
         refs.append(ref)
     return refs
@@ -222,39 +283,91 @@ def normalize_cache_ref_inputs(
 ) -> list[str]:
     refs = normalize_cache_refs(cache_refs)
     seen = set(refs)
-    for raw in cache_branches or []:
-        branch = raw.strip()
-        if not branch:
-            continue
+    raw_branches = [] if cache_branches is None else cache_branches
+    for raw in raw_branches:
+        branch = require_branch(raw, "--cache-branch")
         ref = f"refs/heads/{branch}"
         if ref in seen:
-            continue
+            raise AuditError(f"duplicate cache ref: {ref}", kind=FailureKind.DUPLICATE, field="cache_ref_filter")
         seen.add(ref)
         refs.append(ref)
+    if not refs:
+        raise AuditError(
+            "cache key probes require at least one cache ref",
+            kind=FailureKind.ABSENT,
+            field="cache_ref_filter",
+        )
     return refs
 
 
-def unavailable_cache_key_probe(
-    request: CacheKeyProbeRequest,
-    reason: str,
+def resolve_github_cache_refs(
+    *,
+    github_event_name: str | None,
+    github_ref: str | None,
+    github_base_ref: str | None,
+    github_default_branch: str | None,
+) -> list[str]:
+    event_name = require_text(github_event_name, "--github-event-name")
+    if event_name not in SUPPORTED_GITHUB_CACHE_EVENTS:
+        raise AuditError(
+            f"unsupported GitHub event for cache probes: {event_name}",
+            kind=FailureKind.INVALID,
+            field="--github-event-name",
+        )
+    current_ref = require_ref(github_ref, "--github-ref")
+    default_branch = require_branch(github_default_branch, "--github-default-branch")
+    refs: list[str] = []
+    seen: set[str] = set()
+
+    def add_ref(ref: str) -> None:
+        if ref not in seen:
+            seen.add(ref)
+            refs.append(ref)
+
+    add_ref(current_ref)
+    if event_name == "pull_request":
+        add_ref(f"refs/heads/{require_branch(github_base_ref, '--github-base-ref')}")
+    else:
+        if github_base_ref is None:
+            raise AuditError("--github-base-ref is required", kind=FailureKind.ABSENT, field="--github-base-ref")
+        if github_base_ref != "":
+            raise AuditError(
+                "--github-base-ref must be empty outside pull_request",
+                kind=FailureKind.INVALID,
+                field="--github-base-ref",
+            )
+    add_ref(f"refs/heads/{default_branch}")
+    return refs
+
+
+def resolve_cache_ref_inputs(
     *,
     cache_refs: list[str] | None = None,
-) -> dict[str, Any]:
-    return {
-        "label": request.label,
-        "key": request.key,
-        "available": False,
-        "present": False,
-        "exact_count": 0,
-        "api_prefix_count": 0,
-        "api_prefix_count_source": "unavailable",
-        "api_prefix_enumerated_count": 0,
-        "ref_filtered_prefix_enumerated_count": 0,
-        "prefix_only_count": 0,
-        "entries": [],
-        "reason": reason,
-        "ref_filter": normalize_cache_refs(cache_refs),
-    }
+    cache_branches: list[str] | None = None,
+    github_event_name: str | None = None,
+    github_ref: str | None = None,
+    github_base_ref: str | None = None,
+    github_default_branch: str | None = None,
+) -> list[str]:
+    explicit_inputs_present = cache_refs is not None or cache_branches is not None
+    github_inputs_present = any(
+        value is not None
+        for value in (github_event_name, github_ref, github_base_ref, github_default_branch)
+    )
+    if explicit_inputs_present and github_inputs_present:
+        raise AuditError(
+            "use either explicit cache refs or GitHub context, not both",
+            kind=FailureKind.AMBIGUOUS,
+            field="cache_ref_filter",
+        )
+    if github_inputs_present:
+        return resolve_github_cache_refs(
+            github_event_name=github_event_name,
+            github_ref=github_ref,
+            github_base_ref=github_base_ref,
+            github_default_branch=github_default_branch,
+        )
+    return normalize_cache_ref_inputs(cache_refs=cache_refs, cache_branches=cache_branches)
 
 
 def fetch_cache_key_probes(
@@ -278,9 +391,10 @@ def fetch_cache_key_probes(
                 "actions/caches",
             )
             raw_entries = list_field(payload, "actions_caches", "actions/caches")
-        except (GhApiError, AuditError) as exc:
-            probes.append(unavailable_cache_key_probe(request, str(exc), cache_refs=ref_filter))
-            continue
+        except GhApiError:
+            raise
+        except AuditError as exc:
+            raise AuditError(str(exc), kind=FailureKind.UNAVAILABLE, field="actions/caches") from exc
         prefix_entries = [
             cache_entry_from_raw(raw)
             for raw in raw_entries
@@ -318,14 +432,10 @@ def fetch_cache_key_probes(
 def fetch_cache_usage(client: GhClient) -> dict[str, Any]:
     try:
         payload = require_object(client.api("actions/cache/usage"), "actions/cache/usage")
-    except (GhApiError, AuditError) as exc:
-        return {
-            "available": False,
-            "active_caches_count": 0,
-            "active_caches_size_in_bytes": 0,
-            "source": "unavailable",
-            "reason": str(exc),
-        }
+    except GhApiError:
+        raise
+    except AuditError as exc:
+        raise AuditError(str(exc), kind=FailureKind.UNAVAILABLE, field="actions/cache/usage") from exc
     return {
         "available": True,
         "active_caches_count": nonnegative_int(payload.get("active_caches_count")),
@@ -496,6 +606,13 @@ def build_cache_key_probe_snapshot(
     }
 
 
+def append_step_summary(path: str, text: str) -> None:
+    summary_path = require_text(path, "--github-step-summary")
+    with open(summary_path, "a", encoding="utf-8") as summary:
+        summary.write(text)
+        summary.write("\n")
+
+
 def render_cache_key_probe_text(snapshot: dict[str, Any]) -> str:
     probes = list_field(snapshot, "cache_key_probes", "cache_key_probes")
     lines = [
@@ -517,22 +634,23 @@ def render_cache_key_probe_text(snapshot: dict[str, Any]) -> str:
                 f"(source: {usage.get('source')})"
             )
         else:
-            reason = optional_text(usage.get("reason"))
-            if reason:
-                lines.append(
-                    f"Cache usage: unavailable (source: {usage.get('source')}; reason={reason})"
-                )
-            else:
-                lines.append(f"Cache usage: unavailable (source: {usage.get('source')})")
+            raise AuditError(
+                "cache usage is unavailable in a successful probe snapshot",
+                kind=FailureKind.UNAVAILABLE,
+                field="cache_usage",
+            )
         lines.append("")
     lines.append("Cache key probes:")
     for raw in probes:
         if not isinstance(raw, dict):
             continue
         if raw.get("available") is False:
-            status = "unavailable"
-        else:
-            status = "present" if raw.get("present") else "missing"
+            raise AuditError(
+                "cache key probe is unavailable in a successful probe snapshot",
+                kind=FailureKind.UNAVAILABLE,
+                field="cache_key_probes",
+            )
+        status = "present" if raw.get("present") else "missing"
         reason = optional_text(raw.get("reason"))
         reason_fragment = f" reason={reason}" if reason else ""
         ref_filtered_count = raw.get("ref_filtered_prefix_enumerated_count")
@@ -573,6 +691,54 @@ def render_cache_key_probe_text(snapshot: dict[str, Any]) -> str:
                     f"last_accessed_at={entry.get('last_accessed_at')}"
                 )
     return "\n".join(lines)
+
+
+def render_cache_persistence_audit_text(
+    snapshot: dict[str, Any],
+    *,
+    restore_hits: list[LabeledValue],
+    save_outcomes: list[LabeledValue],
+) -> str:
+    lines = ["### Cache persistence audit", ""]
+    for entry in restore_hits:
+        lines.append(f"- {entry.label} restore hit: `{entry.value}`")
+    for entry in save_outcomes:
+        lines.append(f"- {entry.label} save outcome: `{entry.value}`")
+    lines.extend(["", "```text", render_cache_key_probe_text(snapshot), "```"])
+    return "\n".join(lines)
+
+
+def cache_persistence_annotations(snapshot: dict[str, Any]) -> list[str]:
+    probes = list_field(snapshot, "cache_key_probes", "cache_key_probes")
+    if any(isinstance(raw, dict) and raw.get("available") is False for raw in probes):
+        raise AuditError(
+            "cache key probe is unavailable in a successful probe snapshot",
+            kind=FailureKind.UNAVAILABLE,
+            field="cache_key_probes",
+        )
+    has_missing = any(
+        isinstance(raw, dict) and raw.get("available") is not False and not raw.get("present")
+        for raw in probes
+    )
+    annotations: list[str] = []
+    if has_missing:
+        annotations.append(CACHE_PERSISTENCE_MISSING_WARNING)
+    return annotations
+
+
+def render_cache_persistence_failure_text(error: AuditError) -> str:
+    return "\n".join(
+        [
+            "### Cache persistence audit",
+            "",
+            f"- contract failure kind: `{error.kind.value}`",
+            f"- contract failure field: `{error.field}`",
+            "",
+            "```text",
+            f"ERROR: {error}",
+            "```",
+        ]
+    )
 
 
 def build_snapshot(client: GhClient, *, repo: str, branch: str, snapshot_utc: str) -> dict[str, Any]:
@@ -668,38 +834,96 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--cache-ref",
         action="append",
-        default=[],
+        default=None,
         metavar="REF",
         help="Limit exact-key presence to cache refs restorable by this run. Repeat for multiple refs.",
     )
     parser.add_argument(
         "--cache-branch",
         action="append",
-        default=[],
+        default=None,
         metavar="BRANCH",
         help="Limit exact-key presence to a branch ref restorable by this run. Repeat for multiple branches.",
+    )
+    parser.add_argument("--github-event-name", help="GitHub event name for cache ref resolution.")
+    parser.add_argument("--github-ref", help="GitHub ref for the current workflow run.")
+    parser.add_argument("--github-base-ref", help="GitHub base branch for pull_request cache ref resolution.")
+    parser.add_argument("--github-default-branch", help="GitHub repository default branch.")
+    parser.add_argument("--github-step-summary", help="Append the cache persistence audit summary to this path.")
+    parser.add_argument("--github-annotations", action="store_true", help="Emit GitHub workflow annotations.")
+    parser.add_argument(
+        "--restore-hit",
+        action="append",
+        default=None,
+        metavar="LABEL=VALUE",
+        help="Restore-hit evidence for cache persistence summaries.",
+    )
+    parser.add_argument(
+        "--save-outcome",
+        action="append",
+        default=None,
+        metavar="LABEL=VALUE",
+        help="Save outcome evidence for cache persistence summaries.",
     )
     return parser.parse_args(argv)
 
 
-def main(argv: list[str]) -> int:
-    args = parse_args(argv)
+def run(args: argparse.Namespace) -> int:
     repo = args.repo or infer_repo()
     client = GhClient(repo)
     snapshot_utc = isoformat_utc(dt.datetime.now(dt.UTC))
     if args.cache_key:
+        cache_refs = resolve_cache_ref_inputs(
+            cache_refs=args.cache_ref,
+            cache_branches=args.cache_branch,
+            github_event_name=args.github_event_name,
+            github_ref=args.github_ref,
+            github_base_ref=args.github_base_ref,
+            github_default_branch=args.github_default_branch,
+        )
         snapshot = build_cache_key_probe_snapshot(
             client,
             repo=repo,
             snapshot_utc=snapshot_utc,
             requests=[parse_cache_key_probe(raw) for raw in args.cache_key],
-            cache_refs=args.cache_ref,
-            cache_branches=args.cache_branch,
+            cache_refs=cache_refs,
         )
-        if args.json:
+        restore_hits = [
+            parse_labeled_value(raw, "--restore-hit")
+            for raw in ([] if args.restore_hit is None else args.restore_hit)
+        ]
+        save_outcomes = [
+            parse_labeled_value(raw, "--save-outcome")
+            for raw in ([] if args.save_outcome is None else args.save_outcome)
+        ]
+        if args.github_step_summary is not None:
+            if not restore_hits:
+                raise AuditError("--restore-hit is required", kind=FailureKind.ABSENT, field="--restore-hit")
+            if not save_outcomes:
+                raise AuditError("--save-outcome is required", kind=FailureKind.ABSENT, field="--save-outcome")
+            append_step_summary(
+                args.github_step_summary,
+                render_cache_persistence_audit_text(
+                    snapshot,
+                    restore_hits=restore_hits,
+                    save_outcomes=save_outcomes,
+                ),
+            )
+        elif args.json:
             print(json.dumps(snapshot, indent=2, sort_keys=True))
+        elif restore_hits or save_outcomes:
+            print(
+                render_cache_persistence_audit_text(
+                    snapshot,
+                    restore_hits=restore_hits,
+                    save_outcomes=save_outcomes,
+                )
+            )
         else:
             print(render_cache_key_probe_text(snapshot))
+        if args.github_annotations:
+            for annotation in cache_persistence_annotations(snapshot):
+                print(annotation)
         return 0
     branch = args.branch or infer_default_branch()
     snapshot = build_snapshot(
@@ -715,9 +939,18 @@ def main(argv: list[str]) -> int:
     return 0
 
 
-if __name__ == "__main__":
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
     try:
-        raise SystemExit(main(sys.argv[1:]))
+        return run(args)
     except AuditError as exc:
+        if getattr(args, "github_step_summary", None) is not None:
+            append_step_summary(args.github_step_summary, render_cache_persistence_failure_text(exc))
+        if getattr(args, "github_annotations", False):
+            print(f"::error::cache persistence audit contract failed: {exc}")
         print(f"ERROR: {exc}", file=sys.stderr)
-        raise SystemExit(2) from exc
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

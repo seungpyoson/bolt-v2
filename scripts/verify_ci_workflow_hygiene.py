@@ -10327,10 +10327,17 @@ def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
     detect_job = parse_jobs(text).get("detect", [])
     errors: list[str] = []
     detect_text = "\n".join(detect_job)
+    validate_required = "python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect"
+    if validate_required not in detect_text:
+        errors.append("backtester detect must validate CI input sets before skip decisions")
+    bootstrap_required = 'git diff --name-only "${base_sha}...HEAD" -- scripts/ci_input_sets.py ci/rust-ci-inputs.toml > "$bootstrap_changed_path"'
+    if bootstrap_required not in detect_text:
+        errors.append("backtester detect must force-run on CI input-set bootstrap changes")
     required = 'python3 scripts/ci_input_sets.py changed backtester_detect --base "$base_sha" --head HEAD'
     if required not in detect_text:
         errors.append("backtester detect paths must come from ci_input_sets backtester_detect")
-    if 'git diff --name-only "${base_sha}...HEAD" --' in detect_text:
+    non_bootstrap_detect_text = detect_text.replace(bootstrap_required, "")
+    if 'git diff --name-only "${base_sha}...HEAD" --' in non_bootstrap_detect_text:
         errors.append("backtester detect paths must not be duplicated inline")
     return errors
 

@@ -104,6 +104,40 @@ def assert_hash_changes_when_exact_input_is_deleted() -> None:
         raise AssertionError("input hash must change when an exact input is deleted")
 
 
+def assert_validate_allows_deleted_historical_exact_inputs() -> None:
+    with TemporaryDirectory() as tmp:
+        repo = fixture_repo(Path(tmp))
+        run_git(repo, "rm", "Cargo.toml")
+        run_git(repo, "commit", "--no-verify", "-m", "delete exact input")
+        subprocess.check_call(
+            [sys.executable, str(SCRIPT), "--repo", str(repo), "validate", "cache"],
+        )
+
+
+def assert_validate_rejects_never_valid_exact_inputs() -> None:
+    with TemporaryDirectory() as tmp:
+        repo = fixture_repo(Path(tmp))
+        config = repo / "ci" / "rust-ci-inputs.toml"
+        config.write_text(
+            config.read_text(encoding="utf-8").replace(
+                '  "Cargo.toml",\n',
+                '  "Cargo.toml",\n  "Cargo.lok",\n',
+            ),
+            encoding="utf-8",
+        )
+        try:
+            subprocess.check_output(
+                [sys.executable, str(SCRIPT), "--repo", str(repo), "validate", "cache"],
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            if "input path does not resolve to a tracked or historical path: Cargo.lok" not in exc.output:
+                raise AssertionError(f"validate failed for the wrong reason: {exc.output}") from exc
+        else:
+            raise AssertionError("validate must reject never-valid exact pathspecs")
+
+
 def assert_changed_reports_deleted_exact_inputs() -> None:
     with TemporaryDirectory() as tmp:
         repo = fixture_repo(Path(tmp))
@@ -169,6 +203,8 @@ def main() -> int:
     assert_set_expansion_is_recursive_and_stable()
     assert_hash_changes_when_tracked_inputs_change()
     assert_hash_changes_when_exact_input_is_deleted()
+    assert_validate_allows_deleted_historical_exact_inputs()
+    assert_validate_rejects_never_valid_exact_inputs()
     assert_changed_reports_deleted_exact_inputs()
     assert_changed_uses_named_input_set()
     assert_backtester_sets_cover_cache_and_detector_inputs()

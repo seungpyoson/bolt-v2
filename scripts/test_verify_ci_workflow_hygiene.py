@@ -4049,6 +4049,16 @@ def assert_security_key_public_prefix_is_validated() -> None:
 def assert_backtester_detect_uses_ci_input_set() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    validate_required = "python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect"
+    missing_validate = replace_once(workflow, f"          {validate_required}\n", "")
+    validate_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_validate})
+    if not any("backtester detect must validate CI input sets before skip decisions" in error for error in validate_errors):
+        raise AssertionError(f"backtester detector must reject missing input-set validation, got: {validate_errors}")
+    bootstrap_required = 'git diff --name-only "${base_sha}...HEAD" -- scripts/ci_input_sets.py ci/rust-ci-inputs.toml > "$bootstrap_changed_path"'
+    missing_bootstrap = replace_once(workflow, bootstrap_required, 'true')
+    bootstrap_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_bootstrap})
+    if not any("backtester detect must force-run on CI input-set bootstrap changes" in error for error in bootstrap_errors):
+        raise AssertionError(f"backtester detector must reject missing bootstrap guard, got: {bootstrap_errors}")
     required = 'changed="$(python3 scripts/ci_input_sets.py changed backtester_detect --base "$base_sha" --head HEAD)"'
     bad = replace_once(
         workflow,
@@ -4061,7 +4071,7 @@ def assert_backtester_detect_uses_ci_input_set() -> None:
     if not any("backtester detect paths must not be duplicated inline" in error for error in bad_errors):
         raise AssertionError(f"backtester detector must reject inline duplicated path lists, got: {bad_errors}")
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": workflow})
-    if any("backtester detect paths must" in error for error in good_errors):
+    if any("backtester detect" in error for error in good_errors):
         raise AssertionError(f"backtester detector path check must pass when present, got: {good_errors}")
 
 

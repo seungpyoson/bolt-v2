@@ -4,9 +4,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, TextIO
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -73,15 +74,35 @@ def tracked_files(repo: Path, pathspecs: list[str]) -> list[str]:
     return sorted(path for path in output.decode("utf-8").split("\0") if path)
 
 
+def exact_pathspec_has_tracked_match(pathspec: str, files: list[str]) -> bool:
+    if pathspec in files:
+        return True
+    prefix = pathspec.rstrip("/") + "/"
+    return any(path.startswith(prefix) for path in files)
+
+
 def absent_exact_pathspecs(repo: Path, pathspecs: list[str], files: list[str]) -> list[str]:
-    matched = set(files)
     absent: list[str] = []
     for pathspec in pathspecs:
         if any(char in pathspec for char in GLOB_CHARS):
             continue
-        if pathspec not in matched and not (repo / pathspec).exists():
+        if not exact_pathspec_has_tracked_match(pathspec, files) and not (repo / pathspec).exists():
             absent.append(pathspec)
     return absent
+
+
+def pathspec_has_history(repo: Path, pathspec: str) -> bool:
+    output = run_git(repo, ["log", "--all", "--format=%H", "--", pathspec])
+    return bool(output.strip())
+
+
+def validate_input_pathspecs(repo: Path, pathspecs: list[str]) -> list[str]:
+    files = tracked_files(repo, pathspecs)
+    errors: list[str] = []
+    for pathspec in absent_exact_pathspecs(repo, pathspecs, files):
+        if not pathspec_has_history(repo, pathspec):
+            errors.append(f"input path does not resolve to a tracked or historical path: {pathspec}")
+    return errors
 
 
 def digest_input_set(repo: Path, pathspecs: list[str]) -> str:
@@ -92,6 +113,7 @@ def digest_input_set(repo: Path, pathspecs: list[str]) -> str:
         digest.update(b"\0")
     files = tracked_files(repo, pathspecs)
     for relative in absent_exact_pathspecs(repo, pathspecs, files):
+        print(f"warning: input path absent: {relative}", file=sys.stderr)
         digest.update(b"absent\0")
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
@@ -112,9 +134,9 @@ def changed_paths(repo: Path, pathspecs: list[str], *, base: str, head: str) -> 
     return [line for line in output.splitlines() if line]
 
 
-def print_lines(lines: Iterable[str]) -> None:
+def print_lines(lines: Iterable[str], *, file: TextIO = sys.stdout) -> None:
     for line in lines:
-        print(line)
+        print(line, file=file)
 
 
 def parse_args() -> argparse.Namespace:
@@ -126,6 +148,9 @@ def parse_args() -> argparse.Namespace:
     for command in ("list", "hash"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("set_name")
+
+    validate = subparsers.add_parser("validate")
+    validate.add_argument("set_names", nargs="+")
 
     changed = subparsers.add_parser("changed")
     changed.add_argument("set_name")
@@ -142,12 +167,21 @@ def main() -> int:
     if not config_path.is_absolute():
         config_path = repo / config_path
     config = load_config(config_path)
-    pathspecs = resolve_set(config, args.set_name)
     if args.command == "list":
+        pathspecs = resolve_set(config, args.set_name)
         print_lines(pathspecs)
     elif args.command == "hash":
+        pathspecs = resolve_set(config, args.set_name)
         print(digest_input_set(repo, pathspecs))
+    elif args.command == "validate":
+        errors: list[str] = []
+        for set_name in args.set_names:
+            errors.extend(validate_input_pathspecs(repo, resolve_set(config, set_name)))
+        if errors:
+            print_lines(errors, file=sys.stderr)
+            return 1
     elif args.command == "changed":
+        pathspecs = resolve_set(config, args.set_name)
         print_lines(changed_paths(repo, pathspecs, base=args.base, head=args.head))
     return 0
 

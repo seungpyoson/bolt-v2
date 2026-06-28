@@ -206,6 +206,7 @@ jobs:
         id: detect
         shell: bash
         run: |
+          python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect
           if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "push or manual dispatch event; treating crate as changed"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
@@ -218,6 +219,14 @@ jobs:
           fi
           base_sha="${{ github.event.pull_request.base.sha }}"
           echo "comparing ${base_sha}...HEAD"
+          bootstrap_changed_path="${RUNNER_TEMP:-/tmp}/bvs-bootstrap-changed.txt"
+          git diff --name-only "${base_sha}...HEAD" -- scripts/ci_input_sets.py ci/rust-ci-inputs.toml > "$bootstrap_changed_path"
+          if [[ -s "$bootstrap_changed_path" ]]; then
+            echo "CI input-set bootstrap paths changed:"
+            cat "$bootstrap_changed_path"
+            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # The backtester compiles against the root bolt-v2 crate. Keep this
           # path set in one TOML source shared with cache-key hashing so detector
           # and cache identity cannot drift.

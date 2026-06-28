@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
-import enum
 import fcntl
 import hashlib
 import json
@@ -42,11 +41,7 @@ import shutil
 import subprocess
 import sys
 import time
-try:
-    import tomllib  # Python 3.11+
-    _HAS_TOMLLIB = True
-except ImportError:  # pragma: no cover - exercised on Python < 3.11
-    _HAS_TOMLLIB = False
+import tomllib
 from typing import Any, Callable
 
 SCRIPT_NAME = "clean-merged"
@@ -63,80 +58,9 @@ LOCK_FILE = "clean-merged.lock"
 _REFUSED_DETACHED_SENTINEL = "__REFUSED_DETACHED_HEAD__:"
 
 
-def _parse_toml_flat(text: str) -> dict[str, Any]:
-    """Minimal TOML reader for clean-merged's flat schema (sections + scalar keys).
-
-    Python < 3.11 has no stdlib tomllib, so this is the explicit config
-    contract for that runtime: section headers [a.b.c] and scalar key values
-    (bool/string/int/float) only.
-    NOT a general TOML parser — deliberately restricted to our config's shape.
-    """
-    root: dict[str, Any] = {}
-    cur: dict[str, Any] = root
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            section = line[1:-1].strip()
-            parts = section.split(".")
-            node: dict[str, Any] = root
-            for p in parts:
-                p = p.strip()
-                if p not in node or not isinstance(node[p], dict):
-                    node[p] = {}
-                node = node[p]
-            cur = node
-            continue
-        if "=" not in line:
-            raise ValueError(f"invalid TOML line: {raw_line!r}")
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        # Strip inline comments OUTSIDE quoted strings (round-4 P2 by Kimi/GPT:
-        # a # inside "foo # bar" was corrupting the value).
-        if value and value[0] in "\"'":
-            quote = value[0]
-            end = value.find(quote, 1)
-            if end == -1:
-                raise ValueError(f"unterminated string: {raw_line!r}")
-            # Keep the quoted token; trailing data must be a comment or whitespace.
-            value = value[: end + 1]
-        else:
-            # Bare value: cut at the first '#' that's a comment start.
-            hash_idx = value.find("#")
-            if hash_idx != -1:
-                value = value[:hash_idx].strip()
-                if not value:
-                    continue
-        parsed: Any
-        if value == "true":
-            parsed = True
-        elif value == "false":
-            parsed = False
-        elif value.startswith('"') and value.endswith('"'):
-            parsed = value[1:-1]
-        elif value.startswith("'") and value.endswith("'"):
-            parsed = value[1:-1]
-        else:
-            try:
-                parsed = int(value)
-            except ValueError:
-                try:
-                    parsed = float(value)
-                except ValueError:
-                    raise ValueError(f"unsupported TOML value: {value!r}")
-        cur[key] = parsed
-    return root
-
-
 def _load_toml(path: pathlib.Path) -> dict[str, Any]:
-    """Load clean-merged TOML via stdlib or the Python<3.11 scalar contract."""
-    text = path.read_text(encoding="utf-8")
-    if _HAS_TOMLLIB:
-        return tomllib.loads(text)
-    return _parse_toml_flat(text)
-
+    """Load clean-merged TOML through the single stdlib parser path."""
+    return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
 class CleanMergedError(RuntimeError):
@@ -145,127 +69,6 @@ class CleanMergedError(RuntimeError):
 
 class ConfigError(CleanMergedError):
     pass
-
-
-class ContractFailureClass(enum.Enum):
-    MISSING = "missing"
-    EMPTY = "empty"
-    INVALID = "invalid"
-    STALE = "stale"
-    UNAVAILABLE = "unavailable"
-    TIMEOUT = "timeout"
-    AMBIGUOUS = "ambiguous"
-
-
-CONTRACT_FAILURE_CLASS_BY_VALUE = {kind.value: kind for kind in ContractFailureClass}
-
-
-@dataclasses.dataclass(frozen=True)
-class ContractFailure:
-    kind: ContractFailureClass
-    subject: str
-    detail: str
-
-    @property
-    def diagnostic(self) -> str:
-        return f"{self.kind.value}: {self.subject}: {self.detail}"
-
-
-def _contract_error(kind: ContractFailureClass, subject: str, detail: str) -> ConfigError:
-    return ConfigError(ContractFailure(kind, subject, detail).diagnostic)
-
-
-@dataclasses.dataclass(frozen=True)
-class ContractRule:
-    kind: ContractFailureClass
-    subject: str
-    predicate: Callable[[Any], bool]
-    detail: Callable[[Any], str]
-
-
-@dataclasses.dataclass(frozen=True)
-class ContractValue:
-    value: Any
-    failure: ContractFailure | None
-
-
-@dataclasses.dataclass(frozen=True)
-class ObjectContract:
-    subject: str
-    required_keys: frozenset[str]
-
-
-def _classify_contract(value: Any, rules: tuple[ContractRule, ...]) -> ContractFailure | None:
-    for rule in rules:
-        if rule.predicate(value):
-            return ContractFailure(rule.kind, rule.subject, rule.detail(value))
-    return None
-
-
-def _decode_json_contract(subject: str, text: str) -> ContractValue:
-    if text == "":
-        return ContractValue(None, ContractFailure(
-            ContractFailureClass.EMPTY, subject, "stdout is empty"))
-    try:
-        return ContractValue(json.loads(text), None)
-    except json.JSONDecodeError as exc:
-        return ContractValue(None, ContractFailure(
-            ContractFailureClass.INVALID, subject, f"malformed json: {exc}"))
-
-
-def _validate_object_contract(raw: Any, contract: ObjectContract) -> ContractFailure | None:
-    if raw is None:
-        return ContractFailure(
-            ContractFailureClass.MISSING, contract.subject, "entry is absent")
-    if not isinstance(raw, dict):
-        return ContractFailure(
-            ContractFailureClass.INVALID, contract.subject,
-            f"entry expected object, got {type(raw).__name__}")
-    missing = sorted(contract.required_keys - set(raw))
-    if missing:
-        return ContractFailure(
-            ContractFailureClass.MISSING, contract.subject,
-            f"entry missing required fields: {', '.join(missing)}")
-    extra = sorted(set(raw) - contract.required_keys)
-    if extra:
-        return ContractFailure(
-            ContractFailureClass.INVALID, contract.subject,
-            f"entry has unknown fields: {', '.join(extra)}")
-    return None
-
-
-SchemaTree = dict[str, "SchemaTree | None"]
-
-
-CONFIG_SCHEMA: SchemaTree = {
-    "schema_version": None,
-    "clean-merged": {
-        "enabled": None,
-        "trunk_branch": None,
-        "remote_name": None,
-        "origin_owner": None,
-        "lane_r": {
-            "gh_timeout_s": None,
-            "cache_ttl_s": None,
-        },
-        "lane_w": {
-            "quarantine_dir": None,
-            "quarantine_grace_days": None,
-            "discard_ignored": None,
-            "remove_nested_repos": None,
-            "discard_hidden_index_bits": None,
-        },
-        "logging": {
-            "audit_format": None,
-            "audit_path": None,
-            "max_log_bytes": None,
-            "heartbeat_path": None,
-        },
-        "backups": {
-            "prune_after_days": None,
-        },
-    },
-}
 
 
 # ---------------------------------------------------------------------------
@@ -384,74 +187,66 @@ def _main_worktree_root(repo_root: pathlib.Path) -> pathlib.Path:
     return repo_root
 
 
-def _get_required(data: dict[str, Any], dotted: str) -> Any:
-    parts = dotted.split(".")
-    cur: Any = data
-    for p in parts[:-1]:
-        if not isinstance(cur, dict) or p not in cur:
-            raise _contract_error(ContractFailureClass.MISSING, dotted, "section is absent")
-        cur = cur[p]
-    last = parts[-1]
-    if isinstance(cur, dict) and last in cur:
-        return cur[last]
-    raise _contract_error(ContractFailureClass.MISSING, dotted, "key is absent")
+CONFIG_KEYS = frozenset({
+    "schema_version",
+    "clean-merged.enabled",
+    "clean-merged.trunk_branch",
+    "clean-merged.remote_name",
+    "clean-merged.origin_owner",
+    "clean-merged.lane_r.gh_timeout_s",
+    "clean-merged.lane_r.cache_ttl_s",
+    "clean-merged.lane_w.quarantine_dir",
+    "clean-merged.lane_w.quarantine_grace_days",
+    "clean-merged.lane_w.discard_ignored",
+    "clean-merged.lane_w.remove_nested_repos",
+    "clean-merged.lane_w.discard_hidden_index_bits",
+    "clean-merged.logging.audit_format",
+    "clean-merged.logging.audit_path",
+    "clean-merged.logging.max_log_bytes",
+    "clean-merged.logging.heartbeat_path",
+    "clean-merged.backups.prune_after_days",
+})
 
 
-def _validate_closed_schema(data: dict[str, Any], schema: SchemaTree, path: str = "") -> None:
+def _flatten_config(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    flat: dict[str, Any] = {}
     for key, value in data.items():
-        dotted = f"{path}.{key}" if path else key
-        if key not in schema:
-            raise _contract_error(ContractFailureClass.INVALID, dotted,
-                                  "key is not in clean-merged schema")
-        expected = schema[key]
-        if expected is None:
-            if isinstance(value, dict):
-                raise _contract_error(ContractFailureClass.INVALID, dotted,
-                                      "expected scalar, got table")
-            continue
-        if not isinstance(value, dict):
-            raise _contract_error(ContractFailureClass.INVALID, dotted,
-                                  f"expected table, got {type(value).__name__}")
-        _validate_closed_schema(value, expected, dotted)
+        dotted = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            flat.update(_flatten_config(value, dotted))
+        else:
+            flat[dotted] = value
+    return flat
 
 
-def _require_bool(data: dict[str, Any], dotted: str) -> bool:
-    value = _get_required(data, dotted)
+def _config_str(flat: dict[str, Any], key: str) -> str:
+    value = flat[key]
+    if not isinstance(value, str) or value == "":
+        raise ConfigError(f"invalid config: {key} must be a non-empty string")
+    return value
+
+
+def _config_bool(flat: dict[str, Any], key: str) -> bool:
+    value = flat[key]
     if not isinstance(value, bool):
-        raise _contract_error(ContractFailureClass.INVALID, dotted,
-                              f"expected bool, got {type(value).__name__}")
+        raise ConfigError(f"invalid config: {key} must be bool")
     return value
 
 
-def _require_nonempty_str(data: dict[str, Any], dotted: str) -> str:
-    value = _get_required(data, dotted)
-    if not isinstance(value, str):
-        raise _contract_error(ContractFailureClass.INVALID, dotted,
-                              f"expected string, got {type(value).__name__}")
-    if value == "":
-        raise _contract_error(ContractFailureClass.EMPTY, dotted, "value is empty")
-    return value
-
-
-def _require_positive_float(data: dict[str, Any], dotted: str) -> float:
-    value = _get_required(data, dotted)
+def _config_positive_float(flat: dict[str, Any], key: str) -> float:
+    value = flat[key]
     if not isinstance(value, (int, float)) or isinstance(value, bool):
-        raise _contract_error(ContractFailureClass.INVALID, dotted,
-                              f"expected positive number, got {type(value).__name__}")
-    value_f = float(value)
-    if not math.isfinite(value_f) or value_f <= 0:
-        raise _contract_error(ContractFailureClass.INVALID, dotted,
-                              "expected finite number > 0")
-    return value_f
+        raise ConfigError(f"invalid config: {key} must be a positive number")
+    result = float(value)
+    if not math.isfinite(result) or result <= 0:
+        raise ConfigError(f"invalid config: {key} must be a positive number")
+    return result
 
 
-def _require_positive_int(data: dict[str, Any], dotted: str) -> int:
-    value = _get_required(data, dotted)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise _contract_error(ContractFailureClass.INVALID, dotted,
-                              f"expected positive integer, got {type(value).__name__}")
-    if value <= 0:
-        raise _contract_error(ContractFailureClass.INVALID, dotted, "expected integer > 0")
+def _config_positive_int(flat: dict[str, Any], key: str) -> int:
+    value = flat[key]
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ConfigError(f"invalid config: {key} must be a positive integer")
     return value
 
 
@@ -460,7 +255,7 @@ def load_config(repo_root: pathlib.Path) -> Config:
     which may be on a feature branch predating config/clean-merged.toml).
 
     Honors TOML nesting ([clean-merged.lane_r].gh_timeout_s). Every runtime
-    key is required and validated at this boundary; code supplies no defaults.
+    key is required; code supplies no runtime defaults.
     """
     main_root = _main_worktree_root(repo_root)
     cfg_path = main_root / "config" / "clean-merged.toml"
@@ -471,42 +266,45 @@ def load_config(repo_root: pathlib.Path) -> Config:
         )
     try:
         data = _load_toml(cfg_path)
-    except (tomllib.TOMLDecodeError if _HAS_TOMLLIB else ValueError) as exc:
+    except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"invalid TOML in {cfg_path}: {exc}") from exc
 
-    _validate_closed_schema(data, CONFIG_SCHEMA)
+    flat = _flatten_config(data)
+    missing = sorted(CONFIG_KEYS - set(flat))
+    if missing:
+        raise ConfigError(f"missing required config: {missing[0]}")
+    unknown = sorted(set(flat) - CONFIG_KEYS)
+    if unknown:
+        raise ConfigError(f"unknown config key: {unknown[0]}")
+    if flat["schema_version"] != 1:
+        raise ConfigError(f"invalid config: schema_version expected 1, got {flat['schema_version']!r}")
 
-    schema_version = _get_required(data, "schema_version")
-    if schema_version != 1:
-        raise _contract_error(ContractFailureClass.INVALID, "schema_version",
-                              f"expected 1, got {schema_version!r}")
-
-    enabled = _require_bool(data, "clean-merged.enabled")
-    trunk_branch = _require_nonempty_str(data, "clean-merged.trunk_branch")
-    remote_name = _require_nonempty_str(data, "clean-merged.remote_name")
-    origin_owner = _require_nonempty_str(data, "clean-merged.origin_owner")
+    enabled = _config_bool(flat, "clean-merged.enabled")
+    trunk_branch = _config_str(flat, "clean-merged.trunk_branch")
+    remote_name = _config_str(flat, "clean-merged.remote_name")
+    origin_owner = _config_str(flat, "clean-merged.origin_owner")
 
     lane_r = LaneRConfig(
-        gh_timeout_s=_require_positive_float(data, "clean-merged.lane_r.gh_timeout_s"),
-        cache_ttl_s=_require_positive_float(data, "clean-merged.lane_r.cache_ttl_s"),
+        gh_timeout_s=_config_positive_float(flat, "clean-merged.lane_r.gh_timeout_s"),
+        cache_ttl_s=_config_positive_float(flat, "clean-merged.lane_r.cache_ttl_s"),
     )
     lane_w = LaneWConfig(
-        quarantine_dir=_require_nonempty_str(data, "clean-merged.lane_w.quarantine_dir"),
-        quarantine_grace_days=_require_positive_int(
-            data, "clean-merged.lane_w.quarantine_grace_days"),
-        discard_ignored=_require_bool(data, "clean-merged.lane_w.discard_ignored"),
-        remove_nested_repos=_require_bool(data, "clean-merged.lane_w.remove_nested_repos"),
-        discard_hidden_index_bits=_require_bool(
-            data, "clean-merged.lane_w.discard_hidden_index_bits"),
+        quarantine_dir=_config_str(flat, "clean-merged.lane_w.quarantine_dir"),
+        quarantine_grace_days=_config_positive_int(
+            flat, "clean-merged.lane_w.quarantine_grace_days"),
+        discard_ignored=_config_bool(flat, "clean-merged.lane_w.discard_ignored"),
+        remove_nested_repos=_config_bool(flat, "clean-merged.lane_w.remove_nested_repos"),
+        discard_hidden_index_bits=_config_bool(
+            flat, "clean-merged.lane_w.discard_hidden_index_bits"),
     )
     logging_cfg = LoggingConfig(
-        audit_format=_require_nonempty_str(data, "clean-merged.logging.audit_format"),
-        audit_path=_require_nonempty_str(data, "clean-merged.logging.audit_path"),
-        max_log_bytes=_require_positive_int(data, "clean-merged.logging.max_log_bytes"),
-        heartbeat_path=_require_nonempty_str(data, "clean-merged.logging.heartbeat_path"),
+        audit_format=_config_str(flat, "clean-merged.logging.audit_format"),
+        audit_path=_config_str(flat, "clean-merged.logging.audit_path"),
+        max_log_bytes=_config_positive_int(flat, "clean-merged.logging.max_log_bytes"),
+        heartbeat_path=_config_str(flat, "clean-merged.logging.heartbeat_path"),
     )
     backups = BackupsConfig(
-        prune_after_days=_require_positive_int(data, "clean-merged.backups.prune_after_days"),
+        prune_after_days=_config_positive_int(flat, "clean-merged.backups.prune_after_days"),
     )
 
     return Config(
@@ -530,13 +328,14 @@ def git_common_dir(repo_root: pathlib.Path) -> pathlib.Path:
 
 def _git(repo_root: pathlib.Path, args: list[str], *,
          check: bool = True, timeout: float | None = None,
-         env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+         env: dict[str, str] | None = None,
+         input: str | None = None) -> subprocess.CompletedProcess[str]:
     full_env = os.environ.copy()
     if env:
         full_env.update(env)
     return subprocess.run(
         ["git", *args], cwd=repo_root, check=check, capture_output=True,
-        text=True, timeout=timeout, env=full_env,
+        text=True, timeout=timeout, env=full_env, input=input,
     )
 
 
@@ -597,113 +396,29 @@ def current_branch(repo_root: pathlib.Path) -> str | None:
     return out.stdout.strip() or None
 
 
-class RefResolutionKind(enum.Enum):
-    PRESENT = "present"
-    ABSENT = "absent"
-    EMPTY = "empty"
-    INVALID = "invalid"
-    UNAVAILABLE = "unavailable"
-
-
-@dataclasses.dataclass(frozen=True)
-class RefResolution:
-    ref: str
-    kind: RefResolutionKind
-    sha: str | None
-    failure: ContractFailure | None
-
-
-def resolve_ref_contract(repo_root: pathlib.Path, ref: str) -> RefResolution:
-    """Resolve an exact ref and classify every non-present state."""
-    ref_format = _git(repo_root, ["check-ref-format", ref], check=False)
-    if ref_format.returncode != 0:
-        detail = _safe_report_error(ref_format.stderr) or "ref name is invalid"
-        return RefResolution(
-            ref, RefResolutionKind.INVALID, None,
-            ContractFailure(ContractFailureClass.INVALID, ref, detail),
-        )
-    out = _git(repo_root, ["for-each-ref", "--format=%(objectname)", "--count=1", ref],
-               check=False)
-    if out.returncode != 0:
-        detail = _safe_report_error(out.stderr) or f"git could not inspect {ref}"
-        return RefResolution(
-            ref, RefResolutionKind.UNAVAILABLE, None,
-            ContractFailure(ContractFailureClass.UNAVAILABLE, ref, detail),
-        )
-    sha = out.stdout.strip()
-    if sha == "":
-        return RefResolution(
-            ref, RefResolutionKind.ABSENT, None,
-            ContractFailure(ContractFailureClass.MISSING, ref, f"{ref} does not resolve"),
-        )
-    if not SHA_RE.match(sha):
-        return RefResolution(
-            ref, RefResolutionKind.INVALID, None,
-            ContractFailure(ContractFailureClass.INVALID, ref,
-                            f"git returned a non-40-hex SHA: {sha!r}"),
-        )
-    return RefResolution(ref, RefResolutionKind.PRESENT, sha, None)
-
-
 def resolve_trunk_sha(repo_root: pathlib.Path, trunk: str, remote: str) -> str | None:
-    """Resolve only the configured trunk refs. No implicit main/master substitution."""
+    """Resolve only the configured trunk SHA, preferring remote-tracking."""
     for ref in (f"refs/remotes/{remote}/{trunk}", f"refs/heads/{trunk}"):
-        resolved = resolve_ref_contract(repo_root, ref)
-        if resolved.kind is RefResolutionKind.PRESENT:
-            return resolved.sha
+        out = _git(repo_root, ["rev-parse", "--verify", ref], check=False)
+        if out.returncode == 0:
+            return out.stdout.strip()
     return None
-
-
-@dataclasses.dataclass(frozen=True)
-class TrunkAuthority:
-    sha: str | None
-    failure: ContractFailure | None
-
-
-def _resolve_trunk_authority(
-    repo_root: pathlib.Path, config: Config, trunk_sha_override: str | None,
-) -> TrunkAuthority:
-    if trunk_sha_override is not None:
-        if trunk_sha_override == "":
-            return TrunkAuthority(None, ContractFailure(
-                ContractFailureClass.EMPTY, "trunk authority override",
-                "override SHA is empty"))
-        if not SHA_RE.match(trunk_sha_override):
-            return TrunkAuthority(None, ContractFailure(
-                ContractFailureClass.INVALID, "trunk authority override",
-                f"expected 40-hex SHA, got {trunk_sha_override!r}"))
-        return TrunkAuthority(trunk_sha_override, None)
-
-    remote_resolution = resolve_ref_contract(
-        repo_root, f"refs/remotes/{config.remote_name}/{config.trunk_branch}")
-    if remote_resolution.kind is RefResolutionKind.PRESENT:
-        return TrunkAuthority(remote_resolution.sha, None)
-    if remote_resolution.kind is not RefResolutionKind.ABSENT:
-        assert remote_resolution.failure is not None
-        return TrunkAuthority(None, remote_resolution.failure)
-
-    local_resolution = resolve_ref_contract(repo_root, f"refs/heads/{config.trunk_branch}")
-    if local_resolution.kind is RefResolutionKind.PRESENT:
-        return TrunkAuthority(local_resolution.sha, None)
-    if local_resolution.kind is RefResolutionKind.ABSENT:
-        assert remote_resolution.failure is not None
-        assert local_resolution.failure is not None
-        return TrunkAuthority(None, ContractFailure(
-            ContractFailureClass.MISSING, "trunk authority",
-            f"{remote_resolution.failure.detail}; {local_resolution.failure.detail}"))
-    assert local_resolution.failure is not None
-    return TrunkAuthority(None, local_resolution.failure)
 
 
 def effective_trunk_sha(
     repo_root: pathlib.Path, config: Config, trunk_sha_override: str | None = None,
 ) -> str | None:
-    return _resolve_trunk_authority(repo_root, config, trunk_sha_override).sha
+    if trunk_sha_override is not None:
+        return trunk_sha_override if SHA_RE.match(trunk_sha_override) else None
+    return resolve_trunk_sha(repo_root, config.trunk_branch, config.remote_name)
 
 
 def resolve_ref_sha(repo_root: pathlib.Path, ref: str) -> str | None:
-    resolved = resolve_ref_contract(repo_root, ref)
-    return resolved.sha if resolved.kind is RefResolutionKind.PRESENT else None
+    out = _git(repo_root, ["rev-parse", "--verify", ref], check=False)
+    if out.returncode != 0:
+        return None
+    sha = out.stdout.strip()
+    return sha if SHA_RE.match(sha) else None
 
 
 def worktree_for_branch(repo_root: pathlib.Path, branch: str) -> pathlib.Path | None:
@@ -813,63 +528,27 @@ def _release_lock(fd: int) -> None:
     os.close(fd)
 
 
-_AUDIT_FAILURE_ACTION = {
-    ContractFailureClass.MISSING: "refused-audit-missing",
-    ContractFailureClass.EMPTY: "refused-audit-empty",
-    ContractFailureClass.INVALID: "refused-audit-invalid",
-    ContractFailureClass.STALE: "refused-audit-stale",
-    ContractFailureClass.UNAVAILABLE: "refused-audit-unavailable",
-    ContractFailureClass.TIMEOUT: "refused-audit-timeout",
-    ContractFailureClass.AMBIGUOUS: "refused-audit-ambiguous",
-}
-
-
-def write_audit(
-    repo_root: pathlib.Path, config: Config, record: dict[str, Any],
-) -> ContractFailure | None:
+def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any]) -> None:
     log_path = _resolve_path(repo_root, config.logging.audit_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = log_path.with_suffix(log_path.suffix + ".lock")
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = _acquire_lock(lock_path)
-    except OSError as exc:
-        return ContractFailure(ContractFailureClass.UNAVAILABLE, "audit log",
-                               f"{log_path}: {exc}")
+    fd = _acquire_lock(lock_path)
     if fd is None:
-        return ContractFailure(ContractFailureClass.UNAVAILABLE, "audit log",
-                               f"lock unavailable: {lock_path}")
+        # best-effort; never break the op over logging
+        return
     try:
-        try:
-            if log_path.exists() and log_path.stat().st_size > config.logging.max_log_bytes:
-                rotated = log_path.with_suffix(log_path.suffix + ".1")
+        if log_path.exists() and log_path.stat().st_size > config.logging.max_log_bytes:
+            rotated = log_path.with_suffix(log_path.suffix + ".1")
+            try:
                 rotated.unlink(missing_ok=True)
                 log_path.rename(rotated)
-            record_with_ts = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **record}
-            with log_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record_with_ts, ensure_ascii=False, sort_keys=True) + "\n")
-        except OSError as exc:
-            return ContractFailure(ContractFailureClass.UNAVAILABLE, "audit log",
-                                   f"{log_path}: {exc}")
+            except OSError:
+                pass
+        record_with_ts = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **record}
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record_with_ts, ensure_ascii=False, sort_keys=True) + "\n")
     finally:
         _release_lock(fd)
-    return None
-
-
-def _required_audit_refusal(
-    repo_root: pathlib.Path, config: Config, record: dict[str, Any],
-) -> dict[str, Any] | None:
-    failure = write_audit(repo_root, config, record)
-    if failure is None:
-        return None
-    return {
-        "lane": record.get("lane"),
-        "branch": record.get("branch"),
-        "tip_sha": record.get("tip_sha"),
-        "worktree": record.get("worktree"),
-        "quarantine_path": record.get("quarantine_path"),
-        "action": _AUDIT_FAILURE_ACTION[failure.kind],
-        "reason": failure.diagnostic,
-    }
 
 
 def _atomic_write_text(path: pathlib.Path, text: str) -> None:
@@ -914,402 +593,24 @@ _GH_ENV = {"GH_PROMPT_DISABLED": "1", "GIT_TERMINAL_PROMPT": "0", "NO_COLOR": "1
 _GH_CACHE_NAME = "clean-merged-gh-cache.json"
 
 
-class GhCacheState(enum.Enum):
-    HIT = "hit"
-    ABSENT = "absent"
-    STALE = "stale"
-    INVALID = "invalid"
-    UNAVAILABLE = "unavailable"
-
-
-class GhCacheDecision(enum.Enum):
-    USE_CACHE = "use_cache"
-    QUERY_GH = "query_gh"
-    FAIL_CLOSED = "fail_closed"
-
-
-@dataclasses.dataclass(frozen=True)
-class GhCacheRead:
-    state: GhCacheState
-    cache: dict[str, Any]
-    failure: ContractFailure | None
-
-
-@dataclasses.dataclass(frozen=True)
-class GhCacheEntry:
-    state: GhCacheState
-    value: dict[str, Any] | None
-    failure: ContractFailure | None
-
-
-class GhQueryState(enum.Enum):
-    OK = "ok"
-    INVALID = "invalid"
-    UNAVAILABLE = "unavailable"
-    TIMEOUT = "timeout"
-
-
-@dataclasses.dataclass(frozen=True)
-class GhQueryResult:
-    state: GhQueryState
-    prs: list[dict[str, Any]] | None
-    failure: ContractFailure | None
-
-
-_GH_CACHE_ENTRY_CONTRACT = ObjectContract(
-    "gh cache", frozenset({"fetched_at", "prs", "error", "failure"}))
-_GH_FAILURE_PAYLOAD_CONTRACT = ObjectContract(
-    "gh cache", frozenset({"kind", "subject", "detail"}))
-_GH_FAILURE_STATE = {
-    ContractFailureClass.INVALID: GhQueryState.INVALID,
-    ContractFailureClass.TIMEOUT: GhQueryState.TIMEOUT,
-    ContractFailureClass.MISSING: GhQueryState.UNAVAILABLE,
-    ContractFailureClass.EMPTY: GhQueryState.INVALID,
-    ContractFailureClass.STALE: GhQueryState.UNAVAILABLE,
-    ContractFailureClass.UNAVAILABLE: GhQueryState.UNAVAILABLE,
-    ContractFailureClass.AMBIGUOUS: GhQueryState.INVALID,
-}
-_GH_CACHE_DECISION = {
-    GhCacheState.HIT: GhCacheDecision.USE_CACHE,
-    GhCacheState.ABSENT: GhCacheDecision.QUERY_GH,
-    GhCacheState.STALE: GhCacheDecision.QUERY_GH,
-    GhCacheState.INVALID: GhCacheDecision.FAIL_CLOSED,
-    GhCacheState.UNAVAILABLE: GhCacheDecision.FAIL_CLOSED,
-}
-_GH_CACHE_ENTRY_FAILURE_STATE = {
-    ContractFailureClass.STALE: GhCacheState.STALE,
-    ContractFailureClass.MISSING: GhCacheState.INVALID,
-    ContractFailureClass.EMPTY: GhCacheState.INVALID,
-    ContractFailureClass.INVALID: GhCacheState.INVALID,
-    ContractFailureClass.UNAVAILABLE: GhCacheState.INVALID,
-    ContractFailureClass.TIMEOUT: GhCacheState.INVALID,
-    ContractFailureClass.AMBIGUOUS: GhCacheState.INVALID,
-}
-
-
-def _gh_query_success(prs: list[dict[str, Any]]) -> GhQueryResult:
-    return GhQueryResult(GhQueryState.OK, prs, None)
-
-
-def _gh_query_failure(kind: ContractFailureClass, subject: str, detail: str) -> GhQueryResult:
-    failure = ContractFailure(kind, subject, detail)
-    return GhQueryResult(_GH_FAILURE_STATE[kind], None, failure)
-
-
-def _gh_result_from_failure(failure: ContractFailure) -> GhQueryResult:
-    return GhQueryResult(_GH_FAILURE_STATE[failure.kind], None, failure)
-
-
-def _sanitize_failure(failure: ContractFailure) -> ContractFailure:
-    return ContractFailure(
-        failure.kind,
-        failure.subject,
-        _safe_report_error(failure.detail),
-    )
-
-
-def _failure_to_cache_payload(failure: ContractFailure | None) -> dict[str, str] | None:
-    if failure is None:
-        return None
-    safe = _sanitize_failure(failure)
-    return {
-        "kind": safe.kind.value,
-        "subject": safe.subject,
-        "detail": safe.detail,
-    }
-
-
-def _cache_contract_failure(kind: ContractFailureClass, detail: str) -> ContractFailure:
-    return ContractFailure(kind, "gh cache", detail)
-
-
-_GH_FAILURE_PAYLOAD_RULES = (
-    ContractRule(
-        ContractFailureClass.INVALID,
-        "gh cache",
-        lambda payload: not isinstance(payload["kind"], str),
-        lambda payload: (
-            "entry failure kind expected string, "
-            f"got {type(payload['kind']).__name__}"
-        ),
-    ),
-    ContractRule(
-        ContractFailureClass.INVALID,
-        "gh cache",
-        lambda payload: isinstance(payload["kind"], str)
-        and payload["kind"] not in CONTRACT_FAILURE_CLASS_BY_VALUE,
-        lambda payload: f"entry failure kind is not recognized: {payload['kind']!r}",
-    ),
-    ContractRule(
-        ContractFailureClass.INVALID,
-        "gh cache",
-        lambda payload: not isinstance(payload["subject"], str),
-        lambda payload: (
-            "entry failure subject expected string, "
-            f"got {type(payload['subject']).__name__}"
-        ),
-    ),
-    ContractRule(
-        ContractFailureClass.EMPTY,
-        "gh cache",
-        lambda payload: payload["subject"] == "",
-        lambda payload: "entry failure subject is empty",
-    ),
-    ContractRule(
-        ContractFailureClass.INVALID,
-        "gh cache",
-        lambda payload: not isinstance(payload["detail"], str),
-        lambda payload: (
-            "entry failure detail expected string, "
-            f"got {type(payload['detail']).__name__}"
-        ),
-    ),
-    ContractRule(
-        ContractFailureClass.EMPTY,
-        "gh cache",
-        lambda payload: payload["detail"] == "",
-        lambda payload: "entry failure detail is empty",
-    ),
-)
-
-
-def _failure_from_cache_payload(raw: Any) -> ContractValue:
-    if raw is None:
-        return ContractValue(None, None)
-    shape_failure = _validate_object_contract(raw, _GH_FAILURE_PAYLOAD_CONTRACT)
-    if shape_failure is not None:
-        return ContractValue(None, shape_failure)
-    assert isinstance(raw, dict)
-    kind_raw = raw["kind"]
-    subject = raw["subject"]
-    detail = raw["detail"]
-    payload_failure = _classify_contract(raw, _GH_FAILURE_PAYLOAD_RULES)
-    if payload_failure is not None:
-        return ContractValue(None, payload_failure)
-    assert isinstance(kind_raw, str)
-    assert isinstance(subject, str)
-    assert isinstance(detail, str)
-    kind = CONTRACT_FAILURE_CLASS_BY_VALUE[kind_raw]
-    return ContractValue(_sanitize_failure(ContractFailure(kind, subject, detail)), None)
-
-
-def _cache_fetched_at(raw: Any) -> ContractValue:
-    try:
-        fetched_at = float(raw)
-    except (TypeError, ValueError, OverflowError):
-        return ContractValue(None, _cache_failure(
-            GhCacheState.INVALID, "entry fetched_at is not a finite number"))
-    if not math.isfinite(fetched_at):
-        return ContractValue(None, _cache_failure(
-            GhCacheState.INVALID, "entry fetched_at is not finite"))
-    return ContractValue(fetched_at, None)
-
-
-def _cache_entry_liveness(fetched_at: float, now: float, ttl: float) -> ContractFailure | None:
-    age = now - fetched_at
-    if not math.isfinite(age):
-        return _cache_failure(GhCacheState.INVALID, "entry fetched_at age is not finite")
-    if age >= ttl:
-        return _cache_failure(GhCacheState.STALE,
-                              f"entry age {age:.3f}s exceeds ttl {ttl:.3f}s")
-    return None
-
-
-@dataclasses.dataclass(frozen=True)
-class GhCacheEntryFields:
-    prs: Any
-    error: Any
-    failure: ContractFailure | None
-
-
-def _valid_gh_pr_cache_payload(prs: Any) -> bool:
-    return prs is None or (
-        isinstance(prs, list) and all(isinstance(pr, dict) for pr in prs)
-    )
-
-
-_GH_CACHE_ENTRY_PAYLOAD_RULES = (
-    ContractRule(
-        ContractFailureClass.INVALID,
-        "gh cache",
-        lambda fields: not _valid_gh_pr_cache_payload(fields.prs),
-        lambda fields: f"entry prs expected list/null payload, got {type(fields.prs).__name__}",
-    ),
-    ContractRule(
-        ContractFailureClass.INVALID,
-        "gh cache",
-        lambda fields: fields.error is not None and not isinstance(fields.error, str),
-        lambda fields: (
-            "entry error expected string/null, "
-            f"got {type(fields.error).__name__}"
-        ),
-    ),
-    ContractRule(
-        ContractFailureClass.MISSING,
-        "gh cache",
-        lambda fields: fields.prs is None and fields.failure is None,
-        lambda fields: "entry prs is null but failure metadata is absent",
-    ),
-    ContractRule(
-        ContractFailureClass.INVALID,
-        "gh cache",
-        lambda fields: fields.prs is not None and fields.failure is not None,
-        lambda fields: "entry cannot contain both PR payload and failure metadata",
-    ),
-    ContractRule(
-        ContractFailureClass.INVALID,
-        "gh cache",
-        lambda fields: fields.prs is not None and fields.error is not None,
-        lambda fields: "entry cannot contain both PR payload and error",
-    ),
-    ContractRule(
-        ContractFailureClass.MISSING,
-        "gh cache",
-        lambda fields: fields.failure is not None
-        and (fields.error is None or fields.error == ""),
-        lambda fields: "entry failure requires non-empty error diagnostic",
-    ),
-)
-
-
-def _decode_gh_cache_entry(entry: Any, now: float, ttl: float) -> GhCacheEntry:
-    if entry is None:
-        return GhCacheEntry(GhCacheState.ABSENT, None, _cache_failure(
-            GhCacheState.ABSENT, "entry is absent"))
-    shape_failure = _validate_object_contract(entry, _GH_CACHE_ENTRY_CONTRACT)
-    if shape_failure is not None:
-        return GhCacheEntry(GhCacheState.INVALID, None, shape_failure)
-    assert isinstance(entry, dict)
-
-    fetched_at = _cache_fetched_at(entry["fetched_at"])
-    if fetched_at.failure is not None:
-        return GhCacheEntry(GhCacheState.INVALID, None, fetched_at.failure)
-    assert isinstance(fetched_at.value, float)
-
-    live_failure = _cache_entry_liveness(fetched_at.value, now, ttl)
-    if live_failure is not None:
-        return GhCacheEntry(
-            _GH_CACHE_ENTRY_FAILURE_STATE[live_failure.kind], None, live_failure)
-
-    failure = _failure_from_cache_payload(entry["failure"])
-    if failure.failure is not None:
-        return GhCacheEntry(GhCacheState.INVALID, None, failure.failure)
-    assert failure.value is None or isinstance(failure.value, ContractFailure)
-
-    fields = GhCacheEntryFields(entry["prs"], entry["error"], failure.value)
-    payload_failure = _classify_contract(fields, _GH_CACHE_ENTRY_PAYLOAD_RULES)
-    if payload_failure is not None:
-        return GhCacheEntry(GhCacheState.INVALID, None, payload_failure)
-
-    return GhCacheEntry(GhCacheState.HIT, {
-        "fetched_at": fetched_at.value,
-        "prs": fields.prs,
-        "error": _safe_report_error(fields.error) if isinstance(fields.error, str) else None,
-        "failure": _failure_to_cache_payload(failure.value),
-    }, None)
-
-
-def _gh_cache_entry_from_result(now: float, result: GhQueryResult) -> dict[str, Any]:
-    failure_payload = _failure_to_cache_payload(result.failure)
-    error = None
-    if failure_payload is not None:
-        error = (
-            f"{failure_payload['kind']}: {failure_payload['subject']}: "
-            f"{failure_payload['detail']}"
-        )
-    return {
-        "fetched_at": now,
-        "prs": result.prs,
-        "error": error,
-        "failure": failure_payload,
-    }
-
-
-def _gh_result_from_cache_entry(entry: dict[str, Any]) -> GhQueryResult:
-    failure = _failure_from_cache_payload(entry["failure"])
-    if failure.failure is not None:
-        return _gh_result_from_failure(failure.failure)
-    if failure.value is not None:
-        assert isinstance(failure.value, ContractFailure)
-        return _gh_result_from_failure(failure.value)
-    return _gh_query_success(entry["prs"])
-
-
-_GH_PROCESS_RULES = (
-    ContractRule(
-        ContractFailureClass.UNAVAILABLE,
-        "gh pr list",
-        lambda out: out.returncode != 0,
-        lambda out: f"exit {out.returncode}: {_safe_report_error(out.stderr)}",
-    ),
-)
-
-
-_GH_PR_PAYLOAD_RULES = (
-    ContractRule(
-        ContractFailureClass.INVALID,
-        "gh pr list",
-        lambda payload: not isinstance(payload, list),
-        lambda payload: f"expected list payload, got {type(payload).__name__}",
-    ),
-    ContractRule(
-        ContractFailureClass.INVALID,
-        "gh pr list",
-        lambda payload: isinstance(payload, list)
-        and any(not isinstance(pr, dict) for pr in payload),
-        lambda payload: "expected every PR payload item to be an object",
-    ),
-)
-
-
-def _gh_query_from_completed_process(out: subprocess.CompletedProcess[str]) -> GhQueryResult:
-    process_failure = _classify_contract(out, _GH_PROCESS_RULES)
-    if process_failure is not None:
-        return _gh_result_from_failure(process_failure)
-    decoded = _decode_json_contract("gh pr list", out.stdout.strip())
-    if decoded.failure is not None:
-        return _gh_result_from_failure(decoded.failure)
-    payload_failure = _classify_contract(decoded.value, _GH_PR_PAYLOAD_RULES)
-    if payload_failure is not None:
-        return _gh_result_from_failure(payload_failure)
-    return _gh_query_success(decoded.value)
-
-
 def _gh_cache_path(repo_root: pathlib.Path) -> pathlib.Path:
     return git_common_dir(repo_root) / _GH_CACHE_NAME
 
 
-def _cache_failure(state: GhCacheState, detail: str) -> ContractFailure:
-    failure_kind = {
-        GhCacheState.ABSENT: ContractFailureClass.MISSING,
-        GhCacheState.STALE: ContractFailureClass.STALE,
-        GhCacheState.INVALID: ContractFailureClass.INVALID,
-        GhCacheState.UNAVAILABLE: ContractFailureClass.UNAVAILABLE,
-    }[state]
-    return _cache_contract_failure(failure_kind, detail)
-
-
-def _load_gh_cache(path: pathlib.Path) -> GhCacheRead:
+def _load_gh_cache(path: pathlib.Path) -> tuple[dict[str, Any] | None, str | None]:
     try:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return GhCacheRead(GhCacheState.ABSENT, {}, _cache_failure(
-            GhCacheState.ABSENT, f"{path} is absent"))
+        return {}, None
     except OSError as exc:
-        return GhCacheRead(GhCacheState.UNAVAILABLE, {}, _cache_failure(
-            GhCacheState.UNAVAILABLE, f"{path}: {exc}"))
-    if text == "":
-        return GhCacheRead(GhCacheState.INVALID, {}, _cache_contract_failure(
-            ContractFailureClass.EMPTY, f"{path} is empty"))
+        return None, f"gh cache unavailable: {exc}"
     try:
-        loaded = json.loads(text)
+        data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return GhCacheRead(GhCacheState.INVALID, {}, _cache_failure(
-            GhCacheState.INVALID, f"{path}: malformed json: {exc}"))
-    if not isinstance(loaded, dict):
-        return GhCacheRead(GhCacheState.INVALID, {}, _cache_failure(
-            GhCacheState.INVALID, f"{path}: expected object, got {type(loaded).__name__}"))
-    return GhCacheRead(GhCacheState.HIT, loaded, None)
+        return None, f"gh cache invalid json: {exc}"
+    if not isinstance(data, dict):
+        return None, f"gh cache invalid root: expected object, got {type(data).__name__}"
+    return data, None
 
 
 def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> None:
@@ -1320,23 +621,21 @@ def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> Non
     path.write_text() can interleave/truncate. Atomic rename makes the worst
     case a lost update (one writer wins), never corruption.
 
-    Additionally, every save prunes:
-      - entries whose fetched_at is older than TTL (no point keeping them)
-      - entries without '@' in the key (pre-round-4.5 migration cruft, keyed
-        by branch alone — never read by the new code)
-      - entries with malformed/non-finite fetched_at (round-5.5 GPT/Claude P2)
-      - entries whose cached prs/error payload is not reader-safe
-    This bounds cache growth under sustained rebase/force-push churn.
-
-    Round-5.5 polish (NO DUAL PATHS): uses the shared cache-entry normalizer so
-    the read path and the prune path cannot disagree on live/valid/safe shape.
+    Every save keeps only exact-shape, unexpired entries.
     """
     now = time.time()
     pruned: dict[str, Any] = {}
     for key, entry in cache.items():
-        normalized = _decode_gh_cache_entry(entry, now, ttl)
-        if normalized.state is GhCacheState.HIT and normalized.value is not None and "@" in key:
-            pruned[key] = normalized.value
+        if "@" not in key:
+            continue
+        try:
+            age = _gh_cache_entry_age(entry, now)
+            prs = _gh_cache_entry_prs(entry)
+        except ValueError:
+            continue
+        if age < ttl:
+            assert isinstance(entry, dict)
+            pruned[key] = {"fetched_at": entry["fetched_at"], "prs": prs}
     try:
         tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
         tmp.write_text(json.dumps(pruned), encoding="utf-8")
@@ -1347,8 +646,8 @@ def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> Non
 
 def gh_merged_pr_for_branch(
     repo_root: pathlib.Path, branch: str, timeout: float,
-) -> GhQueryResult:
-    """Return typed GH query result for merged PR authority."""
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Return (prs, error). prs=None means gh trouble (keep the branch)."""
     cmd = [
         # --limit 100 (round-4.5: was 5; Kimi P1 noted that a branch reused
         # >5x with the current tip = older PR would be missed. 100 covers any
@@ -1364,14 +663,74 @@ def gh_merged_pr_for_branch(
             timeout=timeout, env={**os.environ, **_GH_ENV},
         )
     except subprocess.TimeoutExpired:
-        return _gh_query_failure(ContractFailureClass.TIMEOUT, "gh pr list",
-                                 f"timed out after {timeout}s")
-    return _gh_query_from_completed_process(out)
+        return None, "gh timeout"
+    if out.returncode != 0:
+        return None, f"gh exit {out.returncode}: {_safe_report_error(out.stderr)}"
+    try:
+        prs = json.loads(out.stdout) if out.stdout.strip() else []
+    except json.JSONDecodeError as exc:
+        return None, f"gh malformed json: {exc}"
+    if not isinstance(prs, list):
+        return None, "gh non-list payload"
+    if not all(_valid_gh_pr_payload_item(pr) for pr in prs):
+        return None, "gh invalid PR payload"
+    return prs, None
+
+
+def _valid_gh_pr_payload_item(pr: Any) -> bool:
+    if not isinstance(pr, dict):
+        return False
+    head_oid = pr.get("headRefOid")
+    base_ref = pr.get("baseRefName")
+    owner = pr.get("headRepositoryOwner")
+    return (
+        isinstance(head_oid, str)
+        and SHA_RE.fullmatch(head_oid) is not None
+        and isinstance(base_ref, str)
+        and base_ref != ""
+        and isinstance(owner, dict)
+        and isinstance(owner.get("login"), str)
+        and owner.get("login") != ""
+        and isinstance(pr.get("isCrossRepository"), bool)
+    )
+
+
+def _gh_cache_entry_age(entry: Any, now: float) -> float:
+    if not isinstance(entry, dict) or set(entry) != {"fetched_at", "prs"}:
+        raise ValueError("invalid cache entry")
+    try:
+        fetched_at = float(entry["fetched_at"])
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("invalid cache entry") from exc
+    age = now - fetched_at
+    if not math.isfinite(age):
+        raise ValueError("invalid cache entry")
+    return age
+
+
+def _gh_cache_entry_prs(entry: Any) -> list[dict[str, Any]]:
+    if not isinstance(entry, dict):
+        raise ValueError("invalid cache entry")
+    prs = entry["prs"]
+    if not _valid_gh_pr_cache_payload(prs):
+        raise ValueError("invalid cache entry")
+    return prs
+
+
+def _valid_gh_pr_cache_payload(prs: Any) -> bool:
+    return isinstance(prs, list) and all(_valid_gh_pr_payload_item(pr) for pr in prs)
+
+
+def _entry_is_live(entry: Any, now: float, ttl: float) -> bool:
+    try:
+        return _gh_cache_entry_age(entry, now) < ttl
+    except ValueError:
+        return False
 
 
 def gh_merged_pr_for_branch_cached(
     repo_root: pathlib.Path, config: Config, branch: str, tip: str,
-) -> GhQueryResult:
+) -> tuple[list[dict[str, Any]] | None, str | None]:
     """Per-branch gh result with TTL cache (avoids re-querying on every hook fire).
 
     Cache key is (branch, tip-sha[:12]) — round-4.5 self-review / Grok P2: keyed
@@ -1379,262 +738,49 @@ def gh_merged_pr_for_branch_cached(
     suppress cleanup for up to TTL after tip advances to a merged squash commit B.
     Keying by (branch, tip) invalidates the entry automatically when the tip moves.
 
-    Stored under <git-common-dir>/clean-merged-gh-cache.json. Invalid or
-    unavailable cache state is a typed contract failure; absent or stale cache
-    entries proceed to the single live gh query path.
+    Stored under <git-common-dir>/clean-merged-gh-cache.json. Missing entries
+    and exact-shape stale entries query gh. Corrupt cache state fails closed.
     """
     cache_path = _gh_cache_path(repo_root)
     now = time.time()
-    loaded = _load_gh_cache(cache_path)
-    loaded_decision = _GH_CACHE_DECISION[loaded.state]
-    if loaded_decision is GhCacheDecision.FAIL_CLOSED:
-        assert loaded.failure is not None
-        return _gh_result_from_failure(loaded.failure)
-    cache = loaded.cache
+    cache, cache_error = _load_gh_cache(cache_path)
+    if cache is None:
+        return None, cache_error
     cache_key = f"{branch}@{tip[:12]}"
-    entry = cache.get(cache_key)
-    normalized = _decode_gh_cache_entry(entry, now, config.lane_r.cache_ttl_s)
-    entry_decision = _GH_CACHE_DECISION[normalized.state]
-    if entry_decision is GhCacheDecision.USE_CACHE:
-        assert normalized.value is not None
-        if normalized.value != entry:
-            cache[cache_key] = normalized.value
-            _save_gh_cache(cache_path, cache, config.lane_r.cache_ttl_s)
-        return _gh_result_from_cache_entry(normalized.value)
-    if entry_decision is GhCacheDecision.FAIL_CLOSED:
-        assert normalized.failure is not None
-        return _gh_result_from_failure(normalized.failure)
-    result = gh_merged_pr_for_branch(repo_root, branch, config.lane_r.gh_timeout_s)
-    cache[cache_key] = _gh_cache_entry_from_result(now, result)
-    _save_gh_cache(cache_path, cache, config.lane_r.cache_ttl_s)
-    return result
+    if cache_key in cache:
+        entry = cache[cache_key]
+        try:
+            age = _gh_cache_entry_age(entry, now)
+            prs = _gh_cache_entry_prs(entry)
+        except ValueError:
+            return None, "invalid cache entry"
+        if age < config.lane_r.cache_ttl_s:
+            return prs, None
+    prs, err = gh_merged_pr_for_branch(repo_root, branch, config.lane_r.gh_timeout_s)
+    safe_err = _safe_report_error(err) if isinstance(err, str) else err
+    if prs is not None:
+        cache[cache_key] = {"fetched_at": now, "prs": prs}
+        _save_gh_cache(cache_path, cache, config.lane_r.cache_ttl_s)
+    return prs, safe_err
 
 
-class PrMatchState(enum.Enum):
-    MATCH = "match"
-    NO_MATCH = "no_match"
-    FAILURE = "failure"
-
-
-@dataclasses.dataclass(frozen=True)
-class PrAuthority:
-    payload: dict[str, Any]
-    number: int
-    head_oid: str
-    base_ref: str
-    owner_login: str
-    is_cross_repository: bool
-
-
-@dataclasses.dataclass(frozen=True)
-class PrMatchResult:
-    state: PrMatchState
-    authority: PrAuthority | None
-    failure: ContractFailure | None
-
-
-_PR_PAYLOAD_CONTRACT = ObjectContract(
-    "gh pr payload",
-    frozenset({
-        "number",
-        "headRefOid",
-        "baseRefName",
-        "headRepositoryOwner",
-        "isCrossRepository",
-    }),
-)
-_PR_OWNER_CONTRACT = ObjectContract("gh pr payload headRepositoryOwner", frozenset({"login"}))
-
-
-@dataclasses.dataclass(frozen=True)
-class PrPayloadFields:
-    index: int
-    payload: dict[str, Any]
-    owner: dict[str, Any]
-
-
-@dataclasses.dataclass(frozen=True)
-class PrPayloadRule:
-    kind: ContractFailureClass
-    field: str
-    predicate: Callable[[PrPayloadFields], bool]
-    detail: str
-
-
-def _pr_payload_subject(index: int, field: str) -> str:
-    return f"gh pr payload[{index}].{field}"
-
-
-def _pr_payload_field_failure(
-    index: int, field: str, kind: ContractFailureClass, detail: str,
-) -> ContractFailure:
-    return ContractFailure(kind, _pr_payload_subject(index, field), detail)
-
-
-_PR_PAYLOAD_FIELD_RULES = (
-    PrPayloadRule(
-        ContractFailureClass.INVALID,
-        "number",
-        lambda fields: not isinstance(fields.payload["number"], int)
-        or isinstance(fields.payload["number"], bool),
-        "number expected integer",
-    ),
-    PrPayloadRule(
-        ContractFailureClass.INVALID,
-        "number",
-        lambda fields: fields.payload["number"] <= 0,
-        "number expected integer > 0",
-    ),
-    PrPayloadRule(
-        ContractFailureClass.INVALID,
-        "headRefOid",
-        lambda fields: not isinstance(fields.payload["headRefOid"], str),
-        "headRefOid expected string",
-    ),
-    PrPayloadRule(
-        ContractFailureClass.INVALID,
-        "headRefOid",
-        lambda fields: isinstance(fields.payload["headRefOid"], str)
-        and not SHA_RE.match(fields.payload["headRefOid"]),
-        "headRefOid expected 40-hex SHA",
-    ),
-    PrPayloadRule(
-        ContractFailureClass.INVALID,
-        "baseRefName",
-        lambda fields: not isinstance(fields.payload["baseRefName"], str),
-        "baseRefName expected string",
-    ),
-    PrPayloadRule(
-        ContractFailureClass.EMPTY,
-        "baseRefName",
-        lambda fields: fields.payload["baseRefName"] == "",
-        "baseRefName is empty",
-    ),
-    PrPayloadRule(
-        ContractFailureClass.INVALID,
-        "isCrossRepository",
-        lambda fields: not isinstance(fields.payload["isCrossRepository"], bool),
-        "isCrossRepository expected bool",
-    ),
-    PrPayloadRule(
-        ContractFailureClass.INVALID,
-        "headRepositoryOwner.login",
-        lambda fields: not isinstance(fields.owner["login"], str),
-        "headRepositoryOwner.login expected string",
-    ),
-    PrPayloadRule(
-        ContractFailureClass.EMPTY,
-        "headRepositoryOwner.login",
-        lambda fields: fields.owner["login"] == "",
-        "headRepositoryOwner.login is empty",
-    ),
-)
-
-
-def _pr_payload_field_contract(fields: PrPayloadFields) -> ContractFailure | None:
-    for rule in _PR_PAYLOAD_FIELD_RULES:
-        if rule.predicate(fields):
-            return _pr_payload_field_failure(
-                fields.index, rule.field, rule.kind, rule.detail)
-    return None
-
-
-def _decode_pr_authority(pr: dict[str, Any], index: int) -> ContractValue:
-    shape_failure = _validate_object_contract(pr, _PR_PAYLOAD_CONTRACT)
-    if shape_failure is not None:
-        return ContractValue(None, ContractFailure(
-            shape_failure.kind, f"gh pr payload[{index}]", shape_failure.detail))
-    owner = pr["headRepositoryOwner"]
-    owner_failure = _validate_object_contract(owner, _PR_OWNER_CONTRACT)
-    if owner_failure is not None:
-        return ContractValue(None, ContractFailure(
-            owner_failure.kind, _pr_payload_subject(index, "headRepositoryOwner"),
-            owner_failure.detail))
-    assert isinstance(owner, dict)
-    fields = PrPayloadFields(index, pr, owner)
-    field_failure = _pr_payload_field_contract(fields)
-    if field_failure is not None:
-        return ContractValue(None, field_failure)
-    return ContractValue(PrAuthority(
-        payload=pr,
-        number=pr["number"],
-        head_oid=pr["headRefOid"],
-        base_ref=pr["baseRefName"],
-        owner_login=owner["login"],
-        is_cross_repository=pr["isCrossRepository"],
-    ), None)
-
-
-def _decode_pr_authorities(prs: list[dict[str, Any]]) -> ContractValue:
-    authorities: list[PrAuthority] = []
-    for index, pr in enumerate(prs):
-        decoded = _decode_pr_authority(pr, index)
-        if decoded.failure is not None:
-            return decoded
-        assert isinstance(decoded.value, PrAuthority)
-        authorities.append(decoded.value)
-    return ContractValue(authorities, None)
-
-
-def _authority_matches(authority: PrAuthority, tip: str, trunk: str, origin_owner: str) -> bool:
-    return (
-        authority.head_oid == tip
-        and authority.base_ref == trunk
-        and not authority.is_cross_repository
-        and authority.owner_login == origin_owner
-    )
-
-
-def match_merged_pr_authority(
+def find_matching_merged_pr(
     prs: list[dict[str, Any]], tip: str, trunk: str, origin_owner: str,
-) -> PrMatchResult:
-    if origin_owner == "":
-        return PrMatchResult(
-            PrMatchState.FAILURE, None,
-            ContractFailure(ContractFailureClass.EMPTY, "origin owner", "value is empty"),
-        )
-    decoded = _decode_pr_authorities(prs)
-    if decoded.failure is not None:
-        return PrMatchResult(PrMatchState.FAILURE, None, decoded.failure)
-    assert isinstance(decoded.value, list)
-    matches = [
-        authority for authority in decoded.value
-        if _authority_matches(authority, tip, trunk, origin_owner)
-    ]
-    if len(matches) > 1:
-        return PrMatchResult(
-            PrMatchState.FAILURE, None,
-            ContractFailure(
-                ContractFailureClass.AMBIGUOUS,
-                "gh pr authority",
-                f"{len(matches)} merged PRs match {tip[:12]}",
-            ),
-        )
-    if not matches:
-        return PrMatchResult(PrMatchState.NO_MATCH, None, None)
-    return PrMatchResult(PrMatchState.MATCH, matches[0], None)
-
-
-_LANE_R_GH_FAILURE_ACTION = {
-    ContractFailureClass.MISSING: "skipped-gh-missing",
-    ContractFailureClass.EMPTY: "skipped-gh-empty",
-    ContractFailureClass.INVALID: "skipped-gh-invalid",
-    ContractFailureClass.STALE: "skipped-gh-stale",
-    ContractFailureClass.UNAVAILABLE: "skipped-gh-unavailable",
-    ContractFailureClass.TIMEOUT: "skipped-gh-timeout",
-    ContractFailureClass.AMBIGUOUS: "skipped-gh-ambiguous",
-}
-
-
-_LANE_R_PR_AUTHORITY_FAILURE_ACTION = {
-    ContractFailureClass.MISSING: "skipped-pr-authority-missing",
-    ContractFailureClass.EMPTY: "skipped-pr-authority-empty",
-    ContractFailureClass.INVALID: "skipped-pr-authority-invalid",
-    ContractFailureClass.STALE: "skipped-pr-authority-stale",
-    ContractFailureClass.UNAVAILABLE: "skipped-pr-authority-unavailable",
-    ContractFailureClass.TIMEOUT: "skipped-pr-authority-timeout",
-    ContractFailureClass.AMBIGUOUS: "skipped-pr-authority-ambiguous",
-}
+) -> dict[str, Any] | None:
+    """Return the PR whose headRefOid == tip AND baseRefName == trunk AND same-repo.
+    """
+    for pr in prs:
+        if pr["headRefOid"] != tip:
+            continue
+        if pr["baseRefName"] != trunk:
+            continue
+        if pr["isCrossRepository"]:
+            continue
+        owner = pr["headRepositoryOwner"]
+        if owner["login"] != origin_owner:
+            continue
+        return pr
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1730,110 +876,6 @@ def _lane_s_record(
     return record
 
 
-class LaneSPreviewFailure(enum.Enum):
-    FETCH_FAILED = "preview-fetch-failed"
-    REF_ABSENT = "preview-ref-absent"
-    REF_EMPTY = "preview-ref-empty"
-    REF_INVALID = "preview-ref-invalid"
-    REF_UNAVAILABLE = "preview-ref-unavailable"
-    CLEANUP_FAILED = "preview-ref-cleanup-failed"
-    CLEANUP_STALE = "preview-ref-cleanup-stale"
-    CLEANUP_EMPTY = "preview-ref-cleanup-empty"
-    CLEANUP_INVALID = "preview-ref-cleanup-invalid"
-    CLEANUP_UNAVAILABLE = "preview-ref-cleanup-unavailable"
-    MISSING_LOCAL_TRUNK = "refused-missing-local-trunk"
-    NON_FAST_FORWARD = "refused-non-fast-forward"
-    DIRTY_TRUNK_WORKTREE = "refused-dirty-trunk-worktree"
-
-
-def _lane_s_preview_failure(
-    config: Config, failure: LaneSPreviewFailure, reason: str, **fields: Any,
-) -> dict[str, Any]:
-    return _lane_s_record(config, failure.value, reason, **fields)
-
-
-_PREVIEW_REF_FAILURE_ACTION = {
-    RefResolutionKind.ABSENT: LaneSPreviewFailure.REF_ABSENT,
-    RefResolutionKind.EMPTY: LaneSPreviewFailure.REF_EMPTY,
-    RefResolutionKind.INVALID: LaneSPreviewFailure.REF_INVALID,
-    RefResolutionKind.UNAVAILABLE: LaneSPreviewFailure.REF_UNAVAILABLE,
-}
-_PREVIEW_CLEANUP_FAILURE_ACTION = {
-    RefResolutionKind.PRESENT: LaneSPreviewFailure.CLEANUP_STALE,
-    RefResolutionKind.EMPTY: LaneSPreviewFailure.CLEANUP_EMPTY,
-    RefResolutionKind.INVALID: LaneSPreviewFailure.CLEANUP_INVALID,
-    RefResolutionKind.UNAVAILABLE: LaneSPreviewFailure.CLEANUP_UNAVAILABLE,
-}
-_LOCAL_TRUNK_REF_FAILURE_ACTION = {
-    RefResolutionKind.ABSENT: "refused-missing-local-trunk",
-    RefResolutionKind.EMPTY: "refused-empty-local-trunk",
-    RefResolutionKind.INVALID: "refused-invalid-local-trunk",
-    RefResolutionKind.UNAVAILABLE: "refused-unavailable-local-trunk",
-}
-_REMOTE_TRUNK_REF_FAILURE_ACTION = {
-    RefResolutionKind.ABSENT: "refused-missing-remote-trunk",
-    RefResolutionKind.EMPTY: "refused-empty-remote-trunk",
-    RefResolutionKind.INVALID: "refused-invalid-remote-trunk",
-    RefResolutionKind.UNAVAILABLE: "refused-unavailable-remote-trunk",
-}
-
-
-def _ref_resolution_reason(resolution: RefResolution) -> str:
-    return (resolution.failure.diagnostic
-            if resolution.failure is not None
-            else f"{resolution.ref} resolved to {resolution.sha}")
-
-
-def _preview_ref_resolution_failure(
-    config: Config, resolution: RefResolution,
-) -> dict[str, Any]:
-    failure = _PREVIEW_REF_FAILURE_ACTION[resolution.kind]
-    return _lane_s_preview_failure(config, failure, _ref_resolution_reason(resolution))
-
-
-def _preview_cleanup_resolution_failure(
-    config: Config, resolution: RefResolution,
-) -> dict[str, Any]:
-    failure = _PREVIEW_CLEANUP_FAILURE_ACTION[resolution.kind]
-    return _lane_s_preview_failure(
-        config, failure, _ref_resolution_reason(resolution), tip_sha=resolution.sha,
-    )
-
-
-def _fast_forward_postcondition_record(
-    config: Config, local_ref: str, remote_sha: str, resolution: RefResolution,
-) -> tuple[dict[str, Any] | None, bool]:
-    if resolution.kind is not RefResolutionKind.PRESENT:
-        suffix = {
-            RefResolutionKind.ABSENT: "absent",
-            RefResolutionKind.EMPTY: "empty",
-            RefResolutionKind.INVALID: "invalid",
-            RefResolutionKind.UNAVAILABLE: "unavailable",
-        }[resolution.kind]
-        return _lane_s_record(
-            config, f"fast-forward-postcondition-{suffix}",
-            _ref_resolution_reason(resolution),
-        ), False
-    if resolution.sha != remote_sha:
-        return _lane_s_record(
-            config, "fast-forward-postcondition-stale",
-            f"{local_ref} resolved to {resolution.sha}, expected {remote_sha}",
-            tip_sha=resolution.sha,
-        ), False
-    return None, True
-
-
-def _trunk_ref_resolution_failure(
-    config: Config, resolution: RefResolution, *,
-    action_by_kind: dict[RefResolutionKind, str], tip_sha: str | None = None,
-) -> dict[str, Any]:
-    return _lane_s_record(
-        config, action_by_kind[resolution.kind],
-        _ref_resolution_reason(resolution),
-        tip_sha=tip_sha,
-    )
-
-
 def run_lane_s(
     repo_root: pathlib.Path, config: Config, *,
     apply: bool, quiet: bool, defer_cleanup: bool = False,
@@ -1859,19 +901,17 @@ def run_lane_s(
 
     local_ref = f"refs/heads/{config.trunk_branch}"
     remote_ref = f"refs/remotes/{config.remote_name}/{config.trunk_branch}"
-    local_resolution = resolve_ref_contract(repo_root, local_ref)
-    remote_resolution = resolve_ref_contract(repo_root, remote_ref)
+    local_sha = resolve_ref_sha(repo_root, local_ref)
+    remote_sha = resolve_ref_sha(repo_root, remote_ref)
 
-    refusal = _sync_ref_refusal(config, local_resolution, remote_resolution)
+    refusal = _sync_ref_refusal(config, local_ref, remote_ref, local_sha, remote_sha)
     if refusal is not None:
         records.append(refusal)
         return _finish_lane_s(records, apply=apply, quiet=quiet,
                               ok=refusal["action"] == "up-to-date")
 
-    assert local_resolution.sha is not None
-    assert remote_resolution.sha is not None
-    local_sha = local_resolution.sha
-    remote_sha = remote_resolution.sha
+    assert local_sha is not None
+    assert remote_sha is not None
     if not is_ancestor(repo_root, local_sha, remote_sha):
         records.append(_lane_s_record(
             config, "refused-non-fast-forward",
@@ -1888,18 +928,11 @@ def run_lane_s(
             records.append(ff_record)
         return _finish_lane_s(records, apply=apply, quiet=quiet, ok=False)
 
-    postcondition, postcondition_ok = _fast_forward_postcondition_record(
-        config, local_ref, remote_sha, resolve_ref_contract(repo_root, local_ref),
-    )
-    if not postcondition_ok:
-        assert postcondition is not None
-        records.append(postcondition)
-        return _finish_lane_s(records, apply=apply, quiet=quiet, ok=False)
-
+    fresh_sha = resolve_ref_sha(repo_root, local_ref) or remote_sha
     records.append(_lane_s_record(
         config, "fast-forwarded",
         f"{local_sha[:12]} -> {remote_sha[:12]}",
-        tip_sha=remote_sha,
+        tip_sha=fresh_sha,
     ))
     return _finish_lane_s(records, apply=apply, quiet=quiet, ok=True)
 
@@ -1939,48 +972,48 @@ def _fetch_preview_trunk(
         check=False,
     )
     if fetch.returncode != 0:
-        return None, _lane_s_preview_failure(
-            config, LaneSPreviewFailure.FETCH_FAILED,
+        return None, _lane_s_record(
+            config, "preview-fetch-failed",
             _safe_report_error(fetch.stderr) or "git fetch failed",
         )
-    resolution = resolve_ref_contract(repo_root, temp_ref)
-    if resolution.kind is not RefResolutionKind.PRESENT:
-        return None, _preview_ref_resolution_failure(config, resolution)
-    return resolution.sha, None
+    return resolve_ref_sha(repo_root, temp_ref), None
 
 
 def _delete_preview_ref(
     repo_root: pathlib.Path, config: Config, temp_ref: str, expected_sha: str,
 ) -> dict[str, Any] | None:
-    direct = _git(repo_root, ["update-ref", "-d", temp_ref, expected_sha], check=False)
-    if direct.returncode != 0:
-        reason = _safe_report_error(direct.stderr)
-        return _lane_s_preview_failure(
-            config, LaneSPreviewFailure.CLEANUP_FAILED,
+    delete = _git(repo_root, ["update-ref", "-d", temp_ref, expected_sha], check=False)
+    if delete.returncode != 0:
+        reason = _safe_report_error(delete.stderr)
+        return _lane_s_record(
+            config, "preview-ref-cleanup-failed",
             reason or f"could not delete {temp_ref}",
         )
-    post_delete = resolve_ref_contract(repo_root, temp_ref)
-    if post_delete.kind is RefResolutionKind.ABSENT:
+    if resolve_ref_sha(repo_root, temp_ref) is None:
         return None
-    return _preview_cleanup_resolution_failure(config, post_delete)
+    return _lane_s_record(
+        config, "preview-ref-cleanup-failed",
+        f"{temp_ref} still resolves after delete",
+    )
 
 
 def _preview_trunk_context(
     repo_root: pathlib.Path, config: Config, *, temp_ref: str, remote_sha: str | None,
 ) -> tuple[PreviewTrunkContext | None, dict[str, Any] | None]:
     if remote_sha is None:
-        return None, _lane_s_preview_failure(
-            config, LaneSPreviewFailure.FETCH_FAILED,
+        return None, _lane_s_record(
+            config, "preview-fetch-failed",
             f"{temp_ref} did not resolve after fetch",
         )
-    local_resolution = resolve_ref_contract(repo_root, f"refs/heads/{config.trunk_branch}")
-    if local_resolution.kind is not RefResolutionKind.PRESENT:
-        return None, _trunk_ref_resolution_failure(
-            config, local_resolution, action_by_kind=_LOCAL_TRUNK_REF_FAILURE_ACTION,
+    local_ref = f"refs/heads/{config.trunk_branch}"
+    local_sha = resolve_ref_sha(repo_root, local_ref)
+    if local_sha is None:
+        return None, _lane_s_record(
+            config, "refused-missing-local-trunk",
+            f"{local_ref} does not resolve",
         )
-    assert local_resolution.sha is not None
     return PreviewTrunkContext(
-        local_ref=local_resolution.ref, local_sha=local_resolution.sha, remote_sha=remote_sha,
+        local_ref=local_ref, local_sha=local_sha, remote_sha=remote_sha,
     ), None
 
 
@@ -1990,8 +1023,8 @@ def _preview_non_fast_forward_refusal(
     if (context.local_sha == context.remote_sha
             or is_ancestor(repo_root, context.local_sha, context.remote_sha)):
         return None
-    return _lane_s_preview_failure(
-        config, LaneSPreviewFailure.NON_FAST_FORWARD,
+    return _lane_s_record(
+        config, "refused-non-fast-forward",
         f"{context.local_ref} is not an ancestor of preview remote trunk",
         tip_sha=context.local_sha,
     )
@@ -2008,8 +1041,8 @@ def _preview_dirty_trunk_refusal(
     clean, clean_reason = is_worktree_clean(trunk_worktree)
     if clean:
         return None
-    return _lane_s_preview_failure(
-        config, LaneSPreviewFailure.DIRTY_TRUNK_WORKTREE,
+    return _lane_s_record(
+        config, "refused-dirty-trunk-worktree",
         f"uncommitted changes: {clean_reason}",
         tip_sha=context.local_sha,
         worktree=str(trunk_worktree),
@@ -2040,7 +1073,11 @@ def _sync_preview_trunk_record(repo_root: pathlib.Path, config: Config) -> tuple
     remote_sha, fetch_refusal = _fetch_preview_trunk(repo_root, config, temp_ref)
     if fetch_refusal is not None:
         return fetch_refusal, False
-    assert remote_sha is not None
+    if remote_sha is None:
+        return _lane_s_record(
+            config, "preview-fetch-failed",
+            f"{temp_ref} did not resolve after fetch",
+        ), False
     cleanup_refusal = _delete_preview_ref(repo_root, config, temp_ref, remote_sha)
     if cleanup_refusal is not None:
         return cleanup_refusal, False
@@ -2061,24 +1098,25 @@ def _sync_preview_trunk_record(repo_root: pathlib.Path, config: Config) -> tuple
 
 
 def _sync_ref_refusal(
-    config: Config, local_resolution: RefResolution, remote_resolution: RefResolution,
+    config: Config, local_ref: str, remote_ref: str,
+    local_sha: str | None, remote_sha: str | None,
 ) -> dict[str, Any] | None:
-    if local_resolution.kind is not RefResolutionKind.PRESENT:
-        return _trunk_ref_resolution_failure(
-            config, local_resolution, action_by_kind=_LOCAL_TRUNK_REF_FAILURE_ACTION,
+    if local_sha is None:
+        return _lane_s_record(
+            config, "refused-missing-local-trunk",
+            f"{local_ref} does not resolve",
         )
-    assert local_resolution.sha is not None
-    if remote_resolution.kind is not RefResolutionKind.PRESENT:
-        return _trunk_ref_resolution_failure(
-            config, remote_resolution, action_by_kind=_REMOTE_TRUNK_REF_FAILURE_ACTION,
-            tip_sha=local_resolution.sha,
+    if remote_sha is None:
+        return _lane_s_record(
+            config, "refused-missing-remote-trunk",
+            f"{remote_ref} does not resolve",
+            tip_sha=local_sha,
         )
-    assert remote_resolution.sha is not None
-    if local_resolution.sha == remote_resolution.sha:
+    if local_sha == remote_sha:
         return _lane_s_record(
             config, "up-to-date",
-            f"{local_resolution.ref} matches {remote_resolution.ref}",
-            tip_sha=local_resolution.sha,
+            f"{local_ref} matches {remote_ref}",
+            tip_sha=local_sha,
         )
     return None
 
@@ -2135,28 +1173,6 @@ def _finish_lane_s(
 # Lane H
 
 
-_TRUNK_AUTHORITY_FAILURE_ACTION = {
-    ContractFailureClass.MISSING: "refused-missing-trunk-authority",
-    ContractFailureClass.EMPTY: "refused-empty-trunk-authority",
-    ContractFailureClass.INVALID: "refused-invalid-trunk-authority",
-    ContractFailureClass.STALE: "refused-stale-trunk-authority",
-    ContractFailureClass.UNAVAILABLE: "refused-unavailable-trunk-authority",
-    ContractFailureClass.TIMEOUT: "refused-timeout-trunk-authority",
-    ContractFailureClass.AMBIGUOUS: "refused-ambiguous-trunk-authority",
-}
-
-
-def _trunk_authority_failure_record(
-    lane: str, config: Config, failure: ContractFailure,
-) -> dict[str, Any]:
-    return {
-        "lane": lane,
-        "branch": config.trunk_branch,
-        "action": _TRUNK_AUTHORITY_FAILURE_ACTION[failure.kind],
-        "reason": failure.diagnostic,
-    }
-
-
 def run_lane_h(
     repo_root: pathlib.Path, config: Config, *,
     apply: bool, keep: set[str], quiet: bool, trunk_sha_override: str | None = None,
@@ -2164,14 +1180,9 @@ def run_lane_h(
     records: list[dict[str, Any]] = []
     if not config.enabled:
         return records
-    trunk_authority = _resolve_trunk_authority(repo_root, config, trunk_sha_override)
-    if trunk_authority.failure is not None:
-        records.append(_trunk_authority_failure_record("H", config, trunk_authority.failure))
-        if not quiet:
-            _print_lane_summary("H", records, apply)
+    trunk_sha = effective_trunk_sha(repo_root, config, trunk_sha_override)
+    if not trunk_sha:
         return records
-    assert trunk_authority.sha is not None
-    trunk_sha = trunk_authority.sha
     cur = current_branch(repo_root)
     branches = list_local_branches(repo_root)
     bound = worktree_bound_branches(repo_root)
@@ -2210,16 +1221,6 @@ def run_lane_h(
                                 "reason": "branch became worktree-bound after eligibility check"})
                 continue
             backup = write_backup_ref(repo_root, br.name, fresh_tip)
-            audit_refusal = _required_audit_refusal(repo_root, config, {
-                "lane": "H", "branch": br.name, "tip_sha": fresh_tip,
-                "action": "delete-attempted",
-                "reason": "backup ref written; branch delete imminent",
-                "backup_ref": backup,
-                "recovery_hint": {"type": "ref", "ref": backup, "sha": fresh_tip},
-            })
-            if audit_refusal is not None:
-                records.append(audit_refusal)
-                continue
             ok, err = delete_branch_ref_cas(repo_root, br.name, fresh_tip)
             action = "deleted" if ok else "delete-cas-refused"
             reason = "" if ok else err
@@ -2245,20 +1246,15 @@ def run_lane_r(
     records: list[dict[str, Any]] = []
     if not config.enabled:
         return records
-    trunk_authority = _resolve_trunk_authority(repo_root, config, trunk_sha_override)
-    if trunk_authority.failure is not None:
-        records.append(_trunk_authority_failure_record("R", config, trunk_authority.failure))
-        if not quiet:
-            _print_lane_summary("R", records, apply)
+    trunk_sha = effective_trunk_sha(repo_root, config, trunk_sha_override)
+    if not trunk_sha:
         return records
-    assert trunk_authority.sha is not None
-    trunk_sha = trunk_authority.sha
     cur = current_branch(repo_root)
     branches = list_local_branches(repo_root)
     bound = worktree_bound_branches(repo_root)
     skip_names = {b for b in (config.trunk_branch, "master", cur) if b} | keep
 
-    gh_contract_failed = False
+    gh_unavailable = False
     for br in branches:
         if br.name in skip_names:
             continue
@@ -2287,16 +1283,6 @@ def run_lane_r(
                                     "reason": "branch became worktree-bound after eligibility"})
                     continue
                 backup = write_backup_ref(repo_root, br.name, fresh_tip)
-                audit_refusal = _required_audit_refusal(repo_root, config, {
-                    "lane": "R", "branch": br.name, "tip_sha": fresh_tip,
-                    "action": "delete-attempted",
-                    "reason": "backup ref written; branch delete imminent",
-                    "backup_ref": backup,
-                    "recovery_hint": {"type": "ref", "ref": backup, "sha": fresh_tip},
-                })
-                if audit_refusal is not None:
-                    records.append(audit_refusal)
-                    continue
                 ok, err = delete_branch_ref_cas(repo_root, br.name, fresh_tip)
                 records.append({"lane": "R", "branch": br.name, "tip_sha": fresh_tip,
                                 "action": "deleted" if ok else "delete-cas-refused",
@@ -2306,26 +1292,16 @@ def run_lane_r(
                 records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
                                 "action": "would-delete", "reason": "ancestor of trunk"})
             continue
-        gh_result = gh_merged_pr_for_branch_cached(repo_root, config, br.name, br.sha)
-        if gh_result.failure is not None:
-            gh_contract_failed = True
-            failure = gh_result.failure
+        # gh path
+        prs, err = gh_merged_pr_for_branch_cached(repo_root, config, br.name, br.sha)
+        if prs is None:
+            gh_unavailable = True
             records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
-                            "action": _LANE_R_GH_FAILURE_ACTION[failure.kind],
-                            "reason": failure.diagnostic})
+                            "action": "skipped-gh-unavailable", "reason": err or "gh error"})
             continue
-        assert gh_result.prs is not None
-        match = match_merged_pr_authority(
-            gh_result.prs, br.sha, config.trunk_branch, config.origin_owner)
-        if match.failure is not None:
-            failure = match.failure
-            records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
-                            "action": _LANE_R_PR_AUTHORITY_FAILURE_ACTION[failure.kind],
-                            "reason": failure.diagnostic})
+        match = find_matching_merged_pr(prs, br.sha, config.trunk_branch, config.origin_owner)
+        if match is None:
             continue
-        if match.state is PrMatchState.NO_MATCH:
-            continue
-        assert match.authority is not None
         if apply:
             fresh_tip = _git(repo_root, ["rev-parse", br.name], check=False).stdout.strip()
             if not fresh_tip or not SHA_RE.match(fresh_tip):
@@ -2342,37 +1318,20 @@ def run_lane_r(
                                 "reason": "branch became worktree-bound after gh match"})
                 continue
             backup = write_backup_ref(repo_root, br.name, fresh_tip)
-            audit_refusal = _required_audit_refusal(repo_root, config, {
-                "lane": "R", "branch": br.name, "tip_sha": fresh_tip,
-                "action": "delete-attempted",
-                "reason": (
-                    f"backup ref written; gh PR #{match.authority.number} "
-                    "branch delete imminent"
-                ),
-                "backup_ref": backup,
-                "pr_number": match.authority.number,
-                "recovery_hint": {"type": "ref", "ref": backup, "sha": fresh_tip},
-            })
-            if audit_refusal is not None:
-                records.append(audit_refusal)
-                continue
             ok, err = delete_branch_ref_cas(repo_root, br.name, fresh_tip)
             action = "deleted" if ok else "delete-cas-refused"
             records.append({"lane": "R", "branch": br.name, "tip_sha": fresh_tip,
                             "action": action, "reason": "" if ok else err,
-                            "backup_ref": backup, "pr_number": match.authority.number,
+                            "backup_ref": backup, "pr_number": match.get("number"),
                             "recovery_hint": {"type": "ref", "ref": backup, "sha": fresh_tip}})
         else:
             records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
                             "action": "would-delete",
-                            "reason": (
-                                f"gh PR #{match.authority.number} merged headRefOid==tip"
-                            ),
-                            "pr_number": match.authority.number})
+                            "reason": f"gh PR #{match.get('number')} merged headRefOid==tip",
+                            "pr_number": match.get("number")})
 
-    if gh_contract_failed and not quiet:
-        print(f"[{SCRIPT_NAME}] lane R: gh contract failed for some branches; kept them",
-              file=sys.stderr)
+    if gh_unavailable and not quiet:
+        print(f"[{SCRIPT_NAME}] lane R: gh unavailable for some branches; kept them", file=sys.stderr)
     if not quiet:
         _print_lane_summary("R", records, apply)
     return records
@@ -2464,22 +1423,14 @@ def _lane_w_eligible(
         return False, "detached HEAD not ancestor of trunk", None
     if is_ancestor(repo_root, head, trunk_sha):
         return True, "ancestor of trunk", None
-    gh_result = gh_merged_pr_for_branch_cached(repo_root, config, branch, head)
-    if gh_result.failure is not None:
-        return False, f"not ancestor and gh contract failed ({gh_result.failure.diagnostic})", None
-    assert gh_result.prs is not None
-    match = match_merged_pr_authority(
-        gh_result.prs, head, config.trunk_branch, config.origin_owner)
-    if match.failure is not None:
-        return False, f"not ancestor and PR authority failed ({match.failure.diagnostic})", None
-    if match.state is PrMatchState.NO_MATCH:
+    # gh path (Lane W is operator-invoked; network is acceptable here)
+    prs, err = gh_merged_pr_for_branch_cached(repo_root, config, branch, head)
+    if prs is None:
+        return False, f"not ancestor and gh unavailable ({err})", None
+    match = find_matching_merged_pr(prs, head, config.trunk_branch, config.origin_owner)
+    if match is None:
         return False, "no matching merged PR for tip SHA", None
-    assert match.authority is not None
-    return (
-        True,
-        f"gh PR #{match.authority.number} merged headRefOid==tip",
-        match.authority.payload,
-    )
+    return True, f"gh PR #{match.get('number')} merged headRefOid==tip", match
 
 
 def run_lane_w(
@@ -2493,14 +1444,9 @@ def run_lane_w(
     records: list[dict[str, Any]] = []
     if not config.enabled:
         return records
-    trunk_authority = _resolve_trunk_authority(repo_root, config, trunk_sha_override)
-    if trunk_authority.failure is not None:
-        records.append(_trunk_authority_failure_record("W", config, trunk_authority.failure))
-        if not quiet:
-            _print_lane_summary("W", records, apply)
+    trunk_sha = effective_trunk_sha(repo_root, config, trunk_sha_override)
+    if not trunk_sha:
         return records
-    assert trunk_authority.sha is not None
-    trunk_sha = trunk_authority.sha
     # `cur` must reflect the INVOKER's branch, not repo_root's (round-5 Grok P1):
     # if the operator runs Lane W from inside a feature worktree while repo_root
     # resolves to the main worktree, the active-worktree skip would not protect
@@ -2822,26 +1768,7 @@ def cmd_purge_quarantine(
                 continue
             manifest_file = child / "clean-merged.manifest.json"
             if not manifest_file.is_file():
-                # Round-4 P2-B: orphan dir (Lane W crashed before manifest write).
-                # Use the dir's mtime as fallback so it doesn't sit forever.
-                try:
-                    mtime = child.stat().st_mtime
-                except OSError:
-                    skipped += 1
-                    continue
-                if mtime > cutoff:
-                    continue
-                try:
-                    size = sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
-                except OSError:
-                    size = 0
-                shutil.rmtree(child, ignore_errors=True)
-                total_bytes_freed += size
-                write_audit(repo_root, config, {
-                    "lane": "W", "action": "quarantine-purged-orphan",
-                    "quarantine_path": str(child),
-                })
-                purged += 1
+                skipped += 1
                 continue
             try:
                 manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
@@ -3046,7 +1973,7 @@ def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
     print(f"[{SCRIPT_NAME}] doctor")
     print(f"  CONFIG ERROR             = {exc}")
     print(f"  python                   = {sys.version_info.major}.{sys.version_info.minor} "
-          f"(tomllib={'yes' if _HAS_TOMLLIB else 'python<3.11 scalar contract'})")
+          "(tomllib=yes)")
     try:
         common = git_common_dir(repo_root)
         print(f"  git-common-dir           = {common}")
@@ -3089,9 +2016,7 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
 
     # Python / tomllib availability
     py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    print(f"  python                   = {py_version} (tomllib={'yes' if _HAS_TOMLLIB else 'python<3.11 scalar contract'})")
-    if not _HAS_TOMLLIB and sys.version_info < (3, 11):
-        print(f"  note                     = using Python<3.11 scalar TOML contract reader")
+    print(f"  python                   = {py_version} (tomllib=yes)")
 
     # config
     print(f"  config.enabled           = {config.enabled}")
@@ -3237,7 +2162,7 @@ def _print_lane_summary(lane: str, records: list[dict[str, Any]], apply: bool) -
         if r.get("quarantine_path"):
             extra += f" -> {r['quarantine_path']}"
         if r.get("reason"):
-            extra += f" :: {r['reason']}"
+            extra += f" :: {r['reason'][:120]}"
         print(f"  {action:30s} {branch:40s} {sha}{extra}")
 
 

@@ -250,6 +250,10 @@ AI_REVIEW_DELIVERABLES_SNIPPETS = (
     "def validate_review_responses(",
     "did not meet the hard-evidence output contract",
     "validate_review_responses(responses, config.output_contract)",
+    "def list_pull_review_comments",
+    "def update_pull_review_comment",
+    "github.list_pull_review_comments()",
+    "github.update_pull_review_comment(",
 )
 
 KIMI_FORBIDDEN_INPUTS = (
@@ -837,8 +841,8 @@ def run_self_tests(repo_root: Path) -> None:
     pr_agent_model_literal = verify_texts(
         agents_md=agents,
         pr_agent_toml=pr_agent.replace(
-            "the workflow stamps the authoritative configured source/model from `ci/ai-review.toml`",
-            f"the workflow stamps the authoritative configured source/model from `ci/ai-review.toml` (`{current_glm_pr_agent_model}`)",
+            "workflow stamps the authoritative configured source/model from `ci/ai-review.toml`",
+            f"workflow stamps the authoritative configured source/model from `ci/ai-review.toml` (`{current_glm_pr_agent_model}`)",
         ),
         ai_review_toml=ai_review,
         ai_review_deliverables=deliverables,

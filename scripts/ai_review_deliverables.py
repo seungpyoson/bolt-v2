@@ -162,6 +162,12 @@ class GitHubClient:
     def list_reviews(self) -> list[dict[str, object]]:
         return self.list_reviews_for(self.pr_number)
 
+    def list_pull_review_comments_for(self, pr_number: int) -> list[dict[str, object]]:
+        return self._list_paginated(f"pulls/{pr_number}/comments")
+
+    def list_pull_review_comments(self) -> list[dict[str, object]]:
+        return self.list_pull_review_comments_for(self.pr_number)
+
     def post_issue_comment_for(self, pr_number: int, body: str) -> None:
         self._request_json("POST", f"issues/{pr_number}/comments", payload={"body": body})
 
@@ -170,6 +176,9 @@ class GitHubClient:
 
     def update_issue_comment(self, comment_id: int, body: str) -> None:
         self._request_json("PATCH", f"issues/comments/{comment_id}", payload={"body": body})
+
+    def update_pull_review_comment(self, comment_id: int, body: str) -> None:
+        self._request_json("PATCH", f"pulls/comments/{comment_id}", payload={"body": body})
 
 
 class OpenAIChatClient:
@@ -469,7 +478,7 @@ def stamp_existing_review_comment(
     run_url: str,
 ) -> str:
     threshold = parse_iso_timestamp(started_at)
-    candidates = [
+    issue_candidates = [
         comment
         for comment in github.list_issue_comments()
         if actor_is_expected_bot(comment, expected_bot_login)
@@ -481,17 +490,37 @@ def stamp_existing_review_comment(
             or text_time_is_after_or_equal(comment.get("created_at"), threshold)
         )
     ]
-    if not candidates:
+    review_comment_candidates = [
+        comment
+        for comment in github.list_pull_review_comments()
+        if actor_is_expected_bot(comment, expected_bot_login)
+        and isinstance(comment.get("body"), str)
+        and isinstance(comment.get("id"), int)
+        and not isinstance(comment.get("id"), bool)
+        and (
+            text_time_is_after_or_equal(comment.get("updated_at"), threshold)
+            or text_time_is_after_or_equal(comment.get("created_at"), threshold)
+        )
+    ]
+    if not issue_candidates and not review_comment_candidates:
         return "no-existing-review"
     updated = 0
     already_stamped = 0
-    for comment in candidates:
+    for comment in issue_candidates:
         body = str(comment.get("body") or "")
         stamped = add_source_line(body, marker=marker, source_label=source_label, run_url=run_url)
         if stamped == body:
             already_stamped += 1
             continue
         github.update_issue_comment(int(comment["id"]), stamped)
+        updated += 1
+    for comment in review_comment_candidates:
+        body = str(comment.get("body") or "")
+        stamped = add_source_line(body, marker=marker, source_label=source_label, run_url=run_url)
+        if stamped == body:
+            already_stamped += 1
+            continue
+        github.update_pull_review_comment(int(comment["id"]), stamped)
         updated += 1
     if updated:
         return "existing-reviews-stamped"

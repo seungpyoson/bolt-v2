@@ -56,13 +56,16 @@ def load_script():
 class FakeGitHub:
     files: list[dict[str, object]]
     issue_comments: list[dict[str, object]] | None = None
+    review_comments: list[dict[str, object]] | None = None
     reviews: list[dict[str, object]] | None = None
 
     def __post_init__(self) -> None:
         self.issue_comments = list(self.issue_comments or [])
+        self.review_comments = list(self.review_comments or [])
         self.reviews = list(self.reviews or [])
         self.posted: list[str] = []
         self.updated: list[tuple[int, str]] = []
+        self.updated_review_comments: list[tuple[int, str]] = []
 
     def list_pr_files(self) -> list[dict[str, object]]:
         return list(self.files)
@@ -73,11 +76,17 @@ class FakeGitHub:
     def list_reviews(self) -> list[dict[str, object]]:
         return list(self.reviews or [])
 
+    def list_pull_review_comments(self) -> list[dict[str, object]]:
+        return list(self.review_comments or [])
+
     def post_issue_comment(self, body: str) -> None:
         self.posted.append(body)
 
     def update_issue_comment(self, comment_id: int, body: str) -> None:
         self.updated.append((comment_id, body))
+
+    def update_pull_review_comment(self, comment_id: int, body: str) -> None:
+        self.updated_review_comments.append((comment_id, body))
 
 
 class FakeGLM:
@@ -991,6 +1000,22 @@ def test_stamps_all_pr_agent_review_source_model_comments() -> None:
                 "user": {"type": "Bot", "login": "github-actions[bot]"},
             }
         ],
+        review_comments=[
+            {
+                "id": 79,
+                "body": "Line-level PR-Agent observation.",
+                "created_at": "2026-06-22T12:24:00Z",
+                "updated_at": "2026-06-22T12:24:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+            {
+                "id": 80,
+                "body": "Earlier line-level observation.",
+                "created_at": "2026-06-22T12:20:00Z",
+                "updated_at": "2026-06-22T12:20:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+        ],
     )
 
     result = module.stamp_existing_review_comment(
@@ -1006,7 +1031,12 @@ def test_stamps_all_pr_agent_review_source_model_comments() -> None:
     assert result == "existing-reviews-stamped"
     assert github.posted == []
     assert [comment_id for comment_id, _body in github.updated] == [77, 78]
+    assert [comment_id for comment_id, _body in github.updated_review_comments] == [79]
     for _comment_id, body in github.updated:
+        assert body.startswith("<!-- ai-pr-reviewer-glm -->")
+        assert "**Source:** GLM PR-Agent (`configured-pr-agent-model`)" in body
+        assert "**Action run:** https://github.com/seungpyoson/bolt-v2/actions/runs/1" in body
+    for _comment_id, body in github.updated_review_comments:
         assert body.startswith("<!-- ai-pr-reviewer-glm -->")
         assert "**Source:** GLM PR-Agent (`configured-pr-agent-model`)" in body
         assert "**Action run:** https://github.com/seungpyoson/bolt-v2/actions/runs/1" in body

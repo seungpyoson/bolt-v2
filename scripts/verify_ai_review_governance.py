@@ -7,6 +7,7 @@ import argparse
 import re
 import sys
 import tomllib
+from enum import Enum
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -219,6 +220,20 @@ def non_empty_string_list(value: object) -> bool:
     return isinstance(value, list) and bool(value) and all(isinstance(item, str) and item for item in value)
 
 
+class PrAgentMirrorFailure(str, Enum):
+    MISSING_TABLE = "missing_table"
+    INVALID_NOTE_SNIPPETS = "invalid_note_snippets"
+    INVALID_RULES = "invalid_rules"
+    INVALID_RULE = "invalid_rule"
+    INVALID_RULE_NAME = "invalid_rule_name"
+    DUPLICATE_RULE_NAME = "duplicate_rule_name"
+    INVALID_RULE_SNIPPETS = "invalid_rule_snippets"
+
+
+def pr_agent_mirror_contract_failure(reason: PrAgentMirrorFailure, message: str) -> str:
+    return f"ci/ai-review.toml pr_agent_mirror contract failure ({reason.value}): {message}"
+
+
 def verify_pr_agent_mirror(ai_review_toml: str, pr_agent_toml: str) -> list[str]:
     findings: list[str] = []
     try:
@@ -228,43 +243,79 @@ def verify_pr_agent_mirror(ai_review_toml: str, pr_agent_toml: str) -> list[str]
 
     mirror = parsed.get("pr_agent_mirror")
     if not isinstance(mirror, dict):
-        return ["ci/ai-review.toml missing [pr_agent_mirror]"]
+        return [
+            pr_agent_mirror_contract_failure(
+                PrAgentMirrorFailure.MISSING_TABLE,
+                "missing [pr_agent_mirror]",
+            )
+        ]
 
     note_snippets = mirror.get("required_note_snippets")
     if not non_empty_string_list(note_snippets):
-        findings.append("ci/ai-review.toml pr_agent_mirror.required_note_snippets must be a non-empty string list")
-        note_snippets = []
+        return [
+            pr_agent_mirror_contract_failure(
+                PrAgentMirrorFailure.INVALID_NOTE_SNIPPETS,
+                "required_note_snippets must be a non-empty string list",
+            )
+        ]
+    required_note_snippets = tuple(note_snippets)
 
     rules = mirror.get("rules")
     if not isinstance(rules, list) or not rules:
-        findings.append("ci/ai-review.toml pr_agent_mirror.rules must be a non-empty table array")
-        rules = []
+        return [
+            pr_agent_mirror_contract_failure(
+                PrAgentMirrorFailure.INVALID_RULES,
+                "rules must be a non-empty table array",
+            )
+        ]
+    mirror_rules = tuple(rules)
 
     extra, extra_findings = pr_agent_extra_instructions(pr_agent_toml)
     findings.extend(extra_findings)
     if extra_findings:
         return findings
 
-    for snippet in note_snippets:
+    for snippet in required_note_snippets:
         if snippet not in extra:
             findings.append(f".pr_agent.toml missing mirrored governance note: {snippet!r}")
 
     seen_names: set[str] = set()
-    for index, rule in enumerate(rules):
+    for index, rule in enumerate(mirror_rules):
         if not isinstance(rule, dict):
-            findings.append(f"ci/ai-review.toml pr_agent_mirror.rules[{index}] must be a table")
+            findings.append(
+                pr_agent_mirror_contract_failure(
+                    PrAgentMirrorFailure.INVALID_RULE,
+                    f"rules[{index}] must be a table",
+                )
+            )
             continue
         name = rule.get("name")
         if not isinstance(name, str) or not name:
-            findings.append(f"ci/ai-review.toml pr_agent_mirror.rules[{index}].name must be non-empty")
-            name = f"rule-{index}"
-        elif name in seen_names:
-            findings.append(f"ci/ai-review.toml duplicate pr_agent_mirror rule {name!r}")
+            findings.append(
+                pr_agent_mirror_contract_failure(
+                    PrAgentMirrorFailure.INVALID_RULE_NAME,
+                    f"rules[{index}].name must be non-empty",
+                )
+            )
+            continue
+        if name in seen_names:
+            findings.append(
+                pr_agent_mirror_contract_failure(
+                    PrAgentMirrorFailure.DUPLICATE_RULE_NAME,
+                    f"duplicate pr_agent_mirror rule {name!r}",
+                )
+            )
+            continue
         seen_names.add(name)
 
         snippets = rule.get("snippets")
         if not non_empty_string_list(snippets):
-            findings.append(f"ci/ai-review.toml pr_agent_mirror rule {name!r} snippets must be non-empty")
+            findings.append(
+                pr_agent_mirror_contract_failure(
+                    PrAgentMirrorFailure.INVALID_RULE_SNIPPETS,
+                    f"rule {name!r} snippets must be non-empty",
+                )
+            )
             continue
         for snippet in snippets:
             if snippet not in extra:
@@ -965,6 +1016,56 @@ def run_self_tests(repo_root: Path) -> None:
     )
     assert_finding("bad PR-Agent mirror rules", bad_mirror_rules, "rules must be a non-empty table array")
 
+    missing_required_note_snippets = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+
+        [[pr_agent_mirror.rules]]
+        name = "scope discipline"
+        snippets = ["Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice"]
+        """,
+        pr_agent,
+    )
+    assert_finding(
+        "missing PR-Agent mirror note snippets",
+        missing_required_note_snippets,
+        "required_note_snippets must be a non-empty string list",
+    )
+
+    empty_required_note_snippets = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = []
+
+        [[pr_agent_mirror.rules]]
+        name = "scope discipline"
+        snippets = ["Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice"]
+        """,
+        pr_agent,
+    )
+    assert_finding(
+        "empty PR-Agent mirror note snippets",
+        empty_required_note_snippets,
+        "required_note_snippets must be a non-empty string list",
+    )
+
+    invalid_required_note_snippets = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = ["placeholder governance note", 123]
+
+        [[pr_agent_mirror.rules]]
+        name = "scope discipline"
+        snippets = ["Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice"]
+        """,
+        pr_agent,
+    )
+    assert_finding(
+        "invalid PR-Agent mirror note snippets",
+        invalid_required_note_snippets,
+        "required_note_snippets must be a non-empty string list",
+    )
+
     missing_github_token_carveout = verify_variant(
         pr_agent_text=pr_agent.replace(
             "GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN`",
@@ -993,6 +1094,31 @@ def run_self_tests(repo_root: Path) -> None:
         pr_agent,
     )
     assert_finding("duplicate PR-Agent mirror rule", duplicate_mirror_rule, "duplicate pr_agent_mirror rule")
+
+    missing_mirror_rule_name = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = ["placeholder governance note"]
+
+        [[pr_agent_mirror.rules]]
+        snippets = ["Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice"]
+        """,
+        pr_agent,
+    )
+    assert_finding("missing PR-Agent mirror rule name", missing_mirror_rule_name, "rules[0].name must be non-empty")
+
+    empty_mirror_rule_name = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = ["placeholder governance note"]
+
+        [[pr_agent_mirror.rules]]
+        name = ""
+        snippets = ["Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice"]
+        """,
+        pr_agent,
+    )
+    assert_finding("empty PR-Agent mirror rule name", empty_mirror_rule_name, "rules[0].name must be non-empty")
 
     empty_mirror_snippet = verify_pr_agent_mirror(
         """

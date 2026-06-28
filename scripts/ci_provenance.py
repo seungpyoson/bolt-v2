@@ -674,7 +674,7 @@ def load_config(
             )
         shard_count = job_table.get("shard_count")
         if check_name_template is not None:
-            if not isinstance(shard_count, int) or shard_count <= 0:
+            if isinstance(shard_count, bool) or not isinstance(shard_count, int) or shard_count <= 0:
                 raise ProvenanceError(f"ci_provenance.full_ci.jobs.{job}.shard_count must be a positive integer")
             if "{shard}" not in check_name_template:
                 raise ProvenanceError(

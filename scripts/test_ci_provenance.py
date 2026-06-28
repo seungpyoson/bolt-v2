@@ -760,6 +760,14 @@ def assert_positive_int_config_rejects_booleans() -> None:
             "retention_days = true",
             1,
         ),
+        "ci_provenance.full_ci.jobs.test.shard_count must be a positive integer": CONFIG_TOML.replace(
+            '[ci_provenance.full_ci.jobs.test]\ncheck_name = "test"',
+            (
+                '[ci_provenance.full_ci.jobs.test]\n'
+                'check_name_template = "test ({shard}/{shard_count})"\n'
+                "shard_count = true"
+            ),
+        ),
     }
     with tempfile.TemporaryDirectory() as tmp:
         for expected, text in cases.items():

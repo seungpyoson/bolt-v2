@@ -9,9 +9,10 @@ import json
 import pathlib
 import re
 import shlex
+import subprocess
 import sys
 import tomllib
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -100,7 +101,10 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/stale.yml": "stale",
 }
 SSH_RUNNER_ACTION_RE = re.compile(r"^ubicloud/ssh-runner@[0-9a-f]{40}$")
-DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
+DEFAULT_REPO_AUTOMATION_FILES = (
+    REPO_ROOT / "justfile",
+    REPO_ROOT / "ci" / "rust-ci-inputs.toml",
+)
 DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
     (REPO_ROOT / "tests", "*.sh"),
@@ -142,6 +146,7 @@ class ArtifactRetentionUploadSite(NamedTuple):
     artifact_name: str | None
     artifact_name_prefix: str | None
     artifact_class: str
+    retention_days_expression: str | None
 
 
 class ArtifactRetentionPolicy(NamedTuple):
@@ -862,10 +867,9 @@ MERGIFY_PROOF_PR_HEAD_REF_PREDICATE = (
 MERGIFY_PROOF_PR_CANCEL_GUARD = f"!{MERGIFY_PROOF_PR_HEAD_REF_PREDICATE}"
 MERGIFY_PROOF_PR_GROUP_TOKEN = "mergify-proof"
 
-# Shared predicates used by advisory jobs only. Draft and ordinary source PRs
-# are queue-covered and do not produce full-gate proof, so advisory waiters that
-# require proof gates must not run there. These predicates must NOT be used for
-# required merge-proof jobs.
+# Shared predicates used by advisory jobs only. Merge-readiness progress waits
+# for required proof gates, so it is limited to boundary proof PRs. The
+# coverage-enforcer is event-aware and must not reuse that boundary-only gate.
 MERGIFY_PROOF_PR_READY_PREDICATE = (
     "github.event_name == 'pull_request' "
     "&& github.event.pull_request.draft == false "
@@ -882,9 +886,10 @@ EXPECTED_MERGE_READINESS_PROGRESS_IF = (
 )
 
 EXPECTED_COVERAGE_ENFORCER_IF = (
-    "${{ github.event_name == 'merge_group' "
-    "|| (" + MERGIFY_PROOF_PR_READY_PREDICATE + " "
-    "&& !(" + MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE + ")) }}"
+    "${{ !(github.event_name == 'pull_request' "
+    "&& github.event.action == 'edited' "
+    "&& " + MERGIFY_PROOF_PR_HEAD_REF_PREDICATE + " "
+    "&& !(github.event.changes.base.ref.from != '')) }}"
 )
 
 
@@ -2004,6 +2009,13 @@ def upload_artifact_retention_errors(
             continue
         if len(retention_values) != 1:
             errors.append(f"{label} must set exactly one retention-days")
+            continue
+        if site.retention_days_expression is not None:
+            if retention_values[0] != site.retention_days_expression:
+                errors.append(
+                    f"{label} retention-days must match configured expression "
+                    f"{site.retention_days_expression}"
+                )
             continue
         try:
             retention_days = int(retention_values[0])
@@ -5401,121 +5413,326 @@ MERGIFY_REQUIRED_MERGE_CONDITIONS = frozenset(
 )
 
 
-def top_level_yaml_block(config_text: str, key: str) -> str | None:
-    lines = [strip_comment(line).rstrip() for line in config_text.splitlines()]
-    for index, line in enumerate(lines):
-        if re.fullmatch(rf"{re.escape(key)}\s*:\s*", line):
-            block = [line]
-            for nested in lines[index + 1 :]:
-                if nested.strip() and not nested.startswith(" "):
-                    break
-                block.append(nested)
-            return "\n".join(block)
-    return None
-
-
-def yaml_scalar_value(block_text: str, key: str) -> str | None:
-    for line in block_text.splitlines():
-        match = re.match(rf"^\s*{re.escape(key)}\s*:\s*(.*?)\s*$", line)
-        if match is not None:
-            return unquote_yaml_scalar(match.group(1))
-    return None
-
-
-def queue_rule_block(queue_rules_text: str, name: str) -> str | None:
-    lines = queue_rules_text.splitlines()
-    for index, line in enumerate(lines):
-        match = re.match(r"^(\s*)-\s*name\s*:\s*(.*?)\s*$", line)
-        if match is None or unquote_yaml_scalar(match.group(2)) != name:
-            continue
-        item_indent = len(match.group(1))
-        block = [line]
-        for nested in lines[index + 1 :]:
-            if nested.strip():
-                indent = len(nested) - len(nested.lstrip(" "))
-                if indent == item_indent and nested.lstrip().startswith("- "):
-                    break
-            block.append(nested)
-        return "\n".join(block)
-    return None
-
-
-def yaml_list_values(block_text: str, key: str) -> list[str] | None:
-    lines = block_text.splitlines()
-    for index, line in enumerate(lines):
-        match = re.match(rf"^(\s*){re.escape(key)}\s*:\s*(.*?)\s*$", line)
-        if match is None:
-            continue
-        scalar = unquote_yaml_scalar(match.group(2))
-        if scalar == "[]":
-            return []
-        if scalar:
-            return None
-        parent_indent = len(match.group(1))
-        values: list[str] = []
-        for nested in lines[index + 1 :]:
-            if not nested.strip():
-                continue
-            indent = len(nested) - len(nested.lstrip(" "))
-            if indent <= parent_indent:
-                break
-            item_match = re.match(r"^\s*-\s*(.*?)\s*$", nested)
-            if item_match is None:
-                return None
-            values.append(unquote_yaml_scalar(item_match.group(1)))
-        return values
-    return None
-
-
-def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -> list[str]:
-    errors: list[str] = []
-    uncommented = uncommented_text(config_text.splitlines())
-    forbidden_keys = (
-        "autoqueue",
+MERGIFY_REQUIRED_QUEUE_RULES = ("hotfix", "default")
+MERGIFY_REQUIRED_PRIORITY_RULES = ("hotfix",)
+MERGIFY_TOP_LEVEL_KEYS = frozenset({"merge_queue", "queue_rules", "priority_rules"})
+MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS = frozenset(
+    {
         "auto_merge_conditions",
+        "commands_restrictions",
+        "defaults",
+        "extends",
         "merge_protections",
         "merge_protections_settings",
         "pull_request_rules",
-    )
-    for key in forbidden_keys:
-        if re.search(rf"(?m)^\s*{re.escape(key)}\s*:", uncommented):
-            errors.append(f"{config_name} must keep manual queueing only; remove {key}")
-
-    merge_queue = top_level_yaml_block(config_text, "merge_queue")
-    if merge_queue is None:
-        errors.append(f"{config_name} must define merge_queue")
-    else:
-        if yaml_scalar_value(merge_queue, "max_parallel_checks") != "1":
-            errors.append(f"{config_name} merge_queue.max_parallel_checks must be 1")
-        if yaml_scalar_value(merge_queue, "reset_on_external_merge") != "always":
-            errors.append(f"{config_name} merge_queue.reset_on_external_merge must be always")
-
-    queue_rules = top_level_yaml_block(config_text, "queue_rules")
-    default_rule = queue_rule_block(queue_rules, "default") if queue_rules is not None else None
-    if queue_rules is None:
-        errors.append(f"{config_name} must define queue_rules")
-    if default_rule is None:
-        errors.append(f"{config_name} queue_rules must define default")
-        return errors
-
-    if yaml_list_values(default_rule, "queue_conditions") != []:
-        errors.append(f"{config_name} default queue_conditions must be empty for manual entry")
-    merge_conditions = yaml_list_values(default_rule, "merge_conditions")
-    if merge_conditions is None:
-        errors.append(f"{config_name} default merge_conditions must be a list")
-    elif set(merge_conditions) != MERGIFY_REQUIRED_MERGE_CONDITIONS:
-        errors.append(f"{config_name} default merge_conditions must require sp-reviewer and all four gates")
-
-    expected_scalars = {
-        "branch_protection_injection_mode": "merge",
-        "batch_size": "1",
-        "checks_timeout": "60 minutes",
-        "draft_bot_account": "null",
-        "merge_method": "squash",
     }
-    for key, expected in expected_scalars.items():
-        if yaml_scalar_value(default_rule, key) != expected:
-            errors.append(f"{config_name} default {key} must be {expected}")
+)
+MERGIFY_MERGE_QUEUE_KEYS = frozenset({"max_parallel_checks", "reset_on_external_merge"})
+MERGIFY_QUEUE_RULE_KEYS = frozenset(
+    {
+        "name",
+        "queue_conditions",
+        "merge_conditions",
+        "branch_protection_injection_mode",
+        "batch_size",
+        "batch_max_wait_time",
+        "batch_max_failure_resolution_attempts",
+        "checks_timeout",
+        "draft_bot_account",
+        "merge_method",
+    }
+)
+MERGIFY_DYNAMIC_BATCH_KEYS = frozenset({"min", "max"})
+MERGIFY_PRIORITY_RULE_KEYS = frozenset({"name", "conditions", "priority", "allow_checks_interruption"})
+MERGIFY_YAML_PARSER_RUBY = r"""
+require "yaml"
+require "json"
+
+input = STDIN.read
+errors = []
+
+def yaml_scalar_key(node)
+  node.is_a?(Psych::Nodes::Scalar) ? node.value : nil
+end
+
+def walk_yaml(node, path, errors)
+  case node
+  when Psych::Nodes::Mapping
+    seen = {}
+    node.children.each_slice(2) do |key_node, value_node|
+      key = yaml_scalar_key(key_node)
+      if key.nil?
+        errors << "#{path}: mapping keys must be scalars"
+        key = "<non-scalar>"
+      elsif seen.key?(key)
+        errors << "#{path}: duplicate key #{key}"
+      end
+      seen[key] = true
+      errors << "#{path}: YAML merge key is forbidden" if key == "<<"
+      walk_yaml(value_node, "#{path}.#{key}", errors)
+    end
+  when Psych::Nodes::Sequence
+    node.children.each_with_index do |child, index|
+      walk_yaml(child, "#{path}[#{index}]", errors)
+    end
+  when Psych::Nodes::Alias
+    errors << "#{path}: YAML aliases are forbidden"
+  end
+end
+
+begin
+  stream = Psych.parse_stream(input)
+  documents = stream.children
+  errors << "must contain exactly one YAML document" unless documents.length == 1
+  documents.each do |document|
+    walk_yaml(document.root, "$", errors) if document.root
+  end
+  data = nil
+  if errors.empty?
+    data = YAML.safe_load(input, permitted_classes: [], permitted_symbols: [], aliases: false)
+  end
+  puts JSON.generate({"errors" => errors, "data" => data})
+rescue Psych::Exception => e
+  puts JSON.generate({"errors" => ["YAML parse failed: #{e.message}"], "data" => nil})
+end
+"""
+
+
+def parse_mergify_yaml(config_text: str, config_name: str) -> tuple[Any | None, list[str]]:
+    try:
+        result = subprocess.run(
+            ["ruby", "-e", MERGIFY_YAML_PARSER_RUBY],
+            input=config_text,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        return None, [f"{config_name} requires Ruby/Psych to parse YAML"]
+    except subprocess.TimeoutExpired:
+        return None, [f"{config_name} YAML parser timed out"]
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()[0] if result.stderr.strip() else f"exit {result.returncode}"
+        return None, [f"{config_name} YAML parser failed: {detail}"]
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return None, [f"{config_name} YAML parser returned invalid JSON: {exc}"]
+    parse_errors = payload.get("errors")
+    if not isinstance(parse_errors, list):
+        return None, [f"{config_name} YAML parser returned malformed errors"]
+    if parse_errors:
+        return None, [f"{config_name} {error}" for error in parse_errors]
+    return payload.get("data"), []
+
+
+def scalar_equals(actual: Any, expected: Any) -> bool:
+    return type(actual) is type(expected) and actual == expected
+
+
+def yaml_display(value: Any) -> str:
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return str(value)
+
+
+def unsupported_mapping_keys(mapping: dict[str, Any], allowed: frozenset[str]) -> list[str]:
+    return [key for key in mapping if key not in allowed]
+
+
+def mergify_mapping(value: Any, config_name: str, path: str, errors: list[str]) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    errors.append(f"{config_name} {path} must be a mapping")
+    return None
+
+
+def mergify_list(value: Any, config_name: str, path: str, errors: list[str]) -> list[Any] | None:
+    if isinstance(value, list):
+        return value
+    errors.append(f"{config_name} {path} must be a list")
+    return None
+
+
+def required_mergify_mapping(
+    parent: dict[str, Any], key: str, config_name: str, errors: list[str]
+) -> dict[str, Any] | None:
+    if key not in parent:
+        errors.append(f"{config_name} must define {key}")
+        return None
+    return mergify_mapping(parent[key], config_name, key, errors)
+
+
+def required_mergify_list(parent: dict[str, Any], key: str, config_name: str, errors: list[str]) -> list[Any] | None:
+    if key not in parent:
+        errors.append(f"{config_name} must define {key}")
+        return None
+    return mergify_list(parent[key], config_name, key, errors)
+
+
+def named_mergify_rules(
+    parent: dict[str, Any],
+    key: str,
+    expected_names: tuple[str, ...],
+    order_error: str,
+    config_name: str,
+    errors: list[str],
+) -> dict[str, dict[str, Any]]:
+    values = required_mergify_list(parent, key, config_name, errors)
+    if values is None:
+        return {}
+    names: list[Any] = []
+    by_name: dict[str, dict[str, Any]] = {}
+    for index, value in enumerate(values):
+        rule = mergify_mapping(value, config_name, f"{key}[{index}]", errors)
+        name = rule.get("name") if rule is not None else None
+        names.append(name)
+        if isinstance(name, str) and rule is not None:
+            by_name[name] = rule
+    if tuple(names) != expected_names:
+        errors.append(f"{config_name} {order_error}")
+    return by_name
+
+
+def mergify_condition_list(value: Any, expected: list[str], config_name: str, path: str, errors: list[str]) -> None:
+    values = mergify_list(value, config_name, path, errors)
+    if values is None:
+        return
+    if values != expected:
+        errors.append(f"{config_name} {path} must be {expected!r}")
+
+
+def mergify_required_conditions(value: Any, config_name: str, path: str, errors: list[str]) -> None:
+    values = mergify_list(value, config_name, path, errors)
+    if values is None:
+        return
+    if set(values) != MERGIFY_REQUIRED_MERGE_CONDITIONS or len(values) != len(MERGIFY_REQUIRED_MERGE_CONDITIONS):
+        errors.append(f"{config_name} {path} must require sp-reviewer and all four gates")
+
+
+def expect_scalar(value: Any, expected: Any, config_name: str, path: str, errors: list[str]) -> None:
+    if not scalar_equals(value, expected):
+        errors.append(f"{config_name} {path} must be {yaml_display(expected)}")
+
+
+def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -> list[str]:
+    config, errors = parse_mergify_yaml(config_text, config_name)
+    if errors:
+        return errors
+    root = mergify_mapping(config, config_name, "root", errors)
+    if root is None:
+        return errors
+    for key in root:
+        if key in MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS:
+            errors.append(f"{config_name} must keep manual queueing only; remove {key}")
+        elif key not in MERGIFY_TOP_LEVEL_KEYS:
+            errors.append(f"{config_name} must not define unsupported top-level key {key}")
+
+    merge_queue = required_mergify_mapping(root, "merge_queue", config_name, errors)
+    if merge_queue is not None:
+        for key in unsupported_mapping_keys(merge_queue, MERGIFY_MERGE_QUEUE_KEYS):
+            errors.append(f"{config_name} merge_queue must not define unsupported key {key}")
+        expect_scalar(merge_queue.get("max_parallel_checks"), 1, config_name, "merge_queue.max_parallel_checks", errors)
+        expect_scalar(
+            merge_queue.get("reset_on_external_merge"),
+            "always",
+            config_name,
+            "merge_queue.reset_on_external_merge",
+            errors,
+        )
+
+    rules_by_name = named_mergify_rules(
+        root,
+        "queue_rules",
+        MERGIFY_REQUIRED_QUEUE_RULES,
+        "queue_rules must define exactly hotfix followed by default",
+        config_name,
+        errors,
+    )
+
+    rule_expectations = (
+        ("default", [], {"min": 2, "max": 10}, "5 minutes"),
+        ("hotfix", ["label = hotfix"], 1, "30 seconds"),
+    )
+    for rule_name, expected_queue_conditions, expected_batch_size, expected_wait in rule_expectations:
+        rule = rules_by_name.get(rule_name)
+        if rule is None:
+            errors.append(f"{config_name} must define {rule_name} queue rule")
+            continue
+        for key in unsupported_mapping_keys(rule, MERGIFY_QUEUE_RULE_KEYS):
+            errors.append(f"{config_name} {rule_name} must not define unsupported key {key}")
+        mergify_condition_list(
+            rule.get("queue_conditions"),
+            expected_queue_conditions,
+            config_name,
+            f"{rule_name} queue_conditions",
+            errors,
+        )
+        mergify_required_conditions(
+            rule.get("merge_conditions"),
+            config_name,
+            f"{rule_name} merge_conditions",
+            errors,
+        )
+        expected_scalars = {
+            "branch_protection_injection_mode": "merge",
+            "batch_max_wait_time": expected_wait,
+            "batch_max_failure_resolution_attempts": 0,
+            "checks_timeout": "150 minutes",
+            "draft_bot_account": None,
+            "merge_method": "squash",
+        }
+        for key, expected in expected_scalars.items():
+            expect_scalar(rule.get(key), expected, config_name, f"{rule_name} {key}", errors)
+        batch_size = rule.get("batch_size")
+        if isinstance(expected_batch_size, dict):
+            batch_size_mapping = mergify_mapping(batch_size, config_name, f"{rule_name} batch_size", errors)
+            if batch_size_mapping is None:
+                continue
+            for key in unsupported_mapping_keys(batch_size_mapping, MERGIFY_DYNAMIC_BATCH_KEYS):
+                errors.append(f"{config_name} {rule_name} batch_size must not define unsupported key {key}")
+            if batch_size_mapping != expected_batch_size:
+                errors.append(
+                    f"{config_name} {rule_name} batch_size must be min {expected_batch_size['min']} max {expected_batch_size['max']}"
+                )
+        elif not scalar_equals(batch_size, expected_batch_size):
+            errors.append(f"{config_name} {rule_name} batch_size must be {expected_batch_size}")
+
+    priority_by_name = named_mergify_rules(
+        root,
+        "priority_rules",
+        MERGIFY_REQUIRED_PRIORITY_RULES,
+        "priority_rules must define exactly hotfix",
+        config_name,
+        errors,
+    )
+
+    hotfix_priority = priority_by_name.get("hotfix")
+    if hotfix_priority is None:
+        errors.append(f"{config_name} must define hotfix priority rule")
+        return errors
+    for key in unsupported_mapping_keys(hotfix_priority, MERGIFY_PRIORITY_RULE_KEYS):
+        errors.append(f"{config_name} hotfix priority must not define unsupported key {key}")
+    mergify_condition_list(
+        hotfix_priority.get("conditions"),
+        ["label = hotfix"],
+        config_name,
+        "hotfix priority conditions",
+        errors,
+    )
+    expect_scalar(hotfix_priority.get("priority"), 10000, config_name, "hotfix priority", errors)
+    expect_scalar(
+        hotfix_priority.get("allow_checks_interruption"),
+        True,
+        config_name,
+        "hotfix allow_checks_interruption",
+        errors,
+    )
     return errors
 
 
@@ -5563,6 +5780,8 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
 CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/test_ci_storage_audit.py",
     "python3 scripts/test_root_bin_sidecars.py",
+    "python3 scripts/test_ci_input_sets.py",
+    "python3 scripts/test_rust_test_targets.py",
 )
 
 
@@ -8545,6 +8764,34 @@ def ci_provenance_emit_upload_errors(job_lines: list[str]) -> list[str]:
     return errors
 
 
+def capture_artifact_metadata_errors(job_lines: list[str]) -> list[str]:
+    errors: list[str] = []
+    text = uncommented_text(job_lines)
+    if "ci_provenance.py artifact-metadata" not in text:
+        errors.append("capture must derive artifact metadata from ci_provenance.py artifact-metadata")
+    if '--config "$CAPTURE_PROVENANCE_CONFIG"' not in text:
+        errors.append("capture artifact metadata must use CAPTURE_PROVENANCE_CONFIG")
+    if '--run-attempt "${{ github.run_attempt }}"' not in text:
+        errors.append("capture artifact metadata must use github.run_attempt")
+
+    upload_blocks = [
+        block
+        for block in action_blocks(job_lines, "actions/upload-artifact@")
+        if block_has_input(block, "path", "${{ env.CAPTURE_OUTPUT_DIR }}")
+    ]
+    if not upload_blocks:
+        errors.append("capture must upload CAPTURE_OUTPUT_DIR")
+        return errors
+    if not any(block_has_input(block, "name", "${{ steps.provenance.outputs.artifact_name }}") for block in upload_blocks):
+        errors.append("capture upload artifact name must come from provenance config")
+    if not any(
+        block_has_input(block, "retention-days", "${{ steps.provenance.outputs.retention_days }}")
+        for block in upload_blocks
+    ):
+        errors.append("capture upload retention-days must come from provenance config")
+    return errors
+
+
 def ci_provenance_emit_records_secure_fingerprint(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return (
@@ -8863,6 +9110,27 @@ def backtester_detect_forces_bvs_changed_on_merge_group(job_lines: list[str]) ->
     )
 
 
+def backtester_detect_forced_events_use_exact_head_namespace(job_lines: list[str]) -> bool:
+    # Events that bypass the PR diff detector must not trust the head-controlled
+    # cache input helper/config for opaque archive cache keys. They run the proof
+    # lanes and use the exact-head bootstrap namespace instead.
+    text = uncommented_text(job_lines)
+    for branch_type, condition in (
+        ("if", '"${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch"'),
+        ("elif", '"${{ github.event_name }}" == "merge_group"'),
+    ):
+        branch = branch_body(text, branch_type, condition)
+        if branch is None:
+            return False
+        if 'echo "bvs_changed=true" >> "$GITHUB_OUTPUT"' not in branch:
+            return False
+        if 'echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"' not in branch:
+            return False
+        if not body_exits_zero(branch):
+            return False
+    return True
+
+
 def git_diff_pathspecs(block_text: str) -> tuple[str, ...] | None:
     normalized = re.sub(r"\\\s*\n\s*", " ", block_text)
     matches = [
@@ -9019,6 +9287,25 @@ def job_permission_has(job_lines: list[str], permission: str, value: str) -> boo
 
 def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+actions:\s+read\s*$", workflow_text) is not None
+
+
+def workflow_permissions_have_issues_read(workflow_text: str) -> bool:
+    return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+issues:\s+read\s*$", workflow_text) is not None
+
+
+def configured_ci_provenance_retention_days() -> int:
+    try:
+        config = load_github_actions_runners_config()
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        return -1
+    ci_provenance = config.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        return -1
+    artifacts = ci_provenance.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return -1
+    retention_days = artifacts.get("retention_days")
+    return retention_days if isinstance(retention_days, int) and not isinstance(retention_days, bool) else -1
 
 
 def configured_ci_provenance_deploy_artifact_name() -> str:
@@ -9383,6 +9670,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if not workflow_permissions_have_actions_read(workflow_text):
         errors.append("workflow permissions must include actions: read")
+    if not workflow_permissions_have_issues_read(workflow_text):
+        errors.append("workflow permissions must include issues: read")
 
     for job in REQUIRED_JOBS:
         if job not in jobs:
@@ -9398,6 +9687,9 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if "ci-policy" in jobs:
         errors.extend(ci_policy_job_errors(jobs["ci-policy"]))
+
+    if "capture" in jobs:
+        errors.extend(capture_artifact_metadata_errors(jobs["capture"]))
 
     for job in TAG_SKIP_REQUIRED_JOBS:
         if job in jobs and not job_skips_tag_reuse(jobs[job]):
@@ -10365,15 +10657,28 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
     if not file_name.endswith("backtester-ci.yml"):
         return []
     errors: list[str] = []
-    for line in text.splitlines():
-        if "managed-target-bvs-v1-" not in line or "hashFiles(" not in line:
+    for _job_id, job_lines in parse_jobs(text).items():
+        job_text = "\n".join(job_lines)
+        cache_key_seen = False
+        for line in job_text.splitlines():
+            if not any(prefix in line for prefix in ("managed-target-bvs-v", "bvs-nextest-archive-v", "bvs-bin-sidecars-v")):
+                continue
+            if "key:" not in line:
+                continue
+            cache_key_seen = True
+            if "hashFiles(" in line:
+                errors.append("backtester cache key must use ci_input_sets digest, not inline hashFiles")
+            if "${{ steps.bvs_cache_inputs.outputs.digest }}" not in line:
+                errors.append("backtester cache key must include steps.bvs_cache_inputs.outputs.digest")
+        if not cache_key_seen:
             continue
-        for required in [
-            "crates/backtesting-vertical-slice/src/**",
-            "crates/backtesting-vertical-slice/tests/**",
-        ]:
-            if required not in line:
-                errors.append(f"backtester managed-target cache key must include {required}")
+        if "python3 scripts/ci_input_sets.py hash backtester_cache" not in job_text:
+            errors.append("backtester cache key digest must come from ci_input_sets backtester_cache")
+        if (
+            'if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then' not in job_text
+            or 'echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"' not in job_text
+        ):
+            errors.append("backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes")
     return errors
 
 
@@ -10405,26 +10710,34 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     errors: list[str] = []
     if archive_job is None:
         errors.append("backtester bvs-test must define archive producer job")
-    if test_job is None:
-        errors.append("backtester bvs-test must define matrix shard job")
+    if test_job is not None:
+        errors.append("backtester bvs-test must run partitions in the archive producer, not a matrix shard job")
     if issue_job is None:
-        errors.append("backtester bvs-test must define dedicated issue-789 job")
-    if archive_job is None or test_job is None:
+        errors.append("backtester bvs-test must define manual issue-789 diagnostic job")
+    if archive_job is None:
         return errors
     archive_text = uncommented_text(archive_job)
-    job_text = uncommented_text(test_job)
+    job_text = uncommented_text(test_job) if test_job is not None else ""
     issue_text = uncommented_text(issue_job) if issue_job is not None else ""
     gate_text = uncommented_text(gate_job) if gate_job is not None else ""
     consumer_text = f"{job_text}\n{issue_text}"
     combined_text = f"{archive_text}\n{consumer_text}"
     if "just bte-test --partition" in combined_text:
         errors.append("backtester bvs-test must not run direct per-shard target builds")
-    if "for shard in $(seq" in archive_text or "just bte-test-archive-run" in archive_text:
-        errors.append("backtester bvs-test archive producer must not run partitions serially")
-    if "build --locked --bins" in consumer_text:
-        errors.append("backtester bvs-test consumers must not build binary sidecars")
-    if "managed-target-bvs-v1-" in consumer_text or "test-target-cache" in consumer_text:
+    if "for shard in $(seq 1 \"$BVS_NEXTEST_SHARDS\")" not in archive_text:
+        errors.append("backtester bvs-test archive producer must run every BVS partition")
+    if "build --locked --bins" in combined_text:
+        errors.append("backtester bvs-test sidecars must not build every binary")
+    if "find debug -maxdepth 1 -type f -perm -111" in combined_text:
+        errors.append("backtester bvs-test sidecars must not blanket-pack target/debug executables")
+    if "name: bvs-test-payload" in combined_text:
+        errors.append("backtester bvs-test must not publish or consume the legacy fan-out payload")
+    if action_blocks(archive_job, "actions/download-artifact@"):
+        errors.append("backtester required bvs-test path must not download a test payload artifact")
+    if "managed-target-bvs-v" in consumer_text or "test-target-cache" in consumer_text:
         errors.append("backtester bvs-test consumers must not restore the managed target cache")
+    if 'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" --lib --test' in archive_text:
+        errors.append("backtester bvs-test archive targets must be discovered, not hardcoded in workflow YAML")
     if gate_job is not None and (
         "issue_789" in extract_needs(gate_job) or "needs.issue_789.result" in gate_text
     ):
@@ -10434,6 +10747,11 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ("backtester bvs-test archive must use archive job name", "name: bvs-test archive"),
         ("backtester bvs-test archive must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
         ("backtester bvs-test archive must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
+        ("backtester bvs-test archive must declare four archive partitions", 'BVS_NEXTEST_SHARDS: "4"'),
+        (
+            "backtester bvs-test archive must compute the shared BVS cache input digest",
+            "python3 scripts/ci_input_sets.py hash backtester_cache",
+        ),
         (
             "backtester bvs-test archive must restore nextest archive cache explicitly",
             "id: bvs-nextest-archive-cache",
@@ -10444,35 +10762,19 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive cache key must be exact and content-addressed",
-            "key: bvs-nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
+            "key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}",
         ),
         (
             "backtester bvs-test archive must restore binary sidecar cache",
             "id: bvs-bin-sidecars-cache",
         ),
         (
-            "backtester bvs-test archive must upload the run-scoped test payload artifact",
-            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-        ),
-        (
-            "backtester bvs-test archive must publish the bvs-test-payload artifact",
-            "name: bvs-test-payload",
-        ),
-        (
-            "backtester bvs-test archive payload upload must include hidden files (.nextest-archive dot-dir)",
-            "include-hidden-files: true",
-        ),
-        (
-            "backtester bvs-test archive payload upload must fail closed when the payload is empty",
-            "if-no-files-found: error",
-        ),
-        (
             "backtester bvs-test sidecar cache key must be exact and content-addressed",
-            "key: bvs-bin-sidecars-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
+            "key: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}",
         ),
         (
-            "backtester bvs-test archive must resolve target only for cache misses",
-            "if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'",
+            "backtester bvs-test archive must resolve the crate managed target directory",
+            "id: crate_target",
         ),
         (
             "backtester bvs-test archive must save shared registry cache from the archive producer only",
@@ -10483,8 +10785,12 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'",
         ),
         (
-            "backtester bvs-test archive must build a nextest archive",
-            'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH"',
+            "backtester bvs-test archive must derive archive targets from source",
+            "python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice",
+        ),
+        (
+            "backtester bvs-test archive must build a nextest archive from discovered targets",
+            'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"',
         ),
         (
             "backtester bvs-test archive must save nextest archive cache explicitly",
@@ -10499,12 +10805,16 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "Build BVS binary sidecars",
         ),
         (
-            "backtester bvs-test archive sidecars must use managed cargo",
-            'python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- build --locked --bins',
+            "backtester bvs-test archive sidecars must derive from CARGO_BIN_EXE references",
+            "python3 scripts/rust_test_targets.py sidecars --crate crates/backtesting-vertical-slice",
         ),
         (
-            "backtester bvs-test archive must pack sidecars from target debug",
-            "find debug -maxdepth 1 -type f -perm -111 -print0",
+            "backtester bvs-test archive sidecars must use managed cargo",
+            'python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- "${cargo_args[@]}"',
+        ),
+        (
+            "backtester bvs-test archive must pack only required sidecars",
+            'tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -',
         ),
         (
             "backtester bvs-test archive must save binary sidecar cache",
@@ -10518,78 +10828,69 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "backtester bvs-test archive must save target cache only after archive/sidecar misses",
             "if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
         ),
-    ]
-    test_fragments = [
-        ("backtester bvs-test shards must name matrix shards", "name: bvs-test ${{ matrix.shard }} of 4"),
         (
-            "backtester bvs-test shards must depend on archive producer",
-            "needs: [ci-policy, detect, fmt, test-archive]",
+            "backtester bvs-test archive must fail closed on missing local payload",
+            'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }',
         ),
         (
-            "backtester bvs-test shards must only run after archive producer succeeds",
-            "needs.test-archive.result == 'success'",
-        ),
-        ("backtester bvs-test shards must keep fail-fast disabled", "fail-fast: false"),
-        ("backtester bvs-test shards must define four nextest shards", "shard: [1, 2, 3, 4]"),
-        ("backtester bvs-test shards must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
-        ("backtester bvs-test shards must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
-        ("backtester bvs-test shards must declare four archive partitions", 'BVS_NEXTEST_SHARDS: "4"'),
-        (
-            "backtester bvs-test shards must download the run-scoped test payload artifact",
-            "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+            "backtester bvs-test archive must fail closed on missing sidecars",
+            'test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty"; exit 1; }',
         ),
         (
-            "backtester bvs-test shards must download the bvs-test-payload artifact by name",
-            "name: bvs-test-payload",
+            "backtester bvs-test archive must log payload sizes",
+            "stat -c 'bvs-payload-size %n %s'",
         ),
         (
-            "backtester bvs-test shards must extract binary sidecars",
+            "backtester bvs-test archive must extract sidecars locally",
             'tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"',
         ),
         (
-            "backtester bvs-test shards must create archive extract root",
+            "backtester bvs-test archive must list scoped archive tests",
+            'nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH"',
+        ),
+        (
+            "backtester bvs-test archive must create archive extract root",
             'mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"',
         ),
         (
-            "backtester bvs-test shards must exclude dedicated issue-789 lane",
+            "backtester bvs-test archive must exclude dedicated issue-789 lane",
             "-- --skip issue_789_first_real_free_data_taker_pl",
         ),
         (
-            "backtester bvs-test shards must run one partition from local archive",
-            'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${{ matrix.shard }}/${{ env.BVS_NEXTEST_SHARDS }}" -- --skip issue_789_first_real_free_data_taker_pl',
+            "backtester bvs-test archive must run partitioned tests from the local archive",
+            'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl',
         ),
     ]
     issue_fragments = [
         ("backtester bvs-test issue-789 must use dedicated job name", "name: bvs-test issue-789"),
         (
-            "backtester bvs-test issue-789 must depend on archive producer and backtester-gate",
-            "needs: [ci-policy, detect, test-archive, gate]",
+            "backtester bvs-test issue-789 must depend on backtester-gate",
+            "needs: [ci-policy, detect, gate]",
         ),
         (
-            "backtester bvs-test issue-789 must only run after archive producer succeeds",
-            "needs.test-archive.result == 'success'",
+            "backtester bvs-test issue-789 must be manual workflow_dispatch only",
+            "github.event_name == 'workflow_dispatch'",
+        ),
+        (
+            "backtester bvs-test issue-789 must require explicit issue_789 input",
+            "github.event.inputs.issue_789 == 'true'",
         ),
         (
             "backtester bvs-test issue-789 must only run after required gate succeeds",
             "needs.gate.result == 'success'",
         ),
-        ("backtester bvs-test issue-789 must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
-        ("backtester bvs-test issue-789 must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
+        ("backtester bvs-test issue-789 must declare lib archive path", "BVS_ISSUE_789_ARCHIVE_PATH: .nextest-archive/bvs-issue-789-lib.tar.zst"),
         (
             "backtester bvs-test issue-789 must write the first-P/L artifact path",
             "BOLT_ISSUE_789_RESULT_PATH:",
         ),
         (
-            "backtester bvs-test issue-789 must download the run-scoped test payload artifact",
-            "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+            "backtester bvs-test issue-789 must build a dedicated lib archive",
+            'just bte-test-archive "$BVS_ISSUE_789_ARCHIVE_PATH" --lib',
         ),
         (
-            "backtester bvs-test issue-789 must download the bvs-test-payload artifact by name",
-            "name: bvs-test-payload",
-        ),
-        (
-            "backtester bvs-test issue-789 must extract binary sidecars",
-            'tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"',
+            "backtester bvs-test issue-789 must log lib archive size",
+            "stat -c 'bvs-issue-789-archive-size %n %s'",
         ),
         (
             "backtester bvs-test issue-789 must create archive extract root",
@@ -10597,7 +10898,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test issue-789 must run only the dedicated long test",
-            'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl',
+            'just bte-test-archive-run "$BVS_ISSUE_789_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl',
         ),
         (
             "backtester bvs-test issue-789 artifact name must be deterministic",
@@ -10611,38 +10912,6 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     for message, fragment in archive_fragments:
         if fragment not in archive_text:
             errors.append(message)
-    for message, fragment in test_fragments:
-        if fragment not in job_text:
-            errors.append(message)
-    for scope_name, scope_job in (("bvs-test shards", test_job), ("bvs-test issue-789", issue_job)):
-        if scope_job is None:
-            continue
-        for var_name, payload_name in (
-            ("BVS_NEXTEST_ARCHIVE_PATH", "archive"),
-            ("BVS_BIN_SIDECARS_PATH", "sidecars"),
-        ):
-            guard_prefix = f'test -s "${var_name}"'
-            guard_lines: list[str] = []
-            for block in step_blocks(scope_job):
-                for line in block_run_body(block).splitlines():
-                    guard_line = strip_comment(line).strip()
-                    if guard_line.startswith(guard_prefix) and (
-                        len(guard_line) == len(guard_prefix)
-                        or guard_line[len(guard_prefix)] in " \t;|&)"
-                    ):
-                        guard_lines.append(guard_line)
-            if not guard_lines:
-                errors.append(
-                    f"backtester consumer must fail closed if the downloaded {payload_name} "
-                    f"is missing or empty ({scope_name})"
-                )
-                continue
-            for guard_line in guard_lines:
-                if not EXIT_ONE_RE.search(guard_line):
-                    errors.append(
-                        f"backtester consumer guard is not fail-closed for downloaded "
-                        f"{payload_name} ({scope_name}): {guard_line}"
-                    )
     if issue_job is not None:
         for message, fragment in issue_fragments:
             if fragment not in issue_text:
@@ -10850,7 +11119,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
                 errors.append(f"backtester draft deferral ci-policy job must include {required}")
         errors.extend(ci_policy_event_sender_command_errors(policy))
 
-    for heavy_job in ("clippy", "test-archive", "test"):
+    for heavy_job in ("clippy", "test-archive"):
         job = jobs.get(heavy_job)
         if job is None:
             continue
@@ -10891,7 +11160,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             "--job fmt=${{ needs.fmt.result }}",
             "--job clippy=${{ needs.clippy.result }}",
             "--job test-archive=${{ needs.test-archive.result }}",
-            "--job test=${{ needs.test.result }}",
+            "--job test=${{ needs.test-archive.result }}",
         ):
             if required not in gate_text:
                 errors.append(f"backtester draft deferral shared gate call must include {required}")
@@ -10938,9 +11207,102 @@ def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
         return []
     detect_job = parse_jobs(text).get("detect", [])
     errors: list[str] = []
-    for required in ("ci/github-actions-runners.toml", "scripts/ci_provenance.py"):
-        if not any(required in line for line in detect_job):
-            errors.append(f"backtester detect paths must include {required}")
+    detect_text = "\n".join(detect_job)
+    if "bvs_bootstrap_changed: ${{ steps.detect.outputs.bvs_bootstrap_changed }}" not in detect_text:
+        errors.append("backtester detect must expose CI input-set bootstrap changes")
+    validate_required = "python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect"
+    if validate_required not in detect_text:
+        errors.append("backtester detect must validate CI input sets before skip decisions")
+    bootstrap_required = 'git diff --name-only "${base_sha}...HEAD" -- scripts/ci_input_sets.py ci/rust-ci-inputs.toml > "$bootstrap_changed_path"'
+    if bootstrap_required not in detect_text:
+        errors.append("backtester detect must force-run on CI input-set bootstrap changes")
+    bootstrap_branch = branch_body(detect_text, "if", '-s "$bootstrap_changed_path"')
+    if (
+        bootstrap_branch is None
+        or 'echo "bvs_changed=true" >> "$GITHUB_OUTPUT"' not in bootstrap_branch
+        or 'echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"' not in bootstrap_branch
+        or "exit 0" not in bootstrap_branch
+    ):
+        errors.append("backtester detect must mark CI input-set bootstrap changes")
+    required = 'python3 scripts/ci_input_sets.py changed backtester_detect --base "$base_sha" --head HEAD'
+    if required not in detect_text:
+        errors.append("backtester detect paths must come from ci_input_sets backtester_detect")
+    non_bootstrap_detect_text = detect_text.replace(bootstrap_required, "")
+    if 'git diff --name-only "${base_sha}...HEAD" --' in non_bootstrap_detect_text:
+        errors.append("backtester detect paths must not be duplicated inline")
+    return errors
+
+
+def ci_input_set_config_errors(file_name: str, text: str) -> list[str]:
+    if file_name != "ci/rust-ci-inputs.toml" and not file_name.endswith("/ci/rust-ci-inputs.toml"):
+        return []
+    try:
+        config = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return [f"CI input set config is invalid TOML: {exc}"]
+    sets = config.get("sets")
+    if not isinstance(sets, dict):
+        return ["CI input set config must define [sets.<name>] tables"]
+
+    def string_list(value: object, *, label: str) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+            raise ValueError(f"{label} must be a list of non-empty strings")
+        return value
+
+    def resolve_set(name: str, stack: tuple[str, ...] = ()) -> list[str]:
+        if name in stack:
+            raise ValueError("input set cycle: " + " -> ".join((*stack, name)))
+        table = sets.get(name)
+        if not isinstance(table, dict):
+            raise ValueError(f"unknown input set: {name}")
+        paths: list[str] = []
+        for parent in string_list(table.get("include_sets"), label=f"sets.{name}.include_sets"):
+            paths.extend(resolve_set(parent, (*stack, name)))
+        paths.extend(string_list(table.get("paths"), label=f"sets.{name}.paths"))
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for path in paths:
+            if path not in seen:
+                seen.add(path)
+                deduped.append(path)
+        return deduped
+
+    try:
+        cache = set(resolve_set("backtester_cache"))
+        detect = set(resolve_set("backtester_detect"))
+    except ValueError as exc:
+        return [str(exc)]
+
+    errors: list[str] = []
+    for required in [
+        "Cargo.lock",
+        "Cargo.toml",
+        ".gitignore",
+        "build.rs",
+        "gated_source_roots.manifest",
+        "src/**",
+        "tests/**",
+        "specs/023-nt-research-analytics-platform/reference/**",
+        "crates/backtesting-vertical-slice/Cargo.lock",
+        "crates/backtesting-vertical-slice/Cargo.toml",
+        "crates/backtesting-vertical-slice/src/**",
+        "crates/backtesting-vertical-slice/tests/**",
+        "scripts/rust_test_targets.py",
+        "scripts/ci_input_sets.py",
+        "ci/rust-ci-inputs.toml",
+    ]:
+        if required not in cache:
+            errors.append(f"backtester_cache input set must include {required}")
+    for required in [
+        "scripts/ci_provenance.py",
+        "ci/github-actions-runners.toml",
+        ".github/workflows/backtester-ci.yml",
+        "scripts/rust_test_targets.py",
+    ]:
+        if required not in detect:
+            errors.append(f"backtester_detect input set must include {required}")
     return errors
 
 
@@ -10968,6 +11330,12 @@ def backtester_nextest_archive_recipe_errors(file_name: str, text: str) -> list[
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
+        if file_name == "ci/rust-ci-inputs.toml" or file_name.endswith("/ci/rust-ci-inputs.toml"):
+            add_unique_errors(
+                errors,
+                (f"{file_name}: {error}" for error in ci_input_set_config_errors(file_name, text)),
+            )
+            continue
         errors.extend(f"{file_name}: {error}" for error in raw_rust_storage_errors(text))
         add_unique_errors(
             errors,
@@ -11040,6 +11408,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
             if "detect" in jobs and not backtester_detect_forces_bvs_changed_on_merge_group(jobs["detect"]):
                 errors.append(
                     f"{file_name}: backtester detect must force bvs_changed=true for merge_group"
+                )
+            if "detect" in jobs and not backtester_detect_forced_events_use_exact_head_namespace(jobs["detect"]):
+                errors.append(
+                    f"{file_name}: backtester forced detect events must use exact-head cache namespace"
                 )
             add_unique_errors(
                 errors,
@@ -11300,6 +11672,7 @@ def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactReten
                 "artifact_name_template_config_ref",
                 "artifact_name_template_vars_config_ref",
                 "artifact_class",
+                "retention_days_expression",
             },
             prefix,
         )
@@ -11308,6 +11681,7 @@ def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactReten
         artifact_name_config_ref = raw_upload.get("artifact_name_config_ref")
         artifact_name_template_config_ref = raw_upload.get("artifact_name_template_config_ref")
         artifact_name_template_vars_config_ref = raw_upload.get("artifact_name_template_vars_config_ref")
+        retention_days_expression = raw_upload.get("retention_days_expression")
         identity_sources = [
             artifact_name is not None,
             artifact_name_prefix is not None,
@@ -11363,10 +11737,15 @@ def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactReten
         artifact_class = require_config_string(raw_upload, "artifact_class", prefix)
         if artifact_class not in classes:
             raise ValueError(f"{prefix}.artifact_class must reference a configured class")
+        if retention_days_expression is not None and (
+            not isinstance(retention_days_expression, str) or not retention_days_expression
+        ):
+            raise ValueError(f"{prefix}.retention_days_expression must be a non-empty string")
         uploads[upload_key] = ArtifactRetentionUploadSite(
             artifact_name=artifact_name,
             artifact_name_prefix=artifact_name_prefix,
             artifact_class=artifact_class,
+            retention_days_expression=retention_days_expression,
         )
 
     return ArtifactRetentionPolicy(classes=classes, uploads=uploads)
@@ -11928,13 +12307,14 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
 
     permissions = "\n".join(top_level_block(workflow_text, "permissions"))
     for required in (
-        "  checks: write",
+        "  checks: read",
         "  contents: read",
         "  pull-requests: read",
     ):
         if required not in permissions:
             errors.append(f"{workflow_name} permissions must include {required.strip()}")
     for forbidden in (
+        "  checks: write",
         "  contents: write",
         "  pull-requests: write",
         "  actions:",
@@ -11953,9 +12333,9 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     job_if = job_if_value(job)
     if _normalize_concurrency_text(job_if) != EXPECTED_COVERAGE_ENFORCER_IF:
         errors.append(
-            f"{workflow_name} coverage-enforcer job if-condition must run only on "
-            "merge_group and non-draft Mergify proof PRs while skipping "
-            "metadata-only proof PR edits"
+            f"{workflow_name} coverage-enforcer job if-condition must run on "
+            "ordinary PRs, draft Mergify proof PRs, and merge_group while skipping "
+            "only metadata-only proof PR edits"
         )
     trusted_base_ref = (
         "          ref: ${{ github.event.pull_request.base.sha || "
@@ -11983,6 +12363,8 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     for required in (
         "if [ ! -f scripts/coverage_enforcer.py ]; then",
         "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py",
+        'if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then',
+        "coverage-enforcer bootstrap: trusted base tree lacks event-aware scripts/coverage_enforcer.py",
         "exit 0",
     ):
         if required not in job_text:

@@ -36,6 +36,8 @@ ci-provenance-emit = "managed_light"
 same-sha-main-evidence = "github_hosted"
 gate = "github_hosted"
 deploy = "github_hosted"
+capture = "managed_heavy"
+capture-gate = "github_hosted"
 
 [workflows.backtester_ci]
 ci-policy = "managed_light"
@@ -49,7 +51,6 @@ fmt = "managed_light"
 # which already compiles this crate on managed_heavy.
 clippy = "managed_heavy"
 test-archive = "managed_heavy"
-test = "managed_heavy"
 issue_789 = "managed_heavy"
 gate = "github_hosted"
 
@@ -97,7 +98,12 @@ stale = "github_hosted"
 fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
 fingerprint_workflow = "ci"
 debug_workflow = "ci_runner_debug"
-included_workflows = ["ci", "backtester_ci", "ci_runner_debug", "rust_probe"]
+included_workflows = [
+  "ci",
+  "backtester_ci",
+  "ci_runner_debug",
+  "rust_probe",
+]
 
 [meter.api_limits]
 workflow_runs_per_page = 100
@@ -311,9 +317,10 @@ artifact_name_template_config_ref = "ci_provenance.artifact_name_template"
 artifact_name_template_vars_config_ref = "ci_provenance.artifact_name_template_vars"
 artifact_class = "provenance"
 
-[artifact_retention.uploads.".github/workflows/backtester-ci.yml::test-archive::upload-bvs-test-payload"]
-artifact_name = "bvs-test-payload"
-artifact_class = "transient"
+[artifact_retention.uploads.".github/workflows/ci.yml::capture::upload-capture-artifact"]
+artifact_name = "${{ steps.provenance.outputs.artifact_name }}"
+artifact_class = "provenance"
+retention_days_expression = "${{ steps.provenance.outputs.retention_days }}"
 
 [artifact_retention.uploads.".github/workflows/backtester-ci.yml::issue_789::upload-issue-789-first-pl"]
 artifact_name_prefix = "issue-789-first-pl-"

@@ -23,6 +23,7 @@ import zipfile
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
 SUPPORTED_MODES = {
+    "artifact-metadata",
     "check-backtester-gate",
     "check-ci-gate",
     "ci-policy",
@@ -603,11 +604,15 @@ def provenance_config_digest(path: pathlib.Path = DEFAULT_CONFIG) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
+def load_config(
+    path: pathlib.Path = DEFAULT_CONFIG, *, require_workflows: bool = True
+) -> ProvenanceConfig:
     data = load_toml(path)
     workflows = data.get("workflows")
-    if not isinstance(workflows, dict):
+    if require_workflows and not isinstance(workflows, dict):
         raise ProvenanceError("missing [workflows]")
+    if not require_workflows and workflows is not None and not isinstance(workflows, dict):
+        raise ProvenanceError("workflows must be a table")
     meter = data.get("meter")
     if not isinstance(meter, dict):
         raise ProvenanceError("missing [meter]")
@@ -694,9 +699,17 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     api_limits = require_table(ci_provenance, "api_limits", "ci_provenance")
     artifacts = require_table(ci_provenance, "artifacts", "ci_provenance")
     policy_table = require_table(ci_provenance, "policy", "ci_provenance")
-    required_checks_table = require_table(
-        ci_provenance, "required_checks", "ci_provenance"
-    )
+    raw_required_checks = ci_provenance.get("required_checks")
+    if require_workflows:
+        required_checks_table = require_table(
+            ci_provenance, "required_checks", "ci_provenance"
+        )
+    elif raw_required_checks is None:
+        required_checks_table = {}
+    elif isinstance(raw_required_checks, dict):
+        required_checks_table = raw_required_checks
+    else:
+        raise ProvenanceError("ci_provenance.required_checks must be a table")
     overrides = require_table(policy_table, "override", "ci_provenance.policy")
 
     retention_days = require_positive_int(artifacts, "retention_days", "ci_provenance.artifacts")
@@ -718,9 +731,10 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
                 f"ci_provenance.policy.{row} must be full, docs, defer, iteration, noop, or tag_reuse"
             )
         policy[row] = value
-    contract_errors = policy_contract_errors(policy)
-    if contract_errors:
-        raise ProvenanceError("; ".join(contract_errors))
+    if require_workflows:
+        contract_errors = policy_contract_errors(policy)
+        if contract_errors:
+            raise ProvenanceError("; ".join(contract_errors))
 
     dispatch_run_name_default = require_string(dispatch, "run_name_default", "ci_provenance.dispatch")
     dispatch_run_name_full = require_string(dispatch, "run_name_full", "ci_provenance.dispatch")
@@ -740,14 +754,16 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         raise ProvenanceError("; ".join(gate_name_errors))
 
     required_checks = load_required_checks(required_checks_table)
-    required_check_errors = required_check_registry_contract_errors(
-        required_checks=required_checks,
-        gate_names=gate_names,
-        policy=policy,
-        workflows=workflows,
-    )
-    if required_check_errors:
-        raise ProvenanceError("; ".join(required_check_errors))
+    if require_workflows:
+        assert isinstance(workflows, dict)
+        required_check_errors = required_check_registry_contract_errors(
+            required_checks=required_checks,
+            gate_names=gate_names,
+            policy=policy,
+            workflows=workflows,
+        )
+        if required_check_errors:
+            raise ProvenanceError("; ".join(required_check_errors))
 
     docs_safe_paths = require_string_list(docs_table, "safe_paths", "ci_provenance.docs")
     docs_forbidden_ignored_build_paths = require_string_list(
@@ -819,8 +835,12 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         mergify_temp_pr_head_ref_prefix=require_string(
             mergify, "temp_pr_head_ref_prefix", "ci_provenance.mergify"
         ),
-        mergify_temp_pr_actor_id=require_positive_int(
-            mergify, "mergify_temp_pr_actor_id", "ci_provenance.mergify"
+        mergify_temp_pr_actor_id=(
+            require_positive_int(
+                mergify, "mergify_temp_pr_actor_id", "ci_provenance.mergify"
+            )
+            if require_workflows
+            else 0
         ),
         docs_safe_paths=docs_safe_paths,
         docs_forbidden_ignored_build_paths=docs_forbidden_ignored_build_paths,
@@ -1062,7 +1082,7 @@ def evaluate_backtester_gate_verdict(
         if expected_event_class != "iteration":
             raise ProvenanceError(f"backtester iteration CI policy outside resolver-permitted event class {expected_event_class!r}")
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip during iteration")
-        require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester iteration")
+        require_jobs_skipped(job_results, ("clippy", "test-archive"), "backtester iteration")
         return "backtester iteration CI policy; no required full proof published by this run"
 
     if not bvs_changed:
@@ -1075,7 +1095,7 @@ def evaluate_backtester_gate_verdict(
                 f"policy_path {policy_path!r}, got {expected_event_class!r}"
             )
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip on non-crate PR")
-        require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester no-crate")
+        require_jobs_skipped(job_results, ("clippy", "test-archive"), "backtester no-crate")
         return "backtester no-crate proof passed"
 
     if policy_path == "noop":
@@ -1085,7 +1105,6 @@ def evaluate_backtester_gate_verdict(
             ("fmt", "bvs-fmt"),
             ("clippy", "bvs-clippy"),
             ("test-archive", "bvs-test archive"),
-            ("test", "bvs-test"),
         ):
             require_job_result(job_results, job, "success", f"{label} did not succeed")
         return "backtester no-code policy recomputed proof passed"
@@ -1097,7 +1116,6 @@ def evaluate_backtester_gate_verdict(
             ("fmt", "bvs-fmt"),
             ("clippy", "bvs-clippy"),
             ("test-archive", "bvs-test archive"),
-            ("test", "bvs-test"),
         ):
             require_job_result(job_results, job, "success", f"{label} did not succeed")
         return "backtester deferred policy recomputed proof passed"
@@ -1110,7 +1128,6 @@ def evaluate_backtester_gate_verdict(
         ("fmt", "bvs-fmt"),
         ("clippy", "bvs-clippy"),
         ("test-archive", "bvs-test archive"),
-        ("test", "bvs-test"),
     ):
         require_job_result(job_results, job, "success", f"{label} did not succeed")
     return "backtester lanes passed"
@@ -2737,6 +2754,8 @@ def emit_full_ci_record(
 def parser_for_mode(mode: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=f"ci_provenance.py {mode}", allow_abbrev=False)
     parser.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
+    if mode == "artifact-metadata":
+        parser.add_argument("--run-attempt", required=True)
     if mode == "ci-policy":
         parser.add_argument("--event-name", required=True)
         parser.add_argument("--event-action", default="")
@@ -2807,8 +2826,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = parser_for_mode(mode)
     try:
         args = parser.parse_args(rest)
-        config = load_config(args.config)
-        if mode == "ci-policy":
+        config = load_config(args.config, require_workflows=mode != "artifact-metadata")
+        if mode == "artifact-metadata":
+            run_attempt = positive_int_value(args.run_attempt, "run_attempt")
+            print(f"artifact_name={provenance_artifact_name(config, run_attempt)}")
+            print(f"retention_days={config.artifact_retention_days}")
+        elif mode == "ci-policy":
             result = evaluate_ci_policy(
                 config,
                 event_name=args.event_name,

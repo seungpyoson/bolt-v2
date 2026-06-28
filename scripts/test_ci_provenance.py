@@ -28,6 +28,7 @@ RUN_ID = 24623219988
 CHECK_SUITE_ID = 65233803543
 NEXTEST_FINGERPRINT = f"nextest-archive-v2-Linux-X64-test-profile-shards-4-{'a' * 64}"
 NEXTEST_FINGERPRINT_ARTIFACT = f"nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-{'a' * 64}"
+CAPTURE_PROVENANCE_CONFIG_DIGEST = "028c908b23a2e3088a09ace96b904d31be59e85239edc2198755989a2262a580"
 
 CONFIG_TOML = """
 schema_version = 1
@@ -1272,6 +1273,61 @@ def assert_top_level_help_is_supported() -> None:
         raise AssertionError(f"expected top-level usage output, got {combined!r}")
     if "resolve-exact-sha" not in combined:
         raise AssertionError(f"expected supported modes in help output, got {combined!r}")
+    if "artifact-metadata" not in combined:
+        raise AssertionError(f"expected artifact metadata mode in help output, got {combined!r}")
+
+
+def assert_artifact_metadata_outputs_configured_name_and_retention() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        code, stdout, stderr = run_cli(
+            [
+                "artifact-metadata",
+                "--config",
+                str(config),
+                "--run-attempt",
+                "7",
+            ]
+        )
+    if code != 0:
+        raise AssertionError(f"artifact-metadata failed with {code}: stdout={stdout!r} stderr={stderr!r}")
+    lines = stdout.strip().splitlines()
+    if "artifact_name=ci-provenance-attempt-7" not in lines:
+        raise AssertionError(f"artifact metadata must derive artifact name from config, got {stdout!r}")
+    if "retention_days=30" not in lines:
+        raise AssertionError(f"artifact metadata must derive retention from config, got {stdout!r}")
+
+
+def assert_artifact_metadata_accepts_capture_config_without_workflows() -> None:
+    module = load_script()
+    capture_config = REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml"
+    text = capture_config.read_text(encoding="utf-8")
+    if "[workflows" in text:
+        raise AssertionError("capture provenance config must not require workflow registry data")
+    module.load_config(capture_config, require_workflows=False)
+    digest = module.provenance_config_digest(capture_config)
+    if digest != CAPTURE_PROVENANCE_CONFIG_DIGEST:
+        raise AssertionError(f"capture provenance config digest changed: {digest}")
+
+    code, stdout, stderr = run_cli(
+        [
+            "artifact-metadata",
+            "--config",
+            str(capture_config),
+            "--run-attempt",
+            "3",
+        ]
+    )
+
+    if code != 0:
+        raise AssertionError(
+            f"capture artifact-metadata failed with {code}: stdout={stdout!r} stderr={stderr!r}"
+        )
+    lines = stdout.strip().splitlines()
+    if "artifact_name=chainlink-reference-fixture-capture-attempt-3" not in lines:
+        raise AssertionError(f"capture artifact metadata derived wrong artifact name: {stdout!r}")
+    if "retention_days=30" not in lines:
+        raise AssertionError(f"capture artifact metadata derived wrong retention: {stdout!r}")
 
 
 def assert_ci_policy_rejects_event_sender_cli_override_arguments() -> None:
@@ -4163,7 +4219,6 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         "fmt": "skipped",
         "clippy": "skipped",
         "test-archive": "skipped",
-        "test": "skipped",
     }
     module.evaluate_backtester_gate_verdict(
         policy_path="full",
@@ -4203,7 +4258,6 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         "fmt": "success",
         "clippy": "success",
         "test-archive": "success",
-        "test": "success",
     }
     module.evaluate_backtester_gate_verdict(
         policy_path="defer",
@@ -4252,6 +4306,8 @@ def main() -> int:
     assert_fingerprint_reuse_api_errors_fail_closed()
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
+    assert_artifact_metadata_outputs_configured_name_and_retention()
+    assert_artifact_metadata_accepts_capture_config_without_workflows()
     assert_ci_policy_rejects_event_sender_cli_override_arguments()
     assert_ci_policy_outputs_matrix()
     assert_ci_policy_gate_names_are_event_based()

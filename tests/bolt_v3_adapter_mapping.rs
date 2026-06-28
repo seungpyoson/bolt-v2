@@ -31,6 +31,7 @@ use bolt_v2::{
         polyresearch::ResolvedBoltV3PolyResearchSecrets,
     },
     bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
+    bolt_v3_wire_boundary::TransportBackend,
 };
 use nautilus_binance::common::enums::{
     BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
@@ -45,7 +46,6 @@ use nautilus_hyperliquid::{
 };
 use nautilus_model::identifiers::InstrumentId;
 use nautilus_network::transport::sockudo::SockudoTransport;
-use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},

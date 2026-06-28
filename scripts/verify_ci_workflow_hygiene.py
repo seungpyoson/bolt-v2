@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 import functools
 import json
 import pathlib
@@ -651,7 +651,8 @@ CACHE_PERSISTENCE_AUDIT_CACHE_KEYS = (
 )
 CACHE_PERSISTENCE_AUDIT_CACHE_REFS = (
     '--cache-ref "$GITHUB_REF"',
-    '--cache-ref "refs/heads/${{ github.event.repository.default_branch }}"',
+    '--cache-branch "$GITHUB_BASE_REF"',
+    '--cache-branch "${{ github.event.repository.default_branch }}"',
 )
 CACHE_PERSISTENCE_AUDIT_SAVE_SUMMARY_LINES = (
     'echo "- nextest archive save outcome: \\`${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}\\`"',
@@ -684,35 +685,16 @@ CACHE_PERSISTENCE_AUDIT_PROBE_BLOCK_REQUIREMENTS = (
 )
 CACHE_PERSISTENCE_AUDIT_PROBE_RUN_REQUIREMENTS = (
     (
-        "cache-persistence-audit must run ci_storage_audit exact-key probes",
-        (CACHE_PERSISTENCE_AUDIT_COMMAND,),
-    ),
-    (
-        "cache-persistence-audit must preserve probe exit status before reporting",
-        ("set +e", "audit_rc=${PIPESTATUS[0]}", "set -e", 'exit "$audit_rc"'),
-    ),
-    (
-        "cache-persistence-audit must probe all root nextest cache keys",
-        CACHE_PERSISTENCE_AUDIT_CACHE_KEYS,
-    ),
-    (
-        "cache-persistence-audit must limit exact-key probes to restorable cache refs",
-        CACHE_PERSISTENCE_AUDIT_CACHE_REFS,
-    ),
-    (
-        "cache-persistence-audit must write probe results to the job summary",
-        ('} >> "$GITHUB_STEP_SUMMARY"',),
-    ),
-    (
         "cache-persistence-audit must summarize cache save outcomes",
         CACHE_PERSISTENCE_AUDIT_SAVE_SUMMARY_LINES,
     ),
-    (
-        "cache-persistence-audit must warn when probe execution fails",
-        (CACHE_PERSISTENCE_AUDIT_PROBE_FAILURE_WARNING,),
-    ),
 )
 CACHE_PERSISTENCE_AUDIT_WARNING_REQUIREMENTS = (
+    (
+        "cache-persistence-audit must warn when probe execution fails",
+        """if [[ "$audit_rc" -ne 0 ]]; then""",
+        CACHE_PERSISTENCE_AUDIT_PROBE_FAILURE_WARNING,
+    ),
     (
         "cache-persistence-audit must warn when cache keys are missing",
         CACHE_PERSISTENCE_AUDIT_MISSING_GREP,
@@ -2094,6 +2076,44 @@ def line_indent(line: str) -> int:
     return len(line) - len(line.lstrip(" "))
 
 
+def top_level_shell_commands(lines: list[str]) -> list[str]:
+    commands: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].rstrip()
+        if not line.strip() or line_indent(line) != 0:
+            index += 1
+            continue
+        parts = [line.strip()]
+        while parts[-1].endswith("\\") and index + 1 < len(lines):
+            index += 1
+            continuation = lines[index].strip()
+            if continuation:
+                parts.append(continuation)
+        commands.append(" ".join(parts))
+        index += 1
+    return commands
+
+
+def ordered_command_match(
+    commands: list[str],
+    predicates: tuple[Callable[[str], bool], ...],
+) -> bool:
+    cursor = -1
+    for predicate in predicates:
+        for index in range(cursor + 1, len(commands)):
+            if predicate(commands[index]):
+                cursor = index
+                break
+        else:
+            return False
+    return True
+
+
+def run_body_has_top_level_command(lines: list[str], command: str) -> bool:
+    return command in top_level_shell_commands(lines)
+
+
 def run_body_has_immediate_child(lines: list[str], parent: str, child: str) -> bool:
     for index, line in enumerate(lines):
         if line.strip() != parent:
@@ -2104,11 +2124,48 @@ def run_body_has_immediate_child(lines: list[str], parent: str, child: str) -> b
                 continue
             nested_indent = line_indent(nested)
             if nested_indent <= parent_indent:
-                return False
+                break
             if nested_indent == parent_indent + 2 and nested.strip() == child:
                 return True
-        return False
     return False
+
+
+def append_missing_cache_persistence_probe_structure(
+    errors: list[str],
+    run_lines: list[str],
+) -> None:
+    commands = top_level_shell_commands(run_lines)
+    probe_command = next(
+        (command for command in commands if command.startswith(CACHE_PERSISTENCE_AUDIT_COMMAND)),
+        None,
+    )
+    if probe_command is None:
+        errors.append("cache-persistence-audit must run ci_storage_audit exact-key probes")
+    else:
+        if '2>&1 | tee "$RUNNER_TEMP/cache-persistence-audit.txt"' not in probe_command:
+            errors.append("cache-persistence-audit must preserve probe exit status before reporting")
+        if not all(cache_key in probe_command for cache_key in CACHE_PERSISTENCE_AUDIT_CACHE_KEYS):
+            errors.append("cache-persistence-audit must probe all root nextest cache keys")
+        if not all(cache_ref in probe_command for cache_ref in CACHE_PERSISTENCE_AUDIT_CACHE_REFS):
+            errors.append("cache-persistence-audit must limit exact-key probes to restorable cache refs")
+    if not any(CACHE_PERSISTENCE_AUDIT_CACHE_REFS[0] in command for command in commands):
+        errors.append("cache-persistence-audit must limit exact-key probes to restorable cache refs")
+
+    if not ordered_command_match(
+        commands,
+        (
+            lambda command: command == "set +e",
+            lambda command: command.startswith(CACHE_PERSISTENCE_AUDIT_COMMAND)
+            and '2>&1 | tee "$RUNNER_TEMP/cache-persistence-audit.txt"' in command,
+            lambda command: command == "audit_rc=${PIPESTATUS[0]}",
+            lambda command: command == "set -e",
+            lambda command: command == 'exit "$audit_rc"',
+        ),
+    ):
+        errors.append("cache-persistence-audit must preserve probe exit status before reporting")
+
+    if not run_body_has_top_level_command(run_lines, '} >> "$GITHUB_STEP_SUMMARY"'):
+        errors.append("cache-persistence-audit must write probe results to the job summary")
 
 
 def append_missing_warning_requirements(
@@ -2535,6 +2592,15 @@ def named_step_block(lines: list[str], step_name: str) -> list[str] | None:
         if any(name_re.match(strip_comment(line)) for line in block):
             return block
     return None
+
+
+def step_name_matches(block: list[str], step_name: str) -> bool:
+    name_re = re.compile(rf"^\s*(?:-\s*)?name:\s*{re.escape(step_name)}\s*$")
+    return any(name_re.match(strip_comment(line)) for line in block)
+
+
+def step_declares_run(block: list[str]) -> bool:
+    return any(YAML_RUN_LINE_RE.match(strip_comment(line).rstrip()) is not None for line in block)
 
 
 def first_step_running_command(job_lines: list[str], command: str) -> int | None:
@@ -9958,6 +10024,9 @@ def verify_workflow(workflow_text: str) -> list[str]:
         for need in CACHE_PERSISTENCE_AUDIT_NEEDS:
             if need not in audit_needs:
                 errors.append(f"cache-persistence-audit needs {need}")
+        for required_permission in ("contents: read", "actions: read"):
+            if required_permission not in audit_text:
+                errors.append(f"cache-persistence-audit permissions must include {required_permission}")
         if not job_if_uses_always(audit_lines):
             errors.append("cache-persistence-audit must use always()")
         if not job_gates_on_full_ci_required(audit_lines):
@@ -9969,6 +10038,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if audit_probe_block is None:
             errors.append(f"cache-persistence-audit must include {CACHE_PERSISTENCE_AUDIT_PROBE_STEP} step")
         else:
+            audit_run_blocks = [block for block in step_blocks(audit_lines) if step_declares_run(block)]
+            if len(audit_run_blocks) != 1 or not step_name_matches(
+                audit_run_blocks[0],
+                CACHE_PERSISTENCE_AUDIT_PROBE_STEP,
+            ):
+                errors.append("cache-persistence-audit must not add extra run steps")
             audit_probe_text = uncommented_text(audit_probe_block)
             audit_probe_run_lines = block_run_body_lines(audit_probe_block)
             audit_probe_run_text = "\n".join(audit_probe_run_lines)
@@ -9984,6 +10059,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 audit_probe_run_text,
                 CACHE_PERSISTENCE_AUDIT_PROBE_RUN_REQUIREMENTS,
             )
+            append_missing_cache_persistence_probe_structure(errors, audit_probe_run_lines)
             append_missing_warning_requirements(
                 errors,
                 audit_probe_run_lines,

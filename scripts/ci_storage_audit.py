@@ -215,6 +215,25 @@ def normalize_cache_refs(cache_refs: list[str] | None) -> list[str]:
     return refs
 
 
+def normalize_cache_ref_inputs(
+    *,
+    cache_refs: list[str] | None = None,
+    cache_branches: list[str] | None = None,
+) -> list[str]:
+    refs = normalize_cache_refs(cache_refs)
+    seen = set(refs)
+    for raw in cache_branches or []:
+        branch = raw.strip()
+        if not branch:
+            continue
+        ref = f"refs/heads/{branch}"
+        if ref in seen:
+            continue
+        seen.add(ref)
+        refs.append(ref)
+    return refs
+
+
 def unavailable_cache_key_probe(
     request: CacheKeyProbeRequest,
     reason: str,
@@ -243,9 +262,10 @@ def fetch_cache_key_probes(
     requests: list[CacheKeyProbeRequest],
     *,
     cache_refs: list[str] | None = None,
+    cache_branches: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     probes: list[dict[str, Any]] = []
-    ref_filter = normalize_cache_refs(cache_refs)
+    ref_filter = normalize_cache_ref_inputs(cache_refs=cache_refs, cache_branches=cache_branches)
     ref_filter_set = set(ref_filter)
     for request in requests:
         try:
@@ -457,12 +477,21 @@ def build_cache_key_probe_snapshot(
     snapshot_utc: str,
     requests: list[CacheKeyProbeRequest],
     cache_refs: list[str] | None = None,
+    cache_branches: list[str] | None = None,
 ) -> dict[str, Any]:
+    normalized_cache_refs = normalize_cache_ref_inputs(
+        cache_refs=cache_refs,
+        cache_branches=cache_branches,
+    )
     return {
         "snapshot_utc": snapshot_utc,
         "repo": repo,
-        "cache_key_probes": fetch_cache_key_probes(client, requests, cache_refs=cache_refs),
-        "cache_refs": normalize_cache_refs(cache_refs),
+        "cache_key_probes": fetch_cache_key_probes(
+            client,
+            requests,
+            cache_refs=normalized_cache_refs,
+        ),
+        "cache_refs": normalized_cache_refs,
         "cache_usage": fetch_cache_usage(client),
     }
 
@@ -643,6 +672,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         metavar="REF",
         help="Limit exact-key presence to cache refs restorable by this run. Repeat for multiple refs.",
     )
+    parser.add_argument(
+        "--cache-branch",
+        action="append",
+        default=[],
+        metavar="BRANCH",
+        help="Limit exact-key presence to a branch ref restorable by this run. Repeat for multiple branches.",
+    )
     return parser.parse_args(argv)
 
 
@@ -658,6 +694,7 @@ def main(argv: list[str]) -> int:
             snapshot_utc=snapshot_utc,
             requests=[parse_cache_key_probe(raw) for raw in args.cache_key],
             cache_refs=args.cache_ref,
+            cache_branches=args.cache_branch,
         )
         if args.json:
             print(json.dumps(snapshot, indent=2, sort_keys=True))

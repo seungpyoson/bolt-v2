@@ -919,6 +919,9 @@ jobs:
     needs: [ci-policy, nextest-fingerprint-reuse, test-archive]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -932,7 +935,8 @@ jobs:
           python3 scripts/ci_storage_audit.py \
             --repo "$GITHUB_REPOSITORY" \
             --cache-ref "$GITHUB_REF" \
-            --cache-ref "refs/heads/${{ github.event.repository.default_branch }}" \
+            --cache-branch "$GITHUB_BASE_REF" \
+            --cache-branch "${{ github.event.repository.default_branch }}" \
             --cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}" \
             --cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}" \
             --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" \

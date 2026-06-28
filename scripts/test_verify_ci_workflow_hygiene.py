@@ -802,6 +802,9 @@ jobs:
     needs: [ci-policy, nextest-fingerprint-reuse, test-archive]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@example
       - name: Probe saved cache keys
@@ -814,7 +817,8 @@ jobs:
           python3 scripts/ci_storage_audit.py \
             --repo "$GITHUB_REPOSITORY" \
             --cache-ref "$GITHUB_REF" \
-            --cache-ref "refs/heads/${{ github.event.repository.default_branch }}" \
+            --cache-branch "$GITHUB_BASE_REF" \
+            --cache-branch "${{ github.event.repository.default_branch }}" \
             --cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}" \
             --cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}" \
             --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" \
@@ -4378,6 +4382,14 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             ),
         ),
         (
+            "cache-persistence-audit permissions must include actions: read",
+            replace_once(
+                workflow,
+                "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    permissions:\n      contents: read\n      actions: read\n",
+                "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    permissions:\n      contents: read\n",
+            ),
+        ),
+        (
             "cache-persistence-audit must run ci_storage_audit exact-key probes",
             replace_once(workflow, "          python3 scripts/ci_storage_audit.py \\\n", "          python3 scripts/ci_storage_audit_probe.py \\\n"),
         ),
@@ -4410,8 +4422,24 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             ),
         ),
         (
+            "cache-persistence-audit must not add extra run steps",
+            replace_once(
+                workflow,
+                "      - name: Probe saved cache keys\n",
+                "      - name: Accidental blocking step\n        run: exit 1\n\n      - name: Probe saved cache keys\n",
+            ),
+        ),
+        (
             "cache-persistence-audit must preserve probe exit status before reporting",
             replace_once(workflow, "          audit_rc=${PIPESTATUS[0]}\n", ""),
+        ),
+        (
+            "cache-persistence-audit must preserve probe exit status before reporting",
+            replace_once(
+                workflow,
+                "          audit_rc=${PIPESTATUS[0]}\n",
+                '          echo "audit_rc=${PIPESTATUS[0]}" >/dev/null\n',
+            ),
         ),
         (
             "cache-persistence-audit must probe all root nextest cache keys",
@@ -4425,7 +4453,7 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             "cache-persistence-audit must limit exact-key probes to restorable cache refs",
             replace_once(
                 workflow,
-                '            --cache-ref "refs/heads/${{ github.event.repository.default_branch }}" \\\n',
+                '            --cache-branch "${{ github.event.repository.default_branch }}" \\\n',
                 "",
             ),
         ),

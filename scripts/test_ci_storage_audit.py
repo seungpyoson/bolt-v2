@@ -474,6 +474,17 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(probes[0]["ref_filtered_prefix_enumerated_count"], 0)
         self.assertEqual(probes[0]["ref_filter"], ["refs/pull/986/merge", "refs/heads/main"])
 
+    def test_normalize_cache_refs_drops_empty_values_and_duplicates(self) -> None:
+        refs = ci_storage_audit.normalize_cache_ref_inputs(
+            cache_refs=[" refs/pull/986/merge ", "", "refs/pull/986/merge"],
+            cache_branches=["main", "", "main", "release/train"],
+        )
+
+        self.assertEqual(
+            refs,
+            ["refs/pull/986/merge", "refs/heads/main", "refs/heads/release/train"],
+        )
+
     def test_fetch_cache_usage_unavailable_keeps_reason(self) -> None:
         client = FakeClient(
             {

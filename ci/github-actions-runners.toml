@@ -321,6 +321,8 @@ artifact_class = "provenance"
 artifact_name = "${{ steps.provenance.outputs.artifact_name }}"
 artifact_class = "provenance"
 retention_days_expression = "${{ steps.provenance.outputs.retention_days }}"
+retention_days_config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"
+retention_days_config_ref = "ci_provenance.artifacts.retention_days"
 
 [artifact_retention.uploads.".github/workflows/backtester-ci.yml::issue_789::upload-issue-789-first-pl"]
 artifact_name_prefix = "issue-789-first-pl-"

@@ -147,6 +147,7 @@ class ArtifactRetentionUploadSite(NamedTuple):
     artifact_name_prefix: str | None
     artifact_class: str
     retention_days_expression: str | None
+    retention_days: int | None
 
 
 class ArtifactRetentionPolicy(NamedTuple):
@@ -2016,15 +2017,16 @@ def upload_artifact_retention_errors(
                     f"{label} retention-days must match configured expression "
                     f"{site.retention_days_expression}"
                 )
-            continue
-        try:
-            retention_days = int(retention_values[0])
-        except ValueError:
-            errors.append(f"{label} retention-days must be a positive integer")
-            continue
-        if retention_days <= 0:
-            errors.append(f"{label} retention-days must be a positive integer")
-            continue
+            retention_days = site.retention_days
+        else:
+            try:
+                retention_days = int(retention_values[0])
+            except ValueError:
+                errors.append(f"{label} retention-days must be a positive integer")
+                continue
+            if retention_days <= 0:
+                errors.append(f"{label} retention-days must be a positive integer")
+                continue
         if retention_days > class_policy.max_retention_days:
             errors.append(
                 f"{label} retention-days {retention_days} "
@@ -8782,13 +8784,6 @@ def capture_artifact_metadata_errors(job_lines: list[str]) -> list[str]:
     if not upload_blocks:
         errors.append("capture must upload CAPTURE_OUTPUT_DIR")
         return errors
-    if not any(block_has_input(block, "name", "${{ steps.provenance.outputs.artifact_name }}") for block in upload_blocks):
-        errors.append("capture upload artifact name must come from provenance config")
-    if not any(
-        block_has_input(block, "retention-days", "${{ steps.provenance.outputs.retention_days }}")
-        for block in upload_blocks
-    ):
-        errors.append("capture upload retention-days must come from provenance config")
     return errors
 
 
@@ -11615,7 +11610,21 @@ def render_config_string_template(template: str, template_vars: dict[str, str], 
     return rendered
 
 
-def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactRetentionPolicy:
+def resolve_repo_toml_config_file(config_path: pathlib.Path, file_ref: str, prefix: str) -> dict[str, object]:
+    if not isinstance(file_ref, str) or not file_ref.strip():
+        raise ValueError(f"{prefix} must be a non-empty string")
+    repo_path = pathlib.PurePosixPath(file_ref)
+    if repo_path.is_absolute() or any(part in {"", ".", ".."} for part in repo_path.parts):
+        raise ValueError(f"{prefix} must be a repo-relative TOML path")
+    if repo_path.suffix != ".toml":
+        raise ValueError(f"{prefix} must reference a TOML file")
+    file_path = config_path.parent.parent.joinpath(*repo_path.parts)
+    if not file_path.is_file():
+        raise ValueError(f"{prefix} references missing TOML file {file_ref!r}")
+    return tomllib.loads(file_path.read_text(encoding="utf-8"))
+
+
+def validate_artifact_retention_config(data: dict[str, object], config_path: pathlib.Path) -> ArtifactRetentionPolicy:
     artifact_retention = data.get("artifact_retention")
     if not isinstance(artifact_retention, dict):
         raise ValueError("ci/github-actions-runners.toml must define [artifact_retention]")
@@ -11673,6 +11682,8 @@ def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactReten
                 "artifact_name_template_vars_config_ref",
                 "artifact_class",
                 "retention_days_expression",
+                "retention_days_config_file",
+                "retention_days_config_ref",
             },
             prefix,
         )
@@ -11682,6 +11693,8 @@ def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactReten
         artifact_name_template_config_ref = raw_upload.get("artifact_name_template_config_ref")
         artifact_name_template_vars_config_ref = raw_upload.get("artifact_name_template_vars_config_ref")
         retention_days_expression = raw_upload.get("retention_days_expression")
+        retention_days_config_file = raw_upload.get("retention_days_config_file")
+        retention_days_config_ref = raw_upload.get("retention_days_config_ref")
         identity_sources = [
             artifact_name is not None,
             artifact_name_prefix is not None,
@@ -11738,14 +11751,35 @@ def validate_artifact_retention_config(data: dict[str, object]) -> ArtifactReten
         if artifact_class not in classes:
             raise ValueError(f"{prefix}.artifact_class must reference a configured class")
         if retention_days_expression is not None and (
-            not isinstance(retention_days_expression, str) or not retention_days_expression
+            not isinstance(retention_days_expression, str) or not retention_days_expression.strip()
         ):
             raise ValueError(f"{prefix}.retention_days_expression must be a non-empty string")
+        expression_retention_days = None
+        if retention_days_expression is not None:
+            if not isinstance(retention_days_config_file, str) or not retention_days_config_file.strip():
+                raise ValueError(f"{prefix}.retention_days_config_file must be a non-empty string")
+            if not isinstance(retention_days_config_ref, str) or not retention_days_config_ref.strip():
+                raise ValueError(f"{prefix}.retention_days_config_ref must be a non-empty string")
+            retention_config = resolve_repo_toml_config_file(
+                config_path,
+                retention_days_config_file,
+                f"{prefix}.retention_days_config_file",
+            )
+            expression_retention_days = resolve_config_positive_int_ref(
+                retention_config,
+                retention_days_config_ref,
+                f"{prefix}.retention_days_config_ref",
+            )
+        elif retention_days_config_file is not None or retention_days_config_ref is not None:
+            raise ValueError(
+                f"{prefix}.retention_days_config_file and retention_days_config_ref require retention_days_expression"
+            )
         uploads[upload_key] = ArtifactRetentionUploadSite(
             artifact_name=artifact_name,
             artifact_name_prefix=artifact_name_prefix,
             artifact_class=artifact_class,
             retention_days_expression=retention_days_expression,
+            retention_days=expression_retention_days,
         )
 
     return ArtifactRetentionPolicy(classes=classes, uploads=uploads)
@@ -11966,7 +12000,7 @@ def load_github_actions_runners_config(
     if not isinstance(meter, dict):
         raise ValueError("ci/github-actions-runners.toml must define [meter]")
     ci_provenance = validate_ci_provenance_config(data)
-    artifact_retention = validate_artifact_retention_config(data)
+    artifact_retention = validate_artifact_retention_config(data, path)
     dispatch_cancel = validate_dispatch_cancel_config(data)
     meter_workflows = meter.get("included_workflows")
     if not isinstance(meter_workflows, list) or not all(

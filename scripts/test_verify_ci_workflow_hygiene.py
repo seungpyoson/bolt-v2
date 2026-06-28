@@ -1393,9 +1393,26 @@ def write_runner_config_fixture(root: pathlib.Path) -> None:
     runner_config = root / "ci" / "github-actions-runners.toml"
     runner_config.parent.mkdir(parents=True, exist_ok=True)
     runner_config.write_text((REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(), encoding="utf-8")
+    capture_config = root / "ci" / "chainlink-reference-fixture-capture-provenance.toml"
+    capture_config.write_text(
+        (REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml").read_text(),
+        encoding="utf-8",
+    )
     actionlint = root / ".github" / "actionlint.yaml"
     actionlint.parent.mkdir(parents=True, exist_ok=True)
     actionlint.write_text((REPO_ROOT / ".github" / "actionlint.yaml").read_text(), encoding="utf-8")
+
+
+def write_temp_runner_config(root: pathlib.Path, config_text: str) -> pathlib.Path:
+    ci_dir = root / "ci"
+    ci_dir.mkdir(parents=True, exist_ok=True)
+    config_path = ci_dir / "github-actions-runners.toml"
+    config_path.write_text(config_text, encoding="utf-8")
+    (ci_dir / "chainlink-reference-fixture-capture-provenance.toml").write_text(
+        (REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml").read_text(),
+        encoding="utf-8",
+    )
+    return config_path
 
 
 def assert_clean(
@@ -1542,8 +1559,7 @@ def runner_config_load_error(config_text: str, verifier=None) -> str:
     if verifier is None:
         verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
-        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
-        config_path.write_text(config_text, encoding="utf-8")
+        config_path = write_temp_runner_config(pathlib.Path(tmp), config_text)
         try:
             verifier.load_github_actions_runners_config(config_path)
         except Exception as exc:  # noqa: BLE001 - loader raises domain errors.
@@ -2914,31 +2930,9 @@ def assert_capture_artifact_metadata_is_config_derived() -> None:
         '            --config "$CAPTURE_PROVENANCE_CONFIG" \\\n'
         '            --run-attempt "${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"\n'
     )
-    output_name = "          name: ${{ steps.provenance.outputs.artifact_name }}"
-    output_retention = "          retention-days: ${{ steps.provenance.outputs.retention_days }}"
     assert_error(
         "capture must derive artifact metadata from ci_provenance.py artifact-metadata",
         workflow.replace(metadata_command, "") if metadata_command in workflow else workflow,
-    )
-    assert_error(
-        "capture upload artifact name must come from provenance config",
-        replace_once(
-            workflow,
-            output_name,
-            "          name: chainlink-reference-fixture-capture-attempt-${{ github.run_attempt }}",
-        )
-        if output_name in workflow
-        else workflow,
-    )
-    assert_error(
-        "capture upload retention-days must come from provenance config",
-        replace_once(
-            workflow,
-            output_retention,
-            "          retention-days: 30",
-        )
-        if output_retention in workflow
-        else workflow,
     )
 
 
@@ -4985,14 +4979,13 @@ def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> N
     verifier = load_verifier()
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
     with tempfile.TemporaryDirectory() as tmp:
-        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
         config_text = original_config.read_text()
-        config_path.write_text(
+        config_path = write_temp_runner_config(
+            pathlib.Path(tmp),
             config_text.replace(
                 '  "backtester_ci",\n',
                 "",
             ),
-            encoding="utf-8",
         )
         verifier.DEFAULT_RUNNERS_CONFIG = config_path
         try:
@@ -5009,9 +5002,9 @@ def assert_runner_contract_requires_meter_api_limits() -> None:
     verifier = load_verifier()
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
     with tempfile.TemporaryDirectory() as tmp:
-        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
         config_text = original_config.read_text()
-        config_path.write_text(
+        config_path = write_temp_runner_config(
+            pathlib.Path(tmp),
             config_text.replace(
                 """
 [meter.api_limits]
@@ -5023,7 +5016,6 @@ draft_timeline_items = 100
 """,
                 "",
             ),
-            encoding="utf-8",
         )
         verifier.DEFAULT_RUNNERS_CONFIG = config_path
         try:
@@ -5066,15 +5058,14 @@ def assert_runner_contract_requires_fingerprint_archive_tier_coupling() -> None:
     )
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
     with tempfile.TemporaryDirectory() as tmp:
-        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
         config_text = original_config.read_text()
-        config_path.write_text(
+        config_path = write_temp_runner_config(
+            pathlib.Path(tmp),
             replace_once(
                 config_text,
                 'nextest-fingerprint = "managed_heavy"',
                 'nextest-fingerprint = "managed_light"',
             ),
-            encoding="utf-8",
         )
         verifier.DEFAULT_RUNNERS_CONFIG = config_path
         try:
@@ -8543,6 +8534,30 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
         ".github/workflows/ci.yml build upload-artifact step id upload-bolt-v2-binary is duplicated",
         {".github/workflows/ci.yml": duplicate_binary_upload},
     )
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml capture upload-capture-artifact artifact ${{ steps.provenance.outputs.artifact_name }} "
+        "retention-days must match configured expression ${{ steps.provenance.outputs.retention_days }}",
+        {
+            ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml").replace(
+                "          retention-days: ${{ steps.provenance.outputs.retention_days }}\n",
+                "          retention-days: ${{ github.event.inputs.retention_days }}\n",
+                1,
+            ),
+            ".github/workflows/backtester-ci.yml": repo_workflow_text(".github/workflows/backtester-ci.yml"),
+        },
+    )
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml capture upload-capture-artifact artifact chainlink-reference-fixture-capture-attempt-${{ github.run_attempt }} "
+        "does not match configured name ${{ steps.provenance.outputs.artifact_name }}",
+        {
+            ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml").replace(
+                "          name: ${{ steps.provenance.outputs.artifact_name }}\n",
+                "          name: chainlink-reference-fixture-capture-attempt-${{ github.run_attempt }}\n",
+                1,
+            ),
+            ".github/workflows/backtester-ci.yml": repo_workflow_text(".github/workflows/backtester-ci.yml"),
+        },
+    )
 
     extra_action = f"""
 name: Uploading composite
@@ -8608,6 +8623,47 @@ runs:
         raise AssertionError(f"nested workflow retention source must fail config load, got: {error!r}")
 
 
+def assert_artifact_retention_expression_retention_is_bounded() -> None:
+    verifier = load_verifier()
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    capture_config_text = (
+        REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml"
+    ).read_text(encoding="utf-8")
+    over_ceiling_capture_config = capture_config_text.replace(
+        "retention_days = 30",
+        "retention_days = 365",
+        1,
+    )
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        ci_dir = tmp_path / "ci"
+        ci_dir.mkdir()
+        runner_config = ci_dir / "github-actions-runners.toml"
+        runner_config.write_text(config_text, encoding="utf-8")
+        (ci_dir / "chainlink-reference-fixture-capture-provenance.toml").write_text(
+            over_ceiling_capture_config,
+            encoding="utf-8",
+        )
+        verifier.DEFAULT_RUNNERS_CONFIG = runner_config
+        try:
+            errors = verifier.verify_artifact_retention_policy(
+                {
+                    ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml"),
+                    ".github/workflows/backtester-ci.yml": repo_workflow_text(".github/workflows/backtester-ci.yml"),
+                },
+                {},
+            )
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    expected = (
+        ".github/workflows/ci.yml capture upload-capture-artifact artifact "
+        "${{ steps.provenance.outputs.artifact_name }} retention-days 365 exceeds configured max 30"
+    )
+    if not any(expected in error for error in errors):
+        raise AssertionError(f"expression-backed retention must enforce class ceiling, got: {errors}")
+
+
 def assert_ci_provenance_upload_name_comes_from_config_template() -> None:
     verifier = load_verifier()
     config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
@@ -8626,8 +8682,7 @@ def assert_ci_provenance_upload_name_comes_from_config_template() -> None:
     emit_lines = verifier.parse_jobs(configured_workflow)["ci-provenance-emit"]
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
     with tempfile.TemporaryDirectory() as tmp:
-        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
-        config_path.write_text(configured_config, encoding="utf-8")
+        config_path = write_temp_runner_config(pathlib.Path(tmp), configured_config)
         verifier.DEFAULT_RUNNERS_CONFIG = config_path
         try:
             errors = verifier.ci_provenance_emit_upload_errors(emit_lines)
@@ -8690,11 +8745,30 @@ def assert_artifact_retention_config_refs_are_validated() -> None:
             "retention_days_expression = true",
             1,
         ),
+        "upload-capture-artifact.retention_days_expression must be a non-empty string": config_text.replace(
+            'retention_days_expression = "${{ steps.provenance.outputs.retention_days }}"',
+            'retention_days_expression = "   "',
+            1,
+        ),
+        "retention_days_config_file must be a non-empty string": config_text.replace(
+            'retention_days_config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"',
+            'retention_days_config_file = "   "',
+            1,
+        ),
+        "retention_days_config_ref must be a non-empty string": config_text.replace(
+            '\nretention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+            '\nretention_days_config_ref = "   "',
+            1,
+        ),
+        "retention_days_config_ref references missing TOML key": config_text.replace(
+            '\nretention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+            '\nretention_days_config_ref = "ci_provenance.artifacts.missing"',
+            1,
+        ),
     }
     with tempfile.TemporaryDirectory() as tmp:
-        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
         for expected, mutated_config in cases.items():
-            config_path.write_text(mutated_config, encoding="utf-8")
+            config_path = write_temp_runner_config(pathlib.Path(tmp), mutated_config)
             try:
                 verifier.load_github_actions_runners_config(config_path)
             except ValueError as exc:
@@ -10369,6 +10443,7 @@ def main() -> int:
     assert_v6_red_local_composite_actions_are_scanned()
     assert_v6_red_additional_workflows_are_scanned()
     assert_artifact_retention_policy_spine_gaps_are_reported()
+    assert_artifact_retention_expression_retention_is_bounded()
     assert_ci_provenance_upload_name_comes_from_config_template()
     assert_artifact_retention_config_refs_are_validated()
     assert_shell_logical_lines_handles_crlf_continuations()

@@ -554,13 +554,22 @@ def render_model_freshness_warning_block(warning: str) -> str:
     return "\n".join(f"> {line}" if line else ">" for line in ["[!WARNING]", *sanitized.splitlines()])
 
 
-def model_freshness_notice_marker(provider: str) -> str:
+def model_freshness_notice_marker(provider: str, marker_template: str) -> str:
+    if "{provider}" not in marker_template:
+        raise RuntimeError("model_freshness.notice_marker_template must contain {provider}")
     provider_key = "".join(char.lower() if char.isalnum() else "-" for char in provider).strip("-")
-    return f"<!-- ai-review-model-freshness-notice-{provider_key} -->"
+    return marker_template.replace("{provider}", provider_key)
 
 
-def render_model_freshness_notice(*, provider: str, pr_number: int, run_url: str, warning: str) -> str:
-    marker = model_freshness_notice_marker(provider)
+def render_model_freshness_notice(
+    *,
+    provider: str,
+    pr_number: int,
+    run_url: str,
+    warning: str,
+    marker_template: str,
+) -> str:
+    marker = model_freshness_notice_marker(provider, marker_template)
     warning_block = render_model_freshness_warning_block(warning)
     return textwrap.dedent(
         f"""\
@@ -586,11 +595,18 @@ def post_model_freshness_notice(
     run_url: str,
     warning: str,
     expected_bot_login: str,
+    marker_template: str,
 ) -> str:
     if not warning.strip():
         return "no-warning"
-    marker = model_freshness_notice_marker(provider)
-    body = render_model_freshness_notice(provider=provider, pr_number=pr_number, run_url=run_url, warning=warning)
+    marker = model_freshness_notice_marker(provider, marker_template)
+    body = render_model_freshness_notice(
+        provider=provider,
+        pr_number=pr_number,
+        run_url=run_url,
+        warning=warning,
+        marker_template=marker_template,
+    )
     for existing in github.list_issue_comments():
         if not actor_is_expected_bot(existing, expected_bot_login):
             continue
@@ -1129,10 +1145,12 @@ def post_model_freshness_notice_from_env(args: argparse.Namespace) -> int:
     pr_number = int(env_required("PR_NUMBER"))
     runtime_config = load_runtime_config(args)
     github_config = config_table(runtime_config, "github")
+    freshness_config = config_table(runtime_config, "model_freshness")
     github = build_github_client(repo, pr_number, runtime_config)
     run_url = run_url_for(repo, runtime_config)
     warning = args.warning or model_freshness_warning_from_env()
     expected_bot_login = config_str(github_config, "expected_bot_login")
+    marker_template = config_str(freshness_config, "notice_marker_template")
     result = post_model_freshness_notice(
         github=github,
         provider=args.provider,
@@ -1140,6 +1158,7 @@ def post_model_freshness_notice_from_env(args: argparse.Namespace) -> int:
         run_url=run_url,
         warning=warning,
         expected_bot_login=expected_bot_login,
+        marker_template=marker_template,
     )
     updated = 0
     if args.started_at and warning:

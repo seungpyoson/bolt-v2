@@ -620,6 +620,10 @@ model = "{current_kimi}"
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
                 assert main(["--config-file", str(config_path), "--advisory", "--github-notice"]) == 1
             assert "--github-notice requires --live provider freshness data" in stderr.getvalue(), stderr.getvalue()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                assert main(["--config-file", str(config_path), "--github-notice"]) == 1
+            assert "--github-notice requires --advisory" in stderr.getvalue(), stderr.getvalue()
     finally:
         globals()["live_latest_models"] = original_live_latest_models
 
@@ -862,6 +866,9 @@ def main(argv: list[str] | None = None) -> int:
         run_self_test()
         print("AI review model freshness self-tests OK")
         return 0
+    if args.github_notice and not args.advisory:
+        print("ERROR: --github-notice requires --advisory", file=sys.stderr)
+        return 1
 
     try:
         pins, sources = load_config(args.config_file)

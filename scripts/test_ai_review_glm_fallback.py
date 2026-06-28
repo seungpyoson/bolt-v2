@@ -784,6 +784,7 @@ def test_model_freshness_notice_updates_existing_marker_comment() -> None:
         run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
         warning="Kimi model update available: update the pinned model.",
         expected_bot_login="github-actions[bot]",
+        marker_template="<!-- ai-review-model-freshness-notice-{provider} -->",
     )
 
     assert not github.posted
@@ -791,6 +792,21 @@ def test_model_freshness_notice_updates_existing_marker_comment() -> None:
     assert github.updated[0][0] == 123
     assert github.updated[0][1].startswith("<!-- ai-review-model-freshness-notice-kimi -->")
     assert "Kimi model update available" in github.updated[0][1]
+
+
+def test_model_freshness_notice_marker_comes_from_config_template() -> None:
+    module = load_script()
+
+    body = module.render_model_freshness_notice(
+        provider="GLM PR-Agent",
+        pr_number=895,
+        run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+        warning="GLM model update available: update the pinned model.",
+        marker_template="<!-- configured-model-freshness-notice-{provider} -->",
+    )
+
+    assert body.startswith("<!-- configured-model-freshness-notice-glm-pr-agent -->")
+    assert "GLM model update available" in body
 
 
 def test_existing_pr_agent_review_comment_gets_model_freshness_warning() -> None:
@@ -872,6 +888,7 @@ def main() -> int:
     test_render_notice_redacts_new_provider_secret_env_names()
     test_review_comment_includes_model_freshness_warning_at_top()
     test_model_freshness_notice_updates_existing_marker_comment()
+    test_model_freshness_notice_marker_comes_from_config_template()
     test_existing_pr_agent_review_comment_gets_model_freshness_warning()
     test_existing_pr_agent_pull_review_is_not_mutated_for_model_freshness_warning()
     print("GLM fallback self-tests OK")

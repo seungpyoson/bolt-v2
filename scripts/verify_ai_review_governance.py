@@ -344,7 +344,7 @@ def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
     literals: list[str] = []
     model_freshness = parsed.get("model_freshness")
     if isinstance(model_freshness, dict):
-        for key in ("github_api_version", "issue_marker", "issue_title", "user_agent"):
+        for key in ("github_api_version", "issue_marker", "issue_title", "notice_marker_template", "user_agent"):
             value = model_freshness.get(key)
             if isinstance(value, str) and value:
                 literals.append(value)
@@ -435,6 +435,11 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
             "model_freshness.issue_title",
             model_freshness.get("issue_title"),
             "AI review model pin update available",
+        ),
+        (
+            "model_freshness.notice_marker_template",
+            model_freshness.get("notice_marker_template"),
+            "<!-- ai-review-model-freshness-notice-{provider} -->",
         ),
         ("glm.api_base", glm.get("api_base"), "https://api.z.ai/api/coding/paas/v4"),
         ("glm.review_max_chunk_chars", glm.get("review_max_chunk_chars"), 60000),

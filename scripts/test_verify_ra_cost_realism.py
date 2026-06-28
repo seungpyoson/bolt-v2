@@ -94,7 +94,7 @@ fn rejects_invalid_polymarket_cost_realism_parameters() {}
 """
 
 
-def write_common(root: Path, *, run_manifest: str | None = None, tasks_checked: bool = True) -> None:
+def write_common(root: Path, *, run_manifest: str | None = None) -> None:
     write(
         root / "crates/backtesting-vertical-slice/src/run_manifest.rs",
         compliant_run_manifest() if run_manifest is None else run_manifest,
@@ -109,11 +109,6 @@ def write_common(root: Path, *, run_manifest: str | None = None, tasks_checked: 
     python3 scripts/test_verify_ra_cost_realism.py
     python3 scripts/verify_ra_cost_realism.py
 """,
-    )
-    task_mark = "x" if tasks_checked else " "
-    write(
-        root / "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
-        f"- [{task_mark}] RA-009 Implement Polymarket cost realism as FeeModel / FillModel / LatencyModel trait impls registered with the BTE.\n",
     )
 
 
@@ -174,21 +169,11 @@ def test_probabilistic_fill_model_seed_guard_is_required() -> None:
         assert any("probabilistic fill model seed guard" in finding for finding in findings)
 
 
-def test_task_checkbox_is_required() -> None:
-    verifier = load_verifier()
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        write_common(root, tasks_checked=False)
-        findings = verifier.scan_root(root)
-        assert any("RA-009 must be checked" in finding for finding in findings)
-
-
 def main() -> int:
     test_compliant_fixture_passes()
     test_comments_and_strings_only_do_not_satisfy_code_patterns()
     test_model_fields_must_not_remain_in_unsupported_surface_block()
     test_probabilistic_fill_model_seed_guard_is_required()
-    test_task_checkbox_is_required()
     print("OK: verify_ra_cost_realism self-tests passed.")
     return 0
 

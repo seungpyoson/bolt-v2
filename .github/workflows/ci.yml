@@ -503,12 +503,14 @@ jobs:
   source-fence:
     name: source-fence
     needs: [ci-policy, detector]
-    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     env:
       CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         id: setup
@@ -525,12 +527,15 @@ jobs:
         run: 'python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/source-fence.txt'
 
       - name: Install cargo-shim test dependencies
+        if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
         run: 'python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/cargo-shim-tests.txt'
 
       - name: Cargo shim tests
+        if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
         run: just cargo-shim-tests
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
         with:
           cache-on-failure: true
           cache-bin: false
@@ -539,6 +544,7 @@ jobs:
           save-if: ${{ github.job == 'test-archive' }}
 
       - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
@@ -549,7 +555,13 @@ jobs:
         env:
           # Keep targeted source-fence test binaries small enough for CI link/disk limits.
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: just source-fence
+        shell: bash
+        run: |
+          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence
+          else
+            just source-fence-static
+          fi
 
   # #342 owns these canonical source-fence filters. #332 intentionally keeps
   # full nextest duplicate coverage under the same aggregate gate rather than

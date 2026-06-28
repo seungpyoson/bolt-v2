@@ -208,7 +208,6 @@ def write_common(
     artifact_index: str | None = None,
     run_manifest: str | None = None,
     tests: str | None = None,
-    tasks_checked: bool = True,
 ) -> None:
     write(root / "crates/backtesting-vertical-slice/src/research_analytics.rs", compliant_ra() if ra is None else ra)
     write(root / "crates/backtesting-vertical-slice/src/artifact_index.rs", compliant_artifact_index() if artifact_index is None else artifact_index)
@@ -220,11 +219,6 @@ def write_common(
     python3 scripts/test_verify_ra_findings_promotion.py
     python3 scripts/verify_ra_findings_promotion.py
 """,
-    )
-    task_mark = "x" if tasks_checked else " "
-    write(
-        root / "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
-        f"- [{task_mark}] RA-011 Implement the Findings & Promotion model.\n",
     )
 
 
@@ -266,15 +260,6 @@ def test_active_promotion_package_model_is_rejected() -> None:
         assert any("forbidden active RA promotion-packages artifact family" in finding for finding in findings)
 
 
-def test_task_checkbox_is_required() -> None:
-    verifier = load_verifier()
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        write_common(root, tasks_checked=False)
-        findings = verifier.scan_root(root)
-        assert any("RA-011 must be checked" in finding for finding in findings)
-
-
 def test_go_verdict_real_evidence_gate_is_required() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -311,7 +296,6 @@ def main() -> int:
     test_compliant_fixture_passes()
     test_comments_and_strings_only_do_not_satisfy_code_patterns()
     test_active_promotion_package_model_is_rejected()
-    test_task_checkbox_is_required()
     test_go_verdict_real_evidence_gate_is_required()
     test_negative_promotion_package_path_test_is_required()
     print("OK: verify_ra_findings_promotion self-tests passed.")

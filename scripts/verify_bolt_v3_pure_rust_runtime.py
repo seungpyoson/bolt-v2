@@ -9,6 +9,13 @@ import sys
 import tomllib
 from pathlib import Path
 
+from rust_source_scanner import (
+    blank_preserving_newlines,
+    char_literal_end,
+    quoted_literal_end,
+    raw_string_end,
+    strip_rust_comments_and_literals,
+)
 from verify_bolt_v3_provider_leaks import (
     production_text as production_source_text,
 )
@@ -16,7 +23,7 @@ from verify_bolt_v3_provider_leaks import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CARGO_TOML = REPO_ROOT / "Cargo.toml"
-STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
+MAIN_RS = REPO_ROOT / "src/main.rs"
 
 FORBIDDEN_ROOT_FILES = (
     "pyproject.toml",
@@ -77,9 +84,10 @@ FORBIDDEN_RUNTIME_SOURCE_PATTERNS = (
     ),
 )
 
-REQUIRED_STATUS_MAP_PHRASES = (
-    "| 3 | No Python runtime layer | Implemented as current source-scan gate |",
-    "`scripts/verify_bolt_v3_pure_rust_runtime.py`",
+MAIN_RS_ENTRYPOINT_CALLS = (
+    "verify_live_config(&context.config_root, &context.profile)?",
+    "build_bolt_v3_live_node_with_resolved(&loaded, resolved)?",
+    "run_bolt_v3_live_node(&mut node, &loaded).await?",
 )
 
 DEPENDENCY_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -160,129 +168,13 @@ def line_number(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
 
 
-def blank_preserving_newlines(text: str) -> str:
-    return "".join("\n" if char == "\n" else " " for char in text)
-
-
-def raw_string_end(text: str, start: int) -> int | None:
-    i = start
-    if i < len(text) and text[i] in {"b", "c"}:
-        i += 1
-    if i >= len(text) or text[i] != "r":
-        return None
-
-    i += 1
-    hash_start = i
-    while i < len(text) and text[i] == "#":
-        i += 1
-    if i >= len(text) or text[i] != '"':
-        return None
-
-    delimiter = '"' + text[hash_start:i]
-    end = text.find(delimiter, i + 1)
-    if end == -1:
-        return len(text)
-    return end + len(delimiter)
-
-
-def quoted_literal_end(text: str, start: int, quote: str) -> int:
-    i = start + 1
-    while i < len(text):
-        char = text[i]
-        if char == "\\":
-            i += 2
-            continue
-        if char == quote:
-            return i + 1
-        if char == "\n" and quote == "'":
-            return start + 1
-        i += 1
-    return len(text)
-
-
-def char_literal_end(text: str, start: int) -> int | None:
-    i = start + 1
-    if i >= len(text) or text[i] in {"'", "\n", "\r"}:
-        return None
-
-    if text[i] == "\\":
-        i += 1
-        if i >= len(text):
-            return None
-        if text.startswith("u{", i):
-            end = text.find("}", i + 2)
-            if end == -1:
-                return None
-            i = end + 1
-        elif text[i] == "x" and i + 2 < len(text):
-            i += 3
-        else:
-            i += 1
-    else:
-        i += 1
-
-    if i < len(text) and text[i] == "'":
-        return i + 1
-    return None
-
-
-def strip_rust_comments_and_literals(text: str) -> str:
-    output: list[str] = []
-    i = 0
-    while i < len(text):
-        raw_end = raw_string_end(text, i)
-        if raw_end is not None:
-            output.append(blank_preserving_newlines(text[i:raw_end]))
-            i = raw_end
-            continue
-
-        if text.startswith("//", i):
-            end = text.find("\n", i)
-            if end == -1:
-                end = len(text)
-            output.append(blank_preserving_newlines(text[i:end]))
-            i = end
-            continue
-
-        if text.startswith("/*", i):
-            depth = 1
-            j = i + 2
-            while j < len(text) and depth:
-                if text.startswith("/*", j):
-                    depth += 1
-                    j += 2
-                elif text.startswith("*/", j):
-                    depth -= 1
-                    j += 2
-                else:
-                    j += 1
-            output.append(blank_preserving_newlines(text[i:j]))
-            i = j
-            continue
-
-        if text[i] in {"b", "c"} and i + 1 < len(text) and text[i + 1] == '"':
-            end = quoted_literal_end(text, i + 1, '"')
-            output.append(blank_preserving_newlines(text[i:end]))
-            i = end
-            continue
-
-        if text[i] == '"':
-            end = quoted_literal_end(text, i, '"')
-            output.append(blank_preserving_newlines(text[i:end]))
-            i = end
-            continue
-
-        if text[i] == "'":
-            end = char_literal_end(text, i)
-            if end is not None:
-                output.append(blank_preserving_newlines(text[i:end]))
-                i = end
-                continue
-
-        output.append(text[i])
-        i += 1
-
-    return "".join(output)
+def missing_main_rs_entrypoint_calls(text: str) -> list[str]:
+    scan_text = strip_rust_comments_and_literals(strip_cfg_test_items(text))
+    return [
+        f"src/main.rs is missing entrypoint call {call!r}"
+        for call in MAIN_RS_ENTRYPOINT_CALLS
+        if call not in scan_text
+    ]
 
 
 def main() -> int:
@@ -328,12 +220,9 @@ def main() -> int:
                     f"{rel}:{line_number(text, match.start())}: forbidden {label}: {match.group(0)}"
                 )
 
-    status_map = STATUS_MAP.read_text(encoding="utf-8")
-    if "| 3 | No Python runtime layer | Missing verifier |" in status_map:
-        findings.append("status map still marks row 3 as missing a verifier")
-    for phrase in REQUIRED_STATUS_MAP_PHRASES:
-        if phrase not in status_map:
-            findings.append(f"status map missing current pure-Rust evidence phrase: {phrase}")
+    findings.extend(
+        missing_main_rs_entrypoint_calls(MAIN_RS.read_text(encoding="utf-8"))
+    )
 
     if findings:
         for finding in findings:

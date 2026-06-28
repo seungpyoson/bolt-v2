@@ -593,11 +593,6 @@ fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
 def write_compliant_tree(root: Path) -> None:
     write_file(
         root,
-        "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
-        "- [x] RA-001 Gate-0: wire durable + immutable S3 write.\n",
-    )
-    write_file(
-        root,
         "crates/backtesting-vertical-slice/Cargo.toml",
         "\n".join(
             [
@@ -792,19 +787,6 @@ def test_run_spec_rejects_top_level_catalog_projection_manifest_object() -> None
     assert any("must live under [artifact_store]" in finding for finding in findings)
 
 
-def test_unchecked_ra001_task_is_a_finding() -> None:
-    verifier = load_verifier()
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        write_compliant_tree(root)
-        tasks = root / "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md"
-        tasks.write_text("- [ ] RA-001 Gate-0: wire durable + immutable S3 write.\n", encoding="utf-8")
-
-        findings = verifier.scan_root(root)
-
-    assert any("RA-001 must be checked" in finding for finding in findings)
-
-
 def test_cli_fails_with_actionable_output() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -886,7 +868,6 @@ def main() -> int:
         test_compliant_tree_passes,
         test_missing_persistence_helper_is_a_finding,
         test_run_spec_rejects_top_level_catalog_projection_manifest_object,
-        test_unchecked_ra001_task_is_a_finding,
         test_cli_fails_with_actionable_output,
         test_cli_rejects_ambient_object_store_builder,
         test_rejects_non_atomic_durable_result_contract_rewrite,

@@ -20,7 +20,6 @@ tracked_inputs = [
     "src/",
     "tests/",
     "config/root.toml",
-    "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
 ]
 
 [[safe_excludes]]

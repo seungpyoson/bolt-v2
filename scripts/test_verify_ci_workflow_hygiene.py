@@ -579,9 +579,12 @@ jobs:
   source-fence:
     name: source-fence
     needs: [ci-policy, detector]
-    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@example
+        with:
+          ref: ${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && github.event.pull_request.head.sha || github.sha }}
       - uses: ./.github/actions/setup-environment
         with:
           just-version: ${{ env.JUST_VERSION }}
@@ -599,7 +602,12 @@ jobs:
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
-      - run: just source-fence
+      - run: |
+          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence
+          else
+            just source-fence-static
+          fi
 
   nextest-fingerprint:
     name: nextest fingerprint
@@ -4149,11 +4157,27 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             ),
         ),
         (
-            "source-fence must gate on full_ci_required",
+            "source-fence must run for full_ci_required or docs policy",
             replace_once(
                 workflow,
-                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}",
                 "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}",
+            ),
+        ),
+        (
+            "source-fence must run for full_ci_required or docs policy",
+            replace_once(
+                workflow,
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}",
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.ci-policy.outputs.ci_policy_path == 'docs' }}",
+            ),
+        ),
+        (
+            "source-fence checkout must use pull_request head SHA for docs policy and github.sha otherwise",
+            replace_once(
+                workflow,
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n        with:\n          ref: ${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && github.event.pull_request.head.sha || github.sha }}",
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2",
             ),
         ),
         (
@@ -10564,8 +10588,8 @@ def main() -> int:
         "source-fence managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: just source-fence",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just source-fence",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: |",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: |",
         ),
     )
     assert_error(
@@ -11012,8 +11036,53 @@ def main() -> int:
         ),
     )
     assert_error(
+        "source-fence checkout must use pull_request head SHA for docs policy and github.sha otherwise",
+        replace_once(
+            BASE_WORKFLOW,
+            "        with:\n          ref: ${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && github.event.pull_request.head.sha || github.sha }}\n",
+            "",
+        ),
+    )
+    assert_error(
         "source-fence must run just source-fence",
-        replace_once(BASE_WORKFLOW, "- run: just source-fence", "- run: echo source-fence"),
+        replace_once(BASE_WORKFLOW, "            just source-fence", "            echo source-fence"),
+    )
+    assert_error(
+        "source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy",
+        replace_once(BASE_WORKFLOW, "            just source-fence-static", "            echo source-fence-static"),
+    )
+    assert_error(
+        "source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy",
+        replace_once(
+            BASE_WORKFLOW,
+            """          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence
+          else
+            just source-fence-static
+          fi""",
+            """          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence
+            just source-fence-static
+          else
+            echo docs policy skipped
+          fi""",
+        ),
+    )
+    assert_error(
+        "source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy",
+        replace_once(
+            BASE_WORKFLOW,
+            """          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence
+          else
+            just source-fence-static
+          fi""",
+            """          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence-static
+          else
+            just source-fence
+          fi""",
+        ),
     )
     for job in ("deny", "clippy", "source-fence", "nextest-fingerprint", "test-archive", "nextest-fingerprint-reuse", "test"):
         assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
@@ -11758,10 +11827,9 @@ def main() -> int:
         "ci.yml source-fence must not compile cargo-nextest from source",
         replace_once(
             BASE_WORKFLOW,
-            "      - run: just source-fence",
-            """      - run: |
-          cargo install --git https://github.com/nextest-rs/nextest --package cargo-nextest --locked
-          just source-fence""",
+            "            just source-fence",
+            """            cargo install --git https://github.com/nextest-rs/nextest --package cargo-nextest --locked
+            just source-fence""",
         ),
     )
     assert_error(

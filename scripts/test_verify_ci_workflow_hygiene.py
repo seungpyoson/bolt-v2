@@ -669,6 +669,9 @@ jobs:
       nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}
       root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}
       archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}
+      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}
+      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}
+      archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
@@ -730,6 +733,7 @@ jobs:
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
           just test-archive "$NEXTEST_ARCHIVE_PATH"
       - name: Save nextest archive
+        id: nextest-archive-cache-save
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -760,12 +764,14 @@ jobs:
             --target-dir "$target_dir" \
             --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
       - name: Save root binary sidecars
+        id: root-bin-sidecars-cache-save
         if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
           key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
       - name: Save archive build target cache
+        id: test-target-cache-save
         if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
@@ -816,13 +822,16 @@ jobs:
             echo "- nextest archive restore hit: `${{ needs.test-archive.outputs.nextest_archive_cache_hit }}`"
             echo "- root binary sidecars restore hit: `${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}`"
             echo "- archive build target restore hit: `${{ needs.test-archive.outputs.archive_build_target_cache_hit }}`"
+            echo "- nextest archive save outcome: \\`${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}\\`"
+            echo "- root binary sidecars save outcome: \\`${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}\\`"
+            echo "- archive build target save outcome: \\`${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}\\`"
             echo
             echo '```text'
             cat "$RUNNER_TEMP/cache-persistence-audit.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if grep -q ': missing;' "$RUNNER_TEMP/cache-persistence-audit.txt"; then
-            echo "::warning::one or more saved/restored root nextest cache keys are missing from the Actions cache inventory"
+            echo "::warning::one or more root nextest cache keys are missing from the Actions cache inventory after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context"
           fi
 
   test:
@@ -4020,6 +4029,22 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             ),
         ),
         (
+            "test-archive must expose cache persistence save outcomes",
+            replace_once(
+                workflow,
+                "      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}\n",
+                "",
+            ),
+        ),
+        (
+            "test-archive cache save steps must have stable ids for persistence evidence",
+            replace_once(
+                workflow,
+                "        id: nextest-archive-cache-save\n",
+                "        id: nextest-archive-save\n",
+            ),
+        ),
+        (
             "test-archive must emit cache persistence audit keys",
             replace_once(workflow, "        id: cache-audit-keys\n", "        id: cache-keys\n"),
         ),
@@ -4068,10 +4093,18 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             replace_once(workflow, '          } >> "$GITHUB_STEP_SUMMARY"\n', "          } > /dev/null\n"),
         ),
         (
+            "cache-persistence-audit must summarize cache save outcomes",
+            replace_once(
+                workflow,
+                '            echo "- nextest archive save outcome: \\`${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}\\`"\n',
+                "",
+            ),
+        ),
+        (
             "cache-persistence-audit must warn when cache keys are missing",
             replace_once(
                 workflow,
-                "            echo \"::warning::one or more saved/restored root nextest cache keys are missing from the Actions cache inventory\"\n",
+                "            echo \"::warning::one or more root nextest cache keys are missing from the Actions cache inventory after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context\"\n",
                 "",
             ),
         ),
@@ -5388,6 +5421,20 @@ ci-lint-workflow-inner: require-local-verification-gate
     ):
         raise AssertionError(
             f"ci storage audit test wiring drift was silent, got: {missing_storage_audit_test_errors}"
+        )
+
+    duplicate_storage_audit_test = justfile_text.replace(
+        "    python3 scripts/test_ci_storage_audit.py\n",
+        "    python3 scripts/test_ci_storage_audit.py\n"
+        "    python3 scripts/test_ci_storage_audit.py\n",
+    )
+    duplicate_storage_audit_test_errors = verifier.verify_local_verification_gate_recipes(duplicate_storage_audit_test)
+    if not any(
+        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_audit.py exactly once" in error
+        for error in duplicate_storage_audit_test_errors
+    ):
+        raise AssertionError(
+            f"duplicate ci storage audit test wiring was silent, got: {duplicate_storage_audit_test_errors}"
         )
 
     missing_sidecar_test = justfile_text.replace("    python3 scripts/test_root_bin_sidecars.py\n", "")
@@ -10331,6 +10378,7 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Save archive build target cache
+        id: test-target-cache-save
         if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
@@ -10378,7 +10426,7 @@ def main() -> int:
         "test-archive must save nextest archive cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Save nextest archive\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
+            "      - name: Save nextest archive\n        id: nextest-archive-cache-save\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
             "",
         ),
     )

@@ -244,6 +244,24 @@ def fetch_cache_key_probes(
     return probes
 
 
+def fetch_cache_usage(client: GhClient) -> dict[str, Any]:
+    try:
+        payload = require_object(client.api("actions/cache/usage"), "actions/cache/usage")
+    except (GhApiError, AuditError):
+        return {
+            "available": False,
+            "active_caches_count": 0,
+            "active_caches_size_in_bytes": 0,
+            "source": "unavailable",
+        }
+    return {
+        "available": True,
+        "active_caches_count": nonnegative_int(payload.get("active_caches_count")),
+        "active_caches_size_in_bytes": nonnegative_int(payload.get("active_caches_size_in_bytes")),
+        "source": "rest",
+    }
+
+
 def fetch_cache(client: GhClient) -> dict[str, Any]:
     payload = require_object(
         client.api("actions/caches", params={"per_page": "100"}, paginate=True),
@@ -391,6 +409,7 @@ def build_cache_key_probe_snapshot(
         "snapshot_utc": snapshot_utc,
         "repo": repo,
         "cache_key_probes": fetch_cache_key_probes(client, requests),
+        "cache_usage": fetch_cache_usage(client),
     }
 
 
@@ -400,8 +419,20 @@ def render_cache_key_probe_text(snapshot: dict[str, Any]) -> str:
         f"CI cache key probe for {snapshot['repo']}",
         f"Snapshot: {snapshot['snapshot_utc']}",
         "",
-        "Cache key probes:",
     ]
+    usage = snapshot.get("cache_usage")
+    if isinstance(usage, dict):
+        if usage.get("available"):
+            lines.append(
+                "Cache usage: "
+                f"{usage.get('active_caches_count')} active caches, "
+                f"{human_bytes(nonnegative_int(usage.get('active_caches_size_in_bytes')))} "
+                f"(source: {usage.get('source')})"
+            )
+        else:
+            lines.append(f"Cache usage: unavailable (source: {usage.get('source')})")
+        lines.append("")
+    lines.append("Cache key probes:")
     for raw in probes:
         if not isinstance(raw, dict):
             continue

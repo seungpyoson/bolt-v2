@@ -640,6 +640,9 @@ jobs:
       nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}
       root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}
       archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}
+      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}
+      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}
+      archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}
     permissions:
       contents: read
       actions: read
@@ -837,6 +840,7 @@ jobs:
         run: '"$SCCACHE_PATH" --show-stats || true'
 
       - name: Save nextest archive
+        id: nextest-archive-cache-save
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -875,6 +879,7 @@ jobs:
             --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
 
       - name: Save root binary sidecars
+        id: root-bin-sidecars-cache-save
         if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -882,6 +887,7 @@ jobs:
           key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
 
       - name: Save archive build target cache
+        id: test-target-cache-save
         if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -935,6 +941,9 @@ jobs:
             echo "- nextest archive restore hit: \`${{ needs.test-archive.outputs.nextest_archive_cache_hit }}\`"
             echo "- root binary sidecars restore hit: \`${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}\`"
             echo "- archive build target restore hit: \`${{ needs.test-archive.outputs.archive_build_target_cache_hit }}\`"
+            echo "- nextest archive save outcome: \`${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}\`"
+            echo "- root binary sidecars save outcome: \`${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}\`"
+            echo "- archive build target save outcome: \`${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}\`"
             echo
             echo '```text'
             cat "$RUNNER_TEMP/cache-persistence-audit.txt"
@@ -942,7 +951,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if grep -q ': missing;' "$RUNNER_TEMP/cache-persistence-audit.txt"; then
-            echo "::warning::one or more saved/restored root nextest cache keys are missing from the Actions cache inventory"
+            echo "::warning::one or more root nextest cache keys are missing from the Actions cache inventory after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context"
           fi
 
   test:

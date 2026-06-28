@@ -620,6 +620,16 @@ TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS = (
     "root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}",
     "archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}",
 )
+TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS = (
+    "nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}",
+    "root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}",
+    "archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}",
+)
+TEST_ARCHIVE_CACHE_SAVE_STEP_IDS = (
+    ("Save nextest archive", "id: nextest-archive-cache-save"),
+    ("Save root binary sidecars", "id: root-bin-sidecars-cache-save"),
+    ("Save archive build target cache", "id: test-target-cache-save"),
+)
 TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS = (
     "nextest_archive_cache_key=",
     "root_bin_sidecars_cache_key=",
@@ -631,6 +641,15 @@ CACHE_PERSISTENCE_AUDIT_CACHE_KEYS = (
     '--cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}"',
     '--cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}"',
     '--cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"',
+)
+CACHE_PERSISTENCE_AUDIT_SAVE_SUMMARY_LINES = (
+    'echo "- nextest archive save outcome: \\`${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}\\`"',
+    'echo "- root binary sidecars save outcome: \\`${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}\\`"',
+    'echo "- archive build target save outcome: \\`${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}\\`"',
+)
+CACHE_PERSISTENCE_AUDIT_MISSING_WARNING = (
+    "::warning::one or more root nextest cache keys are missing from the Actions cache inventory "
+    "after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context"
 )
 TEST_ARCHIVE_TEST_PROFILE_ENV = 'CARGO_PROFILE_TEST_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
@@ -5478,8 +5497,11 @@ def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
     if "ci-lint-workflow-inner" in recipes:
         ci_lint_inner_lines = active_recipe_lines(recipes, "ci-lint-workflow-inner")
         for required_command in CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS:
-            if not any(required_command in line for line in ci_lint_inner_lines):
+            command_count = sum(1 for line in ci_lint_inner_lines if required_command in line)
+            if command_count == 0:
                 errors.append(f"justfile ci-lint-workflow-inner must run {required_command}")
+            elif command_count > 1:
+                errors.append(f"justfile ci-lint-workflow-inner must run {required_command} exactly once")
     return errors
 
 
@@ -9472,6 +9494,15 @@ def verify_workflow(workflow_text: str) -> list[str]:
             if output not in archive_text:
                 errors.append("test-archive must expose cache persistence audit outputs")
                 break
+        for output in TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS:
+            if output not in archive_text:
+                errors.append("test-archive must expose cache persistence save outcomes")
+                break
+        for label, step_id in TEST_ARCHIVE_CACHE_SAVE_STEP_IDS:
+            block = named_step_block(archive_lines, label)
+            if block is None or step_id not in uncommented_text(block):
+                errors.append("test-archive cache save steps must have stable ids for persistence evidence")
+                break
         cache_audit_step = named_step_block(archive_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
         if cache_audit_step is None or TEST_ARCHIVE_CACHE_AUDIT_STEP_ID not in uncommented_text(cache_audit_step):
             errors.append("test-archive must emit cache persistence audit keys")
@@ -9590,7 +9621,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 break
         if "$GITHUB_STEP_SUMMARY" not in audit_text:
             errors.append("cache-persistence-audit must write probe results to the job summary")
-        if "::warning::one or more saved/restored root nextest cache keys are missing" not in audit_text:
+        for summary_line in CACHE_PERSISTENCE_AUDIT_SAVE_SUMMARY_LINES:
+            if summary_line not in audit_text:
+                errors.append("cache-persistence-audit must summarize cache save outcomes")
+                break
+        if CACHE_PERSISTENCE_AUDIT_MISSING_WARNING not in audit_text:
             errors.append("cache-persistence-audit must warn when cache keys are missing")
 
     if "nextest-fingerprint-reuse" in jobs:

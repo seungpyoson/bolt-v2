@@ -396,6 +396,44 @@ class CiStorageAuditTests(unittest.TestCase):
             ["actions/caches", "actions/caches"],
         )
 
+    def test_build_cache_key_probe_snapshot_includes_cache_usage(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "missing-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 0,
+                    "actions_caches": [],
+                },
+                "actions/cache/usage": {
+                    "active_caches_count": 11,
+                    "active_caches_size_in_bytes": 11_044_557_069,
+                },
+            }
+        )
+
+        snapshot = ci_storage_audit.build_cache_key_probe_snapshot(
+            client,
+            repo="owner/repo",
+            snapshot_utc="2026-06-28T10:37:43+00:00",
+            requests=[ci_storage_audit.CacheKeyProbeRequest("missing", "missing-key")],
+        )
+
+        self.assertEqual(
+            snapshot["cache_usage"],
+            {
+                "available": True,
+                "active_caches_count": 11,
+                "active_caches_size_in_bytes": 11_044_557_069,
+                "source": "rest",
+            },
+        )
+        self.assertEqual(
+            [call[0] for call in client.calls],
+            ["actions/caches", "actions/cache/usage"],
+        )
+
     def test_render_text_limits_artifact_name_details(self) -> None:
         snapshot = {
             "snapshot_utc": "2026-06-23T00:00:00+00:00",
@@ -424,6 +462,12 @@ class CiStorageAuditTests(unittest.TestCase):
         snapshot = {
             "snapshot_utc": "2026-06-23T00:00:00+00:00",
             "repo": "owner/repo",
+            "cache_usage": {
+                "available": True,
+                "active_caches_count": 11,
+                "active_caches_size_in_bytes": 11_044_557_069,
+                "source": "rest",
+            },
             "cache_key_probes": [
                 {
                     "label": "present",
@@ -460,6 +504,7 @@ class CiStorageAuditTests(unittest.TestCase):
 
         rendered = ci_storage_audit.render_cache_key_probe_text(snapshot)
 
+        self.assertIn("Cache usage: 11 active caches, 10.3 GiB (source: rest)", rendered)
         self.assertIn("present; exact_count=1", rendered)
         self.assertIn("id=501 ref=refs/heads/main size=1.0 KiB", rendered)
         self.assertIn("missing; exact_count=0", rendered)

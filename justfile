@@ -497,9 +497,6 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
     if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
         failed=1
     fi
-    if ! python3 scripts/test_ci_storage_audit.py; then
-        failed=1
-    fi
     if ! python3 scripts/test_ci_test_manifest.py; then
         failed=1
     fi

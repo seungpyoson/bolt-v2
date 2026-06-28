@@ -127,6 +127,18 @@ BASE_IDENTITY_FINDING_STATES = {
         "expected base SHA differs from live base branch",
     ),
 }
+RESIDUAL_RISK_REASON_CODES = (
+    "full_ci_result",
+    "mergify_proof_pr_behavior",
+    "remote_runner_availability",
+    "flaky_checks_and_external_services",
+    "base_or_head_drift_after_preflight",
+    "post_merge_config_or_workflow_changes",
+    "queue_metadata_drift",
+    "live_queue_ordering",
+    "reset_on_external_merge",
+    "max_parallel_checks_cost",
+)
 MERGIFY_CONFIG_FIELD_HANDLING = {
     "merge_queue.max_parallel_checks": "residual_cost_impact",
     "merge_queue.reset_on_external_merge": "residual_post_preflight_invalidation",
@@ -275,6 +287,20 @@ def base_identity_findings(
     return BASE_IDENTITY_FINDING_BUILDERS[expected_base_sha == actual_base_sha](
         expected_base_sha=expected_base_sha,
         actual_base_sha=actual_base_sha,
+    )
+
+
+def residual_risk_findings() -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "lane": "residual_risk",
+            "scope": "run",
+            "status": STATUS_RESIDUAL_RISK,
+            "reason_code": reason_code,
+            "message": reason_code,
+            "evidence": {},
+        }
+        for reason_code in RESIDUAL_RISK_REASON_CODES
     )
 
 
@@ -1427,6 +1453,7 @@ def preflight(
         ),
         *mergify_config_findings(repo=repo, base_sha=base_sha, readiness=readiness),
         *preflight_mode_findings(use_gh=use_gh),
+        *residual_risk_findings(),
     )
     contract_evaluation = evaluate_preflight_contract(
         ContractEvidence(
@@ -1444,6 +1471,7 @@ def preflight(
         "pr_heads": {str(number): head.sha for number, head in heads.items()},
         "readiness": readiness,
         "metadata_warnings": metadata_warnings,
+        "residual_risks": list(RESIDUAL_RISK_REASON_CODES),
         "batches": [batch.as_json(output_policy) for batch in batches],
         "blocked_prs": blocked_prs,
         "conflicts": conflicts,
@@ -1559,6 +1587,8 @@ def plain_text(payload: dict[str, object]) -> str:
                     indent="    ",
                     output_policy=output_policy,
                 )
+    lines.append("residual risks:")
+    lines.extend(f"  {reason_code}" for reason_code in payload["residual_risks"])
     warnings = [
         (item["pr"], warning)
         for item in payload["readiness"]

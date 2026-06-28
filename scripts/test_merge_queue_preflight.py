@@ -16,6 +16,18 @@ import tempfile
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "merge_queue_preflight.py"
 MERGIFY_YML = (REPO_ROOT / ".mergify.yml").read_text(encoding="utf-8")
+EXPECTED_RESIDUAL_RISKS = [
+    "full_ci_result",
+    "mergify_proof_pr_behavior",
+    "remote_runner_availability",
+    "flaky_checks_and_external_services",
+    "base_or_head_drift_after_preflight",
+    "post_merge_config_or_workflow_changes",
+    "queue_metadata_drift",
+    "live_queue_ordering",
+    "reset_on_external_merge",
+    "max_parallel_checks_cost",
+]
 
 
 def run(command: list[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
@@ -129,6 +141,20 @@ def no_gh_finding() -> dict[str, object]:
         "message": "--no-gh disables authoritative readiness evidence",
         "evidence": {"use_gh": False},
     }
+
+
+def residual_risk_findings() -> list[dict[str, object]]:
+    return [
+        {
+            "lane": "residual_risk",
+            "scope": "run",
+            "status": "residual_risk",
+            "reason_code": reason_code,
+            "message": reason_code,
+            "evidence": {},
+        }
+        for reason_code in EXPECTED_RESIDUAL_RISKS
+    ]
 
 
 def mergify_config_finding(base_sha: str, blob_sha: str) -> dict[str, object]:
@@ -709,6 +735,7 @@ def assert_clean_prs_batch_together() -> None:
         assert_equal(rc, 3, "clean no-gh rc")
         payload = parse_json(stdout)
         assert_equal(payload["verdict"], "inconclusive", "clean no-gh verdict")
+        assert_equal(payload["residual_risks"], EXPECTED_RESIDUAL_RISKS, "clean residual risks")
         assert_equal(
             payload["findings"],
             [
@@ -721,6 +748,7 @@ def assert_clean_prs_batch_together() -> None:
                     git(fixture.repo, "rev-parse", f"{payload['base_sha']}:.mergify.yml"),
                 ),
                 no_gh_finding(),
+                *residual_risk_findings(),
             ],
             "clean no-gh findings",
         )
@@ -844,6 +872,7 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
                     git(fixture.repo, "rev-parse", f"{payload['base_sha']}:.mergify.yml"),
                 ),
                 no_gh_finding(),
+                *residual_risk_findings(),
                 {
                     "lane": "integration",
                     "scope": "pr",

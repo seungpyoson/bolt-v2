@@ -63,3 +63,18 @@ To fix this, we must shift the architecture from **Piecemeal Conditional Classif
 4. **Phase 4: Formalize Discrepancy Handling**
    - *Target:* Position tracking and lifecycle reconcilers.
    - *Action:* Stop patching state conditionally. If an exchange report doesn't match the internal ledger, emit a formalized `StateDiscrepancyEvent` that triggers a node halt or a deterministic recovery protocol, rather than "eating the error" with a `try` block or silent `else` branch.
+
+## 5. Scripting Tech Debt Analysis
+
+A broader scan across all files (including python scripts) reveals that the piecemeal conditional classification pattern isn't just in the Rust code—it deeply infests the testing and validation scripts as well.
+
+### Top Offenders (by Normalized Tech Debt Density):
+
+| File Path | Lines | Density Score | Primary Anti-Pattern |
+|---|---|---|---|
+| `scripts/test_verify_ci_workflow_hygiene.py` | 12,618 | 172 | Massive brittle string replacements (573 instances). |
+| `scripts/test_verify_ra_bte_phase_prerequisite.py` | 244 | 180 | High usage of forced unwrap patterns. |
+| `scripts/test_verify_ra_sweep_orchestration.py` | 235 | 161 | Forced unwraps and piecemeal checks. |
+| `src/bolt_v3_maker_microprice.rs` | 537 | 145 | `.unwrap()` panics (19 instances). |
+
+As shown above, `test_verify_ci_workflow_hygiene.py` is one of the highest tech-debt files in the entire codebase, heavily skewing toward structural string replacement workarounds instead of declarative testing.

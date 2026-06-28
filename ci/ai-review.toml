@@ -42,11 +42,7 @@ deliverable_headings = [
   "## PR Reviewer Guide",
   "## Incremental PR Reviewer Guide",
 ]
-disabled_noise = [
-  "ticket compliance analysis",
-  "estimated effort to review",
-  "can be split",
-]
+disabled_noise = []
 
 [glm]
 api_base = "https://api.z.ai/api/coding/paas/v4"

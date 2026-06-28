@@ -40,6 +40,32 @@ def valid_finding_response(issue: str = "example issue") -> str:
     )
 
 
+def default_pr_agent_review_body() -> str:
+    return "\n".join(
+        [
+            "## PR Reviewer Guide",
+            "",
+            "**Source:** GLM PR-Agent (`configured-pr-agent-model`)",
+            "",
+            "### Ticket Compliance Analysis",
+            "",
+            "No linked ticket was found.",
+            "",
+            "### Estimated effort to review",
+            "",
+            "2",
+            "",
+            "### Can be split",
+            "",
+            "No.",
+            "",
+            "### Review",
+            "",
+            "No blocking concern found in the changed workflow.",
+        ]
+    )
+
+
 def load_script():
     if not SCRIPT_PATH.exists():
         raise AssertionError(f"missing script: {SCRIPT_PATH}")
@@ -227,7 +253,7 @@ def fallback_config(module, **overrides):
             ),
             non_deliverable_indicators=("review did not produce a deliverable", "review notice"),
             pr_agent_deliverable_headings=("## PR Reviewer Guide", "## Incremental PR Reviewer Guide"),
-            pr_agent_disabled_noise=("ticket compliance analysis", "estimated effort to review", "can be split"),
+            pr_agent_disabled_noise=(),
         ),
         "run_url": "https://github.com/seungpyoson/bolt-v2/actions/runs/1",
         "provider": "GLM",
@@ -348,6 +374,32 @@ def test_pr_agent_severity_review_without_fallback_labels_suppresses_fallback() 
                         "No blocking concern found in the changed workflow.",
                     ]
                 ),
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+    glm = FakeGLM()
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=fallback_config(module),
+    )
+
+    assert result == "existing-review-deliverable"
+    assert glm.prompts == []
+    assert github.posted == []
+
+
+def test_default_pr_agent_sections_suppress_fallback() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "body": default_pr_agent_review_body(),
                 "created_at": "2026-06-22T12:22:00Z",
                 "updated_at": "2026-06-22T12:22:00Z",
                 "user": {"type": "Bot", "login": "github-actions[bot]"},
@@ -1003,13 +1055,20 @@ def test_stamps_all_pr_agent_review_source_model_comments() -> None:
         review_comments=[
             {
                 "id": 79,
-                "body": "Line-level PR-Agent observation.",
+                "body": "## PR Reviewer Guide\n\nLine-level PR-Agent observation.",
                 "created_at": "2026-06-22T12:24:00Z",
                 "updated_at": "2026-06-22T12:24:00Z",
                 "user": {"type": "Bot", "login": "github-actions[bot]"},
             },
             {
                 "id": 80,
+                "body": "Unrelated bot line-level observation.",
+                "created_at": "2026-06-22T12:25:00Z",
+                "updated_at": "2026-06-22T12:25:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+            {
+                "id": 81,
                 "body": "Earlier line-level observation.",
                 "created_at": "2026-06-22T12:20:00Z",
                 "updated_at": "2026-06-22T12:20:00Z",
@@ -1366,6 +1425,7 @@ def main() -> int:
     test_truncated_file_fragment_keeps_markdown_fence_closed()
     test_skips_fallback_when_pr_agent_deliverable_exists_after_start()
     test_pr_agent_severity_review_without_fallback_labels_suppresses_fallback()
+    test_default_pr_agent_sections_suppress_fallback()
     test_unstamped_pr_agent_deliverable_does_not_suppress_fallback()
     test_plain_pr_agent_phrase_does_not_suppress_fallback()
     test_human_pr_agent_marker_comment_does_not_suppress_fallback()

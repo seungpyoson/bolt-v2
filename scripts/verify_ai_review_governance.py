@@ -161,6 +161,9 @@ GLM_DELIVERABLE_SNIPPETS = (
     "scripts/ai_review_deliverables.py glm-stamp",
     "Ensure GLM deliverable or post split fallback",
     "id: glm_fallback",
+    "steps.base-checkout.outcome == 'success'",
+    "steps.runtime-config.outcome == 'success'",
+    "steps.review-window.outcome == 'success'",
     "continue-on-error: true",
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_fallback_timeout_minutes) }}",
     "scripts/ai_review_deliverables.py glm-fallback",
@@ -169,8 +172,8 @@ GLM_DELIVERABLE_SNIPPETS = (
     "Post GLM fallback infrastructure failure notice",
     "&& always()",
     "steps.runtime-config.outcome == 'failure'",
-    "steps.glm_stamp.outcome == 'failure'",
     "steps.glm_fallback.outputs.failure_notice_posted != 'true'",
+    "steps.glm_stamp.outcome == 'failure' && steps.glm_fallback.outcome != 'success'",
     "review infrastructure failed or timed out before posting a usable failure notice",
     'marker="${{ steps.runtime-config.outputs.glm_notice_marker }}"',
     "gh api \"repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments\" --paginate",
@@ -511,7 +514,7 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         (
             "review.pr_agent_output.disabled_noise",
             pr_agent_output.get("disabled_noise"),
-            ["ticket compliance analysis", "estimated effort to review", "can be split"],
+            [],
         ),
         ("glm.api_base", glm.get("api_base"), "https://api.z.ai/api/coding/paas/v4"),
         ("glm.api_timeout_seconds", glm.get("api_timeout_seconds"), 180),
@@ -695,6 +698,21 @@ def verify_texts(
         findings.append("GLM workflow missing Stamp GLM PR-Agent review source step")
     elif "continue-on-error: true" in glm_stamp_step:
         findings.append("GLM source stamp step must fail closed")
+    glm_fallback_step = workflow_step_block(glm_workflow, "Ensure GLM deliverable or post split fallback")
+    if not glm_fallback_step:
+        findings.append("GLM workflow missing Ensure GLM deliverable or post split fallback step")
+    else:
+        for snippet in (
+            "always()",
+            "steps.base-checkout.outcome == 'success'",
+            "steps.runtime-config.outcome == 'success'",
+            "steps.review-window.outcome == 'success'",
+        ):
+            if snippet not in glm_fallback_step:
+                findings.append(
+                    "GLM fallback step must run after stamp failure while requiring usable checkout/runtime context"
+                )
+                break
     for snippet in KIMI_FORBIDDEN_INPUTS:
         if snippet in kimi_workflow:
             findings.append(f"Kimi workflow must use the official Kimi CLI path, not {snippet!r}")
@@ -828,7 +846,7 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         ai_review_deliverables=deliverables,
         glm_workflow=glm.replace(
-            "              || steps.glm_stamp.outcome == 'failure'\n",
+            "              || (steps.glm_stamp.outcome == 'failure' && steps.glm_fallback.outcome != 'success')\n",
             "",
             1,
         ),
@@ -839,6 +857,25 @@ def run_self_tests(repo_root: Path) -> None:
         "missing stamp failure notice",
         missing_stamp_failure_notice,
         "GLM workflow missing expected snippet",
+    )
+
+    fallback_not_reachable_after_stamp_failure = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm.replace(
+            "            && always()\n",
+            "",
+            1,
+        ),
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding(
+        "fallback not reachable after stamp failure",
+        fallback_not_reachable_after_stamp_failure,
+        "GLM fallback step must run after stamp failure",
     )
 
     last_step_then_later_job = "\n".join(

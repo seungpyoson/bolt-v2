@@ -182,7 +182,14 @@ jobs:
 
       - name: Ensure GLM deliverable or post split fallback
         id: glm_fallback
-        if: env.GLM_API_KEY != ''
+        if: >-
+          ${{
+            env.GLM_API_KEY != ''
+            && always()
+            && steps.base-checkout.outcome == 'success'
+            && steps.runtime-config.outcome == 'success'
+            && steps.review-window.outcome == 'success'
+          }}
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_fallback_timeout_minutes) }}
         env:
@@ -207,8 +214,8 @@ jobs:
             && (
               steps.base-checkout.outcome == 'failure'
               || steps.runtime-config.outcome == 'failure'
-              || steps.glm_stamp.outcome == 'failure'
               || steps.glm_fallback.outcome == 'failure'
+              || (steps.glm_stamp.outcome == 'failure' && steps.glm_fallback.outcome != 'success')
             )
             && steps.glm_fallback.outputs.failure_notice_posted != 'true'
           }}

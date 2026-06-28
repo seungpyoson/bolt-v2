@@ -494,6 +494,7 @@ def stamp_existing_review_comment(
         comment
         for comment in github.list_pull_review_comments()
         if actor_is_expected_bot(comment, expected_bot_login)
+        and body_has_deliverable_marker(comment.get("body"), markers)
         and isinstance(comment.get("body"), str)
         and isinstance(comment.get("id"), int)
         and not isinstance(comment.get("id"), bool)
@@ -1133,9 +1134,13 @@ def config_bool(table: dict[str, Any], key: str) -> bool:
     return value
 
 
-def config_str_tuple(table: dict[str, Any], key: str) -> tuple[str, ...]:
+def config_str_tuple(table: dict[str, Any], key: str, *, allow_empty: bool = False) -> tuple[str, ...]:
     value = table.get(key)
-    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
+    if (
+        not isinstance(value, list)
+        or (not value and not allow_empty)
+        or not all(isinstance(item, str) and item for item in value)
+    ):
         raise RuntimeError(f"AI review config missing string array key {key!r}")
     return tuple(value)
 
@@ -1152,7 +1157,7 @@ def review_output_contract(review_config: dict[str, Any]) -> ReviewOutputContrac
         no_findings_guidance=config_str_tuple(contract, "no_findings_guidance"),
         non_deliverable_indicators=config_str_tuple(contract, "non_deliverable_indicators"),
         pr_agent_deliverable_headings=config_str_tuple(pr_agent_output, "deliverable_headings"),
-        pr_agent_disabled_noise=config_str_tuple(pr_agent_output, "disabled_noise"),
+        pr_agent_disabled_noise=config_str_tuple(pr_agent_output, "disabled_noise", allow_empty=True),
     )
 
 

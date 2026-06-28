@@ -2924,6 +2924,7 @@ def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
 
 
 def assert_capture_artifact_metadata_is_config_derived() -> None:
+    verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
     metadata_command = (
         '          python3 scripts/ci_provenance.py artifact-metadata \\\n'
@@ -2934,6 +2935,18 @@ def assert_capture_artifact_metadata_is_config_derived() -> None:
         "capture must derive artifact metadata from ci_provenance.py artifact-metadata",
         workflow.replace(metadata_command, "") if metadata_command in workflow else workflow,
     )
+    mismatched_config_path = replace_once(
+        workflow,
+        "      CAPTURE_PROVENANCE_CONFIG: ci/chainlink-reference-fixture-capture-provenance.toml\n",
+        "      CAPTURE_PROVENANCE_CONFIG: ci/other-capture-provenance.toml\n",
+    )
+    errors = verifier.verify_workflow(mismatched_config_path)
+    expected = (
+        "capture CAPTURE_PROVENANCE_CONFIG must match artifact retention "
+        "retention_days_config_file"
+    )
+    if not any(expected in error for error in errors):
+        raise AssertionError(f"capture config path drift must fail closed, got: {errors}")
 
 
 def assert_ci_base_ref_archives_use_scripts_directory() -> None:
@@ -8719,6 +8732,11 @@ def assert_artifact_retention_config_refs_are_validated() -> None:
             'max_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
             'max_retention_days = 30\nmax_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
         ),
+        "artifact_retention.classes.provenance.max_retention_days_config_ref must be a non-empty string": config_text.replace(
+            'max_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+            'max_retention_days_config_ref = "   "',
+            1,
+        ),
         "artifact_retention.classes has unused classes: ['unused']": config_text.replace(
             "[artifact_retention.classes.deployable]\n",
             "[artifact_retention.classes.unused]\nmax_retention_days = 1\n\n[artifact_retention.classes.deployable]\n",
@@ -8743,6 +8761,16 @@ def assert_artifact_retention_config_refs_are_validated() -> None:
         "must define exactly one artifact_name, artifact_name_prefix, artifact_name_config_ref, or artifact_name_template_config_ref": config_text.replace(
             'artifact_name_template_config_ref = "ci_provenance.artifact_name_template"',
             'artifact_name = "ci-provenance-attempt-${{ github.run_attempt }}"\nartifact_name_template_config_ref = "ci_provenance.artifact_name_template"',
+            1,
+        ),
+        "artifact_name must be a non-empty string": config_text.replace(
+            'artifact_name = "${{ steps.provenance.outputs.artifact_name }}"',
+            'artifact_name = "   "',
+            1,
+        ),
+        "artifact_name_prefix must be a non-empty string": config_text.replace(
+            'artifact_name_prefix = "issue-789-first-pl-"',
+            'artifact_name_prefix = "   "',
             1,
         ),
         "retention_days_expression must be a non-empty string": config_text.replace(

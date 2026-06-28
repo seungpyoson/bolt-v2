@@ -115,6 +115,17 @@ def assert_equal(actual: object, expected: object, label: str) -> None:
     assert actual == expected, (label, actual, expected)
 
 
+def no_gh_finding() -> dict[str, object]:
+    return {
+        "lane": "readiness",
+        "scope": "run",
+        "status": "inconclusive",
+        "reason_code": "readiness_disabled_by_no_gh",
+        "message": "--no-gh disables authoritative readiness evidence",
+        "evidence": {"use_gh": False},
+    }
+
+
 def load_preflight_module() -> object:
     spec = importlib.util.spec_from_file_location("merge_queue_preflight", SCRIPT_PATH)
     if spec is None or spec.loader is None:
@@ -521,6 +532,11 @@ def assert_clean_prs_batch_together() -> None:
         assert_equal(rc, 3, "clean no-gh rc")
         payload = parse_json(stdout)
         assert_equal(payload["verdict"], "inconclusive", "clean no-gh verdict")
+        assert_equal(
+            payload["findings"],
+            [no_gh_finding()],
+            "clean no-gh findings",
+        )
 
         assert_equal(
             payload["batches"],
@@ -632,6 +648,7 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
         assert_equal(
             payload["findings"],
             [
+                no_gh_finding(),
                 {
                     "lane": "integration",
                     "scope": "pr",

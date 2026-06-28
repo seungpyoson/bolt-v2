@@ -127,6 +127,19 @@ CHECK_STATE_CLASSIFICATIONS = {
 CHECK_STATE_UNKNOWN = (STATUS_INCONCLUSIVE, "required_check_unknown")
 CHECK_STATE_STALE = (STATUS_INCONCLUSIVE, "required_check_stale")
 VERIFIER_STREAMS = ("stdout", "stderr")
+PREFLIGHT_MODE_FINDINGS = {
+    True: (),
+    False: (
+        {
+            "lane": LANE_READINESS,
+            "scope": "run",
+            "status": STATUS_INCONCLUSIVE,
+            "reason_code": "readiness_disabled_by_no_gh",
+            "message": "--no-gh disables authoritative readiness evidence",
+            "evidence": {"use_gh": False},
+        },
+    ),
+}
 
 
 class PreflightError(RuntimeError):
@@ -151,6 +164,16 @@ def contract_lane_status(findings: Sequence[dict[str, object]], lane: str) -> st
         if finding["lane"] == lane and finding["status"] != STATUS_RESIDUAL_RISK
     )
     return min(statuses, key=CONTRACT_STATUS_RANK.__getitem__, default=STATUS_INCONCLUSIVE)
+
+
+def preflight_mode_findings(*, use_gh: bool) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            **finding,
+            "evidence": dict(finding["evidence"]),
+        }
+        for finding in PREFLIGHT_MODE_FINDINGS[use_gh]
+    )
 
 
 def contract_result(findings: Sequence[dict[str, object]], *, wave_status: str) -> dict[str, object]:
@@ -1015,7 +1038,7 @@ def preflight(
         )
     contract_evaluation = evaluate_preflight_contract(
         ContractEvidence(
-            findings=(),
+            findings=preflight_mode_findings(use_gh=use_gh),
             artifacts=(*blocked_prs, *conflicts),
             wave_status=STATUS_READY,
         )

@@ -18,13 +18,21 @@ contract.
 
 ## Source Of Truth
 
-- Mergify queue behavior is configured in `.mergify.yml`.
-- The current queue rules use `merge_method: squash`.
-- Any preflight implementation must either model the configured Mergify merge
-  method and queue ordering, or mark its batching prediction as advisory in the
-  residual-risk lane.
+- Mergify queue behavior is configured in `.mergify.yml` and must be read from
+  that file at runtime.
+- Queue rules, queue conditions, merge conditions, priority rules, batch-size
+  bounds, merge method, reset behavior, and max parallel checks must not be
+  hardcoded or mirrored in preflight config.
+- Any preflight implementation must model the configured Mergify queue rule,
+  merge method, batch-size bounds, and queue routing before emitting an
+  authoritative `queue_as_one_wave` or `split_advised` verdict.
+- If a Mergify setting is missing, invalid, unsupported, changed after snapshot,
+  or ambiguous, the Mergify config lane is `inconclusive`.
 - The cheap deterministic verifier set must have one source of truth. Do not
   maintain a second hand-copied list of cheap gates.
+- If the current cheap-lane registry cannot map labels to preflight verifier
+  commands without ambiguity, extend the registry instead of copying values into
+  the preflight implementation.
 
 ## Invariants
 
@@ -70,6 +78,22 @@ Required pattern:
 If implementation appears to need fallback behavior, stop and update this
 contract before adding that behavior.
 
+## Input Failure Matrix
+
+Boundary validation must classify all required inputs before any fetch, metadata
+request, merge simulation, or verifier command runs.
+
+| Failure class | Definition | Status |
+| --- | --- | --- |
+| absent | Required field or evidence is not present | `inconclusive` |
+| empty | Required field is present but empty | preflight usage error |
+| invalid | User-supplied required field is malformed or unsupported | preflight usage error |
+| stale base | Expected base SHA differs from the live base branch | `inconclusive` |
+| stale head | Expected PR head differs from live PR ref or metadata | `blocked` |
+| unavailable | Required API, ref, config, or metadata cannot be read | `inconclusive` |
+| timeout | Required operation exceeded its configured wall-clock budget | `inconclusive` |
+| ambiguous | More than one valid interpretation exists | `inconclusive` |
+
 ## Decision Model
 
 Each lane returns one of these statuses:
@@ -81,6 +105,16 @@ Each lane returns one of these statuses:
   evidence was unavailable or degraded.
 - `residual_risk`: the lane is outside preflight's proof boundary and must be
   reported to the operator.
+
+Every lane finding must use a stable structured shape:
+
+- `lane`: one of `mergify_config`, `identity`, `readiness`, `integration`,
+  `verifier`, `diagnostic`, or `residual_risk`.
+- `scope`: `run`, `queue`, `pr`, `batch`, or `wave`.
+- `status`: `ready`, `blocked`, `inconclusive`, or `residual_risk`.
+- `reason_code`: stable machine-readable classifier.
+- `message`: bounded human-readable diagnostic.
+- `evidence`: structured metadata needed to reproduce the classification.
 
 The top-level verdict must be one of:
 
@@ -100,6 +134,25 @@ Exit codes must distinguish these outcomes:
 - `3`: `inconclusive`
 - `4`: preflight usage or internal tool error
 
+Verdict reduction is centralized and ordered:
+
+| Condition | Verdict | Operator action |
+| --- | --- | --- |
+| Preflight usage or internal tool error | none, exit `4` | fix invocation or tool |
+| Any PR or wave finding is `blocked` | `blocked` | fix or remove blocked PRs |
+| Any required lane is `inconclusive` | `inconclusive` | re-pin, re-run, or investigate |
+| All lanes ready, but one-wave constraints fail | `split_advised` | queue compatible subsets separately |
+| All required lanes are ready for one Mergify queue wave | `queue_as_one_wave` | queue the selected wave |
+
+`blocked` takes precedence over `inconclusive`; the output still reports all
+inconclusive findings. `split_advised` is a non-zero success-with-action, not a
+tool failure. Callers must switch on the specific exit code rather than treating
+only exit `0` as useful.
+
+Residual-risk findings never repair missing required evidence. They can coexist
+with `queue_as_one_wave` only when every required lane is `ready` and the risk is
+outside preflight's proof boundary.
+
 ## Required Input Contract
 
 An authoritative run requires:
@@ -109,16 +162,42 @@ An authoritative run requires:
 - ordered PR list.
 - expected head SHA for each PR.
 - selected verifier profile.
-- Mergify queue rule or an explicit statement that the queue rule is advisory.
+- Mergify config snapshot identity.
+- selected Mergify queue rule, or enough PR metadata to route every PR to a
+  queue rule from `.mergify.yml`.
+
+The Mergify config snapshot identity is the `.mergify.yml` blob SHA or a content
+hash taken before evaluation. If the file changes before completion, the
+Mergify config lane is `inconclusive`.
 
 If any expected SHA is missing, the run is non-authoritative and the verdict is
 `inconclusive`.
 
-Boundary validation must classify all input failures before any fetch, metadata
-request, merge simulation, or verifier command runs.
-
 `--no-gh` is a debug mode only. It disables the readiness lane and therefore must
-produce an `inconclusive` verdict, never `queue_as_one_wave`.
+produce an `inconclusive` verdict, never `queue_as_one_wave`. It also disables
+the GitHub metadata cross-checks in the identity lane.
+
+## Mergify Config Lane
+
+The Mergify config lane verifies:
+
+- `.mergify.yml` is present, valid, and matches the expected config snapshot.
+- every selected PR routes to exactly one supported queue rule.
+- mixed queue-rule waves are not treated as one wave.
+- queue priority and queue conditions are modeled or the run is
+  `inconclusive`.
+- the selected queue rule's merge method is supported.
+- the selected queue rule's batch-size minimum and maximum are modeled.
+- merge conditions identify the authoritative Mergify proof checks.
+
+If a PR matches multiple queue rules and the implementation cannot model
+Mergify's selection semantics, the result is `inconclusive`. If selected PRs
+route to different queue rules, the result is at most `split_advised`.
+
+The required-check source for Mergify readiness is the selected queue rule's
+`merge_conditions`. GitHub branch-protection required checks are additional
+governance evidence when available, but they are not a substitute for Mergify's
+merge conditions.
 
 ## Isolation Lane
 
@@ -150,7 +229,8 @@ The identity lane verifies:
 - GitHub metadata head SHA matches the expected PR head SHA.
 - GitHub metadata base branch matches the expected base branch.
 
-Any mismatch is `blocked`. Any unavailable identity evidence is `inconclusive`.
+Head mismatches are `blocked`. Base mismatches are `inconclusive` and require a
+new base pin. Unavailable identity evidence is `inconclusive`.
 
 ## Readiness Lane
 
@@ -159,17 +239,28 @@ The readiness lane verifies:
 - PR state is open.
 - PR is not draft.
 - required reviewer state is approved.
-- required checks are green.
+- required reviewer identity from the selected Mergify queue rule is approved.
+- required Mergify merge-condition checks are not already failed on the PR head.
 - native code-owner review, stale-review dismissal, last-push approval, and
-  review-thread resolution are either directly verified or reported as residual
-  risk.
-- approval from the repo-governed required reviewer identity is either directly
-  verified or reported as residual risk.
+  review-thread resolution are directly verified when the GitHub API exposes
+  them to the preflight run.
 
 Check states must be exhaustively classified. Unknown, skipped, missing,
 action-required, startup-failure, cancelled, pending, and API-unavailable states
 are not implicit success. Each maps to `blocked` or `inconclusive` through the
 central classifier.
+
+Required, GitHub-queryable merge gates cannot be downgraded to residual risk.
+Unavailable required-gate evidence is `inconclusive`; proven failed required
+evidence is `blocked`.
+
+If a required governance gate is not exposed to the preflight run, the readiness
+lane is `inconclusive`. Residual risk is reserved for non-required or
+out-of-boundary evidence.
+
+Green in-place PR checks are negative evidence only: they show the PR head is not
+already failed. They do not prove the Mergify proof context will pass. The proof
+context rerun remains residual risk.
 
 The readiness lane does not own git mergeability. Mergeability belongs to the
 integration lane. GitHub's async `mergeable` field may be reported as diagnostic
@@ -180,19 +271,24 @@ metadata, but it must not be a second source of truth for merge conflicts.
 The integration lane verifies:
 
 - each PR integrates with the expected base.
-- the requested PR ordering integrates under the selected Mergify queue rule.
+- selected PRs route to one queue rule before any one-wave verdict.
+- the selected PR count satisfies the queue rule's batch-size bounds.
+- the selected PR set integrates under the queue rule's merge method.
+- cross-PR verifier behavior is checked for the combined candidate.
 - any recommended split is reported as `split_advised`, not as a blocker.
 
-Because the current Mergify queue rules use squash merge, the integration lane
-must either:
+The integration lane reports set cleanliness and conflicting-subset membership.
+It must not over-claim that Mergify will choose a particular queue order unless
+the implementation models Mergify ordering from `.mergify.yml` and live queue
+state.
 
-- emulate the effective squash queue proof context, or
-- explicitly report that conflict prediction is advisory and belongs to
-  residual risk.
+If the queue merge method is unsupported or only advisory, the integration lane
+is `inconclusive`; `queue_as_one_wave` is forbidden.
 
-If the implementation cannot model Mergify's actual ordering, the output must
-state that recommended batches are advisory and may diverge from Mergify's
-selected queue order.
+A selected wave larger than the queue rule's maximum batch size is
+`split_advised` when all PRs are otherwise ready. A selected wave below the queue
+rule's minimum batch size is `inconclusive` unless the implementation models the
+queue rule's wait-time behavior.
 
 ## Verifier Lane
 
@@ -224,9 +320,10 @@ not prove. At minimum:
 - remote runner availability and environment.
 - flaky checks and external services.
 - base or PR head drift after preflight.
-- Mergify queue ordering if the tool used CLI order.
-- Mergify squash behavior if the integration lane used an advisory merge model.
-- branch protection or ruleset state not directly verified by the run.
+- live Mergify queue ordering changing after preflight.
+- reset-on-external-merge invalidation after preflight.
+- max-parallel-checks cost amplification for poisoned batches.
+- branch protection or ruleset state only when not exposed to the preflight run.
 
 Residual risks do not make a successful run fail. They define the boundary of the
 claim the operator may make.
@@ -238,7 +335,8 @@ Diagnostics must be useful without violating the no-credential-display rule.
 - Do not emit successful verifier streams.
 - Bound failed streams by configured line and byte limits.
 - Redact known token, key, and secret patterns before display.
-- Treat a verifier profile that can print secrets as invalid for prequeue use.
+- Reject verifier profile command strings that contain secrets or secret-shaped
+  arguments.
 - Include enough structured metadata to identify the failing lane, classifier,
   PR number, batch, command, and timeout without exposing raw logs.
 
@@ -253,21 +351,34 @@ An implementation of this contract must include tests for:
 - unavailable required input.
 - timed-out required input.
 - ambiguous required input.
+- verdict precedence when blocked and inconclusive findings coexist.
+- residual-risk findings do not repair missing required evidence.
 - expected base SHA mismatch.
 - expected PR head SHA mismatch.
+- base drift is `inconclusive`.
+- head drift is `blocked`.
+- Mergify config missing, invalid, unsupported, and changed after snapshot.
+- queue-rule routing for default, hotfix, mixed-queue, and ambiguous waves.
+- selected wave larger than queue batch-size maximum.
+- selected wave smaller than queue batch-size minimum.
 - no use of `FETCH_HEAD` or another shared mutable fetch result.
+- concurrent preflight runs sharing one clone.
 - metadata unavailable.
 - `--no-gh` returns `inconclusive`.
-- open/draft/review/base/head readiness states.
-- required check pass, fail, pending, skipped, missing, and unknown buckets.
+- open, closed, draft, review-approved, and review-not-approved states.
+- required reviewer identity absent, unavailable, and not approved.
+- required check pass, fail, pending, skipped, neutral, missing, duplicate,
+  stale-to-old-SHA, action-required, startup-failure, and unknown buckets.
 - base conflict.
 - clean split into multiple advised batches.
 - verifier failure.
+- batch-level verifier failure.
 - verifier timeout.
 - verifier executable missing.
+- verifier command string containing secret-shaped arguments.
 - bounded and redacted verifier diagnostics.
 - residual-risk output in JSON and plain text.
-- Mergify squash/advisory merge-mode reporting.
+- unsupported Mergify merge method prevents `queue_as_one_wave`.
 
 Completion evidence requires:
 

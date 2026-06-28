@@ -483,6 +483,24 @@ def residual_risk_findings() -> tuple[dict[str, object], ...]:
     )
 
 
+def integration_batch_ready_finding(batch: Batch) -> dict[str, object]:
+    return {
+        "lane": LANE_INTEGRATION,
+        "scope": "batch",
+        "status": STATUS_READY,
+        "reason_code": "integration_batch_ready",
+        "message": f"batch {batch.index} synthetic merge is conflict-free",
+        "evidence": {
+            "index": batch.index,
+            "prs": list(batch.prs),
+        },
+    }
+
+
+def integration_batch_ready_findings(batches: Sequence[Batch]) -> tuple[dict[str, object], ...]:
+    return tuple(integration_batch_ready_finding(batch) for batch in batches)
+
+
 def mergify_config_snapshot_finding(*, repo: pathlib.Path, base_sha: str) -> dict[str, object]:
     result = git(repo, "rev-parse", f"{base_sha}:{MERGIFY_CONFIG_PATH}", check=False)
     blob_sha = result.stdout.strip()
@@ -1746,6 +1764,7 @@ def preflight(
         *mergify_config_findings(repo=repo, base_sha=base_sha, readiness=readiness),
         *preflight_mode_findings(use_gh=use_gh),
         *residual_risk_findings(),
+        *integration_batch_ready_findings(batches),
     )
     contract_evaluation = evaluate_preflight_contract(
         ContractEvidence(

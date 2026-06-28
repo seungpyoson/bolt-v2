@@ -323,6 +323,20 @@ def matching_head_finding(pr: int, head_sha: str) -> dict[str, object]:
     }
 
 
+def integration_batch_ready_finding(batch: dict[str, object]) -> dict[str, object]:
+    return {
+        "lane": "integration",
+        "scope": "batch",
+        "status": "ready",
+        "reason_code": "integration_batch_ready",
+        "message": f"batch {batch['index']} synthetic merge is conflict-free",
+        "evidence": {
+            "index": batch["index"],
+            "prs": batch["prs"],
+        },
+    }
+
+
 def stale_head_finding(pr: int, expected_head_sha: str, actual_head_sha: str) -> dict[str, object]:
     return {
         "lane": "identity",
@@ -937,6 +951,7 @@ def assert_clean_prs_batch_together() -> None:
                 ),
                 no_gh_finding(),
                 *residual_risk_findings(),
+                integration_batch_ready_finding(payload["batches"][0]),
             ],
             "clean no-gh findings",
         )
@@ -1064,6 +1079,7 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
                 ),
                 no_gh_finding(),
                 *residual_risk_findings(),
+                integration_batch_ready_finding(payload["batches"][0]),
                 {
                     "lane": "integration",
                     "scope": "pr",

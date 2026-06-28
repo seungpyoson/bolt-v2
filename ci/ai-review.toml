@@ -15,7 +15,7 @@ finding_required_labels = [
   "Fix / verification:",
 ]
 no_findings_indicator = "No hard-evidence findings"
-no_findings_intro = "No hard-evidence findings in this chunk based only on the supplied diff."
+no_findings_intro = "No hard-evidence findings in this chunk."
 no_findings_required_labels = [
   "Coverage reviewed:",
   "Evidence basis:",

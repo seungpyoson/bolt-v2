@@ -882,7 +882,7 @@ def render_review_comments(
         sections=split_sections,
         part_total_hint=max(1, len(groups)),
     )
-    return [
+    comments = [
         render_review_comment_body(
             config=config,
             total_chunks=len(chunks),
@@ -892,6 +892,13 @@ def render_review_comments(
         )
         for index, group in enumerate(groups, start=1)
     ]
+    oversized = [len(comment) for comment in comments if len(comment) > config.max_comment_chars]
+    if oversized:
+        raise RuntimeError(
+            f"rendered review comment exceeded configured max_comment_chars={config.max_comment_chars}: "
+            f"{max(oversized)}"
+        )
+    return comments
 
 
 def secret_env_values() -> list[str]:

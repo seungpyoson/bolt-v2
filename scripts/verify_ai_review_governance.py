@@ -392,10 +392,10 @@ def verify_pr_agent_config(pr_agent_toml: str, ai_review_toml: str) -> list[str]
             findings.append(f".pr_agent.toml pr_reviewer.{key} must be {value!r}")
 
     _glm_model, _kimi_model, _glm_pr_agent_model = ai_review_model_values(ai_review_toml)
-    expected_source = "workflow stamps the authoritative configured GLM PR-Agent source/model from `ci/ai-review.toml`"
+    expected_source = "workflow stamps the authoritative configured source/model from `ci/ai-review.toml`"
     extra = reviewer.get("extra_instructions", "")
     if expected_source not in extra:
-        findings.append(".pr_agent.toml extra_instructions must delegate GLM PR-Agent source/model stamping to ci/ai-review.toml")
+        findings.append(".pr_agent.toml extra_instructions must delegate source/model stamping to ci/ai-review.toml")
     for literal in configured_runtime_literals(ai_review_toml):
         if literal in extra:
             findings.append(f".pr_agent.toml extra_instructions must read AI review runtime value from ci/ai-review.toml, not {literal!r}")
@@ -464,7 +464,7 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         (
             "review.output_contract.no_findings_intro",
             output_contract.get("no_findings_intro"),
-            "No hard-evidence findings in this chunk based only on the supplied diff.",
+            "No hard-evidence findings in this chunk.",
         ),
         (
             "review.output_contract.no_findings_required_labels",
@@ -759,8 +759,8 @@ def run_self_tests(repo_root: Path) -> None:
     pr_agent_model_literal = verify_texts(
         agents_md=agents,
         pr_agent_toml=pr_agent.replace(
-            "the workflow stamps the authoritative configured GLM PR-Agent source/model from `ci/ai-review.toml`",
-            f"the workflow stamps the authoritative configured GLM PR-Agent source/model from `ci/ai-review.toml` (`{current_glm_pr_agent_model}`)",
+            "the workflow stamps the authoritative configured source/model from `ci/ai-review.toml`",
+            f"the workflow stamps the authoritative configured source/model from `ci/ai-review.toml` (`{current_glm_pr_agent_model}`)",
         ),
         ai_review_toml=ai_review,
         ai_review_deliverables=deliverables,

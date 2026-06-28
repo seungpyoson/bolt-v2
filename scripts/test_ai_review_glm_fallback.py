@@ -203,7 +203,7 @@ def fallback_config(module, **overrides):
         "output_contract": module.ReviewOutputContract(
             finding_required_labels=("Severity:", "Evidence:", "Issue:", "Fix / verification:"),
             no_findings_indicator="No hard-evidence findings",
-            no_findings_intro="No hard-evidence findings in this chunk based only on the supplied diff.",
+            no_findings_intro="No hard-evidence findings in this chunk.",
             no_findings_required_labels=("Coverage reviewed:", "Evidence basis:", "Risk areas considered:"),
             pr_agent_deliverable_headings=("## PR Reviewer Guide", "## Incremental PR Reviewer Guide"),
             pr_agent_disabled_noise=("ticket compliance analysis", "estimated effort to review", "can be split"),
@@ -833,6 +833,37 @@ def test_kimi_fallback_uses_same_chunked_deliverable_contract() -> None:
     assert "## Kimi PR Review" in github.posted[0]
     assert "Per-chunk character budget:" not in github.posted[0]
     assert "Source: Kimi Code CLI" in github.posted[0]
+
+
+def test_chunked_review_comments_respect_configured_comment_limit() -> None:
+    module = load_script()
+    config = fallback_config(
+        module,
+        max_comment_chars=900,
+        response_chars_per_chunk=180,
+    )
+    chunks = [
+        module.ReviewChunk(title=f"src/file_{idx}.rs", body="+" + ("x" * 80))
+        for idx in range(8)
+    ]
+    responses = [
+        "\n".join(
+            [
+                "### Finding 1",
+                "**Severity:** low",
+                "**Evidence:** synthetic chunk with enough text to force comment packing",
+                "**Issue:** packing must preserve the configured size limit after final part labels render",
+                "**Fix / verification:** assert final rendered comments fit",
+            ]
+        )
+        for _ in chunks
+    ]
+
+    comments = module.render_review_comments(config=config, chunks=chunks, responses=responses)
+
+    assert len(comments) > 1
+    assert all(len(comment) <= config.max_comment_chars for comment in comments)
+    assert all("- Comment part: " in comment for comment in comments)
 
 
 def test_source_label_template_substitutes_configured_model() -> None:

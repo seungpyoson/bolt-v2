@@ -12,7 +12,7 @@ import shlex
 import subprocess
 import sys
 import tomllib
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -9331,38 +9331,42 @@ def workflow_permissions_have_issues_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+issues:\s+read\s*$", workflow_text) is not None
 
 
-def configured_ci_provenance_dispatch_input() -> str:
+def configured_ci_provenance_dispatch_input() -> tuple[str | None, list[str]]:
     try:
         config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError):
-        return ""
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        return None, [f"github-actions runner config invalid: {exc}"]
     ci_provenance = config.get("ci_provenance")
     if not isinstance(ci_provenance, dict):
-        return ""
+        return None, ["ci/github-actions-runners.toml must define [ci_provenance]"]
     dispatch = ci_provenance.get("dispatch")
     if not isinstance(dispatch, dict):
-        return ""
+        return None, ["ci_provenance.dispatch must be a table"]
     workflow_input = dispatch.get("workflow_input")
-    return workflow_input if isinstance(workflow_input, str) else ""
+    if not isinstance(workflow_input, str) or not workflow_input.strip():
+        return None, ["ci_provenance.dispatch.workflow_input must be a non-empty string"]
+    return workflow_input, []
 
 
-def configured_ci_provenance_dispatch_names() -> dict[str, str]:
+def configured_ci_provenance_dispatch_names() -> tuple[dict[str, str] | None, list[str]]:
     try:
         config = load_github_actions_runners_config()
-    except (OSError, ValueError, tomllib.TOMLDecodeError):
-        return {}
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        return None, [f"github-actions runner config invalid: {exc}"]
     ci_provenance = config.get("ci_provenance")
     if not isinstance(ci_provenance, dict):
-        return {}
+        return None, ["ci/github-actions-runners.toml must define [ci_provenance]"]
     dispatch = ci_provenance.get("dispatch")
     if not isinstance(dispatch, dict):
-        return {}
-    names = {
-        key: value
-        for key in ("workflow_input", "run_name_default", "run_name_full", "run_name_iteration")
-        if isinstance((value := dispatch.get(key)), str) and value
-    }
-    return names if len(names) == 4 else {}
+        return None, ["ci_provenance.dispatch must be a table"]
+    required_keys = ("workflow_input", "run_name_default", "run_name_full", "run_name_iteration")
+    missing = sorted(
+        key for key in required_keys
+        if not isinstance(dispatch.get(key), str) or not cast(str, dispatch.get(key)).strip()
+    )
+    if missing:
+        return None, [f"ci_provenance.dispatch must define non-empty string keys: {missing}"]
+    return {key: cast(str, dispatch[key]) for key in required_keys}, []
 
 
 def top_level_key_block_text(workflow_text: str, key: str) -> str:
@@ -9383,12 +9387,11 @@ def top_level_key_block_text(workflow_text: str, key: str) -> str:
 
 
 def workflow_run_name_errors(workflow_text: str) -> list[str]:
-    names = configured_ci_provenance_dispatch_names()
-    if not names:
-        return []
+    names, errors = configured_ci_provenance_dispatch_names()
+    if names is None:
+        return errors
     run_name_text = top_level_key_block_text(workflow_text, "run-name")
     full_predicate = f"github.event.inputs.{names['workflow_input']} == 'true'"
-    errors: list[str] = []
     if "run-name: >-" not in run_name_text:
         errors.append("workflow must define run-name for dispatch class markers")
     if full_predicate not in run_name_text:
@@ -9633,8 +9636,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
         )
     if is_ci_topology:
         errors.extend(workflow_pull_request_type_errors(workflow_text))
-        dispatch_input = configured_ci_provenance_dispatch_input()
-        if dispatch_input:
+        dispatch_input, dispatch_errors = configured_ci_provenance_dispatch_input()
+        if dispatch_errors:
+            errors.extend(dispatch_errors)
+        elif dispatch_input:
             errors.extend(
                 workflow_dispatch_input_errors(
                     workflow_text,

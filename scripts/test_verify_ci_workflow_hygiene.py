@@ -8614,6 +8614,45 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
         ".github/workflows/ci.yml build upload-artifact step id upload-bolt-v2-binary is duplicated",
         {".github/workflows/ci.yml": duplicate_binary_upload},
     )
+    verifier = load_verifier()
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    lowered_transient_config = config_text.replace(
+        "[artifact_retention.classes.transient]\nmax_retention_days = 7",
+        "[artifact_retention.classes.transient]\nmax_retention_days = 5",
+        1,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        ci_dir = tmp_path / "ci"
+        ci_dir.mkdir(parents=True, exist_ok=True)
+        config_path = ci_dir / "github-actions-runners.toml"
+        config_path.write_text(lowered_transient_config, encoding="utf-8")
+        (ci_dir / "chainlink-reference-fixture-capture-provenance.toml").write_text(
+            (REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        verifier.DEFAULT_RUNNERS_CONFIG = config_path
+        try:
+            ceiling_errors = verifier.verify_artifact_retention_policy(
+                {
+                    ".github/workflows/backtester-ci.yml": repo_workflow_text(
+                        ".github/workflows/backtester-ci.yml"
+                    ),
+                },
+                {},
+            )
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    expected_ceiling = (
+        ".github/workflows/backtester-ci.yml issue_789 upload-issue-789-first-pl artifact "
+        "issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }} retention-days 7 "
+        "exceeds configured max 5"
+    )
+    if not any(expected_ceiling in error for error in ceiling_errors):
+        raise AssertionError(f"expected class ceiling exceedance error, got: {ceiling_errors}")
     assert_artifact_retention_error(
         ".github/workflows/ci.yml capture upload-capture-artifact artifact ${{ steps.provenance.outputs.artifact_name }} "
         "retention-days must be a positive integer",

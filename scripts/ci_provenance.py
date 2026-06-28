@@ -175,7 +175,6 @@ class ProvenanceConfig:
     run_artifacts_per_page: int
     max_lookback_pages: int
     max_lookback_age_seconds: int
-    artifact_retention_days: int
     policy: dict[str, str]
     gate_names: dict[str, str]
     required_checks: dict[str, RequiredCheckConfig]
@@ -832,7 +831,6 @@ def load_config(
             api_limits, "max_lookback_pages", "ci_provenance.api_limits"
         ),
         max_lookback_age_seconds=max_lookback_age_seconds,
-        artifact_retention_days=retention_days,
         policy=policy,
         gate_names=gate_names,
         required_checks=required_checks,

@@ -201,6 +201,9 @@ pub struct RiskBlock {
     pub default_max_notional_per_order: String,
     pub loss_governor: Option<LossGovernorBlock>,
     pub capital_pools: Option<Vec<CapitalPoolBlock>>,
+    pub risk_reservation_substrate: Option<
+        crate::bolt_v3_risk_reservation_substrate::contracts::RiskReservationSubstrateConfig,
+    >,
     pub nautilus: NautilusRiskBlock,
     pub kill_switch: Option<KillSwitchConfigBlock>,
     pub basket_execution: Option<BasketExecutionRiskBlock>,

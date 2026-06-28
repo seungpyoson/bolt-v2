@@ -10,6 +10,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import textwrap
 import types
 
 
@@ -311,8 +312,8 @@ def assert_parser_help_exposes_suggest_and_examples() -> None:
         "suggest",
         "Examples:",
         "just rust-probe suggest",
-        "just rust-probe check-test-target <test_target>",
-        "just rust-probe nextest-test-target-name <test_target> <test_name>",
+        "just rust-probe check-test-target <harness_target>",
+        "just rust-probe nextest-test-target-name <harness_target> <member_stem>::",
     ):
         if fragment not in help_text:
             raise AssertionError(f"rust-probe help missing {fragment!r}:\n{help_text}")
@@ -340,6 +341,85 @@ def assert_validation_errors_point_to_suggest() -> None:
         raise AssertionError((result, output))
 
 
+def write_test_manifest_fixture(root: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    tests_root = root / "tests"
+    tests_root.mkdir()
+    manifest_path = root / "Cargo.toml"
+    manifest_path.write_text(
+        textwrap.dedent(
+            """\
+            [package]
+            name = "rust-probe-manifest-fixture"
+            version = "0.1.0"
+            edition = "2021"
+            autotests = false
+
+            [[test]]
+            name = "iv"
+            path = "tests/iv.rs"
+
+            [[test]]
+            name = "foo"
+            path = "tests/foo.rs"
+            """
+        ),
+        encoding="utf-8",
+    )
+    (tests_root / "iv.rs").write_text(
+        textwrap.dedent(
+            """\
+            #[path = "bolt_v3_iv_source_fence.rs"]
+            mod bolt_v3_iv_source_fence;
+            mod other_iv_member;
+            """
+        ),
+        encoding="utf-8",
+    )
+    (tests_root / "bolt_v3_iv_source_fence.rs").write_text("", encoding="utf-8")
+    (tests_root / "other_iv_member.rs").write_text("", encoding="utf-8")
+    (tests_root / "foo.rs").write_text("#[test]\nfn foo_works() {}\n", encoding="utf-8")
+    return manifest_path, tests_root
+
+
+def assert_fixture_manifest_suggestions_use_harness_and_member_filter() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        manifest_path, tests_root = write_test_manifest_fixture(pathlib.Path(tmp))
+        member_suggestions = owner.rust_probe_suggestions(
+            ["tests/bolt_v3_iv_source_fence.rs"],
+            {},
+            manifest_path=manifest_path,
+            tests_root=tests_root,
+        )
+        standalone_suggestions = owner.rust_probe_suggestions(
+            ["tests/foo.rs"],
+            {},
+            manifest_path=manifest_path,
+            tests_root=tests_root,
+        )
+    expected_member = [
+        "just rust-probe check-test-target iv",
+        "just rust-probe nextest-no-run-test-target iv",
+        "just rust-probe nextest-test-target iv",
+        "just rust-probe nextest-test-target-name iv bolt_v3_iv_source_fence::",
+    ]
+    for command in expected_member:
+        if command not in member_suggestions:
+            raise AssertionError((command, member_suggestions))
+    if any("nextest-test-target-name bolt_v3_iv_source_fence " in command for command in member_suggestions):
+        raise AssertionError(member_suggestions)
+    expected_standalone = [
+        "just rust-probe check-test-target foo",
+        "just rust-probe nextest-no-run-test-target foo",
+        "just rust-probe nextest-test-target foo",
+    ]
+    for command in expected_standalone:
+        if command not in standalone_suggestions:
+            raise AssertionError((command, standalone_suggestions))
+    if any("nextest-test-target-name foo foo::" in command for command in standalone_suggestions):
+        raise AssertionError(("harness-root self-filter must be omitted", standalone_suggestions))
+
+
 def assert_changed_files_produce_targeted_suggestions() -> None:
     owner = load_owner_module()
     separate_workspaces = owner.remote_probe_policy({"remote_probe": valid_remote_probe()})["separate_workspaces"]
@@ -354,10 +434,10 @@ def assert_changed_files_produce_targeted_suggestions() -> None:
     )
     expected = [
         "just rust-probe check-lib",
-        "just rust-probe check-test-target build_script_git_head_rerun_paths",
-        "just rust-probe nextest-no-run-test-target build_script_git_head_rerun_paths",
-        "just rust-probe nextest-test-target build_script_git_head_rerun_paths",
-        "just rust-probe nextest-test-target-name build_script_git_head_rerun_paths <test_name>",
+        "just rust-probe check-test-target platform_config",
+        "just rust-probe nextest-no-run-test-target platform_config",
+        "just rust-probe nextest-test-target platform_config",
+        "just rust-probe nextest-test-target-name platform_config build_script_git_head_rerun_paths::",
     ]
     for command in expected:
         if command not in suggestions:
@@ -480,7 +560,9 @@ def assert_cmd_rust_probe_suggest_reports_policy_and_rejects_runner_tier() -> No
         output = stdout.getvalue()
         if "tests/config_parsing.rs" not in output:
             raise AssertionError(output)
-        if "just rust-probe check-test-target config_parsing" not in output:
+        if "just rust-probe check-test-target platform_config" not in output:
+            raise AssertionError(output)
+        if "just rust-probe nextest-test-target-name platform_config config_parsing::" not in output:
             raise AssertionError(output)
         if "Rust Probe is not merge proof" not in output:
             raise AssertionError(output)
@@ -811,6 +893,7 @@ def main() -> int:
     assert_parser_exposes_rust_probe()
     assert_parser_help_exposes_suggest_and_examples()
     assert_validation_errors_point_to_suggest()
+    assert_fixture_manifest_suggestions_use_harness_and_member_filter()
     assert_changed_files_produce_targeted_suggestions()
     assert_changed_files_use_integration_base_not_feature_upstream()
     assert_cmd_rust_probe_suggest_reports_policy_and_rejects_runner_tier()

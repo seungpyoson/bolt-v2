@@ -36,6 +36,22 @@ class FakeClient:
 
 
 class CiStorageAuditTests(unittest.TestCase):
+    def test_parse_cache_key_probe_parses_label_and_key(self) -> None:
+        self.assertEqual(
+            ci_storage_audit.parse_cache_key_probe("nextest=exact-key"),
+            ci_storage_audit.CacheKeyProbeRequest("nextest", "exact-key"),
+        )
+        self.assertEqual(
+            ci_storage_audit.parse_cache_key_probe(" cargo = v0-rust-cache "),
+            ci_storage_audit.CacheKeyProbeRequest("cargo", "v0-rust-cache"),
+        )
+
+    def test_parse_cache_key_probe_rejects_invalid_inputs(self) -> None:
+        for raw in ("nokey", "=key", "label=", " "):
+            with self.subTest(raw=raw):
+                with self.assertRaises(ci_storage_audit.AuditError):
+                    ci_storage_audit.parse_cache_key_probe(raw)
+
     def test_build_snapshot_serializes_stable_contract_from_fixture_payloads(self) -> None:
         client = FakeClient(
             {
@@ -210,122 +226,6 @@ class CiStorageAuditTests(unittest.TestCase):
                 self.assertEqual(artifacts["count_source"], "enumerated_count_fallback")
                 self.assertEqual(artifacts["enumerated_count"], 1)
 
-    def test_cache_key_probes_query_exact_keys_and_report_presence(self) -> None:
-        client = FakeClient(
-            {
-                (
-                    "actions/caches",
-                    (("key", "nextest-key"), ("per_page", "100")),
-                ): {
-                    "total_count": 1,
-                    "actions_caches": [
-                        {
-                            "id": 301,
-                            "ref": "refs/heads/main",
-                            "key": "nextest-key",
-                            "last_accessed_at": "2026-06-25T10:00:00Z",
-                            "size_in_bytes": 1024,
-                        }
-                    ],
-                },
-                (
-                    "actions/caches",
-                    (("key", "sidecar-key"), ("per_page", "100")),
-                ): {
-                    "total_count": 0,
-                    "actions_caches": [],
-                },
-            }
-        )
-
-        probes = ci_storage_audit.fetch_cache_key_probes(
-            client,
-            [
-                ci_storage_audit.CacheKeyProbeRequest("nextest-archive", "nextest-key"),
-                ci_storage_audit.CacheKeyProbeRequest("root-bin-sidecars", "sidecar-key"),
-            ],
-        )
-
-        self.assertEqual(
-            probes,
-            [
-                {
-                    "label": "nextest-archive",
-                    "key": "nextest-key",
-                    "present": True,
-                    "count": 1,
-                    "count_source": "exact_enumerated_count",
-                    "enumerated_count": 1,
-                    "entries": [
-                        {
-                            "cache_id": 301,
-                            "ref": "refs/heads/main",
-                            "key": "nextest-key",
-                            "last_accessed_at": "2026-06-25T10:00:00Z",
-                            "size_bytes": 1024,
-                        }
-                    ],
-                },
-                {
-                    "label": "root-bin-sidecars",
-                    "key": "sidecar-key",
-                    "present": False,
-                    "count": 0,
-                    "count_source": "exact_enumerated_count",
-                    "enumerated_count": 0,
-                    "entries": [],
-                },
-            ],
-        )
-        self.assertEqual(
-            client.calls,
-            [
-                ("actions/caches", {"key": "nextest-key", "per_page": "100"}, True),
-                ("actions/caches", {"key": "sidecar-key", "per_page": "100"}, True),
-            ],
-        )
-
-    def test_cache_key_probes_reject_prefix_only_matches(self) -> None:
-        client = FakeClient(
-            {
-                (
-                    "actions/caches",
-                    (("key", "nextest-key"), ("per_page", "100")),
-                ): {
-                    "total_count": 1,
-                    "actions_caches": [
-                        {
-                            "id": 301,
-                            "ref": "refs/heads/main",
-                            "key": "nextest-key-longer",
-                            "last_accessed_at": "2026-06-25T10:00:00Z",
-                            "size_in_bytes": 1024,
-                        }
-                    ],
-                },
-            }
-        )
-
-        probes = ci_storage_audit.fetch_cache_key_probes(
-            client,
-            [ci_storage_audit.CacheKeyProbeRequest("nextest-archive", "nextest-key")],
-        )
-
-        self.assertEqual(
-            probes,
-            [
-                {
-                    "label": "nextest-archive",
-                    "key": "nextest-key",
-                    "present": False,
-                    "count": 0,
-                    "count_source": "exact_enumerated_count",
-                    "enumerated_count": 0,
-                    "entries": [],
-                }
-            ],
-        )
-
     def test_merge_paginated_payload_merges_real_slurp_shape(self) -> None:
         payload = [
             {
@@ -370,6 +270,132 @@ class CiStorageAuditTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ci_storage_audit.human_bytes(-1)
 
+    def test_fetch_cache_key_probes_reports_exact_present_and_missing(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "exact-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 2,
+                    "actions_caches": [
+                        {
+                            "id": 201,
+                            "ref": "refs/heads/main",
+                            "key": "exact-key",
+                            "last_accessed_at": "2026-06-25T10:00:00Z",
+                            "size_in_bytes": 1024,
+                        },
+                        {
+                            "id": 202,
+                            "ref": "refs/pull/2/merge",
+                            "key": "exact-key",
+                            "last_accessed_at": "2026-06-25T11:00:00Z",
+                            "size_in_bytes": 2048,
+                        },
+                    ],
+                },
+                (
+                    "actions/caches",
+                    (("key", "missing-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 0,
+                    "actions_caches": [],
+                },
+            }
+        )
+
+        probes = ci_storage_audit.fetch_cache_key_probes(
+            client,
+            [
+                ci_storage_audit.CacheKeyProbeRequest("present", "exact-key"),
+                ci_storage_audit.CacheKeyProbeRequest("missing", "missing-key"),
+            ],
+        )
+
+        self.assertTrue(probes[0]["present"])
+        self.assertEqual(probes[0]["exact_count"], 2)
+        self.assertEqual(probes[0]["api_prefix_count"], 2)
+        self.assertEqual(probes[0]["api_prefix_enumerated_count"], 2)
+        self.assertEqual(probes[0]["prefix_only_count"], 0)
+        self.assertEqual(len(probes[0]["entries"]), 2)
+        self.assertFalse(probes[1]["present"])
+        self.assertEqual(probes[1]["exact_count"], 0)
+        self.assertEqual(probes[1]["api_prefix_count"], 0)
+        self.assertEqual(probes[1]["api_prefix_enumerated_count"], 0)
+        self.assertEqual(probes[1]["prefix_only_count"], 0)
+
+    def test_fetch_cache_key_probes_rejects_prefix_collision_as_missing(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "foo"), ("per_page", "100")),
+                ): {
+                    "total_count": 1,
+                    "actions_caches": [
+                        {
+                            "id": 301,
+                            "ref": "refs/heads/main",
+                            "key": "foo-longer",
+                            "last_accessed_at": "2026-06-25T10:00:00Z",
+                            "size_in_bytes": 1024,
+                        }
+                    ],
+                },
+            }
+        )
+
+        probes = ci_storage_audit.fetch_cache_key_probes(
+            client,
+            [ci_storage_audit.CacheKeyProbeRequest("probe", "foo")],
+        )
+
+        self.assertFalse(probes[0]["present"])
+        self.assertEqual(probes[0]["exact_count"], 0)
+        self.assertEqual(probes[0]["api_prefix_count"], 1)
+        self.assertEqual(probes[0]["api_prefix_enumerated_count"], 1)
+        self.assertEqual(probes[0]["prefix_only_count"], 1)
+        self.assertEqual(probes[0]["entries"], [])
+
+    def test_fetch_cache_key_probes_handles_repeated_requests(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "shared-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 1,
+                    "actions_caches": [
+                        {
+                            "id": 401,
+                            "ref": "refs/heads/main",
+                            "key": "shared-key",
+                            "last_accessed_at": "2026-06-25T10:00:00Z",
+                            "size_in_bytes": 512,
+                        }
+                    ],
+                },
+            }
+        )
+
+        probes = ci_storage_audit.fetch_cache_key_probes(
+            client,
+            [
+                ci_storage_audit.CacheKeyProbeRequest("first", "shared-key"),
+                ci_storage_audit.CacheKeyProbeRequest("second", "shared-key"),
+            ],
+        )
+
+        self.assertTrue(probes[0]["present"])
+        self.assertTrue(probes[1]["present"])
+        self.assertEqual(probes[0]["exact_count"], 1)
+        self.assertEqual(probes[1]["exact_count"], 1)
+        self.assertEqual(
+            [call[0] for call in client.calls],
+            ["actions/caches", "actions/caches"],
+        )
+
     def test_render_text_limits_artifact_name_details(self) -> None:
         snapshot = {
             "snapshot_utc": "2026-06-23T00:00:00+00:00",
@@ -393,6 +419,75 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertIn("artifact-1", rendered)
         self.assertNotIn("artifact-2", rendered)
         self.assertIn("3 additional artifact names in --json", rendered)
+
+    def test_render_cache_key_probe_text_reports_present_and_missing(self) -> None:
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "cache_key_probes": [
+                {
+                    "label": "present",
+                    "key": "exact-key",
+                    "present": True,
+                    "exact_count": 1,
+                    "api_prefix_count": 1,
+                    "api_prefix_count_source": "github_total_count",
+                    "api_prefix_enumerated_count": 1,
+                    "prefix_only_count": 0,
+                    "entries": [
+                        {
+                            "cache_id": 501,
+                            "ref": "refs/heads/main",
+                            "key": "exact-key",
+                            "last_accessed_at": "2026-06-25T10:00:00Z",
+                            "size_bytes": 1024,
+                        }
+                    ],
+                },
+                {
+                    "label": "missing",
+                    "key": "missing-key",
+                    "present": False,
+                    "exact_count": 0,
+                    "api_prefix_count": 0,
+                    "api_prefix_count_source": "github_total_count",
+                    "api_prefix_enumerated_count": 0,
+                    "prefix_only_count": 0,
+                    "entries": [],
+                },
+            ],
+        }
+
+        rendered = ci_storage_audit.render_cache_key_probe_text(snapshot)
+
+        self.assertIn("present; exact_count=1", rendered)
+        self.assertIn("id=501 ref=refs/heads/main size=1.0 KiB", rendered)
+        self.assertIn("missing; exact_count=0", rendered)
+
+    def test_render_cache_key_probe_text_warns_on_prefix_only_match(self) -> None:
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "cache_key_probes": [
+                {
+                    "label": "probe",
+                    "key": "foo",
+                    "present": False,
+                    "exact_count": 0,
+                    "api_prefix_count": 1,
+                    "api_prefix_count_source": "github_total_count",
+                    "api_prefix_enumerated_count": 1,
+                    "prefix_only_count": 1,
+                    "entries": [],
+                }
+            ],
+        }
+
+        rendered = ci_storage_audit.render_cache_key_probe_text(snapshot)
+
+        self.assertIn("api_prefix_enumerated=1", rendered)
+        self.assertIn("API returned prefix matches, but no exact key matched", rendered)
+        self.assertNotIn("id=", rendered)
 
     def test_render_text_includes_retention_days(self) -> None:
         snapshot = {

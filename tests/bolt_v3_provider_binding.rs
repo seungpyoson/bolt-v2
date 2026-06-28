@@ -26,7 +26,7 @@
 //! selection, fused / reference price derivation, and any trade-action
 //! construction. Those boundaries belong to later slices.
 
-mod support;
+use crate::support;
 
 use std::{
     collections::{BTreeMap, BTreeSet},

@@ -36,6 +36,7 @@ from command_understanding import (
     python_constant_string,
     python_inline_command_payloads,
 )
+from ci_test_manifest import build_test_manifest
 
 try:
     import tomllib as _toml
@@ -51,6 +52,7 @@ CI_RUNNERS_RELATIVE_PATH = pathlib.Path("ci/github-actions-runners.toml")
 MAX_POLICY_BYTES = 1024 * 1024
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 LANE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 RUST_PROBE_MODES = (
     "check-lib",
@@ -73,10 +75,10 @@ RUST_PROBE_HELP_EPILOG = """\
 Examples:
   just rust-probe suggest
   just rust-probe check-lib
-  just rust-probe check-test-target <test_target>
-  just rust-probe nextest-no-run-test-target <test_target>
-  just rust-probe nextest-test-target <test_target>
-  just rust-probe nextest-test-target-name <test_target> <test_name>
+  just rust-probe check-test-target <harness_target>
+  just rust-probe nextest-no-run-test-target <harness_target>
+  just rust-probe nextest-test-target <harness_target>
+  just rust-probe nextest-test-target-name <harness_target> <member_stem>::
 
 Rust Probe is targeted remote debugging feedback only. It is not merge proof.
 Use just verify-remote for full remote feedback; mark the PR ready before treating it as merge proof.
@@ -271,6 +273,7 @@ def validate_policy_data(data: dict[str, Any]) -> None:
     if build.get("artifact_layout") != "cargo":
         raise PolicyError("commands.build.artifact_layout must be 'cargo'")
     validate_local_compile_policy(data)
+    validate_remote_compile_cache_policy(data)
     validate_local_lane_policy(data)
     if "remote_verification" in data:
         validate_remote_verification_policy(data)
@@ -310,6 +313,29 @@ def validate_local_compile_policy(data: dict[str, Any]) -> None:
         raise PolicyError(
             "local_compile_policy.refused_cargo_subcommands must match disk-preflight and alias subcommands"
         )
+
+
+def validate_remote_compile_cache_policy(data: dict[str, Any]) -> None:
+    policy = data.get("remote_compile_cache")
+    if policy is None:
+        return
+    if not isinstance(policy, dict):
+        raise PolicyError("remote_compile_cache table must be a table")
+    allowed_keys = {"enabled", "enable_env", "ci_env", "wrapper_env", "wrapper_program"}
+    for key in policy:
+        if key not in allowed_keys:
+            raise PolicyError(f"remote_compile_cache.{key} is not supported")
+    if policy.get("enabled") is not True:
+        raise PolicyError("remote_compile_cache.enabled must be true")
+    for key in ("enable_env", "ci_env", "wrapper_env"):
+        value = require_non_empty_string(policy, key, "remote_compile_cache")
+        if not ENV_NAME_RE.match(value):
+            raise PolicyError(f"remote_compile_cache.{key} must be an environment variable name")
+    if policy["ci_env"] != "GITHUB_ACTIONS":
+        raise PolicyError("remote_compile_cache.ci_env must be 'GITHUB_ACTIONS'")
+    wrapper_program = require_non_empty_string(policy, "wrapper_program", "remote_compile_cache")
+    if wrapper_program != "sccache":
+        raise PolicyError("remote_compile_cache.wrapper_program must be 'sccache'")
 
 
 def validate_local_lane_policy(data: dict[str, Any]) -> None:
@@ -551,12 +577,41 @@ def cache_lock(policy: dict[str, Any], *, exclusive: bool) -> Any:
 
 
 def managed_env(repo: pathlib.Path, policy: dict[str, Any] | None = None) -> dict[str, str]:
+    data = policy if policy is not None else load_policy(repo)
     env = os.environ.copy()
     for key in SCRUB_ENV_KEYS:
         env.pop(key, None)
-    env["CARGO_TARGET_DIR"] = str(target_dir(repo, policy))
+    env["CARGO_TARGET_DIR"] = str(target_dir(repo, data))
     env["RUST_VERIFICATION_PRESERVE_ROUTING_ENV"] = "1"
+    env.update(managed_remote_compile_cache_env(data))
     return env
+
+
+def managed_remote_compile_cache_env(policy: dict[str, Any]) -> dict[str, str]:
+    cache_policy = policy.get("remote_compile_cache")
+    if not isinstance(cache_policy, dict) or cache_policy.get("enabled") is not True:
+        return {}
+    if os.environ.get(str(cache_policy["enable_env"])) != "1":
+        return {}
+    if os.environ.get(str(cache_policy["ci_env"])) != "true":
+        return {}
+
+    # Fail-open: the opt-in only resolves to "1" after the CI precondition ladder
+    # has installed sccache and exported its path, so a missing or malformed
+    # wrapper here means the environment is not what we expect. Degrade to no
+    # wrapper (a normal local compile) instead of raising -- the remote compile
+    # cache must never be able to fail the build. A structurally invalid
+    # *committed* policy still fails loudly in validate_remote_compile_cache_policy;
+    # this guards only the runtime environment value.
+    wrapper_program = str(cache_policy["wrapper_program"])
+    wrapper = os.environ.get(str(cache_policy["wrapper_env"]), "")
+    if not wrapper:
+        return {}
+    if wrapper.strip() != wrapper or any(char.isspace() for char in wrapper):
+        return {}
+    if pathlib.Path(wrapper).name != wrapper_program:
+        return {}
+    return {"RUSTC_WRAPPER": wrapper}
 
 
 def scrubbed_local_env() -> dict[str, str]:
@@ -3468,7 +3523,7 @@ def validate_rust_probe_selection(mode: str, test_target: str, test_name: str) -
     return None
 
 
-def rust_probe_test_target_for_path(path: str) -> str | None:
+def rust_probe_test_stem_for_path(path: str) -> str | None:
     normalized = path.strip().replace("\\", "/")
     if not normalized:
         return None
@@ -3479,6 +3534,22 @@ def rust_probe_test_target_for_path(path: str) -> str | None:
     return parsed.stem
 
 
+def rust_probe_test_target_for_path(
+    path: str,
+    *,
+    manifest_path: pathlib.Path | None = None,
+    tests_root: pathlib.Path | None = None,
+) -> str | None:
+    stem = rust_probe_test_stem_for_path(path)
+    if stem is None:
+        return None
+    manifest = build_test_manifest(
+        manifest_path or SCRIPT_DIR.parent / "Cargo.toml",
+        tests_root or SCRIPT_DIR.parent / "tests",
+    )
+    return manifest.member_to_harness.get(stem)
+
+
 def rust_probe_separate_workspace_for_path(path: str, separate_workspaces: dict[str, Any]) -> tuple[str, ...] | None:
     normalized = path.strip().replace("\\", "/")
     for prefix, suggestion in separate_workspaces.items():
@@ -3487,15 +3558,31 @@ def rust_probe_separate_workspace_for_path(path: str, separate_workspaces: dict[
     return None
 
 
-def rust_probe_suggestions(changed_files: list[str], separate_workspaces: dict[str, Any]) -> list[str]:
+def rust_probe_suggestions(
+    changed_files: list[str],
+    separate_workspaces: dict[str, Any],
+    *,
+    manifest_path: pathlib.Path | None = None,
+    tests_root: pathlib.Path | None = None,
+) -> list[str]:
     normalized = sorted({path.strip().replace("\\", "/") for path in changed_files if path.strip()})
-    targets = sorted(
+    test_stems = sorted(
         {
-            target
+            stem
             for path in normalized
-            if (target := rust_probe_test_target_for_path(path)) is not None
+            if (stem := rust_probe_test_stem_for_path(path)) is not None
         }
     )
+    target_to_stems: dict[str, list[str]] = {}
+    if test_stems:
+        manifest = build_test_manifest(
+            manifest_path or SCRIPT_DIR.parent / "Cargo.toml",
+            tests_root or SCRIPT_DIR.parent / "tests",
+        )
+        for stem in test_stems:
+            target = manifest.member_to_harness.get(stem)
+            if target is not None:
+                target_to_stems.setdefault(target, []).append(stem)
     suggestions: list[str] = []
     lib_or_workspace_changed = any(
         path == "Cargo.toml"
@@ -3514,15 +3601,20 @@ def rust_probe_suggestions(changed_files: list[str], separate_workspaces: dict[s
         }
     ):
         suggestions.extend(suggestion_lines)
-    for target in targets:
+    for target, stems in sorted(target_to_stems.items()):
         suggestions.extend(
             [
                 f"just rust-probe check-test-target {target}",
                 f"just rust-probe nextest-no-run-test-target {target}",
                 f"just rust-probe nextest-test-target {target}",
-                f"just rust-probe nextest-test-target-name {target} <test_name>",
             ]
         )
+        for stem in sorted(stems):
+            if stem == target:
+                # Harness root file has no direct #[test]s; `nextest-test-target {target}`
+                # above already covers it. A `{target}::` filter would match zero tests.
+                continue
+            suggestions.append(f"just rust-probe nextest-test-target-name {target} {stem}::")
     if suggestions:
         return suggestions
     if any(path.startswith("crates/") for path in normalized):

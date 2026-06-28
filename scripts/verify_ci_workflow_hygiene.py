@@ -8575,6 +8575,34 @@ def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) 
     return errors
 
 
+def capture_artifact_metadata_errors(job_lines: list[str]) -> list[str]:
+    errors: list[str] = []
+    text = uncommented_text(job_lines)
+    if "ci_provenance.py artifact-metadata" not in text:
+        errors.append("capture must derive artifact metadata from ci_provenance.py artifact-metadata")
+    if '--config "$CAPTURE_PROVENANCE_CONFIG"' not in text:
+        errors.append("capture artifact metadata must use CAPTURE_PROVENANCE_CONFIG")
+    if '--run-attempt "${{ github.run_attempt }}"' not in text:
+        errors.append("capture artifact metadata must use github.run_attempt")
+
+    upload_blocks = [
+        block
+        for block in action_blocks(job_lines, "actions/upload-artifact@")
+        if block_has_input(block, "path", "${{ env.CAPTURE_OUTPUT_DIR }}")
+    ]
+    if not upload_blocks:
+        errors.append("capture must upload CAPTURE_OUTPUT_DIR")
+        return errors
+    if not any(block_has_input(block, "name", "${{ steps.provenance.outputs.artifact_name }}") for block in upload_blocks):
+        errors.append("capture upload artifact name must come from provenance config")
+    if not any(
+        block_has_input(block, "retention-days", "${{ steps.provenance.outputs.retention_days }}")
+        for block in upload_blocks
+    ):
+        errors.append("capture upload retention-days must come from provenance config")
+    return errors
+
+
 def ci_provenance_emit_records_secure_fingerprint(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return (
@@ -9051,6 +9079,10 @@ def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+actions:\s+read\s*$", workflow_text) is not None
 
 
+def workflow_permissions_have_issues_read(workflow_text: str) -> bool:
+    return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+issues:\s+read\s*$", workflow_text) is not None
+
+
 def configured_ci_provenance_retention_days() -> int:
     try:
         config = load_github_actions_runners_config()
@@ -9386,6 +9418,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if not workflow_permissions_have_actions_read(workflow_text):
         errors.append("workflow permissions must include actions: read")
+    if not workflow_permissions_have_issues_read(workflow_text):
+        errors.append("workflow permissions must include issues: read")
 
     for job in REQUIRED_JOBS:
         if job not in jobs:
@@ -9401,6 +9435,9 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if "ci-policy" in jobs:
         errors.extend(ci_policy_job_errors(jobs["ci-policy"]))
+
+    if "capture" in jobs:
+        errors.extend(capture_artifact_metadata_errors(jobs["capture"]))
 
     for job in TAG_SKIP_REQUIRED_JOBS:
         if job in jobs and not job_skips_tag_reuse(jobs[job]):

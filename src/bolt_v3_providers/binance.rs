@@ -38,7 +38,6 @@ use nautilus_binance::{
     factories::BinanceDataClientFactory,
 };
 use nautilus_core::string::secret::REDACTED;
-use nautilus_network::websocket::TransportBackend;
 use serde::Deserialize;
 use url::Url;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
@@ -54,6 +53,7 @@ use crate::{
         ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    bolt_v3_wire_boundary::TransportBackend,
 };
 
 pub const KEY: &str = "BINANCE";

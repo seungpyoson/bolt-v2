@@ -286,6 +286,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  issues: read
 
 jobs:
   merge-readiness-progress:
@@ -2991,6 +2992,41 @@ def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
         raise AssertionError(f"expected workflow_dispatch detector guard error, got: {errors}")
 
 
+def assert_capture_artifact_metadata_is_config_derived() -> None:
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    metadata_command = (
+        '          python3 scripts/ci_provenance.py artifact-metadata \\\n'
+        '            --config "$CAPTURE_PROVENANCE_CONFIG" \\\n'
+        '            --run-attempt "${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"\n'
+    )
+    output_name = "          name: ${{ steps.provenance.outputs.artifact_name }}"
+    output_retention = "          retention-days: ${{ steps.provenance.outputs.retention_days }}"
+    assert_error(
+        "capture must derive artifact metadata from ci_provenance.py artifact-metadata",
+        workflow.replace(metadata_command, "") if metadata_command in workflow else workflow,
+    )
+    assert_error(
+        "capture upload artifact name must come from provenance config",
+        replace_once(
+            workflow,
+            output_name,
+            "          name: chainlink-reference-fixture-capture-attempt-${{ github.run_attempt }}",
+        )
+        if output_name in workflow
+        else workflow,
+    )
+    assert_error(
+        "capture upload retention-days must come from provenance config",
+        replace_once(
+            workflow,
+            output_retention,
+            "          retention-days: 30",
+        )
+        if output_retention in workflow
+        else workflow,
+    )
+
+
 def assert_ci_base_ref_archives_use_scripts_directory() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
@@ -4991,8 +5027,8 @@ def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> N
         config_text = original_config.read_text()
         config_path.write_text(
             config_text.replace(
-                'included_workflows = ["ci", "backtester_ci", "ci_runner_debug", "rust_probe"]',
-                'included_workflows = ["ci", "ci_runner_debug", "rust_probe"]',
+                '  "backtester_ci",\n',
+                "",
             ),
             encoding="utf-8",
         )
@@ -10009,6 +10045,10 @@ def main() -> int:
     assert_workflow_hygiene_reviewer_regressions()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
+        "workflow permissions must include issues: read",
+        replace_once(BASE_WORKFLOW, "  issues: read\n", ""),
+    )
+    assert_error(
         "concurrency group must split noop PR runs from full CI runs",
         replace_once(BASE_WORKFLOW, "format('pr-{0}-noop', github.event.number)", "format('pr-{0}-full', github.event.number)"),
     )
@@ -12269,6 +12309,7 @@ def main() -> int:
     assert_test_archive_sccache_fail_open_contract()
     assert_test_archive_sccache_retry_preserves_compile_failures()
     assert_ci_detector_forces_build_on_workflow_dispatch()
+    assert_capture_artifact_metadata_is_config_derived()
     assert_ci_base_ref_archives_use_scripts_directory()
     assert_ci_detector_docs_only_archive_includes_lane_policy()
     assert_merge_group_support_gaps_are_reported()

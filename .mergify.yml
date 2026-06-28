@@ -3,6 +3,26 @@ merge_queue:
   reset_on_external_merge: always
 
 queue_rules:
+  # Exceptional path only. Normal merge sessions use the default queue below.
+  - name: hotfix
+    queue_conditions:
+      - label = hotfix
+    merge_conditions:
+      - approved-reviews-by = sp-reviewer
+      - check-success = gate
+      - check-success = backtester-gate
+      - check-success = actionlint
+      - check-success = host-health
+    branch_protection_injection_mode: merge
+    batch_size: 1
+    batch_max_wait_time: 30 seconds
+    batch_max_failure_resolution_attempts: 0
+    # merge_conditions intentionally differ from queue_conditions, which makes
+    # Mergify use a queue proof context instead of in-place checks.
+    checks_timeout: 150 minutes
+    draft_bot_account: null
+    merge_method: squash
+
   - name: default
     queue_conditions: []
     merge_conditions:
@@ -12,9 +32,20 @@ queue_rules:
       - check-success = actionlint
       - check-success = host-health
     branch_protection_injection_mode: merge
-    batch_size: 1
+    batch_size:
+      min: 2
+      max: 10
+    batch_max_wait_time: 5 minutes
+    batch_max_failure_resolution_attempts: 0
     # merge_conditions intentionally differ from queue_conditions, which makes
     # Mergify use a queue proof context instead of in-place checks.
-    checks_timeout: 60 minutes
+    checks_timeout: 150 minutes
     draft_bot_account: null
     merge_method: squash
+
+priority_rules:
+  - name: hotfix
+    conditions:
+      - label = hotfix
+    priority: 10000
+    allow_checks_interruption: true

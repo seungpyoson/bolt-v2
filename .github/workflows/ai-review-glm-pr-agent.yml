@@ -109,6 +109,31 @@ jobs:
           marker="${{ steps.runtime-config.outputs.glm_notice_marker }}"
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           expected_bot_login="${{ steps.runtime-config.outputs.expected_bot_login }}"
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            if ! config_exports="$(python3 - <<'PY'
+          import shlex
+          import tomllib
+          from pathlib import Path
+
+          def notice_marker(table, marker_key):
+              return table.get("notice_marker", table[marker_key])
+
+          config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
+          github = config["github"]
+          glm = config["glm"]
+          print("marker=" + shlex.quote(notice_marker(glm, "comment_marker")))
+          print("expected_bot_login=" + shlex.quote(github["expected_bot_login"]))
+          PY
+          )"; then
+              echo "::error::AI review notice marker or expected bot login is unavailable."
+              exit 1
+            fi
+            eval "$config_exports"
+          fi
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            echo "::error::AI review notice marker or expected bot login is unavailable."
+            exit 1
+          fi
           cat > "$notice_file" <<EOF
           ${marker}
 
@@ -226,6 +251,31 @@ jobs:
           marker="${{ steps.runtime-config.outputs.glm_notice_marker }}"
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           expected_bot_login="${{ steps.runtime-config.outputs.expected_bot_login }}"
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            if ! config_exports="$(python3 - <<'PY'
+          import shlex
+          import tomllib
+          from pathlib import Path
+
+          def notice_marker(table, marker_key):
+              return table.get("notice_marker", table[marker_key])
+
+          config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
+          github = config["github"]
+          glm = config["glm"]
+          print("marker=" + shlex.quote(notice_marker(glm, "comment_marker")))
+          print("expected_bot_login=" + shlex.quote(github["expected_bot_login"]))
+          PY
+          )"; then
+              echo "::error::AI review notice marker or expected bot login is unavailable."
+              exit 1
+            fi
+            eval "$config_exports"
+          fi
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            echo "::error::AI review notice marker or expected bot login is unavailable."
+            exit 1
+          fi
           cat > "$notice_file" <<EOF
           ${marker}
 

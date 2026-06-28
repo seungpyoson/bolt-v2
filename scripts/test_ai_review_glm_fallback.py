@@ -66,6 +66,10 @@ def default_pr_agent_review_body() -> str:
     )
 
 
+def default_pr_agent_review_body_with_evidence_signal() -> str:
+    return "\n".join([default_pr_agent_review_body(), "", "Severity: low"])
+
+
 def load_script():
     if not SCRIPT_PATH.exists():
         raise AssertionError(f"missing script: {SCRIPT_PATH}")
@@ -328,7 +332,12 @@ def test_skips_fallback_when_pr_agent_deliverable_exists_after_start() -> None:
         files=[file_payload("src/lib.rs", "+change")],
         issue_comments=[
             {
-                "body": "## PR Reviewer Guide\n\n**Source:** GLM PR-Agent (`configured-pr-agent-model`)\n\nexisting PR-Agent result",
+                "body": (
+                    "## PR Reviewer Guide\n\n"
+                    "**Source:** GLM PR-Agent (`configured-pr-agent-model`)\n\n"
+                    "Severity: low\n\n"
+                    "existing PR-Agent result"
+                ),
                 "created_at": "2026-06-22T12:22:00Z",
                 "updated_at": "2026-06-22T12:22:00Z",
                 "user": {"type": "Bot", "login": "github-actions[bot]"},
@@ -393,13 +402,40 @@ def test_pr_agent_severity_review_without_fallback_labels_suppresses_fallback() 
     assert github.posted == []
 
 
-def test_default_pr_agent_sections_suppress_fallback() -> None:
+def test_default_pr_agent_sections_without_evidence_do_not_suppress_fallback() -> None:
     module = load_script()
     github = FakeGitHub(
         files=[file_payload("src/lib.rs", "+change")],
         issue_comments=[
             {
                 "body": default_pr_agent_review_body(),
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+    glm = FakeGLM(response=valid_finding_response("fallback ran after default-only PR-Agent sections."))
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=fallback_config(module),
+    )
+
+    assert result == "fallback-posted"
+    assert len(glm.prompts) == 1
+    assert len(github.posted) == 1
+    assert "fallback ran after default-only PR-Agent sections." in github.posted[0]
+
+
+def test_default_pr_agent_sections_with_evidence_suppress_fallback() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "body": default_pr_agent_review_body_with_evidence_signal(),
                 "created_at": "2026-06-22T12:22:00Z",
                 "updated_at": "2026-06-22T12:22:00Z",
                 "user": {"type": "Bot", "login": "github-actions[bot]"},
@@ -588,6 +624,7 @@ def test_incremental_pr_agent_deliverable_suppresses_fallback() -> None:
                 "body": (
                     "## Incremental PR Reviewer Guide\n\n"
                     "**Source:** GLM PR-Agent (`configured-pr-agent-model`)\n\n"
+                    "Severity: low\n\n"
                     "existing incremental PR-Agent result"
                 ),
                 "created_at": "2026-06-22T12:22:00Z",
@@ -1425,7 +1462,8 @@ def main() -> int:
     test_truncated_file_fragment_keeps_markdown_fence_closed()
     test_skips_fallback_when_pr_agent_deliverable_exists_after_start()
     test_pr_agent_severity_review_without_fallback_labels_suppresses_fallback()
-    test_default_pr_agent_sections_suppress_fallback()
+    test_default_pr_agent_sections_without_evidence_do_not_suppress_fallback()
+    test_default_pr_agent_sections_with_evidence_suppress_fallback()
     test_unstamped_pr_agent_deliverable_does_not_suppress_fallback()
     test_plain_pr_agent_phrase_does_not_suppress_fallback()
     test_human_pr_agent_marker_comment_does_not_suppress_fallback()

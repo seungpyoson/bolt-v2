@@ -385,12 +385,27 @@ def review_body_is_quality_deliverable(body: str, output_contract: ReviewOutputC
     finding_labels = tuple(label.lower() for label in output_contract.finding_required_labels)
     if finding_labels and all(label in lowered for label in finding_labels):
         return True
-    if output_contract.no_findings_indicator.lower() in lowered:
-        return all(label.lower() in lowered for label in output_contract.no_findings_required_labels)
+    if review_body_has_no_findings_contract(lowered, output_contract):
+        return True
     pr_agent_headings = tuple(heading.lower() for heading in output_contract.pr_agent_deliverable_headings)
     if any(heading in lowered for heading in pr_agent_headings):
-        return not any(noise.lower() in lowered for noise in output_contract.pr_agent_disabled_noise)
+        if any(noise.lower() in lowered for noise in output_contract.pr_agent_disabled_noise):
+            return False
+        return pr_agent_body_has_substantive_review(lowered, output_contract)
     return False
+
+
+def review_body_has_no_findings_contract(lowered: str, output_contract: ReviewOutputContract) -> bool:
+    if output_contract.no_findings_indicator.lower() not in lowered:
+        return False
+    return all(label.lower() in lowered for label in output_contract.no_findings_required_labels)
+
+
+def pr_agent_body_has_substantive_review(lowered: str, output_contract: ReviewOutputContract) -> bool:
+    finding_labels = tuple(label.lower() for label in output_contract.finding_required_labels)
+    return any(label in lowered for label in finding_labels) or review_body_has_no_findings_contract(
+        lowered, output_contract
+    )
 
 
 def comment_part_key(body: object) -> str:

@@ -176,6 +176,10 @@ GLM_DELIVERABLE_SNIPPETS = (
     "steps.glm_stamp.outcome == 'failure' && steps.glm_fallback.outcome != 'success'",
     "review infrastructure failed or timed out before posting a usable failure notice",
     'marker="${{ steps.runtime-config.outputs.glm_notice_marker }}"',
+    'config_exports="$(python3 - <<\'PY\'',
+    'config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))',
+    "AI review notice marker or expected bot login is unavailable.",
+    'eval "$config_exports"',
     "gh api \"repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments\" --paginate",
     "gh api --method PATCH \"repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}\"",
     "gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"",
@@ -223,6 +227,10 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "steps.kimi_fallback.outputs.failure_notice_posted != 'true'",
     "review infrastructure failed or timed out before posting a usable failure notice",
     'marker="${{ steps.runtime-config.outputs.kimi_notice_marker }}"',
+    'config_exports="$(python3 - <<\'PY\'',
+    'config = tomllib.loads(Path(".ai-review/base/ci/ai-review.toml").read_text(encoding="utf-8"))',
+    "AI review notice marker or expected bot login is unavailable.",
+    'eval "$config_exports"',
     "gh api \"repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments\" --paginate",
     "gh api --method PATCH \"repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}\"",
     "gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"",
@@ -248,6 +256,8 @@ AI_REVIEW_DELIVERABLES_SNIPPETS = (
     "output_contract.non_deliverable_indicators",
     "output_contract.pr_agent_deliverable_headings",
     "output_contract.pr_agent_disabled_noise",
+    "def review_body_has_no_findings_contract(",
+    "def pr_agent_body_has_substantive_review(",
     "review_output_contract(review_config)",
     "def source_label_from_template(",
     "source_label=source_label_from_template(",
@@ -713,6 +723,34 @@ def verify_texts(
                     "GLM fallback step must run after stamp failure while requiring usable checkout/runtime context"
                 )
                 break
+    glm_notice_step = workflow_step_block(glm_workflow, "Post GLM fallback infrastructure failure notice")
+    if not glm_notice_step:
+        findings.append("GLM workflow missing Post GLM fallback infrastructure failure notice step")
+    else:
+        for snippet in (
+            'config_exports="$(python3 - <<\'PY\'',
+            'tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))',
+            "AI review notice marker or expected bot login is unavailable.",
+            'eval "$config_exports"',
+            'if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then',
+        ):
+            if snippet not in glm_notice_step:
+                findings.append("GLM fallback infrastructure notice must not use empty marker or bot login")
+                break
+    kimi_notice_step = workflow_step_block(kimi_workflow, "Post Kimi fallback infrastructure failure notice")
+    if not kimi_notice_step:
+        findings.append("Kimi workflow missing Post Kimi fallback infrastructure failure notice step")
+    else:
+        for snippet in (
+            'config_exports="$(python3 - <<\'PY\'',
+            'tomllib.loads(Path(".ai-review/base/ci/ai-review.toml").read_text(encoding="utf-8"))',
+            "AI review notice marker or expected bot login is unavailable.",
+            'eval "$config_exports"',
+            'if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then',
+        ):
+            if snippet not in kimi_notice_step:
+                findings.append("Kimi fallback infrastructure notice must not use empty marker or bot login")
+                break
     for snippet in KIMI_FORBIDDEN_INPUTS:
         if snippet in kimi_workflow:
             findings.append(f"Kimi workflow must use the official Kimi CLI path, not {snippet!r}")
@@ -876,6 +914,36 @@ def run_self_tests(repo_root: Path) -> None:
         "fallback not reachable after stamp failure",
         fallback_not_reachable_after_stamp_failure,
         "GLM fallback step must run after stamp failure",
+    )
+
+    notice_empty_marker_guard_removed = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm.replace('            eval "$config_exports"\n', "", 2),
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding(
+        "notice empty marker guard removed",
+        notice_empty_marker_guard_removed,
+        "GLM fallback infrastructure notice must not use empty marker or bot login",
+    )
+
+    kimi_notice_empty_marker_guard_removed = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm,
+        kimi_workflow=kimi.replace('            eval "$config_exports"\n', "", 2),
+        smoke_workflow=smoke,
+    )
+    assert_finding(
+        "Kimi notice empty marker guard removed",
+        kimi_notice_empty_marker_guard_removed,
+        "Kimi fallback infrastructure notice must not use empty marker or bot login",
     )
 
     last_step_then_later_job = "\n".join(

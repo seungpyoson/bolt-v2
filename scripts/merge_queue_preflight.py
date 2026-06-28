@@ -99,6 +99,8 @@ PREFLIGHT_ARTIFACT_CLASSIFICATIONS = {
     "base_conflict": (LANE_INTEGRATION, "pr", STATUS_BLOCKED),
     "batch_conflict": (LANE_INTEGRATION, "batch", STATUS_READY),
     "batch_verifier_failed": (LANE_VERIFIER, "batch", STATUS_READY),
+    "base_mismatch": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
+    "head_mismatch": (LANE_IDENTITY, "pr", STATUS_BLOCKED),
     "metadata_unavailable": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
     "readiness_failed": (LANE_READINESS, "pr", STATUS_BLOCKED),
     "verifier_failed": (LANE_VERIFIER, "pr", STATUS_BLOCKED),
@@ -419,6 +421,20 @@ CHECK_BUCKET_ISSUES = {
     "fail": ("required_check_failed", "required check failed: {name}"),
     "cancel": ("required_check_failed", "required check failed: {name}"),
     "pending": ("required_check_pending", "required check pending: {name}"),
+}
+READINESS_ISSUE_ARTIFACT_TYPES = {
+    "base_mismatch": "base_mismatch",
+    "draft": "readiness_failed",
+    "head_mismatch": "head_mismatch",
+    "not_mergeable": "readiness_failed",
+    "not_open": "readiness_failed",
+    "required_check_failed": "readiness_failed",
+    "required_check_pending": "readiness_failed",
+    "review_not_approved": "readiness_failed",
+}
+READINESS_ISSUE_STATUS_RANKS = {
+    issue_code: CONTRACT_STATUS_RANK[PREFLIGHT_ARTIFACT_CLASSIFICATIONS[artifact_type][2]]
+    for issue_code, artifact_type in READINESS_ISSUE_ARTIFACT_TYPES.items()
 }
 
 
@@ -848,10 +864,15 @@ def readiness_warning_block(readiness: dict[str, object]) -> dict[str, object] |
     warnings = readiness.get("warnings", [])
     if not warnings:
         return None
+    warning_details = readiness["warning_details"]
+    issue_code = min(
+        (str(detail["code"]) for detail in warning_details),
+        key=READINESS_ISSUE_STATUS_RANKS.__getitem__,
+    )
     return {
         "pr": readiness["pr"],
         "reason": "; ".join(str(warning) for warning in warnings),
-        "type": "readiness_failed",
+        "type": READINESS_ISSUE_ARTIFACT_TYPES[issue_code],
     }
 
 

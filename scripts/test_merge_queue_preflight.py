@@ -287,6 +287,8 @@ def assert_preflight_artifact_classification_is_declarative() -> None:
         "base_conflict": ("integration", "pr", "blocked"),
         "batch_conflict": ("integration", "batch", "ready"),
         "batch_verifier_failed": ("verifier", "batch", "ready"),
+        "base_mismatch": ("identity", "pr", "inconclusive"),
+        "head_mismatch": ("identity", "pr", "blocked"),
         "metadata_unavailable": ("readiness", "pr", "inconclusive"),
         "readiness_failed": ("readiness", "pr", "blocked"),
         "verifier_failed": ("verifier", "pr", "blocked"),
@@ -370,6 +372,14 @@ def assert_contract_evaluator_reduces_normalized_evidence() -> None:
             module.ContractEvidence(
                 findings=ready,
                 artifacts=({"type": "metadata_unavailable", "pr": 1, "reason": "gh unavailable"},),
+                wave_status="ready",
+            ),
+            ("inconclusive", 3),
+        ),
+        "base_mismatch_inconclusive": (
+            module.ContractEvidence(
+                findings=ready,
+                artifacts=({"type": "base_mismatch", "pr": 1, "reason": "wrong base"},),
                 wave_status="ready",
             ),
             ("inconclusive", 3),
@@ -927,13 +937,13 @@ def assert_head_oid_mismatch_blocks_pr() -> None:
         assert_equal(result.returncode, 2, "head mismatch rc")
         payload = parse_json(result.stdout)
         blocked = payload["blocked_prs"]
-        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "readiness_failed":
-            raise AssertionError(blocked)
-        if "does not match fetched PR head" not in blocked[0]["reason"]:
-            raise AssertionError(blocked)
+        assert_equal(len(blocked), 1, "head mismatch blocked count")
+        assert_equal(blocked[0]["pr"], 1, "head mismatch pr")
+        assert_equal(blocked[0]["type"], "head_mismatch", "head mismatch type")
+        assert_equal(payload["lane_statuses"]["identity"], "blocked", "head mismatch identity lane")
 
 
-def assert_wrong_base_ref_blocks_pr() -> None:
+def assert_wrong_base_ref_is_inconclusive() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
@@ -943,13 +953,14 @@ def assert_wrong_base_ref_blocks_pr() -> None:
             views={1: approved_pr_view(head, base="release")},
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
-        assert_equal(result.returncode, 2, "wrong base rc")
+        assert_equal(result.returncode, 3, "wrong base rc")
         payload = parse_json(result.stdout)
         blocked = payload["blocked_prs"]
-        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "readiness_failed":
-            raise AssertionError(blocked)
-        if "PR targets base 'release', expected 'main'" not in blocked[0]["reason"]:
-            raise AssertionError(blocked)
+        assert_equal(len(blocked), 1, "wrong base blocked count")
+        assert_equal(blocked[0]["pr"], 1, "wrong base pr")
+        assert_equal(blocked[0]["type"], "base_mismatch", "wrong base type")
+        assert_equal(payload["lane_statuses"]["identity"], "inconclusive", "wrong base identity lane")
+        assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "wrong base contract")
 
 
 def assert_partial_gh_metadata_failure_preserves_other_readiness() -> None:
@@ -1064,7 +1075,7 @@ def main() -> int:
     assert_plain_output_bounds_failed_verifier_streams()
     assert_json_output_uses_bounded_verifier_previews()
     assert_head_oid_mismatch_blocks_pr()
-    assert_wrong_base_ref_blocks_pr()
+    assert_wrong_base_ref_is_inconclusive()
     assert_partial_gh_metadata_failure_preserves_other_readiness()
     assert_invalid_pr_input_is_rejected()
     assert_missing_gh_reports_inconclusive_metadata()

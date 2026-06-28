@@ -12,6 +12,10 @@ kimi_chat_docs_url = "https://platform.kimi.ai/docs/api/chat"
 kimi_models_url = "https://api.moonshot.ai/v1/models"
 glm_docs_index_url = "https://docs.z.ai/llms.txt"
 glm_migration_docs_url = "https://docs.z.ai/guides/overview/migrate-to-glm-new"
+request_timeout_seconds = 30
+github_issues_per_page = 100
+issue_marker = "<!-- ai-review-model-freshness-issue -->"
+issue_title = "AI review model pin update available"
 
 [glm]
 api_base = "https://api.z.ai/api/coding/paas/v4"

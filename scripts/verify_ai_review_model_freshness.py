@@ -29,8 +29,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "ai-review.toml"
 KIMI_CODE_MODEL_RE = re.compile(r"\bkimi-k(?P<version>\d+(?:\.\d+)*)-code(?:-highspeed)?\b")
 GLM_TEXT_MODEL_RE = re.compile(r"\bGLM-(?P<version>\d+(?:\.\d+)*)(?!\.\d)(?![-\w])", re.IGNORECASE)
-MODEL_FRESHNESS_ISSUE_MARKER = "<!-- ai-review-model-freshness-issue -->"
-MODEL_FRESHNESS_ISSUE_TITLE = "AI review model pin update available"
 PROVIDER_ALL = "all"
 PROVIDER_KIMI = "kimi"
 PROVIDER_GLM = "glm"
@@ -49,6 +47,10 @@ class FreshnessSources:
     kimi_models_url: str
     glm_docs_index_url: str
     glm_migration_docs_url: str
+    request_timeout_seconds: int
+    github_issues_per_page: int
+    issue_marker: str
+    issue_title: str
 
 
 def version_key(version: str) -> tuple[int, ...]:
@@ -113,6 +115,18 @@ def load_config(path: Path) -> tuple[ModelPins, FreshnessSources]:
             "glm_migration_docs_url",
             "model_freshness.glm_migration_docs_url",
         ),
+        request_timeout_seconds=int_value(
+            freshness,
+            "request_timeout_seconds",
+            "model_freshness.request_timeout_seconds",
+        ),
+        github_issues_per_page=int_value(
+            freshness,
+            "github_issues_per_page",
+            "model_freshness.github_issues_per_page",
+        ),
+        issue_marker=string_value(freshness, "issue_marker", "model_freshness.issue_marker"),
+        issue_title=string_value(freshness, "issue_title", "model_freshness.issue_title"),
     )
     return pins, sources
 
@@ -121,6 +135,13 @@ def string_value(table: dict[str, object], key: str, label: str) -> str:
     value = table.get(key)
     if not isinstance(value, str) or not value:
         raise ValueError(f"ci/ai-review.toml {label} must be a non-empty string")
+    return value
+
+
+def int_value(table: dict[str, object], key: str, label: str) -> int:
+    value = table.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"ci/ai-review.toml {label} must be a positive integer")
     return value
 
 
@@ -186,13 +207,13 @@ def parse_glm_migration_model(text: str) -> str | None:
     return match.group(1).lower() if match else parse_glm_docs_latest(text)
 
 
-def fetch_text(url: str, token: str | None = None) -> str:
+def fetch_text(url: str, token: str | None = None, *, timeout_seconds: int) -> str:
     headers = {"User-Agent": "bolt-v2-ai-review-model-freshness/1.0"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             return response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"GET {url} failed with HTTP {exc.code}") from exc
@@ -201,10 +222,20 @@ def fetch_text(url: str, token: str | None = None) -> str:
 
 
 class GitHubIssueClient:
-    def __init__(self, *, repo: str, token: str, api_url: str) -> None:
+    def __init__(
+        self,
+        *,
+        repo: str,
+        token: str,
+        api_url: str,
+        request_timeout_seconds: int,
+        issues_per_page: int,
+    ) -> None:
         self.repo = repo
         self.token = token
         self.api_url = api_url.rstrip("/")
+        self.request_timeout_seconds = request_timeout_seconds
+        self.issues_per_page = issues_per_page
 
     def _request_json(
         self,
@@ -228,7 +259,7 @@ class GitHubIssueClient:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=self.request_timeout_seconds) as response:
                 body = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -244,13 +275,13 @@ class GitHubIssueClient:
             payload = self._request_json(
                 "GET",
                 "issues",
-                params={"state": state, "per_page": "100", "page": str(page)},
+                params={"state": state, "per_page": str(self.issues_per_page), "page": str(page)},
             )
             if not isinstance(payload, list):
                 raise RuntimeError("GitHub issues API returned non-list payload")
             page_items = [item for item in payload if isinstance(item, dict) and "pull_request" not in item]
             items.extend(page_items)
-            if len(payload) < 100:
+            if len(payload) < self.issues_per_page:
                 return items
             page += 1
 
@@ -269,22 +300,34 @@ def live_latest_models(
     warnings: list[str] = []
     kimi_latest: str | None = None
     if provider_enabled(provider, PROVIDER_KIMI):
-        kimi_token = os.environ.get("MOONSHOT_API_KEY") or os.environ.get("KIMI_API_KEY")
+        kimi_token = os.environ.get("KIMI_API_KEY")
         if kimi_token:
             try:
-                kimi_latest = parse_kimi_models_api_latest(fetch_text(sources.kimi_models_url, token=kimi_token))
+                kimi_latest = parse_kimi_models_api_latest(
+                    fetch_text(
+                        sources.kimi_models_url,
+                        token=kimi_token,
+                        timeout_seconds=sources.request_timeout_seconds,
+                    )
+                )
             except Exception as exc:  # noqa: BLE001 - keep fallback diagnostic actionable.
                 warnings.append(
                     "Kimi models API unavailable; falling back to public docs: "
                     f"{sanitize_detail(str(exc))}"
                 )
         if kimi_latest is None:
-            kimi_latest = parse_kimi_chat_docs_latest(fetch_text(sources.kimi_chat_docs_url))
+            kimi_latest = parse_kimi_chat_docs_latest(
+                fetch_text(sources.kimi_chat_docs_url, timeout_seconds=sources.request_timeout_seconds)
+            )
 
     glm_latest: str | None = None
     if provider_enabled(provider, PROVIDER_GLM):
-        glm_latest = parse_glm_docs_latest(fetch_text(sources.glm_docs_index_url))
-        migration_model = parse_glm_migration_model(fetch_text(sources.glm_migration_docs_url))
+        glm_latest = parse_glm_docs_latest(
+            fetch_text(sources.glm_docs_index_url, timeout_seconds=sources.request_timeout_seconds)
+        )
+        migration_model = parse_glm_migration_model(
+            fetch_text(sources.glm_migration_docs_url, timeout_seconds=sources.request_timeout_seconds)
+        )
         if glm_latest and migration_model and glm_latest != migration_model:
             warnings.append(
                 "Z.AI docs disagree on latest GLM text model: "
@@ -357,7 +400,7 @@ def build_advisory_outputs(
     }
 
 
-def render_model_freshness_issue_body(*, pins: ModelPins, advisory: dict[str, str]) -> str:
+def render_model_freshness_issue_body(*, pins: ModelPins, advisory: dict[str, str], issue_marker: str) -> str:
     warning_lines = [
         warning
         for warning in (advisory.get("kimi_warning", ""), advisory.get("glm_warning", ""))
@@ -378,7 +421,7 @@ def render_model_freshness_issue_body(*, pins: ModelPins, advisory: dict[str, st
         )
 
     return (
-        f"{MODEL_FRESHNESS_ISSUE_MARKER}\n\n"
+        f"{issue_marker}\n\n"
         "## AI review model freshness\n\n"
         f"{summary}\n\n"
         "Current pins:\n"
@@ -390,61 +433,84 @@ def render_model_freshness_issue_body(*, pins: ModelPins, advisory: dict[str, st
     )
 
 
-def model_freshness_issue_number(issue: dict[str, object]) -> int | None:
+def model_freshness_issue_number(issue: dict[str, object], *, issue_marker: str) -> int | None:
     number = issue.get("number")
     body = issue.get("body")
-    if isinstance(number, int) and isinstance(body, str) and MODEL_FRESHNESS_ISSUE_MARKER in body:
+    if isinstance(number, int) and isinstance(body, str) and issue_marker in body:
         return number
     return None
 
 
-def model_freshness_issues(issues: Iterable[dict[str, object]]) -> list[dict[str, object]]:
-    return [issue for issue in issues if model_freshness_issue_number(issue) is not None]
+def model_freshness_issues(issues: Iterable[dict[str, object]], *, issue_marker: str) -> list[dict[str, object]]:
+    return [issue for issue in issues if model_freshness_issue_number(issue, issue_marker=issue_marker) is not None]
 
 
-def issue_number(issue: dict[str, object]) -> int:
-    number = model_freshness_issue_number(issue)
+def issue_number(issue: dict[str, object], *, issue_marker: str) -> int:
+    number = model_freshness_issue_number(issue, issue_marker=issue_marker)
     if number is None:
         raise ValueError("issue is missing model freshness marker or integer number")
     return number
 
 
-def sync_model_freshness_issue(*, github: object, pins: ModelPins, advisory: dict[str, str]) -> str:
-    body = render_model_freshness_issue_body(pins=pins, advisory=advisory)
-    existing_issues = model_freshness_issues(github.list_issues(state="all"))  # type: ignore[attr-defined]
-    existing_issues.sort(key=issue_number, reverse=True)
+def sync_model_freshness_issue(
+    *,
+    github: object,
+    pins: ModelPins,
+    advisory: dict[str, str],
+    sources: FreshnessSources,
+) -> str:
+    body = render_model_freshness_issue_body(pins=pins, advisory=advisory, issue_marker=sources.issue_marker)
+    existing_issues = model_freshness_issues(  # type: ignore[attr-defined]
+        github.list_issues(state="all"),
+        issue_marker=sources.issue_marker,
+    )
+    existing_issues.sort(key=lambda issue: issue_number(issue, issue_marker=sources.issue_marker), reverse=True)
     existing_issue = existing_issues[0] if existing_issues else None
 
     if advisory.get("stale") == "true":
         if existing_issue is not None:
-            existing_number = issue_number(existing_issue)
+            existing_number = issue_number(existing_issue, issue_marker=sources.issue_marker)
             github.update_issue(existing_number, state="open", body=body)  # type: ignore[attr-defined]
             for duplicate in existing_issues[1:]:
                 if duplicate.get("state") == "open":
-                    github.update_issue(issue_number(duplicate), state="closed", body=body)  # type: ignore[attr-defined]
+                    github.update_issue(  # type: ignore[attr-defined]
+                        issue_number(duplicate, issue_marker=sources.issue_marker),
+                        state="closed",
+                        body=body,
+                    )
             if existing_issue.get("state") == "closed":
                 return "issue-reopened"
             return "issue-updated"
-        github.create_issue(title=MODEL_FRESHNESS_ISSUE_TITLE, body=body)  # type: ignore[attr-defined]
+        github.create_issue(title=sources.issue_title, body=body)  # type: ignore[attr-defined]
         return "issue-created"
 
     open_issues = [issue for issue in existing_issues if issue.get("state") == "open"]
     for issue in open_issues:
-        github.update_issue(issue_number(issue), state="closed", body=body)  # type: ignore[attr-defined]
+        github.update_issue(  # type: ignore[attr-defined]
+            issue_number(issue, issue_marker=sources.issue_marker),
+            state="closed",
+            body=body,
+        )
     if open_issues:
         return "issue-closed"
     return "issue-not-needed"
 
 
-def github_issue_client_from_env() -> GitHubIssueClient:
+def github_issue_client_from_env(sources: FreshnessSources) -> GitHubIssueClient:
     repo = os.environ.get("GITHUB_REPOSITORY", "")
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN", "")
+    token = os.environ.get("GITHUB_TOKEN", "")
     api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com")
     if not repo:
         raise RuntimeError("GITHUB_REPOSITORY is required to sync the model freshness issue")
     if not token:
-        raise RuntimeError("GITHUB_TOKEN or GH_TOKEN is required to sync the model freshness issue")
-    return GitHubIssueClient(repo=repo, token=token, api_url=api_url)
+        raise RuntimeError("GITHUB_TOKEN is required to sync the model freshness issue")
+    return GitHubIssueClient(
+        repo=repo,
+        token=token,
+        api_url=api_url,
+        request_timeout_seconds=sources.request_timeout_seconds,
+        issues_per_page=sources.github_issues_per_page,
+    )
 
 
 def write_github_output(name: str, value: str) -> None:
@@ -530,6 +596,10 @@ kimi_chat_docs_url = "https://example.invalid/kimi-chat"
 kimi_models_url = "https://example.invalid/kimi-models"
 glm_docs_index_url = "https://example.invalid/glm-index"
 glm_migration_docs_url = "https://example.invalid/glm-migration"
+request_timeout_seconds = 30
+github_issues_per_page = 100
+issue_marker = "<!-- test-ai-review-model-freshness-issue -->"
+issue_title = "Test AI review model pin update available"
 
 [glm]
 model = "{current_glm}"
@@ -553,6 +623,10 @@ model = "{current_kimi}"
                 assert main(["--config-file", str(config_path), "--live", "--advisory", "--provider", PROVIDER_GLM]) == 0
             assert f"GLM={current_glm}" in stdout.getvalue(), stdout.getvalue()
             assert "Kimi=" not in stdout.getvalue(), stdout.getvalue()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                assert main(["--config-file", str(config_path), "--advisory", "--github-notice"]) == 1
+            assert "--github-notice requires --live provider freshness data" in stderr.getvalue(), stderr.getvalue()
     finally:
         globals()["live_latest_models"] = original_live_latest_models
 
@@ -589,10 +663,15 @@ model = "{current_kimi}"
         kimi_models_url="https://example.invalid/kimi-models",
         glm_docs_index_url="https://example.invalid/glm-index",
         glm_migration_docs_url="https://example.invalid/glm-migration",
+        request_timeout_seconds=30,
+        github_issues_per_page=100,
+        issue_marker="<!-- test-ai-review-model-freshness-issue -->",
+        issue_title="Test AI review model pin update available",
     )
     original_fetch_text = fetch_text
     try:
-        def fake_fetch_text(url: str, token: str | None = None) -> str:
+        def fake_fetch_text(url: str, token: str | None = None, *, timeout_seconds: int) -> str:
+            del timeout_seconds
             del token
             if url == sources.kimi_chat_docs_url:
                 return f"default:{current_kimi}"
@@ -611,7 +690,8 @@ model = "{current_kimi}"
 
     provider_calls: list[str] = []
     try:
-        def fake_provider_fetch_text(url: str, token: str | None = None) -> str:
+        def fake_provider_fetch_text(url: str, token: str | None = None, *, timeout_seconds: int) -> str:
+            del timeout_seconds
             del token
             provider_calls.append(url)
             if url == sources.kimi_chat_docs_url:
@@ -654,9 +734,9 @@ model = "{current_kimi}"
         warnings=["Z.AI docs disagree on latest GLM text model"],
     )
     fake_issues = FakeIssueClient()
-    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=stale_advisory) == "issue-created"
+    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=stale_advisory, sources=sources) == "issue-created"
     assert len(fake_issues.created) == 1
-    assert MODEL_FRESHNESS_ISSUE_MARKER in fake_issues.created[0]["body"]
+    assert sources.issue_marker in fake_issues.created[0]["body"]
     assert "GLM model update available" in fake_issues.created[0]["body"]
 
     previous_secret = os.environ.get("MODEL_FRESHNESS_TEST_API_KEY")
@@ -664,7 +744,11 @@ model = "{current_kimi}"
     try:
         redacted_advisory = dict(stale_advisory)
         redacted_advisory["source_warnings"] = f"provider echoed {secret}"
-        redacted_body = render_model_freshness_issue_body(pins=pins, advisory=redacted_advisory)
+        redacted_body = render_model_freshness_issue_body(
+            pins=pins,
+            advisory=redacted_advisory,
+            issue_marker=sources.issue_marker,
+        )
         assert secret not in redacted_body, redacted_body
         assert "***" in redacted_body, redacted_body
     finally:
@@ -676,41 +760,70 @@ model = "{current_kimi}"
     stale_issue = {
         "number": 321,
         "state": "open",
-        "body": f"{MODEL_FRESHNESS_ISSUE_MARKER}\n\nold stale body",
+        "body": f"{sources.issue_marker}\n\nold stale body",
     }
     fake_issues = FakeIssueClient([stale_issue])
-    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=stale_advisory) == "issue-updated"
+    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=stale_advisory, sources=sources) == "issue-updated"
     assert fake_issues.created == []
-    assert fake_issues.updated == [(321, {"state": "open", "body": render_model_freshness_issue_body(pins=pins, advisory=stale_advisory)})]
+    assert fake_issues.updated == [
+        (
+            321,
+            {
+                "state": "open",
+                "body": render_model_freshness_issue_body(
+                    pins=pins,
+                    advisory=stale_advisory,
+                    issue_marker=sources.issue_marker,
+                ),
+            },
+        )
+    ]
 
     closed_stale_issue = {
         "number": 322,
         "state": "closed",
-        "body": f"{MODEL_FRESHNESS_ISSUE_MARKER}\n\nclosed stale body",
+        "body": f"{sources.issue_marker}\n\nclosed stale body",
     }
     fake_issues = FakeIssueClient([closed_stale_issue])
-    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=stale_advisory) == "issue-reopened"
+    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=stale_advisory, sources=sources) == "issue-reopened"
     assert fake_issues.created == []
-    assert fake_issues.updated == [(322, {"state": "open", "body": render_model_freshness_issue_body(pins=pins, advisory=stale_advisory)})]
+    assert fake_issues.updated == [
+        (
+            322,
+            {
+                "state": "open",
+                "body": render_model_freshness_issue_body(
+                    pins=pins,
+                    advisory=stale_advisory,
+                    issue_marker=sources.issue_marker,
+                ),
+            },
+        )
+    ]
 
     duplicate_issues = [
         {
             "number": 323,
             "state": "open",
-            "body": f"{MODEL_FRESHNESS_ISSUE_MARKER}\n\nolder duplicate",
+            "body": f"{sources.issue_marker}\n\nolder duplicate",
         },
         {
             "number": 324,
             "state": "closed",
-            "body": f"{MODEL_FRESHNESS_ISSUE_MARKER}\n\nnewer closed issue",
+            "body": f"{sources.issue_marker}\n\nnewer closed issue",
         },
     ]
     fake_issues = FakeIssueClient(duplicate_issues)
-    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=stale_advisory) == "issue-reopened"
+    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=stale_advisory, sources=sources) == "issue-reopened"
     assert fake_issues.created == []
+    stale_body = render_model_freshness_issue_body(
+        pins=pins,
+        advisory=stale_advisory,
+        issue_marker=sources.issue_marker,
+    )
     assert fake_issues.updated == [
-        (324, {"state": "open", "body": render_model_freshness_issue_body(pins=pins, advisory=stale_advisory)}),
-        (323, {"state": "closed", "body": render_model_freshness_issue_body(pins=pins, advisory=stale_advisory)}),
+        (324, {"state": "open", "body": stale_body}),
+        (323, {"state": "closed", "body": stale_body}),
     ]
 
     fresh_advisory = build_advisory_outputs(
@@ -720,8 +833,20 @@ model = "{current_kimi}"
         warnings=[],
     )
     fake_issues = FakeIssueClient([stale_issue])
-    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=fresh_advisory) == "issue-closed"
-    assert fake_issues.updated == [(321, {"state": "closed", "body": render_model_freshness_issue_body(pins=pins, advisory=fresh_advisory)})]
+    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=fresh_advisory, sources=sources) == "issue-closed"
+    assert fake_issues.updated == [
+        (
+            321,
+            {
+                "state": "closed",
+                "body": render_model_freshness_issue_body(
+                    pins=pins,
+                    advisory=fresh_advisory,
+                    issue_marker=sources.issue_marker,
+                ),
+            },
+        )
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -770,7 +895,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             write_github_outputs(advisory)
             if args.github_notice:
-                print(sync_model_freshness_issue(github=github_issue_client_from_env(), pins=pins, advisory=advisory))
+                if not args.live:
+                    raise RuntimeError("--github-notice requires --live provider freshness data")
+                print(
+                    sync_model_freshness_issue(
+                        github=github_issue_client_from_env(sources),
+                        pins=pins,
+                        advisory=advisory,
+                        sources=sources,
+                    )
+                )
             if advisory["stale"] == "true":
                 for warning in (advisory["kimi_warning"], advisory["glm_warning"]):
                     if warning:

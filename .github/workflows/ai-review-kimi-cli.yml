@@ -121,7 +121,6 @@ jobs:
         continue-on-error: true
         env:
           KIMI_API_KEY: ${{ env.KIMI_API_KEY }}
-          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
         run: >-
           python3 .ai-review/base/scripts/verify_ai_review_model_freshness.py
           --config-file .ai-review/base/ci/ai-review.toml

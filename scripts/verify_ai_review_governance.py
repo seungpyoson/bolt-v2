@@ -319,6 +319,9 @@ def verify_model_freshness_step_contracts(glm_workflow: str, kimi_workflow: str)
     glm_block = workflow_step_block(glm_workflow, "Check AI review model freshness")
     if "KIMI_API_KEY" in glm_block or "MOONSHOT_API_KEY" in glm_block:
         findings.append("GLM workflow model freshness step must not receive Kimi/Moonshot secrets")
+    kimi_block = workflow_step_block(kimi_workflow, "Check AI review model freshness")
+    if "MOONSHOT_API_KEY" in kimi_block:
+        findings.append("Kimi workflow model freshness step must use KIMI_API_KEY as the single Kimi credential")
     return findings
 
 
@@ -336,6 +339,12 @@ def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
     except tomllib.TOMLDecodeError:
         return ()
     literals: list[str] = []
+    model_freshness = parsed.get("model_freshness")
+    if isinstance(model_freshness, dict):
+        for key in ("issue_marker", "issue_title"):
+            value = model_freshness.get(key)
+            if isinstance(value, str) and value:
+                literals.append(value)
     for table_name in ("glm", "kimi"):
         table = parsed.get(table_name)
         if isinstance(table, dict):
@@ -406,6 +415,18 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
             "model_freshness.glm_migration_docs_url",
             model_freshness.get("glm_migration_docs_url"),
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
+        ),
+        ("model_freshness.request_timeout_seconds", model_freshness.get("request_timeout_seconds"), 30),
+        ("model_freshness.github_issues_per_page", model_freshness.get("github_issues_per_page"), 100),
+        (
+            "model_freshness.issue_marker",
+            model_freshness.get("issue_marker"),
+            "<!-- ai-review-model-freshness-issue -->",
+        ),
+        (
+            "model_freshness.issue_title",
+            model_freshness.get("issue_title"),
+            "AI review model pin update available",
         ),
         ("glm.api_base", glm.get("api_base"), "https://api.z.ai/api/coding/paas/v4"),
         ("glm.review_max_chunk_chars", glm.get("review_max_chunk_chars"), 60000),
@@ -647,6 +668,8 @@ def run_self_tests(repo_root: Path) -> None:
         raise AssertionError("Kimi model freshness step must be advisory via continue-on-error")
     if "--provider kimi" not in kimi_model_freshness_step:
         raise AssertionError("Kimi model freshness step must check only Kimi freshness")
+    if "MOONSHOT_API_KEY" in kimi_model_freshness_step:
+        raise AssertionError("Kimi model freshness step must use KIMI_API_KEY as the single Kimi credential")
 
     glm_blocking_freshness = verify_texts(
         agents_md=agents,

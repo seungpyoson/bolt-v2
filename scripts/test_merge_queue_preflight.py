@@ -608,6 +608,10 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
             }
         ]:
             raise AssertionError(payload["findings"])
+        if (payload["verdict"], payload["contract_exit_code"]) != ("blocked", 2):
+            raise AssertionError(payload)
+        if payload["lane_statuses"]["integration"] != "blocked":
+            raise AssertionError(payload["lane_statuses"])
 
 
 def assert_verifier_failure_blocks_bad_pr_before_batching() -> None:

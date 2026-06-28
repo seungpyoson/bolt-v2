@@ -990,10 +990,13 @@ def preflight(
                 verifiers=current_verifiers,
             )
         )
-    findings = [
-        preflight_artifact_finding(artifact)
-        for artifact in (*blocked_prs, *conflicts)
-    ]
+    contract_evaluation = evaluate_preflight_contract(
+        ContractEvidence(
+            findings=(),
+            artifacts=(*blocked_prs, *conflicts),
+            wave_status=STATUS_READY,
+        )
+    )
     payload = {
         "base": base,
         "base_sha": base_sha,
@@ -1004,7 +1007,11 @@ def preflight(
         "batches": [batch.as_json(output_policy) for batch in batches],
         "blocked_prs": blocked_prs,
         "conflicts": conflicts,
-        "findings": findings,
+        "contract_exit_code": contract_evaluation["exit_code"],
+        "findings": contract_evaluation["findings"],
+        "lane_statuses": contract_evaluation["lane_statuses"],
+        "verdict": contract_evaluation["verdict"],
+        "wave_status": contract_evaluation["wave_status"],
         "output_policy": output_policy.as_json(),
     }
     exit_code = 1 if blocked_prs or conflicts or metadata_warnings else 0

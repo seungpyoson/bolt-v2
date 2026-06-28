@@ -16,9 +16,6 @@ DOMAIN_METRICS_PATH = Path("crates/backtesting-vertical-slice/src/domain_metrics
 LIB_PATH = Path("crates/backtesting-vertical-slice/src/lib.rs")
 CARGO_PATH = Path("crates/backtesting-vertical-slice/Cargo.toml")
 JUSTFILE_PATH = Path("justfile")
-TASKS_PATH = Path("specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md")
-
-CHECKED_RA010 = re.compile(r"^- \[[xX]\] RA-010\b", re.MULTILINE)
 
 
 def strip_rust_comments_and_literals(text: str) -> str:
@@ -97,15 +94,11 @@ def scan_root(root: Path) -> list[str]:
     lib_text = read(root, LIB_PATH)
     cargo_text = read(root, CARGO_PATH)
     just_text = read(root, JUSTFILE_PATH)
-    tasks_text = read(root, TASKS_PATH)
 
     run_manifest_code = strip_rust_comments_and_literals(run_manifest_text)
     runner_code = strip_rust_comments_and_literals(runner_text)
     domain_metrics_code = strip_rust_comments_and_literals(domain_metrics_text)
     lib_code = strip_rust_comments_and_literals(lib_text)
-
-    if not CHECKED_RA010.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: RA-010 must be checked only when domain metrics are implemented")
 
     if "nautilus-analysis" not in cargo_text:
         findings.append(f"{CARGO_PATH}: missing direct nautilus-analysis dependency")

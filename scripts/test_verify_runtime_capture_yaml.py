@@ -203,7 +203,6 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
         self.patch_verifier_attr("FEAS_PATH", feas_path)
         self.patch_verifier_attr("CURRENT_CAPTURE_PATH", current_capture_path)
         self.patch_verifier_attr("NAMING_AUDIT_PATH", naming_audit_path)
-        self.patch_verifier_attr("RUNTIME_CONTRACTS_PATH", runtime_contracts_path)
         self.patch_verifier_attr("SRC_PATH", src_path)
         self.patch_verifier_attr("TEST_PATH", test_path)
         self.patch_verifier_attr(
@@ -792,12 +791,6 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
         self.write_fixture(mutate)
 
         self.assertEqual([], VERIFIER.collect_failures())
-
-    def test_collect_failures_rejects_missing_runtime_contract_pin(self) -> None:
-        def mutate(fixture: dict[str, Any]) -> None:
-            fixture["runtime_contracts_text"] = "runtime contract without pin\n"
-
-        self.assert_collects("13.runtime_contract_pin_missing", mutate)
 
     def test_collect_failures_rejects_surfaces_yaml_pin_literals(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:

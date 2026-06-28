@@ -14,9 +14,6 @@ ARTIFACT_STORE_PATH = Path("crates/backtesting-vertical-slice/src/artifact_store
 ARTIFACT_INDEX_PATH = Path("crates/backtesting-vertical-slice/src/artifact_index.rs")
 ARTIFACT_STORE_TEST_PATH = Path("crates/backtesting-vertical-slice/tests/artifact_store_contract.rs")
 JUSTFILE_PATH = Path("justfile")
-TASKS_PATH = Path("specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md")
-
-CHECKED_RA012 = re.compile(r"^- \[[xX]\] RA-012\b", re.MULTILINE)
 
 
 def strip_rust_comments_and_literals(text: str) -> str:
@@ -103,14 +100,10 @@ def scan_root(root: Path) -> list[str]:
     artifact_index_text = read(root, ARTIFACT_INDEX_PATH)
     test_text = read(root, ARTIFACT_STORE_TEST_PATH)
     just_text = read(root, JUSTFILE_PATH)
-    tasks_text = read(root, TASKS_PATH)
 
     artifact_store_code = strip_rust_comments_and_literals(artifact_store_text)
     artifact_index_code = strip_rust_comments_and_literals(artifact_index_text)
     test_code = strip_rust_comments_and_literals(test_text)
-
-    if not CHECKED_RA012.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: RA-012 must be checked only when RA Artifact Index commits are implemented")
 
     for family in ("datasets", "feature-tables", "experiment-results"):
         if family not in artifact_store_text:

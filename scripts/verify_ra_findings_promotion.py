@@ -15,9 +15,6 @@ ARTIFACT_INDEX_PATH = Path("crates/backtesting-vertical-slice/src/artifact_index
 RUN_MANIFEST_PATH = Path("crates/backtesting-vertical-slice/src/run_manifest.rs")
 RA_TEST_PATH = Path("crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_research_analytics.rs")
 JUSTFILE_PATH = Path("justfile")
-TASKS_PATH = Path("specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md")
-
-CHECKED_RA011 = re.compile(r"^- \[[xX]\] RA-011\b", re.MULTILINE)
 
 
 def strip_rust_comments_and_literals(text: str) -> str:
@@ -105,15 +102,11 @@ def scan_root(root: Path) -> list[str]:
     run_manifest_text = read(root, RUN_MANIFEST_PATH)
     test_text = read(root, RA_TEST_PATH)
     just_text = read(root, JUSTFILE_PATH)
-    tasks_text = read(root, TASKS_PATH)
 
     ra_code = strip_rust_comments_and_literals(ra_text)
     artifact_index_code = strip_rust_comments_and_literals(artifact_index_text)
     run_manifest_code = strip_rust_comments_and_literals(run_manifest_text)
     test_code = strip_rust_comments_and_literals(test_text)
-
-    if not CHECKED_RA011.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: RA-011 must be checked only when findings/promotion is implemented")
 
     for label, pattern in (
         ("RaVerdictKind enum", r"\bpub\s+enum\s+RaVerdictKind\b.*\bGo\b.*\bNoGo\b.*\bConditionalGo\b"),

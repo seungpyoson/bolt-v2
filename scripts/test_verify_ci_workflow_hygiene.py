@@ -448,9 +448,12 @@ jobs:
   source-fence:
     name: source-fence
     needs: [ci-policy, detector]
-    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@example
+        with:
+          ref: ${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && github.event.pull_request.head.sha || github.sha }}
       - uses: ./.github/actions/setup-environment
         with:
           just-version: ${{ env.JUST_VERSION }}
@@ -468,7 +471,12 @@ jobs:
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
-      - run: just source-fence
+      - run: |
+          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence
+          else
+            just source-fence-static
+          fi
 
   nextest-fingerprint:
     name: nextest fingerprint
@@ -4143,11 +4151,27 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             ),
         ),
         (
-            "source-fence must gate on full_ci_required",
+            "source-fence must run for full_ci_required or docs policy",
             replace_once(
                 workflow,
-                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}",
                 "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}",
+            ),
+        ),
+        (
+            "source-fence must run for full_ci_required or docs policy",
+            replace_once(
+                workflow,
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}",
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.ci-policy.outputs.ci_policy_path == 'docs' }}",
+            ),
+        ),
+        (
+            "source-fence checkout must use pull_request head SHA for docs policy and github.sha otherwise",
+            replace_once(
+                workflow,
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n        with:\n          ref: ${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && github.event.pull_request.head.sha || github.sha }}",
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2",
             ),
         ),
         (
@@ -4973,6 +4997,72 @@ def assert_runner_contract_rejects_unmapped_workflow_jobs() -> None:
     errors = verifier.verify_github_actions_runner_contract({workflow_name: rogue})
     if not any("rogue" in error and "ci/github-actions-runners.toml" in error for error in errors):
         raise AssertionError(f"runner contract must reject unmapped workflow jobs, got: {errors}")
+
+
+def assert_runner_contract_accepts_flaky_detection_workflow_mapping() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/flaky-test-detection.yml"
+    workflow = """name: Flaky Test Detection
+
+on:
+  workflow_dispatch:
+
+jobs:
+  flaky-detection-rust-root:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo root
+
+  flaky-detection-rust-backtester:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo backtester
+
+  flaky-detection-rust-backtester-issue-789:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo issue-789
+"""
+    errors = verifier.verify_github_actions_runner_contract({workflow_name: workflow})
+    if errors:
+        raise AssertionError(f"flaky detection workflow runner contract must be mapped, got: {errors}")
+
+
+def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
+    workflow = repo_workflow_text(".github/workflows/flaky-test-detection.yml")
+    pinned_v14_action = "uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14"
+    expected_job_names = (
+        "job_name: nextest archive",
+        "job_name: bvs-test archive",
+        "job_name: bvs-test issue-789",
+    )
+    expected_cli_job_env = (
+        "MERGIFY_TEST_JOB_NAME: nextest archive",
+        "MERGIFY_TEST_JOB_NAME: bvs-test archive",
+        "MERGIFY_TEST_JOB_NAME: bvs-test issue-789",
+    )
+    if workflow.count(pinned_v14_action) != 3:
+        raise AssertionError("flaky-test-detection.yml must pin all Mergify uploads to the v14 action SHA")
+    if "flaky_test_detection:" in workflow:
+        raise AssertionError("flaky-test-detection.yml must not pass unsupported Mergify inputs")
+    if "MERGIFY_JOB_NAME:" in workflow:
+        raise AssertionError("flaky-test-detection.yml must pass job names through the Mergify job_name input")
+    for job_name in expected_job_names:
+        if job_name not in workflow:
+            raise AssertionError(f"flaky-test-detection.yml missing Mergify upload {job_name!r}")
+    for job_env in expected_cli_job_env:
+        if job_env not in workflow:
+            raise AssertionError(f"flaky-test-detection.yml missing current Mergify CLI env {job_env!r}")
+    if workflow.count("MERGIFY_TEST_EXIT_CODE=%s") != 3:
+        raise AssertionError("flaky-test-detection.yml must pass test runner exit codes to Mergify")
+    if workflow.count("python3 scripts/ci_input_sets.py hash backtester_cache") != 2:
+        raise AssertionError("flaky-test-detection.yml BVS jobs must use the shared backtester cache digest")
+    if "managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles(" in workflow:
+        raise AssertionError("flaky-test-detection.yml BVS target cache keys must not use inline hashFiles")
+    if workflow.count("managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}") != 2:
+        raise AssertionError("flaky-test-detection.yml BVS target cache keys must use the shared digest")
+    if "managed-target-bvs-v1-" in workflow or "flaky-root-test-" in workflow:
+        raise AssertionError("flaky-test-detection.yml must restore from production cache namespaces")
 
 
 def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> None:
@@ -9130,6 +9220,25 @@ def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
     errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
     assert any("backtester cache key must use ci_input_sets digest" in error for error in errors), errors
     assert any("backtester cache key must include steps.bvs_cache_inputs.outputs.digest" in error for error in errors), errors
+    flaky_bad = """jobs:
+  flaky-detection-rust-backtester:
+    steps:
+      - uses: actions/cache/restore@example
+        with:
+          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock') }}
+"""
+    flaky_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/flaky-test-detection.yml": flaky_bad}
+    )
+    assert any("backtester cache key must use ci_input_sets digest" in error for error in flaky_errors), flaky_errors
+    assert any(
+        "backtester cache key digest must come from ci_input_sets backtester_cache" in error
+        for error in flaky_errors
+    ), flaky_errors
+    assert not any(
+        "backtester cache key digest must use exact-head namespace" in error
+        for error in flaky_errors
+    ), flaky_errors
     good = """jobs:
   clippy:
     steps:
@@ -11045,8 +11154,8 @@ def main() -> int:
         "source-fence managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: just source-fence",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just source-fence",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: |",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: |",
         ),
     )
     assert_error(
@@ -11493,8 +11602,53 @@ def main() -> int:
         ),
     )
     assert_error(
+        "source-fence checkout must use pull_request head SHA for docs policy and github.sha otherwise",
+        replace_once(
+            BASE_WORKFLOW,
+            "        with:\n          ref: ${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && github.event.pull_request.head.sha || github.sha }}\n",
+            "",
+        ),
+    )
+    assert_error(
         "source-fence must run just source-fence",
-        replace_once(BASE_WORKFLOW, "- run: just source-fence", "- run: echo source-fence"),
+        replace_once(BASE_WORKFLOW, "            just source-fence", "            echo source-fence"),
+    )
+    assert_error(
+        "source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy",
+        replace_once(BASE_WORKFLOW, "            just source-fence-static", "            echo source-fence-static"),
+    )
+    assert_error(
+        "source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy",
+        replace_once(
+            BASE_WORKFLOW,
+            """          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence
+          else
+            just source-fence-static
+          fi""",
+            """          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence
+            just source-fence-static
+          else
+            echo docs policy skipped
+          fi""",
+        ),
+    )
+    assert_error(
+        "source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy",
+        replace_once(
+            BASE_WORKFLOW,
+            """          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence
+          else
+            just source-fence-static
+          fi""",
+            """          if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+            just source-fence-static
+          else
+            just source-fence
+          fi""",
+        ),
     )
     for job in ("deny", "clippy", "source-fence", "nextest-fingerprint", "test-archive", "nextest-fingerprint-reuse", "test"):
         assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
@@ -12247,10 +12401,9 @@ def main() -> int:
         "ci.yml source-fence must not compile cargo-nextest from source",
         replace_once(
             BASE_WORKFLOW,
-            "      - run: just source-fence",
-            """      - run: |
-          cargo install --git https://github.com/nextest-rs/nextest --package cargo-nextest --locked
-          just source-fence""",
+            "            just source-fence",
+            """            cargo install --git https://github.com/nextest-rs/nextest --package cargo-nextest --locked
+            just source-fence""",
         ),
     )
     assert_error(
@@ -12696,6 +12849,8 @@ def main() -> int:
     assert_ci_provenance_config_contract()
     assert_runner_contract_rejects_missing_and_extra_jobs()
     assert_runner_contract_rejects_unmapped_workflow_jobs()
+    assert_runner_contract_accepts_flaky_detection_workflow_mapping()
+    assert_flaky_detection_workflow_uses_supported_mergify_contract()
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
     assert_runner_contract_requires_meter_api_limits()
     assert_runner_contract_requires_fingerprint_archive_tier_coupling()

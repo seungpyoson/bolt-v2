@@ -25,7 +25,7 @@ NT_REV = "6be5a5094716790a8ca2875445fde4fa2586107e"
 BOLT_REV = "5f39d352c081446f309605e49d6beaba86931ca5"
 
 
-def valid_ledger(capability_overrides: str = "") -> str:
+def valid_ledger_toml(capability_overrides: str = "") -> str:
     entries = []
     for capability in VERIFIER.REQUIRED_CAPABILITIES:
         disposition = "wrap_nt" if capability == "order_book_depth" else "reuse_nt"
@@ -71,9 +71,6 @@ def valid_ledger(capability_overrides: str = "") -> str:
         )
     return textwrap.dedent(
         f"""
-        # Outcome Group NT Evidence
-
-        ```toml outcome_group_nt_capability_ledger
         [ledger]
         version = 1
         nt_revision = "{NT_REV}"
@@ -81,14 +78,13 @@ def valid_ledger(capability_overrides: str = "") -> str:
 
         {''.join(entries)}
         {capability_overrides}
-        ```
         """
     )
 
 
 def remove_capability(ledger: str, capability: str) -> str:
     pattern = re.compile(
-        rf"\n\s*\[capabilities\.{re.escape(capability)}\]\n.*?(?=\n\s*\[capabilities\.|\n\s*```)",
+        rf"\n\s*\[capabilities\.{re.escape(capability)}\]\n.*?(?=\n\s*\[capabilities\.|\Z)",
         re.DOTALL,
     )
     return pattern.sub("\n", ledger)
@@ -96,7 +92,7 @@ def remove_capability(ledger: str, capability: str) -> str:
 
 def replace_capability(ledger: str, capability: str, body: str) -> str:
     pattern = re.compile(
-        rf"\n\s*\[capabilities\.{re.escape(capability)}\]\n.*?(?=\n\s*\[capabilities\.|\n\s*```)",
+        rf"\n\s*\[capabilities\.{re.escape(capability)}\]\n.*?(?=\n\s*\[capabilities\.|\Z)",
         re.DOTALL,
     )
     return pattern.sub("\n" + textwrap.dedent(body).strip() + "\n", ledger)
@@ -136,9 +132,12 @@ def write_fixture(
     sources: dict[str, str] | None = None,
     justfile_text: str | None = None,
 ) -> None:
-    evidence = root / "docs/superpowers/plans/2026-06-13-outcome-group-nt-evidence.md"
-    evidence.parent.mkdir(parents=True, exist_ok=True)
-    evidence.write_text(ledger_text if ledger_text is not None else valid_ledger(), encoding="utf-8")
+    ledger = root / "docs/bolt-v3/research/outcome-groups/nt-capability-ledger.toml"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        ledger_text if ledger_text is not None else valid_ledger_toml(),
+        encoding="utf-8",
+    )
 
     default_sources = {}
     for relative_root in VERIFIER.OUTCOME_GROUP_SOURCE_ROOTS:
@@ -154,11 +153,14 @@ def write_fixture(
         path.write_text(textwrap.dedent(source), encoding="utf-8")
 
     (root / "Justfile").write_text(
-        justfile_text
+        textwrap.dedent(justfile_text)
         if justfile_text is not None
         else textwrap.dedent(
             """
             source-fence-static:
+                just source-fence-static-inner
+
+            source-fence-static-inner:
                 python3 scripts/test_verify_outcome_group_nt_reuse.py
                 python3 scripts/verify_outcome_group_nt_reuse.py
             """
@@ -168,10 +170,16 @@ def write_fixture(
 
 
 class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
-    def collect(self, *, ledger_text: str | None = None, sources: dict[str, str] | None = None) -> list[str]:
+    def collect(
+        self,
+        *,
+        ledger_text: str | None = None,
+        sources: dict[str, str] | None = None,
+        justfile_text: str | None = None,
+    ) -> list[str]:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_fixture(root, ledger_text=ledger_text, sources=sources)
+            write_fixture(root, ledger_text=ledger_text, sources=sources, justfile_text=justfile_text)
             return VERIFIER.collect_findings(root)
 
     def assert_has_finding(self, findings: list[str], needle: str) -> None:
@@ -199,13 +207,13 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
         self.assertEqual(actual, expected)
 
     def test_missing_required_capability_fails(self) -> None:
-        ledger = remove_capability(valid_ledger(), "provider_discovery")
+        ledger = remove_capability(valid_ledger_toml(), "provider_discovery")
 
         self.assert_has_finding(self.collect(ledger_text=ledger), "missing capability provider_discovery")
 
     def test_missing_source_anchor_fails(self) -> None:
         ledger = replace_capability(
-            valid_ledger(),
+            valid_ledger_toml(),
             "neg_risk_market_id",
             """
             [capabilities.neg_risk_market_id]
@@ -218,9 +226,44 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
 
         self.assert_has_finding(self.collect(ledger_text=ledger), "neg_risk_market_id missing source_anchors")
 
+    def test_source_anchor_repo_and_revision_must_match_ledger(self) -> None:
+        unknown_repo = valid_ledger_toml().replace('repo = "nautilus_trader"', 'repo = "random_repo"', 1)
+        self.assert_has_finding(
+            self.collect(ledger_text=unknown_repo),
+            "source_anchors[0] repo must be one of",
+        )
+
+        stale_nt_rev = valid_ledger_toml().replace(f'rev = "{NT_REV}"', 'rev = "1234567"', 1)
+        self.assert_has_finding(
+            self.collect(ledger_text=stale_nt_rev),
+            "source_anchors[0] rev must match ledger.nt_revision",
+        )
+
+        stale_bolt_rev = valid_ledger_toml().replace(f'rev = "{BOLT_REV}"', 'rev = "deadbee"', 1)
+        self.assert_has_finding(
+            self.collect(ledger_text=stale_bolt_rev),
+            "source_anchors[1] rev must match ledger.bolt_revision",
+        )
+
+    def test_unexpected_capability_fails(self) -> None:
+        ledger = valid_ledger_toml(
+            """
+            [capabilities.unapproved_shadow_capability]
+            disposition = "bolt_shim"
+            owner_module = ""
+            reason = ""
+            required_tests = []
+            """
+        )
+
+        self.assert_has_finding(
+            self.collect(ledger_text=ledger),
+            "unexpected capability unapproved_shadow_capability",
+        )
+
     def test_undocumented_bolt_shim_fails(self) -> None:
         ledger = replace_capability(
-            valid_ledger(),
+            valid_ledger_toml(),
             "provider_discovery",
             """
             [capabilities.provider_discovery]
@@ -235,6 +278,30 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
 
         self.assert_has_finding(findings, "provider_discovery bolt_shim requires reason")
         self.assert_has_finding(findings, "provider_discovery bolt_shim requires required_tests")
+
+    def test_source_fence_commands_must_be_in_source_fence_inner_recipe(self) -> None:
+        findings = self.collect(
+            justfile_text="""
+            source-fence-static:
+                just source-fence-static-inner
+
+            source-fence-static-inner:
+                python3 scripts/other.py
+
+            dead-outcome-group-checks:
+                python3 scripts/test_verify_outcome_group_nt_reuse.py
+                python3 scripts/verify_outcome_group_nt_reuse.py
+            """
+        )
+
+        self.assert_has_finding(
+            findings,
+            "source-fence-static-inner must run python3 scripts/test_verify_outcome_group_nt_reuse.py",
+        )
+        self.assert_has_finding(
+            findings,
+            "source-fence-static-inner must run python3 scripts/verify_outcome_group_nt_reuse.py",
+        )
 
     def test_comment_only_submit_order_list_with_per_leg_submit_loop_fails(self) -> None:
         findings = self.collect(
@@ -368,8 +435,7 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
 
             findings = VERIFIER.collect_findings(root)
 
-        self.assert_has_finding(findings, "source-fence-static must run python3 scripts/test_verify_outcome_group_nt_reuse.py")
-        self.assert_has_finding(findings, "source-fence-static must run python3 scripts/verify_outcome_group_nt_reuse.py")
+        self.assert_has_finding(findings, "Justfile: missing source-fence-static-inner recipe")
 
 
 if __name__ == "__main__":

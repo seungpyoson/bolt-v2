@@ -70,4 +70,4 @@ jobs:
 
       - name: Jules advisory status notice
         run: |
-          echo "::notice::Jules advisory automation is non-blocking. A verified Jules session requires the Start Jules advisory session step to pass with a session id. Missing or failed session creation means Jules API was unavailable or rejected the request and must not be treated as merge evidence."
+          echo "::notice::Jules advisory automation is non-blocking and emits no merge signal. Verified Jules session evidence is the Start Jules advisory session step passing with a session id. Unavailable Jules results remain advisory only."

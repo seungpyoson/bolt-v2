@@ -130,9 +130,9 @@ JULES_ADVISORY_COMMON_REQUIRED_SNIPPETS = (
     "https://jules.googleapis.com/v1alpha/sessions",
     "--fail-with-body",
     "jq -e '.name and .id'",
-    "::notice::Jules advisory automation is non-blocking.",
-    "Jules API was unavailable or rejected the request",
-    "must not be treated as merge evidence",
+    "::notice::Jules advisory automation is non-blocking and emits no merge signal.",
+    "Verified Jules session evidence is the Start Jules advisory session step passing with a session id.",
+    "Unavailable Jules results remain advisory only.",
     "advisory only",
     "draft pull request",
     "agent:jules",
@@ -12064,12 +12064,18 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     return errors
 
 
-def verify_text_contracts(
+def verify_required_text_contracts(
     texts: dict[str, str],
     contracts: Iterable[TextContract],
     label: str,
 ) -> list[str]:
-    present_contracts = tuple(contract for contract in contracts if contract.path in texts)
+    contract_list = tuple(contracts)
+    missing_errors = [
+        f"{label} {contract.path} must exist"
+        for contract in contract_list
+        if contract.path not in texts
+    ]
+    present_contracts = tuple(contract for contract in contract_list if contract.path in texts)
     required_errors = [
         f"{label} {contract.path} must include {snippet!r}"
         for contract in present_contracts
@@ -12082,21 +12088,7 @@ def verify_text_contracts(
         for snippet in contract.forbidden
         if snippet in texts[contract.path]
     ]
-    return required_errors + forbidden_errors
-
-
-def verify_required_text_contracts(
-    texts: dict[str, str],
-    contracts: Iterable[TextContract],
-    label: str,
-) -> list[str]:
-    contract_list = tuple(contracts)
-    missing_errors = [
-        f"{label} {contract.path} must exist"
-        for contract in contract_list
-        if contract.path not in texts
-    ]
-    return missing_errors + verify_text_contracts(texts, contract_list, label)
+    return missing_errors + required_errors + forbidden_errors
 
 
 def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
@@ -12279,14 +12271,13 @@ def main() -> int:
         errors.extend(verify_merge_readiness_ci_job(ci_workflow))
     errors.extend(verify_merge_readiness_finalizer_workflow(workflow_texts))
     errors.extend(verify_coverage_enforcer_workflow(workflow_texts))
-    if any(contract.path in workflow_texts for contract in JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS):
-        errors.extend(
-            verify_required_text_contracts(
-                workflow_texts,
-                JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS,
-                "Jules advisory workflow",
-            )
+    errors.extend(
+        verify_required_text_contracts(
+            workflow_texts,
+            JULES_ADVISORY_WORKFLOW_TEXT_CONTRACTS,
+            "Jules advisory workflow",
         )
+    )
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())

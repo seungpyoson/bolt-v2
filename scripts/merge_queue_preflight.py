@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -24,6 +25,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "rust-verification.toml"
 MERGIFY_CONFIG_PATH = ".mergify.yml"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+EXPECTED_HEAD_SHA_RE = re.compile(r"^(?P<pr>[1-9][0-9]*)=(?P<sha>[0-9a-f]{40})$")
 CONFLICT_LINE_RE = re.compile(r"^\d{6} [0-9a-f]{40} [123]\t(.+)$")
 PR_REF_PREFIX = "refs/pull/"
 FETCH_HEAD = "FETCH_HEAD"
@@ -127,6 +129,14 @@ BASE_IDENTITY_FINDING_STATES = {
         "expected base SHA differs from live base branch",
     ),
 }
+HEAD_IDENTITY_FINDING_STATES = {
+    True: (),
+    False: (
+        STATUS_BLOCKED,
+        "stale_head",
+        "expected PR head SHA differs from fetched PR head",
+    ),
+}
 RESIDUAL_RISK_REASON_CODES = (
     "full_ci_result",
     "mergify_proof_pr_behavior",
@@ -221,6 +231,21 @@ class ContractEvidence:
     wave_status: str
 
 
+@dataclasses.dataclass(frozen=True)
+class ExpectedHead:
+    pr: int
+    sha: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ExpectedHeadMapViolation:
+    prs: tuple[int, ...]
+    message_template: str
+
+    def message(self) -> str:
+        return self.message_template.format(prs=format_pr_numbers(self.prs))
+
+
 def normalize_check_state(raw_state: str) -> str:
     return re.sub(r"[-\s]+", "_", str(raw_state).strip().lower())
 
@@ -288,6 +313,110 @@ def base_identity_findings(
         expected_base_sha=expected_base_sha,
         actual_base_sha=actual_base_sha,
     )
+
+
+def matching_head_identity_findings(
+    *,
+    pr: int,
+    expected_head_sha: str,
+    actual_head_sha: str,
+) -> tuple[dict[str, object], ...]:
+    return ()
+
+
+def stale_head_identity_findings(
+    *,
+    pr: int,
+    expected_head_sha: str,
+    actual_head_sha: str,
+) -> tuple[dict[str, object], ...]:
+    status, reason_code, message = HEAD_IDENTITY_FINDING_STATES[False]
+    return (
+        {
+            "lane": LANE_IDENTITY,
+            "scope": "pr",
+            "status": status,
+            "reason_code": reason_code,
+            "message": message,
+            "evidence": {
+                "pr": pr,
+                "expected_head_sha": expected_head_sha,
+                "actual_head_sha": actual_head_sha,
+            },
+        },
+    )
+
+
+HEAD_IDENTITY_FINDING_BUILDERS = {
+    True: matching_head_identity_findings,
+    False: stale_head_identity_findings,
+}
+
+
+def head_identity_findings(
+    *,
+    expected_heads: Mapping[int, str],
+    actual_heads: Mapping[int, PrHead],
+) -> tuple[dict[str, object], ...]:
+    return tuple(
+        finding
+        for pr, expected_head_sha in expected_heads.items()
+        for finding in HEAD_IDENTITY_FINDING_BUILDERS[
+            expected_head_sha == actual_heads[pr].sha
+        ](
+            pr=pr,
+            expected_head_sha=expected_head_sha,
+            actual_head_sha=actual_heads[pr].sha,
+        )
+    )
+
+
+def matching_head_identity_blocks(
+    *,
+    pr: int,
+    expected_head_sha: str,
+    actual_head_sha: str,
+) -> tuple[dict[str, object], ...]:
+    return ()
+
+
+def stale_head_identity_blocks(
+    *,
+    pr: int,
+    expected_head_sha: str,
+    actual_head_sha: str,
+) -> tuple[dict[str, object], ...]:
+    return (
+        {
+            "pr": pr,
+            "reason": "expected PR head SHA differs from fetched PR head",
+            "type": "head_mismatch",
+        },
+    )
+
+
+HEAD_IDENTITY_BLOCK_BUILDERS = {
+    True: matching_head_identity_blocks,
+    False: stale_head_identity_blocks,
+}
+
+
+def head_identity_blocks(
+    *,
+    expected_heads: Mapping[int, str],
+    actual_heads: Mapping[int, PrHead],
+) -> list[dict[str, object]]:
+    return [
+        block
+        for pr, expected_head_sha in expected_heads.items()
+        for block in HEAD_IDENTITY_BLOCK_BUILDERS[
+            expected_head_sha == actual_heads[pr].sha
+        ](
+            pr=pr,
+            expected_head_sha=expected_head_sha,
+            actual_head_sha=actual_heads[pr].sha,
+        )
+    ]
 
 
 def residual_risk_findings() -> tuple[dict[str, object], ...]:
@@ -995,6 +1124,41 @@ def commit_sha(value: str) -> str:
     return value
 
 
+def expected_head_sha(value: str) -> ExpectedHead:
+    parsed = EXPECTED_HEAD_SHA_RE.fullmatch(value)
+    if parsed is None:
+        raise argparse.ArgumentTypeError(
+            "--expected-head-sha must use PR=40-lowercase-hex-SHA"
+        )
+    return ExpectedHead(pr=int(parsed.group("pr")), sha=parsed.group("sha"))
+
+
+def format_pr_numbers(values: Sequence[int]) -> str:
+    return ", ".join(f"#{value}" for value in values)
+
+
+def expected_head_map(entries: Sequence[ExpectedHead], requested: Sequence[int]) -> dict[int, str]:
+    counts = Counter(entry.pr for entry in entries)
+    duplicates = tuple(sorted(pr for pr, count in counts.items() if count > 1))
+    expected = {entry.pr: entry.sha for entry in entries}
+    requested_prs = frozenset(requested)
+    expected_prs = frozenset(expected)
+    missing = tuple(sorted(requested_prs - expected_prs))
+    extra = tuple(sorted(expected_prs - requested_prs))
+    violations = tuple(
+        violation
+        for violation in (
+            ExpectedHeadMapViolation(duplicates, "--expected-head-sha repeated for PR {prs}"),
+            ExpectedHeadMapViolation(missing, "--expected-head-sha missing for PR {prs}"),
+            ExpectedHeadMapViolation(extra, "--expected-head-sha supplied for unrequested PR {prs}"),
+        )
+        if violation.prs
+    )
+    if violations:
+        raise PreflightError(violations[0].message())
+    return expected
+
+
 def unique_preserving_order(values: Sequence[int]) -> tuple[int, ...]:
     seen: set[int] = set()
     ordered: list[int] = []
@@ -1332,12 +1496,14 @@ def preflight(
     origin: str,
     base: str,
     expected_base_sha: str,
+    expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
     output_policy: OutputPolicy,
     use_gh: bool,
 ) -> tuple[dict[str, object], int]:
     requested = unique_preserving_order(pr_numbers)
+    expected_heads = expected_head_map(expected_head_inputs, requested)
     actual_base_sha = fetch_base(repo, origin, base)
     base_sha = expected_base_sha
     heads = {head.number: head for head in (fetch_pr_head(repo, origin, pr) for pr in requested)}
@@ -1347,7 +1513,10 @@ def preflight(
         base=base,
         heads=heads,
     )
-    blocked_prs = readiness_blocks(readiness)
+    blocked_prs = [
+        *head_identity_blocks(expected_heads=expected_heads, actual_heads=heads),
+        *readiness_blocks(readiness),
+    ]
     blocked_numbers = {int(block["pr"]) for block in blocked_prs}
     base_commits: dict[int, SyntheticCommit] = {}
     base_verifiers: dict[int, tuple[VerifierResult, ...]] = {}
@@ -1451,6 +1620,7 @@ def preflight(
             expected_base_sha=expected_base_sha,
             actual_base_sha=actual_base_sha,
         ),
+        *head_identity_findings(expected_heads=expected_heads, actual_heads=heads),
         *mergify_config_findings(repo=repo, base_sha=base_sha, readiness=readiness),
         *preflight_mode_findings(use_gh=use_gh),
         *residual_risk_findings(),
@@ -1467,6 +1637,7 @@ def preflight(
         "base_sha": base_sha,
         "actual_base_sha": actual_base_sha,
         "expected_base_sha": expected_base_sha,
+        "expected_pr_heads": {str(number): sha for number, sha in expected_heads.items()},
         "requested_prs": list(requested),
         "pr_heads": {str(number): head.sha for number, head in heads.items()},
         "readiness": readiness,
@@ -1606,6 +1777,7 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("prs", nargs="+", type=positive_pr_number)
     root.add_argument("--base")
     root.add_argument("--expected-base-sha", required=True, type=commit_sha)
+    root.add_argument("--expected-head-sha", action="append", required=True, type=expected_head_sha)
     root.add_argument("--origin")
     root.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
     root.add_argument("--verifier-profile")
@@ -1631,6 +1803,7 @@ def main(argv: list[str] | None = None) -> int:
             origin=args.origin or config.origin,
             base=args.base or config.base,
             expected_base_sha=args.expected_base_sha,
+            expected_head_inputs=args.expected_head_sha,
             pr_numbers=args.prs,
             verifier_commands=verifier_commands(config, args.verifier_profile, args.run_verifier),
             output_policy=config.output_policy,

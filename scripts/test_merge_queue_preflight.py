@@ -30,6 +30,21 @@ EXPECTED_RESIDUAL_RISKS = [
 ]
 
 
+def expected_head_sha_args(
+    origin: pathlib.Path,
+    pr_args: tuple[str, ...],
+) -> list[str]:
+    head_shas = {
+        int(pr): git(origin, "rev-parse", f"refs/pull/{pr}/head")
+        for pr in pr_args
+    }
+    return [
+        item
+        for pr, sha in head_shas.items()
+        for item in ("--expected-head-sha", f"{pr}={sha}")
+    ]
+
+
 def run(command: list[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
@@ -98,6 +113,7 @@ def run_preflight(
         "main",
         "--expected-base-sha",
         expected_base_sha or git(repo, "rev-parse", "main"),
+        *expected_head_sha_args(origin, args),
         "--no-gh",
         "--verifier-profile",
         "none",
@@ -235,6 +251,21 @@ def stale_base_finding(expected_base_sha: str, actual_base_sha: str) -> dict[str
         "evidence": {
             "expected_base_sha": expected_base_sha,
             "actual_base_sha": actual_base_sha,
+        },
+    }
+
+
+def stale_head_finding(pr: int, expected_head_sha: str, actual_head_sha: str) -> dict[str, object]:
+    return {
+        "lane": "identity",
+        "scope": "pr",
+        "status": "blocked",
+        "reason_code": "stale_head",
+        "message": "expected PR head SHA differs from fetched PR head",
+        "evidence": {
+            "pr": pr,
+            "expected_head_sha": expected_head_sha,
+            "actual_head_sha": actual_head_sha,
         },
     }
 
@@ -615,6 +646,7 @@ def run_preflight_with_gh(
         "main",
         "--expected-base-sha",
         expected_base_sha or git(repo, "rev-parse", "main"),
+        *expected_head_sha_args(origin, prs),
         "--verifier-profile",
         "none",
         "--json",
@@ -717,6 +749,47 @@ def assert_stale_base_sha_is_inconclusive() -> None:
         assert_equal(rc, 3, "stale base rc")
         assert stale_base_finding(expected_base, actual_base) in payload["findings"], payload["findings"]
         assert_equal(payload["lane_statuses"]["identity"], "inconclusive", "stale base identity lane")
+
+
+def assert_stale_expected_head_sha_blocks_pr() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        actual_head = fixture.make_pr(1, {"one.txt": "one\n"})
+        stale_head = "0" * 40
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            git(fixture.repo, "rev-parse", "main"),
+            "--expected-head-sha",
+            f"1={stale_head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        payload = parse_json(result.stdout)
+        assert_equal(result.returncode, 2, "stale head rc")
+        assert_equal(payload["expected_pr_heads"], {"1": stale_head}, "expected PR heads")
+        assert_equal(payload["pr_heads"], {"1": actual_head}, "actual PR heads")
+        assert stale_head_finding(1, stale_head, actual_head) in payload["findings"], payload["findings"]
+        assert_equal(payload["lane_statuses"]["identity"], "blocked", "stale head identity lane")
+        assert_equal(payload["blocked_prs"][0]["type"], "head_mismatch", "stale head blocked type")
+        assert_equal(payload["batches"], [], "stale head batches")
 
 
 def assert_clean_prs_batch_together() -> None:
@@ -892,8 +965,8 @@ def assert_verifier_failure_blocks_bad_pr_before_batching() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
-        fixture.make_pr(1, {"safe.txt": "safe\n"})
-        fixture.make_pr(2, {"fail.txt": "fail\n"})
+        safe_head = fixture.make_pr(1, {"safe.txt": "safe\n"})
+        fail_head = fixture.make_pr(2, {"fail.txt": "fail\n"})
         verifier = root / "reject_fail_file.py"
         write(
             verifier,
@@ -913,6 +986,10 @@ def assert_verifier_failure_blocks_bad_pr_before_batching() -> None:
             "main",
             "--expected-base-sha",
             fixture.base,
+            "--expected-head-sha",
+            f"1={safe_head}",
+            "--expected-head-sha",
+            f"2={fail_head}",
             "--no-gh",
             "--verifier-profile",
             "none",
@@ -945,8 +1022,8 @@ def assert_configured_verifier_profile_blocks_bad_pr() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
-        fixture.make_pr(1, {"safe.txt": "safe\n"})
-        fixture.make_pr(2, {"fail.txt": "fail\n"})
+        safe_head = fixture.make_pr(1, {"safe.txt": "safe\n"})
+        fail_head = fixture.make_pr(2, {"fail.txt": "fail\n"})
         verifier = root / "reject_fail_file.py"
         write(
             verifier,
@@ -967,6 +1044,10 @@ def assert_configured_verifier_profile_blocks_bad_pr() -> None:
             "main",
             "--expected-base-sha",
             fixture.base,
+            "--expected-head-sha",
+            f"1={safe_head}",
+            "--expected-head-sha",
+            f"2={fail_head}",
             "--no-gh",
             "--config",
             str(config),
@@ -995,7 +1076,7 @@ def assert_plain_output_includes_verifier_failure_details() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
-        fixture.make_pr(1, {"fail.txt": "fail\n"})
+        head = fixture.make_pr(1, {"fail.txt": "fail\n"})
         verifier = root / "reject_fail_file.py"
         write(
             verifier,
@@ -1014,6 +1095,8 @@ def assert_plain_output_includes_verifier_failure_details() -> None:
             "main",
             "--expected-base-sha",
             fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
             "--no-gh",
             "--verifier-profile",
             "none",
@@ -1040,7 +1123,7 @@ def assert_plain_output_omits_successful_verifier_streams() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
-        fixture.make_pr(1, {"safe.txt": "safe\n"})
+        head = fixture.make_pr(1, {"safe.txt": "safe\n"})
         verifier = root / "successful_verifier.py"
         write(
             verifier,
@@ -1055,6 +1138,8 @@ def assert_plain_output_omits_successful_verifier_streams() -> None:
             "main",
             "--expected-base-sha",
             fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
             "--no-gh",
             "--verifier-profile",
             "none",
@@ -1081,7 +1166,7 @@ def assert_plain_output_bounds_failed_verifier_streams() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
-        fixture.make_pr(1, {"fail.txt": "fail\n"})
+        head = fixture.make_pr(1, {"fail.txt": "fail\n"})
         verifier = root / "noisy_failure.py"
         write(
             verifier,
@@ -1106,6 +1191,8 @@ def assert_plain_output_bounds_failed_verifier_streams() -> None:
             "main",
             "--expected-base-sha",
             fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
             "--no-gh",
             "--config",
             str(config),
@@ -1132,7 +1219,7 @@ def assert_json_output_uses_bounded_verifier_previews() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
-        fixture.make_pr(1, {"fail.txt": "fail\n"})
+        head = fixture.make_pr(1, {"fail.txt": "fail\n"})
         verifier = root / "noisy_json_failure.py"
         write(
             verifier,
@@ -1157,6 +1244,8 @@ def assert_json_output_uses_bounded_verifier_previews() -> None:
             "main",
             "--expected-base-sha",
             fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
             "--no-gh",
             "--config",
             str(config),
@@ -1191,7 +1280,7 @@ def assert_head_oid_mismatch_blocks_pr() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
-        fixture.make_pr(1, {"one.txt": "one\n"})
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
         bin_dir = write_fake_gh(
             root,
             views={1: approved_pr_view("0" * 40)},
@@ -1280,14 +1369,33 @@ def assert_invalid_pr_input_is_rejected() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
-        rc, stdout, stderr = run_preflight(
-            fixture.repo,
-            fixture.remote,
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            git(fixture.repo, "rev-parse", "main"),
+            "--expected-head-sha",
+            f"1={'0' * 40}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--json",
             "abc",
-            expect_success=False,
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
         )
-        assert_equal(rc, 4, "invalid PR rc")
-        assert "PR numbers must be positive integers" in stderr, stderr
+        assert_equal(result.returncode, 4, "invalid PR rc")
+        assert "PR numbers must be positive integers" in result.stderr, result.stderr
 
 
 def assert_missing_expected_base_sha_is_rejected() -> None:
@@ -1320,11 +1428,43 @@ def assert_missing_expected_base_sha_is_rejected() -> None:
         assert "--expected-base-sha" in result.stderr, result.stderr
 
 
-def assert_missing_gh_reports_inconclusive_metadata() -> None:
+def assert_missing_expected_head_sha_is_rejected() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
         fixture.make_pr(1, {"one.txt": "one\n"})
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            git(fixture.repo, "rev-parse", "main"),
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 4, "missing expected head sha rc")
+        assert "the following arguments are required: --expected-head-sha" in result.stderr, result.stderr
+
+
+def assert_missing_gh_reports_inconclusive_metadata() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
         bin_dir = root / "bin"
         bin_dir.mkdir()
         git_bin = shutil.which("git")
@@ -1340,6 +1480,8 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
             "main",
             "--expected-base-sha",
             fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
             "--verifier-profile",
             "none",
             "--json",
@@ -1382,6 +1524,7 @@ def main() -> int:
     assert_mergify_queue_routing_uses_pr_labels()
     assert_default_queue_above_max_is_split_advised()
     assert_stale_base_sha_is_inconclusive()
+    assert_stale_expected_head_sha_blocks_pr()
     assert_clean_prs_batch_together()
     assert_conflicting_pr_starts_later_batch()
     assert_order_dependent_conflict_context_is_reported()
@@ -1398,6 +1541,7 @@ def main() -> int:
     assert_partial_gh_metadata_failure_preserves_other_readiness()
     assert_invalid_pr_input_is_rejected()
     assert_missing_expected_base_sha_is_rejected()
+    assert_missing_expected_head_sha_is_rejected()
     assert_missing_gh_reports_inconclusive_metadata()
     print("OK: merge_queue_preflight tests passed.")
     return 0

@@ -350,6 +350,8 @@ class CiStorageAuditTests(unittest.TestCase):
                     "ref": "feature/audit",
                     "head_branch": "feature/audit",
                     "head_sha": "a" * 40,
+                    "event": None,
+                    "status_source": "not_fetched",
                 },
             },
         )
@@ -371,6 +373,7 @@ class CiStorageAuditTests(unittest.TestCase):
             wait_and_remeasure = "wait and remeasure natural expiry before deletion"
             protected_refs = ["main"]
             protected_ref_prefixes = ["refs/tags/"]
+            protected_ref_globs = []
             active_run_statuses = ["queued", "in_progress"]
             terminal_run_statuses = ["completed"]
             workflow_run_fetch_limit = 10
@@ -389,7 +392,6 @@ class CiStorageAuditTests(unittest.TestCase):
             name_equals = []
             name_prefixes = ["ci-provenance-attempt-"]
             expired_decision = "KEEP"
-            candidate_reason = "unused"
             keep_reason = "provenance evidence is not a cleanup candidate"
             """,
             label="test-policy",
@@ -540,16 +542,179 @@ class CiStorageAuditTests(unittest.TestCase):
         policy = ci_storage_audit.load_cleanup_policy_path(policy_path)
         rules = {rule.rule_id: rule for rule in policy.classes}
 
+        self.assertEqual(policy.default_class, "ambiguous")
         self.assertEqual(policy.default_decision, "KEEP")
+        self.assertEqual(policy.default_keep_reason, "ambiguous artifact is not a cleanup candidate")
         self.assertEqual(rules["deploy_binary"].name_equals, ("bolt-v2-binary",))
+        self.assertIsNone(rules["deploy_binary"].candidate_reason)
         self.assertEqual(rules["ci_provenance"].name_prefixes, ("ci-provenance-attempt-",))
+        self.assertIsNone(rules["ci_provenance"].candidate_reason)
         self.assertEqual(rules["nextest_fingerprint"].name_prefixes, ("nextest-archive-fingerprint-",))
+        self.assertIsNone(rules["nextest_fingerprint"].candidate_reason)
+        self.assertEqual(rules["sarif_code_scanning"].name_prefixes, ("sarif-artifact-",))
+        self.assertIsNone(rules["sarif_code_scanning"].candidate_reason)
+        self.assertIn("cargo-timings-", rules["debug_evidence"].name_prefixes)
+        self.assertIsNone(rules["debug_evidence"].candidate_reason)
+        self.assertIn("DynaMOS", rules["personal_non_ci"].name_prefixes)
+        self.assertIsNone(rules["personal_non_ci"].candidate_reason)
         self.assertIn("users/{owner}/settings/billing/actions", policy.billing_probe_paths)
 
     def test_cleanup_policy_discovery_finds_single_tracked_policy(self) -> None:
         self.assertEqual(
             ci_storage_audit.discover_cleanup_policy_path().as_posix(),
             "ci/github-actions-runners.toml",
+        )
+
+    def test_ref_protection_normalizes_default_branch_and_tag_shapes(self) -> None:
+        policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
+        policy = ci_storage_audit.load_cleanup_policy_path(policy_path)
+
+        self.assertTrue(ci_storage_audit.ref_is_protected(policy, "main"))
+        self.assertTrue(ci_storage_audit.ref_is_protected(policy, "refs/heads/main"))
+        self.assertTrue(ci_storage_audit.ref_is_protected(policy, "refs/tags/v0.1.0"))
+        self.assertTrue(ci_storage_audit.ref_is_protected(policy, "v0.1.0"))
+        self.assertTrue(ci_storage_audit.ref_is_protected(policy, "deploy/eu-west-2/2026-06-18-0ddd9f73"))
+        self.assertFalse(ci_storage_audit.ref_is_protected(policy, "feature/artifact-observe"))
+
+    def test_cleanup_feasibility_marks_rows_when_workflow_status_is_not_fetched(self) -> None:
+        policy = ci_storage_audit.load_cleanup_policy_text(
+            """
+            [storage_audit.cleanup_feasibility]
+            schema_version = 1
+            default_class = "ambiguous"
+            default_decision = "KEEP"
+            default_keep_reason = "ambiguous artifact is not a cleanup candidate"
+            protected_ref_keep_reason = "protected deploy ref is excluded from cleanup"
+            active_run_keep_reason = "workflow run is still active"
+            status_unavailable_keep_reason = "workflow run status is unavailable"
+            expiration_unknown_keep_reason = "artifact expiration status is unavailable"
+            not_expired_keep_reason = "artifact has not expired"
+            billing_impact_unverifiable = "billing impact unverifiable from API"
+            wait_and_remeasure = "wait and remeasure natural expiry before deletion"
+            protected_refs = ["main"]
+            protected_ref_prefixes = ["refs/tags/"]
+            protected_ref_globs = ["refs/heads/main", "v*"]
+            active_run_statuses = ["queued", "in_progress"]
+            terminal_run_statuses = ["completed"]
+            workflow_run_fetch_limit = 1
+            billing_probe_paths = []
+
+            [[storage_audit.cleanup_feasibility.classes]]
+            id = "nextest_archive"
+            name_equals = ["nextest-archive"]
+            name_prefixes = []
+            expired_decision = "DELETE-CANDIDATE"
+            candidate_reason = "expired test archive outside protected refs"
+            keep_reason = "test archive is retained until it expires"
+            """,
+            label="status-source-policy",
+        )
+        client = FakeClient(
+            {
+                "actions/artifacts": {
+                    "total_count": 2,
+                    "artifacts": [
+                        {
+                            "id": 1,
+                            "name": "nextest-archive",
+                            "size_in_bytes": 100,
+                            "created_at": "2026-06-01T00:00:00Z",
+                            "expires_at": "2026-06-15T00:00:00Z",
+                            "expired": True,
+                            "workflow_run": {"id": 501, "head_branch": "feature/done"},
+                        },
+                        {
+                            "id": 2,
+                            "name": "nextest-archive",
+                            "size_in_bytes": 200,
+                            "created_at": "2026-06-02T00:00:00Z",
+                            "expires_at": "2026-06-16T00:00:00Z",
+                            "expired": True,
+                            "workflow_run": {"id": 502, "head_branch": "feature/unfetched"},
+                        },
+                    ],
+                },
+                "actions/runs/501": {
+                    "id": 501,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "head_branch": "feature/done",
+                },
+            }
+        )
+        artifacts = ci_storage_audit.fetch_artifacts(client, include_entries=True)
+
+        cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+            client,
+            repo="owner/repo",
+            artifacts=artifacts,
+            policy=policy,
+        )
+        rows_by_id = {row["artifact_id"]: row for row in cleanup["rows"]}
+
+        self.assertEqual(rows_by_id[1]["decision"], "DELETE-CANDIDATE")
+        self.assertEqual(rows_by_id[1]["workflow_run"]["status"], "completed")
+        self.assertEqual(rows_by_id[1]["workflow_run"]["status_source"], "run_api")
+        self.assertEqual(rows_by_id[2]["decision"], "KEEP")
+        self.assertEqual(rows_by_id[2]["reason"], "workflow run status is unavailable")
+        self.assertEqual(rows_by_id[2]["workflow_run"]["status"], None)
+        self.assertEqual(rows_by_id[2]["workflow_run"]["status_source"], "fetch_limit")
+        self.assertEqual(cleanup["unverified_candidate_bytes"], 200)
+        self.assertEqual(cleanup["workflow_run_metadata"]["fetch_limit_reached"], True)
+
+    def test_billing_probe_records_reachability_without_raw_payload(self) -> None:
+        policy = ci_storage_audit.load_cleanup_policy_text(
+            """
+            [storage_audit.cleanup_feasibility]
+            schema_version = 1
+            default_class = "ambiguous"
+            default_decision = "KEEP"
+            default_keep_reason = "ambiguous artifact is not a cleanup candidate"
+            protected_ref_keep_reason = "protected deploy ref is excluded from cleanup"
+            active_run_keep_reason = "workflow run is still active"
+            status_unavailable_keep_reason = "workflow run status is unavailable"
+            expiration_unknown_keep_reason = "artifact expiration status is unavailable"
+            not_expired_keep_reason = "artifact has not expired"
+            billing_impact_unverifiable = "billing impact unverifiable from API"
+            wait_and_remeasure = "wait"
+            protected_refs = ["main"]
+            protected_ref_prefixes = []
+            protected_ref_globs = []
+            active_run_statuses = ["queued"]
+            terminal_run_statuses = ["completed"]
+            workflow_run_fetch_limit = 1
+            billing_probe_paths = ["repos/{owner_repo}/actions/cache/usage"]
+
+            [[storage_audit.cleanup_feasibility.classes]]
+            id = "safe_keep"
+            name_equals = ["safe"]
+            name_prefixes = []
+            expired_decision = "KEEP"
+            keep_reason = "safe keep"
+            """,
+            label="billing-policy",
+        )
+        client = FakeClient(
+            {
+                ("GLOBAL", "repos/owner/repo/actions/cache/usage"): {
+                    "total_active_caches_size_in_bytes": 123,
+                    "total_active_caches_count": 4,
+                },
+            }
+        )
+
+        billing = ci_storage_audit.probe_billing_endpoint(client, repo="owner/repo", policy=policy)
+
+        self.assertEqual(billing["status"], "available")
+        self.assertEqual(billing["message"], "billing endpoint reachable")
+        self.assertEqual(billing["source"], "repos/owner/repo/actions/cache/usage")
+        self.assertNotIn("payload", billing)
+        self.assertEqual(
+            billing["response"],
+            {
+                "type": "object",
+                "keys": ["total_active_caches_count", "total_active_caches_size_in_bytes"],
+            },
         )
 
     def test_cleanup_policy_rejects_overlapping_class_matchers(self) -> None:
@@ -570,6 +735,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 wait_and_remeasure = "wait"
                 protected_refs = []
                 protected_ref_prefixes = []
+                protected_ref_globs = []
                 active_run_statuses = ["queued"]
                 terminal_run_statuses = ["completed"]
                 workflow_run_fetch_limit = 1
@@ -580,7 +746,6 @@ class CiStorageAuditTests(unittest.TestCase):
                 name_equals = ["artifact-a"]
                 name_prefixes = []
                 expired_decision = "KEEP"
-                candidate_reason = "unused"
                 keep_reason = "keep"
 
                 [[storage_audit.cleanup_feasibility.classes]]
@@ -588,7 +753,6 @@ class CiStorageAuditTests(unittest.TestCase):
                 name_equals = []
                 name_prefixes = ["artifact-"]
                 expired_decision = "KEEP"
-                candidate_reason = "unused"
                 keep_reason = "keep"
                 """,
                 label="overlap-policy",

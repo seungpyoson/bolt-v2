@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import collections
 import datetime as dt
+import fnmatch
 import json
 import pathlib
 import subprocess
@@ -48,7 +49,7 @@ class ArtifactClassRule(NamedTuple):
     name_equals: tuple[str, ...]
     name_prefixes: tuple[str, ...]
     expired_decision: str
-    candidate_reason: str
+    candidate_reason: str | None
     keep_reason: str
 
 
@@ -66,6 +67,7 @@ class ArtifactCleanupPolicy(NamedTuple):
     wait_and_remeasure: str
     protected_refs: tuple[str, ...]
     protected_ref_prefixes: tuple[str, ...]
+    protected_ref_globs: tuple[str, ...]
     active_run_statuses: tuple[str, ...]
     terminal_run_statuses: tuple[str, ...]
     workflow_run_fetch_limit: int
@@ -246,6 +248,15 @@ def require_policy_string(payload: dict[str, Any], key: str, label: str) -> str:
     return value
 
 
+def optional_policy_string(payload: dict[str, Any], key: str, label: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise AuditError(f"{label}.{key} must be a non-empty string when present")
+    return value
+
+
 def optional_policy_string_list(payload: dict[str, Any], key: str, label: str) -> tuple[str, ...]:
     value = payload.get(key, [])
     if not isinstance(value, list):
@@ -340,12 +351,18 @@ def parse_cleanup_class_rule(
         raise AuditError(f"{label}.name_equals must not contain duplicates after reference resolution")
     if len(set(name_prefixes)) != len(name_prefixes):
         raise AuditError(f"{label}.name_prefixes must not contain duplicates after reference resolution")
+    expired_decision = require_policy_decision(raw, "expired_decision", label)
+    candidate_reason = optional_policy_string(raw, "candidate_reason", label)
+    if expired_decision == DELETE_CANDIDATE_DECISION and candidate_reason is None:
+        raise AuditError(f"{label}.candidate_reason is required for DELETE-CANDIDATE classes")
+    if expired_decision == KEEP_DECISION and candidate_reason is not None:
+        raise AuditError(f"{label}.candidate_reason must be omitted for KEEP classes")
     return ArtifactClassRule(
         rule_id=rule_id,
         name_equals=name_equals,
         name_prefixes=name_prefixes,
-        expired_decision=require_policy_decision(raw, "expired_decision", label),
-        candidate_reason=require_policy_string(raw, "candidate_reason", label),
+        expired_decision=expired_decision,
+        candidate_reason=candidate_reason,
         keep_reason=require_policy_string(raw, "keep_reason", label),
     )
 
@@ -434,6 +451,11 @@ def load_cleanup_policy_text(raw: str, *, label: str) -> ArtifactCleanupPolicy:
             "protected_ref_prefixes",
             "storage_audit.cleanup_feasibility",
         ),
+        protected_ref_globs=optional_policy_string_list(
+            table,
+            "protected_ref_globs",
+            "storage_audit.cleanup_feasibility",
+        ),
         active_run_statuses=require_policy_string_list(
             table,
             "active_run_statuses",
@@ -518,13 +540,16 @@ def workflow_run_from_raw(raw: Any) -> dict[str, Any]:
     head_branch = optional_text(data.get("head_branch"))
     head_sha = optional_text(data.get("head_sha"))
     ref = optional_text(data.get("ref")) or head_branch
+    status = optional_text(data.get("status"))
     return {
         "id": optional_nonnegative_int(data.get("id")),
-        "status": optional_text(data.get("status")),
+        "status": status,
         "conclusion": optional_text(data.get("conclusion")),
         "ref": ref,
         "head_branch": head_branch,
         "head_sha": head_sha,
+        "event": optional_text(data.get("event")),
+        "status_source": "artifact_payload" if status is not None else "not_fetched",
     }
 
 
@@ -532,8 +557,14 @@ def merge_workflow_run_metadata(entry: dict[str, Any], payload: dict[str, Any]) 
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
     refreshed = workflow_run_from_raw(payload)
     for key, value in refreshed.items():
-        if value is not None:
+        if value is not None and key != "status_source":
             workflow_run[key] = value
+    workflow_run["status_source"] = "run_api"
+
+
+def set_workflow_run_status_source(entry: dict[str, Any], source: str) -> None:
+    workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
+    workflow_run["status_source"] = source
 
 
 def artifact_entry_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
@@ -807,10 +838,34 @@ def artifact_ref(entry: dict[str, Any]) -> str | None:
     return optional_text(workflow_run.get("ref")) or optional_text(workflow_run.get("head_branch"))
 
 
+def protected_ref_forms(ref: str) -> tuple[str, ...]:
+    forms = [ref]
+    if ref.startswith("refs/heads/"):
+        branch = ref.removeprefix("refs/heads/")
+        forms.append(branch)
+    elif ref.startswith("heads/"):
+        branch = ref.removeprefix("heads/")
+        forms.extend((branch, f"refs/heads/{branch}"))
+    elif ref.startswith("refs/tags/"):
+        tag = ref.removeprefix("refs/tags/")
+        forms.extend((tag, f"tags/{tag}"))
+    elif ref.startswith("tags/"):
+        tag = ref.removeprefix("tags/")
+        forms.extend((tag, f"refs/tags/{tag}"))
+    else:
+        forms.append(f"refs/heads/{ref}")
+    return tuple(dict.fromkeys(forms))
+
+
 def ref_is_protected(policy: ArtifactCleanupPolicy, ref: str | None) -> bool:
     if ref is None:
         return False
-    return ref in policy.protected_refs or any(ref.startswith(prefix) for prefix in policy.protected_ref_prefixes)
+    forms = protected_ref_forms(ref)
+    return (
+        any(form in policy.protected_refs for form in forms)
+        or any(form.startswith(prefix) for form in forms for prefix in policy.protected_ref_prefixes)
+        or any(fnmatch.fnmatchcase(form, pattern) for form in forms for pattern in policy.protected_ref_globs)
+    )
 
 
 def should_fetch_workflow_run(
@@ -868,6 +923,8 @@ def cleanup_decision_for_entry(
         return class_id, KEEP_DECISION, policy.active_run_keep_reason
     if status not in policy.terminal_run_statuses:
         return class_id, KEEP_DECISION, policy.status_unavailable_keep_reason
+    if rule.candidate_reason is None:
+        raise AuditError(f"cleanup class {rule.rule_id} has no candidate reason")
     return class_id, DELETE_CANDIDATE_DECISION, rule.candidate_reason
 
 
@@ -931,6 +988,14 @@ def format_global_api_path(template: str, repo: str) -> str:
         raise AuditError(f"unsupported billing endpoint placeholder: {exc}") from exc
 
 
+def api_response_summary(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        return {"type": "object", "keys": sorted(str(key) for key in payload)}
+    if isinstance(payload, list):
+        return {"type": "list", "count": len(payload)}
+    return {"type": type(payload).__name__}
+
+
 def probe_billing_endpoint(
     client: GhClient,
     *,
@@ -950,7 +1015,7 @@ def probe_billing_endpoint(
             "message": "billing endpoint reachable",
             "source": path,
             "probes": [*probes, {"path": path, "status": "available"}],
-            "payload": payload,
+            "response": api_response_summary(payload),
         }
     return {
         "status": "unavailable",
@@ -980,19 +1045,24 @@ def build_artifact_cleanup_feasibility(
         if should_fetch_workflow_run(policy, rule, entry):
             run_id = workflow_run_id_from_entry(entry)
             if run_id is None:
-                pass
+                set_workflow_run_status_source(entry, "missing_run_id")
             elif run_id in workflow_run_metadata_cache:
                 payload = workflow_run_metadata_cache[run_id]
                 if payload is not None:
                     merge_workflow_run_metadata(entry, payload)
+                else:
+                    set_workflow_run_status_source(entry, "run_api_unavailable")
             elif workflow_run_fetches < policy.workflow_run_fetch_limit:
                 workflow_run_fetches += 1
                 payload = fetch_workflow_run_metadata_payload(client, run_id)
                 workflow_run_metadata_cache[run_id] = payload
                 if payload is not None:
                     merge_workflow_run_metadata(entry, payload)
+                else:
+                    set_workflow_run_status_source(entry, "run_api_unavailable")
             else:
                 workflow_run_fetch_limit_reached = True
+                set_workflow_run_status_source(entry, "fetch_limit")
         class_id, decision, reason = cleanup_decision_for_entry(policy, rule, entry)
         rows.append(row_from_entry(entry, class_id=class_id, decision=decision, reason=reason))
 

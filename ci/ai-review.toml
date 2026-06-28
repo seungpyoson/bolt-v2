@@ -22,6 +22,17 @@ no_findings_required_labels = [
   "Risk areas considered:",
 ]
 
+[review.pr_agent_output]
+deliverable_headings = [
+  "## PR Reviewer Guide",
+  "## Incremental PR Reviewer Guide",
+]
+disabled_noise = [
+  "ticket compliance analysis",
+  "estimated effort to review",
+  "can be split",
+]
+
 [glm]
 api_base = "https://api.z.ai/api/coding/paas/v4"
 model = "glm-5.2"
@@ -29,6 +40,7 @@ temperature = 0.2
 api_timeout_seconds = 300
 review_max_chunk_chars = 60000
 comment_marker = "<!-- ai-pr-reviewer-glm -->"
+notice_marker = "<!-- ai-pr-reviewer-glm-notice -->"
 deliverable_markers = [
   "## PR Reviewer Guide",
   "## Incremental PR Reviewer Guide",
@@ -61,6 +73,7 @@ telemetry_disabled = true
 cli_timeout_seconds = 180
 review_max_chunk_chars = 60000
 deliverable_marker = "<!-- ai-pr-reviewer-kimi -->"
+notice_marker = "<!-- ai-pr-reviewer-kimi-notice -->"
 cli_package = "@moonshot-ai/kimi-code@0.19.0"
 
 [kimi.workflow]

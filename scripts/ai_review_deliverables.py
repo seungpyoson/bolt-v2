@@ -36,6 +36,8 @@ class ReviewOutputContract:
     no_findings_indicator: str
     no_findings_intro: str
     no_findings_required_labels: tuple[str, ...]
+    pr_agent_deliverable_headings: tuple[str, ...]
+    pr_agent_disabled_noise: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -362,14 +364,9 @@ def review_body_is_quality_deliverable(body: str, output_contract: ReviewOutputC
         return all(label in lowered for label in finding_labels)
     if output_contract.no_findings_indicator.lower() in lowered:
         return all(label.lower() in lowered for label in output_contract.no_findings_required_labels)
-    pr_agent_markers = ("## pr reviewer guide", "## incremental pr reviewer guide")
-    if any(marker in lowered for marker in pr_agent_markers):
-        disabled_noise = (
-            "ticket compliance analysis",
-            "estimated effort to review",
-            "can be split",
-        )
-        return not any(noise in lowered for noise in disabled_noise)
+    pr_agent_headings = tuple(heading.lower() for heading in output_contract.pr_agent_deliverable_headings)
+    if any(heading in lowered for heading in pr_agent_headings):
+        return not any(noise.lower() in lowered for noise in output_contract.pr_agent_disabled_noise)
     return False
 
 
@@ -472,13 +469,21 @@ def stamp_existing_review_comment(
     ]
     if not candidates:
         return "no-existing-review"
-    comment = max(candidates, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""))
-    body = str(comment.get("body") or "")
-    stamped = add_source_line(body, marker=marker, source_label=source_label, run_url=run_url)
-    if stamped == body:
-        return "existing-review-already-stamped"
-    github.update_issue_comment(int(comment["id"]), stamped)
-    return "existing-review-stamped"
+    updated = 0
+    already_stamped = 0
+    for comment in candidates:
+        body = str(comment.get("body") or "")
+        stamped = add_source_line(body, marker=marker, source_label=source_label, run_url=run_url)
+        if stamped == body:
+            already_stamped += 1
+            continue
+        github.update_issue_comment(int(comment["id"]), stamped)
+        updated += 1
+    if updated:
+        return "existing-reviews-stamped"
+    if already_stamped:
+        return "existing-reviews-already-stamped"
+    return "no-existing-review"
 
 
 def file_fragment_body(review_file: ReviewFile, patch_lines: list[str]) -> str:
@@ -1089,11 +1094,14 @@ def config_str_tuple(table: dict[str, Any], key: str) -> tuple[str, ...]:
 
 def review_output_contract(review_config: dict[str, Any]) -> ReviewOutputContract:
     contract = config_table(review_config, "output_contract")
+    pr_agent_output = config_table(review_config, "pr_agent_output")
     return ReviewOutputContract(
         finding_required_labels=config_str_tuple(contract, "finding_required_labels"),
         no_findings_indicator=config_str(contract, "no_findings_indicator"),
         no_findings_intro=config_str(contract, "no_findings_intro"),
         no_findings_required_labels=config_str_tuple(contract, "no_findings_required_labels"),
+        pr_agent_deliverable_headings=config_str_tuple(pr_agent_output, "deliverable_headings"),
+        pr_agent_disabled_noise=config_str_tuple(pr_agent_output, "disabled_noise"),
     )
 
 

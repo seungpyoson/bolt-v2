@@ -100,11 +100,16 @@ class FakeProvider(FakeGLM):
 
 
 class CommentApiHandler(BaseHTTPRequestHandler):
-    comments: list[dict[str, object]] = []
-    requests: list[tuple[str, str, dict[str, object] | None]] = []
-
     def log_message(self, format: str, *args: object) -> None:
         del format, args
+
+    @property
+    def comments(self) -> list[dict[str, object]]:
+        return self.server.comments  # type: ignore[attr-defined]
+
+    @property
+    def requests(self) -> list[tuple[str, str, dict[str, object] | None]]:
+        return self.server.requests  # type: ignore[attr-defined]
 
     def _read_payload(self) -> dict[str, object]:
         length = int(self.headers.get("Content-Length") or "0")
@@ -163,6 +168,18 @@ class CommentApiHandler(BaseHTTPRequestHandler):
         self._write_json(404, {"message": "not found"})
 
 
+def start_comment_api_server(
+    comments: list[dict[str, object]],
+) -> tuple[ThreadingHTTPServer, threading.Thread, list[tuple[str, str, dict[str, object] | None]]]:
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), CommentApiHandler)
+    server.comments = comments  # type: ignore[attr-defined]
+    server.requests = requests  # type: ignore[attr-defined]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, requests
+
+
 def file_payload(name: str, patch: str) -> dict[str, object]:
     return {
         "filename": name,
@@ -188,6 +205,8 @@ def fallback_config(module, **overrides):
             no_findings_indicator="No hard-evidence findings",
             no_findings_intro="No hard-evidence findings in this chunk based only on the supplied diff.",
             no_findings_required_labels=("Coverage reviewed:", "Evidence basis:", "Risk areas considered:"),
+            pr_agent_deliverable_headings=("## PR Reviewer Guide", "## Incremental PR Reviewer Guide"),
+            pr_agent_disabled_noise=("ticket compliance analysis", "estimated effort to review", "can be split"),
         ),
         "run_url": "https://github.com/seungpyoson/bolt-v2/actions/runs/1",
         "provider": "GLM",
@@ -600,7 +619,7 @@ def test_generated_low_quality_review_is_not_posted_as_deliverable() -> None:
 
 def test_github_client_upserts_marker_comments_through_http_api() -> None:
     module = load_script()
-    CommentApiHandler.comments = [
+    comments = [
         {
             "id": 42,
             "body": (
@@ -614,10 +633,7 @@ def test_github_client_upserts_marker_comments_through_http_api() -> None:
             "user": {"type": "Bot", "login": "github-actions[bot]"},
         }
     ]
-    CommentApiHandler.requests = []
-    server = ThreadingHTTPServer(("127.0.0.1", 0), CommentApiHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    server, thread, requests = start_comment_api_server(comments)
     try:
         api_url = f"http://127.0.0.1:{server.server_port}"
         github = module.GitHubClient(
@@ -653,17 +669,17 @@ def test_github_client_upserts_marker_comments_through_http_api() -> None:
         server.shutdown()
         thread.join(timeout=5)
 
-    methods = [method for method, _, _ in CommentApiHandler.requests]
-    assert methods == ["GET", "PATCH", "GET", "POST"], CommentApiHandler.requests
-    assert len(CommentApiHandler.comments) == 2
-    assert CommentApiHandler.comments[0]["id"] == 42
-    assert "updated body" in str(CommentApiHandler.comments[0]["body"])
-    assert "new round body" in str(CommentApiHandler.comments[1]["body"])
+    methods = [method for method, _, _ in requests]
+    assert methods == ["GET", "PATCH", "GET", "POST"], requests
+    assert len(comments) == 2
+    assert comments[0]["id"] == 42
+    assert "updated body" in str(comments[0]["body"])
+    assert "new round body" in str(comments[1]["body"])
 
 
 def test_github_client_keeps_paginated_marker_comments_distinct() -> None:
     module = load_script()
-    CommentApiHandler.comments = [
+    comments = [
         {
             "id": 42,
             "body": (
@@ -678,10 +694,7 @@ def test_github_client_keeps_paginated_marker_comments_distinct() -> None:
             "user": {"type": "Bot", "login": "github-actions[bot]"},
         }
     ]
-    CommentApiHandler.requests = []
-    server = ThreadingHTTPServer(("127.0.0.1", 0), CommentApiHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    server, thread, requests = start_comment_api_server(comments)
     try:
         api_url = f"http://127.0.0.1:{server.server_port}"
         github = module.GitHubClient(
@@ -717,11 +730,11 @@ def test_github_client_keeps_paginated_marker_comments_distinct() -> None:
         server.shutdown()
         thread.join(timeout=5)
 
-    methods = [method for method, _, _ in CommentApiHandler.requests]
-    assert methods == ["GET", "PATCH", "GET", "POST"], CommentApiHandler.requests
-    assert len(CommentApiHandler.comments) == 2
-    assert "updated part one" in str(CommentApiHandler.comments[0]["body"])
-    assert "new part two" in str(CommentApiHandler.comments[1]["body"])
+    methods = [method for method, _, _ in requests]
+    assert methods == ["GET", "PATCH", "GET", "POST"], requests
+    assert len(comments) == 2
+    assert "updated part one" in str(comments[0]["body"])
+    assert "new part two" in str(comments[1]["body"])
 
 
 def test_posts_failure_notice_when_glm_fallback_fails() -> None:
@@ -822,7 +835,7 @@ def test_kimi_fallback_uses_same_chunked_deliverable_contract() -> None:
     assert "Source: Kimi Code CLI" in github.posted[0]
 
 
-def test_stamps_pr_agent_review_source_model() -> None:
+def test_stamps_all_pr_agent_review_source_model_comments() -> None:
     module = load_script()
     github = FakeGitHub(
         files=[],
@@ -833,6 +846,13 @@ def test_stamps_pr_agent_review_source_model() -> None:
                 "created_at": "2026-06-22T12:22:00Z",
                 "updated_at": "2026-06-22T12:22:00Z",
                 "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+            {
+                "id": 78,
+                "body": "## Incremental PR Reviewer Guide\n\nMore observations.",
+                "created_at": "2026-06-22T12:23:00Z",
+                "updated_at": "2026-06-22T12:23:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
             }
         ],
     )
@@ -840,20 +860,20 @@ def test_stamps_pr_agent_review_source_model() -> None:
     result = module.stamp_existing_review_comment(
         github=github,
         started_at="2026-06-22T12:21:00Z",
-        markers=("## PR Reviewer Guide", "<!-- ai-pr-reviewer-glm -->"),
+        markers=("## PR Reviewer Guide", "## Incremental PR Reviewer Guide", "<!-- ai-pr-reviewer-glm -->"),
         expected_bot_login="github-actions[bot]",
         marker="<!-- ai-pr-reviewer-glm -->",
         source_label="GLM PR-Agent (`configured-pr-agent-model`)",
         run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
     )
 
-    assert result == "existing-review-stamped"
+    assert result == "existing-reviews-stamped"
     assert github.posted == []
-    assert len(github.updated) == 1
-    assert github.updated[0][0] == 77
-    assert github.updated[0][1].startswith("<!-- ai-pr-reviewer-glm -->")
-    assert "**Source:** GLM PR-Agent (`configured-pr-agent-model`)" in github.updated[0][1]
-    assert "**Action run:** https://github.com/seungpyoson/bolt-v2/actions/runs/1" in github.updated[0][1]
+    assert [comment_id for comment_id, _body in github.updated] == [77, 78]
+    for _comment_id, body in github.updated:
+        assert body.startswith("<!-- ai-pr-reviewer-glm -->")
+        assert "**Source:** GLM PR-Agent (`configured-pr-agent-model`)" in body
+        assert "**Action run:** https://github.com/seungpyoson/bolt-v2/actions/runs/1" in body
 
 
 def test_stamping_preserves_existing_marker_as_first_line() -> None:
@@ -1193,7 +1213,7 @@ def main() -> int:
     test_posts_failure_notice_when_glm_fallback_fails()
     test_sets_failure_notice_output_after_posting_failure_notice()
     test_kimi_fallback_uses_same_chunked_deliverable_contract()
-    test_stamps_pr_agent_review_source_model()
+    test_stamps_all_pr_agent_review_source_model_comments()
     test_stamping_preserves_existing_marker_as_first_line()
     test_stamping_detects_existing_source_lines_past_initial_comment_window()
     test_splits_fallback_review_across_comments_when_comment_budget_requires_it()

@@ -88,6 +88,7 @@ jobs:
           emit("kimi_model_max_context_size", kimi["model_max_context_size"])
           emit("kimi_model_default_thinking", kimi["default_thinking"])
           emit("kimi_deliverable_marker", kimi["deliverable_marker"])
+          emit("kimi_notice_marker", kimi["notice_marker"])
           emit("kimi_review_max_chunk_chars", kimi["review_max_chunk_chars"])
           emit("kimi_cli_timeout_seconds", kimi["cli_timeout_seconds"])
           emit("kimi_node_version", workflow["node_version"])
@@ -101,7 +102,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           notice_file="${RUNNER_TEMP}/kimi-ai-review-notice.md"
-          marker='<!-- ai-pr-reviewer-kimi-notice -->'
+          marker="${{ steps.runtime-config.outputs.kimi_notice_marker }}"
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           expected_bot_login="${{ steps.runtime-config.outputs.expected_bot_login }}"
           cat > "$notice_file" <<EOF
@@ -242,7 +243,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           notice_file="${RUNNER_TEMP}/kimi-ai-review-notice.md"
-          marker='<!-- ai-pr-reviewer-kimi-notice -->'
+          marker="${{ steps.runtime-config.outputs.kimi_notice_marker }}"
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           expected_bot_login="${{ steps.runtime-config.outputs.expected_bot_login }}"
           cat > "$notice_file" <<EOF

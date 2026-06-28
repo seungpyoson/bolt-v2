@@ -78,6 +78,7 @@ jobs:
           emit("glm_model", glm["model"])
           emit("glm_api_timeout_seconds", glm["api_timeout_seconds"])
           emit("glm_review_max_chunk_chars", glm["review_max_chunk_chars"])
+          emit("glm_notice_marker", glm["notice_marker"])
           emit("glm_pr_agent_model", pr_agent["model"])
           emit("glm_pr_agent_fallback_models", pr_agent["fallback_models"])
           emit("glm_pr_agent_custom_model_max_tokens", pr_agent["custom_model_max_tokens"])
@@ -96,7 +97,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           notice_file="${RUNNER_TEMP}/glm-ai-review-notice.md"
-          marker='<!-- ai-pr-reviewer-glm-notice -->'
+          marker="${{ steps.runtime-config.outputs.glm_notice_marker }}"
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           expected_bot_login="${{ steps.runtime-config.outputs.expected_bot_login }}"
           cat > "$notice_file" <<EOF
@@ -192,7 +193,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           notice_file="${RUNNER_TEMP}/glm-ai-review-notice.md"
-          marker='<!-- ai-pr-reviewer-glm-notice -->'
+          marker="${{ steps.runtime-config.outputs.glm_notice_marker }}"
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           expected_bot_login="${{ steps.runtime-config.outputs.expected_bot_login }}"
           cat > "$notice_file" <<EOF

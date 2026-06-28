@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import pathlib
@@ -108,6 +109,131 @@ def parse_json(stdout: str) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise AssertionError(payload)
     return payload
+
+
+def load_preflight_module() -> object:
+    spec = importlib.util.spec_from_file_location("merge_queue_preflight", SCRIPT_PATH)
+    if spec is None or spec.loader is None:
+        raise AssertionError("merge_queue_preflight module spec unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def assert_contract_result_reduces_findings_by_table() -> None:
+    module = load_preflight_module()
+    findings = [
+        {
+            "lane": "readiness",
+            "scope": "pr",
+            "status": "inconclusive",
+            "reason_code": "metadata_unavailable",
+            "message": "metadata missing",
+            "evidence": {"pr": 1},
+        },
+        {
+            "lane": "integration",
+            "scope": "pr",
+            "status": "blocked",
+            "reason_code": "base_conflict",
+            "message": "conflict",
+            "evidence": {"pr": 2},
+        },
+        {
+            "lane": "residual_risk",
+            "scope": "run",
+            "status": "residual_risk",
+            "reason_code": "proof_only_check",
+            "message": "proof context not yet run",
+            "evidence": {},
+        },
+    ]
+    result = module.contract_result(findings, wave_status="ready")
+    expected_lane_statuses = {
+        "mergify_config": "inconclusive",
+        "identity": "inconclusive",
+        "readiness": "inconclusive",
+        "integration": "blocked",
+        "verifier": "inconclusive",
+    }
+    if result != {
+        "verdict": "blocked",
+        "exit_code": 2,
+        "lane_statuses": expected_lane_statuses,
+    }:
+        raise AssertionError(result)
+    if module.contract_result([], wave_status="ready") != {
+        "verdict": "inconclusive",
+        "exit_code": 3,
+        "lane_statuses": {
+            "mergify_config": "inconclusive",
+            "identity": "inconclusive",
+            "readiness": "inconclusive",
+            "integration": "inconclusive",
+            "verifier": "inconclusive",
+        },
+    }:
+        raise AssertionError("missing ready evidence must be inconclusive")
+    ready_findings = [
+        {
+            "lane": lane,
+            "scope": "run",
+            "status": "ready",
+            "reason_code": f"{lane}_ready",
+            "message": "ready",
+            "evidence": {},
+        }
+        for lane in expected_lane_statuses
+    ]
+    ready_result = module.contract_result(ready_findings, wave_status="ready")
+    if (ready_result["verdict"], ready_result["exit_code"]) != ("queue_as_one_wave", 0):
+        raise AssertionError(ready_result)
+    split_result = module.contract_result(ready_findings, wave_status="split_advised")
+    if (split_result["verdict"], split_result["exit_code"]) != ("split_advised", 1):
+        raise AssertionError(split_result)
+
+
+def assert_check_state_classification_is_table_driven() -> None:
+    module = load_preflight_module()
+    cases = {
+        "success": ("ready", "required_check_ready"),
+        "pass": ("ready", "required_check_ready"),
+        "failure": ("blocked", "required_check_failed"),
+        "error": ("blocked", "required_check_failed"),
+        "cancelled": ("blocked", "required_check_failed"),
+        "action-required": ("blocked", "required_check_failed"),
+        "startup failure": ("blocked", "required_check_failed"),
+        "pending": ("inconclusive", "required_check_pending"),
+        "queued": ("inconclusive", "required_check_pending"),
+        "requested": ("inconclusive", "required_check_pending"),
+        "waiting": ("inconclusive", "required_check_pending"),
+        "in-progress": ("inconclusive", "required_check_pending"),
+        "skipped": ("inconclusive", "required_check_skipped"),
+        "neutral": ("inconclusive", "required_check_skipped"),
+        "missing": ("inconclusive", "required_check_missing"),
+        "unknown-new-state": ("inconclusive", "required_check_unknown"),
+    }
+    for raw_state, expected in cases.items():
+        finding = module.classify_required_check_state(
+            check_name="gate",
+            raw_state=raw_state,
+            expected_head="a" * 40,
+            actual_head="a" * 40,
+            evidence={"workflow": "CI", "job": "gate"},
+        )
+        observed = (finding["status"], finding["reason_code"])
+        if observed != expected:
+            raise AssertionError((raw_state, observed, expected))
+    stale = module.classify_required_check_state(
+        check_name="gate",
+        raw_state="success",
+        expected_head="a" * 40,
+        actual_head="b" * 40,
+        evidence={"workflow": "CI", "job": "gate"},
+    )
+    if (stale["status"], stale["reason_code"]) != ("inconclusive", "required_check_stale"):
+        raise AssertionError(stale)
 
 
 def write_preflight_config(
@@ -770,6 +896,8 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
 
 
 def main() -> int:
+    assert_contract_result_reduces_findings_by_table()
+    assert_check_state_classification_is_table_driven()
     assert_clean_prs_batch_together()
     assert_conflicting_pr_starts_later_batch()
     assert_order_dependent_conflict_context_is_reported()

@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -25,11 +25,130 @@ PR_REF_PREFIX = "refs/pull/"
 FETCH_HEAD = "FETCH_HEAD"
 PROFILE_NONE = "none"
 STATUS_READY = "ready"
+STATUS_BLOCKED = "blocked"
+STATUS_INCONCLUSIVE = "inconclusive"
+STATUS_RESIDUAL_RISK = "residual_risk"
+LANE_MERGIFY_CONFIG = "mergify_config"
+LANE_IDENTITY = "identity"
+LANE_READINESS = "readiness"
+LANE_INTEGRATION = "integration"
+LANE_VERIFIER = "verifier"
+CONTRACT_LANES = (
+    LANE_MERGIFY_CONFIG,
+    LANE_IDENTITY,
+    LANE_READINESS,
+    LANE_INTEGRATION,
+    LANE_VERIFIER,
+)
+CONTRACT_STATUS_RANK = {
+    STATUS_BLOCKED: 0,
+    STATUS_INCONCLUSIVE: 1,
+    STATUS_READY: 2,
+}
+VERDICT_QUEUE_AS_ONE_WAVE = "queue_as_one_wave"
+VERDICT_SPLIT_ADVISED = "split_advised"
+VERDICT_BLOCKED = "blocked"
+VERDICT_INCONCLUSIVE = "inconclusive"
+CONTRACT_READY_WAVE_VERDICTS = {
+    STATUS_READY: VERDICT_QUEUE_AS_ONE_WAVE,
+    VERDICT_SPLIT_ADVISED: VERDICT_SPLIT_ADVISED,
+}
+CONTRACT_STATUS_VERDICTS = {
+    STATUS_BLOCKED: VERDICT_BLOCKED,
+    STATUS_INCONCLUSIVE: VERDICT_INCONCLUSIVE,
+}
+CONTRACT_VERDICT_EXIT_CODES = {
+    VERDICT_QUEUE_AS_ONE_WAVE: 0,
+    VERDICT_SPLIT_ADVISED: 1,
+    VERDICT_BLOCKED: 2,
+    VERDICT_INCONCLUSIVE: 3,
+}
+CHECK_STATE_CLASSIFICATIONS = {
+    "success": (STATUS_READY, "required_check_ready"),
+    "pass": (STATUS_READY, "required_check_ready"),
+    "failure": (STATUS_BLOCKED, "required_check_failed"),
+    "error": (STATUS_BLOCKED, "required_check_failed"),
+    "cancelled": (STATUS_BLOCKED, "required_check_failed"),
+    "action_required": (STATUS_BLOCKED, "required_check_failed"),
+    "startup_failure": (STATUS_BLOCKED, "required_check_failed"),
+    "pending": (STATUS_INCONCLUSIVE, "required_check_pending"),
+    "queued": (STATUS_INCONCLUSIVE, "required_check_pending"),
+    "requested": (STATUS_INCONCLUSIVE, "required_check_pending"),
+    "waiting": (STATUS_INCONCLUSIVE, "required_check_pending"),
+    "in_progress": (STATUS_INCONCLUSIVE, "required_check_pending"),
+    "skipped": (STATUS_INCONCLUSIVE, "required_check_skipped"),
+    "neutral": (STATUS_INCONCLUSIVE, "required_check_skipped"),
+    "missing": (STATUS_INCONCLUSIVE, "required_check_missing"),
+}
+CHECK_STATE_UNKNOWN = (STATUS_INCONCLUSIVE, "required_check_unknown")
+CHECK_STATE_STALE = (STATUS_INCONCLUSIVE, "required_check_stale")
 VERIFIER_STREAMS = ("stdout", "stderr")
 
 
 class PreflightError(RuntimeError):
     """Raised when preflight input or repository state is invalid."""
+
+
+def normalize_check_state(raw_state: str) -> str:
+    return re.sub(r"[-\s]+", "_", str(raw_state).strip().lower())
+
+
+def contract_lane_status(findings: Sequence[dict[str, object]], lane: str) -> str:
+    statuses = tuple(
+        str(finding["status"])
+        for finding in findings
+        if finding["lane"] == lane and finding["status"] != STATUS_RESIDUAL_RISK
+    )
+    return min(statuses, key=CONTRACT_STATUS_RANK.__getitem__, default=STATUS_INCONCLUSIVE)
+
+
+def contract_result(findings: Sequence[dict[str, object]], *, wave_status: str) -> dict[str, object]:
+    lane_statuses = {
+        lane: contract_lane_status(findings, lane)
+        for lane in CONTRACT_LANES
+    }
+    aggregate_status = min(lane_statuses.values(), key=CONTRACT_STATUS_RANK.__getitem__)
+    verdict = {
+        **CONTRACT_STATUS_VERDICTS,
+        STATUS_READY: CONTRACT_READY_WAVE_VERDICTS[wave_status],
+    }[aggregate_status]
+    return {
+        "verdict": verdict,
+        "exit_code": CONTRACT_VERDICT_EXIT_CODES[verdict],
+        "lane_statuses": lane_statuses,
+    }
+
+
+def classify_required_check_state(
+    *,
+    check_name: str,
+    raw_state: str,
+    expected_head: str,
+    actual_head: str,
+    evidence: Mapping[str, object],
+) -> dict[str, object]:
+    normalized_state = normalize_check_state(raw_state)
+    status, reason_code = CHECK_STATE_CLASSIFICATIONS.get(
+        normalized_state,
+        CHECK_STATE_UNKNOWN,
+    )
+    if actual_head != expected_head:
+        status, reason_code = CHECK_STATE_STALE
+    return {
+        "lane": LANE_READINESS,
+        "scope": "pr",
+        "status": status,
+        "reason_code": reason_code,
+        "message": f"required check {check_name} is {reason_code}",
+        "evidence": {
+            **evidence,
+            "check_name": check_name,
+            "raw_state": raw_state,
+            "normalized_state": normalized_state,
+            "expected_head": expected_head,
+            "actual_head": actual_head,
+        },
+    }
 
 
 @dataclasses.dataclass(frozen=True)

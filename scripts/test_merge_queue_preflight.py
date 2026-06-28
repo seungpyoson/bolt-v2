@@ -225,6 +225,26 @@ def mergify_queue_route_finding(pr: int, queue_rule: str, labels: list[str], que
     }
 
 
+def mergify_queue_proof_source_finding(
+    queue_rule: str,
+    queue_conditions: list[str],
+    merge_conditions: list[str],
+) -> dict[str, object]:
+    return {
+        "lane": "mergify_config",
+        "scope": "queue",
+        "status": "ready",
+        "reason_code": "mergify_queue_proof_source",
+        "message": f"Mergify queue rule {queue_rule} uses queue proof context",
+        "evidence": {
+            "queue_rule": queue_rule,
+            "proof_source": "queue_proof_pr",
+            "queue_conditions": queue_conditions,
+            "merge_conditions": merge_conditions,
+        },
+    }
+
+
 def mergify_queue_batch_above_max_finding(queue_rule: str, prs: list[int], max_batch_size: int) -> dict[str, object]:
     return {
         "lane": "mergify_config",
@@ -702,6 +722,28 @@ def assert_mergify_queue_routing_uses_pr_labels() -> None:
         payload = parse_json(result.stdout)
         assert mergify_queue_route_finding(1, "hotfix", ["hotfix"], ["label = hotfix"]) in payload["findings"], payload["findings"]
         assert mergify_queue_route_finding(2, "default", [], []) in payload["findings"], payload["findings"]
+        assert mergify_queue_proof_source_finding(
+            "hotfix",
+            ["label = hotfix"],
+            [
+                "approved-reviews-by = sp-reviewer",
+                "check-success = gate",
+                "check-success = backtester-gate",
+                "check-success = actionlint",
+                "check-success = host-health",
+            ],
+        ) in payload["findings"], payload["findings"]
+        assert mergify_queue_proof_source_finding(
+            "default",
+            [],
+            [
+                "approved-reviews-by = sp-reviewer",
+                "check-success = gate",
+                "check-success = backtester-gate",
+                "check-success = actionlint",
+                "check-success = host-health",
+            ],
+        ) in payload["findings"], payload["findings"]
         assert_equal(payload["wave_status"], "split_advised", "mixed queue wave status")
 
 

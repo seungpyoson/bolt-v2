@@ -121,6 +121,20 @@ MERGIFY_QUEUE_WAVE_STATUSES = {
     True: VERDICT_SPLIT_ADVISED,
 }
 MERGIFY_SPLIT_REASON_CODES = frozenset({"mergify_queue_batch_above_max"})
+MERGIFY_QUEUE_PROOF_SOURCE_STATES = {
+    True: (
+        STATUS_READY,
+        "mergify_queue_proof_source",
+        "Mergify queue rule {queue_rule} uses queue proof context",
+        "queue_proof_pr",
+    ),
+    False: (
+        STATUS_INCONCLUSIVE,
+        "mergify_in_place_proof_source",
+        "Mergify queue rule {queue_rule} uses in-place proof context",
+        "in_place_pr",
+    ),
+}
 BASE_IDENTITY_FINDING_STATES = {
     True: (),
     False: (
@@ -544,6 +558,40 @@ def mergify_route_queue_groups(route_findings: Sequence[Mapping[str, object]]) -
     return groups
 
 
+def mergify_queue_proof_source_finding(rule: Mapping[str, object]) -> dict[str, object]:
+    queue_rule = str(rule["name"])
+    queue_conditions = [str(condition) for condition in tuple(rule["queue_conditions"])]
+    merge_conditions = [str(condition) for condition in tuple(rule["merge_conditions"])]
+    status, reason_code, message, proof_source = MERGIFY_QUEUE_PROOF_SOURCE_STATES[
+        tuple(merge_conditions) != tuple(queue_conditions)
+    ]
+    return {
+        "lane": LANE_MERGIFY_CONFIG,
+        "scope": "queue",
+        "status": status,
+        "reason_code": reason_code,
+        "message": message.format(queue_rule=queue_rule),
+        "evidence": {
+            "queue_rule": queue_rule,
+            "proof_source": proof_source,
+            "queue_conditions": queue_conditions,
+            "merge_conditions": merge_conditions,
+        },
+    }
+
+
+def selected_mergify_queue_proof_source_findings(
+    *,
+    config: Mapping[str, object],
+    route_findings: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    rules_by_name = mergify_queue_rules_by_name(config)
+    return tuple(
+        mergify_queue_proof_source_finding(rules_by_name[queue_rule])
+        for queue_rule in sorted(mergify_route_queue_rules(route_findings))
+    )
+
+
 def mergify_queue_rules_by_name(config: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
     return {
         str(rule["name"]): rule
@@ -650,6 +698,10 @@ def available_mergify_config_route_and_batch_findings(
     route_findings = available_mergify_queue_route_findings(config=config, readiness=readiness)
     return (
         *route_findings,
+        *selected_mergify_queue_proof_source_findings(
+            config=config,
+            route_findings=route_findings,
+        ),
         *mergify_queue_batch_size_findings(config=config, route_findings=route_findings),
     )
 

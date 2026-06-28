@@ -13,7 +13,7 @@
 //!   4. The registration module source itself does not introduce any
 //!      connect / disconnect / run / subscribe / order-submit path.
 
-mod support;
+use crate::support;
 
 use std::collections::BTreeMap;
 

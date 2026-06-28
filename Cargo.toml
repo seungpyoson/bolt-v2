@@ -4,6 +4,51 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.96.0"
 publish = false
+autotests = false
+
+[[test]]
+name = "iv"
+path = "tests/iv.rs"
+
+[[test]]
+name = "outcome_groups"
+path = "tests/outcome_groups.rs"
+
+[[test]]
+name = "maker_taker"
+path = "tests/maker_taker.rs"
+
+[[test]]
+name = "kill_switch_loss"
+path = "tests/kill_switch_loss.rs"
+
+[[test]]
+name = "pricing"
+path = "tests/pricing.rs"
+
+[[test]]
+name = "admission_orders"
+path = "tests/admission_orders.rs"
+
+[[test]]
+name = "platform_config"
+path = "tests/platform_config.rs"
+
+[[test]]
+name = "runtime_capture_io"
+path = "tests/runtime_capture_io.rs"
+
+[[test]]
+name = "wiring_registration"
+path = "tests/wiring_registration.rs"
+
+[[test]]
+name = "bolt_v3_risk_reservation_substrate"
+path = "tests/bolt_v3_risk_reservation_substrate.rs"
+
+[[test]]
+name = "bolt_v3_risk_reservation_epoch_manager"
+path = "tests/bolt_v3_risk_reservation_epoch_manager.rs"
 
 [dependencies]
 ahash = "0.8.12"

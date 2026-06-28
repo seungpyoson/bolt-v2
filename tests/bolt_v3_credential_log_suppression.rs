@@ -27,7 +27,7 @@
 //! logger thread actually emits to the process's standard streams
 //! when that config is the active one.
 
-mod support;
+use crate::support;
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;

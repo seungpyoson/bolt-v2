@@ -17,6 +17,13 @@ test_name="${RUST_PROBE_TEST_NAME:-}"
 expected_sha="${RUST_PROBE_EXPECTED_SHA:-}"
 probe_id="${RUST_PROBE_ID:-}"
 
+# Rust Probe contract:
+# - RUST_PROBE_TEST_TARGET is a Cargo [[test]] harness target name.
+# - RUST_PROBE_TEST_NAME is an optional nextest filter. Suggestions pass
+#   "<member_stem>::" for consolidated harness members so nextest stays scoped
+#   to that module instead of matching same-named tests in sibling modules.
+# - check-test-target and nextest-no-run-test-target compile the whole harness.
+
 if [ -z "$workspace" ]; then
   reject "GITHUB_WORKSPACE is required"
 fi

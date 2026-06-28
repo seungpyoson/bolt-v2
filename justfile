@@ -431,7 +431,8 @@ source-fence: source-fence-static
     python3 scripts/verify_runtime_capture_yaml.py
     # #342 owns these canonical source-fence checks. Until #332 changes full
     # nextest ownership, `test` intentionally still duplicates them under `gate`.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_controlled_connect --test bolt_v3_production_entrypoint --test bolt_v3_iv_source_fence -- --nocapture
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test wiring_registration -- bolt_v3_controlled_connect:: bolt_v3_production_entrypoint:: --nocapture
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test iv -- bolt_v3_iv_source_fence:: --nocapture
 
 # Cargo shim guard tests (pytest-based, unlike the self-running script tests)
 cargo-shim-tests:
@@ -496,6 +497,9 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
     if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
         failed=1
     fi
+    if ! python3 scripts/test_ci_test_manifest.py; then
+        failed=1
+    fi
     if ! python3 scripts/test_cancel_obsolete_dispatch_runs.py; then
         failed=1
     fi
@@ -508,10 +512,19 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
     if ! python3 scripts/test_ci_provenance.py; then
         failed=1
     fi
+    if ! python3 scripts/test_merge_readiness.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_coverage_enforcer.py; then
+        failed=1
+    fi
     if ! python3 scripts/test_nextest_fingerprint.py; then
         failed=1
     fi
     if ! python3 scripts/test_root_bin_sidecars.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_ci_storage_audit.py; then
         failed=1
     fi
     if ! python3 scripts/test_find_same_sha_main_evidence.py; then

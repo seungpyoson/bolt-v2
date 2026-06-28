@@ -19,6 +19,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from ci_provenance import (
     GATE_NAME_KEYS,
+    MERGIFY_TEMP_PR_TRANSIENT_PREFIX,
     POLICY_ROWS,
     POLICY_VALUES,
     ProvenanceError,
@@ -27,6 +28,9 @@ from ci_provenance import (
     policy_contract_errors,
     evaluate_ci_policy as provenance_evaluate_ci_policy,
     docs_safe_path_contract_errors,
+    ProvenanceConfig,
+    load_config,
+    mergify_temp_pr_matches,
 )
 
 # Keep the former verifier-local helper families module-scoped so parity tests
@@ -43,6 +47,7 @@ from command_understanding import (
     python_constant_string,
     python_inline_command_payloads,
 )
+from ci_test_manifest import CiTestManifest, _mask_rust_non_code, build_test_manifest
 from rust_verification import CARGO_ALIAS_SUBCOMMANDS, CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 
 
@@ -66,6 +71,10 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/backtester-ci.yml": "backtester_ci",
     "dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     ".github/workflows/dispatch-ci-cancel.yml": "dispatch_ci_cancel",
+    "merge-readiness-finalizer.yml": "merge_readiness_finalizer",
+    ".github/workflows/merge-readiness-finalizer.yml": "merge_readiness_finalizer",
+    "coverage-enforcer.yml": "coverage_enforcer",
+    ".github/workflows/coverage-enforcer.yml": "coverage_enforcer",
     "ci-runner-debug.yml": "ci_runner_debug",
     ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
     "rust-probe.yml": "rust_probe",
@@ -256,6 +265,32 @@ LIVE_NODE_NEXTEST_BINARIES = (
     "nt_runtime_capture",
     "venue_contract",
 )
+EXPECTED_HARNESS_COUNT = 11
+DECLARED_TOP_LEVEL_TEST_HELPERS = {"bolt_v3_iv_support"}
+RUST_TEST_ATTR_RE = re.compile(r"#\s*\[\s*(?:tokio::)?test(?:\s*\([^]]*\))?\s*\]")
+RUST_INNER_ATTR_RE = re.compile(r"#!\s*\[\s*([A-Za-z_][A-Za-z0-9_]*)")
+BANNED_RUST_INNER_ATTRS = {
+    "feature",
+    "no_std",
+    "no_main",
+    "crate_name",
+    "crate_type",
+    "crate_id",
+}
+NEXTEST_BINARY_FILTER_RE = re.compile(r"\bbinary\(=([A-Za-z0-9_-]+)\)")
+# Equality tail for an audited binary target: binary(=name). Anything else after
+# `binary(` (regex form binary(/.../), spaced forms, etc.) is unparseable by the
+# guardrail and must fail closed rather than collapse to an empty binary set.
+NEXTEST_BINARY_EQ_TAIL_RE = re.compile(r"=[A-Za-z0-9_-]+\)")
+# Harness-scoped live-node test prefix: test(/^member::/).
+NEXTEST_TEST_PREFIX_RE = re.compile(r"test\(/\^([A-Za-z0-9_]+)::/\)")
+NEXTEST_SENSITIVE_OVERRIDE_KEYS = {
+    "test-group",
+    "retries",
+    "slow-timeout",
+    "leak-timeout",
+    "timeout",
+}
 LIVE_NODE_NEXTEST_FILTER = " | ".join(f"binary(={binary})" for binary in LIVE_NODE_NEXTEST_BINARIES)
 CHECK_AARCH64_JOB_LEVEL_IF_RE = re.compile(r"^    if:\s*.*$")
 CHECK_AARCH64_STANDALONE_IF_RE = re.compile(
@@ -515,6 +550,46 @@ TEST_ARCHIVE_SIDECAR_CACHE_KEY = (
     "-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
 )
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_SCCACHE_OPT_IN = (
+    "BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}"
+)
+# Value, not mere presence: the fail-open flag must be literally "1", and the build
+# must retry without sccache on failure, so a future edit cannot silently disable
+# either and make the cache able to fail the required build.
+TEST_ARCHIVE_SCCACHE_IGNORE_IO = 'SCCACHE_IGNORE_SERVER_IO_ERROR: "1"'
+TEST_ARCHIVE_SCCACHE_RETRY = "BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive"
+TEST_ARCHIVE_SCCACHE_PREFIX_PRECONDITION = (
+    '[[ -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]]'
+)
+TEST_ARCHIVE_SCCACHE_LOCATION_PRECONDITION = (
+    '[[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]]'
+)
+TEST_ARCHIVE_SCCACHE_MAIN_DISPATCH_TRUST = (
+    'if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi'
+)
+TEST_ARCHIVE_SCCACHE_MAIN_PUSH_TRUST = (
+    'if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then trusted=true; fi'
+)
+TEST_ARCHIVE_SCCACHE_TRUSTED_ASSIGNMENTS = (
+    TEST_ARCHIVE_SCCACHE_MAIN_DISPATCH_TRUST,
+    TEST_ARCHIVE_SCCACHE_MAIN_PUSH_TRUST,
+)
+TEST_ARCHIVE_SCCACHE_PR_ROLE_ENV = "PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}"
+TEST_ARCHIVE_SCCACHE_READ_WRITE_ROLE = (
+    'if [[ "$trusted" == "true" ]]; then\n'
+    '            cache_mode="read_write"\n'
+    '            role_arn="$ROLE_ARN"\n'
+    "          fi"
+)
+TEST_ARCHIVE_SCCACHE_PR_READ_ONLY_ROLE = (
+    'if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then\n'
+    '            cache_mode="read_only"\n'
+    '            role_arn="$PR_READONLY_ROLE_ARN"\n'
+    "          fi"
+)
+TEST_ARCHIVE_SCCACHE_ROLE_OUTPUT = 'echo "role_arn=$role_arn" >> "$GITHUB_OUTPUT"'
+TEST_ARCHIVE_SCCACHE_MODE_OUTPUT = 'echo "cache_mode=$cache_mode" >> "$GITHUB_OUTPUT"'
+TEST_ARCHIVE_SCCACHE_RESOLVED_ROLE_ASSUME = "role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}"
 TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'"
 TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_SIDECAR_BUILD_GUARD = (
@@ -758,9 +833,38 @@ def _normalize_concurrency_text(text: str) -> str:
     return " ".join(text.split())
 
 
-MERGIFY_PROOF_PR_HEAD_REF_PREDICATE = "startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')"
+MERGIFY_PROOF_PR_BASE_HEAD_REF_PREFIX = "mergify/merge-queue/"
+MERGIFY_PROOF_PR_TRANSIENT_HEAD_REF_PREFIX = (
+    f"{MERGIFY_TEMP_PR_TRANSIENT_PREFIX}{MERGIFY_PROOF_PR_BASE_HEAD_REF_PREFIX}"
+)
+MERGIFY_PROOF_PR_HEAD_REF_PREDICATE = (
+    f"(startsWith(github.event.pull_request.head.ref, '{MERGIFY_PROOF_PR_BASE_HEAD_REF_PREFIX}') "
+    f"|| startsWith(github.event.pull_request.head.ref, '{MERGIFY_PROOF_PR_TRANSIENT_HEAD_REF_PREFIX}'))"
+)
 MERGIFY_PROOF_PR_CANCEL_GUARD = f"!{MERGIFY_PROOF_PR_HEAD_REF_PREDICATE}"
 MERGIFY_PROOF_PR_GROUP_TOKEN = "mergify-proof"
+
+# Shared predicate used by advisory jobs to skip redundant runs on Mergify proof
+# PR metadata-only edits (title/body) after the initial opened run. It is true
+# only for pull_request edited events where the head ref is a Mergify queue
+# proof branch and the base ref did not change. It must NOT be used for required
+# merge-proof jobs.
+MERGIFY_METADATA_EDIT_SKIP_PREDICATE = (
+    "github.event.action == 'edited' "
+    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
+    "&& !(github.event.changes.base.ref.from != '')"
+)
+
+EXPECTED_MERGE_READINESS_PROGRESS_IF = (
+    "${{ github.event_name == 'pull_request' "
+    "&& !(" + MERGIFY_METADATA_EDIT_SKIP_PREDICATE + ") }}"
+)
+
+EXPECTED_COVERAGE_ENFORCER_IF = (
+    "${{ !(github.event_name == 'pull_request' "
+    "&& " + MERGIFY_METADATA_EDIT_SKIP_PREDICATE + ") }}"
+)
 
 
 MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
@@ -768,7 +872,8 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # wins under merge_group (the PR/workflow_dispatch arms are false then), before
     # the per-ref/sha fallback; PR-draft-deferral arms are gated off merge_group.
     "group: >- ${{ github.event_name == 'pull_request' "
-    "&& startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
     "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
     "|| github.event_name == 'pull_request' && github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
@@ -784,7 +889,8 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # .github/workflows/actionlint.yml — simpler prefixed shape, same merge_group
     # arm before the per-ref/sha fallback.
     "group: >- actionlint-${{ github.event_name == 'pull_request' "
-    "&& startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
     "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
     "|| github.event_name == 'pull_request' && format('pr-{0}', github.event.number) "
     "|| github.event_name == 'merge_group' && format('mq-{0}', github.ref) "
@@ -792,7 +898,8 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # .github/workflows/backtester-ci.yml — same draft/full PR split as ci.yml
     # with a backtester-prefixed merge_group arm before the per-ref/sha fallback.
     "group: >- ${{ github.event_name == 'pull_request' "
-    "&& startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
     "&& format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
     "|| github.event_name == 'pull_request' && github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
@@ -822,12 +929,14 @@ KNOWN_SAFE_CANCEL_FORMS = frozenset(
         "&& (github.event.action == 'reopened' || (github.event.action == 'edited' "
         "&& !(github.event.changes.base.ref.from != '')))) || github.event_name == 'workflow_dispatch' }}",
         "${{ github.event_name == 'pull_request' "
-        "&& !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+        "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+        "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
         "&& !(github.event.pull_request.draft == false && (github.event.action == 'reopened' "
         "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))) "
         "|| github.event_name == 'workflow_dispatch' }}",
         "${{ github.event_name == 'pull_request' "
-        "&& !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') }}",
+        "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+        "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) }}",
     }
 )
 
@@ -927,18 +1036,114 @@ def merge_group_concurrency_errors(group_text: str, cancel_text: str) -> list[st
     return errors
 
 
-def mergify_proof_pr_concurrency_errors(group_text: str, cancel_text: str) -> list[str]:
+def mergify_proof_pr_concurrency_errors(
+    group_text: str,
+    cancel_text: str,
+    *,
+    head_ref_predicate: str = MERGIFY_PROOF_PR_HEAD_REF_PREDICATE,
+    cancel_guard: str = MERGIFY_PROOF_PR_CANCEL_GUARD,
+) -> list[str]:
     errors: list[str] = []
     normalized_group = _normalize_concurrency_text(group_text)
     normalized_cancel = _normalize_concurrency_text(cancel_text)
     if (
-        MERGIFY_PROOF_PR_HEAD_REF_PREDICATE not in normalized_group
+        head_ref_predicate not in normalized_group
         or MERGIFY_PROOF_PR_GROUP_TOKEN not in normalized_group
         or "github.run_id" not in normalized_group
     ):
         errors.append("concurrency group must isolate Mergify proof PR runs")
-    if MERGIFY_PROOF_PR_CANCEL_GUARD not in normalized_cancel:
+    if cancel_guard not in normalized_cancel:
         errors.append("cancel-in-progress must not cancel Mergify proof PR validations")
+    return errors
+
+
+def _workflow_proof_pr_prefixes() -> frozenset[str]:
+    """The head-ref prefixes the workflow concurrency layer isolates, extracted from
+    MERGIFY_PROOF_PR_HEAD_REF_PREDICATE: startsWith(<ref>, '<prefix>')."""
+    prefixes = frozenset(re.findall(r"startsWith\([^,]+,\s*'([^']*)'\)", MERGIFY_PROOF_PR_HEAD_REF_PREDICATE))
+    if not prefixes:
+        raise ProvenanceError(
+            "MERGIFY_PROOF_PR_HEAD_REF_PREDICATE must embed at least one startsWith(ref, '<prefix>') literal"
+        )
+    return prefixes
+
+
+def mergify_proof_prefix_alignment_errors(config: ProvenanceConfig) -> list[str]:
+    """Fail loud if the CI policy resolver and the workflow concurrency layer ever
+    disagree on which head-ref prefixes mark a Mergify proof PR.
+
+    The workflow isolates a proof-PR run (own per-run concurrency group, never
+    cancelled) when the head ref satisfies one of the documented Mergify proof-PR
+    prefixes. The resolver must promote exactly that same set for the bound actor.
+    If either layer handles a form the other does not, the required gate can be
+    skipped or cancelled and the queue can deadlock."""
+    errors: list[str] = []
+    workflow_prefixes = _workflow_proof_pr_prefixes()
+    resolver_prefixes = frozenset(
+        {
+            config.mergify_temp_pr_head_ref_prefix,
+            f"{MERGIFY_TEMP_PR_TRANSIENT_PREFIX}{config.mergify_temp_pr_head_ref_prefix}",
+        }
+    )
+    if workflow_prefixes != resolver_prefixes:
+        errors.append(
+            "mergify proof-PR prefix drift: resolver prefixes "
+            f"{sorted(resolver_prefixes)!r} must equal workflow concurrency predicate prefixes "
+            f"{sorted(workflow_prefixes)!r}"
+        )
+    actor_id = config.mergify_temp_pr_actor_id
+    suffix = "83d4b0be7e"
+    expected_head_refs = {prefix: prefix + suffix for prefix in resolver_prefixes}
+    resolver_promoted_prefixes: set[str] = set()
+    workflow_isolated_prefixes: set[str] = set()
+    for prefix, head_ref in expected_head_refs.items():
+        workflow_isolates = any(head_ref.startswith(workflow_prefix) for workflow_prefix in workflow_prefixes)
+        resolver_promotes = mergify_temp_pr_matches(
+            event_name="pull_request",
+            pull_request_draft=True,
+            pull_request_head_ref=head_ref,
+            temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,
+            event_sender_id=actor_id,
+            temp_pr_actor_id=actor_id,
+        )
+        if resolver_promotes:
+            resolver_promoted_prefixes.add(prefix)
+        if workflow_isolates:
+            workflow_isolated_prefixes.add(prefix)
+        if resolver_promotes and not workflow_isolates:
+            errors.append(
+                "mergify proof-PR drift: resolver promotes head ref "
+                f"{head_ref!r} that the workflow concurrency layer does not isolate (it would land "
+                "in the cancellable group and deadlock the queue)"
+            )
+        if workflow_isolates and not resolver_promotes:
+            errors.append(
+                "mergify proof-PR drift: workflow concurrency layer isolates head ref "
+                f"{head_ref!r} that the resolver does not promote (the required gate would not report)"
+            )
+    unrelated_ref = "feature/x"
+    unrelated_workflow_isolates = any(
+        unrelated_ref.startswith(workflow_prefix) for workflow_prefix in workflow_prefixes
+    )
+    unrelated_resolver_promotes = mergify_temp_pr_matches(
+        event_name="pull_request",
+        pull_request_draft=True,
+        pull_request_head_ref=unrelated_ref,
+        temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,
+        event_sender_id=actor_id,
+        temp_pr_actor_id=actor_id,
+    )
+    if unrelated_workflow_isolates or unrelated_resolver_promotes:
+        errors.append(
+            "mergify proof-PR drift: unrelated head ref "
+            f"{unrelated_ref!r} must be neither workflow-isolated nor resolver-promoted"
+        )
+    if resolver_promoted_prefixes != workflow_isolated_prefixes:
+        errors.append(
+            "mergify proof-PR prefix drift: resolver-promoted prefixes "
+            f"{sorted(resolver_promoted_prefixes)!r} must equal workflow-isolated prefixes "
+            f"{sorted(workflow_isolated_prefixes)!r}"
+        )
     return errors
 
 
@@ -1104,10 +1309,17 @@ def evaluate_ci_policy(
     pull_request_base_changed: bool = False,
     workflow_dispatch_full_ci: str = "",
     mergify_temp_pr_head_ref_prefix: str = "",
+    mergify_temp_pr_actor_id: int = -1,
+    event_sender_id: int = -1,
     ref: str,
 ) -> CiPolicyResult:
     override = policy.get("override")
     force_full_ci = isinstance(override, dict) and override.get("force_full_ci") is True
+    # Queue-only rework (#981): the runtime resolver now reads
+    # config.mergify_temp_pr_actor_id and an event_sender_id to bind the mergify temp
+    # PR to its actor. This static mirror delegates to that same resolver, so it must
+    # supply the bound actor id (or a sentinel that never matches a real sender) and
+    # thread the sender id through, or it would crash on the missing attribute.
     config = type(
         "StaticPolicyConfig",
         (),
@@ -1115,6 +1327,7 @@ def evaluate_ci_policy(
             "policy": {key: str(value) for key, value in policy.items() if key != "override"},
             "gate_names": dict(gate_names),
             "mergify_temp_pr_head_ref_prefix": mergify_temp_pr_head_ref_prefix,
+            "mergify_temp_pr_actor_id": mergify_temp_pr_actor_id,
             "force_full_ci": force_full_ci,
         },
     )()
@@ -1128,6 +1341,7 @@ def evaluate_ci_policy(
             pull_request_base_changed=pull_request_base_changed,
             workflow_dispatch_full_ci=workflow_dispatch_full_ci,
             docs_only=False,
+            event_sender_id=event_sender_id,
             ref=ref,
         )
     except ProvenanceError as exc:
@@ -1260,6 +1474,136 @@ def workflow_dispatch_input_errors(workflow_text: str, input_name: str) -> list[
     return []
 
 
+SHELL_ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\+)?=[\s\S]*$")
+CI_POLICY_SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "(", "{", ")", "}"}
+PYTHON3_EXECUTABLE_RE = re.compile(r"^python3(?:\.\d+)?$")
+
+
+def shell_assignment_name(token: str) -> str | None:
+    match = SHELL_ASSIGNMENT_RE.match(token)
+    return match.group(1) if match else None
+
+
+def token_assigns_event_sender_id(token: str) -> bool:
+    return shell_assignment_name(token) == "EVENT_SENDER_ID"
+
+
+def token_executable_name(token: str) -> str:
+    return pathlib.Path(token).name
+
+
+def token_is_python3_executable(token: str) -> bool:
+    return PYTHON3_EXECUTABLE_RE.fullmatch(token_executable_name(token)) is not None
+
+
+def command_segments(tokens: list[str]) -> list[list[str]]:
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token in CI_POLICY_SHELL_COMMAND_BOUNDARIES:
+            if current:
+                segments.append(current)
+                current = []
+            continue
+        current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def ci_policy_resolver_command_index(segment: list[str]) -> int | None:
+    index = consume_assignment_words(segment, 0)
+    while index < len(segment) and token_executable_name(segment[index]) == "env":
+        index = env_command_prefix_index(segment, index + 1)
+        if index is None:
+            return None
+    if index + 2 >= len(segment):
+        return None
+    if not token_is_python3_executable(segment[index]) or segment[index + 2] != "ci-policy":
+        return None
+    script = segment[index + 1]
+    if script != "$policy_script" and not script.endswith("/ci_provenance.py") and script != "scripts/ci_provenance.py":
+        return None
+    return index
+
+
+def command_passes_event_sender_id_arg(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if token.startswith("--event-sender-id"):
+            return True
+        candidate = token
+        for continuation in tokens[index + 1 : index + 5]:
+            candidate += continuation
+            if candidate.startswith("--event-sender-id"):
+                return True
+            if not "--event-sender-id".startswith(candidate):
+                break
+    return False
+
+
+def segment_overrides_event_sender_id_inline(segment: list[str], command_index: int) -> bool:
+    return any(token_assigns_event_sender_id(token) for token in segment[:command_index])
+
+
+def segment_persists_event_sender_id_override(segment: list[str]) -> bool:
+    if any(token in CI_POLICY_SHELL_COMMAND_BOUNDARIES for token in segment):
+        return False
+    assignment_index = consume_assignment_words(segment, 0)
+    if assignment_index == len(segment):
+        return any(token_assigns_event_sender_id(token) for token in segment)
+    if assignment_index < len(segment) and token_executable_name(segment[assignment_index]) == "export":
+        return any(token_assigns_event_sender_id(token) for token in segment[assignment_index + 1 :])
+    return False
+
+
+def yaml_structural_key_count(lines: list[str], key: str) -> int:
+    count = 0
+    skip_scalar_indent: int | None = None
+    key_re = re.compile(rf"^\s*{re.escape(key)}\s*:")
+    for line in lines:
+        clean = strip_comment(line).rstrip()
+        if skip_scalar_indent is not None:
+            if not clean.strip():
+                continue
+            indent = len(clean) - len(clean.lstrip(" "))
+            if indent > skip_scalar_indent:
+                continue
+            skip_scalar_indent = None
+        run_match = YAML_RUN_LINE_RE.match(clean)
+        if run_match is not None and run_match.group(2).strip().startswith(("|", ">")):
+            skip_scalar_indent = len(run_match.group(1))
+            continue
+        if key_re.match(clean):
+            count += 1
+    return count
+
+
+def ci_policy_event_sender_command_errors(job_lines: list[str]) -> list[str]:
+    errors: list[str] = []
+    if yaml_structural_key_count(job_lines, "EVENT_SENDER_ID") > 1:
+        errors.append("ci-policy must declare EVENT_SENDER_ID env exactly once")
+    # Defense-in-depth only: same-repo PRs control their workflow run blocks, so
+    # sender id hygiene is not an unspoofable trust boundary. The queue-only boundary
+    # remains trusted-base check-ci-gate plus branch-protection sp-reviewer approval;
+    # this tokenized check blocks known command-level injections.
+    for block in step_blocks(job_lines):
+        event_sender_id_overridden = False
+        tokens = command_tokens_with_line_boundaries(block_run_body(block))
+        for segment in command_segments(tokens):
+            command_index = ci_policy_resolver_command_index(segment)
+            if command_index is not None and segment_overrides_event_sender_id_inline(segment, command_index):
+                errors.append("ci-policy must not override EVENT_SENDER_ID inline on the resolver command line")
+            if command_index is not None and event_sender_id_overridden:
+                errors.append("ci-policy must not override EVENT_SENDER_ID before the resolver command")
+            if command_index is not None:
+                if command_passes_event_sender_id_arg(segment[command_index + 3 :]):
+                    errors.append("ci-policy must not pass --event-sender-id on the resolver command line")
+                continue
+            if segment_persists_event_sender_id_override(segment):
+                event_sender_id_overridden = True
+    return errors
+
+
 def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
     text = uncommented_text(job_lines)
     errors: list[str] = []
@@ -1305,6 +1649,9 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         errors.append("ci-policy must pass detector docs_only output")
     if '--ref "${{ github.ref }}"' not in text:
         errors.append("ci-policy must pass github.ref")
+    if "EVENT_SENDER_ID: ${{ github.event.sender.id }}" not in text:
+        errors.append("ci-policy must set EVENT_SENDER_ID env for the mergify actor binding")
+    errors.extend(ci_policy_event_sender_command_errors(job_lines))
     return errors
 
 
@@ -1745,6 +2092,10 @@ def job_if_value(job_lines: list[str]) -> str:
         match = re.match(r"^    if:\s*(?P<value>.*?)\s*$", clean)
         if match is not None:
             value = match.group("value")
+            # Strip YAML block/folding scalar indicators; they are syntax, not part
+            # of the evaluated expression.
+            if value in {">-", ">+", ">", "|-", "|+", "|"}:
+                value = ""
             child_values: list[str] = []
             for child in job_lines[index + 1 :]:
                 child_clean = strip_comment(child).rstrip()
@@ -2001,7 +2352,7 @@ def first_step_running_command(job_lines: list[str], command: str) -> int | None
 
 
 def shell_assignment_word(token: str) -> bool:
-    return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=[\s\S]*$", token) is not None
+    return shell_assignment_name(token) is not None
 
 
 def shell_name_word(token: str) -> bool:
@@ -5031,6 +5382,7 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
     "ci-lint-workflow",
 )
 CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
+    "python3 scripts/test_ci_storage_audit.py",
     "python3 scripts/test_root_bin_sidecars.py",
 )
 
@@ -8433,11 +8785,6 @@ def detector_docs_only_archive_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
     for required in (
         'git archive "$base_ref"',
-        "scripts/verify_ci_path_filters.py",
-        "scripts/ci_provenance.py",
-        "scripts/lane_governor.py",
-        "scripts/rust_verification.py",
-        "scripts/command_understanding.py",
         "ci/rust-verification.toml",
         "ci/github-actions-runners.toml",
         ".github/workflows/ci.yml",
@@ -8445,6 +8792,40 @@ def detector_docs_only_archive_errors(job_lines: list[str]) -> list[str]:
     ):
         if required not in text:
             errors.append(f"detector docs-only classifier base archive must include {required}")
+    return errors
+
+
+def base_ref_git_archive_commands(workflow_text: str) -> list[list[str]]:
+    commands: list[list[str]] = []
+    for job_lines in parse_jobs(workflow_text).values():
+        for block in step_blocks(job_lines):
+            for logical_line in shell_logical_lines(block_run_body(block)):
+                tokens = command_tokens_with_line_boundaries(logical_line)
+                index = 0
+                while index + 2 < len(tokens):
+                    if tokens[index : index + 3] != ["git", "archive", "$base_ref"]:
+                        index += 1
+                        continue
+                    end = index + 3
+                    while end < len(tokens) and tokens[end] not in {"|", "&&", "||", ";", "\n"}:
+                        end += 1
+                    commands.append(tokens[index:end])
+                    index = end
+    return commands
+
+
+def base_ref_archive_scripts_directory_errors(workflow_text: str) -> list[str]:
+    errors: list[str] = []
+    for command in base_ref_git_archive_commands(workflow_text):
+        archive_args = command[3:]
+        script_args = [arg for arg in archive_args if arg.startswith("scripts/")]
+        if "scripts/" in archive_args and all(arg == "scripts/" for arg in script_args):
+            continue
+        rendered = " ".join(command)
+        errors.append(
+            "base_ref git archive must archive scripts/ wholesale and must not list "
+            f"individual scripts: {rendered}"
+        )
     return errors
 
 
@@ -8760,6 +9141,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
     is_ci_topology = "pull_request" in triggers and "push" in triggers
     errors.extend(raw_rust_storage_errors(workflow_text))
     errors.extend(exact_head_governance_cache_errors(workflow_text))
+    errors.extend(base_ref_archive_scripts_directory_errors(workflow_text))
     for job_lines in jobs.values():
         errors.extend(upload_artifact_pin_errors(job_lines))
 
@@ -8849,6 +9231,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must not need source-fence")
     if "test-shards" in jobs:
         errors.append("test-shards job must not reintroduce nextest archive artifact fan-out")
+
+    for job_name, job_lines in jobs.items():
+        if job_name != "test-archive" and "BOLT_RUST_VERIFICATION_SCCACHE" in uncommented_text(job_lines):
+            errors.append("BOLT_RUST_VERIFICATION_SCCACHE opt-in must stay scoped to the test-archive job")
 
     if "clippy" in jobs:
         clippy_needs = extract_needs(jobs["clippy"])
@@ -9049,6 +9435,60 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must save root binary sidecar cache only on sidecar cache miss")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
+        # Fail-open contract for the S3 sccache compile cache (#1011): when the
+        # opt-in is wired, the cache must never be able to fail the required build,
+        # and cache use must be gated to trusted refs (the IAM trust scope is the
+        # real poison boundary, but keep the workflow itself honest too).
+        if "BOLT_RUST_VERIFICATION_SCCACHE" in archive_text:
+            if TEST_ARCHIVE_SCCACHE_OPT_IN not in archive_text:
+                errors.append("test-archive sccache opt-in must stay conditional on the resolver, never hardcoded")
+            for label in (
+                "Resolve sccache eligibility",
+                "Configure AWS credentials for sccache",
+                "Install sccache",
+                "Resolve sccache enablement",
+            ):
+                block = named_step_block(archive_lines, label)
+                if block is None or "continue-on-error: true" not in uncommented_text(block):
+                    errors.append(f"test-archive sccache step '{label}' must be continue-on-error (fail-open)")
+            # Value, not mere presence: the flag must be "1" so a future edit cannot
+            # silently flip it to "0" and make S3/server I/O errors fatal.
+            if TEST_ARCHIVE_SCCACHE_IGNORE_IO not in archive_text:
+                errors.append('test-archive sccache must set SCCACHE_IGNORE_SERVER_IO_ERROR: "1" (degrade S3 errors to local compile)')
+            # Even a mid-build sccache server crash (which SCCACHE_IGNORE_SERVER_IO_ERROR
+            # does not cover) must not fail the build: it retries once without sccache.
+            build_block = named_step_block(archive_lines, "Build nextest archive")
+            if build_block is None or TEST_ARCHIVE_SCCACHE_RETRY not in uncommented_text(build_block):
+                errors.append("test-archive sccache must retry the build without sccache on failure (fail-open)")
+            # Gate cache use to trusted refs in the eligibility step itself, not merely
+            # somewhere in the job: main (post-merge) and the GitHub-controlled
+            # merge_group queue ref are the only write-safe refs (IAM is the real boundary).
+            eligibility_block = named_step_block(archive_lines, "Resolve sccache eligibility")
+            eligibility_text = uncommented_text(eligibility_block) if eligibility_block is not None else ""
+            if TEST_ARCHIVE_SCCACHE_PREFIX_PRECONDITION not in eligibility_text:
+                errors.append("test-archive sccache eligibility must require CI_SCCACHE_S3_KEY_PREFIX")
+            if TEST_ARCHIVE_SCCACHE_LOCATION_PRECONDITION not in eligibility_text:
+                errors.append("test-archive sccache eligibility must pin bucket/region/prefix to the bolt-v2 CI cache")
+            trusted_assignments = tuple(
+                line.strip()
+                for line in eligibility_text.splitlines()
+                if "trusted=true" in line
+            )
+            if trusted_assignments != TEST_ARCHIVE_SCCACHE_TRUSTED_ASSIGNMENTS:
+                errors.append("test-archive sccache must gate write-cache use exactly to main push/dispatch refs")
+            if TEST_ARCHIVE_SCCACHE_PR_ROLE_ENV not in eligibility_text:
+                errors.append("test-archive sccache must configure PR read-only sccache role path")
+            if (
+                TEST_ARCHIVE_SCCACHE_READ_WRITE_ROLE not in eligibility_text
+                or TEST_ARCHIVE_SCCACHE_PR_READ_ONLY_ROLE not in eligibility_text
+                or TEST_ARCHIVE_SCCACHE_ROLE_OUTPUT not in eligibility_text
+                or TEST_ARCHIVE_SCCACHE_MODE_OUTPUT not in eligibility_text
+            ):
+                errors.append("test-archive sccache must configure PR read-only sccache role path")
+            aws_block = named_step_block(archive_lines, "Configure AWS credentials for sccache")
+            aws_text = uncommented_text(aws_block) if aws_block is not None else ""
+            if TEST_ARCHIVE_SCCACHE_RESOLVED_ROLE_ASSUME not in aws_text:
+                errors.append("test-archive sccache must assume the resolved sccache role")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:
             errors.append("test-archive must not download nextest archive artifact")
         if TEST_ARCHIVE_SHARDS_ASSIGNMENT not in archive_text or TEST_ARCHIVE_SHARDS_ASSERT not in archive_text:
@@ -9398,12 +9838,279 @@ def verify_setup_action(action_text: str) -> list[str]:
     return errors
 
 
-def verify_nextest_config(config_text: str) -> list[str]:
+def rust_text_has_test_attr(masked_text: str) -> bool:
+    return RUST_TEST_ATTR_RE.search(masked_text) is not None
+
+
+def rust_inner_attr_is_banned(attr_name: str) -> bool:
+    return attr_name in BANNED_RUST_INNER_ATTRS or attr_name.startswith("crate_")
+
+
+def format_banned_inner_attr(attr_name: str) -> str:
+    return f"#![{attr_name}(...)]"
+
+
+def test_manifest_referenced_by(manifest: CiTestManifest) -> dict[str, list[str]]:
+    referenced_by: dict[str, list[str]] = {}
+    for harness, members in manifest.harness_to_members.items():
+        for member in members:
+            if member == harness:
+                continue
+            referenced_by.setdefault(member, []).append(harness)
+    return referenced_by
+
+
+def verify_test_harness_manifest(
+    *,
+    cargo_manifest_path: pathlib.Path | str | None = None,
+    tests_root: pathlib.Path | str | None = None,
+    workflow_path: pathlib.Path | str | None = None,
+    justfile_path: pathlib.Path | str | None = None,
+) -> list[str]:
+    cargo_manifest = pathlib.Path(cargo_manifest_path) if cargo_manifest_path is not None else REPO_ROOT / "Cargo.toml"
+    root = pathlib.Path(tests_root) if tests_root is not None else REPO_ROOT / "tests"
+    workflow = pathlib.Path(workflow_path) if workflow_path is not None else DEFAULT_WORKFLOW
+    justfile = pathlib.Path(justfile_path) if justfile_path is not None else REPO_ROOT / "justfile"
+    errors: list[str] = []
+
+    try:
+        with cargo_manifest.open("rb") as handle:
+            cargo_config = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return [f"{cargo_manifest.name} could not be parsed for explicit test harness governance: {exc}"]
+
+    package = cargo_config.get("package")
+    if not isinstance(package, dict) or package.get("autotests") is not False:
+        errors.append(f"{cargo_manifest.name} [package].autotests must be false for explicit test harnesses")
+
+    try:
+        manifest = build_test_manifest(cargo_manifest, root)
+    except Exception as exc:
+        errors.append(f"{cargo_manifest.name} explicit test harness manifest could not be built: {exc}")
+        return errors
+
+    harness_roots = set(manifest.harness_to_members)
+    if len(harness_roots) != EXPECTED_HARNESS_COUNT:
+        errors.append(
+            f"{cargo_manifest.name} explicit test harness count must be {EXPECTED_HARNESS_COUNT}, got {len(harness_roots)}"
+        )
+
+    referenced_by = test_manifest_referenced_by(manifest)
+    for harness, members in manifest.harness_to_members.items():
+        for member in members:
+            if member in harness_roots and member != harness:
+                errors.append(f"tests/{member}.rs is a harness root and must not be mod-ed by harness {harness}")
+
+    for stem, harnesses in sorted(referenced_by.items()):
+        if len(harnesses) <= 1:
+            continue
+        unique_harnesses = sorted(set(harnesses))
+        test_path = root / f"{stem}.rs"
+        if len(unique_harnesses) == 1:
+            errors.append(f"{test_path.relative_to(root.parent).as_posix()} is registered multiple times by harness {unique_harnesses[0]}")
+        else:
+            errors.append(
+                f"{test_path.relative_to(root.parent).as_posix()} is registered by multiple harnesses: {', '.join(unique_harnesses)}"
+            )
+
+    for test_path in sorted(root.glob("*.rs")):
+        stem = test_path.stem
+        try:
+            masked_text = _mask_rust_non_code(test_path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            errors.append(f"{test_path.relative_to(root.parent).as_posix()} could not be read: {exc}")
+            continue
+        rel_path = test_path.relative_to(root.parent).as_posix()
+        has_test_attr = rust_text_has_test_attr(masked_text)
+        if stem not in harness_roots:
+            for attr_name in RUST_INNER_ATTR_RE.findall(masked_text):
+                if rust_inner_attr_is_banned(attr_name):
+                    errors.append(
+                        f"{rel_path} uses banned module-level inner attribute {format_banned_inner_attr(attr_name)}"
+                    )
+        if stem in harness_roots:
+            continue
+        if stem in DECLARED_TOP_LEVEL_TEST_HELPERS:
+            if has_test_attr:
+                errors.append(f"{rel_path} is declared as a test helper but contains #[test]")
+            continue
+        harnesses = referenced_by.get(stem, [])
+        if has_test_attr:
+            if not harnesses:
+                errors.append(f"{rel_path} has #[test] but is not registered in any explicit test harness")
+            elif len(harnesses) == 1 and manifest.member_to_harness.get(stem) == harnesses[0]:
+                continue
+            else:
+                errors.append(f"{rel_path} has #[test] but is not registered by exactly one explicit test harness")
+            continue
+        errors.append(f"{rel_path} is neither a harness root, a #[test]-bearing registered member, nor a declared test helper")
+
+    for file_name, path in ((".github/workflows/ci.yml", workflow), ("justfile", justfile)):
+        if not path.exists():
+            continue
+        errors.extend(verify_test_harness_test_args(file_name, path.read_text(encoding="utf-8"), manifest))
+
+    return errors
+
+
+def verify_test_harness_test_args(file_name: str, text: str, manifest: CiTestManifest) -> list[str]:
+    errors: list[str] = []
+    harness_roots = set(manifest.harness_to_members)
+    for match in re.finditer(r"['\"]?--test['\"]?(?:=|\s+)(?P<quote>[\"']?)(?P<name>[A-Za-z0-9_-]+)(?P=quote)", text):
+        test_name = match.group("name")
+        if test_name in harness_roots:
+            continue
+        harness = manifest.member_to_harness.get(test_name)
+        if harness is not None and test_name not in harness_roots:
+            errors.append(
+                f"{file_name} references retired integration-test member {test_name!r} with --test; use harness {harness!r}"
+            )
+        else:
+            expected = ", ".join(sorted(harness_roots))
+            errors.append(f"{file_name} references unknown integration-test binary {test_name!r} with --test; expected one of: {expected}")
+    # Source-fence recipes select tests as `--test <harness> -- <member>:: ...`.
+    # The harness token is checked above; validate each positional <member>:: filter
+    # resolves to a real member of THAT harness (a typo/stale member silently matches
+    # zero tests while the required check reports green).
+    for line in text.splitlines():
+        head = re.search(r"['\"]?--test['\"]?(?:=|\s+)[\"']?(?P<harness>[A-Za-z0-9_-]+)[\"']?", line)
+        if head is None or " -- " not in line:
+            continue
+        harness = head.group("harness")
+        for pm in re.finditer(r"\b(?P<member>[A-Za-z0-9_]+)::", line.split(" -- ", 1)[1]):
+            member = pm.group("member")
+            owner = manifest.member_to_harness.get(member)
+            if owner != harness:
+                filt = member + "::"
+                errors.append(
+                    f"{file_name} source-fence test filter {filt!r} does not belong to "
+                    f"--test harness {harness!r} (member maps to {owner!r}); typo or stale member"
+                )
+    return errors
+
+
+def live_node_nextest_expected_clause(member: str, manifest: CiTestManifest) -> str:
+    harness = manifest.member_to_harness.get(member, member)
+    if harness == member:
+        return f"binary(={member})"
+    return f"(binary(={harness}) & test(/^{member}::/))"
+
+
+def live_node_nextest_filter_matches(member: str, manifest: CiTestManifest, filter_expr: object) -> bool:
+    if not isinstance(filter_expr, str):
+        return False
+    harness = manifest.member_to_harness.get(member, member)
+    if harness == member:
+        return f"binary(={member})" in filter_expr
+    return f"binary(={harness})" in filter_expr and f"test(/^{member}::/)" in filter_expr
+
+
+def nextest_override_sensitive_keys(override: dict[object, object]) -> set[str]:
+    keys: set[str] = set()
+    for key in override:
+        if not isinstance(key, str):
+            continue
+        if key in NEXTEST_SENSITIVE_OVERRIDE_KEYS or key.endswith("timeout"):
+            keys.add(key)
+    return keys
+
+
+def nextest_filter_binaries(filter_expr: object) -> set[str]:
+    if not isinstance(filter_expr, str):
+        return set()
+    return set(NEXTEST_BINARY_FILTER_RE.findall(filter_expr))
+
+
+def nextest_filter_has_unparseable_binary(filter_expr: object) -> bool:
+    """True if any binary(...) target is not the audited equality form binary(=name).
+
+    Regex-form binary(/.../) and other shapes parse to an empty binary set, which
+    would silently slip past the subset/skip checks; treat them as unauditable so
+    the override fails closed.
+    """
+    if not isinstance(filter_expr, str):
+        return False
+    for match in re.finditer(r"\bbinary\(", filter_expr):
+        if not NEXTEST_BINARY_EQ_TAIL_RE.match(filter_expr, match.end()):
+            return True
+    return False
+
+
+def nextest_filter_test_prefixes(filter_expr: object) -> set[str]:
+    """The set of harness-scoped member prefixes test(/^member::/) in the filter."""
+    if not isinstance(filter_expr, str):
+        return set()
+    return set(NEXTEST_TEST_PREFIX_RE.findall(filter_expr))
+
+
+def nextest_override_is_known_root_unit(override: dict[object, object]) -> bool:
+    filter_expr = override.get("filter")
+    if override.get("test-group") != LIVE_NODE_TEST_GROUP or not isinstance(filter_expr, str):
+        return False
+    if set(override) != {"filter", "test-group"}:
+        return False
+    if nextest_filter_has_unparseable_binary(filter_expr):
+        return False
+    return nextest_filter_binaries(filter_expr) <= {"bolt_v2"} and all(
+        fragment in filter_expr for fragment in LIVE_NODE_UNIT_TEST_FILTERS
+    )
+
+
+def nextest_override_is_known_live_node(override: dict[object, object], manifest: CiTestManifest) -> bool:
+    filter_expr = override.get("filter")
+    if override.get("test-group") != LIVE_NODE_TEST_GROUP or not isinstance(filter_expr, str):
+        return False
+    if set(override) != {"filter", "test-group"}:
+        return False
+    if nextest_filter_has_unparseable_binary(filter_expr):
+        return False
+    expected_clauses = [live_node_nextest_expected_clause(member, manifest) for member in LIVE_NODE_NEXTEST_BINARIES]
+    expected_binaries = {
+        manifest.member_to_harness.get(member, member)
+        for member in LIVE_NODE_NEXTEST_BINARIES
+    }
+    consolidated_members = {
+        member
+        for member in LIVE_NODE_NEXTEST_BINARIES
+        if manifest.member_to_harness.get(member, member) != member
+    }
+    return (
+        nextest_filter_binaries(filter_expr) <= expected_binaries
+        and nextest_filter_test_prefixes(filter_expr) == consolidated_members
+        and all(clause in filter_expr for clause in expected_clauses)
+    )
+
+
+def nextest_unregistered_override_errors(overrides: list[object], manifest: CiTestManifest) -> list[str]:
+    errors: list[str] = []
+    for index, override in enumerate(overrides, start=1):
+        if not isinstance(override, dict):
+            continue
+        sensitive_keys = nextest_override_sensitive_keys(override)
+        filter_expr = override.get("filter")
+        if (
+            not sensitive_keys
+            and not nextest_filter_binaries(filter_expr)
+            and not nextest_filter_has_unparseable_binary(filter_expr)
+        ):
+            continue
+        if nextest_override_is_known_root_unit(override) or nextest_override_is_known_live_node(override, manifest):
+            continue
+        errors.append(
+            "nextest config has unregistered per-binary override "
+            f"#{index}: keys {', '.join(sorted(sensitive_keys)) or '<none>'}, filter {filter_expr!r}"
+        )
+    return errors
+
+
+def verify_nextest_config(config_text: str, *, manifest: CiTestManifest | None = None) -> list[str]:
     errors: list[str] = []
     try:
         config = tomllib.loads(config_text)
     except tomllib.TOMLDecodeError as exc:
         return [f"nextest config invalid TOML: {exc}"]
+    if manifest is None:
+        manifest = build_test_manifest(REPO_ROOT / "Cargo.toml", REPO_ROOT / "tests")
 
     groups = config.get("test-groups", {})
     if not isinstance(groups, dict):
@@ -9424,21 +10131,22 @@ def verify_nextest_config(config_text: str) -> list[str]:
         for override in overrides
         if isinstance(override, dict) and override.get("test-group") == LIVE_NODE_TEST_GROUP
     ]
-    missing_binaries = [
-        binary
-        for binary in LIVE_NODE_NEXTEST_BINARIES
-        if not any(isinstance(filter_expr, str) and f"binary(={binary})" in filter_expr for filter_expr in live_node_filters)
+    missing_live_node_filters = [
+        live_node_nextest_expected_clause(member, manifest)
+        for member in LIVE_NODE_NEXTEST_BINARIES
+        if not any(live_node_nextest_filter_matches(member, manifest, filter_expr) for filter_expr in live_node_filters)
     ]
     missing_unit_filters = [
         fragment
         for fragment in LIVE_NODE_UNIT_TEST_FILTERS
         if not any(isinstance(filter_expr, str) and fragment in filter_expr for filter_expr in live_node_filters)
     ]
-    if missing_binaries or missing_unit_filters:
+    if missing_live_node_filters or missing_unit_filters:
         missing = ", ".join(
-            [f"binary(={binary})" for binary in missing_binaries] + missing_unit_filters
+            missing_live_node_filters + missing_unit_filters
         )
         errors.append(f"nextest config must assign LiveNode test paths to live-node group: missing {missing}")
+    errors.extend(nextest_unregistered_override_errors(overrides, manifest))
     return errors
 
 
@@ -9935,10 +10643,12 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             '--pull-request-head-ref "$PR_HEAD_REF"',
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
             '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"',
+            "EVENT_SENDER_ID: ${{ github.event.sender.id }}",
             '--ref "${{ github.ref }}"',
         ]:
             if required not in policy_text:
                 errors.append(f"backtester draft deferral ci-policy job must include {required}")
+        errors.extend(ci_policy_event_sender_command_errors(policy))
 
     for heavy_job in ("clippy", "test-archive", "test"):
         job = jobs.get(heavy_job)
@@ -10652,6 +11362,224 @@ def verify_dispatch_ci_cancel_workflow(workflows: dict[str, str]) -> list[str]:
     return errors
 
 
+def verify_merge_readiness_ci_job(workflow_text: str) -> list[str]:
+    workflow_name = ".github/workflows/ci.yml"
+    jobs = parse_jobs(workflow_text)
+    job = jobs.get("merge-readiness-progress")
+    errors: list[str] = []
+    if job is None:
+        return [f"{workflow_name} must define merge-readiness-progress job"]
+    job_text = "\n".join(job)
+    job_if = job_if_value(job)
+    if _normalize_concurrency_text(job_if) != EXPECTED_MERGE_READINESS_PROGRESS_IF:
+        errors.append(
+            "merge-readiness-progress job if-condition must skip Mergify proof PR "
+            "metadata-only edited events while preserving all other pull_request runs"
+        )
+    for required in (
+        "      contents: read",
+        "      checks: read",
+        "      pull-requests: write",
+    ):
+        if required not in job_text:
+            errors.append(
+                f"merge-readiness-progress permissions must include {required.strip()}"
+            )
+    if "      issues:" in job_text:
+        errors.append("merge-readiness-progress must not request issues: write")
+    if "      actions:" in job_text:
+        errors.append("merge-readiness-progress must not request actions:")
+    for required in (
+        "uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+        "          ref: ${{ github.event.pull_request.base.sha }}",
+        "          persist-credentials: false",
+    ):
+        if required not in job_text:
+            errors.append("merge-readiness-progress must check out the PR base SHA only")
+            break
+    for forbidden in ("refs/pull", "ref: ${{ github.event.pull_request.head"):
+        if forbidden in job_text:
+            errors.append("merge-readiness-progress must not check out PR head code")
+    if "python3 scripts/merge_readiness.py comment" not in job_text:
+        errors.append("merge-readiness-progress must run merge_readiness.py comment")
+    if "--watch" not in job_text:
+        errors.append("merge-readiness-progress must watch until terminal status or timeout")
+    for required in (
+        "GITHUB_TOKEN: ${{ github.token }}",
+        "GITHUB_REPOSITORY: ${{ github.repository }}",
+        "PR_NUMBER: ${{ github.event.pull_request.number }}",
+        "PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}",
+    ):
+        if required not in job_text:
+            errors.append(f"merge-readiness-progress must pass {required.split(':', 1)[0]}")
+    return errors
+
+
+def verify_merge_readiness_finalizer_workflow(workflows: dict[str, str]) -> list[str]:
+    workflow_name = ".github/workflows/merge-readiness-finalizer.yml"
+    workflow_text = workflows.get(workflow_name)
+    if workflow_text is None:
+        return [f"{workflow_name} must exist to mark stale merge-readiness comments stalled"]
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+
+    ci_provenance = config["ci_provenance"]
+    expected_ci_name = str(ci_provenance["workflow_name"])
+    errors: list[str] = []
+    if workflow_trigger_keys(workflow_text) != {"workflow_run"}:
+        errors.append(f"{workflow_name} must trigger only on workflow_run")
+    trigger = "\n".join(workflow_trigger_block(workflow_text, "workflow_run"))
+    if f'workflows: ["{expected_ci_name}"]' not in trigger and f"workflows: ['{expected_ci_name}']" not in trigger:
+        errors.append(f"{workflow_name} workflow_run trigger must watch {expected_ci_name!r}")
+    if "types: [completed]" not in trigger:
+        errors.append(f"{workflow_name} workflow_run trigger must use completed only")
+    permissions = "\n".join(top_level_block(workflow_text, "permissions"))
+    for required in (
+        "  contents: read",
+        "  checks: read",
+        "  actions: read",
+        "  pull-requests: write",
+    ):
+        if required not in permissions:
+            errors.append(f"{workflow_name} permissions must include {required.strip()}")
+    for forbidden in ("  actions: write", "  issues:"):
+        if forbidden in permissions:
+            errors.append(f"{workflow_name} permissions must not include {forbidden.strip()}")
+
+    jobs = parse_jobs(workflow_text)
+    job = jobs.get("mark-stalled")
+    if job is None:
+        errors.append(f"{workflow_name} must define mark-stalled job")
+        return errors
+    job_if = job_if_value(job)
+    job_text = "\n".join(job)
+    event_guard = "github.event.workflow_run.event == 'pull_request'"
+    path_guard = f"github.event.workflow_run.path == '{ci_provenance['workflow_path']}'"
+    if event_guard not in job_if:
+        errors.append(f"{workflow_name} job must filter pull_request runs")
+    if "workflow_run.name" in job_if:
+        errors.append(f"{workflow_name} job must not filter the configured CI workflow by mutable name")
+    if path_guard not in job_if:
+        errors.append(f"{workflow_name} job must filter the configured CI workflow by path")
+    if re.search(rf"{re.escape(event_guard)}\s*&&\s*{re.escape(path_guard)}", job_if) is None:
+        errors.append(f"{workflow_name} job must join pull_request and CI filters with &&")
+    if "github.event.workflow_run.head" in job_text or "refs/pull" in job_text:
+        errors.append(f"{workflow_name} job must not check out PR head code")
+    if "          persist-credentials: false" not in job_text:
+        errors.append(f"{workflow_name} checkout must not persist credentials")
+    if "python3 scripts/merge_readiness.py finalize-stalled" not in job_text:
+        errors.append(f"{workflow_name} job must run scripts/merge_readiness.py finalize-stalled")
+    for required in (
+        "GITHUB_TOKEN: ${{ github.token }}",
+        "GITHUB_EVENT_PATH: ${{ github.event_path }}",
+        "GITHUB_REPOSITORY: ${{ github.repository }}",
+    ):
+        if required not in job_text:
+            errors.append(f"{workflow_name} job must pass {required.split(':', 1)[0]}")
+    return errors
+
+
+def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
+    workflow_name = ".github/workflows/coverage-enforcer.yml"
+    workflow_text = workflows.get(workflow_name)
+    if workflow_text is None:
+        return [f"{workflow_name} must exist as its own workflow"]
+
+    errors: list[str] = []
+    for other_name, other_text in workflows.items():
+        if other_name == workflow_name:
+            continue
+        if "coverage-enforcer" in parse_jobs(other_text):
+            errors.append("coverage-enforcer must not be defined inside another workflow")
+
+    if workflow_trigger_keys(workflow_text) != {"pull_request", "merge_group"}:
+        errors.append(f"{workflow_name} must trigger only on pull_request and merge_group")
+    errors.extend(workflow_pull_request_type_errors(workflow_text))
+    pull_request_trigger = "\n".join(workflow_trigger_block(workflow_text, "pull_request"))
+    if "paths:" in pull_request_trigger or "paths-ignore:" in pull_request_trigger:
+        errors.append(f"{workflow_name} on.pull_request must not define paths filters")
+    merge_group_trigger = "\n".join(workflow_trigger_block(workflow_text, "merge_group"))
+    if "types: [checks_requested]" not in merge_group_trigger:
+        errors.append(f"{workflow_name} merge_group trigger must use checks_requested")
+
+    permissions = "\n".join(top_level_block(workflow_text, "permissions"))
+    for required in (
+        "  checks: write",
+        "  contents: read",
+        "  pull-requests: read",
+    ):
+        if required not in permissions:
+            errors.append(f"{workflow_name} permissions must include {required.strip()}")
+    for forbidden in (
+        "  contents: write",
+        "  pull-requests: write",
+        "  actions:",
+        "  id-token:",
+        "  issues:",
+    ):
+        if forbidden in permissions:
+            errors.append(f"{workflow_name} permissions must not include {forbidden.strip()}")
+
+    jobs = parse_jobs(workflow_text)
+    job = jobs.get("coverage-enforcer")
+    if job is None:
+        errors.append(f"{workflow_name} must define coverage-enforcer job")
+        return errors
+    job_text = "\n".join(job)
+    job_if = job_if_value(job)
+    if _normalize_concurrency_text(job_if) != EXPECTED_COVERAGE_ENFORCER_IF:
+        errors.append(
+            f"{workflow_name} coverage-enforcer job if-condition must skip Mergify "
+            "proof PR metadata-only edited events while preserving merge_group and "
+            "all other pull_request runs"
+        )
+    trusted_base_ref = (
+        "          ref: ${{ github.event.pull_request.base.sha || "
+        "github.event.merge_group.base_sha }}"
+    )
+    for required in (
+        "uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+        trusted_base_ref,
+        "          persist-credentials: false",
+    ):
+        if required not in job_text:
+            errors.append(f"{workflow_name} must check out only the trusted base tree")
+            break
+    steps_text = "\n".join(line for block in step_blocks(job) for line in block)
+    for forbidden in (
+        "github.event.pull_request.head",
+        "github.head_ref",
+        "refs/pull",
+    ):
+        if forbidden in steps_text:
+            errors.append(f"{workflow_name} must not check out PR head code")
+            break
+    if "          persist-credentials: false" not in job_text:
+        errors.append(f"{workflow_name} checkout must not persist credentials")
+    for required in (
+        "if [ ! -f scripts/coverage_enforcer.py ]; then",
+        "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py",
+        "exit 0",
+    ):
+        if required not in job_text:
+            errors.append(f"{workflow_name} job must guard first-run trusted-base bootstrap")
+            break
+    if "python3 scripts/coverage_enforcer.py" not in job_text:
+        errors.append(f"{workflow_name} job must run scripts/coverage_enforcer.py")
+    for required in (
+        "GITHUB_TOKEN: ${{ github.token }}",
+        "GITHUB_EVENT_PATH: ${{ github.event_path }}",
+        "GITHUB_REPOSITORY: ${{ github.repository }}",
+    ):
+        if required not in job_text:
+            errors.append(f"{workflow_name} job must pass {required.split(':', 1)[0]}")
+    return errors
+
+
 def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
     if not DEFAULT_RUNNERS_CONFIG.exists():
         return []
@@ -10827,9 +11755,15 @@ def main() -> int:
     errors.extend(verify_github_actions_runner_contract(workflow_texts))
     errors.extend(verify_ci_runner_debug_workflow(workflow_texts))
     errors.extend(verify_dispatch_ci_cancel_workflow(workflow_texts))
+    ci_workflow = workflow_texts.get(".github/workflows/ci.yml")
+    if ci_workflow is not None:
+        errors.extend(verify_merge_readiness_ci_job(ci_workflow))
+    errors.extend(verify_merge_readiness_finalizer_workflow(workflow_texts))
+    errors.extend(verify_coverage_enforcer_workflow(workflow_texts))
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())
+    errors.extend(verify_test_harness_manifest())
     if "justfile" in repo_automation_texts:
         errors.extend(verify_local_verification_gate_recipes(repo_automation_texts["justfile"]))
         errors.extend(verify_source_fence_static_recipe(repo_automation_texts["justfile"]))
@@ -10839,6 +11773,10 @@ def main() -> int:
         errors.extend(verify_mergify_config(DEFAULT_MERGIFY_CONFIG.read_text()))
     else:
         errors.append(".mergify.yml is required for Mergify queue governance")
+    # Mirror verify_github_actions_runner_contract's gating: the runners config drives
+    # this check, so a partial repo (or test harness) without it is tolerated, not failed.
+    if DEFAULT_RUNNERS_CONFIG.exists():
+        errors.extend(mergify_proof_prefix_alignment_errors(load_config(DEFAULT_RUNNERS_CONFIG)))
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

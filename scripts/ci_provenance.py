@@ -33,6 +33,13 @@ SUPPORTED_MODES = {
     "validate-record",
 }
 POLICY_VALUES = {"full", "docs", "defer", "iteration", "noop", "tag_reuse"}
+# The event classes for which gate_name_suffix_for() publishes the REQUIRED gate /
+# backtester-gate context (vs the feedback-only gate-iteration): "full" via
+# merge_group / push / actor-verified mergify_temp_pr, and "tag_reuse" via tag.
+# Every PR/dispatch feedback path (iteration, docs, defer, noop) routes to
+# gate-iteration. required_check_applicable_event_classes() intersects against this
+# so the dynamic gates' applicable set can never include a feedback class.
+REQUIRED_GATE_PROOF_EVENT_CLASSES = {"full", "tag_reuse"}
 GATE_NAME_KEYS = (
     "gate_required",
     "gate_iteration",
@@ -60,14 +67,23 @@ POLICY_ROWS = (
     "tag",
     "unknown_event",
 )
+# Queue-only rework (#981): this repo runs the Mergify queue in TEMP-PR mode, so the
+# native merge_group never fires and the SOLE producer of a green REQUIRED gate is the
+# Mergify temp PR validated at the merge boundary. Every ordinary pull_request row is
+# therefore pinned to "iteration" (defer heavy lanes, publish only the non-required
+# gate-iteration); only the genuine merge-boundary rows stay "full". A non-iteration
+# value on a PR row, or a non-full value on a boundary row, is a required-gate hole and
+# fails the load-time contract closed.
 POLICY_REQUIRED_VALUES = {
-    "draft_pr_synchronize": "defer",
-    "draft_pr_opened": "defer",
-    "draft_pr_reopened": "defer",
-    "draft_pr_edited": "defer",
-    "converted_to_draft": "defer",
-    "ready_pr": "full",
-    "ready_for_review": "full",
+    "draft_pr_synchronize": "iteration",
+    "draft_pr_opened": "iteration",
+    "draft_pr_reopened": "iteration",
+    "draft_pr_edited": "iteration",
+    "converted_to_draft": "iteration",
+    "ready_pr": "iteration",
+    "ready_pr_edited_no_base": "iteration",
+    "ready_pr_reopened": "iteration",
+    "ready_for_review": "iteration",
     "docs": "docs",
     "workflow_dispatch": "iteration",
     "workflow_dispatch_full_ci": "full",
@@ -80,10 +96,10 @@ POLICY_REQUIRED_VALUES = {
 POLICY_REQUIRED_MESSAGES = {
     "workflow_dispatch_full_ci": "ci_provenance.policy.workflow_dispatch_full_ci must remain full",
 }
-POLICY_ALLOWED_VALUES = {
-    "ready_pr_edited_no_base": {"noop", "full"},
-    "ready_pr_reopened": {"noop", "full"},
-}
+POLICY_ALLOWED_VALUES: dict[str, set[str]] = {}
+REQUIRED_CHECK_INTEGRATION_ID = 15368
+REQUIRED_CHECK_ARRIVALS = ("pull_request", "merge_group")
+TARGET_REQUIRED_CHECK_CONTEXT = "coverage-enforcer"
 FORBIDDEN_DOCS_SAFE_PATH_PATTERNS = frozenset({"docs/**", "specs/**"})
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -113,6 +129,21 @@ class JobConfig:
     check_name_template: str | None
     shard_count: int | None
     conditional: str | None
+
+
+@dataclasses.dataclass(frozen=True)
+class RequiredCheckConfig:
+    key: str
+    context: str
+    reporter: str
+    integration_id: int
+    required: bool
+    target: bool
+    runs_on_tags: bool
+    supports_carry_forward: bool
+    arrivals: tuple[str, ...]
+    fresh_event_classes: tuple[str, ...]
+    carry_forward_event_classes: tuple[str, ...]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -146,7 +177,9 @@ class ProvenanceConfig:
     artifact_retention_days: int
     policy: dict[str, str]
     gate_names: dict[str, str]
+    required_checks: dict[str, RequiredCheckConfig]
     mergify_temp_pr_head_ref_prefix: str
+    mergify_temp_pr_actor_id: int
     docs_safe_paths: tuple[str, ...]
     docs_forbidden_ignored_build_paths: tuple[str, ...]
     docs_non_heavy_required_jobs: tuple[str, ...]
@@ -250,6 +283,13 @@ def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> in
     return value
 
 
+def require_bool(parent: dict[str, object], key: str, prefix: str) -> bool:
+    value = parent.get(key)
+    if not isinstance(value, bool):
+        raise ProvenanceError(f"{prefix}.{key} must be boolean")
+    return value
+
+
 def require_string_list(parent: dict[str, object], key: str, prefix: str) -> tuple[str, ...]:
     value = parent.get(key)
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
@@ -302,6 +342,213 @@ def docs_safe_path_contract_errors(safe_paths: tuple[str, ...]) -> list[str]:
             )
     if len(set(safe_paths)) != len(safe_paths):
         errors.append("ci_provenance.docs.safe_paths must not contain duplicates")
+    return errors
+
+
+def load_required_checks(
+    required_checks_table: dict[str, object],
+) -> dict[str, RequiredCheckConfig]:
+    required_checks: dict[str, RequiredCheckConfig] = {}
+    for key, raw_entry in required_checks_table.items():
+        prefix = f"ci_provenance.required_checks.{key}"
+        if not isinstance(raw_entry, dict):
+            raise ProvenanceError(f"{prefix} must be a table")
+        integration_id = raw_entry.get("integration_id")
+        if not isinstance(integration_id, int) or isinstance(integration_id, bool):
+            raise ProvenanceError(f"{prefix}.integration_id must be an integer")
+        proof_rule = require_table(raw_entry, "proof_rule", prefix)
+        required_checks[key] = RequiredCheckConfig(
+            key=key,
+            context=require_string(raw_entry, "context", prefix),
+            reporter=require_string(raw_entry, "reporter", prefix),
+            integration_id=integration_id,
+            required=require_bool(raw_entry, "required", prefix),
+            target=require_bool(raw_entry, "target", prefix),
+            runs_on_tags=require_bool(raw_entry, "runs_on_tags", prefix),
+            supports_carry_forward=require_bool(
+                raw_entry, "supports_carry_forward", prefix
+            ),
+            arrivals=require_string_list(raw_entry, "arrivals", prefix),
+            fresh_event_classes=require_string_list(
+                proof_rule, "fresh", f"{prefix}.proof_rule"
+            ),
+            carry_forward_event_classes=require_string_list(
+                proof_rule, "carry_forward", f"{prefix}.proof_rule"
+            ),
+        )
+    return required_checks
+
+
+def required_check_applicable_event_classes(
+    *, check: RequiredCheckConfig, policy: dict[str, str], gate_names: dict[str, str]
+) -> set[str]:
+    # The registry model is keyed on event class, not individual pull_request
+    # action. actionlint.yml omits converted_to_draft, but that action creates
+    # no new head SHA: every gated SHA was first introduced by opened or
+    # synchronize, which do trigger actionlint. The defer class therefore has a
+    # fresh same-SHA actionlint run, not carry-forward provenance or a skipped
+    # state. Before step 6 consumes this registry, derive and verify
+    # runs_on_tags/supports_carry_forward against
+    # .github/workflows/{ci,actionlint}.yml.
+    applicable: set[str] = set()
+    for event, policy_path in policy.items():
+        candidate_policy_paths = {
+            policy_path,
+            *POLICY_ALLOWED_VALUES.get(event, set()),
+        }
+        for candidate_policy_path in candidate_policy_paths:
+            applicable.add(expected_event_class_for(event, candidate_policy_path))
+    if not check.runs_on_tags:
+        applicable.discard("tag_reuse")
+    if check.context in {gate_names["gate_required"], gate_names["backtester_required"]}:
+        # Single source of truth: gate_name_suffix_for() is the authority on which events
+        # publish the REQUIRED gate/backtester-gate name vs the feedback-only gate-iteration.
+        # It returns the required suffix ONLY for merge_group / push / actor-verified
+        # mergify_temp_pr (event class "full") and tag (class "tag_reuse"); EVERY PR/dispatch
+        # path (iteration, docs, defer, noop) routes to gate-iteration. So keep ONLY the
+        # required-proof classes instead of denylisting each feedback class one by one — a
+        # denylist drifts (iteration was missed, then docs). This intersection fails safe: a
+        # new feedback class is auto-excluded, and a missing required class fails loud in
+        # required_check_registry_contract_errors rather than silently over-claiming.
+        applicable &= REQUIRED_GATE_PROOF_EVENT_CLASSES
+    return applicable
+
+
+def required_check_carry_forward_event_classes(
+    *, check: RequiredCheckConfig, policy: dict[str, str], applicable: set[str]
+) -> set[str]:
+    if not check.supports_carry_forward:
+        return set()
+    carry_forward: set[str] = set()
+    for event, policy_path in policy.items():
+        candidate_policy_paths = {
+            policy_path,
+            *POLICY_ALLOWED_VALUES.get(event, set()),
+        }
+        for candidate_policy_path in candidate_policy_paths:
+            if candidate_policy_path in {"defer", "noop"}:
+                carry_forward.add(expected_event_class_for(event, candidate_policy_path))
+    return carry_forward & applicable
+
+
+def toml_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def required_check_registry_contract_errors(
+    *,
+    required_checks: dict[str, RequiredCheckConfig],
+    gate_names: dict[str, str],
+    policy: dict[str, str],
+    workflows: dict[str, object],
+) -> list[str]:
+    errors: list[str] = []
+    ci_workflow = require_table(workflows, "ci", "workflows")
+    actionlint_workflow = require_table(workflows, "actionlint", "workflows")
+    workflow_required_contexts = {"host-health", "actionlint"}
+    if "host-health" not in ci_workflow:
+        errors.append("workflows.ci.host-health must exist for required-check registry")
+    if "actionlint" not in actionlint_workflow:
+        errors.append("workflows.actionlint.actionlint must exist for required-check registry")
+
+    expected_required_contexts = {
+        gate_names["gate_required"],
+        gate_names["backtester_required"],
+        *workflow_required_contexts,
+    }
+    required_contexts = {
+        check.context for check in required_checks.values() if check.required
+    }
+    if required_contexts != expected_required_contexts:
+        errors.append(
+            "required-check registry contexts must match gate_names plus host-health/actionlint"
+        )
+    expected_target_contexts = expected_required_contexts | {TARGET_REQUIRED_CHECK_CONTEXT}
+    target_contexts = {
+        check.context for check in required_checks.values() if check.target
+    }
+    if target_contexts != expected_target_contexts:
+        errors.append(
+            "required-check registry target contexts must match live contexts plus coverage-enforcer"
+        )
+    registry_contexts = {check.context for check in required_checks.values()}
+    if registry_contexts != expected_target_contexts:
+        errors.append(
+            "required-check registry contexts must be closed over live targets plus coverage-enforcer"
+        )
+    non_target_contexts = sorted(
+        check.context for check in required_checks.values() if not check.target
+    )
+    if non_target_contexts:
+        errors.append(
+            "ci_provenance.required_checks entries must all be target=true: "
+            + ", ".join(non_target_contexts)
+        )
+
+    by_context = {check.context: check for check in required_checks.values()}
+    if len(by_context) != len(required_checks):
+        errors.append("ci_provenance.required_checks contexts must be unique")
+    target_check = by_context.get(TARGET_REQUIRED_CHECK_CONTEXT)
+    if target_check is None:
+        errors.append("coverage-enforcer target entry missing from required-check registry")
+    elif target_check.required or not target_check.target:
+        errors.append("coverage-enforcer must be required=false target=true")
+
+    for key, check in required_checks.items():
+        if check.key != key:
+            errors.append(f"ci_provenance.required_checks.{key}.key must match table key")
+        if check.context != key:
+            errors.append(f"ci_provenance.required_checks.{key}.context must match table key")
+        if check.integration_id != REQUIRED_CHECK_INTEGRATION_ID:
+            errors.append(f"ci_provenance.required_checks.{key}.integration_id must be {REQUIRED_CHECK_INTEGRATION_ID}")
+        if check.required and not check.target:
+            errors.append(f"ci_provenance.required_checks.{key} required checks must also be target=true")
+        if check.arrivals != REQUIRED_CHECK_ARRIVALS:
+            errors.append(
+                f"ci_provenance.required_checks.{key}.arrivals must be {list(REQUIRED_CHECK_ARRIVALS)!r}"
+            )
+
+        fresh = set(check.fresh_event_classes)
+        carry_forward = set(check.carry_forward_event_classes)
+        applicable = required_check_applicable_event_classes(check=check, policy=policy, gate_names=gate_names)
+        expected_carry_forward = required_check_carry_forward_event_classes(
+            check=check,
+            policy=policy,
+            applicable=applicable,
+        )
+        expected_fresh = applicable - expected_carry_forward
+        if len(fresh) != len(check.fresh_event_classes):
+            errors.append(f"ci_provenance.required_checks.{key}.proof_rule.fresh must not contain duplicates")
+        if len(carry_forward) != len(check.carry_forward_event_classes):
+            errors.append(
+                f"ci_provenance.required_checks.{key}.proof_rule.carry_forward must not contain duplicates"
+            )
+        overlap = sorted(fresh & carry_forward)
+        if overlap:
+            errors.append(
+                f"ci_provenance.required_checks.{key}.proof_rule maps event classes twice: {overlap!r}"
+            )
+        if fresh != expected_fresh:
+            errors.append(
+                f"ci_provenance.required_checks.{key}.proof_rule.fresh must be "
+                f"{sorted(expected_fresh)!r} for runs_on_tags={toml_bool(check.runs_on_tags)} "
+                f"supports_carry_forward={toml_bool(check.supports_carry_forward)}"
+            )
+        if carry_forward != expected_carry_forward:
+            errors.append(
+                f"ci_provenance.required_checks.{key}.proof_rule.carry_forward must be "
+                f"{sorted(expected_carry_forward)!r} for runs_on_tags={toml_bool(check.runs_on_tags)} "
+                f"supports_carry_forward={toml_bool(check.supports_carry_forward)}"
+            )
+        for event, policy_path in policy.items():
+            event_class = expected_event_class_for(event, policy_path)
+            if event_class not in applicable:
+                continue
+            matches = int(event_class in fresh) + int(event_class in carry_forward)
+            if matches != 1:
+                errors.append(
+                    f"ci_provenance.required_checks.{key} maps {event} ({event_class}) {matches} times"
+                )
     return errors
 
 
@@ -358,6 +605,9 @@ def provenance_config_digest(path: pathlib.Path = DEFAULT_CONFIG) -> str:
 
 def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     data = load_toml(path)
+    workflows = data.get("workflows")
+    if not isinstance(workflows, dict):
+        raise ProvenanceError("missing [workflows]")
     meter = data.get("meter")
     if not isinstance(meter, dict):
         raise ProvenanceError("missing [meter]")
@@ -444,6 +694,9 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     api_limits = require_table(ci_provenance, "api_limits", "ci_provenance")
     artifacts = require_table(ci_provenance, "artifacts", "ci_provenance")
     policy_table = require_table(ci_provenance, "policy", "ci_provenance")
+    required_checks_table = require_table(
+        ci_provenance, "required_checks", "ci_provenance"
+    )
     overrides = require_table(policy_table, "override", "ci_provenance.policy")
 
     retention_days = require_positive_int(artifacts, "retention_days", "ci_provenance.artifacts")
@@ -485,6 +738,16 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     gate_name_errors = gate_name_collision_errors(gate_names)
     if gate_name_errors:
         raise ProvenanceError("; ".join(gate_name_errors))
+
+    required_checks = load_required_checks(required_checks_table)
+    required_check_errors = required_check_registry_contract_errors(
+        required_checks=required_checks,
+        gate_names=gate_names,
+        policy=policy,
+        workflows=workflows,
+    )
+    if required_check_errors:
+        raise ProvenanceError("; ".join(required_check_errors))
 
     docs_safe_paths = require_string_list(docs_table, "safe_paths", "ci_provenance.docs")
     docs_forbidden_ignored_build_paths = require_string_list(
@@ -552,8 +815,12 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         artifact_retention_days=retention_days,
         policy=policy,
         gate_names=gate_names,
+        required_checks=required_checks,
         mergify_temp_pr_head_ref_prefix=require_string(
             mergify, "temp_pr_head_ref_prefix", "ci_provenance.mergify"
+        ),
+        mergify_temp_pr_actor_id=require_positive_int(
+            mergify, "mergify_temp_pr_actor_id", "ci_provenance.mergify"
         ),
         docs_safe_paths=docs_safe_paths,
         docs_forbidden_ignored_build_paths=docs_forbidden_ignored_build_paths,
@@ -570,6 +837,32 @@ def parse_bool(value: str) -> bool:
     if normalized == "false":
         return False
     raise ProvenanceError(f"expected boolean true or false, got {value!r}")
+
+
+def parse_event_sender_id(raw: object) -> int:
+    # github.event.sender.id is always an integer, but the env-bound value can be empty
+    # (events without a sender) or malformed. Fail CLOSED to -1 (never the bound mergify
+    # actor) so a bad sender id demotes to the non-required gate instead of crashing the
+    # ci-policy job and blocking ALL CI.
+    if isinstance(raw, int):
+        return raw
+    if not isinstance(raw, str):
+        return -1
+    text = raw.strip()
+    if not text:
+        # Senderless event (expected, e.g. an event with no sender): demote quietly.
+        return -1
+    try:
+        return int(text)
+    except ValueError:
+        # Fail LOUD: a non-empty, non-numeric sender id is a wiring bug that would
+        # otherwise SILENTLY demote a real mergify temp PR and deadlock the queue. The
+        # warning goes to stderr so it never pollutes the key=value stdout the gate parses.
+        print(
+            f"warning: EVENT_SENDER_ID={raw!r} is not an integer; failing closed to -1 (gate demoted)",
+            file=sys.stderr,
+        )
+        return -1
 
 
 def require_job_result(
@@ -826,6 +1119,14 @@ def evaluate_backtester_gate_verdict(
 def expected_event_class_for(reason: str, path: str) -> str:
     if reason == "docs" or path == "docs":
         return "docs"
+    # Queue-only rework (#981): the iteration policy is now path-led. Every newly
+    # demoted pull_request row (ready_pr, ready_for_review, draft_pr_*,
+    # converted_to_draft, ready_pr_edited_no_base, ready_pr_reopened) resolves to
+    # ci_policy_path == "iteration", so its event class is "iteration" regardless of
+    # the originating reason. force_full_ci/merge_group keep path == "full" and fall
+    # through to the "full" class below.
+    if path == "iteration":
+        return "iteration"
     if reason in {
         "draft_pr_synchronize",
         "draft_pr_opened",
@@ -850,9 +1151,26 @@ def gate_name_suffix_for(event_name: str, reason: str, path: str) -> str:
         return "dispatch_full"
     if event_name == "workflow_dispatch":
         return "iteration"
+    # Queue-only rework (#981): the gate name is a pure function of (event_name,
+    # reason), NEVER the policy VALUE. A pull_request head run is never proof of the
+    # squash-merged commit, so every pull_request that is not the actor-verified
+    # mergify temp PR publishes only the non-required gate-iteration (even when its
+    # path is "full" under force_full_ci or an unknown draft action). The required
+    # suffix is reachable only by merge_group, push/main_push, tag, the
+    # actor-verified mergify_temp_pr, and unknown non-PR events.
+    if event_name == "pull_request" and reason != "mergify_temp_pr":
+        return "iteration"
     if path in POLICY_VALUES:
         return "required"
     raise ProvenanceError(f"cannot resolve gate name for ci_policy_path {path!r}")
+
+
+MERGIFY_TEMP_PR_TRANSIENT_PREFIX = "tmp-"
+
+# Mergify documents the merge-queue branch as "[tmp-]mergify/merge-queue/<10 hex>".
+# `tmp-` is a documented transient form (docs/ci/merge-queue-evidence.md); the
+# resolver and workflow concurrency layer must both recognize it, or a proof PR can
+# be promoted without isolation and leave the queue waiting forever for `gate`.
 
 
 def mergify_temp_pr_matches(
@@ -861,11 +1179,23 @@ def mergify_temp_pr_matches(
     pull_request_draft: bool,
     pull_request_head_ref: str,
     temp_pr_head_ref_prefix: str,
+    event_sender_id: int,
+    temp_pr_actor_id: int,
 ) -> bool:
+    # GAP-1 fix (#981): a head-ref prefix alone must NEVER grant the required gate —
+    # any actor can open a draft PR whose head ref starts with the mergify prefix. The
+    # temp PR is recognized only when the event sender is the bound mergify actor, so a
+    # spoofed head ref (or an absent/mismatched sender id) fails closed and is treated
+    # as an ordinary PR -> gate-iteration (demote).
+    transient_head_ref_prefix = f"{MERGIFY_TEMP_PR_TRANSIENT_PREFIX}{temp_pr_head_ref_prefix}"
     return (
         event_name == "pull_request"
         and pull_request_draft
-        and pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
+        and (
+            pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
+            or pull_request_head_ref.startswith(transient_head_ref_prefix)
+        )
+        and event_sender_id == temp_pr_actor_id
     )
 
 
@@ -897,6 +1227,7 @@ def evaluate_ci_policy(
     pull_request_base_changed: bool = False,
     workflow_dispatch_full_ci: str = "",
     docs_only: bool = False,
+    event_sender_id: int = -1,
     ref: str,
 ) -> CiPolicyResult:
     mergify_temp_pr = mergify_temp_pr_matches(
@@ -904,6 +1235,8 @@ def evaluate_ci_policy(
         pull_request_draft=pull_request_draft,
         pull_request_head_ref=pull_request_head_ref,
         temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,
+        event_sender_id=event_sender_id,
+        temp_pr_actor_id=config.mergify_temp_pr_actor_id,
     )
     if event_name == "merge_group":
         # The merge queue validates the exact to-be-merged commit on a temporary
@@ -2402,7 +2735,7 @@ def emit_full_ci_record(
 
 
 def parser_for_mode(mode: str) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=f"ci_provenance.py {mode}")
+    parser = argparse.ArgumentParser(prog=f"ci_provenance.py {mode}", allow_abbrev=False)
     parser.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
     if mode == "ci-policy":
         parser.add_argument("--event-name", required=True)
@@ -2485,6 +2818,7 @@ def main(argv: list[str] | None = None) -> int:
                 pull_request_base_changed=parse_bool(args.pull_request_base_changed),
                 workflow_dispatch_full_ci=args.workflow_dispatch_full_ci,
                 docs_only=parse_bool(args.docs_only),
+                event_sender_id=parse_event_sender_id(os.environ.get("EVENT_SENDER_ID") or -1),
                 ref=args.ref,
             )
             print(f"ci_policy_path={result.ci_policy_path}")

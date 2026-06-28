@@ -1207,8 +1207,134 @@ def assert_ci_logs_command_fails_when_diagnostics_unavailable() -> None:
             raise AssertionError(stderr.getvalue())
 
 
+@contextlib.contextmanager
+def _patched_environ(values: dict[str, "str | None"]):
+    saved = {key: os.environ.get(key) for key in values}
+    try:
+        for key, value in values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        yield
+    finally:
+        for key, previous in saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+
+
+REMOTE_COMPILE_CACHE_POLICY = {
+    "enabled": True,
+    "enable_env": "BOLT_RUST_VERIFICATION_SCCACHE",
+    "ci_env": "GITHUB_ACTIONS",
+    "wrapper_env": "SCCACHE_PATH",
+    "wrapper_program": "sccache",
+}
+
+
+def assert_validate_remote_compile_cache_policy_contract() -> None:
+    owner = load_owner_module()
+    # A well-formed opt-in policy validates; an absent table means the feature is
+    # simply off and is also allowed.
+    owner.validate_remote_compile_cache_policy({"remote_compile_cache": dict(REMOTE_COMPILE_CACHE_POLICY)})
+    owner.validate_remote_compile_cache_policy({})
+    rejects = [
+        {**REMOTE_COMPILE_CACHE_POLICY, "enabled": False},
+        {**REMOTE_COMPILE_CACHE_POLICY, "enable_env": "bad lower"},
+        {**REMOTE_COMPILE_CACHE_POLICY, "ci_env": "NOT_GITHUB_ACTIONS"},
+        {**REMOTE_COMPILE_CACHE_POLICY, "wrapper_program": "not-sccache"},
+        {**REMOTE_COMPILE_CACHE_POLICY, "unexpected_key": "x"},
+    ]
+    for bad in rejects:
+        try:
+            owner.validate_remote_compile_cache_policy({"remote_compile_cache": bad})
+        except owner.PolicyError:
+            continue
+        raise AssertionError(f"expected PolicyError for remote_compile_cache={bad!r}")
+
+
+def assert_managed_remote_compile_cache_env_fails_open() -> None:
+    owner = load_owner_module()
+    policy = {"remote_compile_cache": dict(REMOTE_COMPILE_CACHE_POLICY)}
+
+    # Active only when every gate is satisfied: opt-in == "1", CI marker == "true",
+    # and an explicit, clean wrapper path is present.
+    with _patched_environ(
+        {
+            "BOLT_RUST_VERIFICATION_SCCACHE": "1",
+            "GITHUB_ACTIONS": "true",
+            "SCCACHE_PATH": "/opt/sccache/sccache",
+        }
+    ):
+        if owner.managed_remote_compile_cache_env(policy) != {"RUSTC_WRAPPER": "/opt/sccache/sccache"}:
+            raise AssertionError("wrapper must be injected when every gate is satisfied")
+
+    # Each gate, when unmet, yields no wrapper (today's build) -- never an error.
+    gate_off_cases = [
+        {"BOLT_RUST_VERIFICATION_SCCACHE": "0", "GITHUB_ACTIONS": "true", "SCCACHE_PATH": "/opt/sccache/sccache"},
+        {"BOLT_RUST_VERIFICATION_SCCACHE": "1", "GITHUB_ACTIONS": None, "SCCACHE_PATH": "/opt/sccache/sccache"},
+        {"BOLT_RUST_VERIFICATION_SCCACHE": "1", "GITHUB_ACTIONS": "false", "SCCACHE_PATH": "/opt/sccache/sccache"},
+    ]
+    for env in gate_off_cases:
+        with _patched_environ(env):
+            if owner.managed_remote_compile_cache_env(policy) != {}:
+                raise AssertionError(f"wrapper must stay off when a gate is unmet: {env!r}")
+
+    # Gates satisfied but a missing/malformed wrapper path degrades to no wrapper
+    # (fail-open) rather than raising -- the cache must never fail the build.
+    for path in (None, "", "/opt/sc cache/sccache", "/opt/sccache/other"):
+        with _patched_environ(
+            {
+                "BOLT_RUST_VERIFICATION_SCCACHE": "1",
+                "GITHUB_ACTIONS": "true",
+                "SCCACHE_PATH": path,
+            }
+        ):
+            if owner.managed_remote_compile_cache_env(policy) != {}:
+                raise AssertionError(f"malformed wrapper must fail open to no wrapper: {path!r}")
+
+
+def assert_managed_env_scrubs_then_reinjects_wrapper() -> None:
+    owner = load_owner_module()
+    policy = {
+        "target_namespace": "rust-verification-sccache-test",
+        "remote_compile_cache": dict(REMOTE_COMPILE_CACHE_POLICY),
+    }
+    # Gate ON: a pre-existing RUSTC_WRAPPER is scrubbed first (hermetic), then the
+    # opt-in re-injects the resolved sccache path.
+    with _patched_environ(
+        {
+            "RUSTC_WRAPPER": "/evil/wrapper",
+            "BOLT_RUST_VERIFICATION_SCCACHE": "1",
+            "GITHUB_ACTIONS": "true",
+            "SCCACHE_PATH": "/opt/sccache/sccache",
+        }
+    ):
+        env = owner.managed_env(REPO_ROOT, policy)
+    if env.get("RUSTC_WRAPPER") != "/opt/sccache/sccache":
+        raise AssertionError("managed_env must scrub a pre-existing wrapper and re-inject the sccache path")
+    # Gate OFF (no CI marker): wrapper stays scrubbed -- it must not leak to local
+    # runs or to any lane that does not set the opt-in.
+    with _patched_environ(
+        {
+            "RUSTC_WRAPPER": "/evil/wrapper",
+            "BOLT_RUST_VERIFICATION_SCCACHE": "1",
+            "GITHUB_ACTIONS": None,
+            "SCCACHE_PATH": "/opt/sccache/sccache",
+        }
+    ):
+        env = owner.managed_env(REPO_ROOT, policy)
+    if "RUSTC_WRAPPER" in env:
+        raise AssertionError("managed_env must not inject a wrapper outside CI (GITHUB_ACTIONS unset)")
+
+
 def main() -> int:
     assert_repo_local_owner_contract()
+    assert_validate_remote_compile_cache_policy_contract()
+    assert_managed_remote_compile_cache_env_fails_open()
+    assert_managed_env_scrubs_then_reinjects_wrapper()
     assert_ci_provenance_gate_name_helpers_stay_in_parity()
     assert_rust_probe_guidance_distinguishes_feedback_from_proof()
     assert_fmt_avoids_managed_cache_lock()

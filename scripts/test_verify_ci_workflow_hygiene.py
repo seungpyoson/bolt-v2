@@ -8719,6 +8719,11 @@ def assert_artifact_retention_config_refs_are_validated() -> None:
             'max_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
             'max_retention_days = 30\nmax_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
         ),
+        "artifact_retention.classes has unused classes: ['unused']": config_text.replace(
+            "[artifact_retention.classes.deployable]\n",
+            "[artifact_retention.classes.unused]\nmax_retention_days = 1\n\n[artifact_retention.classes.deployable]\n",
+            1,
+        ),
         "artifact_name_template_vars_config_ref references missing TOML key": config_text.replace(
             'artifact_name_template_vars_config_ref = "ci_provenance.artifact_name_template_vars"',
             'artifact_name_template_vars_config_ref = "ci_provenance.missing_artifact_name_template_vars"',

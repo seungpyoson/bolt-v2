@@ -11782,6 +11782,11 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
             retention_days=expression_retention_days,
         )
 
+    used_classes = {site.artifact_class for site in uploads.values()}
+    unused_classes = sorted(set(classes) - used_classes)
+    if unused_classes:
+        raise ValueError(f"artifact_retention.classes has unused classes: {unused_classes!r}")
+
     return ArtifactRetentionPolicy(classes=classes, uploads=uploads)
 
 

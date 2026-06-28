@@ -49,7 +49,6 @@ fmt = "managed_light"
 # which already compiles this crate on managed_heavy.
 clippy = "managed_heavy"
 test-archive = "managed_heavy"
-test = "managed_heavy"
 issue_789 = "managed_heavy"
 gate = "github_hosted"
 

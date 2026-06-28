@@ -4163,7 +4163,6 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         "fmt": "skipped",
         "clippy": "skipped",
         "test-archive": "skipped",
-        "test": "skipped",
     }
     module.evaluate_backtester_gate_verdict(
         policy_path="full",
@@ -4203,7 +4202,6 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         "fmt": "success",
         "clippy": "success",
         "test-archive": "success",
-        "test": "success",
     }
     module.evaluate_backtester_gate_verdict(
         policy_path="defer",

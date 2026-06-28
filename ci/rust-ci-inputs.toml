@@ -1,0 +1,33 @@
+[sets.backtester_cache]
+paths = [
+  "Cargo.lock",
+  "Cargo.toml",
+  ".gitignore",
+  "build.rs",
+  "gated_source_roots.manifest",
+  "src/**",
+  "tests/**",
+  "specs/023-nt-research-analytics-platform/reference/**",
+  "crates/backtesting-vertical-slice/Cargo.lock",
+  "crates/backtesting-vertical-slice/Cargo.toml",
+  "crates/backtesting-vertical-slice/src/**",
+  "crates/backtesting-vertical-slice/tests/**",
+  "crates/backtesting-vertical-slice/ci/rust-verification.toml",
+  "crates/backtesting-vertical-slice/justfile",
+  "justfile",
+  "rust-toolchain.toml",
+  "scripts/rust_verification.py",
+  "scripts/command_understanding.py",
+  "scripts/rust_test_targets.py",
+  "scripts/ci_input_sets.py",
+  "ci/rust-ci-inputs.toml",
+  ".github/actions/setup-environment/**",
+  ".github/workflows/backtester-ci.yml",
+]
+
+[sets.backtester_detect]
+include_sets = ["backtester_cache"]
+paths = [
+  "scripts/ci_provenance.py",
+  "ci/github-actions-runners.toml",
+]

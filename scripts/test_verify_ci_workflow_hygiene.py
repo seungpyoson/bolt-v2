@@ -3152,8 +3152,11 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         backtester_workflow,
         '          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then\n'
         "            # A skipped required gate counts as passing, so queue validation must run proof lanes.\n"
-        '            echo "merge_group event; treating crate as changed"\n'
+        "            # The merge queue is proof-bearing, so avoid opaque archive reuse when this path\n"
+        "            # cannot use the pull_request bootstrap diff.\n"
+        '            echo "merge_group event; treating crate as changed with exact-head cache namespace"\n'
         '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n'
         '            exit 0\n',
         "",
     )
@@ -3171,9 +3174,11 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     backtester_detector_without_exit = replace_once(
         backtester_workflow,
         '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n'
         "            exit 0\n"
         "          fi\n",
         '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n'
         "          fi\n",
     )
     backtester_detector_exit_errors = verifier.verify_repo_automation_texts(
@@ -3186,6 +3191,48 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         raise AssertionError(
             "expected backtester merge_group detector short-circuit error, "
             f"got: {backtester_detector_exit_errors}"
+        )
+
+    backtester_merge_group_without_exact_namespace = replace_once(
+        backtester_workflow,
+        '            echo "merge_group event; treating crate as changed with exact-head cache namespace"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n',
+        '            echo "merge_group event; treating crate as changed"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"\n',
+    )
+    backtester_merge_group_namespace_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_merge_group_without_exact_namespace}
+    )
+    if not any(
+        "backtester forced detect events must use exact-head cache namespace" in error
+        for error in backtester_merge_group_namespace_errors
+    ):
+        raise AssertionError(
+            "expected backtester merge_group exact-head namespace error, "
+            f"got: {backtester_merge_group_namespace_errors}"
+        )
+
+    backtester_dispatch_without_exact_namespace = replace_once(
+        backtester_workflow,
+        '            echo "push or manual dispatch event; treating crate as changed with exact-head cache namespace"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n',
+        '            echo "push or manual dispatch event; treating crate as changed"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=false" >> "$GITHUB_OUTPUT"\n',
+    )
+    backtester_dispatch_namespace_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_dispatch_without_exact_namespace}
+    )
+    if not any(
+        "backtester forced detect events must use exact-head cache namespace" in error
+        for error in backtester_dispatch_namespace_errors
+    ):
+        raise AssertionError(
+            "expected backtester push/dispatch exact-head namespace error, "
+            f"got: {backtester_dispatch_namespace_errors}"
         )
 
     # Detector must force build on merge_group (a skipped required build is a hole).
@@ -5236,31 +5283,85 @@ def assert_security_key_public_prefix_is_validated() -> None:
     raise AssertionError("validate_public_key must reject the invalid ssh-ed25519-sk@ prefix")
 
 
-def assert_backtester_detect_includes_runner_config() -> None:
+def assert_backtester_detect_uses_ci_input_set() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
-    if "            ci/github-actions-runners.toml \\\n" not in workflow:
-        workflow = replace_once(
-            workflow,
-            "            rust-toolchain.toml \\\n",
-            "            rust-toolchain.toml \\\n            ci/github-actions-runners.toml \\\n",
-        )
-    bad = workflow.replace("            ci/github-actions-runners.toml \\\n", "")
-    bad_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
-    if not any("backtester detect paths must include ci/github-actions-runners.toml" in error for error in bad_errors):
-        raise AssertionError(f"backtester detector must reject missing runner config path, got: {bad_errors}")
-    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": workflow})
-    if any("backtester detect paths must include ci/github-actions-runners.toml" in error for error in good_errors):
-        raise AssertionError(f"backtester detector path check must pass when present, got: {good_errors}")
-    missing_policy_script = replace_once_after(
+    missing_bootstrap_output = replace_once(
         workflow,
-        "scripts/command_understanding.py",
-        "scripts/ci_provenance.py",
+        "      bvs_bootstrap_changed: ${{ steps.detect.outputs.bvs_bootstrap_changed }}\n",
         "",
     )
-    policy_script_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_policy_script})
-    if not any("backtester detect paths must include scripts/ci_provenance.py" in error for error in policy_script_errors):
-        raise AssertionError(f"backtester detector must reject missing ci_provenance.py path, got: {policy_script_errors}")
+    bootstrap_output_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": missing_bootstrap_output}
+    )
+    if not any("backtester detect must expose CI input-set bootstrap changes" in error for error in bootstrap_output_errors):
+        raise AssertionError(f"backtester detector must reject missing bootstrap output, got: {bootstrap_output_errors}")
+    validate_required = "python3 scripts/ci_input_sets.py validate backtester_cache backtester_detect"
+    missing_validate = replace_once(workflow, f"          {validate_required}\n", "")
+    validate_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_validate})
+    if not any("backtester detect must validate CI input sets before skip decisions" in error for error in validate_errors):
+        raise AssertionError(f"backtester detector must reject missing input-set validation, got: {validate_errors}")
+    bootstrap_required = 'git diff --name-only "${base_sha}...HEAD" -- scripts/ci_input_sets.py ci/rust-ci-inputs.toml > "$bootstrap_changed_path"'
+    missing_bootstrap = replace_once(workflow, bootstrap_required, 'true')
+    bootstrap_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_bootstrap})
+    if not any("backtester detect must force-run on CI input-set bootstrap changes" in error for error in bootstrap_errors):
+        raise AssertionError(f"backtester detector must reject missing bootstrap guard, got: {bootstrap_errors}")
+    missing_bootstrap_marker = replace_once(
+        workflow,
+        '            echo "CI input-set bootstrap paths changed:"\n'
+        '            cat "$bootstrap_changed_path"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            echo "bvs_bootstrap_changed=true" >> "$GITHUB_OUTPUT"\n',
+        '            echo "CI input-set bootstrap paths changed:"\n'
+        '            cat "$bootstrap_changed_path"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n',
+    )
+    bootstrap_marker_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": missing_bootstrap_marker}
+    )
+    if not any("backtester detect must mark CI input-set bootstrap changes" in error for error in bootstrap_marker_errors):
+        raise AssertionError(f"backtester detector must reject missing bootstrap marker, got: {bootstrap_marker_errors}")
+    required = 'changed="$(python3 scripts/ci_input_sets.py changed backtester_detect --base "$base_sha" --head HEAD)"'
+    bad = replace_once(
+        workflow,
+        required,
+        'changed="$(git diff --name-only "${base_sha}...HEAD" -- ci/github-actions-runners.toml scripts/ci_provenance.py)"',
+    )
+    bad_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
+    if not any("backtester detect paths must come from ci_input_sets backtester_detect" in error for error in bad_errors):
+        raise AssertionError(f"backtester detector must reject non-systematic path detection, got: {bad_errors}")
+    if not any("backtester detect paths must not be duplicated inline" in error for error in bad_errors):
+        raise AssertionError(f"backtester detector must reject inline duplicated path lists, got: {bad_errors}")
+    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": workflow})
+    if any("backtester detect" in error for error in good_errors):
+        raise AssertionError(f"backtester detector path check must pass when present, got: {good_errors}")
+
+
+def assert_backtester_ci_input_set_config_covers_systematic_inputs() -> None:
+    verifier = load_verifier()
+    config_path = "ci/rust-ci-inputs.toml"
+    config = (REPO_ROOT / config_path).read_text(encoding="utf-8")
+    missing_manifest = config.replace('  "gated_source_roots.manifest",\n', "")
+    manifest_errors = verifier.verify_repo_automation_texts({config_path: missing_manifest})
+    if not any("backtester_cache input set must include gated_source_roots.manifest" in error for error in manifest_errors):
+        raise AssertionError(f"CI input set config must reject missing root build manifest, got: {manifest_errors}")
+    missing_gitignore = config.replace('  ".gitignore",\n', "")
+    gitignore_errors = verifier.verify_repo_automation_texts({config_path: missing_gitignore})
+    if not any("backtester_cache input set must include .gitignore" in error for error in gitignore_errors):
+        raise AssertionError(f"CI input set config must reject missing .gitignore input, got: {gitignore_errors}")
+    missing_reference = config.replace('  "specs/023-nt-research-analytics-platform/reference/**",\n', "")
+    reference_errors = verifier.verify_repo_automation_texts({config_path: missing_reference})
+    if not any(
+        "backtester_cache input set must include specs/023-nt-research-analytics-platform/reference/**" in error
+        for error in reference_errors
+    ):
+        raise AssertionError(f"CI input set config must reject missing BVS reference fixture input, got: {reference_errors}")
+    missing_helper = config.replace('  "scripts/rust_test_targets.py",\n', "")
+    helper_errors = verifier.verify_repo_automation_texts({config_path: missing_helper})
+    if not any("backtester_cache input set must include scripts/rust_test_targets.py" in error for error in helper_errors):
+        raise AssertionError(f"CI input set config must reject missing target discovery helper cache input, got: {helper_errors}")
+    if not any("backtester_detect input set must include scripts/rust_test_targets.py" in error for error in helper_errors):
+        raise AssertionError(f"CI input set config must reject missing target discovery helper detect input, got: {helper_errors}")
 
 
 def assert_backtester_ci_requires_pr_event_types() -> None:
@@ -5373,16 +5474,16 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
         )
 
     issue_gate_workflow = workflow
-    if "needs: [ci-policy, detect, fmt, clippy, test-archive, test, issue_789]" not in issue_gate_workflow:
+    if "needs: [ci-policy, detect, fmt, clippy, test-archive, issue_789]" not in issue_gate_workflow:
         issue_gate_workflow = replace_once(
             issue_gate_workflow,
-            "needs: [ci-policy, detect, fmt, clippy, test-archive, test]",
-            "needs: [ci-policy, detect, fmt, clippy, test-archive, test, issue_789]",
+            "needs: [ci-policy, detect, fmt, clippy, test-archive]",
+            "needs: [ci-policy, detect, fmt, clippy, test-archive, issue_789]",
         )
     issue_gate_workflow = replace_once(
         issue_gate_workflow,
-        "--job test=${{ needs.test.result }}",
-        "--job test=${{ needs.test.result }} \\\n            --job issue_789=${{ needs.issue_789.result }}",
+        "--job test-archive=${{ needs.test-archive.result }}",
+        "--job test-archive=${{ needs.test-archive.result }} \\\n            --job issue_789=${{ needs.issue_789.result }}",
     )
     issue_gate_errors = verifier.verify_repo_automation_texts({workflow_name: issue_gate_workflow})
     if not any("backtester diagnostic issue-789 lane must not gate merge proof" in error for error in issue_gate_errors):
@@ -5582,6 +5683,8 @@ ci-lint-workflow-inner: require-local-verification-gate
     python3 scripts/test_verify_ci_workflow_hygiene.py
     python3 scripts/test_ci_storage_audit.py
     python3 scripts/test_root_bin_sidecars.py
+    python3 scripts/test_ci_input_sets.py
+    python3 scripts/test_rust_test_targets.py
 """
     errors = verifier.verify_local_verification_gate_recipes(justfile_text)
     if errors:
@@ -5601,6 +5704,16 @@ ci-lint-workflow-inner: require-local-verification-gate
     missing_sidecar_test_errors = verifier.verify_local_verification_gate_recipes(missing_sidecar_test)
     if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_root_bin_sidecars.py" in error for error in missing_sidecar_test_errors):
         raise AssertionError(f"root bin sidecar test wiring drift was silent, got: {missing_sidecar_test_errors}")
+
+    missing_ci_input_sets_test = justfile_text.replace("    python3 scripts/test_ci_input_sets.py\n", "")
+    missing_ci_input_sets_test_errors = verifier.verify_local_verification_gate_recipes(missing_ci_input_sets_test)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_ci_input_sets.py" in error for error in missing_ci_input_sets_test_errors):
+        raise AssertionError(f"CI input set test wiring drift was silent, got: {missing_ci_input_sets_test_errors}")
+
+    missing_rust_test_targets_test = justfile_text.replace("    python3 scripts/test_rust_test_targets.py\n", "")
+    missing_rust_test_targets_test_errors = verifier.verify_local_verification_gate_recipes(missing_rust_test_targets_test)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_rust_test_targets.py" in error for error in missing_rust_test_targets_test_errors):
+        raise AssertionError(f"Rust test target test wiring drift was silent, got: {missing_rust_test_targets_test_errors}")
 
     ungated = justfile_text.replace(
         "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner",
@@ -8713,16 +8826,69 @@ def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
           key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml') }}
 """
     errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
-    assert any("backtester managed-target cache key must include crates/backtesting-vertical-slice/src/**" in error for error in errors), errors
-    assert any("backtester managed-target cache key must include crates/backtesting-vertical-slice/tests/**" in error for error in errors), errors
-    good = bad.replace(
-        "'crates/backtesting-vertical-slice/Cargo.toml'",
-        "'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**'",
-    )
+    assert any("backtester cache key must use ci_input_sets digest" in error for error in errors), errors
+    assert any("backtester cache key must include steps.bvs_cache_inputs.outputs.digest" in error for error in errors), errors
+    good = """jobs:
+  clippy:
+    steps:
+      - name: Compute BVS cache input hash
+        id: bvs_cache_inputs
+        run: |
+          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
+            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/cache@example
+        with:
+          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-clippy-${{ steps.bvs_cache_inputs.outputs.digest }}
+"""
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [
-        error for error in good_errors if "backtester managed-target cache key must include" in error
+        error for error in good_errors if "backtester cache key" in error
     ], good_errors
+    missing_bootstrap_namespace = good.replace(
+        '          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then\n'
+        '            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"\n'
+        "          else\n"
+        '            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"\n'
+        "          fi",
+        '          echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"',
+    )
+    namespace_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": missing_bootstrap_namespace}
+    )
+    assert any(
+        "backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes" in error
+        for error in namespace_errors
+    ), namespace_errors
+    missing_per_job_namespace = """jobs:
+  clippy:
+    steps:
+      - name: Compute BVS cache input hash
+        id: bvs_cache_inputs
+        run: |
+          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
+            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/cache@example
+        with:
+          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-clippy-${{ steps.bvs_cache_inputs.outputs.digest }}
+  test-archive:
+    steps:
+      - uses: actions/cache@example
+        with:
+          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
+"""
+    per_job_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": missing_per_job_namespace}
+    )
+    assert any(
+        "backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes" in error
+        for error in per_job_errors
+    ), per_job_errors
 
 
 def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
@@ -8754,8 +8920,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
 """
     errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
     assert any("backtester bvs-test must not run direct per-shard target builds" in error for error in errors), errors
-    assert any("backtester bvs-test shards must name matrix shards" in error for error in errors), errors
-    assert any("backtester bvs-test must define dedicated issue-789 job" in error for error in errors), errors
+    assert any("backtester bvs-test must run partitions in the archive producer" in error for error in errors), errors
+    assert any("backtester bvs-test must define manual issue-789 diagnostic job" in error for error in errors), errors
 
     good = """jobs:
   test-archive:
@@ -8764,19 +8930,28 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     env:
       BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+      BVS_NEXTEST_SHARDS: "4"
     steps:
+      - name: Compute BVS cache input hash
+        id: bvs_cache_inputs
+        run: |
+          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
+            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
+          fi
       - name: Restore BVS nextest archive
         id: bvs-nextest-archive-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
-          key: bvs-nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**') }}
+          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
       - name: Restore BVS binary sidecars
         id: bvs-bin-sidecars-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
-          key: bvs-bin-sidecars-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**') }}
+          key: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
       - name: Resolve crate managed target dir
-        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+        id: crate_target
       - uses: Swatinem/rust-cache@example
         with:
           save-if: ${{ github.job == 'test-archive' }}
@@ -8786,79 +8961,54 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
       - name: Build BVS nextest archive
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
-        run: just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH"
+        run: |
+          mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)
+          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"
       - name: Save BVS nextest archive
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
       - name: Build BVS binary sidecars
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
         run: |
-          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- build --locked --bins
-          find debug -maxdepth 1 -type f -perm -111 -print0
+          python3 scripts/rust_test_targets.py sidecars --crate crates/backtesting-vertical-slice
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- "${cargo_args[@]}"
+          tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
       - name: Save BVS binary sidecars
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
       - name: Save archive build target cache
         if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
-      - name: Upload BVS test payload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: bvs-test-payload
-          path: .nextest-archive
-          include-hidden-files: true
-          if-no-files-found: error
-  test:
-    name: bvs-test ${{ matrix.shard }} of 4
-    needs: [ci-policy, detect, fmt, test-archive]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.test-archive.result == 'success' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    env:
-      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
-      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
-      BVS_NEXTEST_SHARDS: "4"
-    steps:
-      - name: Download BVS test payload
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: bvs-test-payload
-          path: .nextest-archive
-      - name: Require BVS test payload
+      - name: Require BVS local payload
         run: |
-          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }
-          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }
+          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }
+          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty"; exit 1; }
+          stat -c 'bvs-payload-size %n %s' "$BVS_NEXTEST_ARCHIVE_PATH" "$BVS_BIN_SIDECARS_PATH"
       - name: Extract BVS binary sidecars
         run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
+      - name: List scoped BVS archive tests
+        run: nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH"
       - name: test
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
-          just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${{ matrix.shard }}/${{ env.BVS_NEXTEST_SHARDS }}" -- --skip issue_789_first_real_free_data_taker_pl
+          for shard in $(seq 1 "$BVS_NEXTEST_SHARDS"); do
+            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl
+          done
   issue_789:
     name: bvs-test issue-789
-    needs: [ci-policy, detect, test-archive, gate]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.test-archive.result == 'success' && needs.gate.result == 'success' }}
+    needs: [ci-policy, detect, gate]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.event.inputs.issue_789 == 'true' && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.gate.result == 'success' }}
     env:
-      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
-      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+      BVS_ISSUE_789_ARCHIVE_PATH: .nextest-archive/bvs-issue-789-lib.tar.zst
       BOLT_ISSUE_789_RESULT_PATH: result.json
     steps:
-      - name: Download BVS test payload
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: bvs-test-payload
-          path: .nextest-archive
-      - name: Require BVS test payload
+      - name: Build issue #789 lib archive
         run: |
-          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }
-          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }
-      - name: Extract BVS binary sidecars
-        run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
+          just bte-test-archive "$BVS_ISSUE_789_ARCHIVE_PATH" --lib
+          stat -c 'bvs-issue-789-archive-size %n %s' "$BVS_ISSUE_789_ARCHIVE_PATH"
       - name: test issue-789
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
-          just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl
+          just bte-test-archive-run "$BVS_ISSUE_789_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl
       - name: Upload issue #789 first-P/L artifact
         uses: actions/upload-artifact@example
         with:
@@ -8868,120 +9018,78 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
 
+    fanout = good.replace(
+        "      - name: Require BVS local payload\n",
+        "      - name: Upload BVS test payload\n        with:\n          name: bvs-test-payload\n      - name: Require BVS local payload\n",
+        1,
+    )
+    fanout_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": fanout})
+    assert any("legacy fan-out payload" in error for error in fanout_errors), fanout_errors
+
+    download_in_archive = good.replace(
+        "      - name: Require BVS local payload\n",
+        "      - name: Download forbidden BVS test payload\n"
+        "        uses: actions/download-artifact@example\n"
+        "      - name: Require BVS local payload\n",
+        1,
+    )
+    download_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": download_in_archive}
+    )
+    assert any(
+        "backtester required bvs-test path must not download a test payload artifact" in error
+        for error in download_errors
+    ), download_errors
+
+    consumer_managed_target = good.replace(
+        "      - name: Build issue #789 lib archive\n",
+        "      - name: Restore forbidden managed target cache\n"
+        "        uses: actions/cache/restore@example\n"
+        "        with:\n"
+        "          key: managed-target-bvs-v4-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}\n"
+        "      - name: Build issue #789 lib archive\n",
+        1,
+    )
+    consumer_target_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": consumer_managed_target}
+    )
+    assert any(
+        "backtester bvs-test consumers must not restore the managed target cache" in error
+        for error in consumer_target_errors
+    ), consumer_target_errors
+
+    hardcoded_archive_targets = good.replace(
+        'mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)\n          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"',
+        'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" --lib --test backtesting_vertical_slice_tests --bin backtesting-vertical-slice',
+        1,
+    )
+    hardcoded_archive_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": hardcoded_archive_targets}
+    )
+    assert any("archive targets must be discovered" in error for error in hardcoded_archive_errors), hardcoded_archive_errors
+
     weakened_archive_guard = good.replace(
-        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }',
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }',
         'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || true',
         1,
     )
     weakened_errors = verifier.verify_repo_automation_texts(
         {".github/workflows/backtester-ci.yml": weakened_archive_guard}
     )
-    assert any("not fail-closed" in error and 'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || true' in error for error in weakened_errors), weakened_errors
-
-    missing_archive_guard = good.replace(
-        '          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }\n',
-        "",
-        1,
-    )
-    def assert_missing_consumer_guard(workflow: str, payload_name: str, scope_name: str) -> None:
-        expected_error = (
-            f"backtester consumer must fail closed if the downloaded {payload_name} "
-            f"is missing or empty ({scope_name})"
-        )
-        workflow_errors = verifier.verify_repo_automation_texts(
-            {".github/workflows/backtester-ci.yml": workflow}
-        )
-        assert any(expected_error in error for error in workflow_errors), workflow_errors
-
-    def assert_missing_shards_archive_guard(workflow: str) -> None:
-        assert_missing_consumer_guard(workflow, "archive", "bvs-test shards")
-
-    missing_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": missing_archive_guard}
-    )
-    assert any(
-        "backtester consumer must fail closed if the downloaded archive is missing or empty" in error
-        for error in missing_errors
-    ), missing_errors
-    assert_missing_shards_archive_guard(
-        missing_archive_guard.replace(
-            '      BVS_NEXTEST_SHARDS: "4"\n',
-            '      BVS_NEXTEST_SHARDS: "4"\n'
-            '      ARCHIVE_DECOY: \'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\'\n',
-            1,
-        )
-    )
-    assert_missing_shards_archive_guard(
-        missing_archive_guard.replace(
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
-            '          echo \'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\'\n',
-            1,
-        )
-    )
-    assert_missing_shards_archive_guard(
-        missing_archive_guard.replace(
-            '      BVS_NEXTEST_SHARDS: "4"\n',
-            '      BVS_NEXTEST_SHARDS: "4"\n'
-            "      DECOY: |\n"
-            "        ignored\n"
-            '        test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\n',
-            1,
-        )
-    )
-    assert_missing_consumer_guard(
-        replace_once(
-            missing_archive_guard,
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
-            '          test -s "$BVS_NEXTEST_ARCHIVE_PATH".decoy || exit 1\n',
-        ),
-        "archive",
-        "bvs-test shards",
-    )
-
-    missing_sidecars_guard = good.replace(
-        '          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }\n',
-        "",
-        1,
-    )
-    assert_missing_consumer_guard(
-        replace_once(
-            missing_sidecars_guard,
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
-            '          test -s "$BVS_BIN_SIDECARS_PATH".decoy || exit 1\n',
-        ),
-        "sidecars",
-        "bvs-test shards",
-    )
-
-    missing_issue_archive_guard = without_once_after(
-        good,
-        "  issue_789:\n",
-        '          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }\n',
-    )
-    assert_missing_consumer_guard(
-        replace_once_after(
-            missing_issue_archive_guard,
-            "      - name: test issue-789\n",
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
-            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
-            '          test -s "$BVS_NEXTEST_ARCHIVE_PATH".decoy || exit 1\n',
-        ),
-        "archive",
-        "bvs-test issue-789",
-    )
+    assert any("backtester bvs-test archive must fail closed on missing local payload" in error for error in weakened_errors), weakened_errors
 
     exit_one_archive_guard = good.replace(
-        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }',
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }',
         'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1',
         1,
     )
     exit_one_errors = verifier.verify_repo_automation_texts(
         {".github/workflows/backtester-ci.yml": exit_one_archive_guard}
     )
-    assert not [error for error in exit_one_errors if "backtester consumer" in error], exit_one_errors
+    assert any(
+        "backtester bvs-test archive must fail closed on missing local payload" in error
+        for error in exit_one_errors
+    ), exit_one_errors
 
 
 def assert_cache_as_same_run_transport_is_banned() -> None:
@@ -12282,7 +12390,8 @@ def main() -> int:
     assert_sync_errors_redact_command_arguments()
     assert_sync_public_key_uses_stdin()
     assert_security_key_public_prefix_is_validated()
-    assert_backtester_detect_includes_runner_config()
+    assert_backtester_detect_uses_ci_input_set()
+    assert_backtester_ci_input_set_config_covers_systematic_inputs()
     assert_backtester_ci_requires_pr_event_types()
     assert_backtester_ci_defers_managed_heavy_on_draft_prs()
     assert_actionlint_rejects_stale_config_variables()

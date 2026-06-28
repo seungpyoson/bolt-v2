@@ -7,9 +7,10 @@ Auto-cleanup of merged branches and worktrees. Always-on, agent-agnostic
 
 ## Problem
 
-Merged PRs leave local git branches and git worktrees. Current accumulation:
-~40 worktrees, ~14 branches merged into `origin/main`, ~5 `[gone]`-upstream
-branches.
+Merged PRs leave local git branches and git worktrees. After Mergify merge
+waves, local state can also lag behind `origin/main`, so cleanup may evaluate
+branches and worktrees against stale remote-tracking refs unless the operator
+runs the manual sync lane first.
 
 ## Hard constraints
 
@@ -21,7 +22,30 @@ branches.
 - Idempotent. Never breaks the git operation that triggered it.
 - Repo rules: NO HARDCODES (TOML config), NO DUAL PATHS, NO DEBTS.
 
-## Architecture: three lanes split by trust/speed profile
+## Architecture: lanes split by trust/speed profile
+
+### Lane S — Sync (manual, network-bound, fast-forward-only)
+
+- **Trigger:** manual only via `--sync-main`, normally through
+  `just clean-merged-backlog`. Hooks do not fetch or update `main`.
+- **Dry-run default:** reports that `git fetch --prune <remote>` would run and
+  that fast-forward safety would be evaluated after that fetch; it does not
+  leave local branch or remote-tracking ref mutations, and it does not claim
+  remote freshness from stale remote-tracking refs. When composed with cleanup
+  lanes, dry-run fetches the remote trunk into a temporary preview ref, deletes
+  that temp ref, and uses the preview SHA so Lane H/R/W can report exact
+  cleanup actions and refusals without advancing `main` or deleting
+  branches/worktrees. If the preview ref cannot be deleted, Lane S reports a
+  refusal and later cleanup lanes do not run from that preview.
+- **Apply:** runs `git fetch --prune <remote>`, verifies local trunk is an
+  ancestor of the refreshed remote-tracking trunk, refuses a dirty checked-out
+  trunk worktree, then advances local trunk with `git merge --ff-only` in the
+  trunk worktree (or a CAS `update-ref` if the trunk branch is not checked out
+  in any worktree).
+- **Refusals:** missing local trunk, missing remote-tracking trunk, fetch
+  failure, non-fast-forward, dirty trunk worktree, merge failure, or CAS drift.
+  A Lane S apply refusal stops later cleanup lanes so stale refs are not used
+  as authority.
 
 ### Lane H — Hook (always-on, offline, fast, reflog-safe)
 
@@ -34,7 +58,8 @@ branches.
 - **Does ONLY:** kill-switch check → cheap candidate precheck → for each
   non-trunk, non-current branch NOT bound to a worktree: re-read tip, check
   `git merge-base --is-ancestor <B> <trunk>` immediately before delete, write
-  timestamped backup ref, then `git branch -d <B>`. **No gh. No `-D`.**
+  timestamped backup ref, then CAS-delete `refs/heads/<B>` with
+  `git update-ref -d refs/heads/<B> <fresh-sha>`. **No gh. No `-D`.**
 - Worktree-bound eligible branches logged as "Lane W candidate."
 
 ### Lane R — Reconcile (hook-spawned detached OR manual; network-bound)
@@ -42,11 +67,14 @@ branches.
 - `post-merge` spawns Lane R detached (`setsid`, stdin→`/dev/null`,
   stdout/stderr→log) with strict Python `subprocess.run(timeout=cfg)` on the
   gh call and a 5-min cache. The git op returns instantly. Manual
-  `just clean-merged --reconcile` for on-demand.
+  `just clean-merged --reconcile` for on-demand, or
+  `just clean-merged-backlog` after merge waves when sync + worktree cleanup
+  are both wanted.
 - **Skip worktree-bound branches** — those flow to Lane W.
-- **Per-branch gh query** (not `--limit 200` newest-first which misses old
-  backlog PRs): for each non-ancestor, non-worktree-bound branch:
-  `gh pr list --head <B> --state merged --json number,headRefOid,baseRefName,headRepositoryOwner,isCrossRepository --limit 5`
+- **Per-branch gh query** (`--limit 100` plus exact `headRefOid` matching to
+  cover realistic branch reuse without accepting false positives): for each
+  non-ancestor, non-worktree-bound branch:
+  `gh pr list --head <B> --state merged --json number,headRefOid,baseRefName,headRepositoryOwner,isCrossRepository --limit 100`
   (`GH_PROMPT_DISABLED=1 GIT_TERMINAL_PROMPT=0`, Python timeout).
 - Match only if `headRefOid == git rev-parse <B>` AND `baseRefName == trunk`
   AND `headRepositoryOwner == <origin owner>` AND NOT `isCrossRepository`.
@@ -91,8 +119,11 @@ Per candidate, atomic sequence under `fcntl.flock` on
    with `tar -tzf`. Abort removal if archive fails integrity.
 6. `git worktree remove <wt>` (plain; refuses if dirty — final TOCTOU safety
    net). On failure, archive is preserved; operator can intervene.
-7. NOW delete the branch ref: timestamped backup ref, then `git branch -D <B>`
-   (safe because eligibility was just verified and the worktree is gone).
+7. Re-read the bound branch tip, revalidate that fresh tip with the same
+   ancestor/PR authority, then delete the branch ref by timestamped backup ref
+   plus CAS `git update-ref -d refs/heads/<B> <fresh-sha>`. If the fresh tip is
+   no longer eligible, keep the branch even though the archived worktree was
+   removed.
 8. Write `<quarantine>/clean-merged.manifest.json`.
 
 Purge: `just clean-merged --purge-quarantine` removes quarantine dirs older
@@ -151,6 +182,10 @@ in two specific ways. Stated precisely:)
   deliberately. This is the cost of the design's foundational invariant:
   never do irreversible work in a hook. The operator must periodically run
   `just clean-merged-backlog` (dry-run first) to reclaim the worktree backlog.
+- **NOT always-on for remote fetch/prune or local trunk sync.** Lane S is
+  manual because fetching/pruning and moving local trunk are network/ref
+  mutations. After Mergify merge waves, `just clean-merged-backlog` is the
+  existing cleanup path that composes Lane S, Lane R, and Lane W.
 - **Detached-HEAD worktrees require an additional explicit override.** Even
   inside Lane W (`--include-worktrees`), detached-HEAD worktrees are REFUSED
   by default. The operator must pass `--allow-detached-removal` to override,

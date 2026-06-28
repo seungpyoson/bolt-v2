@@ -640,10 +640,10 @@ clean-merged *args:
 clean-merged-doctor:
     python3 scripts/clean_merged_artifacts.py --doctor
 
-# clean-merged: one-time bulk reclaim of the worktree backlog.
+# clean-merged: post-merge-wave sync + one-time bulk reclaim of the worktree backlog.
 # Prints a dry-run first; pass --apply to actually archive+remove.
 clean-merged-backlog *args:
-    python3 scripts/clean_merged_artifacts.py --include-worktrees {{args}}
+    python3 scripts/clean_merged_artifacts.py --sync-main --reconcile --include-worktrees {{args}}
 
 # clean-merged: prune quarantine archives and backup refs older than DAYS (default 30).
 clean-merged-purge days='30':

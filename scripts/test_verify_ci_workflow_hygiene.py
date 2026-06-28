@@ -4487,6 +4487,18 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             ),
         ),
         (
+            "cache-persistence-audit must use the workflow token for cache API reads",
+            replace_once(
+                replace_once(
+                    workflow,
+                    "          GH_TOKEN: ${{ github.token }}\n",
+                    "",
+                ),
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          echo 'GH_TOKEN: ${{ github.token }}' >/dev/null\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
             "cache-persistence-audit must run ci_storage_audit exact-key probes",
             replace_once(workflow, "          python3 scripts/ci_storage_audit.py \\\n", "          python3 scripts/ci_storage_audit_probe.py \\\n"),
         ),

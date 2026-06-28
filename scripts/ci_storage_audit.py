@@ -23,6 +23,7 @@ import json
 import subprocess
 import sys
 import urllib.parse
+from collections.abc import Callable, Iterable
 from typing import Any, NamedTuple
 
 
@@ -65,11 +66,47 @@ class LabeledValue(NamedTuple):
     value: str
 
 
+class TextRule(NamedTuple):
+    kind: FailureKind
+    accepts: Callable[[Any], bool]
+    message: str
+
+
+class EventRefSpec(NamedTuple):
+    base_ref_contract: str
+
+
+TEXT_RULES = (
+    TextRule(FailureKind.ABSENT, lambda value: value is not None, "is required"),
+    TextRule(FailureKind.INVALID, lambda value: isinstance(value, str), "must be text"),
+    TextRule(FailureKind.EMPTY, lambda value: value != "", "must not be empty"),
+    TextRule(FailureKind.INVALID, lambda value: value == value.strip(), "must not contain surrounding whitespace"),
+)
+REF_TEXT_RULES = TEXT_RULES + (
+    TextRule(FailureKind.INVALID, lambda value: value.startswith("refs/"), "must be a refs/ value"),
+)
+BRANCH_TEXT_RULES = TEXT_RULES + (
+    TextRule(FailureKind.INVALID, lambda value: not value.startswith("refs/"), "must be a branch name, not a refs/ value"),
+)
+TEXT_CONTRACTS = {
+    "text": TEXT_RULES,
+    "ref": REF_TEXT_RULES,
+    "branch": BRANCH_TEXT_RULES,
+}
+GITHUB_CACHE_EVENT_SPECS = {
+    "pull_request": EventRefSpec(base_ref_contract="required_branch"),
+    "push": EventRefSpec(base_ref_contract="empty"),
+    "workflow_dispatch": EventRefSpec(base_ref_contract="empty"),
+    "merge_group": EventRefSpec(base_ref_contract="empty"),
+}
+EMPTY_BASE_REF_RULES = (
+    TextRule(FailureKind.ABSENT, lambda value: value is not None, "--github-base-ref is required"),
+    TextRule(FailureKind.INVALID, lambda value: value == "", "--github-base-ref must be empty outside pull_request"),
+)
 CACHE_PERSISTENCE_MISSING_WARNING = (
     "::warning::one or more root nextest cache keys are missing from the Actions cache inventory "
     "after save/restore; inspect cache save outcomes and repository cache usage above for quota/eviction context"
 )
-SUPPORTED_GITHUB_CACHE_EVENTS = frozenset({"pull_request", "push", "workflow_dispatch", "merge_group"})
 
 
 class GhClient:
@@ -221,58 +258,76 @@ def cache_entry_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def parse_cache_key_probe(raw: str) -> CacheKeyProbeRequest:
+def require_contract_text(value: Any, field: str, contract_name: str) -> str:
+    for rule in TEXT_CONTRACTS[contract_name]:
+        if not rule.accepts(value):
+            raise AuditError(f"{field} {rule.message}", kind=rule.kind, field=field)
+    return value
+
+
+def require_text(value: Any, field: str) -> str:
+    return require_contract_text(value, field, "text")
+
+
+def require_ref(value: Any, field: str) -> str:
+    return require_contract_text(value, field, "ref")
+
+
+def require_branch(value: Any, field: str) -> str:
+    return require_contract_text(value, field, "branch")
+
+
+def require_labeled_pair(raw: str, field: str) -> tuple[str, str]:
     if "=" not in raw:
-        raise AuditError("--cache-key must be LABEL=KEY", kind=FailureKind.INVALID, field="--cache-key")
-    label, key = raw.split("=", 1)
+        raise AuditError(f"{field} must be LABEL=VALUE", kind=FailureKind.INVALID, field=field)
+    return raw.split("=", 1)
+
+
+def parse_cache_key_probe(raw: str) -> CacheKeyProbeRequest:
+    label, key = require_labeled_pair(raw, "--cache-key")
     label = require_text(label, "--cache-key label")
     key = require_text(key, "--cache-key key")
     return CacheKeyProbeRequest(label=label, key=key)
 
 
 def parse_labeled_value(raw: str, field: str) -> LabeledValue:
-    if "=" not in raw:
-        raise AuditError(f"{field} must be LABEL=VALUE", kind=FailureKind.INVALID, field=field)
-    label, value = raw.split("=", 1)
+    label, value = require_labeled_pair(raw, field)
     label = require_text(label, f"{field} label")
     value = require_text(value, f"{field} value")
     return LabeledValue(label=label, value=value)
 
 
-def require_text(value: str | None, field: str) -> str:
-    if value is None:
-        raise AuditError(f"{field} is required", kind=FailureKind.ABSENT, field=field)
-    if value == "":
+def provided_values(values: Iterable[str] | None, field: str) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    result = tuple(values)
+    if not result:
         raise AuditError(f"{field} must not be empty", kind=FailureKind.EMPTY, field=field)
-    if value != value.strip():
-        raise AuditError(f"{field} must not contain surrounding whitespace", kind=FailureKind.INVALID, field=field)
-    return value
+    return result
 
 
-def require_ref(value: str | None, field: str) -> str:
-    ref = require_text(value, field)
-    if not ref.startswith("refs/"):
-        raise AuditError(f"{field} must be a refs/ value", kind=FailureKind.INVALID, field=field)
-    return ref
+def append_unique_or_fail(refs: list[str], seen: set[str], ref: str) -> None:
+    if ref in seen:
+        raise AuditError(f"duplicate cache ref: {ref}", kind=FailureKind.DUPLICATE, field="cache_ref_filter")
+    seen.add(ref)
+    refs.append(ref)
 
 
-def require_branch(value: str | None, field: str) -> str:
-    branch = require_text(value, field)
-    if branch.startswith("refs/"):
-        raise AuditError(f"{field} must be a branch name, not a refs/ value", kind=FailureKind.INVALID, field=field)
-    return branch
+def unique_ordered(refs: Iterable[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for ref in refs:
+        if ref not in seen:
+            seen.add(ref)
+            result.append(ref)
+    return result
 
 
 def normalize_cache_refs(cache_refs: list[str] | None) -> list[str]:
     refs: list[str] = []
     seen: set[str] = set()
-    raw_refs = [] if cache_refs is None else cache_refs
-    for raw in raw_refs:
-        ref = require_ref(raw, "--cache-ref")
-        if ref in seen:
-            raise AuditError(f"duplicate cache ref: {ref}", kind=FailureKind.DUPLICATE, field="cache_ref_filter")
-        seen.add(ref)
-        refs.append(ref)
+    for raw in provided_values(cache_refs, "--cache-ref"):
+        append_unique_or_fail(refs, seen, require_ref(raw, "--cache-ref"))
     return refs
 
 
@@ -283,14 +338,9 @@ def normalize_cache_ref_inputs(
 ) -> list[str]:
     refs = normalize_cache_refs(cache_refs)
     seen = set(refs)
-    raw_branches = [] if cache_branches is None else cache_branches
-    for raw in raw_branches:
+    for raw in provided_values(cache_branches, "--cache-branch"):
         branch = require_branch(raw, "--cache-branch")
-        ref = f"refs/heads/{branch}"
-        if ref in seen:
-            raise AuditError(f"duplicate cache ref: {ref}", kind=FailureKind.DUPLICATE, field="cache_ref_filter")
-        seen.add(ref)
-        refs.append(ref)
+        append_unique_or_fail(refs, seen, f"refs/heads/{branch}")
     if not refs:
         raise AuditError(
             "cache key probes require at least one cache ref",
@@ -308,7 +358,8 @@ def resolve_github_cache_refs(
     github_default_branch: str | None,
 ) -> list[str]:
     event_name = require_text(github_event_name, "--github-event-name")
-    if event_name not in SUPPORTED_GITHUB_CACHE_EVENTS:
+    event_spec = GITHUB_CACHE_EVENT_SPECS.get(event_name)
+    if event_spec is None:
         raise AuditError(
             f"unsupported GitHub event for cache probes: {event_name}",
             kind=FailureKind.INVALID,
@@ -316,28 +367,40 @@ def resolve_github_cache_refs(
         )
     current_ref = require_ref(github_ref, "--github-ref")
     default_branch = require_branch(github_default_branch, "--github-default-branch")
-    refs: list[str] = []
-    seen: set[str] = set()
+    base_refs = resolve_github_base_refs(github_base_ref, event_spec)
+    return unique_ordered((current_ref, *base_refs, f"refs/heads/{default_branch}"))
 
-    def add_ref(ref: str) -> None:
-        if ref not in seen:
-            seen.add(ref)
-            refs.append(ref)
 
-    add_ref(current_ref)
-    if event_name == "pull_request":
-        add_ref(f"refs/heads/{require_branch(github_base_ref, '--github-base-ref')}")
-    else:
-        if github_base_ref is None:
-            raise AuditError("--github-base-ref is required", kind=FailureKind.ABSENT, field="--github-base-ref")
-        if github_base_ref != "":
-            raise AuditError(
-                "--github-base-ref must be empty outside pull_request",
-                kind=FailureKind.INVALID,
-                field="--github-base-ref",
-            )
-    add_ref(f"refs/heads/{default_branch}")
-    return refs
+def required_base_refs(github_base_ref: str | None) -> tuple[str, ...]:
+    return (f"refs/heads/{require_branch(github_base_ref, '--github-base-ref')}",)
+
+
+def empty_base_refs(github_base_ref: str | None) -> tuple[str, ...]:
+    require_empty_base_ref(github_base_ref)
+    return ()
+
+
+BASE_REF_CONTRACT_RESOLVERS = {
+    "required_branch": required_base_refs,
+    "empty": empty_base_refs,
+}
+
+
+def resolve_github_base_refs(github_base_ref: str | None, event_spec: EventRefSpec) -> tuple[str, ...]:
+    resolver = BASE_REF_CONTRACT_RESOLVERS.get(event_spec.base_ref_contract)
+    if resolver is None:
+        raise AuditError(
+            f"unsupported base ref contract: {event_spec.base_ref_contract}",
+            kind=FailureKind.INVALID,
+            field="--github-event-name",
+        )
+    return resolver(github_base_ref)
+
+
+def require_empty_base_ref(github_base_ref: str | None) -> None:
+    for rule in EMPTY_BASE_REF_RULES:
+        if not rule.accepts(github_base_ref):
+            raise AuditError(rule.message, kind=rule.kind, field="--github-base-ref")
 
 
 def resolve_cache_ref_inputs(
@@ -890,11 +953,11 @@ def run(args: argparse.Namespace) -> int:
         )
         restore_hits = [
             parse_labeled_value(raw, "--restore-hit")
-            for raw in ([] if args.restore_hit is None else args.restore_hit)
+            for raw in provided_values(args.restore_hit, "--restore-hit")
         ]
         save_outcomes = [
             parse_labeled_value(raw, "--save-outcome")
-            for raw in ([] if args.save_outcome is None else args.save_outcome)
+            for raw in provided_values(args.save_outcome, "--save-outcome")
         ]
         if args.github_step_summary is not None:
             if not restore_hits:

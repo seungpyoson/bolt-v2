@@ -685,10 +685,41 @@ CACHE_PERSISTENCE_AUDIT_SAVE_OUTCOME_ARGS = (
     '--save-outcome "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}"',
     '--save-outcome "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}"',
 )
-CACHE_PERSISTENCE_AUDIT_PROBE_BLOCK_REQUIREMENTS = (
+CACHE_PERSISTENCE_AUDIT_PROBE_SCALAR_REQUIREMENTS = (
     (
         "cache-persistence-audit must use the workflow token for cache API reads",
-        ('GH_TOKEN: ${{ github.token }}',),
+        "GH_TOKEN",
+        "${{ github.token }}",
+    ),
+)
+CACHE_PERSISTENCE_AUDIT_PROBE_COMMAND_REQUIREMENTS = (
+    (
+        "cache-persistence-audit must run ci_storage_audit exact-key probes",
+        (CACHE_PERSISTENCE_AUDIT_COMMAND,),
+    ),
+    (
+        "cache-persistence-audit must probe all root nextest cache keys",
+        CACHE_PERSISTENCE_AUDIT_CACHE_KEYS,
+    ),
+    (
+        "cache-persistence-audit must limit exact-key probes to restorable cache refs",
+        CACHE_PERSISTENCE_AUDIT_CACHE_REFS,
+    ),
+    (
+        "cache-persistence-audit must write probe results to the job summary",
+        (CACHE_PERSISTENCE_AUDIT_SUMMARY_ARG,),
+    ),
+    (
+        "cache-persistence-audit must emit audit annotations from ci_storage_audit",
+        (CACHE_PERSISTENCE_AUDIT_ANNOTATIONS_ARG,),
+    ),
+    (
+        "cache-persistence-audit must summarize cache restore hits",
+        CACHE_PERSISTENCE_AUDIT_RESTORE_HIT_ARGS,
+    ),
+    (
+        "cache-persistence-audit must summarize cache save outcomes",
+        CACHE_PERSISTENCE_AUDIT_SAVE_OUTCOME_ARGS,
     ),
 )
 TEST_ARCHIVE_TEST_PROFILE_ENV = 'CARGO_PROFILE_TEST_DEBUG: "0"'
@@ -2051,6 +2082,10 @@ def append_missing_text_requirements(
             errors.append(error)
 
 
+def append_failed_contracts(errors: list[str], contracts: Iterable[tuple[str, bool]]) -> None:
+    errors.extend(error for error, passed in contracts if not passed)
+
+
 def block_run_body_lines(block: list[str]) -> list[str]:
     for index, line in enumerate(block):
         clean = strip_comment(line).rstrip()
@@ -2148,29 +2183,100 @@ def append_missing_cache_persistence_probe_structure(
     run_lines: list[str],
 ) -> None:
     commands = top_level_shell_commands(run_lines)
-    probe_command = next(
-        (command for command in commands if command.startswith(CACHE_PERSISTENCE_AUDIT_COMMAND)),
-        None,
+    command_text = "\n".join(commands)
+    append_failed_contracts(
+        errors,
+        (
+            (
+                "cache-persistence-audit must delegate audit policy to ci_storage_audit",
+                len(commands) == 1 and command_text.startswith(CACHE_PERSISTENCE_AUDIT_COMMAND),
+            ),
+            (
+                "cache-persistence-audit must not suppress audit contract failures",
+                "|| true" not in "\n".join(run_lines),
+            ),
+        ),
     )
-    if len(commands) != 1 or probe_command is None:
-        errors.append("cache-persistence-audit must delegate audit policy to ci_storage_audit")
-    if any("|| true" in line for line in run_lines):
-        errors.append("cache-persistence-audit must not suppress audit contract failures")
-    if probe_command is None:
-        errors.append("cache-persistence-audit must run ci_storage_audit exact-key probes")
-    else:
-        if not all(cache_key in probe_command for cache_key in CACHE_PERSISTENCE_AUDIT_CACHE_KEYS):
-            errors.append("cache-persistence-audit must probe all root nextest cache keys")
-        if not all(cache_ref in probe_command for cache_ref in CACHE_PERSISTENCE_AUDIT_CACHE_REFS):
-            errors.append("cache-persistence-audit must limit exact-key probes to restorable cache refs")
-        if CACHE_PERSISTENCE_AUDIT_SUMMARY_ARG not in probe_command:
-            errors.append("cache-persistence-audit must write probe results to the job summary")
-        if CACHE_PERSISTENCE_AUDIT_ANNOTATIONS_ARG not in probe_command:
-            errors.append("cache-persistence-audit must emit audit annotations from ci_storage_audit")
-        if not all(arg in probe_command for arg in CACHE_PERSISTENCE_AUDIT_RESTORE_HIT_ARGS):
-            errors.append("cache-persistence-audit must summarize cache restore hits")
-        if not all(arg in probe_command for arg in CACHE_PERSISTENCE_AUDIT_SAVE_OUTCOME_ARGS):
-            errors.append("cache-persistence-audit must summarize cache save outcomes")
+    append_missing_text_requirements(
+        errors,
+        command_text,
+        CACHE_PERSISTENCE_AUDIT_PROBE_COMMAND_REQUIREMENTS,
+    )
+
+
+def first_step_uses_checkout(step_blocks_: list[list[str]]) -> bool:
+    return len(step_blocks_) == 2 and any(line_uses_action(line, "actions/checkout@") for line in step_blocks_[0])
+
+
+def single_run_step_matches(run_blocks: list[list[str]], step_name: str) -> bool:
+    return len(run_blocks) == 1 and step_name_matches(run_blocks[0], step_name)
+
+
+def append_cache_persistence_audit_contract_errors(errors: list[str], jobs: dict[str, list[str]]) -> None:
+    audit_lines = jobs.get("cache-persistence-audit")
+    if audit_lines is None:
+        if "test-archive" in jobs:
+            errors.append("cache-persistence-audit job is required")
+        return
+
+    audit_text = uncommented_text(audit_lines)
+    audit_needs = extract_needs(audit_lines)
+    audit_permissions = mapping_child_block(audit_lines, "permissions")
+    audit_step_blocks = step_blocks(audit_lines)
+    audit_probe_block = named_step_block(audit_lines, CACHE_PERSISTENCE_AUDIT_PROBE_STEP)
+
+    append_failed_contracts(
+        errors,
+        (
+            *((f"cache-persistence-audit needs {need}", need in audit_needs) for need in CACHE_PERSISTENCE_AUDIT_NEEDS),
+            *(
+                (
+                    f"cache-persistence-audit permissions must include {permission_name}: read",
+                    block_has_scalar(audit_permissions, permission_name, "read"),
+                )
+                for permission_name in ("contents", "actions")
+            ),
+            ("cache-persistence-audit must use always()", job_if_uses_always(audit_lines)),
+            ("cache-persistence-audit must gate on full_ci_required", job_gates_on_full_ci_required(audit_lines)),
+            (
+                "cache-persistence-audit must require test-archive success",
+                "needs.test-archive.result == 'success'" in audit_text,
+            ),
+            (
+                "cache-persistence-audit must skip on validated nextest fingerprint reuse",
+                NEXTEST_REUSE_MISS_EXPR in audit_text,
+            ),
+            ("cache-persistence-audit must not add extra steps", len(audit_step_blocks) == 2),
+            ("cache-persistence-audit must checkout the repository before probing", first_step_uses_checkout(audit_step_blocks)),
+            (
+                f"cache-persistence-audit must include {CACHE_PERSISTENCE_AUDIT_PROBE_STEP} step",
+                audit_probe_block is not None,
+            ),
+        ),
+    )
+    if audit_probe_block is None:
+        return
+
+    audit_run_blocks = [block for block in audit_step_blocks if step_declares_run(block)]
+    audit_probe_run_lines = block_run_body_lines(audit_probe_block)
+    append_failed_contracts(
+        errors,
+        (
+            *(
+                (message, block_has_scalar(audit_probe_block, name, value))
+                for message, name, value in CACHE_PERSISTENCE_AUDIT_PROBE_SCALAR_REQUIREMENTS
+            ),
+            (
+                "cache-persistence-audit must not add extra run steps",
+                single_run_step_matches(audit_run_blocks, CACHE_PERSISTENCE_AUDIT_PROBE_STEP),
+            ),
+            (
+                "cache-persistence-audit probe must be non-blocking",
+                block_has_scalar(audit_probe_block, "continue-on-error", "true"),
+            ),
+        ),
+    )
+    append_missing_cache_persistence_probe_structure(errors, audit_probe_run_lines)
 
 
 def normalize_script_text(text: str) -> str:
@@ -10085,54 +10191,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append("test-archive must aggregate partition failures")
                 break
 
-    if "test-archive" in jobs and "cache-persistence-audit" not in jobs:
-        errors.append("cache-persistence-audit job is required")
-
-    if "cache-persistence-audit" in jobs:
-        audit_lines = jobs["cache-persistence-audit"]
-        audit_text = uncommented_text(audit_lines)
-        audit_probe_block = named_step_block(audit_lines, CACHE_PERSISTENCE_AUDIT_PROBE_STEP)
-        audit_needs = extract_needs(audit_lines)
-        for need in CACHE_PERSISTENCE_AUDIT_NEEDS:
-            if need not in audit_needs:
-                errors.append(f"cache-persistence-audit needs {need}")
-        audit_permissions = mapping_child_block(audit_lines, "permissions")
-        for permission_name in ("contents", "actions"):
-            if not block_has_scalar(audit_permissions, permission_name, "read"):
-                errors.append(f"cache-persistence-audit permissions must include {permission_name}: read")
-        if not job_if_uses_always(audit_lines):
-            errors.append("cache-persistence-audit must use always()")
-        if not job_gates_on_full_ci_required(audit_lines):
-            errors.append("cache-persistence-audit must gate on full_ci_required")
-        if "needs.test-archive.result == 'success'" not in audit_text:
-            errors.append("cache-persistence-audit must require test-archive success")
-        if NEXTEST_REUSE_MISS_EXPR not in audit_text:
-            errors.append("cache-persistence-audit must skip on validated nextest fingerprint reuse")
-        audit_step_blocks = step_blocks(audit_lines)
-        if len(audit_step_blocks) != 2:
-            errors.append("cache-persistence-audit must not add extra steps")
-        elif not any(line_uses_action(line, "actions/checkout@") for line in audit_step_blocks[0]):
-            errors.append("cache-persistence-audit must checkout the repository before probing")
-        if audit_probe_block is None:
-            errors.append(f"cache-persistence-audit must include {CACHE_PERSISTENCE_AUDIT_PROBE_STEP} step")
-        else:
-            audit_run_blocks = [block for block in audit_step_blocks if step_declares_run(block)]
-            if len(audit_run_blocks) != 1 or not step_name_matches(
-                audit_run_blocks[0],
-                CACHE_PERSISTENCE_AUDIT_PROBE_STEP,
-            ):
-                errors.append("cache-persistence-audit must not add extra run steps")
-            audit_probe_text = uncommented_text(audit_probe_block)
-            audit_probe_run_lines = block_run_body_lines(audit_probe_block)
-            audit_probe_run_text = "\n".join(audit_probe_run_lines)
-            if not block_has_scalar(audit_probe_block, "continue-on-error", "true"):
-                errors.append("cache-persistence-audit probe must be non-blocking")
-            append_missing_text_requirements(
-                errors,
-                audit_probe_text,
-                CACHE_PERSISTENCE_AUDIT_PROBE_BLOCK_REQUIREMENTS,
-            )
-            append_missing_cache_persistence_probe_structure(errors, audit_probe_run_lines)
+    append_cache_persistence_audit_contract_errors(errors, jobs)
 
     if "nextest-fingerprint-reuse" in jobs:
         reuse_lines = jobs["nextest-fingerprint-reuse"]

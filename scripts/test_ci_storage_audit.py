@@ -512,6 +512,23 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.ABSENT)
         self.assertEqual(raised.exception.field, "cache_ref_filter")
 
+    def test_normalize_cache_refs_rejects_empty_ref_list(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.normalize_cache_ref_inputs(cache_refs=[])
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.EMPTY)
+        self.assertEqual(raised.exception.field, "--cache-ref")
+
+    def test_normalize_cache_refs_rejects_empty_branch_list(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.normalize_cache_ref_inputs(
+                cache_refs=["refs/pull/986/merge"],
+                cache_branches=[],
+            )
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.EMPTY)
+        self.assertEqual(raised.exception.field, "--cache-branch")
+
     def test_normalize_cache_refs_rejects_empty_ref(self) -> None:
         with self.assertRaises(ci_storage_audit.AuditError) as raised:
             ci_storage_audit.normalize_cache_ref_inputs(cache_refs=["refs/pull/986/merge", ""])

@@ -17,4 +17,5 @@ config-variables:
   - CI_SCCACHE_S3_KEY_PREFIX
 
 config-secrets:
+  - JULES_API_KEY
   - SSH_PUBLIC_KEY

@@ -99,6 +99,15 @@ summary = "github_hosted"
 [workflows.stale]
 stale = "github_hosted"
 
+[workflows.weekly_cleanup]
+jules-weekly-cleanup = "github_hosted"
+
+[workflows.performance_improver]
+jules-performance-improver = "github_hosted"
+
+[workflows.tech_debt_review]
+jules-tech-debt-review = "github_hosted"
+
 [meter]
 fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
 fingerprint_workflow = "ci"

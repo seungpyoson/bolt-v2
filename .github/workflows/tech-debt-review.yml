@@ -1,0 +1,78 @@
+name: Jules Tech Debt Review
+
+on:
+  schedule:
+    - cron: "17 8 * * 5"
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: jules-tech-debt-review
+  cancel-in-progress: false
+
+jobs:
+  jules-tech-debt-review:
+    name: jules-tech-debt-review
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - name: Start Jules advisory session
+        id: invoke-jules
+        continue-on-error: true
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          JULES_STARTING_BRANCH: ${{ github.event.repository.default_branch }}
+          JULES_TITLE: Jules Advisory Tech Debt Review
+          JULES_PROMPT: |
+            You are Jules running code-maintenance automation for this repository.
+
+            Operating rules:
+            - You are advisory only and not a required gate.
+            - You are not reviewer of record and not policy authority.
+            - You must not approve, merge, or waive findings.
+            - Create a draft pull request only when you have a small verified tech-debt reduction.
+            - Label any pull request with agent:jules.
+            - No safe debt-reduction change: create no pull request and leave a concise report in the Jules session.
+            - Do not edit governance or policy files unless a triggering issue explicitly requests that exact file.
+            - No AWS access.
+            - No trading, runtime, deploy, live, market data, or order execution access.
+
+            Tech-debt focus:
+            - Identify stale small abstractions, obsolete test fixtures, or low-risk local simplifications.
+            - Prefer deleting unnecessary code over adding new frameworks or broad refactors.
+            - Do not create tracking debt comments or fix-later comments.
+            - Keep changes scoped and include verification evidence in the draft PR body.
+        run: |
+          jq -n \
+            --arg owner "${GITHUB_REPOSITORY%/*}" \
+            --arg repo "${GITHUB_REPOSITORY#*/}" \
+            --arg branch "$JULES_STARTING_BRANCH" \
+            --arg title "$JULES_TITLE" \
+            --arg prompt "$JULES_PROMPT" \
+            '{
+              title: $title,
+              prompt: $prompt,
+              sourceContext: {
+                githubRepoContext: {
+                  owner: $owner,
+                  repo: $repo,
+                  baseBranch: $branch
+                }
+              },
+              automationMode: "AUTO_CREATE_PR",
+              requirePlanApproval: false
+            }' > "$RUNNER_TEMP/jules_payload.json"
+
+          curl --silent --show-error --fail-with-body \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --header "x-goog-api-key: ${JULES_API_KEY}" \
+            --data @"$RUNNER_TEMP/jules_payload.json" \
+            --output "$RUNNER_TEMP/jules_response.json" \
+            "https://jules.googleapis.com/v1alpha/sessions"
+
+          jq -e '.name and .id' "$RUNNER_TEMP/jules_response.json" >/dev/null
+
+      - name: Jules advisory status notice
+        run: |
+          echo "::notice::Jules advisory automation is non-blocking. A verified Jules session requires the Start Jules advisory session step to pass with a session id. Missing or failed session creation means Jules API was unavailable or rejected the request and must not be treated as merge evidence."

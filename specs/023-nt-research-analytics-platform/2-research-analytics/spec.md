@@ -178,9 +178,10 @@ artifact family/path.
 ## Known prerequisite
 
 The BTE runner currently registers only the NT example strategy
-`HurstVpinDirectional` over `bybit-spot`. Wiring bolt's
-`binary_oracle_edge_taker` plus venue normalization into the BTE is required
-before Phase-3 sweeps are real.
+`HurstVpinDirectional` over `bybit-spot`. Wiring bolt's binary-oracle
+edge-taker strategy (registry key `STRATEGY_BINARY_ORACLE_EDGE_TAKER` in
+`crates/backtesting-vertical-slice/src/run_manifest.rs`) plus venue
+normalization into the BTE is required before Phase-3 sweeps are real.
 
 ## Issue Dependencies
 

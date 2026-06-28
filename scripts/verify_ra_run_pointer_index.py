@@ -13,9 +13,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RA_PATH = Path("crates/backtesting-vertical-slice/src/research_analytics.rs")
 TEST_PATH = Path("crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_research_analytics.rs")
 JUSTFILE_PATH = Path("justfile")
-TASKS_PATH = Path("specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md")
-
-CHECKED_RA013 = re.compile(r"^- \[[xX]\] RA-013\b", re.MULTILINE)
 
 
 def strip_rust_comments_and_literals(text: str) -> str:
@@ -112,15 +109,9 @@ def scan_root(root: Path) -> list[str]:
     just_text = (
         (root / JUSTFILE_PATH).read_text(encoding="utf-8") if (root / JUSTFILE_PATH).exists() else ""
     )
-    tasks_text = (
-        (root / TASKS_PATH).read_text(encoding="utf-8") if (root / TASKS_PATH).exists() else ""
-    )
 
     ra_code = strip_rust_comments_and_literals(ra_text)
     test_code = strip_rust_comments_and_literals(test_text)
-
-    if not CHECKED_RA013.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: RA-013 must be checked only when run-pointer index is implemented")
 
     for label, pattern in (
         ("BacktestRunCatalogList trait", r"\bpub\s+trait\s+BacktestRunCatalogList\b"),

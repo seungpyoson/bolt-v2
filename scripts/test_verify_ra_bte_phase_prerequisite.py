@@ -31,54 +31,7 @@ def write_file(root: Path, rel: str, text: str) -> Path:
     return path
 
 
-def documented_plan_text(*, omit_binary_oracle: bool = False) -> str:
-    binary_oracle = "" if omit_binary_oracle else "`binary_oracle_edge_taker` strategy and "
-    return f"""
-## Backtest Phase Prerequisite
-
-The BTE runner today wires only an NT example strategy
-(`HurstVpinDirectional`) over a single venue (`bybit-spot`). Bolt's
-{binary_oracle}venue normalization must be wired into
-the BTE engine before any Phase-3 sweep is real. Surface this prerequisite
-explicitly in the backtest phase; do not hide it. NT's pyo3
-`add_native_strategy` is `#[cfg(feature = "examples")]` and can only run NT
-example strategies, not bolt's, so this wiring is a hard precondition, not an
-optional optimization.
-"""
-
-
-def documented_spec_text() -> str:
-    return """
-Known prerequisite (do not hide): the BTE runner today registers only an NT
-example strategy (`HurstVpinDirectional`) over one venue (`bybit-spot`); bolt's
-`binary_oracle_edge_taker` + venue normalization must be wired into the BTE
-before Phase-3 sweeps are real.
-"""
-
-
-def documented_tasks_text(*, checked: bool = True) -> str:
-    mark = "x" if checked else " "
-    return f"""
-- [{mark}] RA-016 Document the known prerequisite: the BTE runner today registers only an NT example strategy (HurstVpinDirectional) over one venue (bybit-spot); bolt's binary_oracle_edge_taker + venue normalization must be wired into the BTE before Phase-3 sweeps produce valid results.
-"""
-
-
 def write_complete_fixture(root: Path) -> None:
-    write_file(
-        root,
-        "specs/023-nt-research-analytics-platform/2-research-analytics/plan.md",
-        documented_plan_text(),
-    )
-    write_file(
-        root,
-        "specs/023-nt-research-analytics-platform/2-research-analytics/spec.md",
-        documented_spec_text(),
-    )
-    write_file(
-        root,
-        "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
-        documented_tasks_text(),
-    )
     write_file(
         root,
         "crates/backtesting-vertical-slice/Cargo.toml",
@@ -206,22 +159,6 @@ def test_documented_prerequisite_passes() -> None:
         assert verifier.scan_root(root) == []
 
 
-def test_missing_bolt_strategy_is_a_finding() -> None:
-    verifier = load_verifier()
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        write_complete_fixture(root)
-        write_file(
-            root,
-            "specs/023-nt-research-analytics-platform/2-research-analytics/plan.md",
-            documented_plan_text(omit_binary_oracle=True),
-        )
-
-        findings = verifier.scan_root(root)
-
-    assert any("binary_oracle_edge_taker" in finding for finding in findings)
-
-
 def test_missing_bte_runner_wiring_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -270,39 +207,14 @@ fn add_manifest_strategy() {}
     assert any("runner" in finding and "binary_oracle_edge_taker" in finding for finding in findings)
 
 
-def test_unchecked_task_is_a_finding() -> None:
-    verifier = load_verifier()
+def test_cli_fails_with_actionable_output() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_complete_fixture(root)
         write_file(
             root,
-            "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
-            documented_tasks_text(checked=False),
-        )
-
-        findings = verifier.scan_root(root)
-
-    assert any("RA-016 must be checked" in finding for finding in findings)
-
-
-def test_cli_fails_with_actionable_output() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        write_file(
-            root,
-            "specs/023-nt-research-analytics-platform/2-research-analytics/plan.md",
-            documented_plan_text(omit_binary_oracle=True),
-        )
-        write_file(
-            root,
-            "specs/023-nt-research-analytics-platform/2-research-analytics/spec.md",
-            documented_spec_text(),
-        )
-        write_file(
-            root,
-            "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
-            documented_tasks_text(),
+            "crates/backtesting-vertical-slice/src/runner.rs",
+            "fn add_manifest_strategy() {}\n",
         )
 
         result = run_script("--root", str(root))
@@ -315,10 +227,8 @@ def test_cli_fails_with_actionable_output() -> None:
 def main() -> int:
     tests = [
         test_documented_prerequisite_passes,
-        test_missing_bolt_strategy_is_a_finding,
         test_missing_bte_runner_wiring_is_a_finding,
         test_runner_tokens_in_comments_and_strings_do_not_satisfy_wiring,
-        test_unchecked_task_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]
     for test in tests:

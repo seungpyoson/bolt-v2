@@ -180,14 +180,16 @@ def check_run(
     app_id: int = APP_ID,
     status: str = "completed",
     conclusion: str | None = "success",
+    started_at: str = "2026-06-27T00:00:00Z",
+    completed_at: str = "2026-06-27T00:00:00Z",
 ) -> dict[str, object]:
     return {
         "id": run_id,
         "name": name,
         "status": status,
         "conclusion": conclusion,
-        "started_at": "2026-06-28T00:00:00Z",
-        "completed_at": "2026-06-28T00:01:00Z" if status == "completed" else None,
+        "started_at": started_at,
+        "completed_at": completed_at if status == "completed" else None,
         "check_suite": {"id": check_suite_id},
         "app": {"id": app_id},
     }
@@ -370,6 +372,34 @@ def assert_merge_boundary_waits_for_required_gates() -> None:
     for context in ("gate", "backtester-gate"):
         if context not in result.summary:
             raise AssertionError(result.summary)
+
+
+def assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair() -> None:
+    stale_completed_at = "2026-06-27T00:00:10Z"
+    fresh_completed_at = "2026-06-27T00:01:10Z"
+    result, fake = run_enforcer(
+        [
+            [
+                check_run("gate", completed_at=stale_completed_at),
+                check_run("backtester-gate", completed_at=stale_completed_at),
+                check_run("host-health"),
+                check_run("actionlint"),
+                check_run(
+                    "gate-iteration",
+                    started_at="2026-06-27T00:01:00Z",
+                    completed_at=fresh_completed_at,
+                ),
+            ]
+        ],
+        event=merge_group_event(),
+        clock=FakeClock([0.0, 2.0]),
+    )
+    if result.conclusion != "failure":
+        raise AssertionError(result)
+    if "backtester-gate-iteration" not in result.summary or "timed out" not in result.summary:
+        raise AssertionError(result.summary)
+    if fake.posted_check_runs():
+        raise AssertionError(fake.requests)
 
 
 def assert_poll_timeout_fails_closed() -> None:
@@ -782,6 +812,7 @@ def main() -> int:
     assert_all_present_and_correct_succeeds()
     assert_iteration_pr_does_not_wait_for_boundary_gates()
     assert_merge_boundary_waits_for_required_gates()
+    assert_newer_partial_gate_pair_fails_closed_over_stale_complete_pair()
     assert_poll_timeout_fails_closed()
     assert_same_app_reruns_do_not_count_as_duplicate_drift()
     assert_wrong_app_rerun_remains_drift_even_with_expected_app_success()

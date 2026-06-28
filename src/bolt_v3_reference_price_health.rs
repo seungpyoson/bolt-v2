@@ -562,12 +562,17 @@ fn reference_current_price_health_stop_timeout(loaded: &LoadedBoltV3Config) -> R
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{path::Path, str::FromStr};
 
     use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use rust_decimal::{Decimal, prelude::ToPrimitive};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
     use crate::{
         bolt_v3_config::load_bolt_v3_config,
         bolt_v3_live_node::build_bolt_v3_strategy_free_live_node_with_summary,
+        bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     };
 
     fn fake_bolt_v3_health_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
@@ -972,5 +977,235 @@ mod tests {
             health_run.runtime.registered_strategy_ids().is_empty(),
             "health must clear strategies from the prepared transport runtime"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        let frame = chainlink_health_report_frame(&loaded);
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback WebSocket server should bind");
+        let port = server
+            .local_addr()
+            .expect("loopback WebSocket server should expose local address")
+            .port();
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = server
+                .accept()
+                .await
+                .expect("Chainlink health client should connect to loopback server");
+            let mut websocket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("loopback WebSocket handshake should complete");
+            websocket
+                .send(WsMessage::Binary(frame.into()))
+                .await
+                .expect("loopback server should send binary Chainlink report frame");
+            let _ = websocket.next().await;
+        });
+
+        configure_chainlink_only_loopback_health(&mut loaded, port);
+        let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
+            .expect("fixture secrets should resolve through the fake SSM resolver");
+        let mut health_run =
+            prepare_reference_current_price_health_run_with_resolved(&loaded, &resolved)
+                .expect("strategy-free health run should build with resolved secrets");
+        let server_join_timeout = reference_current_price_health_stop_timeout(&loaded)
+            .expect("health stop timeout should derive from fixture config")
+            + Duration::from_millis(health_run.plan.observation_timeout_ms);
+
+        let report = run_prepared_reference_current_price_health(&mut health_run)
+            .await
+            .expect("loopback Chainlink frame should drive the real health observer");
+
+        assert!(
+            report.all_sources_observed(),
+            "Chainlink loopback binary frame should satisfy the health report: {report:?}"
+        );
+        assert_eq!(report.targets.len(), 1);
+        assert_eq!(
+            report.source_update_observations.len(),
+            1,
+            "narrowed health fixture should observe exactly the Chainlink source"
+        );
+        let observation = &report.source_update_observations[0];
+        assert_eq!(observation.source_id, "chainlink_primary");
+        assert_eq!(observation.provider, "chainlink_ws");
+        assert_eq!(
+            observation.provider_instrument,
+            "CONFIGURED_ASSET-USD.CHAINLINK"
+        );
+        assert_eq!(
+            observation.status,
+            SOURCE_UPDATE_OBSERVATION_STATUS_OBSERVED
+        );
+
+        tokio::time::timeout(server_join_timeout, server_task)
+            .await
+            .expect("loopback server task should finish within the configured health bound")
+            .expect("loopback server task should finish after client shutdown");
+    }
+
+    fn configure_chainlink_only_loopback_health(loaded: &mut LoadedBoltV3Config, port: u16) {
+        loaded.root.nautilus.timeout_connection_secs = 2;
+        loaded.root.nautilus.timeout_reconciliation_secs = 1;
+        loaded.root.nautilus.timeout_portfolio_secs = 1;
+        loaded.root.nautilus.timeout_disconnection_secs = 1;
+        loaded.root.nautilus.delay_post_stop_secs = 0;
+        loaded.root.nautilus.timeout_shutdown_secs = 1;
+        let catalog_directory = std::env::temp_dir().join(format!(
+            "bolt-v3-chainlink-health-loopback-{}",
+            std::process::id()
+        ));
+        loaded.root.persistence.catalog_directory =
+            catalog_directory.to_string_lossy().into_owned();
+
+        let reference = loaded.strategies[0]
+            .config
+            .reference_current_price
+            .as_mut()
+            .expect("fixture strategy should declare reference_current_price");
+        reference.source_order = vec!["chainlink_primary".to_string()];
+        reference
+            .sources
+            .retain(|source_id, _| source_id == "chainlink_primary");
+        reference.min_valid_sources = 1;
+        let source = reference
+            .sources
+            .get_mut("chainlink_primary")
+            .expect("fixture should carry chainlink_primary source");
+        source.required = true;
+
+        let data = loaded
+            .root
+            .clients
+            .get_mut("chainlink_reference")
+            .and_then(|client| client.data.as_mut())
+            .and_then(toml::Value::as_table_mut)
+            .expect("fixture should carry clients.chainlink_reference.data");
+        data.insert(
+            "websocket_endpoint".to_string(),
+            toml::Value::String(format!("ws://127.0.0.1:{port}")),
+        );
+        data.insert(
+            "transport_backend".to_string(),
+            toml::Value::String("tungstenite".to_string()),
+        );
+        data.insert("heartbeat_secs".to_string(), toml::Value::Integer(1));
+        data.insert(
+            "reconnect_timeout_ms".to_string(),
+            toml::Value::Integer(100),
+        );
+        data.insert(
+            "reconnect_max_attempts".to_string(),
+            toml::Value::Integer(0),
+        );
+        data.insert("idle_timeout_ms".to_string(), toml::Value::Integer(2000));
+    }
+
+    fn chainlink_health_report_frame(loaded: &LoadedBoltV3Config) -> Vec<u8> {
+        let binding = loaded
+            .root
+            .chainlink_data_streams
+            .as_ref()
+            .and_then(|catalog| catalog.feed_bindings.first())
+            .and_then(toml::Value::as_table)
+            .expect("fixture should carry one Chainlink feed binding table");
+        let feed_id = binding
+            .get("feed_id")
+            .and_then(toml::Value::as_str)
+            .expect("fixture Chainlink feed binding should carry feed_id");
+        let decimal_scale = binding
+            .get("report_decimal_scale")
+            .and_then(toml::Value::as_integer)
+            .and_then(|value| u64::try_from(value).ok())
+            .expect("fixture Chainlink feed binding should carry report_decimal_scale");
+        let report_source = serde_json::json!({
+            "feedID": feed_id,
+            "validFromTimestamp": 600,
+            "observationsTimestamp": 601,
+            "fullReport": format!(
+                "0x{}",
+                hex::encode(chainlink_health_full_report_payload(
+                    feed_id,
+                    decimal_scale,
+                ))
+            ),
+        });
+        serde_json::json!({ "report": report_source })
+            .to_string()
+            .into_bytes()
+    }
+
+    fn chainlink_health_full_report_payload(feed_id: &str, decimal_scale: u64) -> Vec<u8> {
+        let observations_seconds = 601_u32;
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&chainlink_health_feed_id_bytes(feed_id));
+        blob.extend_from_slice(&chainlink_health_abi_u32_word(600));
+        blob.extend_from_slice(&chainlink_health_abi_u32_word(observations_seconds));
+        blob.extend_from_slice(&chainlink_health_abi_zero_word());
+        blob.extend_from_slice(&chainlink_health_abi_zero_word());
+        blob.extend_from_slice(&chainlink_health_abi_u32_word(observations_seconds + 60));
+        blob.extend_from_slice(&chainlink_health_abi_i192_word(
+            chainlink_health_scaled_price(66_300.25, decimal_scale),
+        ));
+        blob.extend_from_slice(&chainlink_health_abi_i192_word(
+            chainlink_health_scaled_price(66_299.50, decimal_scale),
+        ));
+        blob.extend_from_slice(&chainlink_health_abi_i192_word(
+            chainlink_health_scaled_price(66_301.00, decimal_scale),
+        ));
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&chainlink_health_abi_zero_word());
+        payload.extend_from_slice(&chainlink_health_abi_zero_word());
+        payload.extend_from_slice(&chainlink_health_abi_zero_word());
+        payload.extend_from_slice(&chainlink_health_abi_usize_word(128));
+        payload.extend_from_slice(&chainlink_health_abi_usize_word(blob.len()));
+        payload.extend_from_slice(&blob);
+        payload
+    }
+
+    fn chainlink_health_abi_zero_word() -> [u8; 32] {
+        [0_u8; 32]
+    }
+
+    fn chainlink_health_abi_u32_word(value: u32) -> [u8; 32] {
+        let mut word = [0_u8; 32];
+        word[28..32].copy_from_slice(&value.to_be_bytes());
+        word
+    }
+
+    fn chainlink_health_abi_usize_word(value: usize) -> [u8; 32] {
+        let mut word = [0_u8; 32];
+        word[24..32].copy_from_slice(&(value as u64).to_be_bytes());
+        word
+    }
+
+    fn chainlink_health_abi_i192_word(value: i128) -> [u8; 32] {
+        let mut word = if value < 0 { [0xff_u8; 32] } else { [0_u8; 32] };
+        word[16..32].copy_from_slice(&value.to_be_bytes());
+        word
+    }
+
+    fn chainlink_health_feed_id_bytes(feed_id: &str) -> [u8; 32] {
+        let mut bytes = [0_u8; 32];
+        let decoded = hex::decode(feed_id.strip_prefix("0x").expect("feed id should have 0x"))
+            .expect("feed id should decode");
+        bytes.copy_from_slice(&decoded);
+        bytes
+    }
+
+    fn chainlink_health_scaled_price(price: f64, decimal_scale: u64) -> i128 {
+        let scale = 10_i128
+            .checked_pow(u32::try_from(decimal_scale).expect("scale should fit u32"))
+            .expect("scale should fit i128");
+        let price = Decimal::from_str_exact(&price.to_string()).expect("price should be decimal");
+        (price * Decimal::from(scale))
+            .round()
+            .to_i128()
+            .expect("scaled price should fit i128")
     }
 }

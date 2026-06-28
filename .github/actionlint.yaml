@@ -4,6 +4,7 @@ self-hosted-runner:
     - ubicloud-standard-4-arm
 
 config-variables:
+  - AWS_CAPTURE_ROLE_ARN
   - AWS_CI_CACHE_ROLE_ARN
   - AWS_CI_CACHE_PR_READONLY_ROLE_ARN
   - AWS_DEPLOY_ROLE_ARN

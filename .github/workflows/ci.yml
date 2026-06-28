@@ -1,6 +1,9 @@
 name: CI
 run-name: >-
   ${{ github.event_name == 'workflow_dispatch'
+      && github.event.inputs.capture_reference_boundary_fixture == 'true'
+      && 'CI [dispatch:capture-reference-boundary-fixture]'
+      || github.event_name == 'workflow_dispatch'
       && github.event.inputs.full_ci == 'true'
       && 'CI [dispatch:full]'
       || github.event_name == 'workflow_dispatch'
@@ -38,6 +41,26 @@ on:
         description: "Run full CI for the selected ref"
         required: false
         default: "false"
+      capture_reference_boundary_fixture:
+        description: "Run the CREDENTIAL-SSM-gated provider/runtime boundary fixture capture"
+        required: false
+        default: "false"
+      credential_ssm_gate:
+        description: "Type CREDENTIAL-SSM to resolve configured capture credentials from AWS SSM"
+        required: false
+        default: ""
+      capture_config:
+        description: "Tracked bolt-v3 root TOML config path for fixture capture"
+        required: false
+        default: "config/root.toml"
+      capture_client_key:
+        description: "Configured Chainlink reference client key for fixture capture"
+        required: false
+        default: "chainlink_reference"
+      capture_wait_timeout_secs:
+        description: "Maximum seconds to wait for a Chainlink binary frame"
+        required: false
+        default: "60"
   # Merge queue lane: GitHub dispatches merge_group/checks_requested on the
   # temporary gh-readonly-queue ref carrying the exact to-be-merged commit.
   # Required checks MUST report on this event or the merge is blocked, and a
@@ -93,6 +116,7 @@ env:
 permissions:
   contents: read
   actions: read
+  issues: read
 
 jobs:
   merge-readiness-progress:
@@ -549,6 +573,8 @@ jobs:
         env:
           # Keep targeted source-fence test binaries small enough for CI link/disk limits.
           CARGO_PROFILE_TEST_DEBUG: "0"
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: just source-fence
 
   # #342 owns these canonical source-fence filters. #332 intentionally keeps
@@ -1001,6 +1027,110 @@ jobs:
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
           retention-days: 3
+
+  capture:
+    name: capture
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.capture_reference_boundary_fixture == 'true' && github.event.inputs.credential_ssm_gate == 'CREDENTIAL-SSM' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    environment: reference-boundary-capture
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      CAPTURE_OUTPUT_DIR: ${{ github.workspace }}/target/chainlink-reference-fixture-capture
+      CAPTURE_PROVENANCE_CONFIG: ci/chainlink-reference-fixture-capture-provenance.toml
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+
+      - name: Configure AWS credentials for SSM
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ vars.AWS_CAPTURE_ROLE_ARN }}
+          aws-region: eu-west-2
+
+      - name: Compute capture provenance inputs
+        id: provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          workflow_digest="$(python3 -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path(".github/workflows/ci.yml").read_bytes()).hexdigest())')"
+          config_digest="$(PYTHONPATH=scripts python3 -c 'import pathlib, ci_provenance; print(ci_provenance.provenance_config_digest(pathlib.Path("ci/chainlink-reference-fixture-capture-provenance.toml")))')"
+          check_suite_id="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq '.check_suite_id')"
+          if [[ ! "$check_suite_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "current workflow run check_suite_id is missing or invalid" >&2
+            exit 1
+          fi
+          created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 scripts/ci_provenance.py artifact-metadata \
+            --config "$CAPTURE_PROVENANCE_CONFIG" \
+            --run-attempt "${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+          {
+            echo "workflow_digest=$workflow_digest"
+            echo "config_digest=$config_digest"
+            echo "check_suite_id=$check_suite_id"
+            echo "created_at=$created_at"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Capture Chainlink reference binary fixture
+        shell: bash
+        run: |
+          mkdir -p "$CAPTURE_OUTPUT_DIR"
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- run --locked --bin bolt-v2 -- \
+            ops capture-reference-boundary-fixture \
+              --root-config "${{ github.event.inputs.capture_config }}" \
+              --client-key "${{ github.event.inputs.capture_client_key }}" \
+              --output-dir "$CAPTURE_OUTPUT_DIR" \
+              --wait-timeout-secs "${{ github.event.inputs.capture_wait_timeout_secs }}" \
+              --repository "${{ github.repository }}" \
+              --workflow-path ".github/workflows/ci.yml" \
+              --workflow-digest "${{ steps.provenance.outputs.workflow_digest }}" \
+              --provenance-config-digest "${{ steps.provenance.outputs.config_digest }}" \
+              --head-sha "${{ github.sha }}" \
+              --head-branch "${{ github.ref_name }}" \
+              --run-id "${{ github.run_id }}" \
+              --run-attempt "${{ github.run_attempt }}" \
+              --check-suite-id "${{ steps.provenance.outputs.check_suite_id }}" \
+              --event "${{ github.event_name }}" \
+              --created-at "${{ steps.provenance.outputs.created_at }}"
+
+      - name: Upload capture artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.provenance.outputs.artifact_name }}
+          path: ${{ env.CAPTURE_OUTPUT_DIR }}
+          if-no-files-found: error
+          retention-days: ${{ steps.provenance.outputs.retention_days }}
+
+  capture-gate:
+    name: capture-gate
+    needs: [capture]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.event.inputs.capture_reference_boundary_fixture == 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - name: Require gated capture success
+        shell: bash
+        run: |
+          if [ "${{ github.event.inputs.credential_ssm_gate }}" != "CREDENTIAL-SSM" ]; then
+            echo "credential_ssm_gate must be CREDENTIAL-SSM"
+            exit 1
+          fi
+          if [ "${{ needs.capture.result }}" != "success" ]; then
+            echo "capture job result was ${{ needs.capture.result }}"
+            exit 1
+          fi
 
   ci-provenance-emit:
     name: ci-provenance-emit

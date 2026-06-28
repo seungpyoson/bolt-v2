@@ -416,6 +416,13 @@ def live_latest_models(
     return kimi_latest, glm_latest, warnings
 
 
+def normalized_latest_model(model: str | None) -> str | None:
+    if model is None:
+        return None
+    stripped = model.strip()
+    return stripped or None
+
+
 def check_pins_against_latest(
     pins: ModelPins,
     kimi_latest: str | None,
@@ -423,6 +430,8 @@ def check_pins_against_latest(
     *,
     provider: str = PROVIDER_ALL,
 ) -> list[str]:
+    kimi_latest = normalized_latest_model(kimi_latest)
+    glm_latest = normalized_latest_model(glm_latest)
     findings = model_alias_findings(pins)
     if provider_enabled(provider, PROVIDER_KIMI):
         if kimi_latest is None:
@@ -452,6 +461,8 @@ def provider_source_warnings(
     glm_latest: str | None,
     provider: str,
 ) -> tuple[str, ...]:
+    kimi_latest = normalized_latest_model(kimi_latest)
+    glm_latest = normalized_latest_model(glm_latest)
     warnings: list[str] = []
     if provider_enabled(provider, PROVIDER_KIMI) and kimi_latest is None:
         warnings.append("Could not determine latest Kimi coding model from provider sources")
@@ -477,6 +488,8 @@ def build_model_freshness_advisory(
     warnings: list[str],
     provider: str = PROVIDER_ALL,
 ) -> ModelFreshnessAdvisory:
+    kimi_latest = normalized_latest_model(kimi_latest)
+    glm_latest = normalized_latest_model(glm_latest)
     kimi_warning = ""
     glm_warning = ""
     if provider_enabled(provider, PROVIDER_KIMI) and kimi_latest and not same_kimi_code_model(pins.kimi, kimi_latest):
@@ -698,6 +711,14 @@ def run_self_test() -> None:
     )
     assert missing_provider_advisory.state is FreshnessState.UNKNOWN, missing_provider_advisory
     assert "Could not determine latest Kimi coding model" in missing_provider_advisory.source_warning_text
+    blank_provider_advisory = build_model_freshness_advisory(
+        pins=ModelPins(kimi=current_kimi, glm=current_glm, glm_pr_agent=current_pr_agent_glm),
+        kimi_latest="   ",
+        glm_latest=current_glm,
+        warnings=[],
+    )
+    assert blank_provider_advisory.state is FreshnessState.UNKNOWN, blank_provider_advisory
+    assert "Could not determine latest Kimi coding model" in blank_provider_advisory.source_warning_text
     config_text = f"""
 [github]
 api_url = "https://example.invalid/github-api"

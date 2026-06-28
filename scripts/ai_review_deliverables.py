@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import json
 import os
 import subprocess
@@ -31,6 +32,19 @@ class ReviewFailed(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ReviewOutputContract:
+    finding_required_labels: tuple[str, ...]
+    finding_guidance: tuple[str, ...]
+    no_findings_indicator: str
+    no_findings_intro: str
+    no_findings_required_labels: tuple[str, ...]
+    no_findings_guidance: tuple[str, ...]
+    non_deliverable_indicators: tuple[str, ...]
+    pr_agent_deliverable_headings: tuple[str, ...]
+    pr_agent_disabled_noise: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class FallbackConfig:
     repo: str
     pr_number: int
@@ -40,11 +54,13 @@ class FallbackConfig:
     run_url: str
     max_comment_chars: int
     response_chars_per_chunk: int
+    output_contract: ReviewOutputContract
     provider: str = "GLM"
     deliverable_markers: tuple[str, ...] = ()
     expected_bot_login: str = ""
     comment_marker: str = ""
     review_intro: str = ""
+    source_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -147,11 +163,23 @@ class GitHubClient:
     def list_reviews(self) -> list[dict[str, object]]:
         return self.list_reviews_for(self.pr_number)
 
+    def list_pull_review_comments_for(self, pr_number: int) -> list[dict[str, object]]:
+        return self._list_paginated(f"pulls/{pr_number}/comments")
+
+    def list_pull_review_comments(self) -> list[dict[str, object]]:
+        return self.list_pull_review_comments_for(self.pr_number)
+
     def post_issue_comment_for(self, pr_number: int, body: str) -> None:
         self._request_json("POST", f"issues/{pr_number}/comments", payload={"body": body})
 
     def post_issue_comment(self, body: str) -> None:
         self.post_issue_comment_for(self.pr_number, body)
+
+    def update_issue_comment(self, comment_id: int, body: str) -> None:
+        self._request_json("PATCH", f"issues/comments/{comment_id}", payload={"body": body})
+
+    def update_pull_review_comment(self, comment_id: int, body: str) -> None:
+        self._request_json("PATCH", f"pulls/comments/{comment_id}", payload={"body": body})
 
 
 class OpenAIChatClient:
@@ -311,12 +339,19 @@ def has_review_deliverable(
     started_at: str,
     markers: tuple[str, ...],
     expected_bot_login: str,
+    output_contract: ReviewOutputContract,
+    require_source_line: bool,
 ) -> bool:
     threshold = parse_iso_timestamp(started_at)
     for comment in comments:
         if not actor_is_expected_bot(comment, expected_bot_login):
             continue
         if not body_has_deliverable_marker(comment.get("body"), markers):
+            continue
+        body = str(comment.get("body") or "")
+        if require_source_line and not review_body_has_source_line(body):
+            continue
+        if not review_body_is_quality_deliverable(body, output_contract):
             continue
         if text_time_is_after_or_equal(comment.get("updated_at"), threshold) or text_time_is_after_or_equal(
             comment.get("created_at"), threshold
@@ -327,9 +362,198 @@ def has_review_deliverable(
             continue
         if not body_has_deliverable_marker(review.get("body"), markers):
             continue
+        body = str(review.get("body") or "")
+        if require_source_line and not review_body_has_source_line(body):
+            continue
+        if not review_body_is_quality_deliverable(body, output_contract):
+            continue
         if text_time_is_after_or_equal(review.get("submitted_at"), threshold):
             return True
     return False
+
+
+def review_body_has_source_line(body: str) -> bool:
+    return any(line.strip().startswith(("**Source:**", "- Source:")) for line in body.splitlines())
+
+
+def review_body_is_quality_deliverable(body: str, output_contract: ReviewOutputContract) -> bool:
+    text = body.strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(indicator.lower() in lowered for indicator in output_contract.non_deliverable_indicators):
+        return False
+    finding_labels = tuple(label.lower() for label in output_contract.finding_required_labels)
+    if finding_labels and all(review_body_has_line_starting_with(lowered, label) for label in finding_labels):
+        return True
+    if review_body_has_no_findings_contract(lowered, output_contract):
+        return True
+    pr_agent_headings = tuple(heading.lower() for heading in output_contract.pr_agent_deliverable_headings)
+    if any(heading in lowered for heading in pr_agent_headings):
+        if any(noise.lower() in lowered for noise in output_contract.pr_agent_disabled_noise):
+            return False
+        return pr_agent_body_has_substantive_review(lowered, output_contract)
+    return False
+
+
+def review_body_has_line_starting_with(lowered: str, label: str) -> bool:
+    return any(line.strip().startswith(label) for line in lowered.splitlines())
+
+
+def review_body_has_no_findings_contract(lowered: str, output_contract: ReviewOutputContract) -> bool:
+    if output_contract.no_findings_indicator.lower() not in lowered:
+        return False
+    return all(
+        review_body_has_line_starting_with(lowered, label.lower())
+        for label in output_contract.no_findings_required_labels
+    )
+
+
+def pr_agent_body_has_substantive_review(lowered: str, output_contract: ReviewOutputContract) -> bool:
+    finding_labels = tuple(label.lower() for label in output_contract.finding_required_labels)
+    primary_finding_label = finding_labels[:1]
+    has_finding_label = any(
+        review_body_has_line_starting_with(lowered, label)
+        for label in primary_finding_label
+    )
+    return has_finding_label or review_body_has_no_findings_contract(lowered, output_contract)
+
+
+def comment_part_key(body: object) -> str:
+    if not isinstance(body, str):
+        return ""
+    for line in body.splitlines():
+        if line.startswith("- Comment part: "):
+            return line.strip()
+    return ""
+
+
+def latest_marker_comment(
+    *,
+    comments: list[dict[str, object]],
+    marker: str,
+    expected_bot_login: str,
+    run_url: str,
+    part_key: str,
+) -> dict[str, object] | None:
+    marker_comments = [
+        comment
+        for comment in comments
+        if actor_is_expected_bot(comment, expected_bot_login)
+        and isinstance(comment.get("body"), str)
+        and body_has_deliverable_marker(comment.get("body"), (marker,))
+        and run_url in comment.get("body", "")
+        and comment_part_key(comment.get("body")) == part_key
+        and isinstance(comment.get("id"), int)
+        and not isinstance(comment.get("id"), bool)
+    ]
+    if not marker_comments:
+        return None
+    return max(marker_comments, key=lambda comment: str(comment.get("updated_at") or comment.get("created_at") or ""))
+
+
+def post_or_update_marker_comment(*, github: Any, config: FallbackConfig, body: str) -> None:
+    if not config.comment_marker:
+        github.post_issue_comment(body)
+        return
+    existing = latest_marker_comment(
+        comments=github.list_issue_comments(),
+        marker=config.comment_marker,
+        expected_bot_login=config.expected_bot_login,
+        run_url=config.run_url,
+        part_key=comment_part_key(body),
+    )
+    if existing is None:
+        github.post_issue_comment(body)
+        return
+    github.update_issue_comment(int(existing["id"]), body)
+
+
+def add_source_line(body: str, *, marker: str, source_label: str, run_url: str = "") -> str:
+    if not source_label:
+        return body
+    source_line = f"**Source:** {source_label}"
+    run_line = f"**Action run:** {run_url}" if run_url else ""
+    text = body.lstrip()
+    prefix = ""
+    if marker and text.startswith(marker):
+        prefix = f"{marker}\n\n"
+        text = text[len(marker):].lstrip()
+    elif marker:
+        prefix = f"{marker}\n\n"
+    if source_line in text and (not run_line or run_line in text):
+        return prefix + text
+    lines = text.splitlines()
+    insert_at = 1 if lines and lines[0].startswith("## ") else 0
+    metadata = ["", source_line]
+    if run_line:
+        metadata.append(run_line)
+    metadata.append("")
+    lines[insert_at:insert_at] = metadata
+    return prefix + "\n".join(lines).strip() + "\n"
+
+
+def stamp_existing_review_comment(
+    *,
+    github: Any,
+    started_at: str,
+    markers: tuple[str, ...],
+    expected_bot_login: str,
+    marker: str,
+    source_label: str,
+    run_url: str,
+) -> str:
+    threshold = parse_iso_timestamp(started_at)
+    issue_candidates = [
+        comment
+        for comment in github.list_issue_comments()
+        if actor_is_expected_bot(comment, expected_bot_login)
+        and body_has_deliverable_marker(comment.get("body"), markers)
+        and isinstance(comment.get("id"), int)
+        and not isinstance(comment.get("id"), bool)
+        and (
+            text_time_is_after_or_equal(comment.get("updated_at"), threshold)
+            or text_time_is_after_or_equal(comment.get("created_at"), threshold)
+        )
+    ]
+    review_comment_candidates = [
+        comment
+        for comment in github.list_pull_review_comments()
+        if actor_is_expected_bot(comment, expected_bot_login)
+        and body_has_deliverable_marker(comment.get("body"), markers)
+        and isinstance(comment.get("body"), str)
+        and isinstance(comment.get("id"), int)
+        and not isinstance(comment.get("id"), bool)
+        and (
+            text_time_is_after_or_equal(comment.get("updated_at"), threshold)
+            or text_time_is_after_or_equal(comment.get("created_at"), threshold)
+        )
+    ]
+    if not issue_candidates and not review_comment_candidates:
+        return "no-existing-review"
+    updated = 0
+    already_stamped = 0
+    for comment in issue_candidates:
+        body = str(comment.get("body") or "")
+        stamped = add_source_line(body, marker=marker, source_label=source_label, run_url=run_url)
+        if stamped == body:
+            already_stamped += 1
+            continue
+        github.update_issue_comment(int(comment["id"]), stamped)
+        updated += 1
+    for comment in review_comment_candidates:
+        body = str(comment.get("body") or "")
+        stamped = add_source_line(body, marker=marker, source_label=source_label, run_url=run_url)
+        if stamped == body:
+            already_stamped += 1
+            continue
+        github.update_pull_review_comment(int(comment["id"]), stamped)
+        updated += 1
+    if updated:
+        return "existing-reviews-stamped"
+    if already_stamped:
+        return "existing-reviews-already-stamped"
+    return "no-existing-review"
 
 
 def file_fragment_body(review_file: ReviewFile, patch_lines: list[str]) -> str:
@@ -435,15 +659,34 @@ def pack_review_chunks(files: list[ReviewFile], max_chars: int) -> list[ReviewCh
     return chunks
 
 
-def build_system_prompt(instructions: str) -> str:
+def build_system_prompt(instructions: str, output_contract: ReviewOutputContract) -> str:
+    finding_lines = "\n".join(
+        f"        {label} {guidance}"
+        for label, guidance in zip(
+            output_contract.finding_required_labels,
+            output_contract.finding_guidance,
+            strict=True,
+        )
+    )
+    no_findings_lines = "\n".join(
+        f"        {label} {guidance}"
+        for label, guidance in zip(
+            output_contract.no_findings_required_labels,
+            output_contract.no_findings_guidance,
+            strict=True,
+        )
+    )
     return textwrap.dedent(
         f"""\
         You are conducting an advisory pull request review for bolt-v2.
 
         Use only hard evidence from the supplied chunk. Report actionable findings only.
-        Quote the smallest relevant evidence snippet or line reference before explaining the implication.
-        If this chunk contains no hard-evidence findings, say exactly:
-        No hard-evidence findings in this chunk.
+        For every finding, include:
+{finding_lines}
+        Do not write generic summaries, praise, scorecards, or broad review guidance.
+        If this chunk contains no hard-evidence findings, use exactly this structure:
+        {output_contract.no_findings_intro}
+{no_findings_lines}
 
         Repository review instructions:
         {instructions.strip()}
@@ -527,6 +770,15 @@ def split_response_for_sections(response: str, limit: int) -> list[str]:
     return balance_markdown_fence_parts(split_text_for_comment_sections(response, limit))
 
 
+def validate_review_responses(responses: list[str], output_contract: ReviewOutputContract) -> None:
+    for index, response in enumerate(responses, start=1):
+        if review_body_is_quality_deliverable(response, output_contract):
+            continue
+        raise RuntimeError(
+            f"review response {index} did not meet the hard-evidence output contract"
+        )
+
+
 def write_github_output(name: str, value: str) -> None:
     output_path = os.environ.get("GITHUB_OUTPUT", "")
     if not output_path:
@@ -570,7 +822,7 @@ def render_review_comment_body(
         title += f" (part {part_index}/{part_total})"
     intro = config.review_intro or (
         f"The primary {config.provider} review action completed without a visible deliverable after this run started, "
-        f"so the fallback reviewer split the PR diff and reviewed each chunk with {config.provider}."
+        f"so the fallback reviewer reviewed the PR diff with {config.provider}."
     )
     parts = []
     if config.comment_marker:
@@ -581,16 +833,77 @@ def render_review_comment_body(
         "",
         intro,
         "",
-        f"- Review chunks: {total_chunks}",
-        f"- Per-chunk character budget: {config.max_chunk_chars}",
         f"- Action run: {config.run_url}",
         ]
     )
+    if config.source_label:
+        parts.append(f"- Source: {config.source_label}")
     if part_index is not None and part_total is not None:
         parts.append(f"- Comment part: {part_index}/{part_total}")
     parts.append("")
     parts.extend(sections)
     return "\n".join(parts).strip() + "\n"
+
+
+def split_oversized_comment_sections(
+    *,
+    config: FallbackConfig,
+    total_chunks: int,
+    sections: list[str],
+    part_total_hint: int,
+) -> list[str]:
+    split_sections: list[str] = []
+    section_overhead_len = len(
+        render_review_comment_body(
+            config=config,
+            total_chunks=total_chunks,
+            sections=["x"],
+            part_index=part_total_hint,
+            part_total=part_total_hint,
+        )
+    ) - len("x")
+    section_budget = max(1, config.max_comment_chars - section_overhead_len)
+    for section in sections:
+        rendered = render_review_comment_body(
+            config=config,
+            total_chunks=total_chunks,
+            sections=[section],
+            part_index=part_total_hint,
+            part_total=part_total_hint,
+        )
+        if len(rendered) <= config.max_comment_chars:
+            split_sections.append(section)
+            continue
+        split_sections.extend(balance_markdown_fence_parts(split_text_for_comment_sections(section, section_budget)))
+    return split_sections
+
+
+def pack_review_comment_sections(
+    *,
+    config: FallbackConfig,
+    total_chunks: int,
+    sections: list[str],
+    part_total_hint: int,
+) -> list[list[str]]:
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for section in sections:
+        candidate = [*current, section]
+        candidate_body = render_review_comment_body(
+            config=config,
+            total_chunks=total_chunks,
+            sections=candidate,
+            part_index=len(groups) + 1,
+            part_total=part_total_hint,
+        )
+        if len(candidate_body) <= config.max_comment_chars or not current:
+            current = candidate
+            continue
+        groups.append(current)
+        current = [section]
+    if current:
+        groups.append(current)
+    return groups
 
 
 def render_review_comments(
@@ -613,44 +926,46 @@ def render_review_comments(
             )
             for response_part_idx, response_part in enumerate(response_parts, start=1)
         )
-    single_comment = render_review_comment_body(config=config, total_chunks=len(chunks), sections=sections)
-    if len(single_comment) <= config.max_comment_chars:
-        return [single_comment]
+    comment = render_review_comment_body(config=config, total_chunks=len(chunks), sections=sections)
+    if len(comment) <= config.max_comment_chars:
+        return [comment]
 
-    packed_sections: list[list[str]] = []
-    current_sections: list[str] = []
-    max_possible_parts = max(1, len(sections))
-    for section in sections:
-        candidate_sections = [*current_sections, section]
-        candidate = render_review_comment_body(
+    part_total_hint = max(1, len(sections))
+    split_sections = split_oversized_comment_sections(
+        config=config,
+        total_chunks=len(chunks),
+        sections=sections,
+        part_total_hint=part_total_hint,
+    )
+    groups = pack_review_comment_sections(
+        config=config,
+        total_chunks=len(chunks),
+        sections=split_sections,
+        part_total_hint=max(1, len(split_sections)),
+    )
+    groups = pack_review_comment_sections(
+        config=config,
+        total_chunks=len(chunks),
+        sections=split_sections,
+        part_total_hint=max(1, len(groups)),
+    )
+    comments = [
+        render_review_comment_body(
             config=config,
             total_chunks=len(chunks),
-            sections=candidate_sections,
-            part_index=len(packed_sections) + 1,
-            part_total=max_possible_parts,
+            sections=group,
+            part_index=index,
+            part_total=len(groups),
         )
-        if current_sections and len(candidate) > config.max_comment_chars:
-            packed_sections.append(current_sections)
-            current_sections = [section]
-            continue
-        current_sections = candidate_sections
-
-    if current_sections:
-        packed_sections.append(current_sections)
-
-    return [
-        truncate_text(
-            render_review_comment_body(
-                config=config,
-                total_chunks=len(chunks),
-                sections=page_sections,
-                part_index=idx,
-                part_total=len(packed_sections),
-            ),
-            config.max_comment_chars,
-        )
-        for idx, page_sections in enumerate(packed_sections, start=1)
+        for index, group in enumerate(groups, start=1)
     ]
+    oversized = [len(comment) for comment in comments if len(comment) > config.max_comment_chars]
+    if oversized:
+        raise RuntimeError(
+            f"rendered review comment exceeded configured max_comment_chars={config.max_comment_chars}: "
+            f"{max(oversized)}"
+        )
+    return comments
 
 
 def secret_env_values() -> list[str]:
@@ -676,7 +991,9 @@ def sanitize_detail(value: str) -> str:
 
 def render_failure_notice(*, provider: str, config: FallbackConfig, error: BaseException) -> str:
     detail = sanitize_detail(str(error))
-    return textwrap.dedent(
+    marker = f"{config.comment_marker}\n\n" if config.comment_marker else ""
+    source = f"\n        - Source: {config.source_label}" if config.source_label else ""
+    return marker + textwrap.dedent(
         f"""\
         ## {provider} review did not produce a deliverable
 
@@ -685,6 +1002,7 @@ def render_failure_notice(*, provider: str, config: FallbackConfig, error: BaseE
         - PR: #{config.pr_number}
         - Action run: {config.run_url}
         - Failure: `{truncate_text(detail, 1200)}`
+        {source}
 
         This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
         """
@@ -696,12 +1014,27 @@ def post_split_review(*, github: Any, reviewer: Any, config: FallbackConfig) -> 
     chunks = pack_review_chunks(review_files, max_chars=config.max_chunk_chars)
     if not chunks:
         marker = f"{config.comment_marker}\n\n" if config.comment_marker else ""
-        github.post_issue_comment(
-            f"{marker}## {config.provider} PR Review\n\nNo reviewable file diff was available from the GitHub API.\n"
+        details = [f"- Action run: {config.run_url}"]
+        if config.source_label:
+            details.append(f"- Source: {config.source_label}")
+        body = "\n".join(
+            [
+                f"{marker}## {config.provider} PR Review",
+                "",
+                "No reviewable file diff was available from the GitHub API.",
+                "",
+                *details,
+                "",
+            ]
+        )
+        post_or_update_marker_comment(
+            github=github,
+            config=config,
+            body=body,
         )
         return "no-reviewable-diff"
 
-    system_prompt = build_system_prompt(config.instructions)
+    system_prompt = build_system_prompt(config.instructions, config.output_contract)
     responses = [
         reviewer.review_chunk(
             system_prompt=system_prompt,
@@ -709,8 +1042,9 @@ def post_split_review(*, github: Any, reviewer: Any, config: FallbackConfig) -> 
         )
         for index, chunk in enumerate(chunks, start=1)
     ]
+    validate_review_responses(responses, config.output_contract)
     for comment in render_review_comments(config=config, chunks=chunks, responses=responses):
-        github.post_issue_comment(comment)
+        post_or_update_marker_comment(github=github, config=config, body=comment)
     return "review-posted"
 
 
@@ -738,6 +1072,8 @@ def run_fallback_review(*, github: Any, reviewer: Any, config: FallbackConfig) -
             started_at=config.started_at,
             markers=config.deliverable_markers,
             expected_bot_login=config.expected_bot_login,
+            output_contract=config.output_contract,
+            require_source_line=bool(config.source_label),
         ):
             return "existing-review-deliverable"
 
@@ -745,7 +1081,11 @@ def run_fallback_review(*, github: Any, reviewer: Any, config: FallbackConfig) -
         return "fallback-posted" if result == "review-posted" else result
     except Exception as exc:
         try:
-            github.post_issue_comment(render_failure_notice(provider=config.provider, config=config, error=exc))
+            post_or_update_marker_comment(
+                github=github,
+                config=config,
+                body=render_failure_notice(provider=config.provider, config=config, error=exc),
+            )
             write_github_output("failure_notice_posted", "true")
         finally:
             raise ReviewFailed(sanitize_detail(str(exc))) from None
@@ -820,11 +1160,38 @@ def config_bool(table: dict[str, Any], key: str) -> bool:
     return value
 
 
-def config_str_tuple(table: dict[str, Any], key: str) -> tuple[str, ...]:
+def config_str_tuple(table: dict[str, Any], key: str, *, allow_empty: bool = False) -> tuple[str, ...]:
     value = table.get(key)
-    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
+    if (
+        not isinstance(value, list)
+        or (not value and not allow_empty)
+        or not all(isinstance(item, str) and item for item in value)
+    ):
         raise RuntimeError(f"AI review config missing string array key {key!r}")
     return tuple(value)
+
+
+def review_output_contract(review_config: dict[str, Any]) -> ReviewOutputContract:
+    contract = config_table(review_config, "output_contract")
+    pr_agent_output = config_table(review_config, "pr_agent_output")
+    return ReviewOutputContract(
+        finding_required_labels=config_str_tuple(contract, "finding_required_labels"),
+        finding_guidance=config_str_tuple(contract, "finding_guidance"),
+        no_findings_indicator=config_str(contract, "no_findings_indicator"),
+        no_findings_intro=config_str(contract, "no_findings_intro"),
+        no_findings_required_labels=config_str_tuple(contract, "no_findings_required_labels"),
+        no_findings_guidance=config_str_tuple(contract, "no_findings_guidance"),
+        non_deliverable_indicators=config_str_tuple(contract, "non_deliverable_indicators"),
+        pr_agent_deliverable_headings=config_str_tuple(pr_agent_output, "deliverable_headings"),
+        pr_agent_disabled_noise=config_str_tuple(pr_agent_output, "disabled_noise", allow_empty=True),
+    )
+
+
+def source_label_from_template(table: dict[str, Any], *, model: str) -> str:
+    template = config_str(table, "source_label_template")
+    if "{model}" not in template:
+        raise RuntimeError("source_label_template must include {model}")
+    return template.replace("{model}", model)
 
 
 def env_required(name: str) -> str:
@@ -868,6 +1235,7 @@ def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
 
     api_key = os.environ.get("GLM_API_KEY", "")
     comment_marker = config_str(glm_config, "comment_marker")
+    model = os.environ.get("GLM_MODEL", config_str(glm_config, "model"))
     config = FallbackConfig(
         repo=repo,
         pr_number=pr_number,
@@ -876,11 +1244,13 @@ def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
         max_chunk_chars=int_env("GLM_REVIEW_MAX_CHUNK_CHARS", config_int(glm_config, "review_max_chunk_chars")),
         max_comment_chars=int_env("AI_REVIEW_MAX_COMMENT_CHARS", config_int(review_config, "max_comment_chars")),
         response_chars_per_chunk=config_int(review_config, "response_chars_per_chunk"),
+        output_contract=review_output_contract(review_config),
         run_url=run_url_for(repo, runtime_config),
         provider="GLM",
         deliverable_markers=config_str_tuple(glm_config, "deliverable_markers"),
         expected_bot_login=config_str(github_config, "expected_bot_login"),
         comment_marker=comment_marker,
+        source_label=source_label_from_template(glm_config, model=model),
     )
     if not api_key:
         github.post_issue_comment_for(
@@ -897,12 +1267,33 @@ def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
     reviewer = OpenAIChatClient(
         api_key=api_key,
         api_base=os.environ.get("GLM_API_BASE", config_str(glm_config, "api_base")),
-        model=os.environ.get("GLM_MODEL", config_str(glm_config, "model")),
+        model=model,
         provider="GLM",
         temperature=config_float(glm_config, "temperature"),
         timeout_seconds=int_env("GLM_API_TIMEOUT_SECONDS", config_int(glm_config, "api_timeout_seconds")),
     )
     result = run_fallback_review(github=github, reviewer=reviewer, config=config)
+    print(result)
+    return 0
+
+
+def run_glm_stamp_from_env(args: argparse.Namespace) -> int:
+    repo = env_required("GITHUB_REPOSITORY")
+    pr_number = int(env_required("PR_NUMBER"))
+    runtime_config = load_runtime_config(args)
+    github_config = config_table(runtime_config, "github")
+    glm_config = config_table(runtime_config, "glm")
+    pr_agent = nested_config_table(runtime_config, "glm", "pr_agent")
+    github = build_github_client(repo, pr_number, runtime_config)
+    result = stamp_existing_review_comment(
+        github=github,
+        started_at=args.started_at,
+        markers=config_str_tuple(glm_config, "deliverable_markers"),
+        expected_bot_login=config_str(github_config, "expected_bot_login"),
+        marker=config_str(glm_config, "comment_marker"),
+        source_label=source_label_from_template(pr_agent, model=config_str(pr_agent, "model")),
+        run_url=run_url_for(repo, runtime_config),
+    )
     print(result)
     return 0
 
@@ -913,6 +1304,7 @@ def build_kimi_config_from_env(args: argparse.Namespace, *, repo: str, pr_number
     github_config = config_table(runtime_config, "github")
     kimi_config = config_table(runtime_config, "kimi")
     marker = os.environ.get("KIMI_DELIVERABLE_MARKER", config_str(kimi_config, "deliverable_marker"))
+    model = os.environ.get("KIMI_MODEL_NAME", config_str(kimi_config, "model"))
     return FallbackConfig(
         repo=repo,
         pr_number=pr_number,
@@ -921,12 +1313,14 @@ def build_kimi_config_from_env(args: argparse.Namespace, *, repo: str, pr_number
         max_chunk_chars=int_env("KIMI_REVIEW_MAX_CHUNK_CHARS", config_int(kimi_config, "review_max_chunk_chars")),
         max_comment_chars=int_env("AI_REVIEW_MAX_COMMENT_CHARS", config_int(review_config, "max_comment_chars")),
         response_chars_per_chunk=config_int(review_config, "response_chars_per_chunk"),
+        output_contract=review_output_contract(review_config),
         run_url=run_url_for(repo, runtime_config),
         provider="Kimi",
         deliverable_markers=(marker,),
         expected_bot_login=config_str(github_config, "expected_bot_login"),
         comment_marker=marker,
         review_intro=review_intro,
+        source_label=source_label_from_template(kimi_config, model=model),
     )
 
 
@@ -958,7 +1352,7 @@ def run_kimi_review_from_env(args: argparse.Namespace) -> int:
         args,
         repo=repo,
         pr_number=pr_number,
-        review_intro="The Kimi CLI reviewer split the PR diff and reviewed each chunk with Kimi.",
+        review_intro="The Kimi CLI reviewer reviewed the PR diff with Kimi.",
     )
     try:
         result = post_split_review(github=github, reviewer=build_kimi_reviewer_from_env(api_key, args), config=config)
@@ -1004,6 +1398,15 @@ def post_notice_from_env(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_notice_env(args: argparse.Namespace) -> int:
+    runtime_config = load_runtime_config(args)
+    github_config = config_table(runtime_config, "github")
+    provider_config = config_table(runtime_config, args.provider)
+    print("marker=" + shlex.quote(config_str(provider_config, "notice_marker")))
+    print("expected_bot_login=" + shlex.quote(config_str(github_config, "expected_bot_login")))
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -1012,6 +1415,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     fallback.add_argument("--started-at", required=True)
     fallback.add_argument("--instructions-file", required=True)
     fallback.add_argument("--config-file", type=Path)
+
+    glm_stamp = subparsers.add_parser("glm-stamp")
+    glm_stamp.add_argument("--started-at", required=True)
+    glm_stamp.add_argument("--config-file", type=Path)
 
     kimi_fallback = subparsers.add_parser("kimi-fallback")
     kimi_fallback.add_argument("--started-at", required=True)
@@ -1028,6 +1435,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     notice.add_argument("--message", required=True)
     notice.add_argument("--config-file", type=Path)
 
+    notice_env = subparsers.add_parser("notice-env")
+    notice_env.add_argument("--provider", required=True, choices=("glm", "kimi"))
+    notice_env.add_argument("--config-file", type=Path)
+
     return parser.parse_args(argv)
 
 
@@ -1035,12 +1446,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     if args.mode == "glm-fallback":
         return run_glm_fallback_from_env(args)
+    if args.mode == "glm-stamp":
+        return run_glm_stamp_from_env(args)
     if args.mode == "kimi-fallback":
         return run_kimi_fallback_from_env(args)
     if args.mode == "kimi-review":
         return run_kimi_review_from_env(args)
     if args.mode == "notice":
         return post_notice_from_env(args)
+    if args.mode == "notice-env":
+        return run_notice_env(args)
     raise RuntimeError(f"unknown mode {args.mode!r}")
 
 

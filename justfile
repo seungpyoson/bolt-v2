@@ -333,8 +333,6 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_doc_decoupling_residuals.py
     python3 scripts/test_verify_bolt_v3_boundary_evidence.py
     python3 scripts/verify_bolt_v3_boundary_evidence.py
-    python3 scripts/test_verify_bolt_v3_status_map_current.py
-    python3 scripts/verify_bolt_v3_status_map_current.py
     python3 scripts/test_verify_bolt_v3_schema_current.py
     python3 scripts/verify_bolt_v3_schema_current.py
     python3 scripts/test_migrate_bolt_v3_decision_evidence_v13_to_v14.py

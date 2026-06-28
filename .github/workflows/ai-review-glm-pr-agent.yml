@@ -158,7 +158,6 @@ jobs:
       - name: Stamp GLM PR-Agent review source
         id: glm_stamp
         if: env.GLM_API_KEY != ''
-        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}

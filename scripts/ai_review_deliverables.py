@@ -327,6 +327,7 @@ def has_review_deliverable(
     markers: tuple[str, ...],
     expected_bot_login: str,
     output_contract: ReviewOutputContract,
+    require_source_line: bool,
 ) -> bool:
     threshold = parse_iso_timestamp(started_at)
     for comment in comments:
@@ -334,7 +335,10 @@ def has_review_deliverable(
             continue
         if not body_has_deliverable_marker(comment.get("body"), markers):
             continue
-        if not review_body_is_quality_deliverable(str(comment.get("body") or ""), output_contract):
+        body = str(comment.get("body") or "")
+        if require_source_line and not review_body_has_source_line(body):
+            continue
+        if not review_body_is_quality_deliverable(body, output_contract):
             continue
         if text_time_is_after_or_equal(comment.get("updated_at"), threshold) or text_time_is_after_or_equal(
             comment.get("created_at"), threshold
@@ -345,11 +349,18 @@ def has_review_deliverable(
             continue
         if not body_has_deliverable_marker(review.get("body"), markers):
             continue
-        if not review_body_is_quality_deliverable(str(review.get("body") or ""), output_contract):
+        body = str(review.get("body") or "")
+        if require_source_line and not review_body_has_source_line(body):
+            continue
+        if not review_body_is_quality_deliverable(body, output_contract):
             continue
         if text_time_is_after_or_equal(review.get("submitted_at"), threshold):
             return True
     return False
+
+
+def review_body_has_source_line(body: str) -> bool:
+    return any(line.strip().startswith(("**Source:**", "- Source:")) for line in body.splitlines())
 
 
 def review_body_is_quality_deliverable(body: str, output_contract: ReviewOutputContract) -> bool:
@@ -1006,6 +1017,7 @@ def run_fallback_review(*, github: Any, reviewer: Any, config: FallbackConfig) -
             markers=config.deliverable_markers,
             expected_bot_login=config.expected_bot_login,
             output_contract=config.output_contract,
+            require_source_line=bool(config.source_label),
         ):
             return "existing-review-deliverable"
 

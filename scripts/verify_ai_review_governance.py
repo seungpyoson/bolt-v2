@@ -391,6 +391,21 @@ def missing_snippets(label: str, text: str, snippets: tuple[str, ...]) -> list[s
     return [f"{label} missing expected snippet: {snippet!r}" for snippet in snippets if snippet not in text]
 
 
+def workflow_step_block(workflow_text: str, step_name: str) -> str:
+    lines = workflow_text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != f"- name: {step_name}":
+            continue
+        indent = len(line) - len(line.lstrip())
+        block = [line]
+        for next_line in lines[index + 1 :]:
+            if next_line.strip().startswith("- name:") and len(next_line) - len(next_line.lstrip()) == indent:
+                break
+            block.append(next_line)
+        return "\n".join(block)
+    return ""
+
+
 def verify_ai_review_config(ai_review_toml: str) -> list[str]:
     findings: list[str] = []
     try:
@@ -643,6 +658,11 @@ def verify_texts(
     findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_BASE_GOVERNANCE_SNIPPETS))
     findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_DELIVERABLE_SNIPPETS))
     findings.extend(missing_snippets("Smoke workflow", smoke_workflow, SMOKE_TRUSTED_CONFIG_SNIPPETS))
+    glm_stamp_step = workflow_step_block(glm_workflow, "Stamp GLM PR-Agent review source")
+    if not glm_stamp_step:
+        findings.append("GLM workflow missing Stamp GLM PR-Agent review source step")
+    elif "continue-on-error: true" in glm_stamp_step:
+        findings.append("GLM source stamp step must fail closed")
     for snippet in KIMI_FORBIDDEN_INPUTS:
         if snippet in kimi_workflow:
             findings.append(f"Kimi workflow must use the official Kimi CLI path, not {snippet!r}")
@@ -739,6 +759,21 @@ def run_self_tests(repo_root: Path) -> None:
         smoke_workflow=smoke,
     )
     assert_finding("workflow GLM marker literal", workflow_glm_marker_literal, "must read AI review runtime value")
+
+    stamp_continue_on_error = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm.replace(
+            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: env.GLM_API_KEY != ''\n        env:",
+            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: env.GLM_API_KEY != ''\n        continue-on-error: true\n        env:",
+            1,
+        ),
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding("stamp continue-on-error", stamp_continue_on_error, "GLM source stamp step must fail closed")
 
     pr_agent_model_literal = verify_texts(
         agents_md=agents,

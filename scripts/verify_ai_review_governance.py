@@ -241,6 +241,8 @@ AI_REVIEW_DELIVERABLES_SNIPPETS = (
     "output_contract.pr_agent_deliverable_headings",
     "output_contract.pr_agent_disabled_noise",
     "review_output_contract(review_config)",
+    "def source_label_from_template(",
+    "source_label=source_label_from_template(",
     "def validate_review_responses(",
     "did not meet the hard-evidence output contract",
     "validate_review_responses(responses, config.output_contract)",
@@ -324,6 +326,7 @@ def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
                 "deliverable_markers",
                 "comment_marker",
                 "notice_marker",
+                "source_label_template",
                 "cli_package",
             ):
                 value = table.get(key)
@@ -334,6 +337,9 @@ def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
             pr_agent = table.get("pr_agent")
             if isinstance(pr_agent, dict):
                 value = pr_agent.get("model")
+                if isinstance(value, str) and value:
+                    literals.append(value)
+                value = pr_agent.get("source_label_template")
                 if isinstance(value, str) and value:
                     literals.append(value)
                 fallback_models = pr_agent.get("fallback_models")
@@ -480,6 +486,12 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("glm.review_max_chunk_chars", glm.get("review_max_chunk_chars"), 60000),
         ("glm.comment_marker", glm.get("comment_marker"), "<!-- ai-pr-reviewer-glm -->"),
         ("glm.notice_marker", glm.get("notice_marker"), "<!-- ai-pr-reviewer-glm-notice -->"),
+        ("glm.source_label_template", glm.get("source_label_template"), "GLM direct fallback (`{model}`)"),
+        (
+            "glm.pr_agent.source_label_template",
+            glm_pr_agent.get("source_label_template"),
+            "GLM PR-Agent (`{model}`)",
+        ),
         ("glm.pr_agent.custom_model_max_tokens", glm_pr_agent.get("custom_model_max_tokens"), 128000),
         ("glm.pr_agent.large_patch_policy", glm_pr_agent.get("large_patch_policy"), "clip"),
         ("glm.pr_agent.timeout_seconds", glm_pr_agent.get("timeout_seconds"), 300),
@@ -498,6 +510,7 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("kimi.review_max_chunk_chars", kimi.get("review_max_chunk_chars"), 60000),
         ("kimi.deliverable_marker", kimi.get("deliverable_marker"), "<!-- ai-pr-reviewer-kimi -->"),
         ("kimi.notice_marker", kimi.get("notice_marker"), "<!-- ai-pr-reviewer-kimi-notice -->"),
+        ("kimi.source_label_template", kimi.get("source_label_template"), "Kimi Code CLI (`{model}`)"),
         ("kimi.cli_package", kimi.get("cli_package"), "@moonshot-ai/kimi-code@0.19.0"),
         ("kimi.workflow.node_version", kimi_workflow.get("node_version"), "24"),
         ("kimi.workflow.job_timeout_minutes", kimi_workflow.get("job_timeout_minutes"), 45),

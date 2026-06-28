@@ -1105,6 +1105,13 @@ def review_output_contract(review_config: dict[str, Any]) -> ReviewOutputContrac
     )
 
 
+def source_label_from_template(table: dict[str, Any], *, model: str) -> str:
+    template = config_str(table, "source_label_template")
+    if "{model}" not in template:
+        raise RuntimeError("source_label_template must include {model}")
+    return template.replace("{model}", model)
+
+
 def env_required(name: str) -> str:
     value = os.environ.get(name, "")
     if not value:
@@ -1161,7 +1168,7 @@ def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
         deliverable_markers=config_str_tuple(glm_config, "deliverable_markers"),
         expected_bot_login=config_str(github_config, "expected_bot_login"),
         comment_marker=comment_marker,
-        source_label=f"GLM direct fallback (`{model}`)",
+        source_label=source_label_from_template(glm_config, model=model),
     )
     if not api_key:
         github.post_issue_comment_for(
@@ -1202,7 +1209,7 @@ def run_glm_stamp_from_env(args: argparse.Namespace) -> int:
         markers=config_str_tuple(glm_config, "deliverable_markers"),
         expected_bot_login=config_str(github_config, "expected_bot_login"),
         marker=config_str(glm_config, "comment_marker"),
-        source_label=f"GLM PR-Agent (`{config_str(pr_agent, 'model')}`)",
+        source_label=source_label_from_template(pr_agent, model=config_str(pr_agent, "model")),
         run_url=run_url_for(repo, runtime_config),
     )
     print(result)
@@ -1231,7 +1238,7 @@ def build_kimi_config_from_env(args: argparse.Namespace, *, repo: str, pr_number
         expected_bot_login=config_str(github_config, "expected_bot_login"),
         comment_marker=marker,
         review_intro=review_intro,
-        source_label=f"Kimi Code CLI (`{model}`)",
+        source_label=source_label_from_template(kimi_config, model=model),
     )
 
 

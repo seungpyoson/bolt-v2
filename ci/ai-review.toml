@@ -41,6 +41,7 @@ api_timeout_seconds = 300
 review_max_chunk_chars = 60000
 comment_marker = "<!-- ai-pr-reviewer-glm -->"
 notice_marker = "<!-- ai-pr-reviewer-glm-notice -->"
+source_label_template = "GLM direct fallback (`{model}`)"
 deliverable_markers = [
   "## PR Reviewer Guide",
   "## Incremental PR Reviewer Guide",
@@ -50,6 +51,7 @@ deliverable_markers = [
 [glm.pr_agent]
 model = "openai/glm-5.2"
 fallback_models = ["openai/glm-5.2"]
+source_label_template = "GLM PR-Agent (`{model}`)"
 custom_model_max_tokens = 128000
 large_patch_policy = "clip"
 timeout_seconds = 300
@@ -74,6 +76,7 @@ cli_timeout_seconds = 180
 review_max_chunk_chars = 60000
 deliverable_marker = "<!-- ai-pr-reviewer-kimi -->"
 notice_marker = "<!-- ai-pr-reviewer-kimi-notice -->"
+source_label_template = "Kimi Code CLI (`{model}`)"
 cli_package = "@moonshot-ai/kimi-code@0.19.0"
 
 [kimi.workflow]

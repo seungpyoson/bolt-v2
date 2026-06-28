@@ -835,6 +835,24 @@ def test_kimi_fallback_uses_same_chunked_deliverable_contract() -> None:
     assert "Source: Kimi Code CLI" in github.posted[0]
 
 
+def test_source_label_template_substitutes_configured_model() -> None:
+    module = load_script()
+
+    assert (
+        module.source_label_from_template(
+            {"source_label_template": "Configured reviewer (`{model}`)"},
+            model="configured-model",
+        )
+        == "Configured reviewer (`configured-model`)"
+    )
+    try:
+        module.source_label_from_template({"source_label_template": "Configured reviewer"}, model="configured-model")
+    except RuntimeError as exc:
+        assert "source_label_template must include {model}" in str(exc)
+    else:
+        raise AssertionError("source label template without model placeholder was accepted")
+
+
 def test_stamps_all_pr_agent_review_source_model_comments() -> None:
     module = load_script()
     github = FakeGitHub(
@@ -1213,6 +1231,7 @@ def main() -> int:
     test_posts_failure_notice_when_glm_fallback_fails()
     test_sets_failure_notice_output_after_posting_failure_notice()
     test_kimi_fallback_uses_same_chunked_deliverable_contract()
+    test_source_label_template_substitutes_configured_model()
     test_stamps_all_pr_agent_review_source_model_comments()
     test_stamping_preserves_existing_marker_as_first_line()
     test_stamping_detects_existing_source_lines_past_initial_comment_window()

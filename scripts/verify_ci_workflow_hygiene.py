@@ -5225,6 +5225,10 @@ MERGIFY_REQUIRED_MERGE_CONDITIONS = frozenset(
 )
 
 
+MERGIFY_REQUIRED_QUEUE_RULES = frozenset({"default", "hotfix"})
+MERGIFY_REQUIRED_PRIORITY_RULES = frozenset({"hotfix"})
+
+
 def top_level_yaml_block(config_text: str, key: str) -> str | None:
     lines = [strip_comment(line).rstrip() for line in config_text.splitlines()]
     for index, line in enumerate(lines):
@@ -5243,6 +5247,30 @@ def yaml_scalar_value(block_text: str, key: str) -> str | None:
         match = re.match(rf"^\s*{re.escape(key)}\s*:\s*(.*?)\s*$", line)
         if match is not None:
             return unquote_yaml_scalar(match.group(1))
+    return None
+
+
+def yaml_nested_scalar_values(block_text: str, key: str) -> dict[str, str] | None:
+    lines = block_text.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(rf"^(\s*){re.escape(key)}\s*:\s*(.*?)\s*$", line)
+        if match is None:
+            continue
+        if unquote_yaml_scalar(match.group(2)):
+            return None
+        parent_indent = len(match.group(1))
+        values: dict[str, str] = {}
+        for nested in lines[index + 1 :]:
+            if not nested.strip():
+                continue
+            indent = len(nested) - len(nested.lstrip(" "))
+            if indent <= parent_indent:
+                break
+            nested_match = re.match(r"^\s*([A-Za-z0-9_-]+)\s*:\s*(.*?)\s*$", nested)
+            if nested_match is None:
+                return None
+            values[nested_match.group(1)] = unquote_yaml_scalar(nested_match.group(2))
+        return values
     return None
 
 
@@ -5318,28 +5346,66 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
     default_rule = queue_rule_block(queue_rules, "default") if queue_rules is not None else None
     if queue_rules is None:
         errors.append(f"{config_name} must define queue_rules")
-    if default_rule is None:
-        errors.append(f"{config_name} queue_rules must define default")
+    queue_rule_names = {
+        unquote_yaml_scalar(match.group(1))
+        for match in re.finditer(r"(?m)^\s*-\s*name\s*:\s*(.*?)\s*$", queue_rules or "")
+    }
+    if queue_rule_names != MERGIFY_REQUIRED_QUEUE_RULES:
+        errors.append(f"{config_name} queue_rules must define exactly default and hotfix")
+    hotfix_rule = queue_rule_block(queue_rules, "hotfix") if queue_rules is not None else None
+    if default_rule is None or hotfix_rule is None:
         return errors
 
-    if yaml_list_values(default_rule, "queue_conditions") != []:
-        errors.append(f"{config_name} default queue_conditions must be empty for manual entry")
-    merge_conditions = yaml_list_values(default_rule, "merge_conditions")
-    if merge_conditions is None:
-        errors.append(f"{config_name} default merge_conditions must be a list")
-    elif set(merge_conditions) != MERGIFY_REQUIRED_MERGE_CONDITIONS:
-        errors.append(f"{config_name} default merge_conditions must require sp-reviewer and all four gates")
+    rule_expectations = (
+        ("default", default_rule, [], None, {"min": "2", "max": "10"}, "60 minutes"),
+        ("hotfix", hotfix_rule, ["label = hotfix"], "1", None, "30 seconds"),
+    )
+    for rule_name, rule, expected_queue_conditions, expected_batch_size, expected_dynamic_batch, expected_wait in rule_expectations:
+        if yaml_list_values(rule, "queue_conditions") != expected_queue_conditions:
+            errors.append(f"{config_name} {rule_name} queue_conditions must be {expected_queue_conditions!r}")
+        merge_conditions = yaml_list_values(rule, "merge_conditions")
+        if merge_conditions is None:
+            errors.append(f"{config_name} {rule_name} merge_conditions must be a list")
+        elif set(merge_conditions) != MERGIFY_REQUIRED_MERGE_CONDITIONS:
+            errors.append(f"{config_name} {rule_name} merge_conditions must require sp-reviewer and all four gates")
+        expected_scalars = {
+            "branch_protection_injection_mode": "merge",
+            "batch_max_wait_time": expected_wait,
+            "batch_max_failure_resolution_attempts": "0",
+            "checks_timeout": "150 minutes",
+            "draft_bot_account": "null",
+            "merge_method": "squash",
+        }
+        for key, expected in expected_scalars.items():
+            if yaml_scalar_value(rule, key) != expected:
+                errors.append(f"{config_name} {rule_name} {key} must be {expected}")
+        if expected_dynamic_batch is None:
+            if yaml_scalar_value(rule, "batch_size") != expected_batch_size:
+                errors.append(f"{config_name} {rule_name} batch_size must be {expected_batch_size}")
+        elif yaml_nested_scalar_values(rule, "batch_size") != expected_dynamic_batch:
+            errors.append(
+                f"{config_name} {rule_name} batch_size must be min {expected_dynamic_batch['min']} max {expected_dynamic_batch['max']}"
+            )
 
-    expected_scalars = {
-        "branch_protection_injection_mode": "merge",
-        "batch_size": "1",
-        "checks_timeout": "60 minutes",
-        "draft_bot_account": "null",
-        "merge_method": "squash",
+    priority_rules = top_level_yaml_block(config_text, "priority_rules")
+    if priority_rules is None:
+        errors.append(f"{config_name} must define priority_rules")
+        return errors
+    priority_rule_names = {
+        unquote_yaml_scalar(match.group(1))
+        for match in re.finditer(r"(?m)^\s*-\s*name\s*:\s*(.*?)\s*$", priority_rules)
     }
-    for key, expected in expected_scalars.items():
-        if yaml_scalar_value(default_rule, key) != expected:
-            errors.append(f"{config_name} default {key} must be {expected}")
+    if priority_rule_names != MERGIFY_REQUIRED_PRIORITY_RULES:
+        errors.append(f"{config_name} priority_rules must define exactly hotfix")
+    hotfix_priority = queue_rule_block(priority_rules, "hotfix")
+    if hotfix_priority is None:
+        return errors
+    if yaml_list_values(hotfix_priority, "conditions") != ["label = hotfix"]:
+        errors.append(f"{config_name} hotfix priority conditions must be ['label = hotfix']")
+    if yaml_scalar_value(hotfix_priority, "priority") != "10000":
+        errors.append(f"{config_name} hotfix priority must be 10000")
+    if yaml_scalar_value(hotfix_priority, "allow_checks_interruption") != "true":
+        errors.append(f"{config_name} hotfix allow_checks_interruption must be true")
     return errors
 
 

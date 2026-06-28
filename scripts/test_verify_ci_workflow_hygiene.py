@@ -3773,8 +3773,8 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "autoqueue enabled",
             replace_once(
                 mergify_config,
-                "    batch_size: 1\n",
-                "    autoqueue: true\n    batch_size: 1\n",
+                "  - name: default\n",
+                "  - name: default\n    autoqueue: true\n",
             ),
             "manual queueing only",
         ),
@@ -3795,17 +3795,38 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "    queue_conditions: []\n",
                 "    queue_conditions:\n      - check-success = gate\n",
             ),
-            "default queue_conditions must be empty",
+            "default queue_conditions must be []",
         ),
         (
-            "missing gate merge condition",
-            replace_once(mergify_config, "      - check-success = gate\n", ""),
+            "hotfix queue conditions changed",
+            replace_once_after(
+                mergify_config,
+                "  - name: hotfix\n    queue_conditions:\n",
+                "      - label = hotfix\n",
+                "      - label = urgent\n",
+            ),
+            "hotfix queue_conditions must be ['label = hotfix']",
+        ),
+        (
+            "default missing gate merge condition",
+            replace_once_after(
+                mergify_config,
+                "  - name: default\n",
+                "      - check-success = gate\n",
+                "",
+            ),
             "default merge_conditions must require sp-reviewer and all four gates",
         ),
         (
-            "extra merge condition",
-            replace_once(
+            "hotfix missing gate merge condition",
+            replace_once(mergify_config, "      - check-success = gate\n", ""),
+            "hotfix merge_conditions must require sp-reviewer and all four gates",
+        ),
+        (
+            "default extra merge condition",
+            replace_once_after(
                 mergify_config,
+                "  - name: default\n",
                 "      - check-success = host-health\n",
                 "      - check-success = host-health\n      - label = queue-proof\n",
             ),
@@ -3818,30 +3839,60 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "    branch_protection_injection_mode: merge\n",
                 "    branch_protection_injection_mode: queue\n",
             ),
-            "default branch_protection_injection_mode must be merge",
+            "hotfix branch_protection_injection_mode must be merge",
         ),
         (
-            "batch size widened",
+            "default batch min lowered",
+            replace_once(mergify_config, "      min: 2\n", "      min: 1\n"),
+            "default batch_size must be min 2 max 10",
+        ),
+        (
+            "default batch max narrowed",
+            replace_once(mergify_config, "      max: 10\n", "      max: 5\n"),
+            "default batch_size must be min 2 max 10",
+        ),
+        (
+            "hotfix batch widened",
             replace_once(mergify_config, "    batch_size: 1\n", "    batch_size: 2\n"),
-            "default batch_size must be 1",
+            "hotfix batch_size must be 1",
+        ),
+        (
+            "default wait shortened",
+            replace_once(mergify_config, "    batch_max_wait_time: 60 minutes\n", "    batch_max_wait_time: 30 seconds\n"),
+            "default batch_max_wait_time must be 60 minutes",
+        ),
+        (
+            "hotfix wait lengthened",
+            replace_once(mergify_config, "    batch_max_wait_time: 30 seconds\n", "    batch_max_wait_time: 60 minutes\n"),
+            "hotfix batch_max_wait_time must be 30 seconds",
+        ),
+        (
+            "failure split enabled",
+            replace_once(
+                mergify_config,
+                "    batch_max_failure_resolution_attempts: 0\n",
+                "    batch_max_failure_resolution_attempts: 3\n",
+            ),
+            "hotfix batch_max_failure_resolution_attempts must be 0",
         ),
         (
             "unbounded timeout",
             replace_once(
                 mergify_config,
-                "    checks_timeout: 60 minutes\n",
+                "    checks_timeout: 150 minutes\n",
                 "    checks_timeout: auto\n",
             ),
-            "default checks_timeout must be 60 minutes",
+            "hotfix checks_timeout must be 150 minutes",
         ),
         (
-            "zero timeout",
-            replace_once(
+            "default timeout lowered",
+            replace_once_after(
                 mergify_config,
+                "  - name: default\n",
+                "    checks_timeout: 150 minutes\n",
                 "    checks_timeout: 60 minutes\n",
-                "    checks_timeout: 0 minutes\n",
             ),
-            "default checks_timeout must be 60 minutes",
+            "default checks_timeout must be 150 minutes",
         ),
         (
             "draft impersonation",
@@ -3850,12 +3901,41 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "    draft_bot_account: null\n",
                 '    draft_bot_account: "{{ author }}"\n',
             ),
-            "default draft_bot_account must be null",
+            "hotfix draft_bot_account must be null",
         ),
         (
             "non-squash merge",
             replace_once(mergify_config, "    merge_method: squash\n", "    merge_method: merge\n"),
-            "default merge_method must be squash",
+            "hotfix merge_method must be squash",
+        ),
+        (
+            "priority rules removed",
+            replace_once(
+                mergify_config,
+                "\npriority_rules:\n  - name: hotfix\n    conditions:\n      - label = hotfix\n    priority: 10000\n    allow_checks_interruption: true\n",
+                "\n",
+            ),
+            "must define priority_rules",
+        ),
+        (
+            "hotfix priority condition changed",
+            replace_once_after(
+                mergify_config,
+                "priority_rules:\n  - name: hotfix\n    conditions:\n",
+                "      - label = hotfix\n",
+                "      - label = urgent\n",
+            ),
+            "hotfix priority conditions must be ['label = hotfix']",
+        ),
+        (
+            "hotfix priority lowered",
+            replace_once(mergify_config, "    priority: 10000\n", "    priority: high\n"),
+            "hotfix priority must be 10000",
+        ),
+        (
+            "hotfix interruption disabled",
+            replace_once(mergify_config, "    allow_checks_interruption: true\n", "    allow_checks_interruption: false\n"),
+            "hotfix allow_checks_interruption must be true",
         ),
     ]
     for label, mutated, expected in mutations:

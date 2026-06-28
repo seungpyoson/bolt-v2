@@ -36,27 +36,8 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
-      - name: Notice when Z.ai secret is not configured
-        if: env.GLM_API_KEY == ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          notice_file="${RUNNER_TEMP}/glm-ai-review-notice.md"
-          cat > "$notice_file" <<EOF
-          ## GLM review notice
-
-          \`GLM_API_KEY\` is not configured, so the GLM review was skipped.
-
-          - PR: #${PR_NUMBER}
-          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-
-          This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
-          EOF
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
-
       - name: Checkout base AI review helpers
         id: base-checkout
-        if: env.GLM_API_KEY != ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
@@ -70,7 +51,6 @@ jobs:
 
       - name: Load AI review runtime config
         id: runtime-config
-        if: env.GLM_API_KEY != ''
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
@@ -91,12 +71,20 @@ jobs:
                   value = json.dumps(value, separators=(",", ":"))
               print(f"{name}={value}")
 
+          def notice_marker(table):
+              marker = table.get("notice_marker")
+              if not isinstance(marker, str) or not marker:
+                  raise RuntimeError("notice_marker is required")
+              return marker
+
           emit("github_api_url", github["api_url"])
+          emit("expected_bot_login", github["expected_bot_login"])
           emit("ai_review_max_comment_chars", review["max_comment_chars"])
           emit("glm_api_base", glm["api_base"])
           emit("glm_model", glm["model"])
           emit("glm_api_timeout_seconds", glm["api_timeout_seconds"])
           emit("glm_review_max_chunk_chars", glm["review_max_chunk_chars"])
+          emit("glm_notice_marker", notice_marker(glm))
           emit("glm_pr_agent_model", pr_agent["model"])
           emit("glm_pr_agent_fallback_models", pr_agent["fallback_models"])
           emit("glm_pr_agent_custom_model_max_tokens", pr_agent["custom_model_max_tokens"])
@@ -108,6 +96,47 @@ jobs:
           emit("glm_primary_timeout_minutes", workflow["primary_timeout_minutes"])
           emit("glm_fallback_timeout_minutes", workflow["fallback_timeout_minutes"])
           PY
+
+      - name: Notice when Z.ai secret is not configured
+        if: env.GLM_API_KEY == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          notice_file="${RUNNER_TEMP}/glm-ai-review-notice.md"
+          marker="${{ steps.runtime-config.outputs.glm_notice_marker }}"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          expected_bot_login="${{ steps.runtime-config.outputs.expected_bot_login }}"
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            if ! config_exports="$(python3 scripts/ai_review_deliverables.py notice-env --provider glm --config-file ci/ai-review.toml)"; then
+              echo "::error::AI review notice marker or expected bot login is unavailable."
+              exit 1
+            fi
+            eval "$config_exports"
+          fi
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            echo "::error::AI review notice marker or expected bot login is unavailable."
+            exit 1
+          fi
+          cat > "$notice_file" <<EOF
+          ${marker}
+
+          ## GLM review notice
+
+          \`GLM_API_KEY\` is not configured, so the GLM review was skipped.
+
+          - PR: #${PR_NUMBER}
+          - Action run: ${run_url}
+
+          This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
+          EOF
+          existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            | jq -r --arg login "$expected_bot_login" --arg marker "$marker" --arg run_url "$run_url" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | select(.body | contains($run_url)) | .id' \
+            | tail -n 1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          fi
 
       - name: Capture GLM review window
         id: review-window
@@ -134,9 +163,41 @@ jobs:
           github_action_config.auto_describe: ${{ steps.runtime-config.outputs.glm_pr_agent_auto_describe }}
           github_action_config.auto_improve: ${{ steps.runtime-config.outputs.glm_pr_agent_auto_improve }}
 
+      - name: Stamp GLM PR-Agent review source
+        id: glm_stamp
+        if: env.GLM_API_KEY != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+        run: |
+          stamp_required="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
+          pr_agent = config.get("glm", {}).get("pr_agent", {})
+          source_template = pr_agent.get("source_label_template") if isinstance(pr_agent, dict) else None
+          print("true" if isinstance(source_template, str) and source_template else "false")
+          PY
+          )"
+          if [ "$stamp_required" != "true" ]; then
+            echo "::notice::Base AI review config does not require GLM PR-Agent source stamping yet."
+            exit 0
+          fi
+          python3 scripts/ai_review_deliverables.py glm-stamp \
+            --started-at "${{ steps.review-window.outputs.started_at }}" \
+            --config-file ci/ai-review.toml
+
       - name: Ensure GLM deliverable or post split fallback
         id: glm_fallback
-        if: env.GLM_API_KEY != ''
+        if: >-
+          ${{
+            env.GLM_API_KEY != ''
+            && always()
+            && steps.base-checkout.outcome == 'success'
+            && steps.runtime-config.outcome == 'success'
+            && steps.review-window.outcome == 'success'
+          }}
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_fallback_timeout_minutes) }}
         env:
@@ -162,6 +223,7 @@ jobs:
               steps.base-checkout.outcome == 'failure'
               || steps.runtime-config.outcome == 'failure'
               || steps.glm_fallback.outcome == 'failure'
+              || (steps.glm_stamp.outcome == 'failure' && steps.glm_fallback.outcome != 'success')
             )
             && steps.glm_fallback.outputs.failure_notice_posted != 'true'
           }}
@@ -169,14 +231,37 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           notice_file="${RUNNER_TEMP}/glm-ai-review-notice.md"
+          marker="${{ steps.runtime-config.outputs.glm_notice_marker }}"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          expected_bot_login="${{ steps.runtime-config.outputs.expected_bot_login }}"
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            if ! config_exports="$(python3 scripts/ai_review_deliverables.py notice-env --provider glm --config-file ci/ai-review.toml)"; then
+              echo "::error::AI review notice marker or expected bot login is unavailable."
+              exit 1
+            fi
+            eval "$config_exports"
+          fi
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            echo "::error::AI review notice marker or expected bot login is unavailable."
+            exit 1
+          fi
           cat > "$notice_file" <<EOF
+          ${marker}
+
           ## GLM review notice
 
           The GLM review infrastructure failed or timed out before posting a usable failure notice. Check the action logs for this run.
 
           - PR: #${PR_NUMBER}
-          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Action run: ${run_url}
 
           This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
           EOF
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            | jq -r --arg login "$expected_bot_login" --arg marker "$marker" --arg run_url "$run_url" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | select(.body | contains($run_url)) | .id' \
+            | tail -n 1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          fi

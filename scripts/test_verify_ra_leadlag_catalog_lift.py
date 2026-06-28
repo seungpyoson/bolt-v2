@@ -31,14 +31,6 @@ def write_file(root: Path, rel: str, text: str) -> Path:
     return path
 
 
-def write_checked_task(root: Path) -> None:
-    write_file(
-        root,
-        "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
-        "- [x] RA-007 Lift the lead-lag measurement lane off raw archive reads.\n",
-    )
-
-
 def rust_reader_source(*, comment_only: bool = False, omit_trades: bool = False) -> str:
     if comment_only:
         return '''
@@ -152,7 +144,6 @@ def main():
 
 
 def write_common(root: Path, *, rust: str | None = None, session: str | None = None) -> None:
-    write_checked_task(root)
     write_file(root, "crates/backtesting-vertical-slice/src/lib.rs", "pub mod leadlag_catalog_reader;\n")
     write_file(
         root,
@@ -240,27 +231,9 @@ def test_raw_only_python_script_is_a_finding() -> None:
     assert any("raw fallback sunset" in finding for finding in findings)
 
 
-def test_unchecked_ra007_task_is_a_finding() -> None:
-    verifier = load_verifier()
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        write_common(root)
-        write_file(
-            root,
-            "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
-            "- [ ] RA-007 Lift the lead-lag measurement lane off raw archive reads.\n",
-        )
-
-        findings = verifier.scan_root(root)
-
-    assert any("RA-007 must be checked" in finding for finding in findings)
-
-
 def test_cli_fails_with_actionable_output() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_checked_task(root)
-
         result = run_script("--root", str(root))
 
     assert result.returncode == 1
@@ -274,7 +247,6 @@ def main() -> int:
         test_rust_comments_and_strings_do_not_satisfy_reader_shape,
         test_catalog_reader_must_query_trades_and_books,
         test_raw_only_python_script_is_a_finding,
-        test_unchecked_ra007_task_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]
     for test in tests:

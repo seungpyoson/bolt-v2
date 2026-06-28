@@ -151,12 +151,7 @@ def _cheap_lane_max_concurrent(lane_policy: dict) -> int | None:
 
 
 def _cheap_lane_config(lane_policy: dict, label: str) -> int | None:
-    labels = lane_policy.get("cheap_lane_labels")
-    if not isinstance(labels, list):
-        return None
-    for item in labels:
-        if not isinstance(item, str) or not _SAFE_LANE_LABEL_RE.match(item):
-            return None
+    labels = rust_verification.resolve_cheap_lane_labels(REPO_ROOT, lane_policy)
     if label not in labels:
         return None
     return _cheap_lane_max_concurrent(lane_policy)

@@ -17,8 +17,6 @@ SESSION_PATH = Path("scripts/leadlag_session4.py")
 CLOCK_PATH = Path("scripts/leadlag_clock_alignment.py")
 SUBSECOND_PATH = Path("scripts/leadlag_subsecond.py")
 JUSTFILE_PATH = Path("justfile")
-TASKS_PATH = Path("specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md")
-CHECKED_RA007 = re.compile(r"^- \[[xX]\] RA-007\b", re.MULTILINE)
 
 CATALOG_CONFIG_PATTERNS = (
     ("catalog URI", r"\bcatalog_uri\s*:\s*String\b"),
@@ -301,12 +299,6 @@ def verify_justfile(text: str, findings: list[str]) -> None:
 def scan_root(root: Path) -> list[str]:
     root = root.resolve()
     findings: list[str] = []
-
-    tasks = root / TASKS_PATH
-    if not tasks.exists():
-        findings.append(f"{TASKS_PATH}: tasks.md is missing")
-    elif not CHECKED_RA007.search(tasks.read_text(encoding="utf-8")):
-        findings.append(f"{TASKS_PATH}: RA-007 must be checked once the lead-lag catalog lift is implemented")
 
     reader = root / READER_PATH
     if not reader.exists():

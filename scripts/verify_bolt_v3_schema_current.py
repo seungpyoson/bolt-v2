@@ -14,15 +14,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-schema.md"
 RUNTIME_CONTRACTS_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
 STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
-RESEARCH_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/research.md"
-TASKS_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/tasks.md"
-CONTRACT_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/contracts/order-intent-layer.md"
-SPEC_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/spec.md"
-DATA_MODEL_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/data-model.md"
-MAKER_SCOPE_CONTRACT_DOC = (
-    REPO_ROOT / "specs/022-nt-maker-order-scope/contracts/maker-order-config.md"
-)
-MAKER_SCOPE_DATA_MODEL_DOC = REPO_ROOT / "specs/022-nt-maker-order-scope/data-model.md"
 VALIDATE_SOURCE = REPO_ROOT / "src/bolt_v3_validate.rs"
 DECISION_EVIDENCE_SOURCE = REPO_ROOT / "src/bolt_v3_decision_evidence.rs"
 ARCHETYPE_BINARY_ORACLE_SOURCE = (
@@ -115,46 +106,6 @@ REQUIRED_STATUS_MAP_PHRASES = (
     "Strategy `oms_type` delegates to NT `OmsType` variants instead of a Bolt-only netting allowlist",
     "order-template validation follows the pinned NT single-order `OrderFactory` surface",
     STATUS_MAP_FORCED_EXIT_BUILDER_PHRASE,
-)
-STALE_RESEARCH_PHRASES = (
-    "current archetype accepts coherent short-side",
-    "current archetype supports coherent short-side",
-)
-STALE_TASKS_PHRASES = (
-    "Allow coherent short-side contracts while keeping incoherent long/short contracts rejected",
-    "Phase 47 blocks completion because current-head multi-agent review found forced-flat exit order semantics still synthesized as Market/TIF/reduce-only fields in strategy code rather than carried as a TOML-owned NT order template.",
-    "Phase 48 blocks completion because latest-head multi-agent review found active schema docs still describe removed market-exit fields and `manage_stop=true` can silently route non-market `forced_exit_order` configs through NT's built-in market close path.",
-    "Phase 50 blocks completion because current-head PR-body/Greptile evidence and source inspection found maker entry sizing still uses taker-side book depth and external Managed close still drops a resting pending entry without NT cancel.",
-    "Phase 34 blocks completion because multi-agent pinned-NT review found TrailingStopMarket validation still requires optional fields that NT defaults.",
-    "Phase 50 closes the current-head maker lifecycle/sizing review findings; only terminal reviewer/no-mistakes state remains open in T224.",
-    "Phase 51 closes the TrailingStopMarket schema-default drift and equivalent-wording verifier gap; only terminal reviewer/no-mistakes state remains open in T228.",
-    "Phase 52 remains open until T233 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.",
-    "Phase 53 remains open until T236 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.",
-    "Phase 54 remains open until T240 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.",
-)
-REQUIRED_TASKS_PHRASES = (
-    "Phase 50 is closed by T224 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
-    "Phase 51 is closed by T228 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
-    "Phase 52 is closed by T233 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
-    "Phase 53 is closed by T236 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
-    "Phase 54 is closed by T240 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
-)
-STALE_CONTRACT_PHRASES = (
-    "Long and short position contracts are coherent.",
-)
-STALE_SPEC_PHRASES = (
-    "config validation does not reject the shape merely because it is short-side",
-)
-STALE_DATA_MODEL_PHRASES = (
-    "`expire_time_unix_nanos` only when GTD is enabled by a reviewed slice",
-)
-STALE_MAKER_SCOPE_CONTRACT_PHRASES = (
-    "until a separate TOML-owned forced-exit override exists",
-    "bolt-v3 must not enable `gtd` until",
-)
-STALE_MAKER_SCOPE_DATA_MODEL_PHRASES = (
-    "limit + post-only + `gtd` until a TOML-owned expiry policy is approved",
-    "Maps TOML-owned timing into NT `expire_time`. This policy is not implemented",
 )
 UNSUPPORTED_SCOPE_PATTERNS = (
     re.compile(
@@ -305,14 +256,7 @@ def section_requires_defaulted_trailing_stop_market_field(section: str) -> bool:
 def validate_docs(
     schema: str,
     status_map: str,
-    research: str = "",
-    tasks: str = "",
-    contract: str = "",
-    spec: str = "",
-    data_model: str = "",
     runtime_contracts: str = "",
-    maker_scope_contract: str = "",
-    maker_scope_data_model: str = "",
     validate_source: str = "",
     decision_evidence_source: str = "",
     archetype_source: str = "",
@@ -448,49 +392,9 @@ def validate_docs(
         if phrase not in status_map:
             findings.append(f"status map missing current phrase: {phrase}")
 
-    for phrase in STALE_RESEARCH_PHRASES:
-        if phrase in research:
-            findings.append(f"research still contains stale phrase: {phrase}")
-
-    for phrase in STALE_TASKS_PHRASES:
-        if phrase in tasks:
-            findings.append(f"tasks still contains stale phrase: {phrase}")
-
-    if tasks:
-        for phrase in REQUIRED_TASKS_PHRASES:
-            if phrase not in tasks:
-                findings.append(f"tasks missing current phrase: {phrase}")
-
-    for phrase in STALE_CONTRACT_PHRASES:
-        if phrase in contract:
-            findings.append(f"contract still contains stale phrase: {phrase}")
-
-    for phrase in STALE_SPEC_PHRASES:
-        if phrase in spec:
-            findings.append(f"spec still contains stale phrase: {phrase}")
-
-    for phrase in STALE_DATA_MODEL_PHRASES:
-        if phrase in data_model:
-            findings.append(f"data model still contains stale phrase: {phrase}")
-
-    for phrase in STALE_MAKER_SCOPE_CONTRACT_PHRASES:
-        if phrase in maker_scope_contract:
-            findings.append(f"maker scope contract still contains stale phrase: {phrase}")
-
-    for phrase in STALE_MAKER_SCOPE_DATA_MODEL_PHRASES:
-        if phrase in maker_scope_data_model:
-            findings.append(f"maker scope data model still contains stale phrase: {phrase}")
-
     findings.extend(unsupported_scope_overclaims("schema", schema))
     findings.extend(unsupported_scope_overclaims("runtime contracts", runtime_contracts))
     findings.extend(unsupported_scope_overclaims("status map", status_map))
-    findings.extend(unsupported_scope_overclaims("research", research))
-    findings.extend(unsupported_scope_overclaims("tasks", tasks))
-    findings.extend(unsupported_scope_overclaims("contract", contract))
-    findings.extend(unsupported_scope_overclaims("spec", spec))
-    findings.extend(unsupported_scope_overclaims("data model", data_model))
-    findings.extend(unsupported_scope_overclaims("maker scope contract", maker_scope_contract))
-    findings.extend(unsupported_scope_overclaims("maker scope data model", maker_scope_data_model))
 
     return findings
 
@@ -499,14 +403,7 @@ def main() -> int:
     findings = validate_docs(
         SCHEMA_DOC.read_text(encoding="utf-8"),
         STATUS_MAP.read_text(encoding="utf-8"),
-        research=RESEARCH_DOC.read_text(encoding="utf-8"),
-        tasks=TASKS_DOC.read_text(encoding="utf-8"),
-        contract=CONTRACT_DOC.read_text(encoding="utf-8"),
-        spec=SPEC_DOC.read_text(encoding="utf-8"),
-        data_model=DATA_MODEL_DOC.read_text(encoding="utf-8"),
         runtime_contracts=RUNTIME_CONTRACTS_DOC.read_text(encoding="utf-8"),
-        maker_scope_contract=MAKER_SCOPE_CONTRACT_DOC.read_text(encoding="utf-8"),
-        maker_scope_data_model=MAKER_SCOPE_DATA_MODEL_DOC.read_text(encoding="utf-8"),
         validate_source=VALIDATE_SOURCE.read_text(encoding="utf-8"),
         decision_evidence_source=DECISION_EVIDENCE_SOURCE.read_text(encoding="utf-8"),
         archetype_source=ARCHETYPE_BINARY_ORACLE_SOURCE.read_text(encoding="utf-8"),

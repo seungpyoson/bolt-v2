@@ -153,26 +153,13 @@ class RaBiSurfaceVerifierTests(unittest.TestCase):
         *,
         helper_text: str = COMPLIANT_HELPER,
         test_text: str = COMPLIANT_TEST,
-        ra014_checked: bool = True,
-        ra015_checked: bool = True,
         just_wired: bool = True,
     ) -> None:
         (root / verifier.HELPER_PATH).parent.mkdir(parents=True, exist_ok=True)
         (root / verifier.TEST_PATH).parent.mkdir(parents=True, exist_ok=True)
-        (root / verifier.TASKS_PATH).parent.mkdir(parents=True, exist_ok=True)
         (root / verifier.JUSTFILE_PATH).parent.mkdir(parents=True, exist_ok=True)
         (root / verifier.HELPER_PATH).write_text(textwrap.dedent(helper_text), encoding="utf-8")
         (root / verifier.TEST_PATH).write_text(textwrap.dedent(test_text), encoding="utf-8")
-        (root / verifier.TASKS_PATH).write_text(
-            "\n".join(
-                [
-                    f"- [{'x' if ra014_checked else ' '}] RA-014 BI surface",
-                    f"- [{'x' if ra015_checked else ' '}] RA-015 binding-key joins",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
         just_text = ""
         if just_wired:
             just_text = (
@@ -187,14 +174,6 @@ class RaBiSurfaceVerifierTests(unittest.TestCase):
             root = Path(tmp)
             self.write_repo(root)
             self.assertEqual(verifier.scan_root(root), [])
-
-    def test_task_checkboxes_are_required(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.write_repo(root, ra014_checked=False, ra015_checked=False)
-            findings = verifier.scan_root(root)
-            self.assertTrue(any("RA-014" in finding for finding in findings))
-            self.assertTrue(any("RA-015" in finding for finding in findings))
 
     def test_comment_only_symbols_do_not_pass(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

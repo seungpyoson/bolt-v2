@@ -31,35 +31,30 @@ def write_file(root: Path, rel_path: str, text: str) -> None:
     path.write_text(textwrap.dedent(text).lstrip(), encoding="utf-8")
 
 
-def line_of(text: str, needle: str) -> int:
-    for index, line in enumerate(textwrap.dedent(text).lstrip().splitlines(), start=1):
-        if needle in line:
-            return index
-    raise AssertionError(f"missing {needle!r}")
-
-
-def config_text(*, exceptions: str = "[]") -> str:
+def config_text(
+    *,
+    logging_call_names: str = '["logger.exception", "logging.exception"]',
+    extra_settings: str = "",
+) -> str:
     return f"""
     [fail_closed_contracts]
     version = 1
     include_globs = ["pkg/**/*.py"]
     exclude_globs = []
     broad_exception_names = ["Exception", "BaseException"]
-    logging_call_names = ["logger.exception", "logging.exception"]
-    sentinel_return_shapes = ["none", "empty_list", "empty_dict", "empty_string", "false"]
-    exceptions = {exceptions}
+    logging_call_names = {logging_call_names}
+    {extra_settings}
 
     [fail_closed_contracts.rule_ids]
     bare_except_pass = "FLC001"
     broad_except_pass = "FLC002"
     broad_sentinel_return = "FLC003"
     broad_logged_sentinel_return = "FLC004"
-    central_exception_invalid = "FLC900"
     """
 
 
-def write_config(root: Path, *, exceptions: str = "[]") -> None:
-    write_file(root, "ci/fail-closed-contracts.toml", config_text(exceptions=exceptions))
+def write_config(root: Path) -> None:
+    write_file(root, "ci/fail-closed-contracts.toml", config_text())
 
 
 def collect(root: Path) -> list[str]:
@@ -95,7 +90,7 @@ def test_bad_fixtures_fail_with_stable_rule_ids() -> None:
         )
         write_file(
             root,
-            "pkg/broad_sentinel.py",
+            "pkg/broad_return.py",
             """
             def load_contract():
                 try:
@@ -106,7 +101,7 @@ def test_bad_fixtures_fail_with_stable_rule_ids() -> None:
         )
         write_file(
             root,
-            "pkg/broad_logged_sentinel.py",
+            "pkg/broad_logged_return.py",
             """
             def load_contract(logger):
                 try:
@@ -148,105 +143,60 @@ def test_precise_exception_fixture_passes() -> None:
     assert findings == []
 
 
-def test_conditional_precise_exception_expression_passes() -> None:
+def test_bare_return_fails_as_return_from_catch_all() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_config(root)
         write_file(
             root,
-            "pkg/conditional_precise.py",
+            "pkg/bare_return.py",
             """
             def load_contract():
                 try:
                     return parse()
-                except TOMLDecodeError if HAS_TOML else ValueError:
-                    return None
+                except Exception:
+                    return
             """,
         )
 
         findings = collect(root)
 
-    assert findings == []
+    assert any(finding.startswith("FLC003:pkg/bare_return.py:4:") for finding in findings)
 
 
-def test_classified_degradation_requires_valid_central_exception() -> None:
-    source = """
-    def load_optional_contract():
+def test_config_string_arrays_reject_invalid_shapes() -> None:
+    for malformed_logging_names in ('"logger.exception"', "[1]"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_file(
+                root,
+                "ci/fail-closed-contracts.toml",
+                config_text(logging_call_names=malformed_logging_names),
+            )
+
+            try:
+                collect(root)
+            except TypeError as exc:
+                assert "logging_call_names" in str(exc)
+            else:
+                raise AssertionError(f"accepted malformed logging_call_names: {malformed_logging_names}")
+
+
+def test_exception_suppression_config_is_rejected() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "ci/fail-closed-contracts.toml",
+            config_text(extra_settings='exceptions = []'),
+        )
+
         try:
-            return parse_optional()
-        except Exception:
-            return []
-    """
-    handler_line = line_of(source, "except Exception:")
-    exception = (
-        "[{ path = \"pkg/degradation.py\", "
-        f"line = {handler_line}, "
-        "rule_id = \"FLC003\", "
-        "classification = \"classified_degradation\", "
-        "reason = \"Optional development report keeps fail-closed runtime paths separate.\" }]"
-    )
-    invalid_exception = (
-        "[{ path = \"pkg/degradation.py\", "
-        f"line = {handler_line}, "
-        "rule_id = \"FLC003\", "
-        "classification = \"\", "
-        "reason = \"missing classification\" }]"
-    )
-
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        write_config(root)
-        write_file(root, "pkg/degradation.py", source)
-        unexcepted = collect(root)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        write_config(root, exceptions=invalid_exception)
-        write_file(root, "pkg/degradation.py", source)
-        invalid = collect(root)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        write_config(root, exceptions=exception)
-        write_file(root, "pkg/degradation.py", source)
-        allowed = collect(root)
-
-    assert any(finding.startswith("FLC003:pkg/degradation.py:4:") for finding in unexcepted)
-    assert any(finding.startswith("FLC003:pkg/degradation.py:4:") for finding in invalid)
-    assert any(finding.startswith("FLC900:") for finding in invalid)
-    assert allowed == []
-
-
-def test_invalid_central_exception_disables_all_exception_suppression() -> None:
-    source = """
-    def load_contract():
-        try:
-            return parse()
-        except Exception:
-            return []
-    """
-    handler_line = line_of(source, "except Exception:")
-    exceptions = (
-        "[{ path = \"pkg/degradation.py\", "
-        f"line = {handler_line}, "
-        "rule_id = \"FLC003\", "
-        "classification = \"classified_degradation\", "
-        "reason = \"Development-only report has explicit degraded-state ownership.\" }, "
-        "{ path = \"pkg/other.py\", "
-        f"line = {handler_line}, "
-        "rule_id = \"FLC003\", "
-        "classification = \"\", "
-        "reason = \"invalid ledger entry\" }]"
-    )
-
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        write_config(root, exceptions=exceptions)
-        write_file(root, "pkg/degradation.py", source)
-        findings = collect(root)
-
-    assert any(finding.startswith("FLC900:") for finding in findings)
-    assert any(finding.startswith("FLC003:pkg/degradation.py:4:") for finding in findings)
+            collect(root)
+        except TypeError as exc:
+            assert "fail_closed_contracts keys" in str(exc)
+        else:
+            raise AssertionError("accepted exception suppression config")
 
 
 def test_cli_fails_with_actionable_output() -> None:
@@ -290,9 +240,9 @@ def main() -> int:
     tests = [
         test_bad_fixtures_fail_with_stable_rule_ids,
         test_precise_exception_fixture_passes,
-        test_conditional_precise_exception_expression_passes,
-        test_classified_degradation_requires_valid_central_exception,
-        test_invalid_central_exception_disables_all_exception_suppression,
+        test_bare_return_fails_as_return_from_catch_all,
+        test_config_string_arrays_reject_invalid_shapes,
+        test_exception_suppression_config_is_rejected,
         test_cli_fails_with_actionable_output,
     ]
     for test in tests:

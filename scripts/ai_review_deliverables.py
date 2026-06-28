@@ -1354,11 +1354,7 @@ def run_kimi_review_from_env(args: argparse.Namespace) -> int:
         pr_number=pr_number,
         review_intro="The Kimi CLI reviewer reviewed the PR diff with Kimi.",
     )
-    try:
-        result = post_split_review(github=github, reviewer=build_kimi_reviewer_from_env(api_key, args), config=config)
-    except Exception as exc:
-        print(f"Kimi primary review failed: {sanitize_detail(truncate_text(str(exc), 1200))}", file=sys.stderr)
-        return 1
+    result = post_split_review(github=github, reviewer=build_kimi_reviewer_from_env(api_key, args), config=config)
     print(result)
     return 0
 

@@ -10189,7 +10189,7 @@ def verify_test_harness_manifest(
 
     try:
         manifest = build_test_manifest(cargo_manifest, root)
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         errors.append(f"{cargo_manifest.name} explicit test harness manifest could not be built: {exc}")
         return errors
 

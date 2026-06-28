@@ -527,7 +527,7 @@ def scan_literals() -> list[Literal]:
 def main() -> int:
     try:
         allowed = load_allowed()
-    except Exception as error:
+    except (OSError, ValueError) as error:
         print(f"ERROR: failed to load runtime literal audit: {error}", file=sys.stderr)
         return 2
 

@@ -4,12 +4,9 @@ include_globs = ["scripts/**/*.py"]
 exclude_globs = ["scripts/test_*.py"]
 broad_exception_names = ["Exception", "BaseException"]
 logging_call_names = ["logger.exception", "logging.exception"]
-sentinel_return_shapes = ["none", "empty_list", "empty_dict", "empty_string", "false"]
-exceptions = []
 
 [fail_closed_contracts.rule_ids]
 bare_except_pass = "FLC001"
 broad_except_pass = "FLC002"
 broad_sentinel_return = "FLC003"
 broad_logged_sentinel_return = "FLC004"
-central_exception_invalid = "FLC900"

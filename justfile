@@ -458,6 +458,8 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
 
     [ -f .github/workflows/ci.yml ] && workflow_files+=(.github/workflows/ci.yml)
     [ -f .github/workflows/advisory.yml ] && workflow_files+=(.github/workflows/advisory.yml)
+    [ -f .github/workflows/flaky-test-detection.yml ] && workflow_files+=(.github/workflows/flaky-test-detection.yml)
+    [ -f .github/workflows/flaky-test-smoke.yml ] && workflow_files+=(.github/workflows/flaky-test-smoke.yml)
     [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
     github_script_files=(.github/scripts/*.sh)
 

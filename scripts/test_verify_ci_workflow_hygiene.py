@@ -5164,7 +5164,7 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
     )
     if "workflow_dispatch:" in detection or "schedule:" in smoke:
         raise AssertionError("flaky full detection and smoke workflows must use separate triggers")
-    if "inputs.mode" in combined or "if: ${{" in combined:
+    if "inputs.mode" in combined:
         raise AssertionError("flaky workflows must not use conditional full/smoke fallback selection")
     for workflow_name, workflow in (
         ("flaky-test-detection.yml", detection),
@@ -5172,6 +5172,15 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
     ):
         if workflow.count("if: success() || failure()") != 3:
             raise AssertionError(f"{workflow_name} must keep the required Mergify upload condition only")
+        workflow_if_values = [
+            match.group(1).strip()
+            for line in workflow.splitlines()
+            if (match := re.match(r"^\s*if:\s*(.*?)\s*$", line)) is not None
+        ]
+        if workflow_if_values != ["success() || failure()"] * 3:
+            raise AssertionError(
+                f"{workflow_name} must not contain conditional fallback gates; got if values {workflow_if_values!r}"
+            )
     if combined.count(pinned_v14_action) != 6:
         raise AssertionError("flaky-test-detection.yml must pin all Mergify uploads to the v14 action SHA")
     if "flaky_test_detection:" in combined:

@@ -493,6 +493,11 @@ def compile_time_include_targets(repo_root: pathlib.Path, config: FingerprintCon
 
 def validate_compile_time_includes(repo_root: pathlib.Path, config: FingerprintConfig) -> None:
     for source, target in compile_time_include_targets(repo_root, config):
+        if target.endswith(".md"):
+            raise FingerprintError(
+                "compile-time include target must not be a prose doc: "
+                f"{target} (referenced by {source})"
+            )
         if not tracked_input_included(target, config.tracked_inputs) or safe_excluded(target, config.safe_excludes):
             raise FingerprintError(
                 "compile-time include target is outside nextest tracked inputs: "

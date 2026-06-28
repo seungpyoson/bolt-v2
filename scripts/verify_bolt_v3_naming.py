@@ -22,11 +22,6 @@ AUDIT_PATH = REPO_ROOT / "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml"
 MISNOMER_ALLOWLIST_PATH = (
     REPO_ROOT / "specs/711-capital-admission-rename/misnomer-allowlist.txt"
 )
-CANONICAL_DOCS = [
-    REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
-    REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-schema.md",
-    REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-contract-ledger.md",
-]
 SCAN_GLOBS = [
     "docs/bolt-v3/*.md",
     "docs/bolt-v3/research/**/*.toml",
@@ -292,7 +287,6 @@ def main() -> int:
         for row in [*rename_rows, *defensive_rows]
         if row.get("from") and row.get("to")
     }
-    required_names = [row["to"] for row in rename_rows if row.get("to")]
 
     findings: list[str] = []
     for path in scan_paths():
@@ -314,11 +308,6 @@ def main() -> int:
                     f"{path.relative_to(REPO_ROOT)}: forbidden {forbidden_name!r}; "
                     f"use {replacement} ({row.get('reason', 'path-scoped rule')})"
                 )
-
-    combined_canonical = "\n".join(path.read_text(encoding="utf-8") for path in CANONICAL_DOCS)
-    for required_name in required_names:
-        if not word_re(required_name).search(combined_canonical):
-            findings.append(f"required canonical name {required_name!r} is absent")
 
     findings.extend(verify_capital_admission_misnomers())
 

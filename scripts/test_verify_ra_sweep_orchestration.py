@@ -37,7 +37,6 @@ def write_common(
     operator_source: str | None = None,
     test_source: str | None = None,
     justfile: str | None = None,
-    tasks: str | None = None,
 ) -> None:
     write_file(
         root,
@@ -73,11 +72,6 @@ fn sweep_orchestration_rejects_contract_not_bound_to_run_spec() {}
     python3 scripts/test_verify_ra_sweep_orchestration.py
     python3 scripts/verify_ra_sweep_orchestration.py
 """,
-    )
-    write_file(
-        root,
-        "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
-        tasks if tasks is not None else "- [x] RA-008 Implement sweep orchestration.\n",
     )
 
 

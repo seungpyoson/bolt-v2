@@ -361,6 +361,46 @@ fn production_subprocess_after_cfg_string_brace() {
     )
 
 
+def test_main_rs_entrypoint_calls_pass_when_present_and_flag_missing() -> None:
+    # Passing fixture: a src/main.rs body that contains every required
+    # bolt-v3 entrypoint call-site.
+    passing_main_rs = "\n".join(
+        f"        {call}" for call in VERIFIER.MAIN_RS_ENTRYPOINT_CALLS
+    )
+    if VERIFIER.missing_main_rs_entrypoint_calls(passing_main_rs):
+        raise AssertionError(
+            "expected no findings when every entrypoint call is present; got "
+            f"{VERIFIER.missing_main_rs_entrypoint_calls(passing_main_rs)!r}"
+        )
+
+    # Failing fixture: identical, but with one entrypoint call-site removed.
+    dropped_call = VERIFIER.MAIN_RS_ENTRYPOINT_CALLS[1]
+    broken_main_rs = passing_main_rs.replace(dropped_call, "")
+    findings = VERIFIER.missing_main_rs_entrypoint_calls(broken_main_rs)
+    if len(findings) != 1:
+        raise AssertionError(f"expected exactly one missing-call finding; got {findings!r}")
+    assert_contains(
+        "\n".join(findings),
+        f"src/main.rs is missing entrypoint call {dropped_call!r}",
+    )
+
+
+def test_main_rs_entrypoint_calls_ignore_comments_and_literals() -> None:
+    commented_and_literal_calls = "\n".join(
+        [
+            f"// {VERIFIER.MAIN_RS_ENTRYPOINT_CALLS[0]}",
+            f'const DECOY: &str = "{VERIFIER.MAIN_RS_ENTRYPOINT_CALLS[1]}";',
+            f"/* {VERIFIER.MAIN_RS_ENTRYPOINT_CALLS[2]} */",
+        ]
+    )
+    findings = VERIFIER.missing_main_rs_entrypoint_calls(commented_and_literal_calls)
+    if len(findings) != len(VERIFIER.MAIN_RS_ENTRYPOINT_CALLS):
+        raise AssertionError(
+            "commented/string-literal entrypoint calls must not satisfy src/main.rs "
+            f"checks; got {findings!r}"
+        )
+
+
 def main() -> int:
     tests = [
         test_collect_dependency_names_covers_workspace_and_target_tables,
@@ -370,6 +410,8 @@ def main() -> int:
         test_forbidden_rust_scan_ignores_comments_and_literals,
         test_cfg_test_items_are_ignored_but_production_items_remain,
         test_runtime_subprocess_detection_survives_comments_literals_and_cfg_fixtures,
+        test_main_rs_entrypoint_calls_pass_when_present_and_flag_missing,
+        test_main_rs_entrypoint_calls_ignore_comments_and_literals,
     ]
     for test in tests:
         test()

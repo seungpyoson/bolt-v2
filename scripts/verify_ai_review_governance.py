@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify AI PR review governance mirrors stay current."""
+"""Verify AI PR review governance config and workflows stay current."""
 
 from __future__ import annotations
 
@@ -7,143 +7,11 @@ import argparse
 import re
 import sys
 import tomllib
-from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-
-@dataclass(frozen=True)
-class MirrorRule:
-    name: str
-    agents_snippets: tuple[str, ...]
-    pr_agent_snippets: tuple[str, ...]
-
-
-AGENTS_BACKPOINTER_SNIPPETS = (
-    ".pr_agent.toml` mirrors the critical AI-review subset for PR-Agent",
-    "scripts/verify_ai_review_governance.py` checks the mirror in CI",
-)
-
-PR_AGENT_MIRROR_NOTE_SNIPPETS = (
-    "This mirror is checked by scripts/verify_ai_review_governance.py",
-    "update this block when the mirrored AGENTS.md rules change",
-)
-
-MIRRORED_RULES = (
-    MirrorRule(
-        "scope discipline",
-        (
-            "One branch or PR may cover only one declared issue, spec, task, or an explicitly named slice",
-            "Reviewers must flag out-of-scope changes, hidden adjacent issue work, and missing claimed scope",
-        ),
-        (
-            "Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice",
-            "flag out-of-scope changes, hidden adjacent work, and missing claimed scope",
-        ),
-    ),
-    MirrorRule(
-        "no hardcodes",
-        (
-            "**NO HARDCODES**",
-            "every runtime value comes from TOML config",
-        ),
-        (
-            "NO HARDCODES: every runtime value comes from TOML config",
-            "no string literals for IDs, quantities, timeouts, or any runtime value in code",
-        ),
-    ),
-    MirrorRule(
-        "no dual paths",
-        (
-            "**NO DUAL PATHS**",
-            "one way to do each thing",
-        ),
-        (
-            "NO DUAL PATHS: one way to do each thing",
-            "one config format, one secret source, one build path",
-        ),
-    ),
-    MirrorRule(
-        "no debts",
-        (
-            "**NO DEBTS**",
-            "no TODO, no \"fix later\", no unpinned dependencies, no uncommitted work",
-        ),
-        (
-            "NO DEBTS: no TODO, no \"fix later\", no unpinned dependencies, no uncommitted work",
-        ),
-    ),
-    MirrorRule(
-        "no credential display",
-        (
-            "**NO CREDENTIAL DISPLAY**",
-            "never cat/print/log API keys, private keys, secrets",
-        ),
-        (
-            "NO CREDENTIAL DISPLAY: never cat, print, or log API keys, private keys, or secrets",
-        ),
-    ),
-    MirrorRule(
-        "ssm secret source",
-        (
-            "**SSM IS THE SINGLE SECRET SOURCE**",
-            "product/runtime credentials resolve from AWS SSM",
-            "GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN`",
-            "do not add alternate GitHub token names",
-        ),
-        (
-            "SSM is the single secret source for product/runtime credentials",
-            "GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN`",
-            "Do not add environment variable fallbacks, alternate GitHub token names, or alternate secret backends",
-        ),
-    ),
-    MirrorRule(
-        "provider runtime boundary evidence",
-        (
-            "**PROVIDER/RUNTIME BOUNDARY EVIDENCE IS REGISTERED**",
-            "every deploy/readiness feeder that depends on provider runtime bytes or metadata must be represented in the authoritative boundary registry",
-            "WebSocket-frame evidence must not be deferred",
-        ),
-        (
-            "Provider/runtime boundary evidence is registered",
-            "every deploy/readiness feeder that depends on provider runtime bytes or metadata must be in the boundary registry and source-fence guarded or issue-bound, expiring non-WebSocket deferral",
-            "WebSocket-frame evidence must not be deferred",
-        ),
-    ),
-    MirrorRule(
-        "evidence-driven verification",
-        (
-            "Every claim must map to evidence",
-            "External review: only after local findings are resolved and exact-head CI or the user-approved equivalent is green",
-        ),
-        (
-            "Evidence-driven verification: every claim must map to tests",
-            "External review happens only after local findings are resolved and exact-head CI or a user-approved equivalent is green",
-        ),
-    ),
-    MirrorRule(
-        "remote-first rust verification",
-        (
-            "Do not run local compile-heavy Rust verification by default",
-            "Use local non-compile gates for fast feedback",
-        ),
-        (
-            "Remote-first Rust verification: do not request local compile-heavy Rust checks by default",
-            "request remote CI or allowed static checks",
-        ),
-    ),
-    MirrorRule(
-        "required human review",
-        (
-            "Agents must not merge, squash, rebase-merge, or otherwise land code until the PR has approval",
-        ),
-        (
-            "Required human review must be preserved",
-            "agents must not merge or bypass the required reviewer gate",
-        ),
-    ),
-)
 
 KIMI_BASE_GOVERNANCE_SNIPPETS = (
     "ref: ${{ github.event.pull_request.base.sha }}",
@@ -327,6 +195,10 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def missing_snippets(label: str, text: str, snippets: tuple[str, ...]) -> list[str]:
+    return [f"{label} missing expected snippet: {snippet!r}" for snippet in snippets if snippet not in text]
+
+
 def pr_agent_extra_instructions(pr_agent_toml: str) -> tuple[str, list[str]]:
     try:
         parsed = tomllib.loads(pr_agent_toml)
@@ -342,6 +214,114 @@ def pr_agent_extra_instructions(pr_agent_toml: str) -> tuple[str, list[str]]:
         return "", [".pr_agent.toml missing non-empty pr_reviewer.extra_instructions"]
 
     return extra, []
+
+
+def non_empty_string_list(value: object) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(item, str) and item for item in value)
+
+
+class PrAgentMirrorFailure(str, Enum):
+    MISSING_TABLE = "missing_table"
+    INVALID_NOTE_SNIPPETS = "invalid_note_snippets"
+    INVALID_RULES = "invalid_rules"
+    INVALID_RULE = "invalid_rule"
+    INVALID_RULE_NAME = "invalid_rule_name"
+    DUPLICATE_RULE_NAME = "duplicate_rule_name"
+    INVALID_RULE_SNIPPETS = "invalid_rule_snippets"
+
+
+def pr_agent_mirror_contract_failure(reason: PrAgentMirrorFailure, message: str) -> str:
+    return f"ci/ai-review.toml pr_agent_mirror contract failure ({reason.value}): {message}"
+
+
+def verify_pr_agent_mirror(ai_review_toml: str, pr_agent_toml: str) -> list[str]:
+    findings: list[str] = []
+    try:
+        parsed = tomllib.loads(ai_review_toml)
+    except tomllib.TOMLDecodeError as exc:
+        return [f"ci/ai-review.toml invalid TOML: {exc}"]
+
+    mirror = parsed.get("pr_agent_mirror")
+    if not isinstance(mirror, dict):
+        return [
+            pr_agent_mirror_contract_failure(
+                PrAgentMirrorFailure.MISSING_TABLE,
+                "missing [pr_agent_mirror]",
+            )
+        ]
+
+    note_snippets = mirror.get("required_note_snippets")
+    if not non_empty_string_list(note_snippets):
+        return [
+            pr_agent_mirror_contract_failure(
+                PrAgentMirrorFailure.INVALID_NOTE_SNIPPETS,
+                "required_note_snippets must be a non-empty string list",
+            )
+        ]
+    required_note_snippets = tuple(note_snippets)
+
+    rules = mirror.get("rules")
+    if not isinstance(rules, list) or not rules:
+        return [
+            pr_agent_mirror_contract_failure(
+                PrAgentMirrorFailure.INVALID_RULES,
+                "rules must be a non-empty table array",
+            )
+        ]
+    mirror_rules = tuple(rules)
+
+    extra, extra_findings = pr_agent_extra_instructions(pr_agent_toml)
+    findings.extend(extra_findings)
+    if extra_findings:
+        return findings
+
+    for snippet in required_note_snippets:
+        if snippet not in extra:
+            findings.append(f".pr_agent.toml missing mirrored governance note: {snippet!r}")
+
+    seen_names: set[str] = set()
+    for index, rule in enumerate(mirror_rules):
+        if not isinstance(rule, dict):
+            findings.append(
+                pr_agent_mirror_contract_failure(
+                    PrAgentMirrorFailure.INVALID_RULE,
+                    f"rules[{index}] must be a table",
+                )
+            )
+            continue
+        name = rule.get("name")
+        if not isinstance(name, str) or not name:
+            findings.append(
+                pr_agent_mirror_contract_failure(
+                    PrAgentMirrorFailure.INVALID_RULE_NAME,
+                    f"rules[{index}].name must be non-empty",
+                )
+            )
+            continue
+        if name in seen_names:
+            findings.append(
+                pr_agent_mirror_contract_failure(
+                    PrAgentMirrorFailure.DUPLICATE_RULE_NAME,
+                    f"duplicate pr_agent_mirror rule {name!r}",
+                )
+            )
+            continue
+        seen_names.add(name)
+
+        snippets = rule.get("snippets")
+        if not non_empty_string_list(snippets):
+            findings.append(
+                pr_agent_mirror_contract_failure(
+                    PrAgentMirrorFailure.INVALID_RULE_SNIPPETS,
+                    f"rule {name!r} snippets must be non-empty",
+                )
+            )
+            continue
+        for snippet in snippets:
+            if snippet not in extra:
+                findings.append(f".pr_agent.toml missing mirrored governance rule {name!r}: {snippet!r}")
+
+    return findings
 
 
 def exact_glm_model_id(value: object) -> bool:
@@ -440,10 +420,6 @@ def verify_pr_agent_config(pr_agent_toml: str, ai_review_toml: str) -> list[str]
             findings.append(f".pr_agent.toml extra_instructions must read AI review runtime value from ci/ai-review.toml, not {literal!r}")
 
     return findings
-
-
-def missing_snippets(label: str, text: str, snippets: tuple[str, ...]) -> list[str]:
-    return [f"{label} missing expected snippet: {snippet!r}" for snippet in snippets if snippet not in text]
 
 
 def workflow_step_block(workflow_text: str, step_name: str) -> str:
@@ -700,9 +676,8 @@ def verify_review_job_timeout_budget(
 
 def verify_texts(
     *,
-    agents_md: str,
-    pr_agent_toml: str,
     ai_review_toml: str,
+    pr_agent_toml: str,
     ai_review_deliverables: str,
     glm_workflow: str,
     kimi_workflow: str,
@@ -710,31 +685,13 @@ def verify_texts(
 ) -> list[str]:
     findings: list[str] = []
 
-    extra, extra_findings = pr_agent_extra_instructions(pr_agent_toml)
-    findings.extend(extra_findings)
-    if extra_findings:
-        return findings
-
-    findings.extend(missing_snippets("AGENTS.md", agents_md, AGENTS_BACKPOINTER_SNIPPETS))
-    findings.extend(missing_snippets(".pr_agent.toml extra_instructions", extra, PR_AGENT_MIRROR_NOTE_SNIPPETS))
     findings.extend(verify_ai_review_config(ai_review_toml))
+    findings.extend(verify_pr_agent_mirror(ai_review_toml, pr_agent_toml))
     findings.extend(verify_pr_agent_config(pr_agent_toml, ai_review_toml))
     findings.extend(missing_snippets("scripts/ai_review_deliverables.py", ai_review_deliverables, AI_REVIEW_DELIVERABLES_SNIPPETS))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, glm_workflow, "glm", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, kimi_workflow, "kimi", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, smoke_workflow, "smoke", setup_required=False))
-
-    for rule in MIRRORED_RULES:
-        for snippet in rule.agents_snippets:
-            if snippet not in agents_md:
-                findings.append(
-                    f"AGENTS.md source for mirrored rule {rule.name!r} changed or disappeared: {snippet!r}"
-                )
-        for snippet in rule.pr_agent_snippets:
-            if snippet not in extra:
-                findings.append(
-                    f".pr_agent.toml missing mirrored AGENTS.md rule {rule.name!r}: {snippet!r}"
-                )
 
     if "pr_reviewer." in glm_workflow:
         findings.append(
@@ -824,9 +781,8 @@ def verify_texts(
 
 def verify_repo(repo_root: Path) -> list[str]:
     return verify_texts(
-        agents_md=read_text(repo_root / "AGENTS.md"),
-        pr_agent_toml=read_text(repo_root / ".pr_agent.toml"),
         ai_review_toml=read_text(repo_root / "ci/ai-review.toml"),
+        pr_agent_toml=read_text(repo_root / ".pr_agent.toml"),
         ai_review_deliverables=read_text(repo_root / "scripts/ai_review_deliverables.py"),
         glm_workflow=read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml"),
         kimi_workflow=read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml"),
@@ -840,9 +796,8 @@ def assert_finding(name: str, findings: list[str], expected: str) -> None:
 
 
 def run_self_tests(repo_root: Path) -> None:
-    agents = read_text(repo_root / "AGENTS.md")
-    pr_agent = read_text(repo_root / ".pr_agent.toml")
     ai_review = read_text(repo_root / "ci/ai-review.toml")
+    pr_agent = read_text(repo_root / ".pr_agent.toml")
     ai_review_config = tomllib.loads(ai_review)
     github_config = ai_review_config["github"]
     glm_config = ai_review_config["glm"]
@@ -856,104 +811,66 @@ def run_self_tests(repo_root: Path) -> None:
     kimi = read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml")
     smoke = read_text(repo_root / ".github/workflows/ai-review-coding-plan-smoke.yml")
 
-    baseline = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
-    )
+    def verify_variant(
+        *,
+        ai_review_text: str = ai_review,
+        pr_agent_text: str = pr_agent,
+        deliverables_text: str = deliverables,
+        glm_text: str = glm,
+        kimi_text: str = kimi,
+        smoke_text: str = smoke,
+    ) -> list[str]:
+        return verify_texts(
+            ai_review_toml=ai_review_text,
+            pr_agent_toml=pr_agent_text,
+            ai_review_deliverables=deliverables_text,
+            glm_workflow=glm_text,
+            kimi_workflow=kimi_text,
+            smoke_workflow=smoke_text,
+        )
+
+    baseline = verify_variant()
     if baseline:
         raise AssertionError(f"real repository must satisfy AI review governance check, got {baseline!r}")
 
-    wrong_ai_review_config = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review.replace("https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/paas/v4"),
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
+    wrong_ai_review_config = verify_variant(
+        ai_review_text=ai_review.replace("https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/paas/v4"),
     )
     assert_finding("wrong AI review config endpoint", wrong_ai_review_config, "ci/ai-review.toml glm.api_base")
 
-    workflow_runtime_literal = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm + f"\n          GLM_MODEL: {current_glm_model}\n",
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
-    )
+    workflow_runtime_literal = verify_variant(glm_text=glm + f"\n          GLM_MODEL: {current_glm_model}\n")
     assert_finding("workflow runtime literal", workflow_runtime_literal, "must read AI review runtime value")
 
-    workflow_bot_literal = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm + f"\n          EXPECTED_BOT_LOGIN: {current_bot_login}\n",
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
-    )
+    workflow_bot_literal = verify_variant(glm_text=glm + f"\n          EXPECTED_BOT_LOGIN: {current_bot_login}\n")
     assert_finding("workflow bot login literal", workflow_bot_literal, "must read AI review runtime value")
 
-    workflow_glm_marker_literal = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm + f"\n          GLM_MARKER: {current_glm_comment_marker}\n",
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
-    )
+    workflow_glm_marker_literal = verify_variant(glm_text=glm + f"\n          GLM_MARKER: {current_glm_comment_marker}\n")
     assert_finding("workflow GLM marker literal", workflow_glm_marker_literal, "must read AI review runtime value")
 
-    stamp_continue_on_error = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm.replace(
+    stamp_continue_on_error = verify_variant(
+        glm_text=glm.replace(
             "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: env.GLM_API_KEY != ''\n        env:",
             "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: env.GLM_API_KEY != ''\n        continue-on-error: true\n        env:",
             1,
         ),
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
     )
     assert_finding("stamp continue-on-error", stamp_continue_on_error, "GLM source stamp step must fail closed")
 
-    missing_stamp_step = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm.replace(
+    missing_stamp_step = verify_variant(
+        glm_text=glm.replace(
             "      - name: Stamp GLM PR-Agent review source\n",
             "      - name: Stamp GLM PR-Agent review source disabled\n",
             1,
         ),
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
     )
     assert_finding("missing stamp step", missing_stamp_step, "GLM workflow missing Stamp GLM PR-Agent review source step")
 
-    missing_stamp_failure_notice = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm.replace(
+    missing_stamp_failure_notice = verify_variant(
+        glm_text=glm.replace(
             "              || (steps.glm_stamp.outcome == 'failure' && steps.glm_fallback.outcome != 'success')\n",
             "",
             1,
         ),
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
     )
     assert_finding(
         "missing stamp failure notice",
@@ -961,18 +878,12 @@ def run_self_tests(repo_root: Path) -> None:
         "GLM workflow missing expected snippet",
     )
 
-    fallback_not_reachable_after_stamp_failure = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm.replace(
+    fallback_not_reachable_after_stamp_failure = verify_variant(
+        glm_text=glm.replace(
             "            && always()\n",
             "",
             1,
         ),
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
     )
     assert_finding(
         "fallback not reachable after stamp failure",
@@ -980,29 +891,15 @@ def run_self_tests(repo_root: Path) -> None:
         "GLM fallback step must run after stamp failure",
     )
 
-    notice_empty_marker_guard_removed = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm.replace('            eval "$config_exports"\n', "", 2),
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
-    )
+    notice_empty_marker_guard_removed = verify_variant(glm_text=glm.replace('            eval "$config_exports"\n', "", 2))
     assert_finding(
         "notice empty marker guard removed",
         notice_empty_marker_guard_removed,
         "GLM notice step",
     )
 
-    kimi_notice_empty_marker_guard_removed = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi.replace('            eval "$config_exports"\n', "", 2),
-        smoke_workflow=smoke,
+    kimi_notice_empty_marker_guard_removed = verify_variant(
+        kimi_text=kimi.replace('            eval "$config_exports"\n', "", 2),
     )
     assert_finding(
         "Kimi notice empty marker guard removed",
@@ -1027,31 +924,19 @@ def run_self_tests(repo_root: Path) -> None:
     if "continue-on-error: true" in stamp_block:
         raise AssertionError("workflow_step_block included a later job in the stamp step block")
 
-    pr_agent_model_literal = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent.replace(
+    pr_agent_model_literal = verify_variant(
+        pr_agent_text=pr_agent.replace(
             "workflow stamps the authoritative configured source/model from `ci/ai-review.toml`",
             f"workflow stamps the authoritative configured source/model from `ci/ai-review.toml` (`{current_glm_pr_agent_model}`)",
         ),
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
     )
     assert_finding("PR-Agent model literal", pr_agent_model_literal, ".pr_agent.toml extra_instructions must read AI review runtime value")
 
-    pr_agent_missing_finding_labels = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent.replace(
+    pr_agent_missing_finding_labels = verify_variant(
+        pr_agent_text=pr_agent.replace(
             "include lines starting exactly with `Severity:`, `Evidence:`, `Issue:`, and `Fix / verification:`",
             "include severity",
         ),
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
     )
     assert_finding(
         "PR-Agent missing finding labels",
@@ -1059,14 +944,8 @@ def run_self_tests(repo_root: Path) -> None:
         "must require the literal finding evidence labels",
     )
 
-    pr_agent_missing_no_findings_contract = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent.replace("No hard-evidence findings", "No findings"),
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
+    pr_agent_missing_no_findings_contract = verify_variant(
+        pr_agent_text=pr_agent.replace("No hard-evidence findings", "No findings"),
     )
     assert_finding(
         "PR-Agent missing no-findings contract",
@@ -1074,14 +953,8 @@ def run_self_tests(repo_root: Path) -> None:
         "must require the no-findings evidence contract",
     )
 
-    workflow_notice_marker_derivation = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm + '\n              return f"{marker[:-4]}-notice -->"\n',
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
+    workflow_notice_marker_derivation = verify_variant(
+        glm_text=glm + '\n              return f"{marker[:-4]}-notice -->"\n',
     )
     assert_finding(
         "workflow notice marker derivation",
@@ -1089,18 +962,12 @@ def run_self_tests(repo_root: Path) -> None:
         "notice markers must use explicit notice_marker config",
     )
 
-    workflow_notice_marker_keyerror = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm.replace(
+    workflow_notice_marker_keyerror = verify_variant(
+        glm_text=glm.replace(
             'marker = table.get("notice_marker")',
             'marker = table["notice_marker"]',
             1,
         ),
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
     )
     assert_finding(
         "workflow notice marker explicit error",
@@ -1108,86 +975,102 @@ def run_self_tests(repo_root: Path) -> None:
         "GLM workflow missing expected snippet",
     )
 
-    smoke_runtime_literal = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke + f"\n          GLM_API_BASE: {current_glm_api_base}\n",
-    )
+    smoke_runtime_literal = verify_variant(smoke_text=smoke + f"\n          GLM_API_BASE: {current_glm_api_base}\n")
     assert_finding("smoke workflow runtime literal", smoke_runtime_literal, "must read AI review runtime value")
 
-    glm_short_job_timeout = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm.replace("timeout-minutes: 35", "timeout-minutes: 20"),
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
-    )
+    glm_short_job_timeout = verify_variant(glm_text=glm.replace("timeout-minutes: 35", "timeout-minutes: 20"))
     assert_finding("GLM short job timeout", glm_short_job_timeout, "GLM workflow job timeout must match")
 
-    kimi_short_job_timeout = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi.replace("timeout-minutes: 45", "timeout-minutes: 35"),
-        smoke_workflow=smoke,
-    )
+    kimi_short_job_timeout = verify_variant(kimi_text=kimi.replace("timeout-minutes: 45", "timeout-minutes: 35"))
     assert_finding("Kimi short job timeout", kimi_short_job_timeout, "Kimi workflow job timeout must match")
 
-    smoke_job_timeout_drift = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke.replace("timeout-minutes: 10", "timeout-minutes: 8"),
-    )
+    smoke_job_timeout_drift = verify_variant(smoke_text=smoke.replace("timeout-minutes: 10", "timeout-minutes: 8"))
     assert_finding("Smoke job timeout drift", smoke_job_timeout_drift, "Smoke workflow job timeout must match")
 
-    smoke_head_config = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke.replace(
+    smoke_head_config = verify_variant(
+        smoke_text=smoke.replace(
             "ref: ${{ github.event.pull_request.base.sha }}",
             "ref: ${{ github.event.pull_request.head.sha }}",
         ),
     )
     assert_finding("Smoke head config", smoke_head_config, "Smoke workflow missing expected snippet")
 
-    missing_mirror = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent.replace("NO HARDCODES: every runtime value comes from TOML config", "NO HARDCODES"),
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
+    missing_mirror = verify_variant(
+        pr_agent_text=pr_agent.replace("NO HARDCODES: every runtime value comes from TOML config", "NO HARDCODES"),
     )
     assert_finding("missing PR-Agent mirror", missing_mirror, ".pr_agent.toml missing mirrored")
 
-    missing_github_token_carveout = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent.replace(
+    invalid_mirror_toml = verify_pr_agent_mirror("[pr_agent_mirror\n", pr_agent)
+    assert_finding("invalid PR-Agent mirror TOML", invalid_mirror_toml, "ci/ai-review.toml invalid TOML")
+
+    missing_mirror_table = verify_pr_agent_mirror('title = "missing"\n', pr_agent)
+    assert_finding("missing PR-Agent mirror table", missing_mirror_table, "missing [pr_agent_mirror]")
+
+    bad_mirror_rules = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = ["placeholder governance note"]
+        rules = "not-a-table-array"
+        """,
+        pr_agent,
+    )
+    assert_finding("bad PR-Agent mirror rules", bad_mirror_rules, "rules must be a non-empty table array")
+
+    missing_required_note_snippets = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+
+        [[pr_agent_mirror.rules]]
+        name = "scope discipline"
+        snippets = ["Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice"]
+        """,
+        pr_agent,
+    )
+    assert_finding(
+        "missing PR-Agent mirror note snippets",
+        missing_required_note_snippets,
+        "required_note_snippets must be a non-empty string list",
+    )
+
+    empty_required_note_snippets = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = []
+
+        [[pr_agent_mirror.rules]]
+        name = "scope discipline"
+        snippets = ["Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice"]
+        """,
+        pr_agent,
+    )
+    assert_finding(
+        "empty PR-Agent mirror note snippets",
+        empty_required_note_snippets,
+        "required_note_snippets must be a non-empty string list",
+    )
+
+    invalid_required_note_snippets = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = ["placeholder governance note", 123]
+
+        [[pr_agent_mirror.rules]]
+        name = "scope discipline"
+        snippets = ["Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice"]
+        """,
+        pr_agent,
+    )
+    assert_finding(
+        "invalid PR-Agent mirror note snippets",
+        invalid_required_note_snippets,
+        "required_note_snippets must be a non-empty string list",
+    )
+
+    missing_github_token_carveout = verify_variant(
+        pr_agent_text=pr_agent.replace(
             "GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN`",
             "GitHub automation may use the default token",
         ),
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
     )
     assert_finding(
         "missing GITHUB_TOKEN carve-out mirror",
@@ -1195,47 +1078,69 @@ def run_self_tests(repo_root: Path) -> None:
         ".pr_agent.toml missing mirrored",
     )
 
-    changed_source = verify_texts(
-        agents_md=agents.replace("**NO DUAL PATHS**", "**NO MULTI PATHS**"),
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
-    )
-    assert_finding("changed AGENTS source", changed_source, "AGENTS.md source for mirrored rule 'no dual paths'")
+    duplicate_mirror_rule = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = ["placeholder governance note"]
 
-    glm_split_config = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm + "\n          pr_reviewer.num_max_findings: \"6\"\n",
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
+        [[pr_agent_mirror.rules]]
+        name = "scope discipline"
+        snippets = ["Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice"]
+
+        [[pr_agent_mirror.rules]]
+        name = "scope discipline"
+        snippets = ["flag out-of-scope changes, hidden adjacent work, and missing claimed scope"]
+        """,
+        pr_agent,
     )
+    assert_finding("duplicate PR-Agent mirror rule", duplicate_mirror_rule, "duplicate pr_agent_mirror rule")
+
+    missing_mirror_rule_name = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = ["placeholder governance note"]
+
+        [[pr_agent_mirror.rules]]
+        snippets = ["Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice"]
+        """,
+        pr_agent,
+    )
+    assert_finding("missing PR-Agent mirror rule name", missing_mirror_rule_name, "rules[0].name must be non-empty")
+
+    empty_mirror_rule_name = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = ["placeholder governance note"]
+
+        [[pr_agent_mirror.rules]]
+        name = ""
+        snippets = ["Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice"]
+        """,
+        pr_agent,
+    )
+    assert_finding("empty PR-Agent mirror rule name", empty_mirror_rule_name, "rules[0].name must be non-empty")
+
+    empty_mirror_snippet = verify_pr_agent_mirror(
+        """
+        [pr_agent_mirror]
+        required_note_snippets = ["placeholder governance note"]
+
+        [[pr_agent_mirror.rules]]
+        name = "empty snippets"
+        snippets = [""]
+        """,
+        pr_agent,
+    )
+    assert_finding("empty PR-Agent mirror snippet", empty_mirror_snippet, "snippets must be non-empty")
+
+    glm_split_config = verify_variant(glm_text=glm + "\n          pr_reviewer.num_max_findings: \"6\"\n")
     assert_finding("GLM split config", glm_split_config, "must not define pr_reviewer.*")
 
-    glm_missing_fallback = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm.replace("scripts/ai_review_deliverables.py glm-fallback", "echo missing"),
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
-    )
+    glm_missing_fallback = verify_variant(glm_text=glm.replace("scripts/ai_review_deliverables.py glm-fallback", "echo missing"))
     assert_finding("GLM missing fallback", glm_missing_fallback, "GLM workflow missing expected snippet")
 
-    glm_missing_infrastructure_notice = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm.replace("gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"", "python3 scripts/ai_review_deliverables.py notice"),
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
+    glm_missing_infrastructure_notice = verify_variant(
+        glm_text=glm.replace("gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"", "python3 scripts/ai_review_deliverables.py notice"),
     )
     assert_finding(
         "GLM helper-based fallback infrastructure notice",
@@ -1243,61 +1148,27 @@ def run_self_tests(repo_root: Path) -> None:
         "must not depend on ai_review_deliverables.py",
     )
 
-    kimi_head_governance = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi.replace(
+    kimi_head_governance = verify_variant(
+        kimi_text=kimi.replace(
             "ref: ${{ github.event.pull_request.base.sha }}",
             "ref: ${{ github.event.pull_request.head.sha }}",
         ),
-        smoke_workflow=smoke,
     )
     assert_finding("Kimi head governance", kimi_head_governance, "Kimi workflow missing expected snippet")
 
-    kimi_misospace_action = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi + "\n      - uses: misospace/pr-reviewer-action@deadbeef\n",
-        smoke_workflow=smoke,
-    )
+    kimi_misospace_action = verify_variant(kimi_text=kimi + "\n      - uses: misospace/pr-reviewer-action@deadbeef\n")
     assert_finding("Kimi Misospace action", kimi_misospace_action, "must use the official Kimi CLI path")
 
-    kimi_prompt_override = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi + "\n          system_prompt_mode: append\n",
-        smoke_workflow=smoke,
-    )
+    kimi_prompt_override = verify_variant(kimi_text=kimi + "\n          system_prompt_mode: append\n")
     assert_finding("Kimi prompt override", kimi_prompt_override, "must use the official Kimi CLI path")
 
-    kimi_missing_fallback = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi.replace(".ai-review/base/scripts/ai_review_deliverables.py kimi-fallback", "echo missing"),
-        smoke_workflow=smoke,
+    kimi_missing_fallback = verify_variant(
+        kimi_text=kimi.replace(".ai-review/base/scripts/ai_review_deliverables.py kimi-fallback", "echo missing"),
     )
     assert_finding("Kimi missing fallback", kimi_missing_fallback, "Kimi workflow missing expected snippet")
 
-    kimi_missing_infrastructure_notice = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables,
-        glm_workflow=glm,
-        kimi_workflow=kimi.replace("gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"", "python3 .ai-review/base/scripts/ai_review_deliverables.py notice"),
-        smoke_workflow=smoke,
+    kimi_missing_infrastructure_notice = verify_variant(
+        kimi_text=kimi.replace("gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"", "python3 .ai-review/base/scripts/ai_review_deliverables.py notice"),
     )
     assert_finding(
         "Kimi helper-based fallback infrastructure notice",
@@ -1305,14 +1176,8 @@ def run_self_tests(repo_root: Path) -> None:
         "must not depend on ai_review_deliverables.py",
     )
 
-    missing_quality_gate = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables.replace("def validate_review_responses(", "def removed_validate_review_responses("),
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
+    missing_quality_gate = verify_variant(
+        deliverables_text=deliverables.replace("def validate_review_responses(", "def removed_validate_review_responses("),
     )
     assert_finding(
         "missing review quality gate",
@@ -1320,17 +1185,11 @@ def run_self_tests(repo_root: Path) -> None:
         "scripts/ai_review_deliverables.py missing expected snippet",
     )
 
-    embedded_pr_agent_label_gate = verify_texts(
-        agents_md=agents,
-        pr_agent_toml=pr_agent,
-        ai_review_toml=ai_review,
-        ai_review_deliverables=deliverables.replace(
+    embedded_pr_agent_label_gate = verify_variant(
+        deliverables_text=deliverables.replace(
             "line.strip().startswith(label)",
             "label in line",
         ),
-        glm_workflow=glm,
-        kimi_workflow=kimi,
-        smoke_workflow=smoke,
     )
     assert_finding(
         "embedded PR-Agent label gate",

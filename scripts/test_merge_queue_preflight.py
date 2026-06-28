@@ -608,6 +608,7 @@ def assert_mergify_queue_routing_uses_pr_labels() -> None:
         payload = parse_json(result.stdout)
         assert mergify_queue_route_finding(1, "hotfix", ["hotfix"], ["label = hotfix"]) in payload["findings"], payload["findings"]
         assert mergify_queue_route_finding(2, "default", [], []) in payload["findings"], payload["findings"]
+        assert_equal(payload["wave_status"], "split_advised", "mixed queue wave status")
 
 
 def assert_clean_prs_batch_together() -> None:

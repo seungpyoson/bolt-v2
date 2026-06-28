@@ -110,6 +110,10 @@ MERGIFY_QUEUE_CONDITION_LABELS = {
     (): frozenset(),
     ("label = hotfix",): frozenset({"hotfix"}),
 }
+MERGIFY_QUEUE_WAVE_STATUSES = {
+    False: STATUS_READY,
+    True: VERDICT_SPLIT_ADVISED,
+}
 MERGIFY_CONFIG_FIELD_HANDLING = {
     "merge_queue.max_parallel_checks": "residual_cost_impact",
     "merge_queue.reset_on_external_merge": "residual_post_preflight_invalidation",
@@ -445,6 +449,20 @@ def evaluate_preflight_contract(evidence: ContractEvidence) -> dict[str, object]
         "findings": list(findings),
         "wave_status": evidence.wave_status,
     }
+
+
+def mergify_route_queue_rules(findings: Sequence[Mapping[str, object]]) -> frozenset[str]:
+    return frozenset(
+        str(dict(finding["evidence"])["queue_rule"])
+        for finding in filter(
+            lambda candidate: candidate["reason_code"] == "mergify_queue_route_selected",
+            findings,
+        )
+    )
+
+
+def mergify_wave_status(findings: Sequence[Mapping[str, object]]) -> str:
+    return MERGIFY_QUEUE_WAVE_STATUSES[len(mergify_route_queue_rules(findings)) > 1]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1230,14 +1248,15 @@ def preflight(
                 verifiers=current_verifiers,
             )
         )
+    contract_findings = (
+        *mergify_config_findings(repo=repo, base_sha=base_sha, readiness=readiness),
+        *preflight_mode_findings(use_gh=use_gh),
+    )
     contract_evaluation = evaluate_preflight_contract(
         ContractEvidence(
-            findings=(
-                *mergify_config_findings(repo=repo, base_sha=base_sha, readiness=readiness),
-                *preflight_mode_findings(use_gh=use_gh),
-            ),
+            findings=contract_findings,
             artifacts=(*blocked_prs, *conflicts),
-            wave_status=STATUS_READY,
+            wave_status=mergify_wave_status(contract_findings),
         )
     )
     payload = {

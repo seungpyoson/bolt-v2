@@ -15,29 +15,7 @@ import tempfile
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "merge_queue_preflight.py"
-MERGIFY_YML = """\
-merge_queue:
-  max_parallel_checks: 1
-  reset_on_external_merge: always
-
-queue_rules:
-  - name: default
-    queue_conditions: []
-    merge_conditions:
-      - approved-reviews-by = sp-reviewer
-      - check-success = gate
-    branch_protection_injection_mode: merge
-    batch_size:
-      min: 2
-      max: 10
-    batch_max_wait_time: 5 minutes
-    batch_max_failure_resolution_attempts: 0
-    checks_timeout: 150 minutes
-    draft_bot_account: null
-    merge_method: squash
-
-priority_rules: []
-"""
+MERGIFY_YML = (REPO_ROOT / ".mergify.yml").read_text(encoding="utf-8")
 
 
 def run(command: list[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
@@ -163,6 +141,25 @@ def mergify_config_finding(base_sha: str, blob_sha: str) -> dict[str, object]:
             "blob_sha": blob_sha,
             "git_returncode": 0,
             "git_stderr": "",
+        },
+    }
+
+
+def mergify_config_valid_finding(base_sha: str, blob_sha: str) -> dict[str, object]:
+    return {
+        "lane": "mergify_config",
+        "scope": "run",
+        "status": "ready",
+        "reason_code": "mergify_config_valid",
+        "message": ".mergify.yml snapshot satisfies Mergify config contract",
+        "evidence": {
+            "path": ".mergify.yml",
+            "base_sha": base_sha,
+            "blob_sha": blob_sha,
+            "validator": "verify_ci_workflow_hygiene.verify_mergify_config",
+            "git_returncode": 0,
+            "git_stderr": "",
+            "errors": [],
         },
     }
 
@@ -573,6 +570,7 @@ def assert_mergify_config_snapshot_uses_base_blob() -> None:
         assert_equal(rc, 3, "mergify snapshot no-gh rc")
         payload = parse_json(stdout)
         assert mergify_config_finding(fixture.base, base_blob) in payload["findings"], payload["findings"]
+        assert mergify_config_valid_finding(fixture.base, base_blob) in payload["findings"], payload["findings"]
 
 
 def assert_clean_prs_batch_together() -> None:
@@ -595,6 +593,10 @@ def assert_clean_prs_batch_together() -> None:
             payload["findings"],
             [
                 mergify_config_finding(
+                    payload["base_sha"],
+                    git(fixture.repo, "rev-parse", f"{payload['base_sha']}:.mergify.yml"),
+                ),
+                mergify_config_valid_finding(
                     payload["base_sha"],
                     git(fixture.repo, "rev-parse", f"{payload['base_sha']}:.mergify.yml"),
                 ),
@@ -714,6 +716,10 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
             payload["findings"],
             [
                 mergify_config_finding(
+                    payload["base_sha"],
+                    git(fixture.repo, "rev-parse", f"{payload['base_sha']}:.mergify.yml"),
+                ),
+                mergify_config_valid_finding(
                     payload["base_sha"],
                     git(fixture.repo, "rev-parse", f"{payload['base_sha']}:.mergify.yml"),
                 ),

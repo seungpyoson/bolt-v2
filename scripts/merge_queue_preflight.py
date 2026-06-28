@@ -16,6 +16,8 @@ import tempfile
 import tomllib
 from collections.abc import Mapping, Sequence
 
+from verify_ci_workflow_hygiene import verify_mergify_config
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "rust-verification.toml"
@@ -89,6 +91,18 @@ MERGIFY_CONFIG_SNAPSHOT_STATES = {
         STATUS_INCONCLUSIVE,
         "mergify_config_snapshot_unavailable",
         ".mergify.yml snapshot unavailable at expected base",
+    ),
+}
+MERGIFY_CONFIG_VALIDATION_STATES = {
+    True: (
+        STATUS_READY,
+        "mergify_config_valid",
+        ".mergify.yml snapshot satisfies Mergify config contract",
+    ),
+    False: (
+        STATUS_INCONCLUSIVE,
+        "mergify_config_invalid",
+        ".mergify.yml snapshot does not satisfy Mergify config contract",
     ),
 }
 MERGIFY_CONFIG_FIELD_HANDLING = {
@@ -218,8 +232,45 @@ def mergify_config_snapshot_finding(*, repo: pathlib.Path, base_sha: str) -> dic
     }
 
 
+def mergify_config_validation_finding(
+    *,
+    repo: pathlib.Path,
+    base_sha: str,
+    blob_sha: str,
+) -> dict[str, object]:
+    result = git(repo, "cat-file", "-p", blob_sha, check=False)
+    errors = tuple(verify_mergify_config(result.stdout, config_name=MERGIFY_CONFIG_PATH))
+    status, reason_code, message = MERGIFY_CONFIG_VALIDATION_STATES[
+        result.returncode == 0 and not errors
+    ]
+    return {
+        "lane": LANE_MERGIFY_CONFIG,
+        "scope": "run",
+        "status": status,
+        "reason_code": reason_code,
+        "message": message,
+        "evidence": {
+            "path": MERGIFY_CONFIG_PATH,
+            "base_sha": base_sha,
+            "blob_sha": blob_sha,
+            "validator": "verify_ci_workflow_hygiene.verify_mergify_config",
+            "git_returncode": result.returncode,
+            "git_stderr": result.stderr.strip(),
+            "errors": list(errors),
+        },
+    }
+
+
 def mergify_config_findings(*, repo: pathlib.Path, base_sha: str) -> tuple[dict[str, object], ...]:
-    return (mergify_config_snapshot_finding(repo=repo, base_sha=base_sha),)
+    snapshot = mergify_config_snapshot_finding(repo=repo, base_sha=base_sha)
+    return (
+        snapshot,
+        mergify_config_validation_finding(
+            repo=repo,
+            base_sha=base_sha,
+            blob_sha=str(snapshot["evidence"]["blob_sha"]),
+        ),
+    )
 
 
 def contract_result(findings: Sequence[dict[str, object]], *, wave_status: str) -> dict[str, object]:

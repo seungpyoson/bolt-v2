@@ -222,4 +222,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     raise SystemExit(main())

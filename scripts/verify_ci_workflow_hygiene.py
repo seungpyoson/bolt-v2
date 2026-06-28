@@ -9,9 +9,10 @@ import json
 import pathlib
 import re
 import shlex
+import subprocess
 import sys
 import tomllib
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -5414,121 +5415,326 @@ MERGIFY_REQUIRED_MERGE_CONDITIONS = frozenset(
 )
 
 
-def top_level_yaml_block(config_text: str, key: str) -> str | None:
-    lines = [strip_comment(line).rstrip() for line in config_text.splitlines()]
-    for index, line in enumerate(lines):
-        if re.fullmatch(rf"{re.escape(key)}\s*:\s*", line):
-            block = [line]
-            for nested in lines[index + 1 :]:
-                if nested.strip() and not nested.startswith(" "):
-                    break
-                block.append(nested)
-            return "\n".join(block)
-    return None
-
-
-def yaml_scalar_value(block_text: str, key: str) -> str | None:
-    for line in block_text.splitlines():
-        match = re.match(rf"^\s*{re.escape(key)}\s*:\s*(.*?)\s*$", line)
-        if match is not None:
-            return unquote_yaml_scalar(match.group(1))
-    return None
-
-
-def queue_rule_block(queue_rules_text: str, name: str) -> str | None:
-    lines = queue_rules_text.splitlines()
-    for index, line in enumerate(lines):
-        match = re.match(r"^(\s*)-\s*name\s*:\s*(.*?)\s*$", line)
-        if match is None or unquote_yaml_scalar(match.group(2)) != name:
-            continue
-        item_indent = len(match.group(1))
-        block = [line]
-        for nested in lines[index + 1 :]:
-            if nested.strip():
-                indent = len(nested) - len(nested.lstrip(" "))
-                if indent == item_indent and nested.lstrip().startswith("- "):
-                    break
-            block.append(nested)
-        return "\n".join(block)
-    return None
-
-
-def yaml_list_values(block_text: str, key: str) -> list[str] | None:
-    lines = block_text.splitlines()
-    for index, line in enumerate(lines):
-        match = re.match(rf"^(\s*){re.escape(key)}\s*:\s*(.*?)\s*$", line)
-        if match is None:
-            continue
-        scalar = unquote_yaml_scalar(match.group(2))
-        if scalar == "[]":
-            return []
-        if scalar:
-            return None
-        parent_indent = len(match.group(1))
-        values: list[str] = []
-        for nested in lines[index + 1 :]:
-            if not nested.strip():
-                continue
-            indent = len(nested) - len(nested.lstrip(" "))
-            if indent <= parent_indent:
-                break
-            item_match = re.match(r"^\s*-\s*(.*?)\s*$", nested)
-            if item_match is None:
-                return None
-            values.append(unquote_yaml_scalar(item_match.group(1)))
-        return values
-    return None
-
-
-def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -> list[str]:
-    errors: list[str] = []
-    uncommented = uncommented_text(config_text.splitlines())
-    forbidden_keys = (
-        "autoqueue",
+MERGIFY_REQUIRED_QUEUE_RULES = ("hotfix", "default")
+MERGIFY_REQUIRED_PRIORITY_RULES = ("hotfix",)
+MERGIFY_TOP_LEVEL_KEYS = frozenset({"merge_queue", "queue_rules", "priority_rules"})
+MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS = frozenset(
+    {
         "auto_merge_conditions",
+        "commands_restrictions",
+        "defaults",
+        "extends",
         "merge_protections",
         "merge_protections_settings",
         "pull_request_rules",
-    )
-    for key in forbidden_keys:
-        if re.search(rf"(?m)^\s*{re.escape(key)}\s*:", uncommented):
-            errors.append(f"{config_name} must keep manual queueing only; remove {key}")
-
-    merge_queue = top_level_yaml_block(config_text, "merge_queue")
-    if merge_queue is None:
-        errors.append(f"{config_name} must define merge_queue")
-    else:
-        if yaml_scalar_value(merge_queue, "max_parallel_checks") != "1":
-            errors.append(f"{config_name} merge_queue.max_parallel_checks must be 1")
-        if yaml_scalar_value(merge_queue, "reset_on_external_merge") != "always":
-            errors.append(f"{config_name} merge_queue.reset_on_external_merge must be always")
-
-    queue_rules = top_level_yaml_block(config_text, "queue_rules")
-    default_rule = queue_rule_block(queue_rules, "default") if queue_rules is not None else None
-    if queue_rules is None:
-        errors.append(f"{config_name} must define queue_rules")
-    if default_rule is None:
-        errors.append(f"{config_name} queue_rules must define default")
-        return errors
-
-    if yaml_list_values(default_rule, "queue_conditions") != []:
-        errors.append(f"{config_name} default queue_conditions must be empty for manual entry")
-    merge_conditions = yaml_list_values(default_rule, "merge_conditions")
-    if merge_conditions is None:
-        errors.append(f"{config_name} default merge_conditions must be a list")
-    elif set(merge_conditions) != MERGIFY_REQUIRED_MERGE_CONDITIONS:
-        errors.append(f"{config_name} default merge_conditions must require sp-reviewer and all four gates")
-
-    expected_scalars = {
-        "branch_protection_injection_mode": "merge",
-        "batch_size": "1",
-        "checks_timeout": "60 minutes",
-        "draft_bot_account": "null",
-        "merge_method": "squash",
     }
-    for key, expected in expected_scalars.items():
-        if yaml_scalar_value(default_rule, key) != expected:
-            errors.append(f"{config_name} default {key} must be {expected}")
+)
+MERGIFY_MERGE_QUEUE_KEYS = frozenset({"max_parallel_checks", "reset_on_external_merge"})
+MERGIFY_QUEUE_RULE_KEYS = frozenset(
+    {
+        "name",
+        "queue_conditions",
+        "merge_conditions",
+        "branch_protection_injection_mode",
+        "batch_size",
+        "batch_max_wait_time",
+        "batch_max_failure_resolution_attempts",
+        "checks_timeout",
+        "draft_bot_account",
+        "merge_method",
+    }
+)
+MERGIFY_DYNAMIC_BATCH_KEYS = frozenset({"min", "max"})
+MERGIFY_PRIORITY_RULE_KEYS = frozenset({"name", "conditions", "priority", "allow_checks_interruption"})
+MERGIFY_YAML_PARSER_RUBY = r"""
+require "yaml"
+require "json"
+
+input = STDIN.read
+errors = []
+
+def yaml_scalar_key(node)
+  node.is_a?(Psych::Nodes::Scalar) ? node.value : nil
+end
+
+def walk_yaml(node, path, errors)
+  case node
+  when Psych::Nodes::Mapping
+    seen = {}
+    node.children.each_slice(2) do |key_node, value_node|
+      key = yaml_scalar_key(key_node)
+      if key.nil?
+        errors << "#{path}: mapping keys must be scalars"
+        key = "<non-scalar>"
+      elsif seen.key?(key)
+        errors << "#{path}: duplicate key #{key}"
+      end
+      seen[key] = true
+      errors << "#{path}: YAML merge key is forbidden" if key == "<<"
+      walk_yaml(value_node, "#{path}.#{key}", errors)
+    end
+  when Psych::Nodes::Sequence
+    node.children.each_with_index do |child, index|
+      walk_yaml(child, "#{path}[#{index}]", errors)
+    end
+  when Psych::Nodes::Alias
+    errors << "#{path}: YAML aliases are forbidden"
+  end
+end
+
+begin
+  stream = Psych.parse_stream(input)
+  documents = stream.children
+  errors << "must contain exactly one YAML document" unless documents.length == 1
+  documents.each do |document|
+    walk_yaml(document.root, "$", errors) if document.root
+  end
+  data = nil
+  if errors.empty?
+    data = YAML.safe_load(input, permitted_classes: [], permitted_symbols: [], aliases: false)
+  end
+  puts JSON.generate({"errors" => errors, "data" => data})
+rescue Psych::Exception => e
+  puts JSON.generate({"errors" => ["YAML parse failed: #{e.message}"], "data" => nil})
+end
+"""
+
+
+def parse_mergify_yaml(config_text: str, config_name: str) -> tuple[Any | None, list[str]]:
+    try:
+        result = subprocess.run(
+            ["ruby", "-e", MERGIFY_YAML_PARSER_RUBY],
+            input=config_text,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        return None, [f"{config_name} requires Ruby/Psych to parse YAML"]
+    except subprocess.TimeoutExpired:
+        return None, [f"{config_name} YAML parser timed out"]
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()[0] if result.stderr.strip() else f"exit {result.returncode}"
+        return None, [f"{config_name} YAML parser failed: {detail}"]
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return None, [f"{config_name} YAML parser returned invalid JSON: {exc}"]
+    parse_errors = payload.get("errors")
+    if not isinstance(parse_errors, list):
+        return None, [f"{config_name} YAML parser returned malformed errors"]
+    if parse_errors:
+        return None, [f"{config_name} {error}" for error in parse_errors]
+    return payload.get("data"), []
+
+
+def scalar_equals(actual: Any, expected: Any) -> bool:
+    return type(actual) is type(expected) and actual == expected
+
+
+def yaml_display(value: Any) -> str:
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return str(value)
+
+
+def unsupported_mapping_keys(mapping: dict[str, Any], allowed: frozenset[str]) -> list[str]:
+    return [key for key in mapping if key not in allowed]
+
+
+def mergify_mapping(value: Any, config_name: str, path: str, errors: list[str]) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    errors.append(f"{config_name} {path} must be a mapping")
+    return None
+
+
+def mergify_list(value: Any, config_name: str, path: str, errors: list[str]) -> list[Any] | None:
+    if isinstance(value, list):
+        return value
+    errors.append(f"{config_name} {path} must be a list")
+    return None
+
+
+def required_mergify_mapping(
+    parent: dict[str, Any], key: str, config_name: str, errors: list[str]
+) -> dict[str, Any] | None:
+    if key not in parent:
+        errors.append(f"{config_name} must define {key}")
+        return None
+    return mergify_mapping(parent[key], config_name, key, errors)
+
+
+def required_mergify_list(parent: dict[str, Any], key: str, config_name: str, errors: list[str]) -> list[Any] | None:
+    if key not in parent:
+        errors.append(f"{config_name} must define {key}")
+        return None
+    return mergify_list(parent[key], config_name, key, errors)
+
+
+def named_mergify_rules(
+    parent: dict[str, Any],
+    key: str,
+    expected_names: tuple[str, ...],
+    order_error: str,
+    config_name: str,
+    errors: list[str],
+) -> dict[str, dict[str, Any]]:
+    values = required_mergify_list(parent, key, config_name, errors)
+    if values is None:
+        return {}
+    names: list[Any] = []
+    by_name: dict[str, dict[str, Any]] = {}
+    for index, value in enumerate(values):
+        rule = mergify_mapping(value, config_name, f"{key}[{index}]", errors)
+        name = rule.get("name") if rule is not None else None
+        names.append(name)
+        if isinstance(name, str) and rule is not None:
+            by_name[name] = rule
+    if tuple(names) != expected_names:
+        errors.append(f"{config_name} {order_error}")
+    return by_name
+
+
+def mergify_condition_list(value: Any, expected: list[str], config_name: str, path: str, errors: list[str]) -> None:
+    values = mergify_list(value, config_name, path, errors)
+    if values is None:
+        return
+    if values != expected:
+        errors.append(f"{config_name} {path} must be {expected!r}")
+
+
+def mergify_required_conditions(value: Any, config_name: str, path: str, errors: list[str]) -> None:
+    values = mergify_list(value, config_name, path, errors)
+    if values is None:
+        return
+    if set(values) != MERGIFY_REQUIRED_MERGE_CONDITIONS or len(values) != len(MERGIFY_REQUIRED_MERGE_CONDITIONS):
+        errors.append(f"{config_name} {path} must require sp-reviewer and all four gates")
+
+
+def expect_scalar(value: Any, expected: Any, config_name: str, path: str, errors: list[str]) -> None:
+    if not scalar_equals(value, expected):
+        errors.append(f"{config_name} {path} must be {yaml_display(expected)}")
+
+
+def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -> list[str]:
+    config, errors = parse_mergify_yaml(config_text, config_name)
+    if errors:
+        return errors
+    root = mergify_mapping(config, config_name, "root", errors)
+    if root is None:
+        return errors
+    for key in root:
+        if key in MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS:
+            errors.append(f"{config_name} must keep manual queueing only; remove {key}")
+        elif key not in MERGIFY_TOP_LEVEL_KEYS:
+            errors.append(f"{config_name} must not define unsupported top-level key {key}")
+
+    merge_queue = required_mergify_mapping(root, "merge_queue", config_name, errors)
+    if merge_queue is not None:
+        for key in unsupported_mapping_keys(merge_queue, MERGIFY_MERGE_QUEUE_KEYS):
+            errors.append(f"{config_name} merge_queue must not define unsupported key {key}")
+        expect_scalar(merge_queue.get("max_parallel_checks"), 1, config_name, "merge_queue.max_parallel_checks", errors)
+        expect_scalar(
+            merge_queue.get("reset_on_external_merge"),
+            "always",
+            config_name,
+            "merge_queue.reset_on_external_merge",
+            errors,
+        )
+
+    rules_by_name = named_mergify_rules(
+        root,
+        "queue_rules",
+        MERGIFY_REQUIRED_QUEUE_RULES,
+        "queue_rules must define exactly hotfix followed by default",
+        config_name,
+        errors,
+    )
+
+    rule_expectations = (
+        ("default", [], {"min": 2, "max": 10}, "5 minutes"),
+        ("hotfix", ["label = hotfix"], 1, "30 seconds"),
+    )
+    for rule_name, expected_queue_conditions, expected_batch_size, expected_wait in rule_expectations:
+        rule = rules_by_name.get(rule_name)
+        if rule is None:
+            errors.append(f"{config_name} must define {rule_name} queue rule")
+            continue
+        for key in unsupported_mapping_keys(rule, MERGIFY_QUEUE_RULE_KEYS):
+            errors.append(f"{config_name} {rule_name} must not define unsupported key {key}")
+        mergify_condition_list(
+            rule.get("queue_conditions"),
+            expected_queue_conditions,
+            config_name,
+            f"{rule_name} queue_conditions",
+            errors,
+        )
+        mergify_required_conditions(
+            rule.get("merge_conditions"),
+            config_name,
+            f"{rule_name} merge_conditions",
+            errors,
+        )
+        expected_scalars = {
+            "branch_protection_injection_mode": "merge",
+            "batch_max_wait_time": expected_wait,
+            "batch_max_failure_resolution_attempts": 0,
+            "checks_timeout": "150 minutes",
+            "draft_bot_account": None,
+            "merge_method": "squash",
+        }
+        for key, expected in expected_scalars.items():
+            expect_scalar(rule.get(key), expected, config_name, f"{rule_name} {key}", errors)
+        batch_size = rule.get("batch_size")
+        if isinstance(expected_batch_size, dict):
+            batch_size_mapping = mergify_mapping(batch_size, config_name, f"{rule_name} batch_size", errors)
+            if batch_size_mapping is None:
+                continue
+            for key in unsupported_mapping_keys(batch_size_mapping, MERGIFY_DYNAMIC_BATCH_KEYS):
+                errors.append(f"{config_name} {rule_name} batch_size must not define unsupported key {key}")
+            if batch_size_mapping != expected_batch_size:
+                errors.append(
+                    f"{config_name} {rule_name} batch_size must be min {expected_batch_size['min']} max {expected_batch_size['max']}"
+                )
+        elif not scalar_equals(batch_size, expected_batch_size):
+            errors.append(f"{config_name} {rule_name} batch_size must be {expected_batch_size}")
+
+    priority_by_name = named_mergify_rules(
+        root,
+        "priority_rules",
+        MERGIFY_REQUIRED_PRIORITY_RULES,
+        "priority_rules must define exactly hotfix",
+        config_name,
+        errors,
+    )
+
+    hotfix_priority = priority_by_name.get("hotfix")
+    if hotfix_priority is None:
+        errors.append(f"{config_name} must define hotfix priority rule")
+        return errors
+    for key in unsupported_mapping_keys(hotfix_priority, MERGIFY_PRIORITY_RULE_KEYS):
+        errors.append(f"{config_name} hotfix priority must not define unsupported key {key}")
+    mergify_condition_list(
+        hotfix_priority.get("conditions"),
+        ["label = hotfix"],
+        config_name,
+        "hotfix priority conditions",
+        errors,
+    )
+    expect_scalar(hotfix_priority.get("priority"), 10000, config_name, "hotfix priority", errors)
+    expect_scalar(
+        hotfix_priority.get("allow_checks_interruption"),
+        True,
+        config_name,
+        "hotfix allow_checks_interruption",
+        errors,
+    )
     return errors
 
 

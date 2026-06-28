@@ -289,6 +289,71 @@ max_lookback_age_seconds = 2592000
 [ci_provenance.artifacts]
 retention_days = 30
 
+[storage_audit.cleanup_feasibility]
+schema_version = 1
+default_class = "unclassified"
+default_decision = "KEEP"
+default_keep_reason = "artifact is outside configured cleanup candidate classes"
+protected_ref_keep_reason = "protected deploy ref is excluded from cleanup"
+active_run_keep_reason = "workflow run is still active"
+status_unavailable_keep_reason = "workflow run status is unavailable"
+expiration_unknown_keep_reason = "artifact expiration status is unavailable"
+not_expired_keep_reason = "artifact has not expired"
+billing_impact_unverifiable = "billing impact unverifiable from API"
+wait_and_remeasure = "wait and remeasure natural expiry/garbage collection before deletion"
+protected_refs = ["main"]
+protected_ref_prefixes = ["refs/tags/"]
+active_run_statuses = ["queued", "in_progress", "waiting", "requested", "pending"]
+terminal_run_statuses = ["completed"]
+workflow_run_fetch_limit = 100
+billing_probe_paths = [
+  "users/{owner}/settings/billing/actions",
+  "orgs/{owner}/settings/billing/actions",
+]
+
+[[storage_audit.cleanup_feasibility.classes]]
+id = "nextest_archive"
+name_equals = ["nextest-archive"]
+name_prefixes = []
+expired_decision = "DELETE-CANDIDATE"
+candidate_reason = "expired nextest archive outside protected refs"
+keep_reason = "nextest archive is retained until it expires"
+
+[[storage_audit.cleanup_feasibility.classes]]
+id = "backtester_payload"
+name_equals = ["bvs-test-payload"]
+name_prefixes = []
+expired_decision = "DELETE-CANDIDATE"
+candidate_reason = "expired backtester test payload outside protected refs"
+keep_reason = "backtester test payload is retained until it expires"
+
+[[storage_audit.cleanup_feasibility.classes]]
+id = "deploy_binary"
+name_equals = []
+name_equals_from = ["ci_provenance.deploy.artifact_name"]
+name_prefixes = []
+expired_decision = "KEEP"
+candidate_reason = "unused"
+keep_reason = "deploy binary is not a cleanup candidate"
+
+[[storage_audit.cleanup_feasibility.classes]]
+id = "ci_provenance"
+name_equals = []
+name_prefixes = []
+name_prefixes_from_templates = ["ci_provenance.artifact_name_template"]
+expired_decision = "KEEP"
+candidate_reason = "unused"
+keep_reason = "CI provenance evidence is not a cleanup candidate"
+
+[[storage_audit.cleanup_feasibility.classes]]
+id = "nextest_fingerprint"
+name_equals = []
+name_prefixes = []
+name_prefixes_from = ["meter.fingerprint_artifact_prefix"]
+expired_decision = "KEEP"
+candidate_reason = "unused"
+keep_reason = "nextest fingerprint evidence is not a cleanup candidate"
+
 # Queue-only rework (#981): the Mergify queue runs in TEMP-PR mode, so merge_group
 # never fires and the SOLE producer of a green REQUIRED gate is the actor-verified
 # mergify temp PR validated at the merge boundary. Every ordinary pull_request row is

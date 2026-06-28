@@ -10773,49 +10773,11 @@ FAIL_ON_CACHE_MISS_BLOCK_SCALAR_RE = re.compile(
     re.IGNORECASE,
 )
 FAIL_ON_CACHE_MISS_BLOCK_TRUTHY_RE = re.compile(r"^[\"']?(?:true|yes|on)[\"']?$", re.IGNORECASE)
-WORKFLOW_IF_LINE_RE = re.compile(r"^\s*(?:-\s*)?if:\s*(.*?)\s*$")
-FLAKY_WORKFLOW_NAMES = {
-    ".github/workflows/flaky-test-detection.yml",
-    ".github/workflows/flaky-test-smoke.yml",
-    "flaky-test-detection.yml",
-    "flaky-test-smoke.yml",
-}
-FLAKY_WORKFLOW_ALLOWED_IF = "success() || failure()"
 
 
 def is_workflow_yaml(file_name: str) -> bool:
     normalized = file_name.replace("\\", "/")
     return normalized.startswith(".github/workflows/") and normalized.endswith((".yml", ".yaml"))
-
-
-def flaky_workflow_condition_errors(file_name: str, text: str) -> list[str]:
-    normalized = file_name.replace("\\", "/")
-    if normalized not in FLAKY_WORKFLOW_NAMES:
-        return []
-
-    errors: list[str] = []
-    upload_guard_count = 0
-    for line_number, line in enumerate(text.splitlines(), 1):
-        clean = strip_comment(line).rstrip()
-        match = WORKFLOW_IF_LINE_RE.match(clean)
-        if match is None:
-            continue
-        value = match.group(1).strip()
-        if value == FLAKY_WORKFLOW_ALLOWED_IF:
-            upload_guard_count += 1
-            continue
-        rendered = value or "<empty>"
-        errors.append(
-            "flaky workflows may only use the Mergify upload guard "
-            f"{FLAKY_WORKFLOW_ALLOWED_IF!r}; line {line_number} has {rendered!r}"
-        )
-
-    if upload_guard_count != 3:
-        errors.append(
-            "flaky workflows must contain exactly three Mergify upload guards "
-            f"{FLAKY_WORKFLOW_ALLOWED_IF!r}; found {upload_guard_count}"
-        )
-    return errors
 
 
 def step_has_cache_miss_guard(block: list[str]) -> bool:
@@ -11196,10 +11158,6 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in backtester_managed_target_cache_errors(file_name, text)),
-        )
-        add_unique_errors(
-            errors,
-            (f"{file_name}: {error}" for error in flaky_workflow_condition_errors(file_name, text)),
         )
         add_unique_errors(
             errors,

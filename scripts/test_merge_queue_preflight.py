@@ -290,6 +290,8 @@ def assert_preflight_artifact_classification_is_declarative() -> None:
         "base_mismatch": ("identity", "pr", "inconclusive"),
         "head_mismatch": ("identity", "pr", "blocked"),
         "metadata_unavailable": ("readiness", "pr", "inconclusive"),
+        "required_check_failed": ("readiness", "pr", "blocked"),
+        "required_check_pending": ("readiness", "pr", "inconclusive"),
         "readiness_failed": ("readiness", "pr", "blocked"),
         "verifier_failed": ("verifier", "pr", "blocked"),
     }
@@ -372,6 +374,14 @@ def assert_contract_evaluator_reduces_normalized_evidence() -> None:
             module.ContractEvidence(
                 findings=ready,
                 artifacts=({"type": "metadata_unavailable", "pr": 1, "reason": "gh unavailable"},),
+                wave_status="ready",
+            ),
+            ("inconclusive", 3),
+        ),
+        "required_check_pending_inconclusive": (
+            module.ContractEvidence(
+                findings=ready,
+                artifacts=({"type": "required_check_pending", "pr": 1, "reason": "pending"},),
                 wave_status="ready",
             ),
             ("inconclusive", 3),
@@ -963,6 +973,27 @@ def assert_wrong_base_ref_is_inconclusive() -> None:
         assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "wrong base contract")
 
 
+def assert_required_check_pending_is_inconclusive() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks={1: [{"name": "gate", "state": "PENDING", "bucket": "pending", "workflow": "CI"}]},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 3, "pending check rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        assert_equal(len(blocked), 1, "pending check blocked count")
+        assert_equal(blocked[0]["pr"], 1, "pending check pr")
+        assert_equal(blocked[0]["type"], "required_check_pending", "pending check type")
+        assert_equal(payload["lane_statuses"]["readiness"], "inconclusive", "pending check readiness lane")
+        assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "pending check contract")
+
+
 def assert_partial_gh_metadata_failure_preserves_other_readiness() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -1076,6 +1107,7 @@ def main() -> int:
     assert_json_output_uses_bounded_verifier_previews()
     assert_head_oid_mismatch_blocks_pr()
     assert_wrong_base_ref_is_inconclusive()
+    assert_required_check_pending_is_inconclusive()
     assert_partial_gh_metadata_failure_preserves_other_readiness()
     assert_invalid_pr_input_is_rejected()
     assert_missing_gh_reports_inconclusive_metadata()

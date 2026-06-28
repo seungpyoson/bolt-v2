@@ -102,6 +102,8 @@ PREFLIGHT_ARTIFACT_CLASSIFICATIONS = {
     "base_mismatch": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
     "head_mismatch": (LANE_IDENTITY, "pr", STATUS_BLOCKED),
     "metadata_unavailable": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
+    "required_check_failed": (LANE_READINESS, "pr", STATUS_BLOCKED),
+    "required_check_pending": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
     "readiness_failed": (LANE_READINESS, "pr", STATUS_BLOCKED),
     "verifier_failed": (LANE_VERIFIER, "pr", STATUS_BLOCKED),
 }
@@ -428,8 +430,8 @@ READINESS_ISSUE_ARTIFACT_TYPES = {
     "head_mismatch": "head_mismatch",
     "not_mergeable": "readiness_failed",
     "not_open": "readiness_failed",
-    "required_check_failed": "readiness_failed",
-    "required_check_pending": "readiness_failed",
+    "required_check_failed": "required_check_failed",
+    "required_check_pending": "required_check_pending",
     "review_not_approved": "readiness_failed",
 }
 READINESS_ISSUE_STATUS_RANKS = {

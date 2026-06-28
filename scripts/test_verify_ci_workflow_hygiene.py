@@ -7644,6 +7644,33 @@ def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
         "backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes" in error
         for error in namespace_errors
     ), namespace_errors
+    missing_per_job_namespace = """jobs:
+  clippy:
+    steps:
+      - name: Compute BVS cache input hash
+        id: bvs_cache_inputs
+        run: |
+          if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then
+            echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/cache@example
+        with:
+          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-clippy-${{ steps.bvs_cache_inputs.outputs.digest }}
+  test-archive:
+    steps:
+      - uses: actions/cache@example
+        with:
+          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
+"""
+    per_job_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": missing_per_job_namespace}
+    )
+    assert any(
+        "backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes" in error
+        for error in per_job_errors
+    ), per_job_errors
 
 
 def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:

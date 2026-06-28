@@ -9808,24 +9808,28 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
     if not file_name.endswith("backtester-ci.yml"):
         return []
     errors: list[str] = []
-    cache_key_seen = False
-    for line in text.splitlines():
-        if not any(prefix in line for prefix in ("managed-target-bvs-v", "bvs-nextest-archive-v", "bvs-bin-sidecars-v")):
+    for _job_id, job_lines in parse_jobs(text).items():
+        job_text = "\n".join(job_lines)
+        cache_key_seen = False
+        for line in job_text.splitlines():
+            if not any(prefix in line for prefix in ("managed-target-bvs-v", "bvs-nextest-archive-v", "bvs-bin-sidecars-v")):
+                continue
+            if "key:" not in line:
+                continue
+            cache_key_seen = True
+            if "hashFiles(" in line:
+                errors.append("backtester cache key must use ci_input_sets digest, not inline hashFiles")
+            if "${{ steps.bvs_cache_inputs.outputs.digest }}" not in line:
+                errors.append("backtester cache key must include steps.bvs_cache_inputs.outputs.digest")
+        if not cache_key_seen:
             continue
-        if "key:" not in line:
-            continue
-        cache_key_seen = True
-        if "hashFiles(" in line:
-            errors.append("backtester cache key must use ci_input_sets digest, not inline hashFiles")
-        if "${{ steps.bvs_cache_inputs.outputs.digest }}" not in line:
-            errors.append("backtester cache key must include steps.bvs_cache_inputs.outputs.digest")
-    if cache_key_seen and "python3 scripts/ci_input_sets.py hash backtester_cache" not in text:
-        errors.append("backtester cache key digest must come from ci_input_sets backtester_cache")
-    if cache_key_seen and (
-        'if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then' not in text
-        or 'echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"' not in text
-    ):
-        errors.append("backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes")
+        if "python3 scripts/ci_input_sets.py hash backtester_cache" not in job_text:
+            errors.append("backtester cache key digest must come from ci_input_sets backtester_cache")
+        if (
+            'if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then' not in job_text
+            or 'echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"' not in job_text
+        ):
+            errors.append("backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes")
     return errors
 
 
@@ -10305,7 +10309,6 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             "--job fmt=${{ needs.fmt.result }}",
             "--job clippy=${{ needs.clippy.result }}",
             "--job test-archive=${{ needs.test-archive.result }}",
-            "--job test=${{ needs.test-archive.result }}",
         ):
             if required not in gate_text:
                 errors.append(f"backtester draft deferral shared gate call must include {required}")

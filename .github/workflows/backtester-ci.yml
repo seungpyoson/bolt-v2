@@ -614,5 +614,4 @@ jobs:
             --job detect=${{ needs.detect.result }} \
             --job fmt=${{ needs.fmt.result }} \
             --job clippy=${{ needs.clippy.result }} \
-            --job test-archive=${{ needs.test-archive.result }} \
-            --job test=${{ needs.test-archive.result }}
+            --job test-archive=${{ needs.test-archive.result }}

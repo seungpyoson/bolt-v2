@@ -88,11 +88,14 @@ MIRRORED_RULES = (
         "ssm secret source",
         (
             "**SSM IS THE SINGLE SECRET SOURCE**",
-            "No AWS CLI subprocess, no 1Password CLI, no environment variable fallbacks",
+            "product/runtime credentials resolve from AWS SSM",
+            "GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN`",
+            "do not add alternate GitHub token names",
         ),
         (
-            "SSM is the single secret source for runtime credentials",
-            "do not add environment variable fallbacks or alternate secret backends in product code",
+            "SSM is the single secret source for product/runtime credentials",
+            "GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN`",
+            "Do not add environment variable fallbacks, alternate GitHub token names, or alternate secret backends",
         ),
     ),
     MirrorRule(
@@ -320,8 +323,8 @@ def verify_model_freshness_step_contracts(glm_workflow: str, kimi_workflow: str)
     if "KIMI_API_KEY" in glm_block or "MOONSHOT_API_KEY" in glm_block:
         findings.append("GLM workflow model freshness step must not receive Kimi/Moonshot secrets")
     kimi_block = workflow_step_block(kimi_workflow, "Check AI review model freshness")
-    if "MOONSHOT_API_KEY" in kimi_block:
-        findings.append("Kimi workflow model freshness step must use KIMI_API_KEY as the single Kimi credential")
+    if "KIMI_API_KEY" in kimi_block or "MOONSHOT_API_KEY" in kimi_block:
+        findings.append("Kimi workflow model freshness step must not receive Kimi/Moonshot secrets")
     return findings
 
 
@@ -341,7 +344,7 @@ def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
     literals: list[str] = []
     model_freshness = parsed.get("model_freshness")
     if isinstance(model_freshness, dict):
-        for key in ("issue_marker", "issue_title"):
+        for key in ("github_api_version", "issue_marker", "issue_title", "user_agent"):
             value = model_freshness.get(key)
             if isinstance(value, str) and value:
                 literals.append(value)
@@ -408,8 +411,13 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("github.expected_bot_login", github.get("expected_bot_login"), "github-actions[bot]"),
         ("review.max_comment_chars", review.get("max_comment_chars"), 60000),
         ("review.response_chars_per_chunk", review.get("response_chars_per_chunk"), 8000),
+        (
+            "model_freshness.user_agent",
+            model_freshness.get("user_agent"),
+            "bolt-v2-ai-review-model-freshness/1.0",
+        ),
+        ("model_freshness.github_api_version", model_freshness.get("github_api_version"), "2022-11-28"),
         ("model_freshness.kimi_chat_docs_url", model_freshness.get("kimi_chat_docs_url"), "https://platform.kimi.ai/docs/api/chat"),
-        ("model_freshness.kimi_models_url", model_freshness.get("kimi_models_url"), "https://api.moonshot.ai/v1/models"),
         ("model_freshness.glm_docs_index_url", model_freshness.get("glm_docs_index_url"), "https://docs.z.ai/llms.txt"),
         (
             "model_freshness.glm_migration_docs_url",
@@ -668,8 +676,8 @@ def run_self_tests(repo_root: Path) -> None:
         raise AssertionError("Kimi model freshness step must be advisory via continue-on-error")
     if "--provider kimi" not in kimi_model_freshness_step:
         raise AssertionError("Kimi model freshness step must check only Kimi freshness")
-    if "MOONSHOT_API_KEY" in kimi_model_freshness_step:
-        raise AssertionError("Kimi model freshness step must use KIMI_API_KEY as the single Kimi credential")
+    if "KIMI_API_KEY" in kimi_model_freshness_step or "MOONSHOT_API_KEY" in kimi_model_freshness_step:
+        raise AssertionError("Kimi model freshness step must not receive Kimi/Moonshot secrets")
 
     glm_blocking_freshness = verify_texts(
         agents_md=agents,
@@ -715,13 +723,27 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm,
         kimi_workflow=kimi.replace(
-            "        continue-on-error: true\n        env:\n          KIMI_API_KEY: ${{ env.KIMI_API_KEY }}",
-            "        env:\n          KIMI_API_KEY: ${{ env.KIMI_API_KEY }}",
+            "        continue-on-error: true\n        run: >-\n          python3 .ai-review/base/scripts/verify_ai_review_model_freshness.py",
+            "        run: >-\n          python3 .ai-review/base/scripts/verify_ai_review_model_freshness.py",
             1,
         ),
         smoke_workflow=smoke,
     )
     assert_finding("Kimi blocking freshness step", kimi_blocking_freshness, "model freshness step must be advisory")
+
+    kimi_secret_expansion = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        glm_workflow=glm,
+        kimi_workflow=kimi.replace(
+            "        continue-on-error: true\n        run: >-",
+            "        continue-on-error: true\n        env:\n          KIMI_API_KEY: ${{ env.KIMI_API_KEY }}\n        run: >-",
+            1,
+        ),
+        smoke_workflow=smoke,
+    )
+    assert_finding("Kimi model freshness secret expansion", kimi_secret_expansion, "must not receive Kimi/Moonshot secrets")
 
     future_ai_review = ai_review.replace(
         current_glm_model,

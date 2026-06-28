@@ -117,10 +117,7 @@ jobs:
 
       - name: Check AI review model freshness
         id: model-freshness
-        if: env.KIMI_API_KEY != ''
         continue-on-error: true
-        env:
-          KIMI_API_KEY: ${{ env.KIMI_API_KEY }}
         run: >-
           python3 .ai-review/base/scripts/verify_ai_review_model_freshness.py
           --config-file .ai-review/base/ci/ai-review.toml

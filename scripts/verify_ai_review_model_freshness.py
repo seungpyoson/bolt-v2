@@ -43,8 +43,9 @@ class ModelPins:
 
 @dataclass(frozen=True)
 class FreshnessSources:
+    user_agent: str
+    github_api_version: str
     kimi_chat_docs_url: str
-    kimi_models_url: str
     glm_docs_index_url: str
     glm_migration_docs_url: str
     request_timeout_seconds: int
@@ -107,8 +108,9 @@ def load_config(path: Path) -> tuple[ModelPins, FreshnessSources]:
         glm_pr_agent=string_value(pr_agent, "model", "glm.pr_agent.model"),
     )
     sources = FreshnessSources(
+        user_agent=string_value(freshness, "user_agent", "model_freshness.user_agent"),
+        github_api_version=string_value(freshness, "github_api_version", "model_freshness.github_api_version"),
         kimi_chat_docs_url=string_value(freshness, "kimi_chat_docs_url", "model_freshness.kimi_chat_docs_url"),
-        kimi_models_url=string_value(freshness, "kimi_models_url", "model_freshness.kimi_models_url"),
         glm_docs_index_url=string_value(freshness, "glm_docs_index_url", "model_freshness.glm_docs_index_url"),
         glm_migration_docs_url=string_value(
             freshness,
@@ -182,15 +184,6 @@ def parse_kimi_chat_docs_latest(text: str) -> str | None:
     return pick_latest_kimi_code_model(match.group(0) for match in KIMI_CODE_MODEL_RE.finditer(text))
 
 
-def parse_kimi_models_api_latest(text: str) -> str | None:
-    payload = json.loads(text)
-    data = payload.get("data")
-    if not isinstance(data, list):
-        raise ValueError("Kimi models API response missing data list")
-    model_ids = [item.get("id") for item in data if isinstance(item, dict) and isinstance(item.get("id"), str)]
-    return pick_latest_kimi_code_model(model_ids)
-
-
 def parse_glm_docs_latest(text: str) -> str | None:
     candidates: list[tuple[tuple[int, ...], str]] = []
     for match in GLM_TEXT_MODEL_RE.finditer(text):
@@ -207,10 +200,8 @@ def parse_glm_migration_model(text: str) -> str | None:
     return match.group(1).lower() if match else parse_glm_docs_latest(text)
 
 
-def fetch_text(url: str, token: str | None = None, *, timeout_seconds: int) -> str:
-    headers = {"User-Agent": "bolt-v2-ai-review-model-freshness/1.0"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+def fetch_text(url: str, *, user_agent: str, timeout_seconds: int) -> str:
+    headers = {"User-Agent": user_agent}
     request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
@@ -228,12 +219,16 @@ class GitHubIssueClient:
         repo: str,
         token: str,
         api_url: str,
+        user_agent: str,
+        github_api_version: str,
         request_timeout_seconds: int,
         issues_per_page: int,
     ) -> None:
         self.repo = repo
         self.token = token
         self.api_url = api_url.rstrip("/")
+        self.user_agent = user_agent
+        self.github_api_version = github_api_version
         self.request_timeout_seconds = request_timeout_seconds
         self.issues_per_page = issues_per_page
 
@@ -255,7 +250,8 @@ class GitHubIssueClient:
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
-                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": self.user_agent,
+                "X-GitHub-Api-Version": self.github_api_version,
             },
         )
         try:
@@ -300,33 +296,29 @@ def live_latest_models(
     warnings: list[str] = []
     kimi_latest: str | None = None
     if provider_enabled(provider, PROVIDER_KIMI):
-        kimi_token = os.environ.get("KIMI_API_KEY")
-        if kimi_token:
-            try:
-                kimi_latest = parse_kimi_models_api_latest(
-                    fetch_text(
-                        sources.kimi_models_url,
-                        token=kimi_token,
-                        timeout_seconds=sources.request_timeout_seconds,
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001 - keep fallback diagnostic actionable.
-                warnings.append(
-                    "Kimi models API unavailable; falling back to public docs: "
-                    f"{sanitize_detail(str(exc))}"
-                )
-        if kimi_latest is None:
-            kimi_latest = parse_kimi_chat_docs_latest(
-                fetch_text(sources.kimi_chat_docs_url, timeout_seconds=sources.request_timeout_seconds)
+        kimi_latest = parse_kimi_chat_docs_latest(
+            fetch_text(
+                sources.kimi_chat_docs_url,
+                user_agent=sources.user_agent,
+                timeout_seconds=sources.request_timeout_seconds,
             )
+        )
 
     glm_latest: str | None = None
     if provider_enabled(provider, PROVIDER_GLM):
         glm_latest = parse_glm_docs_latest(
-            fetch_text(sources.glm_docs_index_url, timeout_seconds=sources.request_timeout_seconds)
+            fetch_text(
+                sources.glm_docs_index_url,
+                user_agent=sources.user_agent,
+                timeout_seconds=sources.request_timeout_seconds,
+            )
         )
         migration_model = parse_glm_migration_model(
-            fetch_text(sources.glm_migration_docs_url, timeout_seconds=sources.request_timeout_seconds)
+            fetch_text(
+                sources.glm_migration_docs_url,
+                user_agent=sources.user_agent,
+                timeout_seconds=sources.request_timeout_seconds,
+            )
         )
         if glm_latest and migration_model and glm_latest != migration_model:
             warnings.append(
@@ -508,6 +500,8 @@ def github_issue_client_from_env(sources: FreshnessSources) -> GitHubIssueClient
         repo=repo,
         token=token,
         api_url=api_url,
+        user_agent=sources.user_agent,
+        github_api_version=sources.github_api_version,
         request_timeout_seconds=sources.request_timeout_seconds,
         issues_per_page=sources.github_issues_per_page,
     )
@@ -544,8 +538,6 @@ def run_self_test() -> None:
     current_pr_agent_glm = f"openai/{current_glm}"
     kimi_doc = f"model\ndefault:{current_kimi}\nAvailable options: `{current_kimi}-highspeed`"
     assert parse_kimi_chat_docs_latest(kimi_doc) == current_kimi
-    kimi_api = json.dumps({"data": [{"id": old_kimi}, {"id": f"{current_kimi}-highspeed"}, {"id": current_kimi}]})
-    assert parse_kimi_models_api_latest(kimi_api) == current_kimi
     kimi_alias_doc = "Available options: `kimi-k2.7-code` `kimi-k2.7-code-highspeed` `kimi-k27-code`"
     assert parse_kimi_chat_docs_latest(kimi_alias_doc) == "kimi-k2.7-code"
     glm_index = f"[GLM-{old_glm_version}](/guides/llm/glm-old.md) [GLM-{current_glm_version}](/guides/llm/glm-current.md)"
@@ -592,8 +584,9 @@ def run_self_test() -> None:
     assert alias_advisory["kimi_warning"] == "", alias_advisory
     config_text = f"""
 [model_freshness]
+user_agent = "bolt-v2-ai-review-model-freshness-test/1.0"
+github_api_version = "2022-11-28"
 kimi_chat_docs_url = "https://example.invalid/kimi-chat"
-kimi_models_url = "https://example.invalid/kimi-models"
 glm_docs_index_url = "https://example.invalid/glm-index"
 glm_migration_docs_url = "https://example.invalid/glm-migration"
 request_timeout_seconds = 30
@@ -659,8 +652,9 @@ model = "{current_kimi}"
             os.environ["MODEL_FRESHNESS_TEST_API_KEY"] = previous_secret
 
     sources = FreshnessSources(
+        user_agent="bolt-v2-ai-review-model-freshness-test/1.0",
+        github_api_version="2022-11-28",
         kimi_chat_docs_url="https://example.invalid/kimi-chat",
-        kimi_models_url="https://example.invalid/kimi-models",
         glm_docs_index_url="https://example.invalid/glm-index",
         glm_migration_docs_url="https://example.invalid/glm-migration",
         request_timeout_seconds=30,
@@ -670,9 +664,9 @@ model = "{current_kimi}"
     )
     original_fetch_text = fetch_text
     try:
-        def fake_fetch_text(url: str, token: str | None = None, *, timeout_seconds: int) -> str:
+        def fake_fetch_text(url: str, *, user_agent: str, timeout_seconds: int) -> str:
             del timeout_seconds
-            del token
+            assert user_agent == sources.user_agent
             if url == sources.kimi_chat_docs_url:
                 return f"default:{current_kimi}"
             if url == sources.glm_docs_index_url:
@@ -690,9 +684,9 @@ model = "{current_kimi}"
 
     provider_calls: list[str] = []
     try:
-        def fake_provider_fetch_text(url: str, token: str | None = None, *, timeout_seconds: int) -> str:
+        def fake_provider_fetch_text(url: str, *, user_agent: str, timeout_seconds: int) -> str:
             del timeout_seconds
-            del token
+            assert user_agent == sources.user_agent
             provider_calls.append(url)
             if url == sources.kimi_chat_docs_url:
                 return f"default:{current_kimi}"

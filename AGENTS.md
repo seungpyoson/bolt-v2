@@ -27,7 +27,7 @@ Repo governance for agents; higher-level standing instructions apply.
 3. **NO DEBTS** — no TODO, no "fix later", no unpinned dependencies, no uncommitted work.
 4. **NO CREDENTIAL DISPLAY** — never cat/print/log API keys, private keys, secrets.
 5. **PURE RUST BINARY** — standalone Rust `LiveNode` using NT's Rust API directly. No Python layer, PyO3, maturin, or pip.
-6. **SSM IS THE SINGLE SECRET SOURCE** — all credentials resolve from AWS SSM via `aws-sdk-ssm`. No AWS CLI subprocess, no 1Password CLI, no environment variable fallbacks, no other secret backends.
+6. **SSM IS THE SINGLE SECRET SOURCE** — product/runtime credentials resolve from AWS SSM via `aws-sdk-ssm`. No AWS CLI subprocess, no 1Password CLI, no environment variable fallbacks, no other secret backends. GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN` only for GitHub API operations; do not add alternate GitHub token names.
 7. **GROUP BY CHANGE** — values that share a lifecycle live in one config section; a wallet, credential-set, or venue swap must require one edit.
 8. **DO NOT REFERENCE BOLT V1** — do not read, import, or depend on `~/Projects/Claude/bolt/`. NT source is in `~/.cargo/git/checkouts/nautilus_trader-*/` or GitHub.
 9. **STRATEGIES PRODUCE INTENT ONLY** — strategies emit order intent and strategy-local signal state only. Admissibility, venue rules, fillability, rounding, minimum size, fee-adjusted sizing, and submit gating live in shared NT-based execution/admission modules. Submit mechanics under `src/strategies/*` are rejected unless explicitly approved as strategy-local signal logic.

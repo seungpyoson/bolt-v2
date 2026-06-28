@@ -35,7 +35,7 @@ queue_rules:
     batch_size:
       min: 2
       max: 10
-    batch_max_wait_time: 60 minutes
+    batch_max_wait_time: 5 minutes
     batch_max_failure_resolution_attempts: 0
     # merge_conditions intentionally differ from queue_conditions, which makes
     # Mergify use a queue proof context instead of in-place checks.

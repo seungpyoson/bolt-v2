@@ -5357,7 +5357,7 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
         return errors
 
     rule_expectations = (
-        ("default", default_rule, [], None, {"min": "2", "max": "10"}, "60 minutes"),
+        ("default", default_rule, [], None, {"min": "2", "max": "10"}, "5 minutes"),
         ("hotfix", hotfix_rule, ["label = hotfix"], "1", None, "30 seconds"),
     )
     for rule_name, rule, expected_queue_conditions, expected_batch_size, expected_dynamic_batch, expected_wait in rule_expectations:

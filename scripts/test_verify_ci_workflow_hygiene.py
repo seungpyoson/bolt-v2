@@ -3875,8 +3875,8 @@ def assert_mergify_config_gaps_are_reported() -> None:
         ),
         (
             "default wait shortened",
-            replace_once(mergify_config, "    batch_max_wait_time: 60 minutes\n", "    batch_max_wait_time: 30 seconds\n"),
-            "default batch_max_wait_time must be 60 minutes",
+            replace_once(mergify_config, "    batch_max_wait_time: 5 minutes\n", "    batch_max_wait_time: 30 seconds\n"),
+            "default batch_max_wait_time must be 5 minutes",
         ),
         (
             "hotfix wait lengthened",

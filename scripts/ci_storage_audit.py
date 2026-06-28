@@ -21,6 +21,7 @@ import datetime as dt
 import fnmatch
 import json
 import pathlib
+import string
 import subprocess
 import sys
 import tomllib
@@ -76,9 +77,72 @@ class ArtifactCleanupPolicy(NamedTuple):
     classes: tuple[ArtifactClassRule, ...]
 
 
+class InputFailure(NamedTuple):
+    field: str
+    state: str
+    code: str
+
+
+class ClassifiedInt(NamedTuple):
+    value: int | None
+    failure: InputFailure | None
+
+
+class ClassifiedText(NamedTuple):
+    value: str | None
+    failure: InputFailure | None
+
+
+class ClassifiedBool(NamedTuple):
+    value: bool | None
+    failure: InputFailure | None
+
+
+class CleanupDecision(NamedTuple):
+    class_id: str
+    decision: str
+    reason_code: str
+    reason: str
+    metadata_failure: InputFailure | None
+
+
 KEEP_DECISION = "KEEP"
 DELETE_CANDIDATE_DECISION = "DELETE-CANDIDATE"
 CLEANUP_POLICY_SECTION_MARKER = "[storage_audit.cleanup_feasibility]"
+STATE_ABSENT = "absent"
+STATE_EMPTY = "empty"
+STATE_INVALID = "invalid"
+FIELD_ARTIFACT_ID = "artifact_id"
+FIELD_ARTIFACT_EXPIRED = "expired"
+FIELD_ARTIFACT_REF = "workflow_run.ref"
+FIELD_WORKFLOW_RUN_ID = "workflow_run.id"
+FIELD_WORKFLOW_STATUS = "workflow_run.status"
+INPUT_FAILURE_CODES = {
+    (FIELD_ARTIFACT_ID, STATE_ABSENT): "artifact_id_absent",
+    (FIELD_ARTIFACT_ID, STATE_INVALID): "artifact_id_invalid",
+    (FIELD_ARTIFACT_EXPIRED, STATE_ABSENT): "artifact_expired_absent",
+    (FIELD_ARTIFACT_EXPIRED, STATE_EMPTY): "artifact_expired_empty",
+    (FIELD_ARTIFACT_EXPIRED, STATE_INVALID): "artifact_expired_invalid",
+    (FIELD_ARTIFACT_REF, STATE_ABSENT): "artifact_ref_absent",
+    (FIELD_ARTIFACT_REF, STATE_EMPTY): "artifact_ref_empty",
+    (FIELD_ARTIFACT_REF, STATE_INVALID): "artifact_ref_invalid",
+    (FIELD_WORKFLOW_RUN_ID, STATE_ABSENT): "workflow_run_id_absent",
+    (FIELD_WORKFLOW_RUN_ID, STATE_INVALID): "workflow_run_id_invalid",
+    (FIELD_WORKFLOW_STATUS, STATE_EMPTY): "workflow_status_empty",
+    (FIELD_WORKFLOW_STATUS, STATE_INVALID): "workflow_status_invalid",
+}
+WORKFLOW_RUN_ID_STATUS_SOURCES = {
+    STATE_ABSENT: "workflow_run_id_absent",
+    STATE_INVALID: "workflow_run_id_invalid",
+}
+REASON_DEFAULT_KEEP = "default_keep"
+REASON_EXPIRATION_UNKNOWN = "expiration_status_unknown"
+REASON_ARTIFACT_METADATA_UNAVAILABLE = "artifact_metadata_unavailable"
+REASON_PROTECTED_REF = "protected_ref"
+REASON_CLASS_KEEP = "class_keep"
+REASON_ACTIVE_RUN = "active_run"
+REASON_WORKFLOW_STATUS_UNAVAILABLE = "workflow_status_unavailable"
+REASON_DELETE_CANDIDATE = "delete_candidate"
 
 
 class GhClient:
@@ -215,6 +279,16 @@ def list_field(payload: dict[str, Any], field: str, label: str) -> list[Any]:
     return value
 
 
+def object_list_field(payload: dict[str, Any], field: str, label: str) -> list[dict[str, Any]]:
+    items = list_field(payload, field, label)
+    objects: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise AuditError(f"{label}.{field}[{index}] is not an object")
+        objects.append(item)
+    return objects
+
+
 def optional_text(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
@@ -233,12 +307,72 @@ def require_nonnegative_int(value: Any, label: str) -> int:
     return value
 
 
+def require_nonempty_text(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise AuditError(f"{label} must be a non-empty string")
+    return value
+
+
 def optional_nonnegative_int(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int) and value >= 0:
         return value
     return None
+
+
+def input_failure(field: str, state: str) -> InputFailure:
+    code = INPUT_FAILURE_CODES.get((field, state))
+    if code is None:
+        raise AssertionError(f"unregistered input failure: {field} {state}")
+    return InputFailure(field=field, state=state, code=code)
+
+
+def serialized_failure(failure: InputFailure | None) -> dict[str, str] | None:
+    return failure._asdict() if failure is not None else None
+
+
+def parsed_failure(value: Any, label: str) -> InputFailure | None:
+    if value is None:
+        return None
+    data = require_object(value, label)
+    failure = InputFailure(
+        field=require_nonempty_text(data.get("field"), f"{label}.field"),
+        state=require_nonempty_text(data.get("state"), f"{label}.state"),
+        code=require_nonempty_text(data.get("code"), f"{label}.code"),
+    )
+    expected_code = INPUT_FAILURE_CODES.get((failure.field, failure.state))
+    if expected_code != failure.code:
+        raise AuditError(f"{label} has inconsistent failure code")
+    return failure
+
+
+def classify_positive_int(value: Any, field: str) -> ClassifiedInt:
+    if value is None:
+        return ClassifiedInt(value=None, failure=input_failure(field, STATE_ABSENT))
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return ClassifiedInt(value=None, failure=input_failure(field, STATE_INVALID))
+    return ClassifiedInt(value=value, failure=None)
+
+
+def classify_optional_text(value: Any, field: str) -> ClassifiedText:
+    if value is None:
+        return ClassifiedText(value=None, failure=None)
+    if not isinstance(value, str):
+        return ClassifiedText(value=None, failure=input_failure(field, STATE_INVALID))
+    if not value:
+        return ClassifiedText(value=None, failure=input_failure(field, STATE_EMPTY))
+    return ClassifiedText(value=value, failure=None)
+
+
+def classify_required_bool(value: Any, field: str) -> ClassifiedBool:
+    if value is None:
+        return ClassifiedBool(value=None, failure=input_failure(field, STATE_ABSENT))
+    if isinstance(value, bool):
+        return ClassifiedBool(value=value, failure=None)
+    if value == "":
+        return ClassifiedBool(value=None, failure=input_failure(field, STATE_EMPTY))
+    return ClassifiedBool(value=None, failure=input_failure(field, STATE_INVALID))
 
 
 def require_policy_table(payload: dict[str, Any], key: str, label: str) -> dict[str, Any]:
@@ -383,7 +517,8 @@ def load_cleanup_policy_text(raw: str, *, label: str) -> ArtifactCleanupPolicy:
         raise AuditError(f"{label}: TOML root must be a table")
     storage_audit = require_policy_table(document, "storage_audit", label)
     table = require_policy_table(storage_audit, "cleanup_feasibility", "storage_audit")
-    if table.get("schema_version") != 1:
+    schema_version = table.get("schema_version")
+    if isinstance(schema_version, bool) or schema_version != 1:
         raise AuditError("storage_audit.cleanup_feasibility.schema_version must be 1")
     default_decision = require_policy_decision(table, "default_decision", "storage_audit.cleanup_feasibility")
     if default_decision != KEEP_DECISION:
@@ -424,6 +559,16 @@ def load_cleanup_policy_text(raw: str, *, label: str) -> ArtifactCleanupPolicy:
                 raise AuditError(
                     f"cleanup artifact prefix matcher {left_prefix!r} overlaps {right_prefix!r}"
                 )
+    billing_probe_paths = optional_policy_string_list(
+        table,
+        "billing_probe_paths",
+        "storage_audit.cleanup_feasibility",
+    )
+    for template in billing_probe_paths:
+        validate_global_api_path_template(
+            template,
+            "storage_audit.cleanup_feasibility.billing_probe_paths",
+        )
     return ArtifactCleanupPolicy(
         schema_version=1,
         default_class=require_policy_string(table, "default_class", "storage_audit.cleanup_feasibility"),
@@ -483,11 +628,7 @@ def load_cleanup_policy_text(raw: str, *, label: str) -> ArtifactCleanupPolicy:
             "workflow_run_fetch_limit",
             "storage_audit.cleanup_feasibility",
         ),
-        billing_probe_paths=optional_policy_string_list(
-            table,
-            "billing_probe_paths",
-            "storage_audit.cleanup_feasibility",
-        ),
+        billing_probe_paths=billing_probe_paths,
         classes=classes,
     )
 
@@ -547,21 +688,34 @@ def cache_entry_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def classify_workflow_ref(workflow_run: dict[str, Any]) -> ClassifiedText:
+    ref = classify_optional_text(workflow_run.get("ref"), FIELD_ARTIFACT_REF)
+    if ref.failure is not None or ref.value is not None:
+        return ref
+    head_branch = classify_optional_text(workflow_run.get("head_branch"), FIELD_ARTIFACT_REF)
+    if head_branch.failure is not None or head_branch.value is not None:
+        return head_branch
+    return ClassifiedText(value=None, failure=input_failure(FIELD_ARTIFACT_REF, STATE_ABSENT))
+
+
 def workflow_run_from_raw(raw: Any) -> dict[str, Any]:
-    data = raw if isinstance(raw, dict) else {}
-    head_branch = optional_text(data.get("head_branch"))
+    data = require_object(raw, "actions/artifacts.workflow_run")
+    run_id = classify_positive_int(data.get("id"), FIELD_WORKFLOW_RUN_ID)
+    status = classify_optional_text(data.get("status"), FIELD_WORKFLOW_STATUS)
+    ref = classify_workflow_ref(data)
     head_sha = optional_text(data.get("head_sha"))
-    ref = optional_text(data.get("ref")) or head_branch
-    status = optional_text(data.get("status"))
     return {
-        "id": optional_nonnegative_int(data.get("id")),
-        "status": status,
+        "id": run_id.value,
+        "id_failure": serialized_failure(run_id.failure),
+        "status": status.value,
+        "status_failure": serialized_failure(status.failure),
         "conclusion": optional_text(data.get("conclusion")),
-        "ref": ref,
-        "head_branch": head_branch,
+        "ref": ref.value,
+        "ref_failure": serialized_failure(ref.failure),
+        "head_branch": data.get("head_branch"),
         "head_sha": head_sha,
         "event": optional_text(data.get("event")),
-        "status_source": "artifact_payload" if status is not None else "not_fetched",
+        "status_source": "artifact_payload" if status.value is not None else "not_fetched",
     }
 
 
@@ -579,15 +733,24 @@ def set_workflow_run_status_source(entry: dict[str, Any], source: str) -> None:
     workflow_run["status_source"] = source
 
 
-def artifact_entry_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
-    expired = raw.get("expired")
+def artifact_base_entry_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
+    expired = classify_required_bool(raw.get("expired"), FIELD_ARTIFACT_EXPIRED)
     return {
-        "artifact_id": optional_nonnegative_int(raw.get("id")),
-        "name": optional_text(raw.get("name")) or "",
+        "name": require_nonempty_text(raw.get("name"), "actions/artifacts.name"),
         "size_bytes": require_nonnegative_int(raw.get("size_in_bytes"), "actions/artifacts.size_in_bytes"),
         "created_at": optional_text(raw.get("created_at")),
         "expires_at": optional_text(raw.get("expires_at")),
-        "expired": expired if isinstance(expired, bool) else None,
+        "expired": expired.value,
+        "expiration_failure": serialized_failure(expired.failure),
+    }
+
+
+def artifact_entry_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
+    artifact_id = classify_positive_int(raw.get("id"), FIELD_ARTIFACT_ID)
+    return {
+        "artifact_id": artifact_id.value,
+        "artifact_id_failure": serialized_failure(artifact_id.failure),
+        **artifact_base_entry_from_raw(raw),
         "workflow_run": workflow_run_from_raw(raw.get("workflow_run")),
     }
 
@@ -704,15 +867,13 @@ def fetch_artifacts(client: GhClient, *, include_entries: bool = False) -> dict[
         client.api("actions/artifacts", params={"per_page": "100"}, paginate=True),
         "actions/artifacts",
     )
-    raw_artifacts = list_field(payload, "artifacts", "actions/artifacts")
+    raw_artifacts = object_list_field(payload, "artifacts", "actions/artifacts")
     by_name: dict[str, dict[str, int]] = collections.defaultdict(empty_artifact_group)
     totals = empty_artifact_group()
     entries: list[dict[str, Any]] = []
 
     for raw in raw_artifacts:
-        if not isinstance(raw, dict):
-            continue
-        entry = artifact_entry_from_raw(raw)
+        entry = artifact_entry_from_raw(raw) if include_entries else artifact_base_entry_from_raw(raw)
         add_artifact_expiration_totals(
             totals,
             size_bytes=entry["size_bytes"],
@@ -847,7 +1008,7 @@ def cleanup_rule_for_name(policy: ArtifactCleanupPolicy, name: str) -> ArtifactC
 
 def artifact_ref(entry: dict[str, Any]) -> str | None:
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
-    return optional_text(workflow_run.get("ref")) or optional_text(workflow_run.get("head_branch"))
+    return classify_workflow_ref(workflow_run).value
 
 
 def protected_ref_forms(ref: str) -> tuple[str, ...]:
@@ -880,12 +1041,22 @@ def ref_is_protected(policy: ArtifactCleanupPolicy, ref: str | None) -> bool:
     )
 
 
-def artifact_identity_is_known(entry: dict[str, Any]) -> bool:
-    return optional_nonnegative_int(entry.get("artifact_id")) is not None
+def artifact_identity_failure(entry: dict[str, Any]) -> InputFailure | None:
+    stored_failure = parsed_failure(entry.get("artifact_id_failure"), "artifact artifact_id_failure")
+    if stored_failure is not None:
+        return stored_failure
+    return classify_positive_int(entry.get("artifact_id"), FIELD_ARTIFACT_ID).failure
 
 
-def artifact_ref_is_known(entry: dict[str, Any]) -> bool:
-    return artifact_ref(entry) is not None
+def artifact_metadata_failure(entry: dict[str, Any]) -> InputFailure | None:
+    identity_failure = artifact_identity_failure(entry)
+    if identity_failure is not None:
+        return identity_failure
+    workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
+    stored_ref_failure = parsed_failure(workflow_run.get("ref_failure"), "artifact workflow_run.ref_failure")
+    if stored_ref_failure is not None:
+        return stored_ref_failure
+    return classify_workflow_ref(workflow_run).failure
 
 
 def should_fetch_workflow_run(
@@ -899,16 +1070,21 @@ def should_fetch_workflow_run(
         return False
     if entry.get("expired") is not True:
         return False
+    if artifact_metadata_failure(entry) is not None:
+        return False
     if ref_is_protected(policy, artifact_ref(entry)):
         return False
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
-    status = optional_text(workflow_run.get("status"))
-    return status is None
+    status = classify_optional_text(workflow_run.get("status"), FIELD_WORKFLOW_STATUS)
+    return status.value is None
 
 
-def workflow_run_id_from_entry(entry: dict[str, Any]) -> int | None:
+def workflow_run_id_from_entry(entry: dict[str, Any]) -> ClassifiedInt:
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
-    return optional_nonnegative_int(workflow_run.get("id"))
+    stored_failure = parsed_failure(workflow_run.get("id_failure"), "artifact workflow_run.id_failure")
+    if stored_failure is not None:
+        return ClassifiedInt(value=None, failure=stored_failure)
+    return classify_positive_int(workflow_run.get("id"), FIELD_WORKFLOW_RUN_ID)
 
 
 def fetch_workflow_run_metadata_payload(client: GhClient, run_id: int) -> dict[str, Any] | None:
@@ -922,53 +1098,108 @@ def cleanup_decision_for_entry(
     policy: ArtifactCleanupPolicy,
     rule: ArtifactClassRule | None,
     entry: dict[str, Any],
-) -> tuple[str, str, str]:
+) -> CleanupDecision:
     if rule is None:
-        return policy.default_class, policy.default_decision, policy.default_keep_reason
+        return CleanupDecision(
+            class_id=policy.default_class,
+            decision=policy.default_decision,
+            reason_code=REASON_DEFAULT_KEEP,
+            reason=policy.default_keep_reason,
+            metadata_failure=None,
+        )
     class_id = rule.rule_id
     expired = entry.get("expired")
-    if expired is None:
-        return class_id, KEEP_DECISION, policy.expiration_unknown_keep_reason
+    expiration_failure = parsed_failure(entry.get("expiration_failure"), "artifact expiration_failure")
+    if expiration_failure is not None or expired is None:
+        return CleanupDecision(
+            class_id=class_id,
+            decision=KEEP_DECISION,
+            reason_code=REASON_EXPIRATION_UNKNOWN,
+            reason=policy.expiration_unknown_keep_reason,
+            metadata_failure=None,
+        )
     if expired is False:
-        return class_id, KEEP_DECISION, rule.keep_reason or policy.not_expired_keep_reason
-    if rule.expired_decision == DELETE_CANDIDATE_DECISION and (
-        not artifact_identity_is_known(entry) or not artifact_ref_is_known(entry)
-    ):
-        return class_id, KEEP_DECISION, policy.artifact_metadata_unavailable_keep_reason
+        return CleanupDecision(
+            class_id=class_id,
+            decision=KEEP_DECISION,
+            reason_code=REASON_CLASS_KEEP,
+            reason=rule.keep_reason,
+            metadata_failure=None,
+        )
+    metadata_failure = artifact_metadata_failure(entry)
+    if rule.expired_decision == DELETE_CANDIDATE_DECISION and metadata_failure is not None:
+        return CleanupDecision(
+            class_id=class_id,
+            decision=KEEP_DECISION,
+            reason_code=REASON_ARTIFACT_METADATA_UNAVAILABLE,
+            reason=policy.artifact_metadata_unavailable_keep_reason,
+            metadata_failure=metadata_failure,
+        )
     ref = artifact_ref(entry)
     if ref_is_protected(policy, ref):
-        return class_id, KEEP_DECISION, policy.protected_ref_keep_reason
+        return CleanupDecision(
+            class_id=class_id,
+            decision=KEEP_DECISION,
+            reason_code=REASON_PROTECTED_REF,
+            reason=policy.protected_ref_keep_reason,
+            metadata_failure=None,
+        )
     if rule.expired_decision == KEEP_DECISION:
-        return class_id, KEEP_DECISION, rule.keep_reason
+        return CleanupDecision(
+            class_id=class_id,
+            decision=KEEP_DECISION,
+            reason_code=REASON_CLASS_KEEP,
+            reason=rule.keep_reason,
+            metadata_failure=None,
+        )
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
-    status = optional_text(workflow_run.get("status"))
-    if status in policy.active_run_statuses:
-        return class_id, KEEP_DECISION, policy.active_run_keep_reason
-    if status not in policy.terminal_run_statuses:
-        return class_id, KEEP_DECISION, policy.status_unavailable_keep_reason
+    status = classify_optional_text(workflow_run.get("status"), FIELD_WORKFLOW_STATUS)
+    if status.value in policy.active_run_statuses:
+        return CleanupDecision(
+            class_id=class_id,
+            decision=KEEP_DECISION,
+            reason_code=REASON_ACTIVE_RUN,
+            reason=policy.active_run_keep_reason,
+            metadata_failure=None,
+        )
+    if status.value not in policy.terminal_run_statuses:
+        return CleanupDecision(
+            class_id=class_id,
+            decision=KEEP_DECISION,
+            reason_code=REASON_WORKFLOW_STATUS_UNAVAILABLE,
+            reason=policy.status_unavailable_keep_reason,
+            metadata_failure=None,
+        )
     if rule.candidate_reason is None:
         raise AuditError(f"cleanup class {rule.rule_id} has no candidate reason")
-    return class_id, DELETE_CANDIDATE_DECISION, rule.candidate_reason
+    return CleanupDecision(
+        class_id=class_id,
+        decision=DELETE_CANDIDATE_DECISION,
+        reason_code=REASON_DELETE_CANDIDATE,
+        reason=rule.candidate_reason,
+        metadata_failure=None,
+    )
 
 
 def row_from_entry(
     entry: dict[str, Any],
     *,
-    class_id: str,
-    decision: str,
-    reason: str,
+    cleanup_decision: CleanupDecision,
 ) -> dict[str, Any]:
     return {
         "artifact_id": entry.get("artifact_id"),
         "name": entry.get("name"),
-        "class": class_id,
+        "class": cleanup_decision.class_id,
         "size_bytes": entry.get("size_bytes"),
         "created_at": entry.get("created_at"),
         "expires_at": entry.get("expires_at"),
         "expired": entry.get("expired"),
+        "expiration_failure": entry.get("expiration_failure"),
         "workflow_run": entry.get("workflow_run"),
-        "decision": decision,
-        "reason": reason,
+        "decision": cleanup_decision.decision,
+        "reason_code": cleanup_decision.reason_code,
+        "reason": cleanup_decision.reason,
+        "metadata_failure": serialized_failure(cleanup_decision.metadata_failure),
     }
 
 
@@ -1010,10 +1241,24 @@ def cleanup_self_clear_horizon(entries: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def validate_global_api_path_template(template: str, label: str) -> None:
+    allowed_fields = frozenset(("owner", "repo", "owner_repo"))
+    try:
+        parsed = tuple(string.Formatter().parse(template))
+    except ValueError as exc:
+        raise AuditError(f"{label} template is invalid: {exc}") from exc
+    for _, field_name, _, _ in parsed:
+        if field_name is None:
+            continue
+        if field_name not in allowed_fields:
+            raise AuditError(f"{label} has unsupported placeholder: {field_name!r}")
+
+
 def format_global_api_path(template: str, repo: str) -> str:
     if "/" not in repo:
         raise AuditError("repo must be OWNER/REPO for billing endpoint path expansion")
     owner, repo_name = repo.split("/", 1)
+    validate_global_api_path_template(template, "billing endpoint path")
     try:
         return template.format(owner=owner, repo=repo_name, owner_repo=repo)
     except (IndexError, KeyError, ValueError) as exc:
@@ -1064,30 +1309,31 @@ def build_artifact_cleanup_feasibility(
     artifacts: dict[str, Any],
     policy: ArtifactCleanupPolicy,
 ) -> dict[str, Any]:
-    entries = list_field(artifacts, "entries", "artifacts")
+    entries = object_list_field(artifacts, "entries", "artifacts")
     rows: list[dict[str, Any]] = []
     workflow_run_fetches = 0
     workflow_run_fetch_limit_reached = False
     workflow_run_metadata_cache: dict[int, dict[str, Any] | None] = {}
 
     for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        rule = cleanup_rule_for_name(policy, str(entry.get("name") or ""))
+        artifact_name = require_nonempty_text(entry.get("name"), "artifacts.entries.name")
+        rule = cleanup_rule_for_name(policy, artifact_name)
         if should_fetch_workflow_run(policy, rule, entry):
             run_id = workflow_run_id_from_entry(entry)
-            if run_id is None:
-                set_workflow_run_status_source(entry, "missing_run_id")
-            elif run_id in workflow_run_metadata_cache:
-                payload = workflow_run_metadata_cache[run_id]
+            if run_id.failure is not None:
+                set_workflow_run_status_source(entry, WORKFLOW_RUN_ID_STATUS_SOURCES[run_id.failure.state])
+            elif run_id.value in workflow_run_metadata_cache:
+                payload = workflow_run_metadata_cache[run_id.value]
                 if payload is not None:
                     merge_workflow_run_metadata(entry, payload)
                 else:
                     set_workflow_run_status_source(entry, "run_api_unavailable")
             elif workflow_run_fetches < policy.workflow_run_fetch_limit:
                 workflow_run_fetches += 1
-                payload = fetch_workflow_run_metadata_payload(client, run_id)
-                workflow_run_metadata_cache[run_id] = payload
+                if run_id.value is None:
+                    raise AssertionError("workflow run id classifier returned no value without failure")
+                payload = fetch_workflow_run_metadata_payload(client, run_id.value)
+                workflow_run_metadata_cache[run_id.value] = payload
                 if payload is not None:
                     merge_workflow_run_metadata(entry, payload)
                 else:
@@ -1095,8 +1341,8 @@ def build_artifact_cleanup_feasibility(
             else:
                 workflow_run_fetch_limit_reached = True
                 set_workflow_run_status_source(entry, "fetch_limit")
-        class_id, decision, reason = cleanup_decision_for_entry(policy, rule, entry)
-        rows.append(row_from_entry(entry, class_id=class_id, decision=decision, reason=reason))
+        cleanup_decision = cleanup_decision_for_entry(policy, rule, entry)
+        rows.append(row_from_entry(entry, cleanup_decision=cleanup_decision))
 
     candidate_bytes = sum(
         nonnegative_int(row.get("size_bytes"))
@@ -1107,7 +1353,13 @@ def build_artifact_cleanup_feasibility(
         nonnegative_int(row.get("size_bytes"))
         for row in rows
         if row.get("decision") == KEEP_DECISION
-        and row.get("reason") == policy.status_unavailable_keep_reason
+        and row.get("reason_code") == REASON_WORKFLOW_STATUS_UNAVAILABLE
+    )
+    metadata_unavailable_bytes = sum(
+        nonnegative_int(row.get("size_bytes"))
+        for row in rows
+        if row.get("decision") == KEEP_DECISION
+        and row.get("reason_code") == REASON_ARTIFACT_METADATA_UNAVAILABLE
     )
     billing = probe_billing_endpoint(client, repo=repo, policy=policy)
     return {
@@ -1121,13 +1373,19 @@ def build_artifact_cleanup_feasibility(
         "unverified_candidate_count": sum(
             1 for row in rows
             if row.get("decision") == KEEP_DECISION
-            and row.get("reason") == policy.status_unavailable_keep_reason
+            and row.get("reason_code") == REASON_WORKFLOW_STATUS_UNAVAILABLE
+        ),
+        "metadata_unavailable_bytes": metadata_unavailable_bytes,
+        "metadata_unavailable_count": sum(
+            1 for row in rows
+            if row.get("decision") == KEEP_DECISION
+            and row.get("reason_code") == REASON_ARTIFACT_METADATA_UNAVAILABLE
         ),
         "expected_reclaim_proxy_bytes": candidate_bytes,
         "measured_billed_reclaim_bytes": None,
         "reclaim_basis": "listed_artifact_bytes_proxy",
         "billing": billing,
-        "self_clear_horizon": cleanup_self_clear_horizon([entry for entry in entries if isinstance(entry, dict)]),
+        "self_clear_horizon": cleanup_self_clear_horizon(entries),
         "wait_and_remeasure": policy.wait_and_remeasure,
         "workflow_run_metadata": {
             "fetches": workflow_run_fetches,
@@ -1304,6 +1562,10 @@ def render_text(snapshot: dict[str, Any], *, artifact_name_limit: int = 10) -> s
                 (
                     f"  - unverified_candidate_rows={cleanup.get('unverified_candidate_count')} "
                     f"unverified_bytes={human_bytes(nonnegative_int(cleanup.get('unverified_candidate_bytes')))}"
+                ),
+                (
+                    f"  - metadata_unavailable_rows={cleanup.get('metadata_unavailable_count')} "
+                    f"metadata_unavailable_bytes={human_bytes(nonnegative_int(cleanup.get('metadata_unavailable_bytes')))}"
                 ),
                 f"  - billing={billing.get('status')} ({billing.get('message')})",
                 f"  - self_clear_horizon={horizon.get('expires_at')}",

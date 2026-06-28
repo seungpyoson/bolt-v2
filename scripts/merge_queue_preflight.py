@@ -76,6 +76,18 @@ class VerifierResult:
 
 
 @dataclasses.dataclass(frozen=True)
+class OutputPolicy:
+    verifier_stream_max_lines: int
+    verifier_stream_max_bytes: int
+
+    def as_json(self) -> dict[str, int]:
+        return {
+            "verifier_stream_max_lines": self.verifier_stream_max_lines,
+            "verifier_stream_max_bytes": self.verifier_stream_max_bytes,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
 class ReadinessIssue:
     code: str
     message: str
@@ -153,6 +165,7 @@ class PreflightConfig:
     base: str
     default_verifier_profile: str
     verifier_profiles: dict[str, tuple[str, ...]]
+    output_policy: OutputPolicy
 
 
 STATIC_READINESS_EXPECTATIONS = (
@@ -252,6 +265,13 @@ def require_string(parent: dict[str, object], key: str, prefix: str) -> str:
     return value
 
 
+def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
+    value = parent.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise PreflightError(f"{prefix}.{key} must be a positive integer")
+    return value
+
+
 def load_config(path: pathlib.Path) -> PreflightConfig:
     root = load_toml(path)
     settings = require_table(root, "merge_queue_preflight", "config")
@@ -262,6 +282,19 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
     )
     profiles_root = require_table(
         settings, "verifier_profiles", "config.merge_queue_preflight"
+    )
+    output_settings = require_table(settings, "output", "config.merge_queue_preflight")
+    output_policy = OutputPolicy(
+        verifier_stream_max_lines=require_positive_int(
+            output_settings,
+            "verifier_stream_max_lines",
+            "config.merge_queue_preflight.output",
+        ),
+        verifier_stream_max_bytes=require_positive_int(
+            output_settings,
+            "verifier_stream_max_bytes",
+            "config.merge_queue_preflight.output",
+        ),
     )
     profiles: dict[str, tuple[str, ...]] = {}
     for profile_name, raw_profile in profiles_root.items():
@@ -286,6 +319,7 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
         base=base,
         default_verifier_profile=default_profile,
         verifier_profiles=profiles,
+        output_policy=output_policy,
     )
 
 
@@ -554,29 +588,32 @@ def readiness_for_wave(
 ) -> tuple[list[dict[str, object]], list[str]]:
     if not use_gh:
         return [pr_readiness(pr, use_gh=False) for pr in pr_numbers], []
-    try:
-        return [
-            pr_readiness(
-                pr,
-                use_gh=True,
-                expected_base=base,
-                fetched_head=heads[pr].sha,
+    readiness: list[dict[str, object]] = []
+    metadata_warnings: list[str] = []
+    for pr in pr_numbers:
+        try:
+            readiness.append(
+                pr_readiness(
+                    pr,
+                    use_gh=True,
+                    expected_base=base,
+                    fetched_head=heads[pr].sha,
+                )
             )
-            for pr in pr_numbers
-        ], []
-    except PreflightError as exc:
-        warning = f"GitHub metadata unavailable; readiness checks skipped: {exc}"
-        readiness = [
-            {
-                "pr": pr,
-                "warnings": [],
-                "warning_details": [],
-                "checks": [],
-                "metadata_unavailable": True,
-            }
-            for pr in pr_numbers
-        ]
-        return readiness, [warning]
+        except PreflightError as exc:
+            warning = f"GitHub metadata unavailable for PR #{pr}; readiness checks skipped: {exc}"
+            metadata_warnings.append(warning)
+            readiness.append(
+                {
+                    "pr": pr,
+                    "warnings": [],
+                    "warning_details": [],
+                    "checks": [],
+                    "metadata_unavailable": True,
+                    "metadata_error": str(exc),
+                }
+            )
+    return readiness, metadata_warnings
 
 
 def preflight(
@@ -586,6 +623,7 @@ def preflight(
     base: str,
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
+    output_policy: OutputPolicy,
     use_gh: bool,
 ) -> tuple[dict[str, object], int]:
     requested = unique_preserving_order(pr_numbers)
@@ -715,12 +753,42 @@ def preflight(
         "batches": [batch.as_json() for batch in batches],
         "blocked_prs": blocked_prs,
         "conflicts": conflicts,
+        "output_policy": output_policy.as_json(),
     }
     exit_code = 1 if blocked_prs or conflicts or metadata_warnings else 0
     return payload, exit_code
 
 
-def append_verifier_result(lines: list[str], verifier: dict[str, object], *, indent: str) -> None:
+def output_policy_from_payload(payload: dict[str, object]) -> OutputPolicy:
+    value = payload["output_policy"]
+    if not isinstance(value, dict):
+        raise PreflightError("payload output_policy must be an object")
+    return OutputPolicy(
+        verifier_stream_max_lines=int(value["verifier_stream_max_lines"]),
+        verifier_stream_max_bytes=int(value["verifier_stream_max_bytes"]),
+    )
+
+
+def bounded_stream_lines(output: str, output_policy: OutputPolicy) -> tuple[list[str], bool]:
+    encoded = output.encode("utf-8")
+    byte_truncated = len(encoded) > output_policy.verifier_stream_max_bytes
+    if byte_truncated:
+        output = encoded[: output_policy.verifier_stream_max_bytes].decode(
+            "utf-8",
+            errors="ignore",
+        )
+    stream_lines = output.rstrip().splitlines()
+    line_truncated = len(stream_lines) > output_policy.verifier_stream_max_lines
+    return stream_lines[: output_policy.verifier_stream_max_lines], byte_truncated or line_truncated
+
+
+def append_verifier_result(
+    lines: list[str],
+    verifier: dict[str, object],
+    *,
+    indent: str,
+    output_policy: OutputPolicy,
+) -> None:
     lines.append(
         "{indent}verifier {command}: exit {returncode}".format(
             indent=indent,
@@ -728,15 +796,21 @@ def append_verifier_result(lines: list[str], verifier: dict[str, object], *, ind
             returncode=verifier["returncode"],
         )
     )
+    if verifier["returncode"] == 0:
+        return
     for stream in ("stdout", "stderr"):
         output = str(verifier.get(stream, ""))
         if not output:
             continue
         lines.append(f"{indent}  {stream}:")
-        lines.extend(f"{indent}    {line}" for line in output.rstrip().splitlines())
+        stream_lines, truncated = bounded_stream_lines(output, output_policy)
+        lines.extend(f"{indent}    {line}" for line in stream_lines)
+        if truncated:
+            lines.append(f"{indent}    ... truncated by merge_queue_preflight output policy")
 
 
 def plain_text(payload: dict[str, object]) -> str:
+    output_policy = output_policy_from_payload(payload)
     lines = [
         f"base: {payload['base']} {payload['base_sha']}",
         "requested PRs: " + ", ".join(f"#{pr}" for pr in payload["requested_prs"]),
@@ -748,7 +822,12 @@ def plain_text(payload: dict[str, object]) -> str:
             prs=", ".join(f"#{pr}" for pr in batch["prs"]),
         ))
         for verifier in batch["verifiers"]:
-            append_verifier_result(lines, verifier, indent="    ")
+            append_verifier_result(
+                lines,
+                verifier,
+                indent="    ",
+                output_policy=output_policy,
+            )
     if payload["blocked_prs"]:
         lines.append("blocked PRs:")
         for item in payload["blocked_prs"]:
@@ -756,7 +835,12 @@ def plain_text(payload: dict[str, object]) -> str:
             if item.get("files"):
                 lines.append("    files: " + ", ".join(item["files"]))
             if "command" in item:
-                append_verifier_result(lines, item, indent="    ")
+                append_verifier_result(
+                    lines,
+                    item,
+                    indent="    ",
+                    output_policy=output_policy,
+                )
     if payload["metadata_warnings"]:
         lines.append("metadata warnings:")
         for warning in payload["metadata_warnings"]:
@@ -769,7 +853,12 @@ def plain_text(payload: dict[str, object]) -> str:
             if item.get("files"):
                 lines.append("    files: " + ", ".join(item["files"]))
             if "command" in item:
-                append_verifier_result(lines, item, indent="    ")
+                append_verifier_result(
+                    lines,
+                    item,
+                    indent="    ",
+                    output_policy=output_policy,
+                )
     warnings = [
         (item["pr"], warning)
         for item in payload["readiness"]
@@ -812,6 +901,7 @@ def main(argv: list[str] | None = None) -> int:
             base=args.base or config.base,
             pr_numbers=args.prs,
             verifier_commands=verifier_commands(config, args.verifier_profile, args.run_verifier),
+            output_policy=config.output_policy,
             use_gh=not args.no_gh,
         )
     except PreflightError as exc:

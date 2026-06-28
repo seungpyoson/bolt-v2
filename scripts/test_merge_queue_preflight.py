@@ -110,7 +110,14 @@ def parse_json(stdout: str) -> dict[str, object]:
     return payload
 
 
-def write_preflight_config(root: pathlib.Path, profile: str, commands: list[str]) -> pathlib.Path:
+def write_preflight_config(
+    root: pathlib.Path,
+    profile: str,
+    commands: list[str],
+    *,
+    verifier_stream_max_lines: int = 40,
+    verifier_stream_max_bytes: int = 4000,
+) -> pathlib.Path:
     rendered_commands = ", ".join(json.dumps(command) for command in commands)
     path = root / "preflight.toml"
     write(
@@ -119,6 +126,9 @@ def write_preflight_config(root: pathlib.Path, profile: str, commands: list[str]
         'origin = "origin"\n'
         'base = "main"\n'
         f"default_verifier_profile = {json.dumps(profile)}\n\n"
+        "[merge_queue_preflight.output]\n"
+        f"verifier_stream_max_lines = {verifier_stream_max_lines}\n"
+        f"verifier_stream_max_bytes = {verifier_stream_max_bytes}\n\n"
         f"[merge_queue_preflight.verifier_profiles.{profile}]\n"
         f"commands = [{rendered_commands}]\n",
     )
@@ -130,6 +140,7 @@ def write_fake_gh(
     *,
     views: dict[int, dict[str, object]],
     checks: dict[int, list[dict[str, object]]] | None = None,
+    failed_views: dict[int, str] | None = None,
 ) -> pathlib.Path:
     bin_dir = root / "bin"
     bin_dir.mkdir()
@@ -141,8 +152,12 @@ def write_fake_gh(
         "import sys\n"
         f"views = {views!r}\n"
         f"checks = {(checks or {})!r}\n"
+        f"failed_views = {(failed_views or {})!r}\n"
         "args = sys.argv[1:]\n"
         "if len(args) >= 3 and args[0:2] == ['pr', 'view']:\n"
+        "    if int(args[2]) in failed_views:\n"
+        "        print(failed_views[int(args[2])], file=sys.stderr)\n"
+        "        raise SystemExit(1)\n"
         "    print(json.dumps(views[int(args[2])]))\n"
         "elif len(args) >= 3 and args[0:2] == ['pr', 'checks']:\n"
         "    print(json.dumps(checks.get(int(args[2]), [])))\n"
@@ -465,6 +480,96 @@ def assert_plain_output_includes_verifier_failure_details() -> None:
             raise AssertionError(result.stdout)
 
 
+def assert_plain_output_omits_successful_verifier_streams() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        fixture.make_pr(1, {"safe.txt": "safe\n"})
+        verifier = root / "successful_verifier.py"
+        write(
+            verifier,
+            "print('success output should stay quiet')\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise AssertionError(f"expected verifier rc=0, got {result.returncode}\n{result.stdout}\n{result.stderr}")
+        if f"verifier {sys.executable} {verifier}: exit 0" not in result.stdout:
+            raise AssertionError(result.stdout)
+        if "success output should stay quiet" in result.stdout:
+            raise AssertionError(result.stdout)
+
+
+def assert_plain_output_bounds_failed_verifier_streams() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        fixture.make_pr(1, {"fail.txt": "fail\n"})
+        verifier = root / "noisy_failure.py"
+        write(
+            verifier,
+            "import sys\n"
+            "for line in ['line-1', 'line-2', 'line-3']:\n"
+            "    print(line)\n"
+            "sys.exit(7)\n",
+        )
+        config = write_preflight_config(
+            root,
+            "strict",
+            [f"{sys.executable} {verifier}"],
+            verifier_stream_max_lines=2,
+            verifier_stream_max_bytes=200,
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--no-gh",
+            "--config",
+            str(config),
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 1:
+            raise AssertionError(f"expected verifier rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}")
+        if "line-1" not in result.stdout or "line-2" not in result.stdout:
+            raise AssertionError(result.stdout)
+        if "line-3" in result.stdout:
+            raise AssertionError(result.stdout)
+        if "truncated" not in result.stdout:
+            raise AssertionError(result.stdout)
+
+
 def assert_head_oid_mismatch_blocks_pr() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -505,6 +610,33 @@ def assert_wrong_base_ref_blocks_pr() -> None:
             raise AssertionError(blocked)
         if "PR targets base 'release', expected 'main'" not in blocked[0]["reason"]:
             raise AssertionError(blocked)
+
+
+def assert_partial_gh_metadata_failure_preserves_other_readiness() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        fixture.make_pr(2, {"two.txt": "two\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            failed_views={2: "simulated metadata failure"},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1", "2")
+        if result.returncode != 1:
+            raise AssertionError(
+                f"expected partial metadata failure rc=1, got {result.returncode}\n{result.stdout}\n{result.stderr}"
+            )
+        payload = parse_json(result.stdout)
+        readiness = {item["pr"]: item for item in payload["readiness"]}
+        if "metadata" not in readiness[1]:
+            raise AssertionError(payload)
+        if readiness[2].get("metadata_unavailable") is not True:
+            raise AssertionError(payload)
+        warnings = payload.get("metadata_warnings")
+        if not isinstance(warnings, list) or "PR #2" not in warnings[0]:
+            raise AssertionError(payload)
 
 
 def assert_invalid_pr_input_is_rejected() -> None:
@@ -580,8 +712,11 @@ def main() -> int:
     assert_verifier_failure_blocks_bad_pr_before_batching()
     assert_configured_verifier_profile_blocks_bad_pr()
     assert_plain_output_includes_verifier_failure_details()
+    assert_plain_output_omits_successful_verifier_streams()
+    assert_plain_output_bounds_failed_verifier_streams()
     assert_head_oid_mismatch_blocks_pr()
     assert_wrong_base_ref_blocks_pr()
+    assert_partial_gh_metadata_failure_preserves_other_readiness()
     assert_invalid_pr_input_is_rejected()
     assert_missing_gh_reports_inconclusive_metadata()
     print("OK: merge_queue_preflight tests passed.")

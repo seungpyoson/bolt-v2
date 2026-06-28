@@ -42,7 +42,7 @@ FRESHNESS_STATE_BY_SIGNALS = {
     (False, False): FreshnessState.FRESH,
     (False, True): FreshnessState.UNKNOWN,
     (True, False): FreshnessState.STALE,
-    (True, True): FreshnessState.STALE,
+    (True, True): FreshnessState.UNKNOWN,
 }
 ISSUE_OPEN_BY_STATE = {
     FreshnessState.STALE: True,
@@ -127,6 +127,7 @@ ISSUE_PRESENTERS: dict[FreshnessState, Callable[[ModelFreshnessAdvisory], IssueP
 
 @dataclass(frozen=True)
 class FreshnessSources:
+    github_api_url: str
     user_agent: str
     github_api_version: str
     kimi_chat_docs_url: str
@@ -176,6 +177,7 @@ def freshness_success_message(*, pins: ModelPins, provider: str) -> str:
 def load_config(path: Path) -> tuple[ModelPins, FreshnessSources]:
     parsed = tomllib.loads(path.read_text(encoding="utf-8"))
     try:
+        github = parsed["github"]
         glm = parsed["glm"]
         kimi = parsed["kimi"]
         freshness = parsed["model_freshness"]
@@ -192,6 +194,7 @@ def load_config(path: Path) -> tuple[ModelPins, FreshnessSources]:
         glm_pr_agent=string_value(pr_agent, "model", "glm.pr_agent.model"),
     )
     sources = FreshnessSources(
+        github_api_url=string_value(github, "api_url", "github.api_url"),
         user_agent=string_value(freshness, "user_agent", "model_freshness.user_agent"),
         github_api_version=string_value(freshness, "github_api_version", "model_freshness.github_api_version"),
         kimi_chat_docs_url=string_value(freshness, "kimi_chat_docs_url", "model_freshness.kimi_chat_docs_url"),
@@ -443,6 +446,20 @@ def model_update_warning(*, provider: str, config_key: str, current: str, latest
     )
 
 
+def provider_source_warnings(
+    *,
+    kimi_latest: str | None,
+    glm_latest: str | None,
+    provider: str,
+) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if provider_enabled(provider, PROVIDER_KIMI) and kimi_latest is None:
+        warnings.append("Could not determine latest Kimi coding model from provider sources")
+    if provider_enabled(provider, PROVIDER_GLM) and glm_latest is None:
+        warnings.append("Could not determine latest GLM text coding model from provider sources")
+    return tuple(warnings)
+
+
 def classify_freshness_state(
     *,
     kimi_warning: str,
@@ -476,7 +493,10 @@ def build_model_freshness_advisory(
             current=pins.glm,
             latest=glm_latest,
         )
-    source_warnings = tuple(sanitize_detail(warning) for warning in warnings)
+    source_warnings = tuple(
+        sanitize_detail(warning)
+        for warning in (*warnings, *provider_source_warnings(kimi_latest=kimi_latest, glm_latest=glm_latest, provider=provider))
+    )
     return ModelFreshnessAdvisory(
         state=classify_freshness_state(
             kimi_warning=kimi_warning,
@@ -576,7 +596,6 @@ def sync_model_freshness_issue(
 def github_issue_client_from_env(sources: FreshnessSources) -> GitHubIssueClient:
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     token = os.environ.get("GITHUB_TOKEN", "")
-    api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com")
     if not repo:
         raise RuntimeError("GITHUB_REPOSITORY is required to sync the model freshness issue")
     if not token:
@@ -584,7 +603,7 @@ def github_issue_client_from_env(sources: FreshnessSources) -> GitHubIssueClient
     return GitHubIssueClient(
         repo=repo,
         token=token,
-        api_url=api_url,
+        api_url=sources.github_api_url,
         user_agent=sources.user_agent,
         github_api_version=sources.github_api_version,
         request_timeout_seconds=sources.request_timeout_seconds,
@@ -671,7 +690,18 @@ def run_self_test() -> None:
     assert alias_advisory.state is FreshnessState.FRESH, alias_advisory
     assert alias_outputs["stale"] == "false", alias_outputs
     assert alias_advisory.kimi_warning == "", alias_advisory
+    missing_provider_advisory = build_model_freshness_advisory(
+        pins=ModelPins(kimi=current_kimi, glm=current_glm, glm_pr_agent=current_pr_agent_glm),
+        kimi_latest=None,
+        glm_latest=current_glm,
+        warnings=[],
+    )
+    assert missing_provider_advisory.state is FreshnessState.UNKNOWN, missing_provider_advisory
+    assert "Could not determine latest Kimi coding model" in missing_provider_advisory.source_warning_text
     config_text = f"""
+[github]
+api_url = "https://example.invalid/github-api"
+
 [model_freshness]
 user_agent = "bolt-v2-ai-review-model-freshness-test/1.0"
 github_api_version = "2022-11-28"
@@ -692,6 +722,12 @@ model = "{current_pr_agent_glm}"
 [kimi]
 model = "{current_kimi}"
 """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "ai-review.toml"
+        config_path.write_text(config_text, encoding="utf-8")
+        _loaded_pins, loaded_sources = load_config(config_path)
+        assert loaded_sources.github_api_url == "https://example.invalid/github-api"
+
     original_live_latest_models = live_latest_models
     try:
         globals()["live_latest_models"] = lambda sources, *, provider=PROVIDER_ALL: (next_kimi, current_glm, [])
@@ -745,6 +781,7 @@ model = "{current_kimi}"
             os.environ["MODEL_FRESHNESS_TEST_API_KEY"] = previous_secret
 
     sources = FreshnessSources(
+        github_api_url="https://example.invalid/github-api",
         user_agent="bolt-v2-ai-review-model-freshness-test/1.0",
         github_api_version="2022-11-28",
         kimi_chat_docs_url="https://example.invalid/kimi-chat",
@@ -774,6 +811,24 @@ model = "{current_kimi}"
         assert any("docs disagree" in warning for warning in source_warnings), source_warnings
     finally:
         globals()["fetch_text"] = original_fetch_text
+
+    try:
+        globals()["live_latest_models"] = lambda sources, *, provider=PROVIDER_ALL: (
+            current_kimi,
+            current_glm,
+            ["Z.AI docs disagree on latest GLM text model: index='glm-9.9', migration='glm-9.2'"],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "ai-review.toml"
+            config_path.write_text(config_text, encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                assert main(["--config-file", str(config_path), "--live", "--advisory", "--provider", PROVIDER_GLM]) == 0
+            assert "fresh" not in stdout.getvalue().lower(), stdout.getvalue()
+            assert "docs disagree" in stderr.getvalue(), stderr.getvalue()
+    finally:
+        globals()["live_latest_models"] = original_live_latest_models
 
     provider_calls: list[str] = []
     try:
@@ -818,7 +873,7 @@ model = "{current_kimi}"
         pins=ModelPins(kimi=current_kimi, glm=old_glm, glm_pr_agent=f"openai/{old_glm}"),
         kimi_latest=current_kimi,
         glm_latest=current_glm,
-        warnings=["Z.AI docs disagree on latest GLM text model"],
+        warnings=[],
     )
     fake_issues = FakeIssueClient()
     assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=stale_advisory, sources=sources) == "issue-created"
@@ -835,6 +890,7 @@ model = "{current_kimi}"
             glm_latest=current_glm,
             warnings=[f"provider echoed {secret}"],
         )
+        assert redacted_advisory.state is FreshnessState.UNKNOWN, redacted_advisory
         redacted_body = render_model_freshness_issue_body(
             pins=pins,
             advisory=redacted_advisory,
@@ -1040,6 +1096,8 @@ def main(argv: list[str] | None = None) -> int:
             if findings:
                 for finding in findings:
                     print(f"warning: {sanitize_detail(finding)}", file=sys.stderr)
+                return 0
+            if advisory.state is FreshnessState.UNKNOWN:
                 return 0
         if findings:
             for finding in findings:

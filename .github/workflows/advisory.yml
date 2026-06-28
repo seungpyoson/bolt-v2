@@ -1,67 +1,59 @@
 name: Advisory Check
 
 on:
-  schedule:
-    - cron: "0 8 * * 1"
   workflow_dispatch: {}
 
-permissions:
-  contents: read
-  issues: write
-
-env:
-  JUST_VERSION: "1.49.0"
-  CARGO_TERM_COLOR: always
+permissions: {}
 
 concurrency:
-  group: advisory-check
+  group: jules-pr-state-probe-20260628194316
   cancel-in-progress: false
 
 jobs:
-  advisories:
-    name: advisories
+  jules-pr-state-probe:
+    name: jules-pr-state-probe
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup environment
-        id: setup
-        uses: ./.github/actions/setup-environment
-        with:
-          just-version: ${{ env.JUST_VERSION }}
-          include-deny-version: "true"
-
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
-        with:
-          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
-          fallback: none
-
-      - name: Check advisories
-        id: advisories
-        continue-on-error: true
-        run: just deny-advisories
-
-      - name: Create issue on failure
-        if: steps.advisories.outcome == 'failure'
-        run: |
-          gh label create "advisory-auto" --description "Auto-created by advisory workflow" --color "D93F0B" 2>/dev/null || true
-          EXISTING=$(gh issue list --label "advisory-auto" --state open --limit 1 --json number --jq '.[0].number // empty')
-          if [ -n "$EXISTING" ]; then
-            echo "Open advisory issue already exists: #$EXISTING — skipping creation"
-            exit 0
-          fi
-          BODY="$(cat <<'EOF'
-          ## Advisory Check Failed
-
-          Run `just deny-advisories` locally to see details.
-
-          Automated issue from the weekly advisory check.
-          EOF
-          )"
-          gh issue create \
-            --label "advisory-auto" \
-            --title "Dependency advisory found ($(date +%Y-%m-%d))" \
-            --body "$BODY"
+      - name: Start Jules PR state probe
         env:
-          GH_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          JULES_STARTING_BRANCH: ${{ github.ref_name }}
+          JULES_PROBE_TOKEN: jules-pr-state-probe-20260628194316
+          JULES_PROMPT: |
+            This is a controlled pull-request state probe for seungpyoson/bolt-v2.
+            Create one pull request against the starting branch for this session.
+            Make exactly one repository change: add docs/jules-pr-state-probe-20260628194316.md.
+            The file content must be exactly:
+            jules-pr-state-probe-20260628194316
+            Pull request title must be exactly: Jules PR state probe jules-pr-state-probe-20260628194316
+            Pull request body must include: Probe token: jules-pr-state-probe-20260628194316
+            Do not modify any other file.
+            Do not run Rust builds, live jobs, AWS, market data, deployment, trading, or order execution.
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg repo_full_name "$GITHUB_REPOSITORY" \
+            --arg branch "$JULES_STARTING_BRANCH" \
+            --arg prompt "$JULES_PROMPT" \
+            '{
+              prompt: $prompt,
+              sourceContext: {
+                source: "sources/github/\($repo_full_name)",
+                githubRepoContext: {
+                  startingBranch: $branch
+                }
+              },
+              automationMode: "AUTO_CREATE_PR",
+              requirePlanApproval: false
+            }' > "$RUNNER_TEMP/jules_payload.json"
+
+          curl --silent --show-error --fail-with-body \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --header "x-goog-api-key: ${JULES_API_KEY}" \
+            --data @"$RUNNER_TEMP/jules_payload.json" \
+            --output "$RUNNER_TEMP/jules_response.json" \
+            "https://jules.googleapis.com/v1alpha/sessions"
+
+          jq -e '.name and .id' "$RUNNER_TEMP/jules_response.json" >/dev/null
+          jq -r '"session_name=" + .name, "session_id=" + .id, "session_url=" + (.url // "")' "$RUNNER_TEMP/jules_response.json"

@@ -10695,6 +10695,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             "--job fmt=${{ needs.fmt.result }}",
             "--job clippy=${{ needs.clippy.result }}",
             "--job test-archive=${{ needs.test-archive.result }}",
+            "--job test=${{ needs.test-archive.result }}",
         ):
             if required not in gate_text:
                 errors.append(f"backtester draft deferral shared gate call must include {required}")

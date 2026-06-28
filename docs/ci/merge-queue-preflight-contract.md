@@ -162,7 +162,7 @@ Verdict reduction is centralized and ordered:
 | Condition | Verdict | Operator action |
 | --- | --- | --- |
 | Preflight usage or internal tool error | none, exit `4` | fix invocation or tool |
-| Any PR or wave finding is `blocked` | `blocked` | fix or remove blocked PRs |
+| Any required lane is `blocked` | `blocked` | fix or remove blocked PRs |
 | Any required lane is `inconclusive` | `inconclusive` | re-pin, re-run, or investigate |
 | All lanes ready, but one-wave constraints fail | `split_advised` | queue compatible subsets separately |
 | All required lanes are ready for one Mergify queue wave | `queue_as_one_wave` | queue the selected wave |
@@ -224,6 +224,10 @@ routes to no queue rule, it is `blocked` when proven ineligible and
 `inconclusive` when routing evidence is unavailable. If selected PRs route to
 different queue rules, the result is at most `split_advised`.
 
+Effective queue selection must model Mergify's first matching queue rule in file
+order. A later catch-all queue condition does not make an earlier more-specific
+match ambiguous.
+
 Queue priority and live queue order affect Mergify's eventual partition, not
 the set-cleanliness proof. They are residual risk after effective queue routing
 has been modeled. They must not force `inconclusive` unless routing itself
@@ -251,6 +255,7 @@ The implementation must classify each `.mergify.yml` field present in this repo:
 | `queue_rules[].draft_bot_account` | support explicitly or mark config inconclusive |
 | `queue_rules[].merge_method` | support explicitly or mark config inconclusive |
 | `priority_rules[].conditions` | model when needed for effective queue routing |
+| `priority_rules[].name` | required unique priority-rule identity |
 | `priority_rules[].priority` | parse and report live-order residual risk |
 | `priority_rules[].allow_checks_interruption` | parse and report interruption residual risk |
 
@@ -298,7 +303,8 @@ The readiness lane verifies:
 - PR is not draft.
 - required reviewer state is approved.
 - required reviewer identity from the selected Mergify queue rule is approved.
-- required Mergify merge-condition checks are not already failed on the PR head.
+- required Mergify merge-condition checks with in-place equivalents are not
+  already failed on the PR head.
 - native code-owner review, stale-review dismissal, last-push approval, and
   review-thread resolution are directly verified when the GitHub API exposes
   them to the preflight run.
@@ -317,8 +323,17 @@ lane is `inconclusive`. Residual risk is reserved for non-required or
 out-of-boundary evidence.
 
 Green in-place PR checks are negative evidence only: they show the PR head is not
-already failed. They do not prove the Mergify proof context will pass. The proof
-context rerun remains residual risk.
+already failed. They do not prove the Mergify proof context will pass. Mergify
+merge-condition checks that are produced only in the proof context are residual
+risk when absent in-place, not `inconclusive`.
+
+The Mergify config lane must classify each `merge_conditions` check as one of:
+
+- in-place mapped: an in-place PR-head check identity must be evaluated through
+  the check-state table.
+- proof-only: absence from PR-head checks is residual risk; any available
+  in-place failed equivalent still blocks.
+- unsupported mapping: `inconclusive`.
 
 Required check states must be classified through one table:
 
@@ -328,7 +343,8 @@ Required check states must be classified through one table:
 | failure, error, cancelled, action-required, or startup-failure | `blocked` |
 | pending, queued, requested, waiting, or in-progress | `inconclusive` |
 | skipped or neutral | `inconclusive` |
-| missing | `inconclusive` |
+| missing in-place mapped check | `inconclusive` |
+| missing proof-only check | residual risk |
 | duplicate name without unique app/workflow identity | `inconclusive` |
 | stale to a SHA other than expected head | `inconclusive` |
 | unknown state or bucket | `inconclusive` |
@@ -404,6 +420,7 @@ not prove. At minimum:
 - remote runner availability and environment.
 - flaky checks and external services.
 - base or PR head drift after preflight.
+- `.mergify.yml` changes introduced by a selected PR and applied after merge.
 - queue-relevant label or PR metadata drift after preflight.
 - live Mergify queue ordering changing after preflight.
 - reset-on-external-merge invalidation after preflight.
@@ -456,7 +473,10 @@ An implementation of this contract must include tests for:
 - unsupported Mergify condition operators.
 - queue-rule routing for default, hotfix, zero-route, mixed-queue, and ambiguous
   waves.
+- hotfix queue routing wins over a later catch-all default queue by file order.
 - queue-condition metadata unavailable or changed during the run.
+- selected PR changes `.mergify.yml` and reports post-merge config residual
+  risk.
 - selected wave larger than queue batch-size maximum.
 - selected wave smaller than queue batch-size minimum.
 - mixed queue split recommendations respect each queue's batch bounds.
@@ -470,6 +490,10 @@ An implementation of this contract must include tests for:
 - required reviewer identity absent, unavailable, and not approved.
 - required check pass, fail, pending, skipped, neutral, missing, duplicate,
   stale-to-old-SHA, action-required, startup-failure, and unknown buckets.
+- proof-only Mergify merge-condition check absent in-place is residual risk.
+- missing in-place mapped merge-condition check is `inconclusive`.
+- failed in-place mapped merge-condition check is `blocked`.
+- unsupported merge-condition check mapping is `inconclusive`.
 - base conflict.
 - clean split into multiple advised batches.
 - verifier failure.

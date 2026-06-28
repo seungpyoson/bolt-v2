@@ -169,6 +169,7 @@ GLM_DELIVERABLE_SNIPPETS = (
     "Post GLM fallback infrastructure failure notice",
     "&& always()",
     "steps.runtime-config.outcome == 'failure'",
+    "steps.glm_stamp.outcome == 'failure'",
     "steps.glm_fallback.outputs.failure_notice_posted != 'true'",
     "review infrastructure failed or timed out before posting a usable failure notice",
     'marker="${{ steps.runtime-config.outputs.glm_notice_marker }}"',
@@ -820,6 +821,25 @@ def run_self_tests(repo_root: Path) -> None:
         smoke_workflow=smoke,
     )
     assert_finding("missing stamp step", missing_stamp_step, "GLM workflow missing Stamp GLM PR-Agent review source step")
+
+    missing_stamp_failure_notice = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm.replace(
+            "              || steps.glm_stamp.outcome == 'failure'\n",
+            "",
+            1,
+        ),
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding(
+        "missing stamp failure notice",
+        missing_stamp_failure_notice,
+        "GLM workflow missing expected snippet",
+    )
 
     last_step_then_later_job = "\n".join(
         [

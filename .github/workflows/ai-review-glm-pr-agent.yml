@@ -207,6 +207,7 @@ jobs:
             && (
               steps.base-checkout.outcome == 'failure'
               || steps.runtime-config.outcome == 'failure'
+              || steps.glm_stamp.outcome == 'failure'
               || steps.glm_fallback.outcome == 'failure'
             )
             && steps.glm_fallback.outputs.failure_notice_posted != 'true'

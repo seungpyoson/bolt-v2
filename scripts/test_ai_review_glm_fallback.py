@@ -1514,6 +1514,15 @@ def test_notice_env_fails_closed_without_notice_marker() -> None:
             raise AssertionError("notice-env must fail closed when notice_marker is absent")
 
 
+def test_pr_agent_prompt_pins_no_findings_contract() -> None:
+    prompt = (REPO_ROOT / ".pr_agent.toml").read_text(encoding="utf-8")
+
+    assert "No hard-evidence findings" in prompt
+    assert "Coverage reviewed:" in prompt
+    assert "Evidence basis:" in prompt
+    assert "Risk areas considered:" in prompt
+
+
 def main() -> int:
     test_packs_more_than_two_review_chunks_when_budget_requires_it()
     test_splits_one_oversized_file_patch_into_multiple_review_chunks()
@@ -1552,6 +1561,7 @@ def main() -> int:
     test_render_notice_redacts_new_provider_secret_env_names()
     test_notice_env_outputs_shell_safe_marker_and_bot_login()
     test_notice_env_fails_closed_without_notice_marker()
+    test_pr_agent_prompt_pins_no_findings_contract()
     print("GLM fallback self-tests OK")
     return 0
 

@@ -78,13 +78,10 @@ jobs:
               print(f"{name}={value}")
 
           def notice_marker(table, marker_key):
-              configured = table.get("notice_marker")
-              if isinstance(configured, str) and configured:
-                  return configured
-              marker = table[marker_key]
-              if not isinstance(marker, str) or not marker.endswith(" -->"):
-                  raise RuntimeError(f"{marker_key} cannot provide a rollout notice marker")
-              return f"{marker[:-4]}-notice -->"
+              marker = table["notice_marker"]
+              if not isinstance(marker, str) or not marker:
+                  raise RuntimeError("notice_marker is required")
+              return marker
 
           emit("github_api_url", github["api_url"])
           emit("expected_bot_login", github["expected_bot_login"])

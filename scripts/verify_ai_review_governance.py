@@ -145,6 +145,7 @@ GLM_DELIVERABLE_SNIPPETS = (
     'emit("glm_api_base", glm["api_base"])',
     'def notice_marker(table, marker_key):',
     'emit("glm_notice_marker", notice_marker(glm, "comment_marker"))',
+    'raise RuntimeError("notice_marker is required")',
     'emit("glm_pr_agent_model", pr_agent["model"])',
     'emit("glm_pr_agent_fallback_models", pr_agent["fallback_models"])',
     'emit("glm_primary_timeout_minutes", workflow["primary_timeout_minutes"])',
@@ -198,6 +199,7 @@ KIMI_DELIVERABLE_SNIPPETS = (
     'emit("kimi_deliverable_marker", kimi["deliverable_marker"])',
     'def notice_marker(table, marker_key):',
     'emit("kimi_notice_marker", notice_marker(kimi, "deliverable_marker"))',
+    'raise RuntimeError("notice_marker is required")',
     'emit("kimi_node_version", workflow["node_version"])',
     "id: kimi-review",
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.kimi_primary_timeout_minutes) }}",
@@ -401,6 +403,15 @@ def verify_pr_agent_config(pr_agent_toml: str, ai_review_toml: str) -> list[str]
     expected_severity_label = "include a line starting exactly with `Severity:`"
     if expected_severity_label not in extra:
         findings.append(".pr_agent.toml extra_instructions must require the literal Severity: finding label")
+    for snippet in (
+        "No hard-evidence findings",
+        "Coverage reviewed:",
+        "Evidence basis:",
+        "Risk areas considered:",
+    ):
+        if snippet not in extra:
+            findings.append(".pr_agent.toml extra_instructions must require the no-findings evidence contract")
+            break
     for literal in configured_runtime_literals(ai_review_toml):
         if literal in extra:
             findings.append(f".pr_agent.toml extra_instructions must read AI review runtime value from ci/ai-review.toml, not {literal!r}")
@@ -713,6 +724,8 @@ def verify_texts(
     ):
         if "ai_review_deliverables.py notice --" in workflow:
             findings.append(f"{workflow_name} backup/skip notices must not depend on ai_review_deliverables.py")
+        if "marker[:-4]" in workflow:
+            findings.append(f"{workflow_name} notice markers must use explicit notice_marker config")
         for endpoint in FORBIDDEN_API_ENDPOINTS:
             if endpoint in workflow:
                 findings.append(f"{workflow_name} must use coding-plan endpoint/model, not {endpoint!r}")
@@ -1018,6 +1031,36 @@ def run_self_tests(repo_root: Path) -> None:
         "PR-Agent missing severity label",
         pr_agent_missing_severity_label,
         "must require the literal Severity: finding label",
+    )
+
+    pr_agent_missing_no_findings_contract = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent.replace("No hard-evidence findings", "No findings"),
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding(
+        "PR-Agent missing no-findings contract",
+        pr_agent_missing_no_findings_contract,
+        "must require the no-findings evidence contract",
+    )
+
+    workflow_notice_marker_derivation = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
+        glm_workflow=glm + '\n              return f"{marker[:-4]}-notice -->"\n',
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding(
+        "workflow notice marker derivation",
+        workflow_notice_marker_derivation,
+        "notice markers must use explicit notice_marker config",
     )
 
     smoke_runtime_literal = verify_texts(

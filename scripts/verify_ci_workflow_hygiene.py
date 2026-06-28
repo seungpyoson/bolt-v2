@@ -5228,6 +5228,17 @@ MERGIFY_REQUIRED_MERGE_CONDITIONS = frozenset(
 MERGIFY_REQUIRED_QUEUE_RULES = ("hotfix", "default")
 MERGIFY_REQUIRED_PRIORITY_RULES = ("hotfix",)
 MERGIFY_TOP_LEVEL_KEYS = frozenset({"merge_queue", "queue_rules", "priority_rules"})
+MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS = frozenset(
+    {
+        "auto_merge_conditions",
+        "commands_restrictions",
+        "defaults",
+        "extends",
+        "merge_protections",
+        "merge_protections_settings",
+        "pull_request_rules",
+    }
+)
 MERGIFY_MERGE_QUEUE_KEYS = frozenset({"max_parallel_checks", "reset_on_external_merge"})
 MERGIFY_QUEUE_RULE_KEYS = frozenset(
     {
@@ -5245,6 +5256,7 @@ MERGIFY_QUEUE_RULE_KEYS = frozenset(
 )
 MERGIFY_DYNAMIC_BATCH_KEYS = frozenset({"min", "max"})
 MERGIFY_PRIORITY_RULE_KEYS = frozenset({"name", "conditions", "priority", "allow_checks_interruption"})
+YAML_KEY_TOKEN_RE = re.compile(r"^(\s*)(-\s*)?([A-Za-z0-9_-]+|'[^']+'|\"[^\"]+\")\s*:")
 
 
 def top_level_yaml_block(config_text: str, key: str) -> str | None:
@@ -5270,14 +5282,62 @@ def ordered_duplicates(values: Iterable[str]) -> list[str]:
     return duplicates
 
 
+def ordered_unique(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
 def matching_yaml_keys(lines: Iterable[str], pattern: str, keys: frozenset[str]) -> list[str]:
     matches = (re.match(pattern, line) for line in lines)
-    return [match.group(1) for match in matches if match is not None and match.group(1) in keys]
+    return [
+        unquote_yaml_scalar(match.group(1))
+        for match in matches
+        if match is not None and unquote_yaml_scalar(match.group(1)) in keys
+    ]
 
 
 def duplicate_top_level_yaml_keys(config_text: str, keys: frozenset[str]) -> list[str]:
     lines = (strip_comment(line).rstrip() for line in config_text.splitlines())
-    return ordered_duplicates(matching_yaml_keys(lines, r"^([A-Za-z0-9_-]+)\s*:", keys))
+    return ordered_duplicates(matching_yaml_keys(lines, r"^([A-Za-z0-9_-]+|'[^']+'|\"[^\"]+\")\s*:", keys))
+
+
+def top_level_yaml_keys(config_text: str) -> list[str]:
+    matches = (YAML_KEY_TOKEN_RE.match(strip_comment(line).rstrip()) for line in config_text.splitlines())
+    return [
+        unquote_yaml_scalar(match.group(3))
+        for match in matches
+        if match is not None and len(match.group(1)) == 0 and not match.group(2)
+    ]
+
+
+def direct_yaml_keys(block_text: str) -> list[str]:
+    lines = block_text.splitlines()
+    if not lines:
+        return []
+    header = YAML_KEY_TOKEN_RE.match(lines[0])
+    if header is None:
+        return []
+    parent_indent = len(header.group(1))
+    child_indent = parent_indent + 2
+    keys = [unquote_yaml_scalar(header.group(3))] if header.group(2) else []
+    for line in lines[1:]:
+        match = YAML_KEY_TOKEN_RE.match(line)
+        if match is not None and len(match.group(1)) == child_indent and not match.group(2):
+            keys.append(unquote_yaml_scalar(match.group(3)))
+    return keys
+
+
+def unsupported_yaml_keys(block_text: str, keys: frozenset[str]) -> list[str]:
+    return [key for key in ordered_unique(direct_yaml_keys(block_text)) if key not in keys]
+
+
+def yaml_merge_key_present(config_text: str) -> bool:
+    return re.search(r"(?m)^\s*(?:-\s*)?<<\s*:", uncommented_text(config_text.splitlines())) is not None
 
 
 def yaml_scalar_value(block_text: str, key: str) -> str | None:
@@ -5314,7 +5374,7 @@ def yaml_nested_scalar_values(block_text: str, key: str) -> dict[str, str] | Non
 
 def duplicate_yaml_keys(block_text: str, keys: frozenset[str]) -> list[str]:
     return ordered_duplicates(
-        matching_yaml_keys(block_text.splitlines(), r"^\s*(?:-\s*)?([A-Za-z0-9_-]+)\s*:", keys)
+        matching_yaml_keys(block_text.splitlines(), r"^\s*(?:-\s*)?([A-Za-z0-9_-]+|'[^']+'|\"[^\"]+\")\s*:", keys)
     )
 
 
@@ -5385,18 +5445,13 @@ def yaml_list_values(block_text: str, key: str) -> list[str] | None:
 
 def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -> list[str]:
     errors: list[str] = []
-    uncommented = uncommented_text(config_text.splitlines())
-    forbidden_keys = (
-        "autoqueue",
-        "auto_merge_conditions",
-        "defaults",
-        "merge_protections",
-        "merge_protections_settings",
-        "pull_request_rules",
-    )
-    for key in forbidden_keys:
-        if re.search(rf"(?m)^\s*{re.escape(key)}\s*:", uncommented):
+    if yaml_merge_key_present(config_text):
+        errors.append(f"{config_name} must not use YAML merge keys")
+    for key in top_level_yaml_keys(config_text):
+        if key in MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS:
             errors.append(f"{config_name} must keep manual queueing only; remove {key}")
+        elif key not in MERGIFY_TOP_LEVEL_KEYS:
+            errors.append(f"{config_name} must not define unsupported top-level key {key}")
     for key in duplicate_top_level_yaml_keys(config_text, MERGIFY_TOP_LEVEL_KEYS):
         errors.append(f"{config_name} must not duplicate top-level {key}")
 
@@ -5404,6 +5459,8 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
     if merge_queue is None:
         errors.append(f"{config_name} must define merge_queue")
     else:
+        for key in unsupported_yaml_keys(merge_queue, MERGIFY_MERGE_QUEUE_KEYS):
+            errors.append(f"{config_name} merge_queue must not define unsupported key {key}")
         for key in duplicate_yaml_keys(merge_queue, MERGIFY_MERGE_QUEUE_KEYS):
             errors.append(f"{config_name} merge_queue must not duplicate {key}")
         if yaml_scalar_value(merge_queue, "max_parallel_checks") != "1":
@@ -5430,6 +5487,8 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
         ("hotfix", hotfix_rule, ["label = hotfix"], "1", None, "30 seconds"),
     )
     for rule_name, rule, expected_queue_conditions, expected_batch_size, expected_dynamic_batch, expected_wait in rule_expectations:
+        for key in unsupported_yaml_keys(rule, MERGIFY_QUEUE_RULE_KEYS):
+            errors.append(f"{config_name} {rule_name} must not define unsupported key {key}")
         for key in duplicate_yaml_keys(rule, MERGIFY_QUEUE_RULE_KEYS):
             errors.append(f"{config_name} {rule_name} must not duplicate {key}")
         if yaml_list_values(rule, "queue_conditions") != expected_queue_conditions:
@@ -5456,6 +5515,8 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
         else:
             batch_size_block = yaml_nested_block(rule, "batch_size")
             if batch_size_block is not None:
+                for key in unsupported_yaml_keys(batch_size_block, MERGIFY_DYNAMIC_BATCH_KEYS):
+                    errors.append(f"{config_name} {rule_name} batch_size must not define unsupported key {key}")
                 for key in duplicate_yaml_keys(batch_size_block, MERGIFY_DYNAMIC_BATCH_KEYS):
                     errors.append(f"{config_name} {rule_name} batch_size must not duplicate {key}")
             if yaml_nested_scalar_values(rule, "batch_size") != expected_dynamic_batch:
@@ -5476,6 +5537,8 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
     hotfix_priority = queue_rule_block(priority_rules, "hotfix")
     if hotfix_priority is None:
         return errors
+    for key in unsupported_yaml_keys(hotfix_priority, MERGIFY_PRIORITY_RULE_KEYS):
+        errors.append(f"{config_name} hotfix priority must not define unsupported key {key}")
     for key in duplicate_yaml_keys(hotfix_priority, MERGIFY_PRIORITY_RULE_KEYS):
         errors.append(f"{config_name} hotfix priority must not duplicate {key}")
     if yaml_list_values(hotfix_priority, "conditions") != ["label = hotfix"]:

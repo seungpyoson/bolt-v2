@@ -3788,7 +3788,7 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "  - name: default\n",
                 "  - name: default\n    autoqueue: true\n",
             ),
-            "manual queueing only",
+            "default must not define unsupported key autoqueue",
         ),
         (
             "pull request rules enabled",
@@ -3804,6 +3804,31 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "defaults override enabled",
             mergify_config + "\ndefaults:\n  queue_rule:\n    batch_size: 1\n",
             "manual queueing only",
+        ),
+        (
+            "remote config inheritance enabled",
+            mergify_config + "\nextends: shared/mergify-config\n",
+            "manual queueing only",
+        ),
+        (
+            "commands restrictions inheritance enabled",
+            mergify_config + "\ncommands_restrictions:\n  queue:\n    conditions: []\n",
+            "manual queueing only",
+        ),
+        (
+            "unknown top-level key enabled",
+            mergify_config + "\nshared:\n  queue_branch_prefix: custom/merge-queue/\n",
+            "unsupported top-level key shared",
+        ),
+        (
+            "yaml merge key enabled",
+            replace_once_after(
+                mergify_config,
+                "  - name: default\n",
+                "    queue_conditions: []\n",
+                "    <<: *default_queue\n    queue_conditions: []\n",
+            ),
+            "must not use YAML merge keys",
         ),
         (
             "duplicate queue_rules top level",
@@ -3823,6 +3848,35 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "  - name: default\n    queue_conditions: []\n    queue_conditions:\n      - check-success = gate\n",
             ),
             "default must not duplicate queue_conditions",
+        ),
+        (
+            "quoted duplicate default queue conditions",
+            replace_once(
+                mergify_config,
+                "  - name: default\n    queue_conditions: []\n",
+                "  - name: default\n    queue_conditions: []\n    \"queue_conditions\":\n      - check-success = gate\n",
+            ),
+            "default must not duplicate queue_conditions",
+        ),
+        (
+            "default custom queue branch prefix",
+            replace_once_after(
+                mergify_config,
+                "  - name: default\n",
+                "    queue_conditions: []\n",
+                "    queue_conditions: []\n    queue_branch_prefix: custom/merge-queue/\n",
+            ),
+            "default must not define unsupported key queue_branch_prefix",
+        ),
+        (
+            "default editable queue branch",
+            replace_once_after(
+                mergify_config,
+                "  - name: default\n",
+                "    queue_conditions: []\n",
+                "    queue_conditions: []\n    allow_queue_branch_edit: true\n",
+            ),
+            "default must not define unsupported key allow_queue_branch_edit",
         ),
         (
             "queue conditions require gate",
@@ -3891,6 +3945,11 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "default batch max duplicated",
             replace_once(mergify_config, "      max: 10\n", "      max: 10\n      max: 5\n"),
             "default batch_size must not duplicate max",
+        ),
+        (
+            "default batch unknown nested key",
+            replace_once(mergify_config, "      max: 10\n", "      max: 10\n      spread: true\n"),
+            "default batch_size must not define unsupported key spread",
         ),
         (
             "hotfix batch widened",

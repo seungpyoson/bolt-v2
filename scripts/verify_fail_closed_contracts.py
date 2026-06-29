@@ -104,6 +104,8 @@ RULE_ID_KEYS = frozenset(rule.key for rule in RULES)
 EXCEPTIONS_KEYS = frozenset({"version", "exceptions"})
 EXCEPTION_ENTRY_KEYS = frozenset({"rule_id", "path", "line", "reason"})
 STALE_EXCEPTION_RULE_ID = "FLC000"
+LOGGER_RECEIVER_NAMES = frozenset({"log", "logger", "logging"})
+LOGGER_FACTORY_NAMES = frozenset({"get_log", "get_logger", "get_logging"})
 
 
 def strings(field_name: str, value: object) -> tuple[str, ...]:
@@ -267,9 +269,23 @@ def is_logging_call(node: ast.AST, config: Config) -> bool:
     if not isinstance(node, ast.Call):
         return False
     name = dotted_name(node.func)
-    if name is not None and (name in config.logging_call_names or name.endswith(".exception")):
+    if name is not None and name in config.logging_call_names:
         return True
-    return isinstance(node.func, ast.Attribute) and node.func.attr == "exception"
+    if not isinstance(node.func, ast.Attribute) or node.func.attr != "exception":
+        return False
+    return logger_receiver(node.func.value)
+
+
+def logger_receiver(node: ast.AST) -> bool:
+    name = dotted_name(node)
+    if name is not None:
+        return name.rsplit(".", maxsplit=1)[-1] in LOGGER_RECEIVER_NAMES
+    if isinstance(node, ast.Call):
+        call_name = dotted_name(node.func)
+        if call_name is None:
+            return False
+        return call_name.rsplit(".", maxsplit=1)[-1] in LOGGER_FACTORY_NAMES
+    return False
 
 
 def sentinel_shape(node: ast.AST | None) -> str | None:
@@ -420,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         findings = collect_findings(args.root, args.config, args.exceptions_config)
-    except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, KeyError, SyntaxError, TypeError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         print(f"FAIL: fail-closed contract verifier configuration error: {exc}", file=sys.stderr)
         return 2
     if findings:

@@ -318,6 +318,30 @@ def test_chained_logger_exception_classifies_logged_sentinel_return() -> None:
     ], findings
 
 
+def test_non_logger_exception_method_does_not_classify_as_logged() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/non_logger_exception_method.py",
+            """
+            def load_contract(client):
+                try:
+                    return parse()
+                except Exception:
+                    client.exception("domain method, not logging")
+                    return None
+            """,
+        )
+
+        findings = collect(root)
+
+    assert findings == [
+        "FLC003:pkg/non_logger_exception_method.py:4: catch-all exception handler returns a sentinel"
+    ], findings
+
+
 def test_conditional_sentinel_return_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -766,6 +790,62 @@ def test_cli_reports_exception_config_errors_without_traceback() -> None:
     assert "Traceback" not in result.stderr
 
 
+def test_cli_reports_source_syntax_errors_without_traceback() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(root, "pkg/broken.py", "def load_contract(\n")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--root",
+                str(root),
+                "--config",
+                str(root / "ci" / "fail-closed-contracts.toml"),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    assert result.returncode == 2
+    assert "FAIL: fail-closed contract verifier configuration error:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_cli_reports_source_decode_errors_without_traceback() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        path = root / "pkg" / "bad_encoding.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xfe\x00")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--root",
+                str(root),
+                "--config",
+                str(root / "ci" / "fail-closed-contracts.toml"),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    assert result.returncode == 2
+    assert "FAIL: fail-closed contract verifier configuration error:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_exception_config_rejects_bad_rule_id() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -885,6 +965,7 @@ def main() -> int:
         test_broad_except_tuple_sentinel_return_fails_closed,
         test_self_logger_exception_classifies_logged_sentinel_return,
         test_chained_logger_exception_classifies_logged_sentinel_return,
+        test_non_logger_exception_method_does_not_classify_as_logged,
         test_conditional_sentinel_return_fails_closed,
         test_boolean_sentinel_return_fails_closed,
         test_conditional_broad_exception_type_fails_closed,
@@ -901,6 +982,8 @@ def main() -> int:
         test_exception_line_drift_fails_closed_both_ways,
         test_cli_reports_config_errors_without_traceback,
         test_cli_reports_exception_config_errors_without_traceback,
+        test_cli_reports_source_syntax_errors_without_traceback,
+        test_cli_reports_source_decode_errors_without_traceback,
         test_exception_config_rejects_bad_rule_id,
         test_config_string_arrays_reject_invalid_shapes,
         test_exception_suppression_config_is_rejected,

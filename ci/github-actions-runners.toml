@@ -405,6 +405,7 @@ protected_ref_globs = [
   "deploy/*",
   "tag-archive-*",
 ]
+branch_ref_events = ["pull_request", "push"]
 active_run_statuses = ["queued", "in_progress", "waiting", "requested", "pending"]
 terminal_run_statuses = ["completed"]
 workflow_run_fetch_limit = 100

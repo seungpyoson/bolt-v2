@@ -70,6 +70,7 @@ def cleanup_candidate_policy(label: str) -> ci_storage_audit.ArtifactCleanupPoli
         protected_refs = ["main"]
         protected_ref_prefixes = []
         protected_ref_globs = []
+        branch_ref_events = ["push"]
         active_run_statuses = ["queued"]
         terminal_run_statuses = ["completed"]
         workflow_run_fetch_limit = 1
@@ -522,6 +523,7 @@ class CiStorageAuditTests(unittest.TestCase):
             protected_refs = ["main"]
             protected_ref_prefixes = ["refs/tags/"]
             protected_ref_globs = []
+            branch_ref_events = ["push"]
             active_run_statuses = ["queued", "in_progress"]
             terminal_run_statuses = ["completed"]
             workflow_run_fetch_limit = 10
@@ -559,7 +561,6 @@ class CiStorageAuditTests(unittest.TestCase):
                             "expired": True,
                             "workflow_run": {
                                 "id": 501,
-                                "ref": "refs/heads/feature/done",
                                 "head_branch": "feature/done",
                                 "head_sha": "a" * 40,
                             },
@@ -624,7 +625,6 @@ class CiStorageAuditTests(unittest.TestCase):
                             "expired": True,
                             "workflow_run": {
                                 "id": 506,
-                                "ref": "refs/heads/feature/live",
                                 "head_branch": "feature/live",
                                 "head_sha": "f" * 40,
                             },
@@ -643,7 +643,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     "id": 501,
                     "status": "completed",
                     "conclusion": "success",
-                    "ref": "refs/heads/feature/done",
+                    "event": "push",
                     "head_branch": "feature/done",
                     "head_sha": "a" * 40,
                 },
@@ -651,7 +651,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     "id": 506,
                     "status": "in_progress",
                     "conclusion": None,
-                    "ref": "refs/heads/feature/live",
+                    "event": "push",
                     "head_branch": "feature/live",
                     "head_sha": "f" * 40,
                 },
@@ -869,13 +869,29 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "tags/v0.1.0"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "tags/feature-branch"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v0.1.0"))
-        self.assertTrue(ci_storage_audit.ref_is_protected(policy, "deploy/eu-west-2/2026-06-18-0ddd9f73"))
+        self.assertFalse(ci_storage_audit.ref_is_protected(policy, "deploy/eu-west-2/2026-06-18-0ddd9f73"))
+        self.assertTrue(ci_storage_audit.ref_is_protected(policy, "refs/heads/deploy/eu-west-2/2026-06-18-0ddd9f73"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "feature/artifact-observe"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "issue-955"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "incident-2026-06-28"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v2-cleanup"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v2.0-cleanup"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v2.0/feature"))
+        self.assertIn("pull_request", policy.branch_ref_events)
+        self.assertEqual(
+            ci_storage_audit.classify_workflow_ref(
+                {"head_branch": "feature/pr-artifact", "event": "pull_request"},
+                branch_ref_events=policy.branch_ref_events,
+            ).value,
+            "refs/heads/feature/pr-artifact",
+        )
+        self.assertEqual(
+            ci_storage_audit.classify_workflow_ref(
+                {"head_branch": "feature/manual-artifact", "event": "workflow_dispatch"},
+                branch_ref_events=policy.branch_ref_events,
+            ).value,
+            "feature/manual-artifact",
+        )
 
     def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_has_unsupported_shape(self) -> None:
         policy = cleanup_candidate_policy("unsupported-ref-policy")
@@ -963,7 +979,16 @@ class CiStorageAuditTests(unittest.TestCase):
     def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_is_ambiguous_bare_ref(self) -> None:
         policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
         policy = ci_storage_audit.load_cleanup_policy_path(policy_path)
-        for raw_ref in ("v0.1.0", "release-1.0", "v2.0-cleanup", "v2.0/feature", "feature/artifact"):
+        for raw_ref in (
+            "v0.1.0",
+            "release-1.0",
+            "v2.0-cleanup",
+            "v2.0/feature",
+            "feature/artifact",
+            "deploy/eu-west-2/2026-06-18-0ddd9f73",
+            "archive/2026-06-18",
+            "tag-archive-v0.1.0",
+        ):
             with self.subTest(raw_ref=raw_ref):
                 entry = ci_storage_audit.artifact_entry_from_raw(
                     {
@@ -982,19 +1007,28 @@ class CiStorageAuditTests(unittest.TestCase):
                     }
                 )
 
+                client = FakeClient(
+                    {
+                        "actions/runs/501": {
+                            "id": 501,
+                            "status": "completed",
+                            "conclusion": "success",
+                            "event": "release",
+                            "head_branch": raw_ref,
+                            "head_sha": "a" * 40,
+                        },
+                        ("GLOBAL", "users/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                            "users/owner/settings/billing/actions",
+                            "billing unavailable",
+                        ),
+                        ("GLOBAL", "orgs/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                            "orgs/owner/settings/billing/actions",
+                            "billing unavailable",
+                        ),
+                    }
+                )
                 cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
-                    FakeClient(
-                        {
-                            ("GLOBAL", "users/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
-                                "users/owner/settings/billing/actions",
-                                "billing unavailable",
-                            ),
-                            ("GLOBAL", "orgs/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
-                                "orgs/owner/settings/billing/actions",
-                                "billing unavailable",
-                            ),
-                        }
-                    ),
+                    client,
                     repo="owner/repo",
                     artifacts=cleanup_artifacts_with_entry(entry),
                     policy=policy,
@@ -1012,6 +1046,7 @@ class CiStorageAuditTests(unittest.TestCase):
                         "code": "artifact_ref_invalid",
                     },
                 )
+                self.assertEqual(client.calls, [("actions/runs/501", None, False)])
 
     def test_cleanup_feasibility_keeps_candidate_when_run_api_returns_wrong_identity(self) -> None:
         policy = cleanup_candidate_policy("run-api-identity-policy")
@@ -1242,6 +1277,7 @@ class CiStorageAuditTests(unittest.TestCase):
             )
 
     def test_artifact_metadata_failures_classify_absent_empty_and_invalid_fields(self) -> None:
+        policy = cleanup_candidate_policy("metadata-failure-policy")
         cases = [
             (
                 {
@@ -1302,7 +1338,7 @@ class CiStorageAuditTests(unittest.TestCase):
 
         for entry, expected_failure in cases:
             with self.subTest(expected_failure=expected_failure):
-                failure = ci_storage_audit.artifact_metadata_failure(entry)
+                failure = ci_storage_audit.artifact_metadata_failure(policy, entry)
 
                 self.assertIsNotNone(failure)
                 self.assertEqual(failure._asdict(), expected_failure)
@@ -1487,6 +1523,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 "expired": True,
                 "workflow_run": {
                     "id": 501,
+                    "head_branch": "feature/recovered-ref",
                     "head_sha": "a" * 40,
                 },
             }
@@ -1497,7 +1534,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     "id": 501,
                     "status": "completed",
                     "conclusion": "success",
-                    "ref": "refs/heads/feature/recovered-ref",
+                    "event": "push",
                     "head_branch": "feature/recovered-ref",
                     "head_sha": "a" * 40,
                 },

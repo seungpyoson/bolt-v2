@@ -91,6 +91,7 @@ class ArtifactCleanupPolicy(NamedTuple):
     protected_refs: tuple[str, ...]
     protected_ref_prefixes: tuple[str, ...]
     protected_ref_globs: tuple[str, ...]
+    branch_ref_events: tuple[str, ...]
     active_run_statuses: tuple[str, ...]
     terminal_run_statuses: tuple[str, ...]
     workflow_run_fetch_limit: int
@@ -847,6 +848,11 @@ def load_cleanup_policy_text(raw: str, *, label: str) -> ArtifactCleanupPolicy:
             "protected_ref_globs",
             "storage_audit.cleanup_feasibility",
         ),
+        branch_ref_events=optional_policy_string_list(
+            table,
+            "branch_ref_events",
+            "storage_audit.cleanup_feasibility",
+        ),
         active_run_statuses=require_policy_string_list(
             table,
             "active_run_statuses",
@@ -1111,13 +1117,25 @@ def classify_cleanup_ref(value: Any, field: str, *, allow_canonical_refs: bool) 
     return ref
 
 
-def classify_workflow_ref(workflow_run: dict[str, Any]) -> ClassifiedText:
+def cleanup_ref_has_known_namespace(ref: str | None) -> bool:
+    return ref is not None and ref.startswith(("refs/heads/", "refs/tags/"))
+
+
+def classify_workflow_ref(
+    workflow_run: dict[str, Any],
+    *,
+    branch_ref_events: tuple[str, ...] = (),
+) -> ClassifiedText:
     ref = classify_cleanup_ref(workflow_run.get("ref"), FIELD_ARTIFACT_REF, allow_canonical_refs=True)
-    if ref.failure is not None or ref.value is not None:
+    if ref.failure is not None or cleanup_ref_has_known_namespace(ref.value):
         return ref
     head_branch = classify_cleanup_ref(workflow_run.get("head_branch"), FIELD_ARTIFACT_REF, allow_canonical_refs=False)
     if head_branch.failure is not None or head_branch.value is not None:
+        if head_branch.value is not None and workflow_run.get("event") in branch_ref_events:
+            return ClassifiedText(value=f"refs/heads/{head_branch.value}", failure=None)
         return head_branch
+    if ref.value is not None:
+        return ref
     return ClassifiedText(value=None, failure=input_failure(FIELD_ARTIFACT_REF, STATE_ABSENT))
 
 
@@ -1589,9 +1607,22 @@ def cleanup_rule_for_name(policy: ArtifactCleanupPolicy, name: str) -> ArtifactC
     return None
 
 
-def artifact_ref(entry: dict[str, Any]) -> str | None:
+def artifact_ref(policy: ArtifactCleanupPolicy, entry: dict[str, Any]) -> str | None:
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
-    return classify_workflow_ref(workflow_run).value
+    return classify_workflow_ref(workflow_run, branch_ref_events=policy.branch_ref_events).value
+
+
+def apply_cleanup_policy_ref_resolution(entry: dict[str, Any], policy: ArtifactCleanupPolicy) -> None:
+    workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
+    if parsed_failure(workflow_run.get("ref_failure"), "artifact workflow_run.ref_failure") is not None:
+        return
+    ref = classify_workflow_ref(workflow_run, branch_ref_events=policy.branch_ref_events)
+    if ref.failure is not None:
+        workflow_run["ref"] = None
+        workflow_run["ref_failure"] = serialized_failure(ref.failure)
+        return
+    workflow_run["ref"] = ref.value
+    workflow_run["ref_failure"] = None
 
 
 def protected_ref_forms(ref: str) -> tuple[str, ...]:
@@ -1613,6 +1644,10 @@ def protected_ref_forms(ref: str) -> tuple[str, ...]:
 def ref_is_protected(policy: ArtifactCleanupPolicy, ref: str | None) -> bool:
     if ref is None:
         return False
+    if ref in policy.protected_refs:
+        return True
+    if not cleanup_ref_has_known_namespace(ref):
+        return False
     forms = protected_ref_forms(ref)
     return (
         any(form in policy.protected_refs for form in forms)
@@ -1624,7 +1659,7 @@ def ref_is_protected(policy: ArtifactCleanupPolicy, ref: str | None) -> bool:
 def cleanup_ref_namespace_failure(ref: str | None) -> InputFailure | None:
     if ref is None:
         return None
-    if ref.startswith(("refs/heads/", "refs/tags/")):
+    if cleanup_ref_has_known_namespace(ref):
         return None
     return input_failure(FIELD_ARTIFACT_REF, STATE_INVALID)
 
@@ -1636,19 +1671,19 @@ def artifact_identity_failure(entry: dict[str, Any]) -> InputFailure | None:
     return classify_positive_int(entry.get("artifact_id"), FIELD_ARTIFACT_ID).failure
 
 
-def artifact_metadata_failure(entry: dict[str, Any]) -> InputFailure | None:
+def artifact_metadata_failure(policy: ArtifactCleanupPolicy, entry: dict[str, Any]) -> InputFailure | None:
     identity_failure = artifact_identity_failure(entry)
     if identity_failure is not None:
         return identity_failure
-    return artifact_ref_failure(entry)
+    return artifact_ref_failure(policy, entry)
 
 
-def artifact_ref_failure(entry: dict[str, Any]) -> InputFailure | None:
+def artifact_ref_failure(policy: ArtifactCleanupPolicy, entry: dict[str, Any]) -> InputFailure | None:
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
     stored_ref_failure = parsed_failure(workflow_run.get("ref_failure"), "artifact workflow_run.ref_failure")
     if stored_ref_failure is not None:
         return stored_ref_failure
-    return classify_workflow_ref(workflow_run).failure
+    return classify_workflow_ref(workflow_run, branch_ref_events=policy.branch_ref_events).failure
 
 
 def workflow_status_failure(workflow_run: dict[str, Any]) -> InputFailure | None:
@@ -1671,20 +1706,20 @@ def should_fetch_workflow_run(
         return False
     if artifact_identity_failure(entry) is not None:
         return False
-    ref_failure = artifact_ref_failure(entry)
+    ref_failure = artifact_ref_failure(policy, entry)
+    ref_namespace_failure = None
     if ref_failure is None:
-        ref = artifact_ref(entry)
+        ref = artifact_ref(policy, entry)
         if ref_is_protected(policy, ref):
             return False
-        if cleanup_ref_namespace_failure(ref) is not None:
-            return False
+        ref_namespace_failure = cleanup_ref_namespace_failure(ref)
     elif ref_failure.state != STATE_ABSENT:
         return False
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
     if workflow_status_failure(workflow_run) is not None:
         return False
     status = classify_optional_text(workflow_run.get("status"), FIELD_WORKFLOW_STATUS)
-    return status.value is None or ref_failure is not None
+    return status.value is None or ref_failure is not None or ref_namespace_failure is not None
 
 
 def workflow_run_id_from_entry(entry: dict[str, Any]) -> ClassifiedInt:
@@ -1764,7 +1799,7 @@ def cleanup_decision_for_entry(
             reason=policy.not_expired_keep_reason,
             metadata_failure=None,
         )
-    metadata_failure = artifact_metadata_failure(entry)
+    metadata_failure = artifact_metadata_failure(policy, entry)
     if rule.expired_decision == DELETE_CANDIDATE_DECISION and metadata_failure is not None:
         return CleanupDecision(
             class_id=class_id,
@@ -1773,7 +1808,7 @@ def cleanup_decision_for_entry(
             reason=policy.artifact_metadata_unavailable_keep_reason,
             metadata_failure=metadata_failure,
         )
-    ref = artifact_ref(entry)
+    ref = artifact_ref(policy, entry)
     if ref_is_protected(policy, ref):
         return CleanupDecision(
             class_id=class_id,
@@ -1993,6 +2028,7 @@ def build_artifact_cleanup_feasibility(
             else:
                 workflow_run_fetch_limit_reached = True
                 set_workflow_run_status_source(entry, "fetch_limit")
+        apply_cleanup_policy_ref_resolution(entry, policy)
         cleanup_decision = cleanup_decision_for_entry(policy, rule, entry)
         rows.append(row_from_entry(entry, cleanup_decision=cleanup_decision))
 

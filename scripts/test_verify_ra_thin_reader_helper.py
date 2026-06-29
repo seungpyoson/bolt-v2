@@ -31,14 +31,6 @@ def write_file(root: Path, rel: str, text: str) -> Path:
     return path
 
 
-def write_checked_task(root: Path) -> None:
-    write_file(
-        root,
-        "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
-        "- [x] RA-004 Implement a thin reader helper.\n",
-    )
-
-
 def helper_source(*, duplicate_engine: bool = False, omit_session: bool = False) -> str:
     duplicate = "let _node = BacktestNode::new;\n" if duplicate_engine else ""
     session = (
@@ -108,7 +100,6 @@ def test_delegating_helper_passes() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_checked_task(root)
         write_file(root, "crates/backtesting-vertical-slice/src/lib.rs", "pub mod research_reader;\n")
         write_file(
             root,
@@ -123,7 +114,6 @@ def test_missing_helper_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_checked_task(root)
         write_file(root, "crates/backtesting-vertical-slice/src/lib.rs", "")
 
         findings = verifier.scan_root(root)
@@ -135,7 +125,6 @@ def test_helper_must_use_data_backend_session_for_arrow_sql() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_checked_task(root)
         write_file(root, "crates/backtesting-vertical-slice/src/lib.rs", "pub mod research_reader;\n")
         write_file(
             root,
@@ -153,7 +142,6 @@ def test_helper_must_not_import_backtest_runtime() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_checked_task(root)
         write_file(root, "crates/backtesting-vertical-slice/src/lib.rs", "pub mod research_reader;\n")
         write_file(
             root,
@@ -170,7 +158,6 @@ def test_helper_tokens_in_comments_and_strings_do_not_satisfy_wiring() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_checked_task(root)
         write_file(root, "crates/backtesting-vertical-slice/src/lib.rs", "pub mod research_reader;\n")
         write_file(
             root,
@@ -200,31 +187,9 @@ fn unrelated() {}
     assert any("query_catalog_typed" in finding or "CatalogQuerySpec" in finding for finding in findings)
 
 
-def test_unchecked_ra004_task_is_a_finding() -> None:
-    verifier = load_verifier()
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        write_file(root, "crates/backtesting-vertical-slice/src/lib.rs", "pub mod research_reader;\n")
-        write_file(
-            root,
-            "crates/backtesting-vertical-slice/src/research_reader.rs",
-            helper_source(),
-        )
-        write_file(
-            root,
-            "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
-            "- [ ] RA-004 Implement a thin reader helper.\n",
-        )
-
-        findings = verifier.scan_root(root)
-
-    assert any("RA-004 must be checked" in finding for finding in findings)
-
-
 def test_cli_fails_with_actionable_output() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_checked_task(root)
         write_file(root, "crates/backtesting-vertical-slice/src/lib.rs", "")
 
         result = run_script("--root", str(root))
@@ -241,7 +206,6 @@ def main() -> int:
         test_helper_must_use_data_backend_session_for_arrow_sql,
         test_helper_must_not_import_backtest_runtime,
         test_helper_tokens_in_comments_and_strings_do_not_satisfy_wiring,
-        test_unchecked_ra004_task_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]
     for test in tests:

@@ -36,24 +36,6 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
-      - name: Notice when Kimi secret is not configured
-        if: env.KIMI_API_KEY == ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          notice_file="${RUNNER_TEMP}/kimi-ai-review-notice.md"
-          cat > "$notice_file" <<EOF
-          ## Kimi review notice
-
-          \`KIMI_API_KEY\` is not configured, so the Kimi review was skipped.
-
-          - PR: #${PR_NUMBER}
-          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-
-          This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
-          EOF
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
-
       - name: Checkout PR head
         id: checkout-head
         if: env.KIMI_API_KEY != ''
@@ -65,7 +47,6 @@ jobs:
 
       - name: Checkout base governance
         id: checkout-base
-        if: env.KIMI_API_KEY != ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
@@ -80,7 +61,6 @@ jobs:
 
       - name: Load AI review runtime config
         id: runtime-config
-        if: env.KIMI_API_KEY != ''
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import tomllib
@@ -97,7 +77,14 @@ jobs:
                   value = "true" if value else "false"
               print(f"{name}={value}")
 
+          def notice_marker(table):
+              marker = table.get("notice_marker")
+              if not isinstance(marker, str) or not marker:
+                  raise RuntimeError("notice_marker is required")
+              return marker
+
           emit("github_api_url", github["api_url"])
+          emit("expected_bot_login", github["expected_bot_login"])
           emit("ai_review_max_comment_chars", review["max_comment_chars"])
           emit("kimi_cli_package", kimi["cli_package"])
           emit("kimi_disable_telemetry", "1" if kimi["telemetry_disabled"] else "0")
@@ -107,12 +94,54 @@ jobs:
           emit("kimi_model_max_context_size", kimi["model_max_context_size"])
           emit("kimi_model_default_thinking", kimi["default_thinking"])
           emit("kimi_deliverable_marker", kimi["deliverable_marker"])
+          emit("kimi_notice_marker", notice_marker(kimi))
           emit("kimi_review_max_chunk_chars", kimi["review_max_chunk_chars"])
           emit("kimi_cli_timeout_seconds", kimi["cli_timeout_seconds"])
           emit("kimi_node_version", workflow["node_version"])
           emit("kimi_primary_timeout_minutes", workflow["primary_timeout_minutes"])
           emit("kimi_fallback_timeout_minutes", workflow["fallback_timeout_minutes"])
           PY
+
+      - name: Notice when Kimi secret is not configured
+        if: env.KIMI_API_KEY == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          notice_file="${RUNNER_TEMP}/kimi-ai-review-notice.md"
+          marker="${{ steps.runtime-config.outputs.kimi_notice_marker }}"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          expected_bot_login="${{ steps.runtime-config.outputs.expected_bot_login }}"
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            if ! config_exports="$(python3 .ai-review/base/scripts/ai_review_deliverables.py notice-env --provider kimi --config-file .ai-review/base/ci/ai-review.toml)"; then
+              echo "::error::AI review notice marker or expected bot login is unavailable."
+              exit 1
+            fi
+            eval "$config_exports"
+          fi
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            echo "::error::AI review notice marker or expected bot login is unavailable."
+            exit 1
+          fi
+          cat > "$notice_file" <<EOF
+          ${marker}
+
+          ## Kimi review notice
+
+          \`KIMI_API_KEY\` is not configured, so the Kimi review was skipped.
+
+          - PR: #${PR_NUMBER}
+          - Action run: ${run_url}
+
+          This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
+          EOF
+          existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            | jq -r --arg login "$expected_bot_login" --arg marker "$marker" --arg run_url "$run_url" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | select(.body | contains($run_url)) | .id' \
+            | tail -n 1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          fi
 
       - name: Prepare Kimi review standards
         id: prepare-standards
@@ -231,14 +260,37 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           notice_file="${RUNNER_TEMP}/kimi-ai-review-notice.md"
+          marker="${{ steps.runtime-config.outputs.kimi_notice_marker }}"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          expected_bot_login="${{ steps.runtime-config.outputs.expected_bot_login }}"
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            if ! config_exports="$(python3 .ai-review/base/scripts/ai_review_deliverables.py notice-env --provider kimi --config-file .ai-review/base/ci/ai-review.toml)"; then
+              echo "::error::AI review notice marker or expected bot login is unavailable."
+              exit 1
+            fi
+            eval "$config_exports"
+          fi
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            echo "::error::AI review notice marker or expected bot login is unavailable."
+            exit 1
+          fi
           cat > "$notice_file" <<EOF
+          ${marker}
+
           ## Kimi review notice
 
           The Kimi review infrastructure failed or timed out before posting a usable failure notice. Check the action logs for this run.
 
           - PR: #${PR_NUMBER}
-          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Action run: ${run_url}
 
           This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
           EOF
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            | jq -r --arg login "$expected_bot_login" --arg marker "$marker" --arg run_url "$run_url" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | select(.body | contains($run_url)) | .id' \
+            | tail -n 1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          fi

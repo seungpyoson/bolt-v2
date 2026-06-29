@@ -12,11 +12,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HELPER_PATH = Path("crates/backtesting-vertical-slice/src/research_reader.rs")
 TEST_PATH = Path("crates/backtesting-vertical-slice/tests/research_reader_contract.rs")
-TASKS_PATH = Path("specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md")
 JUSTFILE_PATH = Path("justfile")
-
-CHECKED_RA014 = re.compile(r"^- \[[xX]\] RA-014\b", re.MULTILINE)
-CHECKED_RA015 = re.compile(r"^- \[[xX]\] RA-015\b", re.MULTILINE)
 
 
 def strip_rust_comments_and_literals(text: str) -> str:
@@ -115,16 +111,10 @@ def scan_root(root: Path) -> list[str]:
     findings: list[str] = []
     helper_text = (root / HELPER_PATH).read_text(encoding="utf-8") if (root / HELPER_PATH).exists() else ""
     test_text = (root / TEST_PATH).read_text(encoding="utf-8") if (root / TEST_PATH).exists() else ""
-    tasks_text = (root / TASKS_PATH).read_text(encoding="utf-8") if (root / TASKS_PATH).exists() else ""
     just_text = (root / JUSTFILE_PATH).read_text(encoding="utf-8") if (root / JUSTFILE_PATH).exists() else ""
 
     helper_code = strip_rust_comments_and_literals(helper_text)
     test_code = strip_rust_comments_and_literals(test_text)
-
-    if not CHECKED_RA014.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: RA-014 must be checked once BI surface contract is implemented")
-    if not CHECKED_RA015.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: RA-015 must be checked once binding-key join contract is implemented")
 
     for label, pattern in (
         ("NotebookBiSurfaceSpec", r"\bpub\s+struct\s+NotebookBiSurfaceSpec\b"),

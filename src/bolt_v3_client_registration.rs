@@ -144,7 +144,6 @@ mod tests {
     use nautilus_common::enums::Environment;
     use nautilus_live::node::LiveNode;
     use nautilus_model::identifiers::TraderId;
-    use nautilus_network::websocket::TransportBackend;
     use nautilus_polymarket::{
         config::PolymarketDataClientConfig, factories::PolymarketDataClientFactory,
     };
@@ -161,6 +160,7 @@ mod tests {
             polyresearch::ResolvedBoltV3PolyResearchSecrets,
         },
         bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
+        bolt_v3_wire_boundary::TransportBackend,
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {

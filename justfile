@@ -72,10 +72,6 @@ verify-bolt-v3-provider-leaks: check-workspace
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
     python3 scripts/verify_bolt_v3_provider_leaks.py
 
-verify-bolt-v3-status-map-current: check-workspace
-    python3 scripts/test_verify_bolt_v3_status_map_current.py
-    python3 scripts/verify_bolt_v3_status_map_current.py
-
 verify-bolt-v3-schema-current: check-workspace
     python3 scripts/test_verify_bolt_v3_schema_current.py
     python3 scripts/verify_bolt_v3_schema_current.py
@@ -148,21 +144,9 @@ verify-ra-bi-surface-and-feature-joins: check-workspace
     python3 scripts/test_verify_ra_bi_surface_and_feature_joins.py
     python3 scripts/verify_ra_bi_surface_and_feature_joins.py
 
-verify-dashboard-customer-jobs: check-workspace
-    python3 scripts/test_verify_dashboard_customer_jobs.py
-    python3 scripts/verify_dashboard_customer_jobs.py
-
-verify-dashboard-field-source-matrix: check-workspace
-    python3 scripts/test_verify_dashboard_field_source_matrix.py
-    python3 scripts/verify_dashboard_field_source_matrix.py
-
 verify-dashboard-read-only-contract: check-workspace
     python3 scripts/test_verify_dashboard_read_only_contract.py
     python3 scripts/verify_dashboard_read_only_contract.py
-
-verify-023-status-legend-registry: check-workspace
-    python3 scripts/test_verify_023_status_legend_registry.py
-    python3 scripts/verify_023_status_legend_registry.py
 
 verify-bte-022-pmxt-durable-source: check-workspace
     python3 scripts/test_verify_bte_022_pmxt_durable_source.py
@@ -219,6 +203,10 @@ verify-bolt-v3-market-family-coupling: check-workspace
 verify-bolt-v3-dependency-direction: check-workspace
     python3 scripts/test_verify_bolt_v3_dependency_direction.py
     python3 scripts/verify_bolt_v3_dependency_direction.py
+
+verify-bolt-v3-boundary-evidence: check-workspace
+    python3 scripts/test_verify_bolt_v3_boundary_evidence.py
+    python3 scripts/verify_bolt_v3_boundary_evidence.py
 
 # Enforces "allowlist may only shrink" against the protected mainline: fails if
 # the in-tree dependency allowlist is not a subset of the one on origin/main.
@@ -344,8 +332,10 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_bolt_v3_naming.py
     python3 scripts/test_verify_bolt_v3_dependency_direction.py
     python3 scripts/verify_bolt_v3_dependency_direction.py
-    python3 scripts/test_verify_bolt_v3_status_map_current.py
-    python3 scripts/verify_bolt_v3_status_map_current.py
+    python3 scripts/test_verify_doc_decoupling_residuals.py
+    python3 scripts/verify_doc_decoupling_residuals.py
+    python3 scripts/test_verify_bolt_v3_boundary_evidence.py
+    python3 scripts/verify_bolt_v3_boundary_evidence.py
     python3 scripts/test_verify_bolt_v3_schema_current.py
     python3 scripts/verify_bolt_v3_schema_current.py
     python3 scripts/test_migrate_bolt_v3_decision_evidence_v13_to_v14.py
@@ -380,8 +370,6 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_ra_run_pointer_index.py
     python3 scripts/test_verify_ra_bi_surface_and_feature_joins.py
     python3 scripts/verify_ra_bi_surface_and_feature_joins.py
-    python3 scripts/test_verify_023_status_legend_registry.py
-    python3 scripts/verify_023_status_legend_registry.py
     python3 scripts/test_verify_bte_022_pmxt_durable_source.py
     python3 scripts/verify_bte_022_pmxt_durable_source.py
     python3 scripts/test_verify_bte_022_pmxt_storage_proof.py
@@ -396,10 +384,6 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py
     python3 scripts/test_verify_bte_test_topology.py
     python3 scripts/verify_bte_test_topology.py
-    python3 scripts/test_verify_dashboard_customer_jobs.py
-    python3 scripts/verify_dashboard_customer_jobs.py
-    python3 scripts/test_verify_dashboard_field_source_matrix.py
-    python3 scripts/verify_dashboard_field_source_matrix.py
     python3 scripts/test_verify_dashboard_read_only_contract.py
     python3 scripts/verify_dashboard_read_only_contract.py
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
@@ -513,6 +497,12 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
         failed=1
     fi
     if ! python3 scripts/test_ci_provenance.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_ci_input_sets.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_rust_test_targets.py; then
         failed=1
     fi
     if ! python3 scripts/test_merge_readiness.py; then

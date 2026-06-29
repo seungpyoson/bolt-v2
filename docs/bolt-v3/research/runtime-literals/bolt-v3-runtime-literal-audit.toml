@@ -16058,7 +16058,7 @@ classification = "strategy_free_probe_sampling_index"
 reason = "Median index arithmetic for deterministic metadata sampling; source-owned target counts and limits remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"book"'''
 context = '''DataClientReadinessProbeMarketDataKind::Book => "book",'''
@@ -16098,7 +16098,7 @@ classification = "strategy_free_probe_fail_closed_diagnostic"
 reason = "Fail-closed diagnostic for metadata-response fanout beyond the TOML-owned cap; it instructs the operator to tighten TOML policy."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"metadata_response readiness probe produced no source-owned instrument targets"'''
 context = '''"metadata_response readiness probe produced no source-owned instrument targets"'''
@@ -16106,7 +16106,7 @@ classification = "strategy_free_probe_fail_closed_diagnostic"
 reason = "Fail-closed readiness probe diagnostic when the data client returns no owned targets; it does not configure behavior."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"quote"'''
 context = '''DataClientReadinessProbeMarketDataKind::Quote => "quote",'''
@@ -16122,7 +16122,7 @@ classification = "strategy_free_probe_market_data_label"
 reason = "Diagnostic label for an already selected quote subscription branch; the selected client and probe kind remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"trade"'''
 context = '''DataClientReadinessProbeMarketDataKind::Trade => "trade",'''
@@ -16186,7 +16186,7 @@ classification = "ops_probe_json_stdout_template"
 reason = "CLI output format template for printing the structured readiness probe report; report values come from runtime observation and TOML."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"instrument census"'''
 context = '''"instrument census",'''
@@ -16194,7 +16194,7 @@ classification = "ops_census_registration_diagnostic_label"
 reason = "Diagnostic label used when validating that the selected strategy-free data client is registered for the census command; it does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"data-client census observed zero cached instruments"'''
 context = '''reason: "data-client census observed zero cached instruments".to_string(),'''
@@ -16202,7 +16202,7 @@ classification = "ops_census_fail_closed_diagnostic"
 reason = "Fail-closed diagnostic emitted when the strategy-free data-client census reaches NT Running without any cached instruments; it does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''b"\0"'''
 context = '''hasher.update(b"\0");'''

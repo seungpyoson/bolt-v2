@@ -1678,6 +1678,40 @@ class HookEndToEndTests(unittest.TestCase):
         self.assertFalse(log_path.with_suffix(log_path.suffix + ".1").exists())
         self.assertIn("new content", log_path.read_text(encoding="utf-8"))
 
+    def test_lane_r_log_rotation_keeps_active_writer_reachable(self) -> None:
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        log_path = common / "clean-merged.lane-r.log"
+        log_path.write_text("seed content that exceeds the configured cap\n", encoding="utf-8")
+
+        active = cm._open_rotating_log(log_path, 10)
+        try:
+            active.write("active writer before later rotations\n")
+            active.flush()
+            second = cm._open_rotating_log(log_path, 10)
+            try:
+                second.write("second writer content beyond cap\n")
+            finally:
+                second.close()
+            active.write("active writer after second rotation\n")
+            active.flush()
+            third = cm._open_rotating_log(log_path, 10)
+            try:
+                third.write("third writer content\n")
+            finally:
+                third.close()
+            active.write("active writer after third rotation\n")
+            active.flush()
+        finally:
+            active.close()
+
+        visible = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(log_path.parent.glob(f"{log_path.name}*"))
+            if path.is_file() and not path.name.endswith(".lock")
+        )
+        self.assertIn("active writer after third rotation", visible)
+
     def test_post_rewrite_fires_on_rebase_pull(self) -> None:
         # Divergent local + remote forces an actual rebase on pull -> post-rewrite fires.
         _run(["git", "commit", "--allow-empty", "-m", "local-divergent"], cwd=self.work)

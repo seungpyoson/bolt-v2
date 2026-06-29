@@ -566,12 +566,21 @@ def _release_lock(fd: int) -> None:
 
 def _rotate_log_if_needed(log_path: pathlib.Path, max_bytes: int) -> None:
     if log_path.exists() and log_path.stat().st_size > max_bytes:
-        rotated = log_path.with_suffix(log_path.suffix + ".1")
+        rotated = _next_rotated_log_path(log_path)
         try:
-            rotated.unlink(missing_ok=True)
             log_path.rename(rotated)
         except OSError:
             pass
+
+
+def _next_rotated_log_path(log_path: pathlib.Path) -> pathlib.Path:
+    first = log_path.with_suffix(log_path.suffix + ".1")
+    if not first.exists():
+        return first
+    while True:
+        candidate = log_path.with_name(f"{log_path.name}.1.{os.getpid()}.{time.time_ns()}")
+        if not candidate.exists():
+            return candidate
 
 
 def _log_lock_path(log_path: pathlib.Path) -> pathlib.Path:

@@ -1360,6 +1360,7 @@ TEST_HARNESS_NAMES = (
     "wiring_registration",
     "bolt_v3_risk_reservation_substrate",
     "bolt_v3_risk_reservation_epoch_manager",
+    "bolt_v3_financial_value_guards",
 )
 TEST_HARNESS_MEMBER = "bolt_v3_fixture_member"
 

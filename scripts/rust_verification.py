@@ -194,7 +194,15 @@ def parse_minimal_toml(path: pathlib.Path) -> dict[str, Any]:
             if not sep:
                 raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: expected key = value")
             key = key.strip()
-            if not SAFE_IDENTIFIER_RE.match(key):
+            if key.startswith('"') and key.endswith('"'):
+                try:
+                    parsed_key = json.loads(key)
+                except json.JSONDecodeError as exc:
+                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: invalid key") from exc
+                if not isinstance(parsed_key, str) or not parsed_key:
+                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: invalid key")
+                key = parsed_key
+            elif not SAFE_IDENTIFIER_RE.match(key):
                 raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported key")
             value_text = value_text.strip()
             if value_text.startswith('"') and value_text.endswith('"'):

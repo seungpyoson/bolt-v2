@@ -131,6 +131,7 @@ archive_verify_timeout_s = 30
 audit_format = "jsonl"
 audit_path = "<git-common-dir>/clean-merged.log"
 max_log_bytes = 1048576
+rotated_log_retention_days = 30
 heartbeat_path = "<git-common-dir>/clean-merged.heartbeat"
 heartbeat_stale_days = 7
 lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"
@@ -800,6 +801,16 @@ class InfraTests(unittest.TestCase):
         self.assertIn("gh CLI not available; Lane R cannot run", proc.stdout)
         self.assertNotIn("Traceback", proc.stdout + proc.stderr)
 
+    def test_doctor_reports_rotated_log_usage(self) -> None:
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        (common / "clean-merged.log.1").write_text("audit\n", encoding="utf-8")
+        (common / "clean-merged.lane-r.log.1.123.456").write_text("lane r\n", encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertIn("rotated logs             = 2 files", proc.stdout)
+
     def test_doctor_heartbeat_stale_threshold_comes_from_config(self) -> None:
         cfg = self.work / "config" / "clean-merged.toml"
         cfg.write_text(
@@ -1236,6 +1247,7 @@ class CleanupContractTests(unittest.TestCase):
             .replace("archive_timeout_s = 120", "archive_timeout_s = 12")
             .replace("archive_verify_timeout_s = 30", "archive_verify_timeout_s = 3")
             .replace("heartbeat_stale_days = 7", "heartbeat_stale_days = 2")
+            .replace("rotated_log_retention_days = 30", "rotated_log_retention_days = 3")
             .replace(
                 'lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"',
                 'lane_r_log_path = "<git-common-dir>/custom-lane-r.log"',
@@ -1248,6 +1260,7 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(config.lane_r.gh_limit, 37)
         self.assertEqual(config.lane_w.archive_timeout_s, 12)
         self.assertEqual(config.lane_w.archive_verify_timeout_s, 3)
+        self.assertEqual(config.logging.rotated_log_retention_days, 3)
         self.assertEqual(config.logging.heartbeat_stale_days, 2)
         self.assertEqual(config.logging.lane_r_log_path, "<git-common-dir>/custom-lane-r.log")
 
@@ -1313,6 +1326,7 @@ git config "remote.${{clean_merged_remote}}.prune" true
         self.assertNotIn("fail-open (corrupt/tampered", source)
         self.assertIn("invalid or future-dated gh cache entries fail closed", normalized_lower)
         self.assertNotIn("pre-purge warning", normalized_lower)
+        self.assertIn("rotated_log_retention_days", normalized)
 
     def test_post_rewrite_comment_uses_configured_trunk(self) -> None:
         source = (REPO_ROOT / ".githooks" / "post-rewrite").read_text(encoding="utf-8")
@@ -1667,7 +1681,7 @@ class HookEndToEndTests(unittest.TestCase):
         self.assertIsNotNone(lock_fd)
         assert lock_fd is not None
         try:
-            handle = cm._open_rotating_log(log_path, 10)
+            handle = cm._open_rotating_log(log_path, 10, rotated_retention_days=30)
             try:
                 handle.write("new content\n")
             finally:
@@ -1684,18 +1698,18 @@ class HookEndToEndTests(unittest.TestCase):
         log_path = common / "clean-merged.lane-r.log"
         log_path.write_text("seed content that exceeds the configured cap\n", encoding="utf-8")
 
-        active = cm._open_rotating_log(log_path, 10)
+        active = cm._open_rotating_log(log_path, 10, rotated_retention_days=30)
         try:
             active.write("active writer before later rotations\n")
             active.flush()
-            second = cm._open_rotating_log(log_path, 10)
+            second = cm._open_rotating_log(log_path, 10, rotated_retention_days=30)
             try:
                 second.write("second writer content beyond cap\n")
             finally:
                 second.close()
             active.write("active writer after second rotation\n")
             active.flush()
-            third = cm._open_rotating_log(log_path, 10)
+            third = cm._open_rotating_log(log_path, 10, rotated_retention_days=30)
             try:
                 third.write("third writer content\n")
             finally:
@@ -1711,6 +1725,26 @@ class HookEndToEndTests(unittest.TestCase):
             if path.is_file() and not path.name.endswith(".lock")
         )
         self.assertIn("active writer after third rotation", visible)
+
+    def test_rotating_log_prunes_expired_rotated_segments(self) -> None:
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        log_path = common / "clean-merged.lane-r.log"
+        log_path.write_text("live content that exceeds the configured cap\n", encoding="utf-8")
+        expired = common / "clean-merged.lane-r.log.1.111.222"
+        fresh = common / "clean-merged.lane-r.log.1.333.444"
+        expired.write_text("expired\n", encoding="utf-8")
+        fresh.write_text("fresh\n", encoding="utf-8")
+        now = time.time()
+        os.utime(expired, (now - 3 * 86400, now - 3 * 86400))
+        os.utime(fresh, (now, now))
+
+        handle = cm._open_rotating_log(log_path, 10, rotated_retention_days=2)
+        handle.close()
+
+        self.assertFalse(expired.exists())
+        self.assertTrue(fresh.exists())
+        self.assertTrue(log_path.with_suffix(log_path.suffix + ".1").exists())
 
     def test_post_rewrite_fires_on_rebase_pull(self) -> None:
         # Divergent local + remote forces an actual rebase on pull -> post-rewrite fires.

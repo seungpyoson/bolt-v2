@@ -165,9 +165,11 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
 ## Audit log (JSONL)
 
 Path: `$(git rev-parse --git-common-dir)/clean-merged.log`. Rotation under
-`fcntl.flock` at `max_log_bytes`. Each record: `ts, lane, branch, tip_sha,
-action, reason, backup_ref, quarantine_path, recovery_hint` (structured
-pointer, not literal shell — survives shell-sensitive branch names).
+`fcntl.flock` at `max_log_bytes`; rotated audit and Lane R log segments are
+retained for `rotated_log_retention_days` and reported by `--doctor`. Each
+record: `ts, lane, branch, tip_sha, action, reason, backup_ref,
+quarantine_path, recovery_hint` (structured pointer, not literal shell —
+survives shell-sensitive branch names).
 
 ## Contract: what "always-on" actually means
 

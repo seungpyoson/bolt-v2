@@ -112,6 +112,7 @@ class LoggingConfig:
     audit_format: str
     audit_path: str
     max_log_bytes: int
+    rotated_log_retention_days: int
     heartbeat_path: str
     heartbeat_stale_days: int
     lane_r_log_path: str
@@ -225,6 +226,7 @@ CONFIG_KEYS = frozenset({
     "clean-merged.logging.audit_format",
     "clean-merged.logging.audit_path",
     "clean-merged.logging.max_log_bytes",
+    "clean-merged.logging.rotated_log_retention_days",
     "clean-merged.logging.heartbeat_path",
     "clean-merged.logging.heartbeat_stale_days",
     "clean-merged.logging.lane_r_log_path",
@@ -329,6 +331,8 @@ def load_config(repo_root: pathlib.Path) -> Config:
         audit_format=_config_str(flat, "clean-merged.logging.audit_format"),
         audit_path=_config_str(flat, "clean-merged.logging.audit_path"),
         max_log_bytes=_config_positive_int(flat, "clean-merged.logging.max_log_bytes"),
+        rotated_log_retention_days=_config_positive_int(
+            flat, "clean-merged.logging.rotated_log_retention_days"),
         heartbeat_path=_config_str(flat, "clean-merged.logging.heartbeat_path"),
         heartbeat_stale_days=_config_positive_int(
             flat, "clean-merged.logging.heartbeat_stale_days"),
@@ -564,6 +568,23 @@ def _release_lock(fd: int) -> None:
     os.close(fd)
 
 
+def _rotated_log_paths(log_path: pathlib.Path) -> list[pathlib.Path]:
+    return sorted(
+        path for path in log_path.parent.glob(f"{log_path.name}.1*")
+        if path.is_file()
+    )
+
+
+def _prune_expired_rotated_logs(log_path: pathlib.Path, retention_days: int) -> None:
+    cutoff = time.time() - retention_days * 86400
+    for rotated in _rotated_log_paths(log_path):
+        try:
+            if rotated.stat().st_mtime < cutoff:
+                rotated.unlink()
+        except OSError:
+            pass
+
+
 def _rotate_log_if_needed(log_path: pathlib.Path, max_bytes: int) -> None:
     if log_path.exists() and log_path.stat().st_size > max_bytes:
         rotated = _next_rotated_log_path(log_path)
@@ -587,16 +608,38 @@ def _log_lock_path(log_path: pathlib.Path) -> pathlib.Path:
     return log_path.with_suffix(log_path.suffix + ".lock")
 
 
-def _open_rotating_log(log_path: pathlib.Path, max_bytes: int) -> Any:
+def _open_rotating_log(
+    log_path: pathlib.Path, max_bytes: int, *, rotated_retention_days: int,
+) -> Any:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     fd = _acquire_lock(_log_lock_path(log_path))
     try:
         if fd is not None:
+            _prune_expired_rotated_logs(log_path, rotated_retention_days)
             _rotate_log_if_needed(log_path, max_bytes)
         return log_path.open("a", encoding="utf-8", buffering=1)
     finally:
         if fd is not None:
             _release_lock(fd)
+
+
+def _rotated_log_usage(repo_root: pathlib.Path, config: Config) -> tuple[int, int]:
+    paths = {
+        _resolve_path(repo_root, config.logging.audit_path),
+        _resolve_path(repo_root, config.logging.lane_r_log_path),
+    }
+    rotated_paths: set[pathlib.Path] = set()
+    total_bytes = 0
+    for log_path in paths:
+        for rotated in _rotated_log_paths(log_path):
+            if rotated in rotated_paths:
+                continue
+            rotated_paths.add(rotated)
+            try:
+                total_bytes += rotated.stat().st_size
+            except OSError:
+                pass
+    return len(rotated_paths), total_bytes
 
 
 def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any]) -> None:
@@ -608,6 +651,7 @@ def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any])
         # best-effort; never break the op over logging
         return
     try:
+        _prune_expired_rotated_logs(log_path, config.logging.rotated_log_retention_days)
         _rotate_log_if_needed(log_path, config.logging.max_log_bytes)
         record_with_ts = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **record}
         with log_path.open("a", encoding="utf-8") as fh:
@@ -2058,8 +2102,9 @@ def _python_runtime_status() -> str:
     return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} ({toml_status})"
 
 
-def _redirect_output_to(path: pathlib.Path, max_bytes: int) -> Any:
-    handle = _open_rotating_log(path, max_bytes)
+def _redirect_output_to(path: pathlib.Path, max_bytes: int, rotated_retention_days: int) -> Any:
+    handle = _open_rotating_log(
+        path, max_bytes, rotated_retention_days=rotated_retention_days)
     # dup2 gives stdout/stderr independent descriptors; the returned handle
     # only keeps the target open until the dup has completed.
     os.dup2(handle.fileno(), sys.stdout.fileno())
@@ -2241,6 +2286,10 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
                   "remove manually when no longer needed")
     else:
         print(f"  quarantine               = (absent)")
+
+    rotated_count, rotated_bytes = _rotated_log_usage(repo_root, config)
+    print(f"  rotated logs             = {rotated_count} files "
+          f"({rotated_bytes / (1024 * 1024):.1f} MiB)")
 
     # backup refs
     backups_out = _git(repo_root, ["for-each-ref", "refs/clean-merged/"], check=False)
@@ -2438,6 +2487,7 @@ def main(argv: list[str] | None = None) -> int:
             _redirect_output_to(
                 _resolve_path(repo_root, config.logging.lane_r_log_path),
                 config.logging.max_log_bytes,
+                config.logging.rotated_log_retention_days,
             )
         except OSError as exc:
             if not args.quiet:

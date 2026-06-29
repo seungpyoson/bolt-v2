@@ -59,6 +59,8 @@ audit_format = "jsonl"
 audit_path = "<git-common-dir>/clean-merged.log"
 # Rotate the audit log above this size (bytes).
 max_log_bytes = 1048576
+# Days to retain rotated audit and Lane R log segments.
+rotated_log_retention_days = 30
 # Heartbeat file written on every Lane H run; doctor checks freshness.
 heartbeat_path = "<git-common-dir>/clean-merged.heartbeat"
 # Doctor stale threshold for the Lane H heartbeat (days).

@@ -6195,6 +6195,14 @@ CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/test_ci_input_sets.py",
     "python3 scripts/test_rust_test_targets.py",
 )
+SOURCE_FENCE_STATIC_INNER_REQUIRED_COMMANDS = (
+    "python3 scripts/test_local_verification_gate.py",
+    "python3 scripts/test_lane_governor.py",
+    "python3 scripts/test_verify_lane_governance.py",
+    "python3 scripts/verify_lane_governance.py",
+    "python3 scripts/test_verify_fail_closed_contracts.py",
+    "python3 scripts/verify_fail_closed_contracts.py",
+)
 
 
 def local_verification_inner_errors(
@@ -6287,12 +6295,7 @@ def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
         errors.append("justfile source-fence-static must not invoke wrapper-routed Cargo")
     if "cargo fetch" in static_body or re.search(r"\bscripts/verify_runtime_capture_yaml\.py\b", static_body):
         errors.append("justfile source-fence-static must stop before cargo fetch and runtime capture verification")
-    for command in (
-        "python3 scripts/test_local_verification_gate.py",
-        "python3 scripts/test_lane_governor.py",
-        "python3 scripts/test_verify_lane_governance.py",
-        "python3 scripts/verify_lane_governance.py",
-    ):
+    for command in SOURCE_FENCE_STATIC_INNER_REQUIRED_COMMANDS:
         if command not in static_lines:
             errors.append(f"justfile source-fence-static must run {command}")
     full_body = "\n".join(source_fence_body)

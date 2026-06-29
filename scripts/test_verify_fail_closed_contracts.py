@@ -611,6 +611,14 @@ def test_source_fence_static_wiring_is_required() -> None:
         assert findings == [expected], findings
 
 
+def test_repo_source_fence_static_wiring_is_current() -> None:
+    verifier = load_verifier()
+
+    findings = verifier.source_fence_wiring_findings(REPO_ROOT)
+
+    assert findings == [], findings
+
+
 def test_source_fence_static_parser_requires_indented_commands() -> None:
     verifier = load_verifier()
     justfile_text = """
@@ -1061,6 +1069,7 @@ def main() -> int:
         test_config_excludes_nested_test_files,
         test_repo_config_excludes_nested_script_test_files,
         test_source_fence_static_wiring_is_required,
+        test_repo_source_fence_static_wiring_is_current,
         test_source_fence_static_parser_requires_indented_commands,
         test_classified_degradation_requires_central_exception,
         test_stale_central_exception_fails_closed,

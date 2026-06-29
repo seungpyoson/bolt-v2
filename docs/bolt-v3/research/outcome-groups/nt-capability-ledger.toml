@@ -1,0 +1,279 @@
+[ledger]
+version = 1
+nt_revision = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+bolt_revision = "5f39d352c081446f309605e49d6beaba86931ca5"
+
+[capabilities.neg_risk_market_id]
+disposition = "surface_in_nt"
+owner_module = "src/bolt_v3_outcome_group_sources.rs"
+reason = "NT parses Polymarket negRiskMarketID on Gamma market/event payloads and uses neg_risk for signing, but BinaryOption.info at the pinned revision does not expose the shared negRiskMarketID needed for durable outcome grouping."
+required_tests = [
+  "neg-risk grouped Polymarket markets carry the shared group id into outcome-group source records",
+  "controlled-connect mapping rejects missing neg-risk group id for grouped live basket mutation",
+]
+
+[[capabilities.neg_risk_market_id.source_anchors]]
+repo = "nautilus_trader"
+rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+path = "crates/adapters/polymarket/src/http/models.rs"
+lines = "232-234"
+symbol = "GammaMarket.neg_risk_market_id"
+evidence = "Pinned NT Gamma market model parses negRiskMarketID from the Polymarket API response."
+
+[[capabilities.neg_risk_market_id.source_anchors]]
+repo = "bolt-v2"
+rev = "5f39d352c081446f309605e49d6beaba86931ca5"
+path = "src/bolt_v3_providers/polymarket.rs"
+lines = "413-423"
+symbol = "PolymarketProviderConfig::validate"
+evidence = "Pinned Bolt controlled-connect Polymarket config rejects subscribe_new_markets=true, limiting safe live mutation sources."
+
+[capabilities.source_grouping_proof]
+disposition = "bolt_shim"
+owner_module = "src/bolt_v3_outcome_group_sources.rs"
+reason = "NT supplies provider-native identifiers and instrument metadata, but first-slice cross-source proof of a shared outcome group is Bolt-specific admission evidence that joins configured provider surfaces without adding a second provider client path."
+required_tests = [
+  "source grouping evidence records every provider-native source id and pinned adapter revision",
+  "source grouping rejects mixed lifecycle edits that require changing more than one config section",
+]
+
+[[capabilities.source_grouping_proof.source_anchors]]
+repo = "nautilus_trader"
+rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+path = "crates/model/src/instruments/binary_option.rs"
+lines = "63-89"
+symbol = "BinaryOption::new"
+evidence = "Pinned NT BinaryOption construction carries identifiers, currency, increments, and metadata used as normalized provider source inputs."
+
+[[capabilities.source_grouping_proof.source_anchors]]
+repo = "bolt-v2"
+rev = "5f39d352c081446f309605e49d6beaba86931ca5"
+path = "src/bolt_v3_market_families/mod.rs"
+lines = "331-356"
+symbol = "MarketFamily"
+evidence = "Pinned Bolt groups provider/product lifecycle configuration in one market-family section, which remains the grouping change boundary."
+
+[capabilities.submit_order_list]
+disposition = "reuse_nt"
+owner_module = "src/bolt_v3_basket_execution.rs"
+reason = "Basket submission must use NT OrderList and SubmitOrderList surfaces instead of looping per leg through provider clients."
+required_tests = [
+  "basket execution builds one NT OrderList and one SubmitOrderList for accepted legs",
+  "source-fence rejects per-leg submit_order loops and direct venue submit clients in basket execution",
+]
+
+[[capabilities.submit_order_list.source_anchors]]
+repo = "nautilus_trader"
+rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+path = "crates/model/src/orders/list.rs"
+lines = "49"
+symbol = "OrderList"
+evidence = "Pinned NT exposes OrderList as the model object for grouped order submission."
+
+[[capabilities.submit_order_list.source_anchors]]
+repo = "bolt-v2"
+rev = "5f39d352c081446f309605e49d6beaba86931ca5"
+path = "src/strategies/complete_set_arbitrage/mod.rs"
+lines = "1-1"
+symbol = "complete_set_arbitrage"
+evidence = "Pinned Bolt strategy package is strategy-local signal scope only; shared execution must own grouped submit mechanics."
+
+[capabilities.order_book_depth]
+disposition = "wrap_nt"
+owner_module = "src/bolt_v3_outcome_group_scanner.rs"
+reason = "Scanner/admission may wrap existing Bolt executable-cost math, but book state and depth inputs must remain NT OrderBook, OrderBookDepth10, OrderBookDeltas, BookLevel, or QuoteTick surfaces."
+required_tests = [
+  "scanner computes grouped executable cost from NT depth/book inputs",
+  "source-fence rejects local order-book structs and BTreeMap price-depth models",
+]
+
+[[capabilities.order_book_depth.source_anchors]]
+repo = "nautilus_trader"
+rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+path = "crates/model/src/data/depth.rs"
+lines = "48"
+symbol = "OrderBookDepth10"
+evidence = "Pinned NT provides normalized top-of-book depth snapshots for scanner inputs."
+
+[[capabilities.order_book_depth.source_anchors]]
+repo = "bolt-v2"
+rev = "5f39d352c081446f309605e49d6beaba86931ca5"
+path = "src/bolt_v3_executable_cost.rs"
+lines = "52"
+symbol = "ExecutableBookQuote"
+evidence = "Pinned Bolt already has executable quote cost representation that can wrap NT book/depth data."
+
+[capabilities.order_management_cancel_modify]
+disposition = "reuse_nt"
+owner_module = "src/bolt_v3_basket_repair.rs"
+reason = "Repair and unwind paths must use NT cancel/modify command surfaces and risk/execution routing instead of direct venue cancel calls."
+required_tests = [
+  "basket repair emits NT cancel/modify command intent for every repair action",
+  "source-fence rejects direct provider cancel_order calls in repair and unwind modules",
+]
+
+[[capabilities.order_management_cancel_modify.source_anchors]]
+repo = "nautilus_trader"
+rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+path = "crates/trading/src/strategy/mod.rs"
+lines = "333-433"
+symbol = "Strategy::cancel_order"
+evidence = "Pinned NT strategy API exposes cancel command submission through the trading/risk/execution path."
+
+[[capabilities.order_management_cancel_modify.source_anchors]]
+repo = "bolt-v2"
+rev = "5f39d352c081446f309605e49d6beaba86931ca5"
+path = "src/bolt_v3_live_node.rs"
+lines = "2058-2063"
+symbol = "LiveNodeBuilder::build"
+evidence = "Pinned Bolt builds one NT LiveNode path, so repair/unwind commands must stay on that shared path."
+
+[capabilities.nt_cache_reconciliation]
+disposition = "reuse_nt"
+owner_module = "src/bolt_v3_basket_store.rs"
+reason = "Basket state may retain basket-local admission evidence and NT ids, but authoritative order state, fills, mass status, and reconciliation must come from NT cache/report machinery."
+required_tests = [
+  "basket store persists only basket ids, NT order-list ids, and admission evidence hashes",
+  "source-fence rejects general order history caches in basket store",
+]
+
+[[capabilities.nt_cache_reconciliation.source_anchors]]
+repo = "nautilus_trader"
+rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+path = "crates/live/src/builder.rs"
+lines = "183-200"
+symbol = "LiveNodeBuilder::with_cache_config"
+evidence = "Pinned NT LiveNode builder owns cache configuration for live reconciliation."
+
+[[capabilities.nt_cache_reconciliation.source_anchors]]
+repo = "bolt-v2"
+rev = "5f39d352c081446f309605e49d6beaba86931ca5"
+path = "src/bolt_v3_live_node.rs"
+lines = "1972-1986"
+symbol = "BoltV3LiveNodeBuilder::build"
+evidence = "Pinned Bolt currently passes no alternate order cache, preserving a single NT-owned reconciliation path."
+
+[capabilities.external_order_claims]
+disposition = "reuse_nt"
+owner_module = "src/bolt_v3_basket_store.rs"
+reason = "Any externally observed order/fill/status claim must be represented through NT reports and execution-client account-state surfaces, not a Bolt-specific venue polling client."
+required_tests = [
+  "external order claims reference NT report ids and do not create venue-specific order mirrors",
+  "source-fence rejects direct provider HTTP/WebSocket clients outside approved normalizers",
+]
+
+[[capabilities.external_order_claims.source_anchors]]
+repo = "nautilus_trader"
+rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+path = "crates/model/src/reports/mass_status.rs"
+lines = "39"
+symbol = "ExecutionMassStatus"
+evidence = "Pinned NT models mass status reports used to reconcile external execution state."
+
+[[capabilities.external_order_claims.source_anchors]]
+repo = "bolt-v2"
+rev = "5f39d352c081446f309605e49d6beaba86931ca5"
+path = "src/bolt_v3_live_node.rs"
+lines = "4107-4172"
+symbol = "live_node_cache_tests"
+evidence = "Pinned Bolt tests cover the current single LiveNode/cache construction boundary."
+
+[capabilities.settlement_signals]
+disposition = "reject_for_now"
+owner_module = "src/bolt_v3_outcome_group_polymarket.rs"
+reason = "Pinned NT contains instrument status/close data APIs and Polymarket websocket status parsing, but the reachable Polymarket settlement stream requires subscribe_new_markets=true, which pinned Bolt rejects for controlled-connect. Live Polymarket basket mutation therefore remains disabled."
+required_tests = [
+  "live Polymarket basket mutation remains rejected while settlement_signals is reject_for_now",
+  "config tests keep subscribe_new_markets=true rejected for controlled-connect Polymarket runtime",
+]
+
+[[capabilities.settlement_signals.source_anchors]]
+repo = "nautilus_trader"
+rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+path = "crates/data/src/client.rs"
+lines = "552-562"
+symbol = "DataClient::subscribe_instrument_status"
+evidence = "Pinned NT exposes instrument status subscription APIs."
+
+[[capabilities.settlement_signals.source_anchors]]
+repo = "bolt-v2"
+rev = "5f39d352c081446f309605e49d6beaba86931ca5"
+path = "tests/config_parsing.rs"
+lines = "6520-6534"
+symbol = "polymarket_subscribe_new_markets_rejected"
+evidence = "Pinned Bolt tests assert subscribe_new_markets=true is rejected in controlled-connect config."
+
+[capabilities.hip4_discovery]
+disposition = "reuse_nt"
+owner_module = "src/bolt_v3_outcome_group_hyperliquid.rs"
+reason = "Hyperliquid HIP-4 discovery must use NT Hyperliquid metadata, parse, and outcome-settlement surfaces, with Bolt only normalizing configured provider sources."
+required_tests = [
+  "HIP-4 source discovery uses NT Hyperliquid metadata and settlement ids",
+  "Hyperliquid outcome group normalizer rejects products outside configured market-family surfaces",
+]
+
+[[capabilities.hip4_discovery.source_anchors]]
+repo = "nautilus_trader"
+rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+path = "crates/adapters/hyperliquid/src/outcome_settlement.rs"
+lines = "48-90"
+symbol = "OutcomeSettlement"
+evidence = "Pinned NT Hyperliquid adapter exposes outcome-settlement metadata for HIP-4 style grouping."
+
+[[capabilities.hip4_discovery.source_anchors]]
+repo = "bolt-v2"
+rev = "5f39d352c081446f309605e49d6beaba86931ca5"
+path = "src/bolt_v3_providers/hyperliquid.rs"
+lines = "1461-1471"
+symbol = "HyperliquidProviderConfig::validate"
+evidence = "Pinned Bolt validates Hyperliquid target/product surfaces before provider use."
+
+[capabilities.min_size_precision]
+disposition = "reuse_nt"
+owner_module = "src/bolt_v3_basket_admission.rs"
+reason = "Admission and sizing must use NT instrument increments, precision, and adapter filters; no local hardcoded minimum size or precision table is allowed."
+required_tests = [
+  "basket admission rounds and rejects legs with NT instrument precision and min-size surfaces",
+  "source-fence-static remains green without hardcoded outcome-group size or precision literals",
+]
+
+[[capabilities.min_size_precision.source_anchors]]
+repo = "nautilus_trader"
+rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+path = "crates/model/src/instruments/binary_option.rs"
+lines = "315-320"
+symbol = "BinaryOption::price_precision"
+evidence = "Pinned NT BinaryOption exposes precision from the normalized instrument."
+
+[[capabilities.min_size_precision.source_anchors]]
+repo = "bolt-v2"
+rev = "5f39d352c081446f309605e49d6beaba86931ca5"
+path = "src/bolt_v3_book_sizing.rs"
+lines = "134-169"
+symbol = "size_from_executable_quote"
+evidence = "Pinned Bolt sizing already computes quantity from executable quotes and must be fed NT precision/min-size data."
+
+[capabilities.provider_discovery]
+disposition = "wrap_nt"
+owner_module = "src/bolt_v3_outcome_group_sources.rs"
+reason = "Provider discovery is configuration-led in Bolt but must wrap the existing NT adapter/instrument discovery surfaces; adding alternate direct provider discovery clients is rejected."
+required_tests = [
+  "provider discovery reads configured market-family provider surfaces and NT adapter instruments only",
+  "source-fence rejects direct provider clients outside approved provider normalizers",
+]
+
+[[capabilities.provider_discovery.source_anchors]]
+repo = "nautilus_trader"
+rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+path = "crates/adapters/polymarket/src/http/query.rs"
+lines = "152"
+symbol = "GetMarketsParams"
+evidence = "Pinned NT Polymarket adapter owns market discovery query parameters."
+
+[[capabilities.provider_discovery.source_anchors]]
+repo = "bolt-v2"
+rev = "5f39d352c081446f309605e49d6beaba86931ca5"
+path = "src/bolt_v3_market_families/mod.rs"
+lines = "802-810"
+symbol = "MarketFamiliesConfig::validate"
+evidence = "Pinned Bolt validates configured provider/product discovery surfaces in market families."

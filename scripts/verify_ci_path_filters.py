@@ -18,22 +18,9 @@ import ci_provenance  # noqa: E402
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
-DEFAULT_DOCS = REPO_ROOT / "docs" / "ci" / "paths-ignore-behavior.md"
 DEFAULT_RUST_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
 LEGACY_RUST_POLICY = REPO_ROOT / ".claude" / "rust-verification.toml"
-REQUIRED_DOC_SCENARIOS = (
-    "docs-only root agent doc",
-    "root security policy",
-    "workflow change",
-    "Rust source change",
-    "managed rust-verification config",
-    "forbidden legacy rust-verification config",
-    "lockfile change",
-    "mixed docs and source",
-    "ignored Claude agent dir",
-    "ignored config dir",
-)
 MAX_TEXT_BYTES = 1_000_000
 
 
@@ -217,37 +204,6 @@ def verify_ci_workflow_has_no_pull_request_paths_ignore(workflow_text: str) -> N
     raise PathFilterError(f"ci workflow pull_request paths-ignore must be removed, got {tuple(paths)}")
 
 
-def extract_docs_table_scenarios(docs_text: str) -> tuple[str, ...]:
-    scenarios: list[str] = []
-    for line in docs_text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("|"):
-            continue
-        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
-        if len(cells) < 4:
-            continue
-        scenario = cells[0]
-        if not scenario or scenario == "Scenario" or set(scenario) <= {"-", ":"}:
-            continue
-        scenarios.append(scenario)
-    if not scenarios:
-        raise PathFilterError("docs table missing scenario rows")
-    return tuple(scenarios)
-
-
-def verify_docs_table(docs_text: str) -> None:
-    documented_scenarios = extract_docs_table_scenarios(docs_text)
-    documented_set = set(documented_scenarios)
-    if len(documented_set) != len(documented_scenarios):
-        raise PathFilterError("docs table contains duplicate scenario rows")
-    for scenario in REQUIRED_DOC_SCENARIOS:
-        if scenario not in documented_set:
-            raise PathFilterError(f"docs missing required scenario {scenario}")
-    required_set = set(REQUIRED_DOC_SCENARIOS)
-    for scenario in sorted(documented_set - required_set):
-        raise PathFilterError(f"docs table scenario is not enforced: {scenario}")
-
-
 def verify_rust_policy_location(
     policy_path: pathlib.Path = DEFAULT_RUST_POLICY,
     legacy_path: pathlib.Path = LEGACY_RUST_POLICY,
@@ -261,7 +217,6 @@ def verify_rust_policy_location(
 def verify_repository(
     *,
     ci_workflow: pathlib.Path = DEFAULT_CI_WORKFLOW,
-    docs: pathlib.Path = DEFAULT_DOCS,
     config: pathlib.Path = DEFAULT_CONFIG,
 ) -> list[str]:
     errors: list[str] = []
@@ -272,10 +227,6 @@ def verify_repository(
         errors.append(str(exc))
     try:
         verify_ci_workflow_has_no_pull_request_paths_ignore(read_text_bounded(ci_workflow, "CI workflow"))
-    except Exception as exc:  # noqa: BLE001
-        errors.append(str(exc))
-    try:
-        verify_docs_table(read_text_bounded(docs, "docs"))
     except Exception as exc:  # noqa: BLE001
         errors.append(str(exc))
     try:

@@ -373,6 +373,29 @@ def assert_oversized_policy_fails_closed() -> None:
             raise AssertionError(result.stderr)
 
 
+def assert_validate_policy_rejects_unknown_cheap_lane_just_recipe() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        policy = repo / "ci" / "rust-verification.toml"
+        policy.write_text(
+            policy.read_text(encoding="utf-8").replace(
+                "poll_interval_seconds = 1\n",
+                'poll_interval_seconds = 1\ncheap_lane_just_recipes = ["missing-cheap-lane-recipe"]\n',
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        result = run_owner(["validate-policy", "--repo", str(repo)], env=os.environ.copy())
+
+    if result.returncode != 2:
+        raise AssertionError((result.returncode, result.stdout, result.stderr))
+    if "missing from justfile" not in result.stderr:
+        raise AssertionError(result.stderr)
+
+
 def assert_remote_diagnostics_policy_loads() -> None:
     owner = load_owner_module()
     policy = {
@@ -1340,6 +1363,7 @@ def main() -> int:
     assert_fmt_avoids_managed_cache_lock()
     assert_system_python_contract()
     assert_oversized_policy_fails_closed()
+    assert_validate_policy_rejects_unknown_cheap_lane_just_recipe()
     assert_remote_diagnostics_policy_loads()
     assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped()
     assert_verify_remote_dispatch_wait_does_not_depend_on_local_clock()

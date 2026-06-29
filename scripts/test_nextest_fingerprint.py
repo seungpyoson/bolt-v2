@@ -46,7 +46,6 @@ tracked_inputs = [
     "src/",
     "tests/",
     "config/root.toml",
-    "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
 ]
 
 [[safe_excludes]]
@@ -334,16 +333,10 @@ def assert_tree_digest_covers_runtime_inputs_and_mode_bits() -> None:
         if root_config_changed == manifest_changed:
             raise AssertionError("config/root.toml changes must change the nextest archive key")
 
-        write(repo / "docs" / "bolt-v3" / "2026-04-25-bolt-v3-runtime-contracts.md", "# changed\n")
-        commit_all(repo, "change compile-time docs contract")
-        docs_changed, _ = fingerprint(repo)
-        if docs_changed == root_config_changed:
-            raise AssertionError("compile-time docs contract changes must change the nextest archive key")
-
         (repo / "build.rs").chmod(0o755)
         commit_all(repo, "make deploy executable")
         mode_changed, _ = fingerprint(repo)
-        if mode_changed == docs_changed:
+        if mode_changed == root_config_changed:
             raise AssertionError("allowlisted tracked mode changes must change the nextest archive key")
 
 
@@ -388,13 +381,35 @@ def assert_compile_time_include_targets_must_be_tracked() -> None:
         repo = init_repo(pathlib.Path(tmp))
         write(
             repo / "src" / "lib.rs",
-            'pub const EXTRA_DOC: &str = include_str!("../docs/extra/index.md");\n',
+            'pub const INSTALL_SCRIPT: &str = include_str!("../deploy/install.sh");\n',
         )
-        commit_all(repo, "include untracked docs")
+        commit_all(repo, "include untracked file")
         result = run_fingerprint_expect_failure(repo)
         if result.returncode == 0:
             raise AssertionError("compile-time include targets outside tracked_inputs must fail closed")
-        if "compile-time include target is outside nextest tracked inputs: docs/extra/index.md" not in result.stderr:
+        if "compile-time include target is outside nextest tracked inputs: deploy/install.sh" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
+def assert_compile_time_include_targets_must_not_be_prose_docs() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "ci" / "nextest-fingerprint.toml",
+            FINGERPRINT_CONFIG_TEXT.replace(
+                '    "config/root.toml",\n',
+                '    "config/root.toml",\n    "docs/extra/index.md",\n',
+            ),
+        )
+        write(
+            repo / "src" / "lib.rs",
+            'pub const EXTRA_DOC: &str = include_str!("../docs/extra/index.md");\n',
+        )
+        commit_all(repo, "include tracked prose doc")
+        result = run_fingerprint_expect_failure(repo)
+        if result.returncode == 0:
+            raise AssertionError("compile-time include targets for prose docs must fail closed")
+        if "compile-time include target must not be a prose doc: docs/extra/index.md" not in result.stderr:
             raise AssertionError(result.stderr)
 
 
@@ -430,17 +445,17 @@ def assert_compile_time_include_macro_syntax_variants_are_detected() -> None:
         repo = init_repo(pathlib.Path(tmp))
         write(
             repo / "src" / "lib.rs",
-            'pub const COMMENT_AFTER_NAME: &str = include_str /* comment */ !("../docs/extra/index.md");\n'
-            'pub const COMMENT_AFTER_BANG: &str = include_str! /* comment */ ("../docs/extra/index.md");\n'
-            'pub const COMMENT_BEFORE_ARG: &[u8] = include_bytes!(/* comment */ "../docs/extra/index.md");\n'
-            'pub const BRACKET_DELIMITER: &str = include_str!["../docs/extra/index.md"];\n'
-            'pub const BRACE_DELIMITER: &str = include_str!{ "../docs/extra/index.md" };\n',
+            'pub const COMMENT_AFTER_NAME: &str = include_str /* comment */ !("../deploy/install.sh");\n'
+            'pub const COMMENT_AFTER_BANG: &str = include_str! /* comment */ ("../deploy/install.sh");\n'
+            'pub const COMMENT_BEFORE_ARG: &[u8] = include_bytes!(/* comment */ "../deploy/install.sh");\n'
+            'pub const BRACKET_DELIMITER: &str = include_str!["../deploy/install.sh"];\n'
+            'pub const BRACE_DELIMITER: &str = include_str!{ "../deploy/install.sh" };\n',
         )
         commit_all(repo, "include macro syntax variants")
         result = run_fingerprint_expect_failure(repo)
         if result.returncode == 0:
             raise AssertionError("compile-time include macro syntax variants must fail closed")
-        if "compile-time include target is outside nextest tracked inputs: docs/extra/index.md" not in result.stderr:
+        if "compile-time include target is outside nextest tracked inputs: deploy/install.sh" not in result.stderr:
             raise AssertionError(result.stderr)
 
 
@@ -694,6 +709,7 @@ def main() -> int:
     assert_self_governance_changes_affect_digest()
     assert_tracked_inputs_must_match_head_tree()
     assert_compile_time_include_targets_must_be_tracked()
+    assert_compile_time_include_targets_must_not_be_prose_docs()
     assert_commented_compile_time_include_targets_are_ignored()
     assert_string_literal_include_text_is_ignored()
     assert_compile_time_include_macro_syntax_variants_are_detected()

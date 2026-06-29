@@ -70,6 +70,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/ci.yml": "ci",
     "backtester-ci.yml": "backtester_ci",
     ".github/workflows/backtester-ci.yml": "backtester_ci",
+    "flaky-test-detection.yml": "flaky_test_detection",
+    ".github/workflows/flaky-test-detection.yml": "flaky_test_detection",
     "dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     ".github/workflows/dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     "merge-readiness-finalizer.yml": "merge_readiness_finalizer",
@@ -309,7 +311,20 @@ TAG_SKIP_ALWAYS_IF_RE = re.compile(
 )
 SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
 FULL_CI_REQUIRED_EXPR = "needs.ci-policy.outputs.full_ci_required == 'true'"
+DOCS_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'docs'"
 TAG_REUSE_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'tag_reuse'"
+SOURCE_FENCE_JOB_IF_VALUE = f"${{{{ {FULL_CI_REQUIRED_EXPR} || {DOCS_POLICY_EXPR} }}}}"
+SOURCE_FENCE_POLICY_SWITCH = """
+if [[ "${{ needs.ci-policy.outputs.full_ci_required }}" == "true" ]]; then
+  just source-fence
+else
+  just source-fence-static
+fi
+"""
+SOURCE_FENCE_CHECKOUT_REF = (
+    "${{ needs.ci-policy.outputs.ci_policy_path == 'docs' && "
+    "github.event.pull_request.head.sha || github.sha }}"
+)
 NEXTEST_REUSE_MISS_EXPR = "needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'"
 MAIN_BRANCH_SKIP_EXPR = "github.ref != 'refs/heads/main'"
 BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
@@ -8395,6 +8410,19 @@ def job_gates_on_full_ci_required(job_lines: list[str]) -> bool:
     return FULL_CI_REQUIRED_EXPR in uncommented_text(job_lines)
 
 
+def source_fence_runs_on_full_ci_or_docs(job_lines: list[str]) -> bool:
+    return job_if_value(job_lines) == SOURCE_FENCE_JOB_IF_VALUE
+
+
+def source_fence_uses_policy_switch(job_lines: list[str]) -> bool:
+    return any(block_run_body_matches(block, SOURCE_FENCE_POLICY_SWITCH) for block in step_blocks(job_lines))
+
+
+def source_fence_checkout_uses_docs_head_ref(job_lines: list[str]) -> bool:
+    checkout_blocks = action_blocks(job_lines, "actions/checkout@")
+    return len(checkout_blocks) == 1 and block_has_input(checkout_blocks[0], "ref", SOURCE_FENCE_CHECKOUT_REF)
+
+
 def check_aarch64_runs_on_full_or_tag_reuse(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return FULL_CI_REQUIRED_EXPR in text and TAG_REUSE_POLICY_EXPR in text
@@ -9476,8 +9504,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
         source_fence_needs = extract_needs(jobs["source-fence"])
         if "ci-policy" not in source_fence_needs:
             errors.append("source-fence needs ci-policy")
-        if not job_gates_on_full_ci_required(jobs["source-fence"]):
-            errors.append("source-fence must gate on full_ci_required")
+        if not source_fence_runs_on_full_ci_or_docs(jobs["source-fence"]):
+            errors.append("source-fence must run for full_ci_required or docs policy")
+        if not source_fence_uses_policy_switch(jobs["source-fence"]):
+            errors.append("source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy")
+        if not source_fence_checkout_uses_docs_head_ref(jobs["source-fence"]):
+            errors.append("source-fence checkout must use pull_request head SHA for docs policy and github.sha otherwise")
 
     for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):
@@ -10434,7 +10466,7 @@ def repo_automation_source_build_errors(text: str) -> list[str]:
 
 
 def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[str]:
-    if not file_name.endswith("backtester-ci.yml"):
+    if not any(prefix in text for prefix in ("managed-target-bvs-v", "bvs-nextest-archive-v", "bvs-bin-sidecars-v")):
         return []
     errors: list[str] = []
     for _job_id, job_lines in parse_jobs(text).items():
@@ -10454,7 +10486,7 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
             continue
         if "python3 scripts/ci_input_sets.py hash backtester_cache" not in job_text:
             errors.append("backtester cache key digest must come from ci_input_sets backtester_cache")
-        if (
+        if file_name.endswith("backtester-ci.yml") and (
             'if [[ "${{ needs.detect.outputs.bvs_bootstrap_changed }}" == "true" ]]; then' not in job_text
             or 'echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"' not in job_text
         ):

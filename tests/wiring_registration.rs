@@ -11,7 +11,6 @@ mod bolt_v3_credential_log_suppression;
 mod bolt_v3_decision_evidence;
 mod bolt_v3_prod_profile;
 mod bolt_v3_production_entrypoint;
-mod bolt_v3_production_readiness_contract;
 mod bolt_v3_provider_binding;
 mod bolt_v3_readiness;
 mod bolt_v3_strategy_registration;

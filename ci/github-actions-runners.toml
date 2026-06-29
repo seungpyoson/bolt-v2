@@ -114,6 +114,28 @@ summary = "github_hosted"
 [workflows.stale]
 stale = "github_hosted"
 
+[workflows.weekly_cleanup]
+jules-weekly-cleanup = "github_hosted"
+
+[workflows.performance_improver]
+jules-performance-improver = "github_hosted"
+
+[workflows.tech_debt_review]
+jules-tech-debt-review = "github_hosted"
+
+[jules_advisory]
+workflow_paths = [
+  ".github/workflows/weekly-cleanup.yml",
+  ".github/workflows/performance-improver.yml",
+  ".github/workflows/tech-debt-review.yml",
+]
+secret = "JULES_API_KEY"
+sessions_endpoint_variable = "JULES_SESSIONS_ENDPOINT"
+session_timeout_minutes_variable = "JULES_SESSION_TIMEOUT_MINUTES"
+sessions_endpoint = "https://jules.googleapis.com/v1alpha/sessions"
+session_timeout_minutes = 10
+require_plan_approval = true
+
 [meter]
 fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
 fingerprint_workflow = "ci"

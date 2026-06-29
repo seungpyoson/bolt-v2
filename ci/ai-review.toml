@@ -65,6 +65,9 @@ name = "ssm secret source"
 snippets = [
   "SSM is the single secret source for product/runtime credentials",
   "GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN`",
+  "`JULES_API_KEY` may live in GitHub Actions secrets only for repository code-maintenance advisory workflows",
+  "it is not a product/runtime/deploy/live/trading secret, not an alternate GitHub token",
+  "must not be exposed to AWS, market data, order execution, runtime, deploy, or live jobs",
   "Do not add environment variable fallbacks, alternate GitHub token names, or alternate secret backends",
 ]
 

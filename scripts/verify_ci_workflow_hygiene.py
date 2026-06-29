@@ -11667,6 +11667,12 @@ def validate_jules_advisory_config(data: dict[str, object]) -> dict[str, object]
     )
     if timeout_variable != JULES_ADVISORY_TIMEOUT_VARIABLE:
         raise ValueError("jules_advisory.session_timeout_minutes_variable must be JULES_SESSION_TIMEOUT_MINUTES")
+    sessions_endpoint = require_config_string(
+        section, "sessions_endpoint", "jules_advisory"
+    )
+    timeout_minutes = require_config_positive_int(
+        section, "session_timeout_minutes", "jules_advisory"
+    )
     if section.get("require_plan_approval") is not True:
         raise ValueError("jules_advisory.require_plan_approval must be true")
     return {
@@ -11674,6 +11680,10 @@ def validate_jules_advisory_config(data: dict[str, object]) -> dict[str, object]
         "secret": secret,
         "sessions_endpoint_variable": sessions_endpoint_variable,
         "session_timeout_minutes_variable": timeout_variable,
+        "repository_variables": {
+            sessions_endpoint_variable: sessions_endpoint,
+            timeout_variable: str(timeout_minutes),
+        },
         "require_plan_approval": True,
     }
 
@@ -11739,11 +11749,7 @@ def load_github_actions_runners_config(
         "managed_labels": sorted(set(managed_labels)),
         "meter_included_workflows": sorted(set(meter_workflows)),
         "variables": sorted(
-            set(tier_to_var.values())
-            | {
-                jules_advisory["sessions_endpoint_variable"],
-                jules_advisory["session_timeout_minutes_variable"],
-            }
+            set(tier_to_var.values()) | set(jules_advisory["repository_variables"])
         ),
         "workflows": workflows,
         "ci_provenance": ci_provenance,

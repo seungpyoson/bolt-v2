@@ -117,6 +117,8 @@ workflow_paths = [
 secret = "JULES_API_KEY"
 sessions_endpoint_variable = "JULES_SESSIONS_ENDPOINT"
 session_timeout_minutes_variable = "JULES_SESSION_TIMEOUT_MINUTES"
+sessions_endpoint = "https://jules.googleapis.com/v1alpha/sessions"
+session_timeout_minutes = 10
 require_plan_approval = true
 
 [meter]

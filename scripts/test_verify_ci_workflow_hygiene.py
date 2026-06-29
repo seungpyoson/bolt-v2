@@ -1729,6 +1729,41 @@ jobs:
         raise AssertionError(f"real Jules workflows must satisfy advisory contract, got: {real_errors}")
 
 
+def assert_jules_advisory_config_carries_repo_variable_values() -> None:
+    verifier = load_verifier()
+    config = verifier.load_github_actions_runners_config()
+    jules_config = config["jules_advisory"]
+    actual_values = jules_config.get("repository_variables")
+    expected_keys = {
+        jules_config["sessions_endpoint_variable"],
+        jules_config["session_timeout_minutes_variable"],
+    }
+    if not isinstance(actual_values, dict) or set(actual_values) != expected_keys:
+        raise AssertionError(
+            "Jules advisory config must carry provisionable repository variable values, "
+            f"got: {actual_values!r}"
+        )
+    for key, value in actual_values.items():
+        if not isinstance(value, str) or not value:
+            raise AssertionError(f"Jules advisory repository variable {key} must have a non-empty value")
+
+    config_text = ci_provenance_config_fixture()
+    cases = (
+        (
+            "jules_advisory.sessions_endpoint must be a non-empty string",
+            re.sub(r'^sessions_endpoint = ".+"\n', "", config_text, count=1, flags=re.MULTILINE),
+        ),
+        (
+            "jules_advisory.session_timeout_minutes must be a positive integer",
+            re.sub(r"^session_timeout_minutes = [0-9]+\n", "", config_text, count=1, flags=re.MULTILINE),
+        ),
+    )
+    for fragment, broken_config in cases:
+        error = runner_config_load_error(broken_config, verifier)
+        if fragment not in error:
+            raise AssertionError(f"expected Jules config error containing {fragment!r}, got: {error!r}")
+
+
 def without_job(workflow: str, job: str) -> str:
     lines = workflow.splitlines()
     start = next(i for i, line in enumerate(lines) if line == f"  {job}:")
@@ -12697,6 +12732,7 @@ def main() -> int:
     assert_runner_contract_requires_meter_api_limits()
     assert_runner_contract_requires_fingerprint_archive_tier_coupling()
     assert_jules_advisory_workflow_contracts()
+    assert_jules_advisory_config_carries_repo_variable_values()
     assert_debug_workflow_rejects_non_manual_trigger()
     assert_debug_workflow_checks_each_ssh_runner_step()
     assert_bootstrap_uses_onepassword_key_generation()

@@ -5556,9 +5556,8 @@ def assert_runner_contract_rejects_unmapped_workflow_jobs() -> None:
 
 def assert_runner_contract_accepts_flaky_detection_workflow_mapping() -> None:
     verifier = load_verifier()
-    workflow_name = ".github/workflows/flaky-test-detection.yml"
-    smoke_workflow_name = ".github/workflows/flaky-test-detection-smoke.yml"
-    workflow = """name: Flaky Test Detection
+    detection_workflow_name = ".github/workflows/flaky-test-detection.yml"
+    detection_workflow = """name: Flaky Test Detection
 
 on:
   schedule:
@@ -5580,30 +5579,31 @@ jobs:
     steps:
       - run: echo issue-789
 """
-    smoke_workflow = """name: Flaky Test Detection Smoke
+    smoke_workflow_name = ".github/workflows/flaky-test-smoke.yml"
+    smoke_workflow = """name: Flaky Test Smoke
 
 on:
   workflow_dispatch:
 
 jobs:
-  flaky-detection-rust-root-smoke:
+  flaky-smoke-rust-root:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
-      - run: echo root
+      - run: echo root-smoke
 
-  flaky-detection-rust-backtester-smoke:
+  flaky-smoke-rust-backtester:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
-      - run: echo backtester
+      - run: echo backtester-smoke
 
-  flaky-detection-rust-backtester-issue-789-smoke:
+  flaky-smoke-rust-backtester-issue-789:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
-      - run: echo issue-789
+      - run: echo issue-789-smoke
 """
     errors = verifier.verify_github_actions_runner_contract(
         {
-            workflow_name: workflow,
+            detection_workflow_name: detection_workflow,
             smoke_workflow_name: smoke_workflow,
         }
     )
@@ -5614,7 +5614,7 @@ jobs:
 def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
     workflows = (
         (".github/workflows/flaky-test-detection.yml", 2),
-        (".github/workflows/flaky-test-detection-smoke.yml", 2),
+        (".github/workflows/flaky-test-smoke.yml", 2),
     )
     pinned_v14_action = "uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14"
     expected_job_names = (
@@ -5655,14 +5655,14 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
 
 def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     full_workflow = repo_workflow_text(".github/workflows/flaky-test-detection.yml")
-    smoke_workflow = repo_workflow_text(".github/workflows/flaky-test-detection-smoke.yml")
+    smoke_workflow = repo_workflow_text(".github/workflows/flaky-test-smoke.yml")
     if "workflow_dispatch:" in full_workflow:
         raise AssertionError("flaky-test-detection.yml must remain schedule-only")
     if "schedule:" in smoke_workflow:
-        raise AssertionError("flaky-test-detection-smoke.yml must remain manual-only")
+        raise AssertionError("flaky-test-smoke.yml must remain manual-only")
     for workflow_path, workflow in (
         (".github/workflows/flaky-test-detection.yml", full_workflow),
-        (".github/workflows/flaky-test-detection-smoke.yml", smoke_workflow),
+        (".github/workflows/flaky-test-smoke.yml", smoke_workflow),
     ):
         forbidden_fragments = (
             "mode:",
@@ -5678,21 +5678,21 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
                 raise AssertionError(f"{workflow_path} must not contain {fragment!r}")
     smoke_fragments = (
         "workflow_dispatch:",
-        "flaky-detection-rust-root-smoke:",
-        "flaky-detection-rust-backtester-smoke:",
-        "flaky-detection-rust-backtester-issue-789-smoke:",
+        "flaky-smoke-rust-root:",
+        "flaky-smoke-rust-backtester:",
+        "flaky-smoke-rust-backtester-issue-789:",
         "run_number: [1]",
         "shard: [1]",
     )
     for fragment in smoke_fragments:
         if fragment not in smoke_workflow:
-            raise AssertionError(f"flaky-test-detection-smoke.yml missing {fragment!r}")
+            raise AssertionError(f"flaky-test-smoke.yml missing {fragment!r}")
 
 
 def assert_flaky_detection_workflow_split_gaps_are_reported() -> None:
     verifier = load_verifier()
     full_workflow_name = ".github/workflows/flaky-test-detection.yml"
-    smoke_workflow_name = ".github/workflows/flaky-test-detection-smoke.yml"
+    smoke_workflow_name = ".github/workflows/flaky-test-smoke.yml"
     good_full_workflow = """name: Flaky Test Detection
 
 on:
@@ -5779,13 +5779,13 @@ jobs:
           job_name: bvs-test issue-789
           report_path: "junit-*.xml"
 """
-    good_smoke_workflow = """name: Flaky Test Detection Smoke
+    good_smoke_workflow = """name: Flaky Test Smoke
 
 on:
   workflow_dispatch:
 
 jobs:
-  flaky-detection-rust-root-smoke:
+  flaky-smoke-rust-root:
     strategy:
       matrix:
         run_number: [1]
@@ -5811,7 +5811,7 @@ jobs:
           job_name: nextest archive
           report_path: "junit-*.xml"
 
-  flaky-detection-rust-backtester-smoke:
+  flaky-smoke-rust-backtester:
     strategy:
       matrix:
         run_number: [1]
@@ -5838,7 +5838,7 @@ jobs:
           job_name: bvs-test archive
           report_path: "junit-*.xml"
 
-  flaky-detection-rust-backtester-issue-789-smoke:
+  flaky-smoke-rust-backtester-issue-789:
     strategy:
       matrix:
         run_number: [1]
@@ -5893,7 +5893,7 @@ jobs:
             f"flaky detection verifier must reject multi-shard smoke BVS jobs, got: {oversized_smoke_errors}"
         )
 
-    missing_smoke_workflow = good_smoke_workflow.replace("  flaky-detection-rust-backtester-smoke:\n", "  removed-backtester-smoke:\n")
+    missing_smoke_workflow = good_smoke_workflow.replace("  flaky-smoke-rust-backtester:\n", "  removed-backtester-smoke:\n")
     missing_smoke_errors = verifier.verify_flaky_test_detection_workflows(
         {
             full_workflow_name: good_full_workflow,
@@ -9385,8 +9385,8 @@ def write_base_workflows(workflow_dir: pathlib.Path) -> None:
     (workflow_dir / "merge-readiness-finalizer.yml").write_text(BASE_MERGE_READINESS_FINALIZER_WORKFLOW)
     (workflow_dir / "coverage-enforcer.yml").write_text(BASE_COVERAGE_ENFORCER_WORKFLOW)
     (workflow_dir / "flaky-test-detection.yml").write_text(repo_workflow_text(".github/workflows/flaky-test-detection.yml"))
-    (workflow_dir / "flaky-test-detection-smoke.yml").write_text(
-        repo_workflow_text(".github/workflows/flaky-test-detection-smoke.yml")
+    (workflow_dir / "flaky-test-smoke.yml").write_text(
+        repo_workflow_text(".github/workflows/flaky-test-smoke.yml")
     )
 
 

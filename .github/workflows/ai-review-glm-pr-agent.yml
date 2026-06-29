@@ -32,10 +32,20 @@ jobs:
     # this in sync with ci/ai-review.toml [glm.workflow].job_timeout_minutes.
     timeout-minutes: 35
     env:
-      GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
+      - name: Detect GLM secret
+        id: glm-secret
+        env:
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+        run: |
+          if [ -n "$GLM_API_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout base AI review helpers
         id: base-checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -47,6 +57,7 @@ jobs:
             .pr_agent.toml
             ci/ai-review.toml
             scripts/ai_review_deliverables.py
+            scripts/verify_ai_review_model_freshness.py
           sparse-checkout-cone-mode: false
 
       - name: Load AI review runtime config
@@ -98,7 +109,7 @@ jobs:
           PY
 
       - name: Notice when Z.ai secret is not configured
-        if: env.GLM_API_KEY == ''
+        if: steps.glm-secret.outputs.configured == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -138,22 +149,33 @@ jobs:
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
           fi
 
+      - name: Check AI review model freshness
+        id: model-freshness
+        if: steps.glm-secret.outputs.configured == 'true'
+        continue-on-error: true
+        run: >-
+          python3 scripts/verify_ai_review_model_freshness.py
+          --config-file ci/ai-review.toml
+          --live
+          --advisory
+          --provider glm
+
       - name: Capture GLM review window
         id: review-window
-        if: env.GLM_API_KEY != ''
+        if: steps.glm-secret.outputs.configured == 'true'
         run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Run PR-Agent review with GLM
         id: pr-agent
-        if: env.GLM_API_KEY != ''
+        if: steps.glm-secret.outputs.configured == 'true'
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_primary_timeout_minutes) }}
         uses: the-pr-agent/pr-agent@49cb2d8ce4a6f01c238229b3770e328fe11479df # v0.34.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI__API_BASE: ${{ steps.runtime-config.outputs.glm_api_base }}
-          OPENAI__KEY: ${{ env.GLM_API_KEY }}
-          OPENAI_KEY: ${{ env.GLM_API_KEY }}
+          OPENAI__KEY: ${{ secrets.GLM_API_KEY }}
+          OPENAI_KEY: ${{ secrets.GLM_API_KEY }}
           config.model: ${{ steps.runtime-config.outputs.glm_pr_agent_model }}
           config.fallback_models: ${{ steps.runtime-config.outputs.glm_pr_agent_fallback_models }}
           config.custom_model_max_tokens: ${{ steps.runtime-config.outputs.glm_pr_agent_custom_model_max_tokens }}
@@ -165,7 +187,7 @@ jobs:
 
       - name: Stamp GLM PR-Agent review source
         id: glm_stamp
-        if: env.GLM_API_KEY != ''
+        if: steps.glm-secret.outputs.configured == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
@@ -192,7 +214,7 @@ jobs:
         id: glm_fallback
         if: >-
           ${{
-            env.GLM_API_KEY != ''
+            steps.glm-secret.outputs.configured == 'true'
             && always()
             && steps.base-checkout.outcome == 'success'
             && steps.runtime-config.outcome == 'success'
@@ -203,21 +225,40 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
           GLM_API_BASE: ${{ steps.runtime-config.outputs.glm_api_base }}
           GLM_MODEL: ${{ steps.runtime-config.outputs.glm_model }}
           GLM_API_TIMEOUT_SECONDS: ${{ steps.runtime-config.outputs.glm_api_timeout_seconds }}
           GLM_REVIEW_MAX_CHUNK_CHARS: ${{ steps.runtime-config.outputs.glm_review_max_chunk_chars }}
           AI_REVIEW_MAX_COMMENT_CHARS: ${{ steps.runtime-config.outputs.ai_review_max_comment_chars }}
+          AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.glm_warning }}
         run: >-
           python3 scripts/ai_review_deliverables.py glm-fallback
           --started-at "${{ steps.review-window.outputs.started_at }}"
           --instructions-file .pr_agent.toml
           --config-file ci/ai-review.toml
 
+      - name: Post GLM model freshness advisory
+        if: >-
+          ${{
+            steps.glm-secret.outputs.configured == 'true'
+            && always()
+            && steps.model-freshness.outputs.glm_warning != ''
+          }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+          AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.glm_warning }}
+        run: >-
+          python3 scripts/ai_review_deliverables.py model-freshness-notice
+          --provider GLM
+          --started-at "${{ steps.review-window.outputs.started_at }}"
+          --config-file ci/ai-review.toml
+
       - name: Post GLM fallback infrastructure failure notice
         if: >-
           ${{
-            env.GLM_API_KEY != ''
+            steps.glm-secret.outputs.configured == 'true'
             && always()
             && (
               steps.base-checkout.outcome == 'failure'

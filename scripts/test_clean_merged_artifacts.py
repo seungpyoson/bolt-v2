@@ -39,7 +39,8 @@ Coverage map (by review finding):
   #1050 post-review safety   : test_lane_w_refuses_branch_delete_when_tip_drifts_to_unmerged_commit,
                                test_fetch_failure_reason_redacts_url_credentials,
                                test_report_error_redacts_common_secret_forms,
-                               test_live_cache_entry_with_malformed_prs_fails_closed_without_refetch
+                               test_live_cache_entry_with_malformed_prs_fails_closed_without_refetch,
+                               test_lane_summary_prints_full_refusal_reason
 """
 
 from __future__ import annotations
@@ -1052,6 +1053,27 @@ class CleanupContractTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_lane_summary_prints_full_refusal_reason(self) -> None:
+        reason = (
+            "detached-HEAD worktree refused "
+            "(use --allow-detached-removal to override; "
+            "reflog-only commits are not preserved by the archive)"
+        )
+        stdout = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout):
+            cm._print_lane_summary("W", [{
+                "action": "refused-detached-head",
+                "branch": "detached-5a4127b5",
+                "tip_sha": "5a4127b52a7f",
+                "worktree": "/tmp/wt",
+                "reason": reason,
+            }], apply=False)
+
+        out = stdout.getvalue()
+        self.assertIn(reason, out)
+        self.assertIn("reflog-only commits are not preserved by the archive)", out)
 
     def test_no_alternate_toml_parser_path(self) -> None:
         source = (REPO_ROOT / "scripts" / "clean_merged_artifacts.py").read_text(

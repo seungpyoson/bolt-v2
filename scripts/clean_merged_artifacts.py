@@ -2169,7 +2169,7 @@ def _print_lane_summary(lane: str, records: list[dict[str, Any]], apply: bool) -
         if r.get("quarantine_path"):
             extra += f" -> {r['quarantine_path']}"
         if r.get("reason"):
-            extra += f" :: {r['reason'][:120]}"
+            extra += f" :: {r['reason']}"
         print(f"  {action:30s} {branch:40s} {sha}{extra}")
 
 

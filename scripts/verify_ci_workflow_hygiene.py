@@ -674,6 +674,106 @@ TEST_ARCHIVE_SIDECAR_PACK_GUARD = (
 )
 TEST_ARCHIVE_TARGET_CACHE_RESTORE_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_TARGET_CACHE_SAVE_GUARD = "if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}"
+TEST_ARCHIVE_TARGET_CACHE_KEY = (
+    "managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ "
+    "hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', "
+    "'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', "
+    "'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', "
+    "'.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', "
+    "'src/**', 'tests/**') }}"
+)
+TEST_ARCHIVE_CACHE_AUDIT_STEP = "Resolve root nextest cache keys"
+TEST_ARCHIVE_CACHE_AUDIT_STEP_ID = "id: root-nextest-cache-keys"
+TEST_ARCHIVE_CACHE_KEY_OUTPUT = "${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}"
+TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT = "${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}"
+TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT = "${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}"
+TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS = (
+    f"nextest_archive_cache_key: {TEST_ARCHIVE_CACHE_KEY_OUTPUT}",
+    f"root_bin_sidecars_cache_key: {TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT}",
+    f"archive_build_target_cache_key: {TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT}",
+    "nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}",
+    "root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}",
+    "archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}",
+)
+TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS = (
+    "nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}",
+    "root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}",
+    "archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}",
+)
+TEST_ARCHIVE_CACHE_SAVE_STEP_IDS = (
+    ("Save nextest archive", "id: nextest-archive-cache-save"),
+    ("Save root binary sidecars", "id: root-bin-sidecars-cache-save"),
+    ("Save archive build target cache", "id: test-target-cache-save"),
+)
+TEST_ARCHIVE_CACHE_RESTORE_STEP_IDS = (
+    ("Restore nextest archive", "id: nextest-archive-cache"),
+    ("Restore root binary sidecars", "id: root-bin-sidecars-cache"),
+    ("Restore archive build target cache", "id: test-target-cache"),
+)
+TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS = (
+    "nextest_archive_cache_key=",
+    "root_bin_sidecars_cache_key=",
+    "archive_build_target_cache_key=",
+)
+CACHE_PERSISTENCE_AUDIT_PROBE_STEP = "Probe saved cache keys"
+CACHE_PERSISTENCE_AUDIT_NEEDS = ("ci-policy", "nextest-fingerprint-reuse", "test-archive")
+CACHE_PERSISTENCE_AUDIT_CACHE_KEYS = (
+    '--cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}"',
+    '--cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}"',
+    '--cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"',
+)
+CACHE_PERSISTENCE_AUDIT_CACHE_REFS = (
+    '--github-event-name "$GITHUB_EVENT_NAME"',
+    '--github-ref "$GITHUB_REF"',
+    '--github-base-ref "$GITHUB_BASE_REF"',
+    '--github-default-branch "${{ github.event.repository.default_branch }}"',
+)
+CACHE_PERSISTENCE_AUDIT_SUMMARY_ARG = '--github-step-summary "$GITHUB_STEP_SUMMARY"'
+CACHE_PERSISTENCE_AUDIT_ANNOTATIONS_ARG = "--github-annotations"
+CACHE_PERSISTENCE_AUDIT_RESTORE_HIT_ARGS = (
+    '--restore-hit "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_hit }}"',
+    '--restore-hit "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}"',
+    '--restore-hit "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_hit }}"',
+)
+CACHE_PERSISTENCE_AUDIT_SAVE_OUTCOME_ARGS = (
+    '--save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}"',
+    '--save-outcome "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}"',
+    '--save-outcome "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}"',
+)
+CACHE_PERSISTENCE_AUDIT_PROBE_SCALAR_REQUIREMENTS = (
+    (
+        "cache-persistence-audit must use the workflow token for cache API reads",
+        "GH_TOKEN",
+        "${{ github.token }}",
+    ),
+)
+CACHE_PERSISTENCE_AUDIT_PROBE_COMMAND_REQUIREMENTS = (
+    (
+        "cache-persistence-audit must probe all root nextest cache keys",
+        CACHE_PERSISTENCE_AUDIT_CACHE_KEYS,
+    ),
+    (
+        "cache-persistence-audit must limit exact-key probes to restorable cache refs",
+        CACHE_PERSISTENCE_AUDIT_CACHE_REFS,
+    ),
+    (
+        "cache-persistence-audit must write probe results to the job summary",
+        (CACHE_PERSISTENCE_AUDIT_SUMMARY_ARG,),
+    ),
+    (
+        "cache-persistence-audit must emit audit annotations from ci_storage_audit",
+        (CACHE_PERSISTENCE_AUDIT_ANNOTATIONS_ARG,),
+    ),
+    (
+        "cache-persistence-audit must summarize cache restore hits",
+        CACHE_PERSISTENCE_AUDIT_RESTORE_HIT_ARGS,
+    ),
+    (
+        "cache-persistence-audit must summarize cache save outcomes",
+        CACHE_PERSISTENCE_AUDIT_SAVE_OUTCOME_ARGS,
+    ),
+)
+CACHE_PERSISTENCE_AUDIT_ARGV_PREFIX = ("python3", "scripts/ci_storage_audit.py")
 TEST_ARCHIVE_TEST_PROFILE_ENV = 'CARGO_PROFILE_TEST_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_BUILD_COMMAND = (
@@ -1965,6 +2065,27 @@ def block_has_scalar(block: list[str], name: str, value: str) -> bool:
     return any(strip_comment(line).strip() == expected for line in block)
 
 
+def mapping_child_block(lines: list[str], name: str) -> list[str]:
+    expected = f"{name}:"
+    for index, line in enumerate(lines):
+        clean = strip_comment(line).rstrip()
+        if clean.strip() != expected:
+            continue
+        parent_indent = line_indent(clean)
+        block: list[str] = []
+        for nested in lines[index + 1:]:
+            nested_clean = strip_comment(nested).rstrip()
+            if not nested_clean.strip():
+                if block:
+                    block.append(nested_clean)
+                continue
+            if line_indent(nested_clean) <= parent_indent:
+                break
+            block.append(nested_clean)
+        return block
+    return []
+
+
 def block_input_value(block: list[str], name: str) -> str | None:
     for item_name, item_value in block_input_items(block):
         if item_name == name:
@@ -2157,6 +2278,233 @@ def job_opts_into_managed_target_dir(job_lines: list[str]) -> bool:
 
 def uncommented_text(lines: list[str]) -> str:
     return "\n".join(strip_comment(line) for line in lines)
+
+
+def append_missing_text_requirements(
+    errors: list[str],
+    text: str,
+    requirements: tuple[tuple[str, tuple[str, ...]], ...],
+) -> None:
+    for error, fragments in requirements:
+        if not all(fragment in text for fragment in fragments):
+            errors.append(error)
+
+
+def append_failed_contracts(errors: list[str], contracts: Iterable[tuple[str, bool]]) -> None:
+    errors.extend(error for error, passed in contracts if not passed)
+
+
+def block_run_body_lines(block: list[str]) -> list[str]:
+    for index, line in enumerate(block):
+        clean = strip_comment(line).rstrip()
+        match = YAML_RUN_LINE_RE.match(clean)
+        if match is None:
+            continue
+        value = match.group(2).strip().strip("'\"")
+        if value not in {"|", ">"}:
+            return [value] if value else []
+        run_indent = len(clean) - len(clean.lstrip(" "))
+        body_indent: int | None = None
+        body: list[str] = []
+        for nested in block[index + 1:]:
+            nested_clean = strip_comment(nested).rstrip()
+            if not nested_clean.strip():
+                body.append("")
+                continue
+            indent = len(nested_clean) - len(nested_clean.lstrip(" "))
+            if indent <= run_indent:
+                break
+            if body_indent is None:
+                body_indent = indent
+            body.append(nested_clean[body_indent:] if indent >= body_indent else nested_clean.lstrip())
+        return body
+    return []
+
+
+def line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def top_level_shell_commands(lines: list[str]) -> list[str]:
+    commands: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].rstrip()
+        if not line.strip() or line_indent(line) != 0:
+            index += 1
+            continue
+        parts = [line.strip()]
+        while parts[-1].endswith("\\") and index + 1 < len(lines):
+            index += 1
+            continuation = lines[index].strip()
+            if continuation:
+                parts.append(continuation)
+        commands.append(" ".join(parts))
+        index += 1
+    return commands
+
+
+def ordered_command_match(
+    commands: list[str],
+    predicates: tuple[Callable[[str], bool], ...],
+) -> bool:
+    cursor = -1
+    for predicate in predicates:
+        for index in range(cursor + 1, len(commands)):
+            if predicate(commands[index]):
+                cursor = index
+                break
+        else:
+            return False
+    return True
+
+
+def run_body_has_top_level_command(lines: list[str], command: str) -> bool:
+    return command in top_level_shell_commands(lines)
+
+
+def shell_line_exits(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    command = stripped.split(maxsplit=1)[0]
+    return command in {"exit", "return"}
+
+
+def run_body_has_single_terminal_exit(lines: list[str], command: str) -> bool:
+    significant_lines = [(index, line) for index, line in enumerate(lines) if line.strip()]
+    if not significant_lines:
+        return False
+    last_index, last_line = significant_lines[-1]
+    if line_indent(last_line) != 0 or last_line.strip() != command:
+        return False
+    exit_lines = [
+        (index, line)
+        for index, line in significant_lines
+        if shell_line_exits(line)
+    ]
+    return exit_lines == [(last_index, last_line)]
+
+
+def command_argv_has_prefix(command: str, expected_prefix: tuple[str, ...]) -> bool:
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    return tuple(argv[: len(expected_prefix)]) == expected_prefix
+
+
+CACHE_PERSISTENCE_AUDIT_FAILURE_MASKING_OPERATORS = {";", "&", "&&", "||", "|"}
+
+
+def command_has_failure_masking_shell_control(command: str) -> bool:
+    tokens = command_tokens_with_line_boundaries(command)
+    return any(token in CACHE_PERSISTENCE_AUDIT_FAILURE_MASKING_OPERATORS for token in tokens)
+
+
+def append_missing_cache_persistence_probe_structure(
+    errors: list[str],
+    run_lines: list[str],
+) -> None:
+    commands = top_level_shell_commands(run_lines)
+    command_text = "\n".join(commands)
+    append_failed_contracts(
+        errors,
+        (
+            (
+                "cache-persistence-audit must delegate audit policy to ci_storage_audit",
+                len(commands) == 1,
+            ),
+            (
+                "cache-persistence-audit must run ci_storage_audit exact-key probes",
+                command_argv_has_prefix(command_text, CACHE_PERSISTENCE_AUDIT_ARGV_PREFIX),
+            ),
+            (
+                "cache-persistence-audit must not suppress audit contract failures",
+                len(commands) == 1 and not command_has_failure_masking_shell_control(command_text),
+            ),
+        ),
+    )
+    append_missing_text_requirements(
+        errors,
+        command_text,
+        CACHE_PERSISTENCE_AUDIT_PROBE_COMMAND_REQUIREMENTS,
+    )
+
+
+def first_step_uses_checkout(step_blocks_: list[list[str]]) -> bool:
+    return len(step_blocks_) == 2 and any(line_uses_action(line, "actions/checkout@") for line in step_blocks_[0])
+
+
+def single_run_step_matches(run_blocks: list[list[str]], step_name: str) -> bool:
+    return len(run_blocks) == 1 and step_name_matches(run_blocks[0], step_name)
+
+
+def append_cache_persistence_audit_contract_errors(errors: list[str], jobs: dict[str, list[str]]) -> None:
+    audit_lines = jobs.get("cache-persistence-audit")
+    if audit_lines is None:
+        if "test-archive" in jobs:
+            errors.append("cache-persistence-audit job is required")
+        return
+
+    audit_text = uncommented_text(audit_lines)
+    audit_needs = extract_needs(audit_lines)
+    audit_permissions = mapping_child_block(audit_lines, "permissions")
+    audit_step_blocks = step_blocks(audit_lines)
+    audit_probe_block = named_step_block(audit_lines, CACHE_PERSISTENCE_AUDIT_PROBE_STEP)
+
+    append_failed_contracts(
+        errors,
+        (
+            *((f"cache-persistence-audit needs {need}", need in audit_needs) for need in CACHE_PERSISTENCE_AUDIT_NEEDS),
+            *(
+                (
+                    f"cache-persistence-audit permissions must include {permission_name}: read",
+                    block_has_scalar(audit_permissions, permission_name, "read"),
+                )
+                for permission_name in ("contents", "actions")
+            ),
+            ("cache-persistence-audit must use always()", job_if_uses_always(audit_lines)),
+            ("cache-persistence-audit must gate on full_ci_required", job_gates_on_full_ci_required(audit_lines)),
+            (
+                "cache-persistence-audit must require test-archive success",
+                "needs.test-archive.result == 'success'" in audit_text,
+            ),
+            (
+                "cache-persistence-audit must skip on validated nextest fingerprint reuse",
+                NEXTEST_REUSE_MISS_EXPR in audit_text,
+            ),
+            ("cache-persistence-audit must not add extra steps", len(audit_step_blocks) == 2),
+            ("cache-persistence-audit must checkout the repository before probing", first_step_uses_checkout(audit_step_blocks)),
+            (
+                f"cache-persistence-audit must include {CACHE_PERSISTENCE_AUDIT_PROBE_STEP} step",
+                audit_probe_block is not None,
+            ),
+        ),
+    )
+    if audit_probe_block is None:
+        return
+
+    audit_run_blocks = [block for block in audit_step_blocks if step_declares_run(block)]
+    audit_probe_run_lines = block_run_body_lines(audit_probe_block)
+    append_failed_contracts(
+        errors,
+        (
+            *(
+                (message, block_has_scalar(audit_probe_block, name, value))
+                for message, name, value in CACHE_PERSISTENCE_AUDIT_PROBE_SCALAR_REQUIREMENTS
+            ),
+            (
+                "cache-persistence-audit must not add extra run steps",
+                single_run_step_matches(audit_run_blocks, CACHE_PERSISTENCE_AUDIT_PROBE_STEP),
+            ),
+            (
+                "cache-persistence-audit probe must be non-blocking",
+                block_has_scalar(audit_probe_block, "continue-on-error", "true"),
+            ),
+        ),
+    )
+    append_missing_cache_persistence_probe_structure(errors, audit_probe_run_lines)
 
 
 def normalize_script_text(text: str) -> str:
@@ -2470,9 +2818,13 @@ def nextest_fingerprint_errors(fingerprint_lines: list[str], archive_lines: list
         or min(upload_block_indices) >= min(repo_controlled_indices)
     ):
         return ["nextest-fingerprint must publish nextest fingerprint before repo-controlled steps"]
-    if not cache_blocks or not all(block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY) for block in cache_blocks):
+    cache_key_step = named_step_block(archive_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
+    cache_key_step_text = uncommented_text(cache_key_step) if cache_key_step is not None else ""
+    if not cache_blocks or not all(block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY_OUTPUT) for block in cache_blocks):
         return ["nextest archive cache key must use nextest fingerprint output"]
     if any("hashFiles(" in (block_input_value(block, "key") or "") for block in cache_blocks):
+        return ["nextest archive cache key must use nextest fingerprint output"]
+    if TEST_ARCHIVE_CACHE_KEY not in cache_key_step_text:
         return ["nextest archive cache key must use nextest fingerprint output"]
     return []
 
@@ -2531,10 +2883,21 @@ def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
     expected_prefix = (
         f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-"
     )
-    # The exact `key:` value must carry the job-specific prefix. Checking the
-    # whole block's text would also match a prefix that only appears in
+    # The exact key source must carry the job-specific prefix. Checking the
+    # whole cache block's text would also match a prefix that only appears in
     # `restore-keys:`, masking key/restore-keys drift.
-    if not any(block_key_value_has_prefix(block, expected_prefix) for block in target_blocks):
+    key_sources = [
+        block_input_value(block, "key") or ""
+        for block in target_blocks
+    ]
+    if job == "test-archive" and all(
+        block_has_input(block, "key", TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT)
+        for block in target_blocks
+    ):
+        cache_key_step = named_step_block(job_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
+        if cache_key_step is not None:
+            key_sources.append(uncommented_text(cache_key_step))
+    if not any(expected_prefix in key_source for key_source in key_sources):
         return [f"{job} managed target cache key must isolate {expected_key}"]
 
     # #400: each managed-target cache MUST declare a restore-keys prefix fallback
@@ -2573,6 +2936,15 @@ def named_step_block(lines: list[str], step_name: str) -> list[str] | None:
         if any(name_re.match(strip_comment(line)) for line in block):
             return block
     return None
+
+
+def step_name_matches(block: list[str], step_name: str) -> bool:
+    name_re = re.compile(rf"^\s*(?:-\s*)?name:\s*{re.escape(step_name)}\s*$")
+    return any(name_re.match(strip_comment(line)) for line in block)
+
+
+def step_declares_run(block: list[str]) -> bool:
+    return any(YAML_RUN_LINE_RE.match(strip_comment(line).rstrip()) is not None for line in block)
 
 
 def first_step_running_command(job_lines: list[str], command: str) -> int | None:
@@ -5883,8 +6255,11 @@ def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
     if "ci-lint-workflow-inner" in recipes:
         ci_lint_inner_lines = active_recipe_lines(recipes, "ci-lint-workflow-inner")
         for required_command in CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS:
-            if not any(required_command in line for line in ci_lint_inner_lines):
+            command_count = sum(1 for line in ci_lint_inner_lines if required_command in line)
+            if command_count == 0:
                 errors.append(f"justfile ci-lint-workflow-inner must run {required_command}")
+            elif command_count > 1:
+                errors.append(f"justfile ci-lint-workflow-inner must run {required_command} exactly once")
     return errors
 
 
@@ -9833,27 +10208,35 @@ def verify_workflow(workflow_text: str) -> list[str]:
             for block in action_blocks(archive_lines, "actions/cache/save@")
             if block_has_input(block, "path", "${{ steps.setup.outputs.managed_target_dir }}")
         ]
+        cache_key_step = named_step_block(archive_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
+        cache_key_step_text = uncommented_text(cache_key_step) if cache_key_step is not None else ""
         target_cache_keys = [
             block_input_value(block, "key") or ""
             for block in target_restore_blocks + target_save_blocks
         ]
+        if cache_key_step_text:
+            target_cache_keys.append(cache_key_step_text)
         if TEST_ARCHIVE_PATH not in archive_text:
             errors.append("test-archive must declare nextest archive path")
         if TEST_ARCHIVE_SIDECAR_PATH not in archive_text:
             errors.append("test-archive must declare root binary sidecar path")
         if not archive_cache_blocks or not all(
-            block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY)
+            block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY_OUTPUT)
             for block in archive_cache_blocks
         ):
             errors.append("nextest archive cache key must use nextest fingerprint output")
         if any("hashFiles(" in (block_input_value(block, "key") or "") for block in archive_cache_blocks):
             errors.append("nextest archive cache key must use nextest fingerprint output")
+        if TEST_ARCHIVE_CACHE_KEY not in cache_key_step_text:
+            errors.append("nextest archive cache key must use nextest fingerprint output")
         if not sidecar_cache_blocks or not all(
-            block_has_input(block, "key", TEST_ARCHIVE_SIDECAR_CACHE_KEY)
+            block_has_input(block, "key", TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT)
             for block in sidecar_cache_blocks
         ):
             errors.append("root binary sidecar cache key must use nextest fingerprint output")
         if any("hashFiles(" in (block_input_value(block, "key") or "") for block in sidecar_cache_blocks):
+            errors.append("root binary sidecar cache key must use nextest fingerprint output")
+        if TEST_ARCHIVE_SIDECAR_CACHE_KEY not in cache_key_step_text:
             errors.append("root binary sidecar cache key must use nextest fingerprint output")
         if not job_has_setup_input(archive_lines, "include-managed-target-dir", '"true"'):
             errors.append("test-archive must opt into managed target dir")
@@ -9871,6 +10254,13 @@ def verify_workflow(workflow_text: str) -> list[str]:
             for block in target_save_blocks
         ):
             errors.append("test-archive must save target cache only on target cache miss")
+        if not target_restore_blocks or not target_save_blocks or not all(
+            block_has_input(block, "key", TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT)
+            for block in target_restore_blocks + target_save_blocks
+        ):
+            errors.append("test-archive managed target cache key must use root nextest cache key output")
+        if TEST_ARCHIVE_TARGET_CACHE_KEY not in cache_key_step_text:
+            errors.append("test-archive cache persistence keys must come from single-source cache key outputs")
         for required in ("src/**", "tests/**"):
             if not any(required in key for key in target_cache_keys):
                 errors.append(f"test-archive managed target cache key must include {required}")
@@ -9927,6 +10317,37 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must save root binary sidecar cache only on sidecar cache miss")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
+        for output in TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS:
+            if output not in archive_text:
+                errors.append("test-archive must expose cache persistence audit outputs")
+                break
+        if "archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}" in archive_text:
+            errors.append("test-archive archive build target cache hit output must be explicit when restore is skipped")
+        for output in TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS:
+            if output not in archive_text:
+                errors.append("test-archive must expose cache persistence save outcomes")
+                break
+        for label, step_id in TEST_ARCHIVE_CACHE_SAVE_STEP_IDS:
+            block = named_step_block(archive_lines, label)
+            if block is None or step_id not in uncommented_text(block):
+                errors.append("test-archive cache save steps must have stable ids for persistence evidence")
+                break
+        for label, step_id in TEST_ARCHIVE_CACHE_RESTORE_STEP_IDS:
+            block = named_step_block(archive_lines, label)
+            if block is None or step_id not in uncommented_text(block):
+                errors.append("test-archive cache restore steps must have stable ids for persistence evidence")
+                break
+        if "id: cache-audit-keys" in archive_text or "Emit cache persistence audit keys" in archive_text:
+            errors.append("test-archive cache persistence keys must come from single-source cache key outputs")
+        if cache_key_step is None or TEST_ARCHIVE_CACHE_AUDIT_STEP_ID not in cache_key_step_text:
+            errors.append("test-archive must resolve root nextest cache keys")
+        elif (
+            TEST_ARCHIVE_CACHE_KEY not in cache_key_step_text
+            or TEST_ARCHIVE_SIDECAR_CACHE_KEY not in cache_key_step_text
+            or TEST_ARCHIVE_TARGET_CACHE_KEY not in cache_key_step_text
+            or not all(output in cache_key_step_text for output in TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS)
+        ):
+            errors.append("test-archive cache persistence keys must come from single-source cache key outputs")
         # Fail-open contract for the S3 sccache compile cache (#1011): when the
         # opt-in is wired, the cache must never be able to fail the required build,
         # and cache use must be gated to trusted refs (the IAM trust scope is the
@@ -10004,6 +10425,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             if fragment not in archive_text:
                 errors.append("test-archive must aggregate partition failures")
                 break
+
+    append_cache_persistence_audit_contract_errors(errors, jobs)
 
     if "nextest-fingerprint-reuse" in jobs:
         reuse_lines = jobs["nextest-fingerprint-reuse"]

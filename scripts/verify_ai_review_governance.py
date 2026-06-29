@@ -156,7 +156,10 @@ CLAUDE_WORKFLOW_SNIPPETS = (
     "scripts/verify_ai_review_model_freshness.py --live --advisory --provider claude",
     "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2",
     "anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1",
+    "contents: read",
+    "id-token: write",
     "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    "additional_permissions: |",
     "track_progress: ${{ steps.runtime-config.outputs.claude_track_progress }}",
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.claude_primary_timeout_minutes) }}",
     "--max-turns ${{ steps.runtime-config.outputs.claude_max_turns }}",
@@ -938,6 +941,8 @@ def verify_texts(
             findings.append("Claude workflow review step must be advisory via continue-on-error")
         if "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" not in claude_run_step:
             findings.append("Claude workflow review step must use CLAUDE_CODE_OAUTH_TOKEN")
+        if "additional_permissions: |" not in claude_run_step or "contents: read" not in claude_run_step:
+            findings.append("Claude workflow review step must cap Claude app token contents permission to read")
         if "anthropic_api_key:" in claude_run_step:
             findings.append("Claude workflow review step must not set anthropic_api_key alongside OAuth")
         if "--allowedTools" not in claude_run_step:
@@ -1127,6 +1132,8 @@ def run_self_tests(repo_root: Path) -> None:
         raise AssertionError("Claude review step must be advisory via continue-on-error")
     if "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" not in claude_review_step:
         raise AssertionError("Claude review step must use CLAUDE_CODE_OAUTH_TOKEN")
+    if "additional_permissions: |" not in claude_review_step or "contents: read" not in claude_review_step:
+        raise AssertionError("Claude review step must cap Claude app token contents permission to read")
     if "anthropic_api_key:" in claude_review_step:
         raise AssertionError("Claude review step must not set anthropic_api_key")
     if "track_progress: ${{ steps.runtime-config.outputs.claude_track_progress }}" not in claude_review_step:
@@ -1163,6 +1170,28 @@ def run_self_tests(repo_root: Path) -> None:
         ),
     )
     assert_finding("Claude Anthropic API key conflict", claude_anthropic_api_key, "not anthropic_api_key")
+
+    claude_missing_additional_permissions = verify_variant(
+        claude_text=claude.replace(
+            "          additional_permissions: |\n            contents: read\n",
+            "",
+            1,
+        ),
+    )
+    assert_finding(
+        "Claude missing app token contents cap",
+        claude_missing_additional_permissions,
+        "app token contents permission",
+    )
+
+    claude_weakened_additional_permissions = verify_variant(
+        claude_text=claude.replace("            contents: read", "            contents: write", 1),
+    )
+    assert_finding(
+        "Claude weakened app token contents cap",
+        claude_weakened_additional_permissions,
+        "app token contents permission",
+    )
 
     claude_missing_labeled_trigger = verify_variant(
         claude_text=claude.replace("types: [opened, synchronize, labeled]", "types: [opened, synchronize]", 1),

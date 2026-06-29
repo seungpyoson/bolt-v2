@@ -5,6 +5,9 @@ use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
 
 const DISALLOWED_OPERATOR_FORMAT_CHARS: &str = "\u{00ad}\u{034f}\u{061c}\u{115f}\u{1160}\u{17b4}\u{17b5}\u{180e}\u{200b}\u{200c}\u{200d}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2060}\u{2061}\u{2062}\u{2063}\u{2064}\u{2066}\u{2067}\u{2068}\u{2069}\u{206a}\u{206b}\u{206c}\u{206d}\u{206e}\u{206f}\u{feff}";
+const POLYMARKET_NATIVE_IDENTITY_PROVIDER_KEY: &str = crate::bolt_v3_providers::polymarket::KEY;
+const HYPERLIQUID_NATIVE_IDENTITY_PROVIDER_KEY: &str = crate::bolt_v3_providers::hyperliquid::KEY;
+const OPERATOR_NATIVE_IDENTITY_PROVIDER_KEY: &str = "OPERATOR";
 
 pub type OutcomeGroupId = String;
 pub type OutcomeLegId = String;
@@ -109,12 +112,21 @@ impl GroupingProof {
         match self {
             Self::PolymarketNegRisk {
                 neg_risk_market_id, ..
-            } => format!("polymarket:{neg_risk_market_id}"),
-            Self::HyperliquidOutcome { question, .. } => format!("hyperliquid:{question}"),
+            } => native_identity_from_provider_key(
+                POLYMARKET_NATIVE_IDENTITY_PROVIDER_KEY,
+                neg_risk_market_id,
+            ),
+            Self::HyperliquidOutcome { question, .. } => native_identity_from_provider_key(
+                HYPERLIQUID_NATIVE_IDENTITY_PROVIDER_KEY,
+                question,
+            ),
             Self::OperatorAttested {
                 settlement_contract_id,
                 ..
-            } => format!("operator:{settlement_contract_id}"),
+            } => native_identity_from_provider_key(
+                OPERATOR_NATIVE_IDENTITY_PROVIDER_KEY,
+                settlement_contract_id,
+            ),
         }
     }
 
@@ -1243,6 +1255,14 @@ fn payout_for_role(
             OutcomeGroupValidationError::UnsupportedMultiStateLegRole(leg_id.to_string()),
         ),
     }
+}
+
+pub(crate) fn native_identity_from_provider_key(
+    provider_key: &str,
+    native_identifier: impl std::fmt::Display,
+) -> String {
+    let namespace = provider_key.to_ascii_lowercase();
+    format!("{namespace}:{native_identifier}")
 }
 
 fn validate_sha256_field(

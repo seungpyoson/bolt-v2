@@ -184,8 +184,14 @@ class FenceTests(unittest.TestCase):
         # Comparing an arbitrarily-named var to a venue literal needs flow analysis.
         self.assertEqual(self._one('if some_str == "polymarket" {'), [])
 
-    def test_constructed_literal_is_a_documented_false_negative(self):
-        self.assertEqual(self._one('if venue_id == concat!("poly", "market") {'), [])
+    def test_concat_built_literal_is_caught(self):
+        self.assertEqual(len(self._one('if venue_id == concat!("poly", "market") {')), 1)
+
+    def test_format_built_literal_is_caught(self):
+        self.assertEqual(len(self._one('if venue_id == format!("{}{}", "hyper", "liquid") {')), 1)
+
+    def test_venue_id_from_literal_is_caught(self):
+        self.assertEqual(len(self._one('if venue_id == VenueId::from("polymarket") {')), 1)
 
     # --- structural ---
 

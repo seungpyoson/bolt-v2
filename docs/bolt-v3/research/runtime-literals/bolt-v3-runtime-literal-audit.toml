@@ -11518,6 +11518,14 @@ reason = "Stable denylist for zero-width and format characters rejected before o
 [[allowed]]
 path = "src/bolt_v3_outcome_groups.rs"
 kind = "string"
+literal = '''"OPERATOR"'''
+context = '''const OPERATOR_NATIVE_IDENTITY_PROVIDER_KEY: &str = "OPERATOR";'''
+classification = "outcome_group_native_identity_provider_key"
+reason = "Stable protocol namespace for operator-attested outcome-group native identities; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
 literal = '''"grouping_proof.proof_fingerprint"'''
 context = '''validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?;'''
 classification = "outcome_group_model_evidence_schema_label"

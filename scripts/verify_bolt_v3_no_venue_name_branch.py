@@ -24,10 +24,13 @@ while covering the idiomatic evasions:
     top level — never in an arm body, an `if`-guard expression, or a nested
     `match` on a non-venue scrutinee. So `match mode { "gamma" => .. }` and
     `match venue { _ => { match mode { "gamma" => .. } } }` are both clean.
+  * String-literal-only `concat!`, string-literal-only `format!`, and
+    `VenueId::from("x")` are folded before rule matching, so those syntax forms
+    cannot hide a venue token. Numeric macro literals remain GAP-4b residual.
 
 KNOWN, DELIBERATELY-UNCAUGHT forms (they need type/flow analysis a regex cannot
 do soundly; the capability-contract design + code review cover them):
-  * constructed/split literals: `concat!("poly","market")`, `format!(..)`;
+  * numeric `concat!`/`format!` literals (GAP-4b), e.g. `format!("{}", true)`;
   * wrapper/alias PartialEq where neither operand is a syntactic venue read:
     `VenueId::from("polymarket") == other`, `some_non_venue_var == "polymarket"`;
   * venue-name read via a `venue`-*suffixed* getter (`obj.get_venue()`) rather
@@ -186,6 +189,169 @@ def _scan_string(text: str, i: int) -> tuple[int, int, str | None] | None:
     return None
 
 
+def _skip_ws(text: str, i: int) -> int:
+    while i < len(text) and text[i].isspace():
+        i += 1
+    return i
+
+
+def _consume_token(text: str, i: int, token: str) -> int | None:
+    i = _skip_ws(text, i)
+    if text.startswith(token, i):
+        return i + len(token)
+    return None
+
+
+def _matching_paren(text: str, open_pos: int) -> int | None:
+    depth = 1
+    i = open_pos + 1
+    while i < len(text):
+        lit = _scan_string(text, i)
+        if lit is not None:
+            _, end, _ = lit
+            i = end
+            continue
+        if text[i] == "'":
+            match = _CHAR.match(text, i)
+            if match is not None:
+                i = match.end()
+                continue
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+def _split_top_level_args(text: str) -> list[str]:
+    args: list[str] = []
+    start = 0
+    depth = 0
+    i = 0
+    while i < len(text):
+        lit = _scan_string(text, i)
+        if lit is not None:
+            _, end, _ = lit
+            i = end
+            continue
+        if text[i] == "'":
+            match = _CHAR.match(text, i)
+            if match is not None:
+                i = match.end()
+                continue
+        if text[i] in "([{":
+            depth += 1
+        elif text[i] in ")]}":
+            depth -= 1
+        elif text[i] == "," and depth == 0:
+            args.append(text[start:i].strip())
+            start = i + 1
+        i += 1
+    tail = text[start:].strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
+def _literal_arg(arg: str) -> str | None:
+    lit = _scan_string(arg, 0)
+    if lit is None:
+        return None
+    _start, end, value = lit
+    if value is None or arg[end:].strip():
+        return None
+    return value
+
+
+def _format_literal_value(template: str, values: list[str]) -> str | None:
+    output: list[str] = []
+    value_index = 0
+    i = 0
+    while i < len(template):
+        if template.startswith("{{", i):
+            output.append("{")
+            i += 2
+            continue
+        if template.startswith("}}", i):
+            output.append("}")
+            i += 2
+            continue
+        if template.startswith("{}", i):
+            if value_index >= len(values):
+                return None
+            output.append(values[value_index])
+            value_index += 1
+            i += 2
+            continue
+        if template[i] in "{}":
+            return None
+        output.append(template[i])
+        i += 1
+    if value_index != len(values):
+        return None
+    return "".join(output)
+
+
+def _folded_string_expr_at(text: str, i: int) -> tuple[int, int, str] | None:
+    if text.startswith("concat!", i):
+        open_pos = _skip_ws(text, i + len("concat!"))
+        if open_pos >= len(text) or text[open_pos] != "(":
+            return None
+        close_pos = _matching_paren(text, open_pos)
+        if close_pos is None:
+            return None
+        parts = [_literal_arg(arg) for arg in _split_top_level_args(text[open_pos + 1 : close_pos])]
+        if not parts or any(part is None for part in parts):
+            return None
+        return i, close_pos + 1, "".join(part for part in parts if part is not None)
+
+    if text.startswith("format!", i):
+        open_pos = _skip_ws(text, i + len("format!"))
+        if open_pos >= len(text) or text[open_pos] != "(":
+            return None
+        close_pos = _matching_paren(text, open_pos)
+        if close_pos is None:
+            return None
+        args = _split_top_level_args(text[open_pos + 1 : close_pos])
+        if not args:
+            return None
+        template = _literal_arg(args[0])
+        if template is None:
+            return None
+        values = [_literal_arg(arg) for arg in args[1:]]
+        if any(value is None for value in values):
+            return None
+        folded = _format_literal_value(template, [value for value in values if value is not None])
+        if folded is None:
+            return None
+        return i, close_pos + 1, folded
+
+    if not text.startswith("VenueId", i):
+        return None
+    cursor = _consume_token(text, i + len("VenueId"), "::")
+    if cursor is None:
+        return None
+    cursor = _consume_token(text, cursor, "from")
+    if cursor is None:
+        return None
+    open_pos = _skip_ws(text, cursor)
+    if open_pos >= len(text) or text[open_pos] != "(":
+        return None
+    close_pos = _matching_paren(text, open_pos)
+    if close_pos is None:
+        return None
+    args = _split_top_level_args(text[open_pos + 1 : close_pos])
+    if len(args) != 1:
+        return None
+    value = _literal_arg(args[0])
+    if value is None:
+        return None
+    return i, close_pos + 1, value
+
+
 def _canonical_code(text: str) -> str:
     """Length-preserving 'code view': blank comments / char literals / non-venue
     string-literal bodies (newlines kept), and normalize any string literal
@@ -222,6 +388,16 @@ def _canonical_code(text: str) -> str:
                 i = m.end()
                 continue
             i += 1  # a lifetime (`'a`) — leave as code
+            continue
+        folded = _folded_string_expr_at(text, i)
+        if folded is not None:
+            start, end, value = folded
+            blank(start, end)
+            if value.lower() in _VENUES:
+                token = '"' + value.lower() + '"'
+                for k, ch in enumerate(token):
+                    out[start + k] = ch
+            i = end
             continue
         lit = _scan_string(text, i)
         if lit is not None:

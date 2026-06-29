@@ -476,6 +476,137 @@ def test_new_core_file_is_auto_scanned() -> None:
         assert "provider-key string literal in core production code" in messages
 
 
+def test_constructed_provider_key_literals_are_findings() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {"src/bolt_v3_providers/hyperliquid.rs": 'pub const KEY: &str = "hyperliquid";\n'}
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    pub fn leaked() -> (String, &'static str) {
+                        (
+                            format!("{}{}", "poly", "market"),
+                            concat!("hyper", "liquid"),
+                        )
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        provider_key_findings = [
+            finding
+            for finding in findings
+            if finding.message == "provider-key string literal in core production code"
+        ]
+
+        assert len(provider_key_findings) >= 2, findings
+
+
+def test_venue_id_from_provider_key_literal_is_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    use nautilus_model::identifiers::VenueId;
+
+                    pub fn leaked() -> VenueId {
+                        VenueId::from("polymarket")
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+
+
+def test_native_identity_literal_namespaces_are_findings() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {"src/bolt_v3_providers/hyperliquid.rs": 'pub const KEY: &str = "hyperliquid";\n'}
+            | {
+                "src/bolt_v3_outcome_groups.rs": """
+                    pub enum GroupingProof {
+                        PolymarketNegRisk { neg_risk_market_id: String },
+                        HyperliquidOutcome { question: u32 },
+                        OperatorAttested { settlement_contract_id: String },
+                    }
+
+                    impl GroupingProof {
+                        fn native_identity(&self) -> String {
+                            match self {
+                                Self::PolymarketNegRisk { neg_risk_market_id } => {
+                                    format!("polymarket:{neg_risk_market_id}")
+                                }
+                                Self::HyperliquidOutcome { question } => {
+                                    format!("hyperliquid:{question}")
+                                }
+                                Self::OperatorAttested { settlement_contract_id } => {
+                                    format!("operator:{settlement_contract_id}")
+                                }
+                            }
+                        }
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        provider_key_findings = [
+            finding
+            for finding in findings
+            if finding.message == "provider-key string literal in core production code"
+        ]
+        native_identity_findings = [
+            finding
+            for finding in findings
+            if finding.message == "native-identity namespace string literal in outcome-group code"
+        ]
+
+        assert len(provider_key_findings) >= 2, findings
+        assert len(native_identity_findings) == 3, findings
+
+
+def test_hyperliquid_outcome_group_literal_namespace_is_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_outcome_group_hyperliquid.rs": """
+                    pub fn group_id(question: &str) -> String {
+                        format!("hyperliquid:{question}")
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        native_identity_findings = [
+            finding
+            for finding in findings
+            if finding.message == "native-identity namespace string literal in outcome-group code"
+        ]
+
+        assert len(native_identity_findings) == 1, findings
+
+
 def test_production_after_cfg_test_block_is_scanned() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1065,6 +1196,10 @@ def main() -> int:
         test_cfg_not_any_test_is_scanned_as_production,
         test_shared_market_data_provider_module_name_is_not_concrete_provider,
         test_provider_key_constants_in_shared_market_data_module_are_findings,
+        test_constructed_provider_key_literals_are_findings,
+        test_venue_id_from_provider_key_literal_is_finding,
+        test_native_identity_literal_namespaces_are_findings,
+        test_hyperliquid_outcome_group_literal_namespace_is_finding,
         test_cfg_any_test_feature_is_scanned_as_production,
         test_cfg_all_test_feature_is_stripped_as_test_only,
         test_cfg_not_not_test_is_stripped_as_test_only,

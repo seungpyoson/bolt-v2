@@ -81,12 +81,22 @@ FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = (
     FindingAllowance(
         "src/bolt_v3_outcome_groups.rs",
         "concrete provider type name in core production code",
-        'Self::HyperliquidOutcome { question, .. } => format!("hyperliquid:{question}"),',
+        "Self::HyperliquidOutcome {",
     ),
     FindingAllowance(
         "src/bolt_v3_outcome_groups.rs",
         "concrete provider type name in core production code",
-        "Self::HyperliquidOutcome {",
+        "Self::HyperliquidOutcome { question, .. } => native_identity_from_provider_key(",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "core accesses concrete provider module path",
+        "const POLYMARKET_NATIVE_IDENTITY_PROVIDER_KEY: &str = crate::bolt_v3_providers::polymarket::KEY;",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "core accesses concrete provider module path",
+        "const HYPERLIQUID_NATIVE_IDENTITY_PROVIDER_KEY: &str = crate::bolt_v3_providers::hyperliquid::KEY;",
     ),
     FindingAllowance(
         "src/bolt_v3_outcome_groups.rs",
@@ -130,6 +140,12 @@ PROVIDER_SPECIFIC_ROOT_MODULES: frozenset[str] = frozenset(
     {
         "src/bolt_v3_outcome_group_hyperliquid.rs",
         "src/bolt_v3_outcome_group_polymarket.rs",
+    }
+)
+NATIVE_IDENTITY_NAMESPACE_FILES: frozenset[str] = frozenset(
+    {
+        "src/bolt_v3_outcome_groups.rs",
+        "src/bolt_v3_outcome_group_hyperliquid.rs",
     }
 )
 
@@ -659,6 +675,323 @@ def char_literal_end_at(line: str, start: int) -> int | None:
     return quote + 1 if quote < len(line) and line[quote] == "'" else None
 
 
+def scan_plain_string(text: str, quote: int, start: int) -> tuple[int, int, str | None]:
+    i = quote + 1
+    escaped = False
+    while i < len(text):
+        char = text[i]
+        if char == "\\":
+            escaped = True
+            i += 2
+            continue
+        if char == '"':
+            body = text[quote + 1 : i]
+            value = None if escaped else body
+            return start, i + 1, value
+        if char == "\n":
+            return start, i, None
+        i += 1
+    return start, len(text), None
+
+
+def scan_string_at(text: str, start: int) -> tuple[int, int, str | None] | None:
+    if start >= len(text):
+        return None
+    if text[start] == '"':
+        return scan_plain_string(text, start, start)
+    if start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
+        return None
+    raw = raw_string_closer_at(text, start)
+    if raw is not None:
+        prefix_len, closer = raw
+        body_start = start + prefix_len
+        close = text.find(closer, body_start)
+        if close == -1:
+            return start, len(text), None
+        body = text[body_start:close]
+        value = None if "\n" in body else body
+        return start, close + len(closer), value
+    if text.startswith("b\"", start):
+        return scan_plain_string(text, start + 1, start)
+    return None
+
+
+def skip_ws(text: str, index: int) -> int:
+    while index < len(text) and text[index].isspace():
+        index += 1
+    return index
+
+
+def consume_token(text: str, index: int, token: str) -> int | None:
+    index = skip_ws(text, index)
+    if text.startswith(token, index):
+        return index + len(token)
+    return None
+
+
+def matching_paren(text: str, open_pos: int) -> int | None:
+    depth = 1
+    index = open_pos + 1
+    while index < len(text):
+        string = scan_string_at(text, index)
+        if string is not None:
+            _, end, _ = string
+            index = end
+            continue
+        if text[index] == "'":
+            char_end = char_literal_end_at(text, index)
+            if char_end is not None:
+                index = char_end
+                continue
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return None
+
+
+def split_top_level_args(text: str) -> list[str]:
+    args: list[str] = []
+    start = 0
+    depth = 0
+    index = 0
+    while index < len(text):
+        string = scan_string_at(text, index)
+        if string is not None:
+            _, end, _ = string
+            index = end
+            continue
+        if text[index] == "'":
+            char_end = char_literal_end_at(text, index)
+            if char_end is not None:
+                index = char_end
+                continue
+        if text[index] in "([{":
+            depth += 1
+        elif text[index] in ")]}":
+            depth -= 1
+        elif text[index] == "," and depth == 0:
+            args.append(text[start:index].strip())
+            start = index + 1
+        index += 1
+    tail = text[start:].strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
+def literal_arg(arg: str) -> str | None:
+    string = scan_string_at(arg, 0)
+    if string is None:
+        return None
+    _start, end, value = string
+    if value is None or arg[end:].strip():
+        return None
+    return value
+
+
+def format_literal_segments(template: str) -> list[str] | None:
+    segments: list[str] = []
+    current: list[str] = []
+    index = 0
+    while index < len(template):
+        if template.startswith("{{", index):
+            current.append("{")
+            index += 2
+            continue
+        if template.startswith("}}", index):
+            current.append("}")
+            index += 2
+            continue
+        if template[index] == "{":
+            close = template.find("}", index + 1)
+            if close == -1:
+                return None
+            segments.append("".join(current))
+            current = []
+            index = close + 1
+            continue
+        if template[index] == "}":
+            return None
+        current.append(template[index])
+        index += 1
+    segments.append("".join(current))
+    return segments
+
+
+def format_literal_value(template: str, values: list[str]) -> str | None:
+    output: list[str] = []
+    value_index = 0
+    index = 0
+    while index < len(template):
+        if template.startswith("{{", index):
+            output.append("{")
+            index += 2
+            continue
+        if template.startswith("}}", index):
+            output.append("}")
+            index += 2
+            continue
+        if template.startswith("{}", index):
+            if value_index >= len(values):
+                return None
+            output.append(values[value_index])
+            value_index += 1
+            index += 2
+            continue
+        if template[index] in "{}":
+            return None
+        output.append(template[index])
+        index += 1
+    if value_index != len(values):
+        return None
+    return "".join(output)
+
+
+@dataclass(frozen=True)
+class StaticStringExpression:
+    start: int
+    end: int
+    value: str | None
+    segments: tuple[str, ...]
+
+
+def static_string_expression_at(text: str, index: int) -> StaticStringExpression | None:
+    if text.startswith("concat!", index):
+        open_pos = skip_ws(text, index + len("concat!"))
+        if open_pos >= len(text) or text[open_pos] != "(":
+            return None
+        close_pos = matching_paren(text, open_pos)
+        if close_pos is None:
+            return None
+        parts = [literal_arg(arg) for arg in split_top_level_args(text[open_pos + 1 : close_pos])]
+        if not parts or any(part is None for part in parts):
+            return None
+        value = "".join(part for part in parts if part is not None)
+        return StaticStringExpression(index, close_pos + 1, value, (value,))
+
+    if text.startswith("format!", index):
+        open_pos = skip_ws(text, index + len("format!"))
+        if open_pos >= len(text) or text[open_pos] != "(":
+            return None
+        close_pos = matching_paren(text, open_pos)
+        if close_pos is None:
+            return None
+        args = split_top_level_args(text[open_pos + 1 : close_pos])
+        if not args:
+            return None
+        template = literal_arg(args[0])
+        if template is None:
+            return None
+        segments = format_literal_segments(template)
+        if segments is None:
+            return None
+        values = [literal_arg(arg) for arg in args[1:]]
+        value = None
+        if all(value_part is not None for value_part in values):
+            value = format_literal_value(template, [part for part in values if part is not None])
+        return StaticStringExpression(index, close_pos + 1, value, tuple(segments))
+
+    if not text.startswith("VenueId", index):
+        return None
+    cursor = consume_token(text, index + len("VenueId"), "::")
+    if cursor is None:
+        return None
+    cursor = consume_token(text, cursor, "from")
+    if cursor is None:
+        return None
+    open_pos = skip_ws(text, cursor)
+    if open_pos >= len(text) or text[open_pos] != "(":
+        return None
+    close_pos = matching_paren(text, open_pos)
+    if close_pos is None:
+        return None
+    args = split_top_level_args(text[open_pos + 1 : close_pos])
+    if len(args) != 1:
+        return None
+    value = literal_arg(args[0])
+    if value is None:
+        return None
+    return StaticStringExpression(index, close_pos + 1, value, (value,))
+
+
+def is_provider_key_or_namespace(value: str, provider_names: tuple[str, ...]) -> bool:
+    lowered = value.lower()
+    return any(lowered == provider or lowered.startswith(f"{provider}:") for provider in provider_names)
+
+
+def native_identity_namespace_prefix(segment: str) -> str | None:
+    colon = segment.find(":")
+    if colon <= 0:
+        return None
+    prefix = segment[:colon]
+    if not prefix[0].islower():
+        return None
+    if not all(char.islower() or char.isdigit() or char == "_" for char in prefix):
+        return None
+    return prefix
+
+
+def native_identity_namespace_findings(path: str, text: str) -> list[Finding]:
+    if path not in NATIVE_IDENTITY_NAMESPACE_FILES:
+        return []
+
+    findings: list[Finding] = []
+    index = 0
+    while index < len(text):
+        expression = static_string_expression_at(text, index)
+        if expression is None:
+            index += 1
+            continue
+        if any(native_identity_namespace_prefix(segment) is not None for segment in expression.segments):
+            findings.append(
+                Finding(
+                    path=path,
+                    line=line_number(text, expression.start),
+                    message="native-identity namespace string literal in outcome-group code",
+                    excerpt=excerpt_for(text, expression.start),
+                )
+            )
+        index = expression.end
+    return findings
+
+
+def constructed_provider_key_findings(
+    path: str,
+    text: str,
+    provider_names: tuple[str, ...],
+) -> list[Finding]:
+    findings: list[Finding] = []
+    index = 0
+    while index < len(text):
+        expression = static_string_expression_at(text, index)
+        if expression is None:
+            index += 1
+            continue
+        has_provider_key = expression.value is not None and is_provider_key_or_namespace(
+            expression.value,
+            provider_names,
+        )
+        has_provider_namespace_segment = any(
+            segment and is_provider_key_or_namespace(segment, provider_names)
+            for segment in expression.segments
+        )
+        if has_provider_key or has_provider_namespace_segment:
+            findings.append(
+                Finding(
+                    path=path,
+                    line=line_number(text, expression.start),
+                    message="provider-key string literal in core production code",
+                    excerpt=excerpt_for(text, expression.start),
+                )
+            )
+        index = expression.end
+    return findings
+
+
 def strip_comments_preserve_lines(text: str) -> str:
     output: list[str] = []
     i = 0
@@ -969,10 +1302,25 @@ def production_text(text: str) -> str:
 
 def scan_root(root: Path) -> list[Finding]:
     findings: list[Finding] = []
+    provider_names = discovered_binding_names(root, "bolt_v3_providers")
     # Many rules target the same file (1160 rules over ~144 distinct paths), so
     # cache the production-text strip per path instead of re-stripping ~8x per
     # file. Scan-local dict: bounded to this scan, naturally released after.
     text_cache: dict[Path, str] = {}
+    parsed_paths: set[Path] = set()
+    native_identity_paths: set[Path] = set()
+
+    for rel_path in sorted(NATIVE_IDENTITY_NAMESPACE_FILES):
+        path = root / rel_path
+        if not path.exists():
+            continue
+        text = production_text(path.read_text(encoding="utf-8"))
+        text_cache[path] = text
+        for finding in native_identity_namespace_findings(rel_path, text):
+            if not is_allowed_finding(finding):
+                findings.append(finding)
+        native_identity_paths.add(path)
+
     for rule in rules_for_root(root):
         path = root / rule.path
         if not path.exists():
@@ -980,6 +1328,16 @@ def scan_root(root: Path) -> list[Finding]:
         if path not in text_cache:
             text_cache[path] = production_text(path.read_text(encoding="utf-8"))
         text = text_cache[path]
+        if path not in parsed_paths:
+            parsed_findings = [
+                *constructed_provider_key_findings(rule.path, text, provider_names),
+            ]
+            if path not in native_identity_paths:
+                parsed_findings.extend(native_identity_namespace_findings(rule.path, text))
+            for finding in parsed_findings:
+                if not is_allowed_finding(finding):
+                    findings.append(finding)
+            parsed_paths.add(path)
         for match in rule.pattern.finditer(text):
             finding = Finding(
                 path=rule.path,

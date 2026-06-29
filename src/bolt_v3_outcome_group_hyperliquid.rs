@@ -25,6 +25,7 @@ use crate::{
         SettlementSourceKind, TerminalPayoutDerivation, TerminalState, TerminalStateConvention,
         TerminalStateKind, ValidatedOutcomeGroup, build_leg_map, canonical_fingerprint,
         derive_standard_payout_matrix, expected_metadata_fingerprint,
+        native_identity_from_provider_key,
     },
     bolt_v3_providers::hyperliquid,
 };
@@ -148,7 +149,7 @@ pub fn normalize_hyperliquid_hip4_outcome_group(
     };
 
     let mut group = OutcomeGroup {
-        group_id: format!("hyperliquid:{question}"),
+        group_id: native_identity_from_provider_key(hyperliquid::KEY, question),
         source_client_id: input.source.client_id,
         venue: Venue::from(hyperliquid::KEY),
         source_kind: crate::bolt_v3_outcome_groups::OutcomeGroupSourceKind::Hyperliquid,

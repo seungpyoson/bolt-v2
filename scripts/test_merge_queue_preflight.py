@@ -559,6 +559,7 @@ def assert_preflight_artifact_classification_is_declarative() -> None:
         "batch_verifier_failed": ("verifier", "batch", "ready"),
         "base_mismatch": ("identity", "pr", "inconclusive"),
         "head_mismatch": ("identity", "pr", "blocked"),
+        "head_fetch_failed": ("identity", "pr", "inconclusive"),
         "head_unavailable": ("identity", "pr", "inconclusive"),
         "metadata_unavailable": ("readiness", "pr", "inconclusive"),
         "required_check_failed": ("readiness", "pr", "blocked"),
@@ -1646,6 +1647,25 @@ def assert_fetch_failure_after_readiness_is_inconclusive_not_tool_error() -> Non
         assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "missing fetch contract")
 
 
+def assert_non_missing_head_fetch_failure_is_inspection_error() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        fixture.make_pr(1, {"one.txt": "one\n"})
+        heads, blocks = module.fetch_available_pr_heads(
+            repo=fixture.repo,
+            origin=str(root / "not-a-remote.git"),
+            requested=(1,),
+            blocked_numbers=set(),
+        )
+        assert_equal(heads, {}, "inspection error heads")
+        if len(blocks) != 1 or blocks[0]["pr"] != 1 or blocks[0]["type"] != "head_fetch_failed":
+            raise AssertionError(blocks)
+        if "head ref was not found" in str(blocks[0]["reason"]):
+            raise AssertionError(blocks)
+
+
 def assert_invalid_pr_input_is_rejected() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -1823,6 +1843,7 @@ def main() -> int:
     assert_required_check_exit_code_two_stays_readiness_failure()
     assert_partial_gh_metadata_failure_preserves_other_readiness()
     assert_fetch_failure_after_readiness_is_inconclusive_not_tool_error()
+    assert_non_missing_head_fetch_failure_is_inspection_error()
     assert_invalid_pr_input_is_rejected()
     assert_missing_expected_base_sha_is_rejected()
     assert_missing_expected_head_sha_is_rejected()

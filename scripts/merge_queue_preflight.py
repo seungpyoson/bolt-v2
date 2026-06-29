@@ -197,6 +197,7 @@ PREFLIGHT_ARTIFACT_CLASSIFICATIONS = {
     "batch_verifier_failed": (LANE_VERIFIER, "batch", STATUS_READY),
     "base_mismatch": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
     "head_mismatch": (LANE_IDENTITY, "pr", STATUS_BLOCKED),
+    "head_fetch_failed": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
     "head_unavailable": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
     "metadata_unavailable": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
     "required_check_failed": (LANE_READINESS, "pr", STATUS_BLOCKED),
@@ -1666,17 +1667,23 @@ def fetch_available_pr_heads(
 ) -> tuple[dict[int, PrHead], list[dict[str, object]]]:
     heads: dict[int, PrHead] = {}
     blocks: list[dict[str, object]] = []
+    missing_head_prefix = "PR #"
+    missing_head_suffix = "head ref was not found"
     for pr in requested:
         if pr in blocked_numbers:
             continue
         try:
             heads[pr] = fetch_pr_head(repo, origin, pr)
         except PreflightError as exc:
+            reason = str(exc)
+            block_type = "head_unavailable"
+            if not (reason.startswith(missing_head_prefix) and missing_head_suffix in reason):
+                block_type = "head_fetch_failed"
             blocks.append(
                 {
                     "pr": pr,
-                    "reason": str(exc),
-                    "type": "head_unavailable",
+                    "reason": reason,
+                    "type": block_type,
                 }
             )
     return heads, blocks

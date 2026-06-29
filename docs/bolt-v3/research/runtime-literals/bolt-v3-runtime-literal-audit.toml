@@ -19537,3 +19537,3574 @@ literal = "0"
 context = '''|| envelope.ranges.max_quantity_policy_versions == 0'''
 classification = "policy_epoch_envelope_zero_bound_reject"
 reason = "A safety-policy envelope with zero quantity-policy versions cannot approve any prepared quantity-policy bundle; the bound is envelope-owned, while zero is the structural empty-bound rejection sentinel."
+
+# H1 bool-literal audit rows generated from h1-bool-inventory.csv.
+# GAP-4b residual: string-interpolation macro arguments such as `format!("{}", true)` remain out of scope for this verifier slice.
+
+[[allowed]]
+path = '''src/bolt_v3_archetypes/binary_oracle_edge_taker.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''required: true,'''
+classification = "typed_requirement_flag_bool"
+reason = '''Typed requirement flag on provider/archetype wiring; source IDs and runtime values remain config/source-owned, while this declares a fixed contract shape.'''
+
+[[allowed]]
+path = '''src/bolt_v3_archetypes/binary_oracle_edge_taker.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''allow_no_resolution: false,'''
+classification = "typed_requirement_flag_bool"
+reason = '''Typed requirement flag on provider/archetype wiring; source IDs and runtime values remain config/source-owned, while this declares a fixed contract shape.'''
+
+[[allowed]]
+path = '''src/bolt_v3_archetypes/complete_set_arbitrage.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''is_post_only: false,'''
+classification = "nt_api_selector_bool"
+reason = '''Pinned NautilusTrader/API selector boolean for the current typed call surface; it selects API semantics and is not an operator runtime scalar.'''
+
+[[allowed]]
+path = '''src/bolt_v3_archetypes/complete_set_arbitrage.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''is_reduce_only: false,'''
+classification = "nt_api_selector_bool"
+reason = '''Pinned NautilusTrader/API selector boolean for the current typed call surface; it selects API semantics and is not an operator runtime scalar.'''
+
+[[allowed]]
+path = '''src/bolt_v3_archetypes/complete_set_arbitrage.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''is_quote_quantity: false,'''
+classification = "nt_api_selector_bool"
+reason = '''Pinned NautilusTrader/API selector boolean for the current typed call surface; it selects API semantics and is not an operator runtime scalar.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_admission.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''reservation.release_on_drop = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_admission.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.unwrap_or(true)'''
+classification = "bool_fail_closed_or_presence_default"
+reason = '''Audited boolean default on an Option/Result presence check; the value is a fail-closed or state-presence sentinel, not an operator runtime policy knob.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_admission.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''release_on_drop: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Err(_) => false,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''reservation_held: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''unresolved_real_exposure: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''settled: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.reservation_held = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.settled = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.unresolved_real_exposure = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''self.reservation_held = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''self.unresolved_real_exposure = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''strategy_shell_may_call_submit_admission: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''strategy_shell_may_mutate_venue: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''shared_executor_owns_state_transitions: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''kill_switch_transition_context(false, false),'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Ok(()) => true,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''operator_authorized: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''manual_reset_evidence_valid: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''mandatory_proof_streams_fresh: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''no_outstanding_order_risk: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''no_open_positions: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_basket_execution.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''no_pending_entry_risk: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_binary_outcome_edge.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''trade_allowed: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_book_sizing.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_book_sizing.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_book_sizing.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_book_sizing.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_admission.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''accepted: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_admission.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''accepted: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_admission_runtime_feed.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''external_position_fill_trade_id_retention_exhausted: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_admission_runtime_feed.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''self.external_position_fill_trade_id_retention_exhausted = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_admission_runtime_feed.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_admission_runtime_feed.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_admission_runtime_feed.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.external_position_fill_trade_id_retention_exhausted = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_admission_runtime_feed.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''all_open_orders_attributed: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_admission_runtime_feed.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''.unwrap_or(false);'''
+classification = "bool_fail_closed_or_presence_default"
+reason = '''Audited boolean default on an Option/Result presence check; the value is a fail-closed or state-presence sentinel, not an operator runtime policy knob.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_admission_runtime_feed.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut changed = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_admission_runtime_feed.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''*attributed = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_admission_runtime_feed.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''changed = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_reservation.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''reconciliation_complete: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_reservation.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''reconciliation_complete: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_reservation.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''accepted: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_capital_reservation.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''accepted: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_client_registration.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut data_added = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_client_registration.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut exec_added = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_client_registration.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''data_added = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_client_registration.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''exec_added = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.unwrap_or(true);'''
+classification = "bool_fail_closed_or_presence_default"
+reason = '''Audited boolean default on an Option/Result presence check; the value is a fail-closed or state-presence sentinel, not an operator runtime policy knob.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''options.append(true);'''
+classification = "filesystem_open_option_bool"
+reason = '''Rust filesystem OpenOptions API selector for append/read/create semantics; not a trading, venue, quantity, timeout, or operator policy value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''options.append(true).create_new(true);'''
+classification = "filesystem_open_option_bool"
+reason = '''Rust filesystem OpenOptions API selector for append/read/create semantics; not a trading, venue, quantity, timeout, or operator policy value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.read(true)'''
+classification = "filesystem_open_option_bool"
+reason = '''Rust filesystem OpenOptions API selector for append/read/create semantics; not a trading, venue, quantity, timeout, or operator policy value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''fs::OpenOptions::new().read(true).open(path)'''
+classification = "filesystem_open_option_bool"
+reason = '''Rust filesystem OpenOptions API selector for append/read/create semantics; not a trading, venue, quantity, timeout, or operator policy value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_executable_cost.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''exact_size_filled: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_executable_cost.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''cost_available: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_executable_cost.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''OrderSide::Buy => (book.best_ask, true),'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_executable_cost.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''OrderSide::Sell => (book.best_bid, false),'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_executable_cost.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''exact_size_filled: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_executable_cost.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''cost_available: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_fair_value_pricing.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_fair_value_pricing.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/authz.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/authz.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''IvAuthorizationMode::ProfileWide => true,'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/bounds.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/bounds.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/config.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/config.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''inclusive: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/config.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''inclusive: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/config.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/derive.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''output_validated: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/derive.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''validate_numeric(option_price.value, IvDerivedInputField::OptionPrice, true)?;'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/derive.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/derive.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''validate_numeric(strike.value, IvDerivedInputField::Strike, true)?;'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/derive.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''validate_numeric(rate.value, IvDerivedInputField::Rate, false)?;'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/derive.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''validate_numeric(carry.value, IvDerivedInputField::Carry, false)?;'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/derive.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''validate_numeric(initial_vol.value, IvDerivedInputField::InitialVol, true)?;'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/health.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''return true;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/health.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/policy.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''quorum_met: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/policy.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''mark_rejected: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''stale_state: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''retention_state: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut interpolation_rejected = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''interpolation_rejected = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut unauthorized_candidate = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''unauthorized_candidate = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut derived_any = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''derived_any = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''return true;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''_ => false,'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut saw_interpolatable_product = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''saw_interpolatable_product = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/query.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''apply_source_rejection_flags(existing, reject_reason, false);'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/runtime.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/runtime.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/runtime.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''mark_rejected: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/runtime.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''_ => false,'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/runtime.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''stale_state: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/runtime.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''retention_state: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/store.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut indexed_basis = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_iv/store.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''indexed_basis = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch_flatten.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''authorizes_durable_state_transition: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''metadata_response_allow_target_sampling: false,'''
+classification = "readiness_probe_plan_state_bool"
+reason = '''Readiness-probe state default for non-sampling constructors; the sampling choice is passed through from TOML-owned readiness_probe config where applicable.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''quote_targets_initialized: Rc::new(Cell::new(true)),'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''quote_targets_initialized: Rc::new(Cell::new(false)),'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''started: Cell::new(false),'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''complete: Cell::new(false),'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''None => false,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.quote_targets_initialized.set(true);'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut matched_required = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''matched_required = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''walk.complete.set(true);'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Ok(false)'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Ok(true)'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''all_open_orders_attributed = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''log_components_only: false,'''
+classification = "pinned_nt_logger_bool"
+reason = '''Pinned NautilusTrader LoggerConfig boolean documented in the Bolt-v3 schema; TOML owns log levels while these current-scope booleans are intentionally fixed builder settings.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''is_colored: true,'''
+classification = "pinned_nt_logger_bool"
+reason = '''Pinned NautilusTrader LoggerConfig boolean documented in the Bolt-v3 schema; TOML owns log levels while these current-scope booleans are intentionally fixed builder settings.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''print_config: false,'''
+classification = "pinned_nt_logger_bool"
+reason = '''Pinned NautilusTrader LoggerConfig boolean documented in the Bolt-v3 schema; TOML owns log levels while these current-scope booleans are intentionally fixed builder settings.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''use_tracing: false,'''
+classification = "pinned_nt_logger_bool"
+reason = '''Pinned NautilusTrader LoggerConfig boolean documented in the Bolt-v3 schema; TOML owns log levels while these current-scope booleans are intentionally fixed builder settings.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''bypass_logging: false,'''
+classification = "pinned_nt_logger_bool"
+reason = '''Pinned NautilusTrader LoggerConfig boolean documented in the Bolt-v3 schema; TOML owns log levels while these current-scope booleans are intentionally fixed builder settings.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''clear_log_file: false,'''
+classification = "pinned_nt_logger_bool"
+reason = '''Pinned NautilusTrader LoggerConfig boolean documented in the Bolt-v3 schema; TOML owns log levels while these current-scope booleans are intentionally fixed builder settings.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''fileout_sync_on_flush: true,'''
+classification = "pinned_nt_logger_bool"
+reason = '''Pinned NautilusTrader LoggerConfig boolean documented in the Bolt-v3 schema; TOML owns log levels while these current-scope booleans are intentionally fixed builder settings.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''buffered_stdout: false,'''
+classification = "pinned_nt_logger_bool"
+reason = '''Pinned NautilusTrader LoggerConfig boolean documented in the Bolt-v3 schema; TOML owns log levels while these current-scope booleans are intentionally fixed builder settings.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''bypass: false,'''
+classification = "pinned_nt_risk_engine_safety_bool"
+reason = '''Mandated live risk-engine safety invariant: Bolt-v3 must not expose a TOML or operator override that bypasses NT pre-trade risk checks.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''loop_debug: false,'''
+classification = "pinned_nt_live_node_disabled_bool"
+reason = '''Pinned NautilusTrader LiveNodeConfig disabled setting documented as intentionally omitted from Bolt-v3 TOML; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Ok(true) => Ok(()),'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Ok(false) => Err(BoltV3LiveNodeError::ConnectIncomplete),'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_governor.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''snapshot_present: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_governor.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''per_trade_pnl_present: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_governor.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''daily_pnl_present: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_governor.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''rolling_pnl_present: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_governor.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''current_equity_present: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_governor.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''peak_equity_present: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_governor.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''accepted: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_governor.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''snapshot_present: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''return Ok(true);'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Ok(false)'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Some(current) if bucket == current => true,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Some(_) => false,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''state_write_succeeded: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''durable_halt_evidence_recorded: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''state_write_succeeded: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''durable_halt_evidence_recorded: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''operator_authorized: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''manual_reset_evidence_valid: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''mandatory_proof_streams_fresh: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''no_outstanding_order_risk: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''no_open_positions: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''no_pending_entry_risk: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''cumulative_realized_pnl: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''closes_position: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''closes_position: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_protection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''cumulative_realized_pnl: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_runtime_feed.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.state.portfolio_pnl_observed = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_runtime_feed.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''portfolio_pnl_observed: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_runtime_feed.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_runtime_feed.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''closed: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_runtime_feed.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''reset_completed_position_pnl: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_runtime_feed.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''reset_completed_position_pnl: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_runtime_feed.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''closed: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_runtime_feed.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut found = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_loss_runtime_feed.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''found = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_maker_event_fence.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Some(current) if next.generation <= current.generation => return false,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_maker_event_fence.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_maker_inventory.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_maker_inventory.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_maker_market_selection.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''retained: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_maker_market_selection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''retained: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_maker_quote_control.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.unwrap_or(true);'''
+classification = "bool_fail_closed_or_presence_default"
+reason = '''Audited boolean default on an Option/Result presence check; the value is a fail-closed or state-presence sentinel, not an operator runtime policy knob.'''
+
+[[allowed]]
+path = '''src/bolt_v3_maker_quote_control.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_maker_quote_control.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''requote_needed: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_maker_quote_set.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''requote_needed: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''ensure_selected_market_text(SELECTED_MARKET_VENUE_FIELD, parts.venue, false)?;'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''ensure_selected_market_text(SELECTED_MARKET_FAMILY_KEY_FIELD, parts.family_key, false)?;'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''ensure_selected_market_text(SELECTED_MARKET_MARKET_ID_FIELD, parts.market_id, false)?;'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''ensure_selected_market_text(SELECTED_MARKET_VALUE_KIND_FIELD, parts.value_kind, false)?;'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''ensure_selected_market_text(SELECTED_MARKET_INSTRUMENT_IDS_FIELD, instrument_id, false)?;'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''ensure_selected_market_text(SELECTED_MARKET_METADATA_PROVENANCE_KEY_FIELD, key, false)?;'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''serde_json::Value::String(text) => ensure_selected_market_text(field, text, false),'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''ensure_selected_market_text(field, key, false)?;'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_order_reject_observer_feed.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut episode_inserted = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_order_reject_observer_feed.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''episode_inserted = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_outcome_group_hyperliquid.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut saw_parentless_outcome = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_outcome_group_hyperliquid.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''saw_parentless_outcome = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_outcome_group_hyperliquid.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''if info.get_bool("is_fallback").unwrap_or(false) {'''
+classification = "bool_fail_closed_or_presence_default"
+reason = '''Audited boolean default on an Option/Result presence check; the value is a fail-closed or state-presence sentinel, not an operator runtime policy knob.'''
+
+[[allowed]]
+path = '''src/bolt_v3_outcome_group_scanner.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''evidence.admissible = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_outcome_group_scanner.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_outcome_group_scanner.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''admissible: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_outcome_group_scanner.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''self.admissible = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_outcome_group_sources.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''None => false,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_outcome_group_sources.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Some(Err(_)) | None => false,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_outcome_group_sources.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Some(Err(_)) | None => true,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_outcome_group_sources.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Ok(decimal) if decimal > Decimal::ZERO => true,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_outcome_group_sources.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_prod_profile.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_prod_profile.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''loss_governor_present: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_prod_profile.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''matches_profile: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_prod_profile.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''loads_against_binary: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/chainlink/report.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''let mut carry = u8::from(true);'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/chainlink/report.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/chainlink/strike_source.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''connected: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/chainlink/strike_source.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Err(_) => false,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/chainlink/strike_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.connected = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/chainlink/strike_source.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''self.connected = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/chainlink.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return Ok(false);'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/chainlink.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''return Ok(true);'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/chainlink.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Ok(false)'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/chainlink_reference.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''connected: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/chainlink_reference.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.connected = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/chainlink_reference.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''self.connected = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.read(true)'''
+classification = "filesystem_open_option_bool"
+reason = '''Rust filesystem OpenOptions API selector for append/read/create semantics; not a trading, venue, quantity, timeout, or operator policy value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''reduce_only_supported: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''reduce_only_supported: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''return Ok(true);'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/adapter_signing_source.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''neg_risk: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/adapter_signing_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''domain_version_declared: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/adapter_signing_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''domain_name_declared: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/adapter_signing_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''polygon_chain_id_declared: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/adapter_signing_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''ctf_exchange_declared: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/adapter_signing_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''neg_risk_ctf_exchange_declared: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/adapter_signing_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''order_signer_declared: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/adapter_signing_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''sign_order_declared: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/adapter_signing_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''order_hash_declared: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/collateral_accounting_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''request, true,'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/fee_behavior_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''maker_zero_declared: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/fee_behavior_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''taker_fee_schedule_declared: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/fee_behavior_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''commission_formula_declared: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/fee_behavior_source.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''market_buy_adjustment_declared: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''const POSITION_REDEEMABLE_WHEN_ABSENT: bool = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(false, None) => {}'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.load_all(true)'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polyresearch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''connected: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polyresearch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.connected = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polyresearch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''self.connected = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polyresearch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polyresearch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polyresearch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return Ok(false);'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polyresearch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''return Ok(true);'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polyresearch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Ok(true)'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polyresearch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Ok(true) => return,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polyresearch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Ok(false) => {}'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/reference_boundary_capture.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''signature_verified: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_quote_lifecycle.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''requote_needed: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_realized_volatility.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''ready: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_realized_volatility.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_realized_volatility.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_realized_volatility.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''if let (true, RealizedVolSourceStatus::Ready, true, Some(value), _) = ('''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_realized_volatility_runtime.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut matched_configured_source = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_realized_volatility_runtime.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut observed = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_realized_volatility_runtime.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''matched_configured_source = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_realized_volatility_runtime.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_realized_volatility_runtime.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''self.publish_surface_at(surface_id, as_of_ms, false)'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_realized_volatility_runtime.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.filter_map(|surface_id| self.publish_surface_at(surface_id.as_str(), recv_ts_ms, true))'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_reference_price.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''failover_used: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_reference_price.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''self.failover_used = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_reference_price.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.failover_used = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_reference_price.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''required: false,'''
+classification = "typed_requirement_flag_bool"
+reason = '''Typed requirement flag on provider/archetype wiring; source IDs and runtime values remain config/source-owned, while this declares a fixed contract shape.'''
+
+[[allowed]]
+path = '''src/bolt_v3_reference_price.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''required: true,'''
+classification = "typed_requirement_flag_bool"
+reason = '''Typed requirement flag on provider/archetype wiring; source IDs and runtime values remain config/source-owned, while this declares a fixed contract shape.'''
+
+[[allowed]]
+path = '''src/bolt_v3_reference_price_health.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let _ = observer.into_observations(false);'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_requote_budget.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_requote_budget.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/admission_service.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut target_found = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/admission_service.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''target_found = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/epoch_manager.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''let safety_action_enabled = true;'''
+classification = "policy_epoch_state_bool"
+reason = '''Policy-epoch state-machine flag derived from prepared epoch/revaluation state; it is not an allowlisted operator policy literal.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/risk_kernel.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''accepted: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/risk_kernel.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''RiskEvaluationScope::Portfolio { .. } => true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''risk_increasing_admission_enabled: true,'''
+classification = "policy_epoch_state_bool"
+reason = '''Policy-epoch state-machine flag derived from prepared epoch/revaluation state; it is not an allowlisted operator policy literal.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''safety_action_enabled: true,'''
+classification = "policy_epoch_state_bool"
+reason = '''Policy-epoch state-machine flag derived from prepared epoch/revaluation state; it is not an allowlisted operator policy literal.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''inner.reconciled.insert(pool_id.clone(), false);'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''inner.reconciled.insert(pool_id.clone(), true);'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''.unwrap_or(false)'''
+classification = "bool_fail_closed_or_presence_default"
+reason = '''Audited boolean default on an Option/Result presence check; the value is a fail-closed or state-presence sentinel, not an operator runtime policy knob.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''state.risk_increasing_admission_enabled = false;'''
+classification = "policy_epoch_state_bool"
+reason = '''Policy-epoch state-machine flag derived from prepared epoch/revaluation state; it is not an allowlisted operator policy literal.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''state.safety_action_enabled = true;'''
+classification = "policy_epoch_state_bool"
+reason = '''Policy-epoch state-machine flag derived from prepared epoch/revaluation state; it is not an allowlisted operator policy literal.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''record.open_order_remainder_held = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''record.filled_position_held = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''record.filled_position_held = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''open_order_remainder_held: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''filled_position_held: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''return true;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_risk_reservation_substrate/state_owner.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''inner.reconciled.insert(lease.pool_id().clone(), false);'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''accepted: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''unknown_reservation: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''recovered_from_startup: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''recovered_from_startup: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''all_open_orders_attributed: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''accepted: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''unknown_reservation: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''committed: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.committed = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit => true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''BoltV3SubmitIntentKind::KillSwitchForcedReduction => true,'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.calculate_notional_value(effective_quantity, last_px, Some(true))'''
+classification = "nt_api_selector_bool"
+reason = '''Pinned NautilusTrader/API selector boolean for the current typed call surface; it selects API semantics and is not an operator runtime scalar.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''return true;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut remove_execution_client = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_taker_pricing.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''fast_venue_incoherent: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_taker_pricing.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''lead_quality_policy_applied: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_taker_pricing.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''self.fast_venue_incoherent = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_taker_pricing.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''self.lead_quality_policy_applied = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_taker_pricing.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.lead_quality_policy_applied = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_taker_pricing.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.fast_venue_incoherent = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_taker_updown_signal.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(true, false) => Some(OutcomeSide::Up),'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_taker_updown_signal.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(true, false) => Some(OutcomeSide::Up),'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_taker_updown_signal.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(false, true) => Some(OutcomeSide::Down),'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_taker_updown_signal.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(false, true) => Some(OutcomeSide::Down),'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_taker_updown_signal.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(true, true) => match (up_worst_ev_bps, down_worst_ev_bps) {'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_taker_updown_signal.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(false, false) => None,'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Ok(true) => {}'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return Ok(false);'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Field::new(EVENT_TYPE_FIELD, DataType::Utf8, false),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Field::new(STRATEGY_ID_FIELD, DataType::Utf8, false),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Field::new(INSTRUMENT_ID_FIELD, DataType::Utf8, false),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Field::new(CLIENT_ORDER_ID_FIELD, DataType::Utf8, false),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Field::new(VENUE_ORDER_ID_FIELD, DataType::Utf8, true),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Field::new(ACCOUNT_ID_FIELD, DataType::Utf8, true),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Field::new(TS_EVENT_FIELD, DataType::UInt64, false),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Field::new(TS_INIT_FIELD, DataType::UInt64, false),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Field::new(PAYLOAD_JSON_FIELD, DataType::Utf8, false),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Ok(true)'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Field::new(TRADER_ID_FIELD, DataType::Utf8, false),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Field::new(POSITION_ID_FIELD, DataType::Utf8, false),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Field::new(ACCOUNT_ID_FIELD, DataType::Utf8, false),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Field::new(EVENT_ID_FIELD, DataType::Utf8, true),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Field::new(OPENING_ORDER_ID_FIELD, DataType::Utf8, true),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Field::new(CLOSING_ORDER_ID_FIELD, DataType::Utf8, true),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Field::new(SIDE_FIELD, DataType::Utf8, true),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Field::new(QUANTITY_FIELD, DataType::Utf8, true),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Field::new(TS_OPENED_FIELD, DataType::UInt64, true),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Field::new(TS_CLOSED_FIELD, DataType::UInt64, true),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Field::new(REALIZED_PNL_FIELD, DataType::Utf8, true),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/execution_state.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Field::new(UNREALIZED_PNL_FIELD, DataType::Utf8, true),'''
+classification = "schema_nullability_bool"
+reason = '''Arrow schema nullability flag for persisted execution-state columns; schema shape is structural and not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut has_failure = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''has_failure = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''spool_present: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(Capability::Unsupported, _, false, _) => (ClassReportStatus::PassUnsupported, None),'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(Capability::Unsupported, _, true, _) => {'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(Capability::Supported | Capability::Conditional, Policy::Disabled, true, _) => {'''
+classification = "venue_contract_truth_table_bool"
+reason = '''Boolean arm in the venue-contract capability/policy validation truth table; it represents observed source presence, not a configured runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(Capability::Supported | Capability::Conditional, Policy::Disabled, false, _) => {'''
+classification = "venue_contract_truth_table_bool"
+reason = '''Boolean arm in the venue-contract capability/policy validation truth table; it represents observed source presence, not a configured runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(Capability::Supported | Capability::Conditional, Policy::Required, true, true) => {'''
+classification = "venue_contract_truth_table_bool"
+reason = '''Boolean arm in the venue-contract capability/policy validation truth table; it represents observed source presence, not a configured runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(Capability::Supported | Capability::Conditional, Policy::Optional, true, true) => {'''
+classification = "venue_contract_truth_table_bool"
+reason = '''Boolean arm in the venue-contract capability/policy validation truth table; it represents observed source presence, not a configured runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(Capability::Supported | Capability::Conditional, Policy::Required, true, false) => {'''
+classification = "venue_contract_truth_table_bool"
+reason = '''Boolean arm in the venue-contract capability/policy validation truth table; it represents observed source presence, not a configured runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(Capability::Supported | Capability::Conditional, Policy::Required, true, false) => {'''
+classification = "venue_contract_truth_table_bool"
+reason = '''Boolean arm in the venue-contract capability/policy validation truth table; it represents observed source presence, not a configured runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(Capability::Supported | Capability::Conditional, Policy::Optional, true, false) => {'''
+classification = "venue_contract_truth_table_bool"
+reason = '''Boolean arm in the venue-contract capability/policy validation truth table; it represents observed source presence, not a configured runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(Capability::Supported | Capability::Conditional, Policy::Optional, true, false) => {'''
+classification = "venue_contract_truth_table_bool"
+reason = '''Boolean arm in the venue-contract capability/policy validation truth table; it represents observed source presence, not a configured runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(Capability::Supported | Capability::Conditional, Policy::Required, false, _) => {'''
+classification = "venue_contract_truth_table_bool"
+reason = '''Boolean arm in the venue-contract capability/policy validation truth table; it represents observed source presence, not a configured runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(Capability::Supported | Capability::Conditional, Policy::Optional, false, _) => {'''
+classification = "venue_contract_truth_table_bool"
+reason = '''Boolean arm in the venue-contract capability/policy validation truth table; it represents observed source presence, not a configured runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.create_new(true)'''
+classification = "filesystem_open_option_bool"
+reason = '''Rust filesystem OpenOptions API selector for append/read/create semantics; not a trading, venue, quantity, timeout, or operator policy value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''discarded: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''published: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''preserve_stage: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.published = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.preserve_stage = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''self.discarded = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''let mut converted_any = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''file_data.extend(decode_batch_to_data(&metadata, batch, false)?);'''
+classification = "nt_api_selector_bool"
+reason = '''Pinned NautilusTrader/API selector boolean for the current typed call surface; it selects API semantics and is not an operator runtime scalar.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''catalog.write_data_enum(&file_data, None, None, Some(true))?;'''
+classification = "nt_api_selector_bool"
+reason = '''Pinned NautilusTrader/API selector boolean for the current typed call surface; it selects API semantics and is not an operator runtime scalar.'''
+
+[[allowed]]
+path = '''src/lake_batch.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''converted_any = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/log_sweep.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''None => return false,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/log_sweep.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''return true;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/log_sweep.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/log_sweep.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''KILL_SWITCH_STORE_INIT_COMPLETED_OUTPUT_FIELD: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''generated_live_config: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''verified_live_config: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''matches_installed_binary: Some(true),'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''matches_requested_profile: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''matches_current_config: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''CLOB_V2_CACHE_SYNC_COMPLETED_OUTPUT_FIELD: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/nt_runtime_capture.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''unhealthy: Arc::new(AtomicBool::new(false)),'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/nt_runtime_capture.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/nt_runtime_capture.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/nt_runtime_capture.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''saw_running = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/raw_types.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''let file = OpenOptions::new().create(true).append(true).open(path)?;'''
+classification = "filesystem_open_option_bool"
+reason = '''Rust filesystem OpenOptions API selector for append/read/create semantics; not a trading, venue, quantity, timeout, or operator policy value.'''
+
+[[allowed]]
+path = '''src/raw_types.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''let mut file = OpenOptions::new().create(true).append(true).open(path)?;'''
+classification = "filesystem_open_option_bool"
+reason = '''Rust filesystem OpenOptions API selector for append/read/create semantics; not a trading, venue, quantity, timeout, or operator policy value.'''
+
+[[allowed]]
+path = '''src/secrets.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.with_decryption(true)'''
+classification = "ssm_secret_decryption_invariant_bool"
+reason = '''SSM SecureString retrieval must request decryption; this is a fixed secret-source invariant, not operator runtime policy.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/config.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(true, true) => {}'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/config.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(true, false) => Self::push_missing('''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/config.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(true, false) => Self::push_missing('''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/config.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(false, true) | (false, false) => Self::push_missing('''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/config.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(false, true) | (false, false) => Self::push_missing('''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/exposure.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''| Self::BlindRecovery(_) => true,'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/exposure.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Self::Flat | Self::PendingEntry(_) => false,'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/exposure.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(OrderSide::Buy, false) | (OrderSide::Sell, true) => Some(OrderSide::Buy),'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(OrderSide::Buy, false) | (OrderSide::Sell, true) => Some(OrderSide::Buy),'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''(OrderSide::Sell, false) | (OrderSide::Buy, true) => Some(OrderSide::Sell),'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(OrderSide::Sell, false) | (OrderSide::Buy, true) => Some(OrderSide::Sell),'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''up_ready: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''down_ready: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''fast_venue_incoherent: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''forced_flat: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''Self::from_market(market, warmup_target, SelectionPhase::Active, false)'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''Self::from_market(market, warmup_target, SelectionPhase::Freeze, true)'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''idle.forced_flat = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''None => true,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''final_fee_amount_known: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.try_make_qty(normalized.to_f64()?, Some(true))'''
+classification = "nt_api_selector_bool"
+reason = '''Pinned NautilusTrader/API selector boolean for the current typed call surface; it selects API semantics and is not an operator runtime scalar.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''return true;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''pending_exit.residual_position_observed_after_fill = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''exit_pending.pending_exit.terminal_received = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return (false, EVIDENCE_REASON_NO_MANAGED_POSITION);'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''(true, EVIDENCE_REASON_CAPTURED_FROM_STRATEGY_ENTRY_STATE)'''
+classification = "boolean_algorithm_literal"
+reason = '''Boolean algorithm/control-flow literal audited by H1; no operator runtime value is sourced from this token.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''fill_received: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''close_received: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''terminal_received: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''residual_position_observed_after_fill: false,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''let mut changed = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''changed = false;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''let Ok(quantity) = instrument.try_make_qty(shares_value, Some(true)) else {'''
+classification = "nt_api_selector_bool"
+reason = '''Pinned NautilusTrader/API selector boolean for the current typed call surface; it selects API semantics and is not an operator runtime scalar.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''let quantity = instrument.try_make_qty(quantity_value, Some(true))?;'''
+classification = "nt_api_selector_bool"
+reason = '''Pinned NautilusTrader/API selector boolean for the current typed call surface; it selects API semantics and is not an operator runtime scalar.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''matched = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''.residual_position_observed_after_fill = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''exit_pending.pending_exit.fill_received = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''exit_pending.pending_exit.close_received = true;'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);'''
+classification = "nt_api_selector_bool"
+reason = '''Pinned NautilusTrader/API selector boolean for the current typed call surface; it selects API semantics and is not an operator runtime scalar.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/selection.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''SelectionState::Idle { .. } => return true,'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/selection.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''.unwrap_or(false)'''
+classification = "bool_fail_closed_or_presence_default"
+reason = '''Audited boolean default on an Option/Result presence check; the value is a fail-closed or state-presence sentinel, not an operator runtime policy knob.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/binding.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''eligible: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state, readiness, or decision-result marker computed by typed control flow; not a config-sourced runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/runtime.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/runtime.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''true'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/complete_set_arbitrage/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''shared_basket_execution_owns_admission: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/complete_set_arbitrage/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''shared_basket_execution_owns_venue_mutation: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/complete_set_arbitrage/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''shared_basket_execution_owns_fillability: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/complete_set_arbitrage/mod.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''shared_basket_execution_owns_repair_unwind: true,'''
+classification = "state_machine_or_decision_result_bool"
+reason = '''Boolean state or struct-field value in typed control flow; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/complete_set_arbitrage/tests/shell.rs'''
+kind = "bool"
+literal = '''true'''
+context = '''allow_unwind_when_repair_denied: true,'''
+classification = "strategy_test_fixture"
+reason = '''Boolean fixture value in a strategy test support module under src; it drives local shell coverage and is not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/venue_contract.rs'''
+kind = "bool"
+literal = '''false'''
+context = '''return false;'''
+classification = "boolean_predicate_result_literal"
+reason = '''Boolean predicate/result literal in typed control flow; it returns an already-computed condition rather than configuring runtime behavior.'''

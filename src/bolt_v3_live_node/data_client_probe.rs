@@ -1,5 +1,10 @@
 use super::*;
 
+/// Run an already-built strategy-free data-client probe node.
+///
+/// The caller must build `runtime` at a synchronous startup boundary before
+/// entering Tokio, because the build path owns SSM resolution through
+/// `SsmResolverSession`.
 pub async fn run_bolt_v3_data_client_probe(
     mut runtime: BoltV3LiveNodeRuntime,
     probe_loaded: &LoadedBoltV3Config,

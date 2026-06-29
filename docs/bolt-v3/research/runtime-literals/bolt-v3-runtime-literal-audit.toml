@@ -5533,7 +5533,7 @@ classification = "pricing_formula_constant"
 reason = "This is the named sigma-squared-over-two divisor in the updown family's fair-probability formula, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/secrets_builders.rs"
 kind = "number"
 literal = '''0'''
 context = '''let mut count = 0;'''
@@ -5541,7 +5541,7 @@ classification = "hyperliquid_live_submit_client_counter_initial_value"
 reason = "This initializes a structural count of configured provider live-submit clients; operator approval limits remain TOML/artifact-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/secrets_builders.rs"
 kind = "number"
 literal = '''1'''
 context = '''count += 1;'''

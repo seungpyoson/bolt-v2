@@ -24,10 +24,30 @@ Coverage map (by review finding):
   P2 kill switch             : test_kill_switch
   P2 branch-name reuse       : test_branch_reuse_after_merge
   P2 backup ref shape        : test_backup_ref_is_sha_addressed
+  #1050 merge-wave sync      : test_sync_main_dry_run_changes_nothing,
+                               test_sync_main_dry_run_does_not_claim_stale_tracking_ref_is_current,
+                               test_sync_main_dry_run_reports_cleanup_after_preview_sync,
+                               test_sync_main_apply_fast_forwards_local_main,
+                               test_sync_main_apply_updates_unchecked_out_main_ref,
+                               test_sync_main_apply_refuses_non_fast_forward,
+                               test_sync_main_apply_refusal_stops_cleanup_lanes,
+                               test_sync_main_apply_refuses_dirty_checked_out_main,
+                               test_sync_main_dry_run_refuses_dirty_checked_out_main_before_cleanup_preview,
+                               test_sync_main_dry_run_refuses_when_preview_temp_ref_delete_fails,
+                               test_sync_main_dry_run_refuses_when_preview_temp_ref_cannot_be_deleted,
+                               test_remote_branch_gone_but_merged_to_main_is_cleaned_after_sync
+  #1050 post-review safety   : test_lane_w_refuses_branch_delete_when_tip_drifts_to_unmerged_commit,
+                               test_fetch_failure_reason_redacts_url_credentials,
+                               test_report_error_redacts_common_secret_forms,
+                               test_live_cache_entry_with_malformed_prs_fails_closed_without_refetch,
+                               test_lane_summary_prints_full_refusal_reason
 """
 
 from __future__ import annotations
 
+import contextlib
+import datetime as dt
+import io
 import json
 import os
 import pathlib
@@ -94,22 +114,28 @@ schema_version = 1
 enabled = true
 trunk_branch = "main"
 remote_name = "origin"
-hook_detach = false
+origin_owner = "t"
 [clean-merged.lane_r]
 gh_timeout_s = 5
 cache_ttl_s = 300
-hook_spawn_detached = false
+gh_limit = 100
 [clean-merged.lane_w]
 quarantine_dir = "<git-common-dir>/clean-merged-quarantine"
 quarantine_grace_days = 30
 discard_ignored = false
 remove_nested_repos = false
 discard_hidden_index_bits = false
+archive_timeout_s = 120
+archive_verify_timeout_s = 30
 [clean-merged.logging]
 audit_format = "jsonl"
 audit_path = "<git-common-dir>/clean-merged.log"
 max_log_bytes = 1048576
+rotated_log_retention_days = 30
+report_error_max_chars = 200
 heartbeat_path = "<git-common-dir>/clean-merged.heartbeat"
+heartbeat_stale_days = 7
+lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"
 [clean-merged.backups]
 prune_after_days = 30
 """
@@ -119,15 +145,21 @@ prune_after_days = 30
 
 def run_clean(work: pathlib.Path, *args: str, env: dict[str, str] | None = None) -> int:
     """Subprocess runner — for end-to-end tests where mocking is not needed."""
+    return run_clean_proc(work, *args, env=env).returncode
+
+
+def run_clean_proc(
+    work: pathlib.Path, *args: str, env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Subprocess runner that returns stdout/stderr for reporting assertions."""
     full_env = os.environ.copy()
     full_env.update(GIT_ENV)
     if env:
         full_env.update(env)
-    proc = subprocess.run(
+    return subprocess.run(
         [sys.executable, str(REPO_ROOT / "scripts" / "clean_merged_artifacts.py"), *args],
         cwd=work, env=full_env, capture_output=True, text=True, timeout=60,
     )
-    return proc.returncode
 
 
 def run_clean_inproc(work: pathlib.Path, *args: str) -> int:
@@ -213,6 +245,16 @@ class LaneHTests(unittest.TestCase):
         self.assertIn("feat/bound", branches,
                        "Lane H must NOT touch worktree-bound branches (Lane W owns them)")
 
+    def test_master_has_no_implicit_lane_h_protection(self) -> None:
+        """Only configured trunk/current/keep are protected branch identities."""
+        _run(["git", "branch", "master"], cwd=self.work)
+        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+
+        rc = run_clean(self.work, "--lane", "h", "--apply", "--quiet")
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn("master", git(self.work, "branch", "--list"))
+
 
 # ---------------------------------------------------------------------------
 # Lane R tests (gh mocked)
@@ -249,8 +291,7 @@ class LaneRTests(unittest.TestCase):
                                     "headRepositoryOwner": {"login": "t"},
                                     "isCrossRepository": False,
                                 }])):
-            with mock.patch.object(cm, "_resolve_origin_owner", return_value="t"):
-                rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
+            rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         branches = git(self.work, "branch", "--list")
         self.assertIn("feat/x", branches, "headRefOid mismatch must keep the branch")
@@ -267,8 +308,7 @@ class LaneRTests(unittest.TestCase):
                                     "headRepositoryOwner": {"login": "t"},
                                     "isCrossRepository": False,
                                 }])):
-            with mock.patch.object(cm, "_resolve_origin_owner", return_value="t"):
-                rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
+            rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         self.assertIn("feat/release", git(self.work, "branch", "--list"))
 
@@ -284,8 +324,7 @@ class LaneRTests(unittest.TestCase):
                                     "headRepositoryOwner": {"login": "someone-else"},
                                     "isCrossRepository": True,
                                 }])):
-            with mock.patch.object(cm, "_resolve_origin_owner", return_value="t"):
-                rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
+            rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         self.assertIn("feat/fork", git(self.work, "branch", "--list"),
                        "cross-repo (fork) PR must not delete local branch")
@@ -302,8 +341,7 @@ class LaneRTests(unittest.TestCase):
                                     "headRepositoryOwner": {"login": "t"},
                                     "isCrossRepository": False,
                                 }])):
-            with mock.patch.object(cm, "_resolve_origin_owner", return_value="t"):
-                rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
+            rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         self.assertNotIn("feat/merged", git(self.work, "branch", "--list"))
         # backup ref should exist
@@ -317,8 +355,7 @@ class LaneRTests(unittest.TestCase):
         _run(["git", "checkout", "main"], cwd=self.work)
         with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning(None, error="gh exit 1: auth")):
-            with mock.patch.object(cm, "_resolve_origin_owner", return_value="t"):
-                rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
+            rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         self.assertIn("feat/err", git(self.work, "branch", "--list"),
                        "gh error must keep the branch (never treat trouble as merged)")
@@ -329,10 +366,59 @@ class LaneRTests(unittest.TestCase):
         _run(["git", "checkout", "main"], cwd=self.work)
         with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning(None, error="gh timeout")):
-            with mock.patch.object(cm, "_resolve_origin_owner", return_value="t"):
-                rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
+            rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         self.assertIn("feat/timeout", git(self.work, "branch", "--list"))
+
+    def test_gh_missing_binary_kept(self) -> None:
+        empty_bin = self.tmp / "empty-bin"
+        empty_bin.mkdir()
+
+        with mock.patch.dict(os.environ, {"PATH": str(empty_bin)}):
+            prs, err = cm.gh_merged_pr_for_branch(self.work, "feat/missing-gh", 5, 100, 200)
+
+        self.assertIsNone(prs)
+        self.assertIsNotNone(err)
+        self.assertIn("gh unavailable", err)
+
+    def test_gh_query_only_requests_merged_prs(self) -> None:
+        """Closed-unmerged PRs must not enter Lane R's merged-branch authority."""
+        captured: dict[str, Any] = {}
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            captured["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
+
+        with mock.patch.object(cm.subprocess, "run", fake_run):
+            prs, err = cm.gh_merged_pr_for_branch(self.work, "feat/closed", 5, 37, 200)
+
+        self.assertEqual(prs, [])
+        self.assertIsNone(err)
+        cmd = captured["cmd"]
+        state_idx = cmd.index("--state")
+        self.assertEqual(cmd[state_idx + 1], "merged",
+                         "closed-unmerged PRs must not be queried as cleanup authority")
+        limit_idx = cmd.index("--limit")
+        self.assertEqual(cmd[limit_idx + 1], "37",
+                         "gh PR query limit must come from config, not a code literal")
+
+    def test_gh_query_rejects_pr_payload_without_number(self) -> None:
+        tip = "a" * 40
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            payload = [{
+                "headRefOid": tip,
+                "baseRefName": "main",
+                "headRepositoryOwner": {"login": "t"},
+                "isCrossRepository": False,
+            }]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+        with mock.patch.object(cm.subprocess, "run", fake_run):
+            prs, err = cm.gh_merged_pr_for_branch(self.work, "feat/no-number", 5, 100, 200)
+
+        self.assertIsNone(prs)
+        self.assertIn("invalid PR payload", err or "")
 
     def test_lane_r_skips_worktree_bound(self) -> None:
         # The structural P0 fix: Lane R must NEVER update-ref -d a worktree-bound branch.
@@ -348,8 +434,7 @@ class LaneRTests(unittest.TestCase):
                                     "headRepositoryOwner": {"login": "t"},
                                     "isCrossRepository": False,
                                 }])):
-            with mock.patch.object(cm, "_resolve_origin_owner", return_value="t"):
-                rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
+            rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
         self.assertEqual(rc, 0)
         # branch still exists, worktree still bound, NOT bricked
         self.assertIn("feat/wt", git(self.work, "branch", "--list"))
@@ -373,9 +458,18 @@ class LaneRTests(unittest.TestCase):
                                     "headRepositoryOwner": {"login": "t"},
                                     "isCrossRepository": False,
                                 }])):
-            with mock.patch.object(cm, "_resolve_origin_owner", return_value="t"):
-                run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
+            run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
         self.assertIn("feat/reuse", git(self.work, "branch", "--list"))
+
+    def test_master_has_no_implicit_lane_r_protection(self) -> None:
+        """Lane R shares the same branch identity contract as Lane H."""
+        _run(["git", "branch", "master"], cwd=self.work)
+        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+
+        rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn("master", git(self.work, "branch", "--list"))
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +484,41 @@ class LaneWTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_purge_quarantine_preserves_dir_without_manifest(self) -> None:
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        q = common / "clean-merged-quarantine" / "missing-manifest"
+        q.mkdir(parents=True)
+        old_ts = time.time() - 31 * 86400
+        os.utime(q, (old_ts, old_ts))
+
+        purged = cm.cmd_purge_quarantine(
+            self.work, cm.load_config(self.work), grace_days=30, quiet=True)
+
+        self.assertEqual(purged, 0)
+        self.assertTrue(q.exists(), "quarantine entries without manifest authority must be kept")
+
+    def test_archive_timeouts_come_from_config(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8")
+            .replace("archive_timeout_s = 120", "archive_timeout_s = 12")
+            .replace("archive_verify_timeout_s = 30", "archive_verify_timeout_s = 3"),
+            encoding="utf-8",
+        )
+        config = cm.load_config(self.work)
+        calls: list[float] = []
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            calls.append(kwargs["timeout"])
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with mock.patch.object(cm.subprocess, "run", fake_run):
+            ok, err = cm._archive_worktree(self.work, self.tmp / "archive.tar.gz", config)
+
+        self.assertTrue(ok, err)
+        self.assertEqual(calls, [12, 3])
 
     def _setup_merged_worktree_branch(self, name: str = "feat/wt-merged",
                                        gitignore: str | None = None) -> pathlib.Path:
@@ -500,10 +629,11 @@ class LaneWTests(unittest.TestCase):
         wt_path = self._setup_merged_worktree_branch("feat/dirty")
         (wt_path / "tracked.txt").write_text("dirty\n", encoding="utf-8")
         _run(["git", "add", "tracked.txt"], cwd=wt_path)
-        rc = run_clean(self.work, "--include-worktrees", "--apply", "--quiet")
-        self.assertEqual(rc, 0)
+        proc = run_clean_proc(self.work, "--include-worktrees", "--apply")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue(wt_path.exists())
         self.assertIn("feat/dirty", git(self.work, "branch", "--list"))
+        self.assertIn("refused-dirty", proc.stdout)
 
     def test_nested_git_refused(self) -> None:
         wt_path = self._setup_merged_worktree_branch("feat/nested")
@@ -533,6 +663,51 @@ class LaneWTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(captured.get("ref_present"),
                         "Lane W eligibility must run BEFORE the branch ref is deleted")
+
+    def test_lane_w_refuses_branch_delete_when_tip_drifts_to_unmerged_commit(self) -> None:
+        wt_path = self._setup_merged_worktree_branch("feat/tip-drift")
+        original_git = cm._git
+        injected: dict[str, str] = {}
+
+        def inject_clean_commit_before_remove(
+            repo_root: pathlib.Path, args: list[str], **kwargs: Any,
+        ) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ["worktree", "remove"] and "sha" not in injected:
+                (wt_path / "late.txt").write_text("late local work\n", encoding="utf-8")
+                _run(["git", "add", "late.txt"], cwd=wt_path)
+                _run(["git", "commit", "-m", "late local work"], cwd=wt_path)
+                injected["sha"] = git(wt_path, "rev-parse", "HEAD").strip()
+            return original_git(repo_root, args, **kwargs)
+
+        with mock.patch.object(cm, "_git", inject_clean_commit_before_remove):
+            rc = run_clean_inproc(self.work, "--include-worktrees", "--apply", "--quiet")
+
+        self.assertEqual(rc, 0)
+        self.assertIn("sha", injected, "test must inject a post-eligibility branch tip drift")
+        self.assertFalse(wt_path.exists(), "clean worktree removal may still complete")
+        self.assertIn("feat/tip-drift", git(self.work, "branch", "--list"),
+                      "fresh unmerged branch tip must remain reachable by branch name")
+        self.assertEqual(git(self.work, "rev-parse", "feat/tip-drift").strip(),
+                         injected["sha"],
+                         "branch must point at the fresh unmerged tip")
+
+    def test_master_has_no_implicit_lane_w_protection(self) -> None:
+        """Lane W may remove a worktree-bound branch named master when eligible."""
+        wt_path = self._setup_merged_worktree_branch("master")
+
+        rc = run_clean(self.work, "--include-worktrees", "--apply", "--quiet")
+
+        self.assertEqual(rc, 0)
+        self.assertFalse(wt_path.exists())
+        self.assertNotIn("master", git(self.work, "branch", "--list"))
+
+    def test_clean_merged_worktree_reports_removal_in_dry_run(self) -> None:
+        wt_path = self._setup_merged_worktree_branch("feat/wt-dry-run")
+        proc = run_clean_proc(self.work, "--include-worktrees")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(wt_path.exists(), "dry-run must not remove the worktree")
+        self.assertIn("feat/wt-dry-run", git(self.work, "branch", "--list"))
+        self.assertIn("would-archive-and-remove", proc.stdout)
 
     def test_lane_w_iteration_exception_audit_type_error_does_not_kill_sweep(self) -> None:
         self._setup_merged_worktree_branch("feat/audit-typeerror")
@@ -616,8 +791,7 @@ class InfraTests(unittest.TestCase):
                                     "headRepositoryOwner": {"login": "t"},
                                     "isCrossRepository": False,
                                 }], None)):
-            with mock.patch.object(cm, "_resolve_origin_owner", return_value="t"):
-                run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
+            run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
         backups = git(self.work, "for-each-ref", "--format=%(refname)",
                        "refs/clean-merged/")
         self.assertIn(tip[:12], backups,
@@ -630,57 +804,593 @@ class InfraTests(unittest.TestCase):
         # both are acceptable; we only assert it runs to completion
         self.assertIn(rc, (0, 1))
 
+    def test_doctor_reports_missing_gh_without_traceback(self) -> None:
+        git_bin = shutil.which("git")
+        self.assertIsNotNone(git_bin, "git must be available for the test suite")
+        bin_dir = self.tmp / "git-only-bin"
+        bin_dir.mkdir()
+        (bin_dir / "git").symlink_to(git_bin)
+
+        proc = run_clean_proc(self.work, "--doctor", env={"PATH": str(bin_dir)})
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("gh available             = False", proc.stdout)
+        self.assertIn("gh CLI not available; Lane R cannot run", proc.stdout)
+        self.assertNotIn("Traceback", proc.stdout + proc.stderr)
+
+    def test_doctor_reports_rotated_log_usage(self) -> None:
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        (common / "clean-merged.log.1").write_text("audit\n", encoding="utf-8")
+        (common / "clean-merged.lane-r.log.1.123.456").write_text("lane r\n", encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertIn("rotated logs             = 2 files", proc.stdout)
+
+    def test_doctor_heartbeat_stale_threshold_comes_from_config(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8").replace(
+                "heartbeat_stale_days = 7",
+                "heartbeat_stale_days = 1",
+            ),
+            encoding="utf-8",
+        )
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        hb = common / "clean-merged.heartbeat"
+        hb.write_text(
+            (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=2)).isoformat(),
+            encoding="utf-8",
+        )
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("heartbeat stale", proc.stdout)
+
 
 # ---------------------------------------------------------------------------
-# Fallback TOML parser (A1)
+# Remote sync tests (#1050)
 
 
-class FallbackTomlParserTests(unittest.TestCase):
-    def test_parses_clean_merged_schema(self) -> None:
-        from textwrap import dedent
-        text = dedent("""
-        schema_version = 1
-        [clean-merged]
-        enabled = true
-        trunk_branch = "main"
-        remote_name = "origin"
-        hook_detach = false
+class SyncMainTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="cm-sync-"))
+        self.work = make_repo(self.tmp)
+        make_config(self.work)
+        _run(["git", "add", "config/clean-merged.toml"], cwd=self.work)
+        _run(["git", "commit", "-m", "add clean-merged config"], cwd=self.work)
+        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
 
-        [clean-merged.lane_r]
-        gh_timeout_s = 5
-        cache_ttl_s = 300
-        hook_spawn_detached = true
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
-        [clean-merged.lane_w]
-        quarantine_dir = "<git-common-dir>/clean-merged-quarantine"
-        quarantine_grace_days = 30
-        discard_ignored = false
-        """)
-        data = cm._parse_toml_flat(text)
-        self.assertEqual(data["schema_version"], 1)
-        self.assertIs(data["clean-merged"]["enabled"], True)
-        self.assertEqual(data["clean-merged"]["trunk_branch"], "main")
-        self.assertEqual(data["clean-merged"]["lane_r"]["gh_timeout_s"], 5)
-        self.assertIs(data["clean-merged"]["lane_r"]["hook_spawn_detached"], True)
-        self.assertEqual(data["clean-merged"]["lane_w"]["quarantine_grace_days"], 30)
-        self.assertEqual(data["clean-merged"]["lane_w"]["discard_ignored"], False)
+    def _advance_remote_main(self, message: str = "remote-advance") -> str:
+        other = self.tmp / f"other-{time.time_ns()}"
+        _run(["git", "clone", "-q", "-b", "main", str(self.tmp / "remote.git"), str(other)],
+             cwd=self.tmp)
+        _run(["git", "commit", "--allow-empty", "-m", message], cwd=other)
+        _run(["git", "push", "-q", "origin", "main"], cwd=other)
+        return _run(["git", "rev-parse", "HEAD"], cwd=other).stdout.strip()
 
-    def test_rejects_invalid_value(self) -> None:
-        with self.assertRaises(ValueError):
-            # datetime / unsupported bare value
-            cm._parse_toml_flat("key = 2024-01-01\n")
+    def test_sync_main_dry_run_changes_nothing(self) -> None:
+        self._advance_remote_main()
+        before = git(self.work, "for-each-ref", "--format=%(refname) %(objectname)")
 
-    def test_parses_arrays_and_inline_hash_in_strings(self) -> None:
-        # Round-4 P2: arrays of strings + '#' inside quoted strings.
-        text = (
-            'keep = ["branch-a", "branch-b"]\n'
-            'note = "see # here for details"\n'
-            'trunk_branch = "main"  # configured trunk\n'
+        proc = run_clean_proc(self.work, "--sync-main")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        after = git(self.work, "for-each-ref", "--format=%(refname) %(objectname)")
+        self.assertEqual(before, after, "sync dry-run must not mutate any refs")
+        self.assertIn("would-fetch-prune", proc.stdout)
+
+    def test_sync_main_dry_run_does_not_claim_stale_tracking_ref_is_current(self) -> None:
+        self._advance_remote_main()
+
+        proc = run_clean_proc(self.work, "--sync-main")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("would-evaluate-after-fetch", proc.stdout)
+        self.assertNotIn("tracking-ref-up-to-date", proc.stdout)
+
+    def test_sync_main_dry_run_reports_cleanup_after_preview_sync(self) -> None:
+        _run(["git", "checkout", "-b", "feat/preview-w"], cwd=self.work)
+        (self.work / "preview.txt").write_text("merged\n", encoding="utf-8")
+        _run(["git", "add", "preview.txt"], cwd=self.work)
+        _run(["git", "commit", "-m", "preview feature"], cwd=self.work)
+        _run(["git", "push", "-u", "origin", "feat/preview-w"], cwd=self.work)
+        _run(["git", "checkout", "main"], cwd=self.work)
+        wt_path = self.tmp / "wt-preview-w"
+        add_worktree(self.work, "feat/preview-w", wt_path)
+        before_refs = git(self.work, "for-each-ref", "--format=%(refname) %(objectname)")
+
+        other = self.tmp / "other-preview-merge"
+        _run(["git", "clone", "-q", "-b", "main", str(self.tmp / "remote.git"), str(other)],
+             cwd=self.tmp)
+        _run(["git", "fetch", "-q", "origin", "feat/preview-w:feat/preview-w"], cwd=other)
+        _run(["git", "merge", "--ff-only", "feat/preview-w"], cwd=other)
+        _run(["git", "push", "-q", "origin", "main"], cwd=other)
+
+        proc = run_clean_proc(self.work, "--sync-main", "--include-worktrees")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(wt_path.exists(), "dry-run must not remove worktrees")
+        self.assertEqual(git(self.work, "for-each-ref", "--format=%(refname) %(objectname)"),
+                         before_refs,
+                         "preview sync dry-run must not mutate refs")
+        self.assertIn("preview-fetched-trunk", proc.stdout)
+        self.assertIn("lane W dry-run", proc.stdout)
+        self.assertIn("would-archive-and-remove", proc.stdout)
+
+    def test_sync_main_dry_run_refuses_when_preview_temp_ref_delete_fails(self) -> None:
+        _run(["git", "branch", "feat/direct-cleanup-refusal"], cwd=self.work)
+        wt_path = self.tmp / "wt-direct-cleanup-refusal"
+        add_worktree(self.work, "feat/direct-cleanup-refusal", wt_path)
+        self._advance_remote_main()
+        original_git = cm._git
+
+        def fail_preview_ref_delete(
+            repo_root: pathlib.Path, args: list[str], **kwargs: Any,
+        ) -> subprocess.CompletedProcess[str]:
+            if (args[:2] == ["update-ref", "-d"]
+                    and len(args) > 2
+                    and args[2].startswith("refs/clean-merged-preview/")):
+                return subprocess.CompletedProcess(args, 1, "", "cannot delete preview ref")
+            return original_git(repo_root, args, **kwargs)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.object(cm, "_git", fail_preview_ref_delete):
+            with contextlib.redirect_stdout(stdout):
+                with contextlib.redirect_stderr(stderr):
+                    rc = run_clean_inproc(self.work, "--sync-main", "--include-worktrees")
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(wt_path.exists(), "cleanup refusal must stop worktree preview")
+        self.assertIn("preview-ref-cleanup-failed", stdout.getvalue())
+        self.assertIn("usable cleanup authority", stderr.getvalue())
+        self.assertNotIn("lane W dry-run", stdout.getvalue())
+        self.assertNotIn("would-archive-and-remove", stdout.getvalue())
+
+    def test_sync_main_dry_run_refuses_when_preview_temp_ref_cannot_be_deleted(self) -> None:
+        _run(["git", "branch", "feat/cleanup-refusal"], cwd=self.work)
+        wt_path = self.tmp / "wt-cleanup-refusal"
+        add_worktree(self.work, "feat/cleanup-refusal", wt_path)
+        self._advance_remote_main()
+        original_git = cm._git
+
+        def fail_all_preview_ref_deletes(
+            repo_root: pathlib.Path, args: list[str], **kwargs: Any,
+        ) -> subprocess.CompletedProcess[str]:
+            if (args[:2] == ["update-ref", "-d"]
+                    and len(args) > 2
+                    and args[2].startswith("refs/clean-merged-preview/")):
+                return subprocess.CompletedProcess(args, 1, "", "cannot delete preview ref")
+            return original_git(repo_root, args, **kwargs)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.object(cm, "_git", fail_all_preview_ref_deletes):
+            with contextlib.redirect_stdout(stdout):
+                with contextlib.redirect_stderr(stderr):
+                    rc = run_clean_inproc(self.work, "--sync-main", "--include-worktrees")
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(wt_path.exists(), "cleanup refusal must stop worktree preview")
+        self.assertIn("preview-ref-cleanup-failed", stdout.getvalue())
+        self.assertIn("usable cleanup authority", stderr.getvalue())
+        self.assertNotIn("fast-forward-safe trunk", stderr.getvalue())
+        self.assertNotIn("lane W dry-run", stdout.getvalue())
+        self.assertNotIn("would-archive-and-remove", stdout.getvalue())
+
+    def test_sync_main_dry_run_refuses_non_fast_forward_before_cleanup_preview(self) -> None:
+        _run(["git", "branch", "feat/nonff-preview"], cwd=self.work)
+        _run(["git", "commit", "--allow-empty", "-m", "local-only"], cwd=self.work)
+        local_sha = git(self.work, "rev-parse", "main").strip()
+        wt_path = self.tmp / "wt-nonff-preview"
+        add_worktree(self.work, "feat/nonff-preview", wt_path)
+        self._advance_remote_main()
+
+        proc = run_clean_proc(self.work, "--sync-main", "--include-worktrees")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(git(self.work, "rev-parse", "main").strip(), local_sha)
+        self.assertTrue(wt_path.exists(), "dry-run must not remove worktrees")
+        self.assertIn("refused-non-fast-forward", proc.stdout)
+        self.assertNotIn("lane W dry-run", proc.stdout)
+        self.assertNotIn("would-archive-and-remove", proc.stdout)
+
+    def test_sync_main_dry_run_refuses_dirty_checked_out_main_before_cleanup_preview(self) -> None:
+        _run(["git", "branch", "feat/dirty-preview"], cwd=self.work)
+        wt_path = self.tmp / "wt-dirty-preview"
+        add_worktree(self.work, "feat/dirty-preview", wt_path)
+        self._advance_remote_main()
+        local_sha = git(self.work, "rev-parse", "main").strip()
+        (self.work / "operator-note.txt").write_text("dirty main\n", encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--sync-main", "--include-worktrees")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(git(self.work, "rev-parse", "main").strip(), local_sha)
+        self.assertTrue(wt_path.exists(), "dry-run must not remove worktrees")
+        self.assertIn("refused-dirty-trunk-worktree", proc.stdout)
+        self.assertNotIn("lane W dry-run", proc.stdout)
+        self.assertNotIn("would-archive-and-remove", proc.stdout)
+
+    def test_sync_main_apply_fast_forwards_local_main(self) -> None:
+        remote_sha = self._advance_remote_main()
+
+        proc = run_clean_proc(self.work, "--sync-main", "--apply", "--quiet")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(git(self.work, "rev-parse", "main").strip(), remote_sha)
+        self.assertEqual(git(self.work, "rev-parse", "refs/remotes/origin/main").strip(),
+                         remote_sha)
+
+    def test_sync_main_apply_updates_unchecked_out_main_ref(self) -> None:
+        remote_sha = self._advance_remote_main()
+        _run(["git", "checkout", "-b", "operator"], cwd=self.work)
+        operator_sha = git(self.work, "rev-parse", "HEAD").strip()
+
+        proc = run_clean_proc(self.work, "--sync-main", "--apply", "--quiet")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(git(self.work, "branch", "--show-current").strip(), "operator")
+        self.assertEqual(git(self.work, "rev-parse", "HEAD").strip(), operator_sha)
+        self.assertEqual(git(self.work, "rev-parse", "main").strip(), remote_sha)
+
+    def test_sync_main_apply_refuses_non_fast_forward(self) -> None:
+        _run(["git", "commit", "--allow-empty", "-m", "local-only"], cwd=self.work)
+        local_sha = git(self.work, "rev-parse", "main").strip()
+        self._advance_remote_main()
+
+        proc = run_clean_proc(self.work, "--sync-main", "--apply")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(git(self.work, "rev-parse", "main").strip(), local_sha)
+        self.assertIn("refused-non-fast-forward", proc.stdout)
+
+    def test_sync_main_apply_refusal_stops_cleanup_lanes(self) -> None:
+        _run(["git", "branch", "feat/blocked-w"], cwd=self.work)
+        _run(["git", "commit", "--allow-empty", "-m", "local-only"], cwd=self.work)
+        wt_path = self.tmp / "wt-blocked-w"
+        add_worktree(self.work, "feat/blocked-w", wt_path)
+        self._advance_remote_main()
+
+        proc = run_clean_proc(self.work, "--sync-main", "--include-worktrees", "--apply")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(wt_path.exists(), "Lane W must not run after Lane S refusal")
+        self.assertIn("feat/blocked-w", git(self.work, "branch", "--list"))
+        self.assertIn("refused-non-fast-forward", proc.stdout)
+        self.assertIn("cleanup skipped because lane S", proc.stderr)
+
+    def test_sync_main_apply_refuses_dirty_checked_out_main(self) -> None:
+        self._advance_remote_main()
+        local_sha = git(self.work, "rev-parse", "main").strip()
+        (self.work / "local-note.txt").write_text("operator scratch\n", encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--sync-main", "--apply")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(git(self.work, "rev-parse", "main").strip(), local_sha)
+        self.assertIn("refused-dirty-trunk-worktree", proc.stdout)
+
+    def test_remote_branch_gone_but_merged_to_main_is_cleaned_after_sync(self) -> None:
+        _run(["git", "checkout", "-b", "feat/gone-merged"], cwd=self.work)
+        (self.work / "feature.txt").write_text("merged\n", encoding="utf-8")
+        _run(["git", "add", "feature.txt"], cwd=self.work)
+        _run(["git", "commit", "-m", "feature"], cwd=self.work)
+        feature_sha = git(self.work, "rev-parse", "HEAD").strip()
+        _run(["git", "push", "-u", "origin", "feat/gone-merged"], cwd=self.work)
+        _run(["git", "checkout", "main"], cwd=self.work)
+
+        other = self.tmp / "other-merge"
+        _run(["git", "clone", "-q", "-b", "main", str(self.tmp / "remote.git"), str(other)],
+             cwd=self.tmp)
+        _run(["git", "fetch", "-q", "origin", "feat/gone-merged:feat/gone-merged"],
+             cwd=other)
+        _run(["git", "merge", "--ff-only", "feat/gone-merged"], cwd=other)
+        _run(["git", "push", "-q", "origin", "main"], cwd=other)
+        _run(["git", "push", "-q", "origin", "--delete", "feat/gone-merged"], cwd=other)
+
+        proc = run_clean_proc(self.work, "--sync-main", "--apply", "--quiet")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(git(self.work, "rev-parse", "main").strip(), feature_sha)
+        self.assertNotEqual(
+            _run(["git", "rev-parse", "--verify", "refs/remotes/origin/feat/gone-merged"],
+                 cwd=self.work, check=False).returncode,
+            0,
+            "fetch --prune must remove the stale remote-tracking branch",
         )
-        data = cm._parse_toml_flat(text)
-        self.assertEqual(data["keep"], ["branch-a", "branch-b"])
-        self.assertEqual(data["note"], "see # here for details")
-        self.assertEqual(data["trunk_branch"], "main")
+        self.assertNotIn("feat/gone-merged", git(self.work, "branch", "--list"),
+                         "local branch merged into refreshed main is safe to delete")
+
+
+# ---------------------------------------------------------------------------
+# Report redaction tests
+
+
+class ReportRedactionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="cm-redact-"))
+        self.work = make_repo(self.tmp)
+        make_config(self.work)
+        self.config = cm.load_config(self.work)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_fetch_failure_reason_redacts_url_credentials(self) -> None:
+        raw = ("fatal: unable to access "
+               "'https://user:secret-token@example.invalid/private.git/': denied")
+
+        def fake_git(
+            repo_root: pathlib.Path, args: list[str], **kwargs: Any,
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(args, 128, "", raw)
+
+        with mock.patch.object(cm, "_git", fake_git):
+            record = cm._sync_fetch_record(self.work, self.config, apply=True)
+
+        self.assertEqual(record["action"], "fetch-prune-failed")
+        self.assertNotIn("secret-token", record["reason"])
+        self.assertNotIn("user:secret-token", record["reason"])
+        self.assertIn("<redacted>", record["reason"])
+
+    def test_fetch_failure_reason_uses_configured_report_limit(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8").replace(
+                "report_error_max_chars = 200", "report_error_max_chars = 12"),
+            encoding="utf-8",
+        )
+        config = cm.load_config(self.work)
+
+        def fake_git(
+            repo_root: pathlib.Path, args: list[str], **kwargs: Any,
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args, 128, "", "fatal: abcdefghijklmnopqrstuvwxyz")
+
+        with mock.patch.object(cm, "_git", fake_git):
+            record = cm._sync_fetch_record(self.work, config, apply=True)
+
+        self.assertLessEqual(len(record["reason"]), 12)
+
+    def test_report_error_redacts_common_secret_forms(self) -> None:
+        raw = (
+            "Authorization: Bearer ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "
+            "token=secret-token password: hunter2 "
+            "github_pat_11AAAAAAAAAAAAAAAAAAAA_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        )
+
+        safe = cm._safe_report_error(raw, limit=self.config.logging.report_error_max_chars)
+
+        self.assertNotIn("ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", safe)
+        self.assertNotIn("secret-token", safe)
+        self.assertNotIn("hunter2", safe)
+        self.assertNotIn("github_pat_11AAAAAAAAAAAAAAAAAAAA", safe)
+        self.assertIn("<redacted>", safe)
+
+    def test_gh_error_is_redacted_without_cache_write(self) -> None:
+        branch = "feat/gh-error"
+        _run(["git", "branch", branch], cwd=self.work)
+        tip = git(self.work, "rev-parse", branch).strip()
+        raw_error = "gh exit 1: https://user:secret-token@example.invalid/private.git"
+
+        with mock.patch.object(cm, "gh_merged_pr_for_branch", return_value=(None, raw_error)):
+            prs, err = cm.gh_merged_pr_for_branch_cached(self.work, self.config, branch, tip)
+
+        self.assertIsNone(prs)
+        self.assertIsNotNone(err)
+        assert err is not None
+        self.assertNotIn("secret-token", err)
+        self.assertNotIn("user:secret-token", err)
+        self.assertIn("<redacted>", err)
+        cache_path = cm._gh_cache_path(self.work)
+        if cache_path.exists():
+            self.assertNotIn("secret-token", cache_path.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Clean-merged contract tests
+
+
+class CleanupContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="cm-contract-"))
+        self.work = make_repo(self.tmp)
+        make_config(self.work)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_lane_summary_prints_full_refusal_reason(self) -> None:
+        reason = (
+            "detached-HEAD worktree refused "
+            "(use --allow-detached-removal to override; "
+            "reflog-only commits are not preserved by the archive)"
+        )
+        stdout = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout):
+            cm._print_lane_summary("W", [{
+                "action": "refused-detached-head",
+                "branch": "detached-5a4127b5",
+                "tip_sha": "5a4127b52a7f",
+                "worktree": "/tmp/wt",
+                "reason": reason,
+            }], apply=False)
+
+        out = stdout.getvalue()
+        self.assertIn(reason, out)
+        self.assertIn("reflog-only commits are not preserved by the archive)", out)
+
+    def test_no_alternate_toml_parser_path(self) -> None:
+        source = (REPO_ROOT / "scripts" / "clean_merged_artifacts.py").read_text(
+            encoding="utf-8")
+        for token in ("_parse_toml_flat", "_HAS_TOMLLIB", "fallback flat parser"):
+            self.assertNotIn(token, source)
+
+    def test_no_rule_engine_classifier_path(self) -> None:
+        source = (REPO_ROOT / "scripts" / "clean_merged_artifacts.py").read_text(
+            encoding="utf-8")
+        for token in ("ContractRule", "PrPayloadRule", "_classify_contract"):
+            self.assertNotIn(token, source)
+
+    def test_no_preview_cleanup_fallback_delete_path(self) -> None:
+        source = (REPO_ROOT / "scripts" / "clean_merged_artifacts.py").read_text(
+            encoding="utf-8")
+        self.assertNotIn('"update-ref", "--stdin"', source)
+
+    def test_missing_origin_owner_is_config_error(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8").replace('origin_owner = "t"\n', ""),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(cm.ConfigError, "origin_owner"):
+            cm.load_config(self.work)
+
+    def test_unknown_runtime_key_is_config_error(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8").replace(
+                'origin_owner = "t"', 'origin_owner = "t"\nhook_detach = false'),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(cm.ConfigError, "hook_detach"):
+            cm.load_config(self.work)
+
+    def test_trunk_resolution_uses_configured_ref_only(self) -> None:
+        _run(["git", "checkout", "-b", "operator"], cwd=self.work)
+        _run(["git", "branch", "-D", "main"], cwd=self.work)
+        _run(["git", "update-ref", "-d", "refs/remotes/origin/main"], cwd=self.work)
+        _run(["git", "branch", "master"], cwd=self.work)
+
+        self.assertIsNone(cm.resolve_trunk_sha(self.work, "main", "origin"))
+
+    def test_runtime_quantities_load_from_config(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8")
+            .replace("gh_limit = 100", "gh_limit = 37")
+            .replace("archive_timeout_s = 120", "archive_timeout_s = 12")
+            .replace("archive_verify_timeout_s = 30", "archive_verify_timeout_s = 3")
+            .replace("heartbeat_stale_days = 7", "heartbeat_stale_days = 2")
+            .replace("rotated_log_retention_days = 30", "rotated_log_retention_days = 3")
+            .replace("report_error_max_chars = 200", "report_error_max_chars = 44")
+            .replace(
+                'lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"',
+                'lane_r_log_path = "<git-common-dir>/custom-lane-r.log"',
+            ),
+            encoding="utf-8",
+        )
+
+        config = cm.load_config(self.work)
+
+        self.assertEqual(config.lane_r.gh_limit, 37)
+        self.assertEqual(config.lane_w.archive_timeout_s, 12)
+        self.assertEqual(config.lane_w.archive_verify_timeout_s, 3)
+        self.assertEqual(config.logging.rotated_log_retention_days, 3)
+        self.assertEqual(config.logging.report_error_max_chars, 44)
+        self.assertEqual(config.logging.heartbeat_stale_days, 2)
+        self.assertEqual(config.logging.lane_r_log_path, "<git-common-dir>/custom-lane-r.log")
+
+    def test_cli_print_remote_name_uses_config(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8").replace(
+                'remote_name = "origin"', 'remote_name = "upstream"'),
+            encoding="utf-8",
+        )
+
+        proc = run_clean_proc(self.work, "--print-remote-name")
+
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "upstream")
+
+    def test_cli_print_remote_name_fails_loud_without_config(self) -> None:
+        (self.work / "config" / "clean-merged.toml").unlink()
+
+        proc = run_clean_proc(self.work, "--print-remote-name")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn("config/clean-merged.toml", proc.stderr)
+
+    def test_setup_source_uses_configured_remote_name(self) -> None:
+        source = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+
+        self.assertIn("--print-remote-name", source)
+        self.assertIn("remote.${clean_merged_remote}.prune", source)
+        self.assertNotIn("remote.origin.prune", source)
+
+    def test_setup_remote_prune_snippet_sets_configured_remote(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8").replace(
+                'remote_name = "origin"', 'remote_name = "upstream"'),
+            encoding="utf-8",
+        )
+        _run(["git", "remote", "add", "upstream", "https://example.invalid/upstream.git"],
+             cwd=self.work)
+        script = f"""
+set -euo pipefail
+clean_merged_remote="$({sys.executable} {REPO_ROOT / "scripts" / "clean_merged_artifacts.py"} --print-remote-name)"
+git config "remote.${{clean_merged_remote}}.prune" true
+"""
+
+        _run(["bash", "-c", script], cwd=self.work)
+
+        self.assertEqual(git(self.work, "config", "--get", "remote.upstream.prune").strip(), "true")
+        origin_prune = _run(["git", "config", "--get", "remote.origin.prune"],
+                            cwd=self.work, check=False)
+        self.assertNotEqual(origin_prune.returncode, 0)
+
+    def test_docs_do_not_hardcode_configured_heartbeat_latency(self) -> None:
+        source = (REPO_ROOT / "docs" / "ops" / "clean-merged-design.md").read_text(
+            encoding="utf-8")
+        normalized = " ".join(source.split())
+        normalized_lower = normalized.lower()
+
+        self.assertNotIn("real detection latency is 7 days", source)
+        self.assertIn("configured heartbeat stale threshold (default 7 days)", normalized)
+        self.assertNotIn("fail-open (corrupt/tampered", source)
+        self.assertIn("invalid or future-dated gh cache entries fail closed", normalized_lower)
+        self.assertNotIn("pre-purge warning", normalized_lower)
+        self.assertIn("rotated_log_retention_days", normalized)
+        self.assertIn("secret-redacted", normalized_lower)
+        self.assertIn("report_error_max_chars", normalized)
+        self.assertIn("gh cache health", normalized_lower)
+        self.assertIn("rotated-log usage", normalized_lower)
+        self.assertNotIn("Design provenance", source)
+
+    def test_clean_merged_production_comments_use_domain_language(self) -> None:
+        sources = [
+            REPO_ROOT / "scripts" / "clean_merged_artifacts.py",
+            REPO_ROOT / ".githooks" / "post-merge",
+            REPO_ROOT / ".githooks" / "post-checkout",
+        ]
+        combined = "\n".join(path.read_text(encoding="utf-8") for path in sources)
+
+        self.assertNotRegex(
+            combined,
+            r"(?i)\bround[- ]?\d|\bself-review\b|\bGPT\b|\bKimi\b|\bGrok\b|"
+            r"\bGemini\b|code-assist|RECOVERY_HOLE|Design provenance",
+        )
+
+    def test_post_rewrite_comment_uses_configured_trunk(self) -> None:
+        source = (REPO_ROOT / ".githooks" / "post-rewrite").read_text(encoding="utf-8")
+
+        self.assertNotIn("local main", source)
+        self.assertIn("configured trunk", source)
 
 
 # ---------------------------------------------------------------------------
@@ -700,7 +1410,10 @@ class GhCacheTests(unittest.TestCase):
         config = cm.load_config(self.work)
         call_count = {"n": 0}
 
-        def counting_fake(repo_root: pathlib.Path, branch: str, timeout: float):
+        def counting_fake(
+            repo_root: pathlib.Path, branch: str, timeout: float, limit: int,
+            report_error_max_chars: int,
+        ):
             call_count["n"] += 1
             return [], None
 
@@ -717,7 +1430,10 @@ class GhCacheTests(unittest.TestCase):
         config = cm.load_config(self.work)
         call_count = {"n": 0}
 
-        def counting_fake(repo_root: pathlib.Path, branch: str, timeout: float):
+        def counting_fake(
+            repo_root: pathlib.Path, branch: str, timeout: float, limit: int,
+            report_error_max_chars: int,
+        ):
             call_count["n"] += 1
             return [], None
 
@@ -731,14 +1447,13 @@ class GhCacheTests(unittest.TestCase):
 
     def test_entry_is_live_rejects_malformed_and_non_finite(self) -> None:
         """round-5.5 polish (Claude P3-2, GPT P2): malformed/non-finite fetched_at
-        must NOT crash the cache (read or save) AND must be treated as expired
-        so the tool self-heals instead of permanently caching a tampered value."""
+        must NOT crash the cache (read or save) and must not be considered live."""
         now = 1000.0
         ttl = 300.0
         # Live entry
-        self.assertTrue(cm._entry_is_live({"fetched_at": now - 100}, now, ttl))
+        self.assertTrue(cm._entry_is_live({"fetched_at": now - 100, "prs": []}, now, ttl))
         # Expired entry
-        self.assertFalse(cm._entry_is_live({"fetched_at": now - 1000}, now, ttl))
+        self.assertFalse(cm._entry_is_live({"fetched_at": now - 1000, "prs": []}, now, ttl))
         # Malformed: string
         self.assertFalse(cm._entry_is_live({"fetched_at": "not-a-float"}, now, ttl))
         # Malformed: missing key
@@ -752,6 +1467,12 @@ class GhCacheTests(unittest.TestCase):
         # Non-dict
         self.assertFalse(cm._entry_is_live(["not", "a", "dict"], now, ttl))
         self.assertFalse(cm._entry_is_live(None, now, ttl))
+
+    def test_entry_is_live_rejects_future_fetched_at(self) -> None:
+        now = 1000.0
+        ttl = 300.0
+
+        self.assertFalse(cm._entry_is_live({"fetched_at": now + 1, "prs": []}, now, ttl))
 
     def test_atomic_write_text_cleans_tmp_on_crash(self) -> None:
         """round-5.5 polish (Kimi/Grok P2): if write_text or os.replace raises,
@@ -771,17 +1492,108 @@ class GhCacheTests(unittest.TestCase):
         # Original content preserved (write_text succeeded but replace failed)
         self.assertEqual(target.read_text(encoding="utf-8"), "ORIGINAL")
 
-    def test_cache_survives_corrupt_cache_file(self) -> None:
+    def test_cache_corruption_fails_closed_without_refetch(self) -> None:
         config = cm.load_config(self.work)
         cache_path = cm._gh_cache_path(self.work)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text("not json at all", encoding="utf-8")
-        with mock.patch.object(cm, "gh_merged_pr_for_branch",
-                                lambda r, b, t: ([], None)):
+        with mock.patch.object(cm, "gh_merged_pr_for_branch") as gh:
             prs, err = cm.gh_merged_pr_for_branch_cached(
                 self.work, config, "feat/x", "0" * 40)
-        self.assertEqual(prs, [])
-        self.assertIsNone(err)
+        self.assertIsNone(prs)
+        self.assertIn("cache", err or "")
+        gh.assert_not_called()
+
+    def test_live_cache_entry_with_malformed_prs_fails_closed_without_refetch(self) -> None:
+        config = cm.load_config(self.work)
+        branch = "feat/malformed-prs"
+        tip = "1" * 40
+        cache_path = cm._gh_cache_path(self.work)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps({
+            f"{branch}@{tip[:12]}": {
+                "fetched_at": time.time(),
+                "prs": {"not": "a list"},
+                "error": None,
+            }
+        }), encoding="utf-8")
+        with mock.patch.object(cm, "gh_merged_pr_for_branch") as gh:
+            prs, err = cm.gh_merged_pr_for_branch_cached(self.work, config, branch, tip)
+
+        self.assertIsNone(prs)
+        self.assertIn("invalid cache entry", err or "")
+        gh.assert_not_called()
+
+    def test_future_cache_entry_fails_closed_without_refetch(self) -> None:
+        config = cm.load_config(self.work)
+        branch = "feat/future-cache"
+        tip = "3" * 40
+        cache_path = cm._gh_cache_path(self.work)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps({
+            f"{branch}@{tip[:12]}": {
+                "fetched_at": time.time() + 3600,
+                "prs": [],
+            }
+        }), encoding="utf-8")
+        with mock.patch.object(cm, "gh_merged_pr_for_branch") as gh:
+            prs, err = cm.gh_merged_pr_for_branch_cached(self.work, config, branch, tip)
+
+        self.assertIsNone(prs)
+        self.assertIn("invalid cache entry", err or "")
+        gh.assert_not_called()
+
+    def test_cache_save_prunes_invalid_entries(self) -> None:
+        config = cm.load_config(self.work)
+        cache_path = cm._gh_cache_path(self.work)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        cache = {
+            "bad@aaaaaaaaaaaa": {
+                "fetched_at": now,
+                "prs": {"not": "a list"},
+            },
+            "good@bbbbbbbbbbbb": {
+                "fetched_at": now,
+                "prs": [],
+            },
+        }
+        cache_path.write_text(json.dumps(cache), encoding="utf-8")
+
+        cm._save_gh_cache(cache_path, cache, config.lane_r.cache_ttl_s)
+
+        stored = json.loads(cache_path.read_text(encoding="utf-8"))
+        self.assertNotIn("bad@aaaaaaaaaaaa", stored)
+        self.assertIn("good@bbbbbbbbbbbb", stored)
+
+    def test_doctor_reports_invalid_gh_cache(self) -> None:
+        cache_path = cm._gh_cache_path(self.work)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("not json at all", encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        output = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("gh cache", output)
+        self.assertIn(str(cache_path), output)
+
+    def test_gh_failure_is_not_persisted_to_cache(self) -> None:
+        config = cm.load_config(self.work)
+        branch = "feat/gh-failure"
+        tip = "2" * 40
+
+        with mock.patch.object(
+            cm, "gh_merged_pr_for_branch", return_value=(None, "permission denied")
+        ):
+            prs, err = cm.gh_merged_pr_for_branch_cached(self.work, config, branch, tip)
+
+        self.assertIsNone(prs)
+        self.assertEqual(err, "permission denied")
+        cache_path = cm._gh_cache_path(self.work)
+        if cache_path.exists():
+            stored = json.loads(cache_path.read_text(encoding="utf-8"))
+            self.assertNotIn(f"{branch}@{tip[:12]}", stored)
 
 
 # ---------------------------------------------------------------------------
@@ -799,12 +1611,7 @@ class HookEndToEndTests(unittest.TestCase):
         _run(["git", "init", "-b", "main", str(self.work)], cwd=self.tmp)
         _run(["git", "remote", "add", "origin", str(self.remote)], cwd=self.work)
         # Drop config + script + hooks
-        (self.work / "config").mkdir()
-        (self.work / "config" / "clean-merged.toml").write_text(
-            'schema_version = 1\n[clean-merged]\nenabled = true\n'
-            'trunk_branch = "main"\n[clean-merged.lane_w]\n'
-            'quarantine_dir = "<git-common-dir>/clean-merged-quarantine"\n',
-            encoding="utf-8")
+        make_config(self.work)
         scripts_dir = self.work / "scripts"
         scripts_dir.mkdir()
         shutil.copy(REPO_ROOT / "scripts" / "clean_merged_artifacts.py", scripts_dir)
@@ -853,6 +1660,155 @@ class HookEndToEndTests(unittest.TestCase):
         hb = self._heartbeat()
         # post-checkout runs Lane H only when landing on trunk; verify heartbeat present.
         self.assertIsNotNone(hb, "post-checkout Lane H dispatch must write heartbeat")
+
+    def test_post_checkout_uses_configured_trunk_branch(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8").replace(
+                'trunk_branch = "main"', 'trunk_branch = "trunk"'),
+            encoding="utf-8",
+        )
+        _run(["git", "checkout", "-b", "trunk"], cwd=self.work)
+        common = _run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                       cwd=self.work).stdout.strip()
+        pathlib.Path(common, "clean-merged.heartbeat").unlink(missing_ok=True)
+
+        _run(["git", "checkout", "-b", "feat/configured-trunk"], cwd=self.work)
+        self.assertIsNone(
+            self._heartbeat(),
+            "post-checkout must not dispatch when landing off the configured trunk",
+        )
+        _run(["git", "checkout", "trunk"], cwd=self.work)
+
+        self.assertIsNotNone(
+            self._heartbeat(),
+            "post-checkout must dispatch when landing on the TOML-configured trunk",
+        )
+
+    def test_post_merge_uses_configured_lane_r_log_redirect_and_setsid_fallback(self) -> None:
+        source = (REPO_ROOT / ".githooks" / "post-merge").read_text(encoding="utf-8")
+        self.assertIn("--redirect-output-to-lane-r-log", source)
+        self.assertIn("setsid", source)
+        self.assertIn('setsid python3 "$script" --reconcile', source)
+        self.assertNotIn('(setsid python3 "$script"', source)
+        self.assertNotIn("clean-merged.lane-r.log", source)
+
+    def test_redirect_output_to_configured_lane_r_log(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8").replace(
+                'lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"',
+                'lane_r_log_path = "<git-common-dir>/custom-lane-r.log"',
+            ),
+            encoding="utf-8",
+        )
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        log_path = common / "custom-lane-r.log"
+
+        proc = run_clean_proc(self.work, "--doctor", "--redirect-output-to-lane-r-log")
+
+        self.assertEqual(proc.stdout, "")
+        self.assertTrue(log_path.is_file())
+        self.assertIn("[clean-merged] doctor", log_path.read_text(encoding="utf-8"))
+
+    def test_redirect_output_rotates_lane_r_log(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8")
+            .replace("max_log_bytes = 1048576", "max_log_bytes = 10")
+            .replace(
+                'lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"',
+                'lane_r_log_path = "<git-common-dir>/custom-lane-r.log"',
+            ),
+            encoding="utf-8",
+        )
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        log_path = common / "custom-lane-r.log"
+        log_path.write_text("old content that exceeds the configured cap\n", encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--doctor", "--redirect-output-to-lane-r-log")
+
+        self.assertEqual(proc.stdout, "")
+        self.assertTrue(log_path.with_suffix(log_path.suffix + ".1").is_file())
+        self.assertIn("old content", log_path.with_suffix(log_path.suffix + ".1").read_text(
+            encoding="utf-8"))
+        self.assertIn("[clean-merged] doctor", log_path.read_text(encoding="utf-8"))
+
+    def test_lane_r_log_rotation_respects_existing_lock(self) -> None:
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        log_path = common / "clean-merged.lane-r.log"
+        log_path.write_text("old content that exceeds the configured cap\n", encoding="utf-8")
+        lock_fd = cm._acquire_lock(log_path.with_suffix(log_path.suffix + ".lock"))
+        self.assertIsNotNone(lock_fd)
+        assert lock_fd is not None
+        try:
+            handle = cm._open_rotating_log(log_path, 10, rotated_retention_days=30)
+            try:
+                handle.write("new content\n")
+            finally:
+                handle.close()
+        finally:
+            cm._release_lock(lock_fd)
+
+        self.assertFalse(log_path.with_suffix(log_path.suffix + ".1").exists())
+        self.assertIn("new content", log_path.read_text(encoding="utf-8"))
+
+    def test_lane_r_log_rotation_keeps_active_writer_reachable(self) -> None:
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        log_path = common / "clean-merged.lane-r.log"
+        log_path.write_text("seed content that exceeds the configured cap\n", encoding="utf-8")
+
+        active = cm._open_rotating_log(log_path, 10, rotated_retention_days=30)
+        try:
+            active.write("active writer before later rotations\n")
+            active.flush()
+            second = cm._open_rotating_log(log_path, 10, rotated_retention_days=30)
+            try:
+                second.write("second writer content beyond cap\n")
+            finally:
+                second.close()
+            active.write("active writer after second rotation\n")
+            active.flush()
+            third = cm._open_rotating_log(log_path, 10, rotated_retention_days=30)
+            try:
+                third.write("third writer content\n")
+            finally:
+                third.close()
+            active.write("active writer after third rotation\n")
+            active.flush()
+        finally:
+            active.close()
+
+        visible = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(log_path.parent.glob(f"{log_path.name}*"))
+            if path.is_file() and not path.name.endswith(".lock")
+        )
+        self.assertIn("active writer after third rotation", visible)
+
+    def test_rotating_log_prunes_expired_rotated_segments(self) -> None:
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        log_path = common / "clean-merged.lane-r.log"
+        log_path.write_text("live content that exceeds the configured cap\n", encoding="utf-8")
+        expired = common / "clean-merged.lane-r.log.1.111.222"
+        fresh = common / "clean-merged.lane-r.log.1.333.444"
+        expired.write_text("expired\n", encoding="utf-8")
+        fresh.write_text("fresh\n", encoding="utf-8")
+        now = time.time()
+        os.utime(expired, (now - 3 * 86400, now - 3 * 86400))
+        os.utime(fresh, (now, now))
+
+        handle = cm._open_rotating_log(log_path, 10, rotated_retention_days=2)
+        handle.close()
+
+        self.assertFalse(expired.exists())
+        self.assertTrue(fresh.exists())
+        self.assertTrue(log_path.with_suffix(log_path.suffix + ".1").exists())
 
     def test_post_rewrite_fires_on_rebase_pull(self) -> None:
         # Divergent local + remote forces an actual rebase on pull -> post-rewrite fires.
@@ -1250,6 +2206,36 @@ class LaneWOptInInvariantTests(unittest.TestCase):
                          f"--doctor in a config-less repo should report a problem (rc=1); stderr={doc.stderr!r}")
         self.assertNotIn("Traceback", doc.stdout + doc.stderr,
                          "--doctor in a config-less repo must not crash with a traceback")
+
+    def test_missing_tomllib_exits_gracefully(self) -> None:
+        """A Python without stdlib tomllib must not die before doctor diagnostics."""
+        shadow_dir = self.tmp / "shadow-tomllib"
+        shadow_dir.mkdir()
+        script = shadow_dir / "clean_merged_artifacts.py"
+        shutil.copy(REPO_ROOT / "scripts" / "clean_merged_artifacts.py", script)
+        (shadow_dir / "tomllib.py").write_text(
+            "raise ModuleNotFoundError(\"No module named 'tomllib'\")\n",
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env.update(GIT_ENV)
+
+        normal = subprocess.run(
+            [sys.executable, str(script), "--lane", "h", "--apply", "--quiet"],
+            cwd=self.work, env=env, capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(normal.returncode, 0)
+        self.assertNotIn("Traceback", normal.stdout + normal.stderr)
+
+        doctor = subprocess.run(
+            [sys.executable, str(script), "--doctor"],
+            cwd=self.work, env=env, capture_output=True, text=True, timeout=60,
+        )
+        output = doctor.stdout + doctor.stderr
+        self.assertEqual(doctor.returncode, 1)
+        self.assertNotIn("Traceback", output)
+        self.assertIn("tomllib=no", output)
+        self.assertIn("Python 3.11+", output)
 
     def test_detached_refusal_uses_distinct_action_and_no_sentinel_leak(self) -> None:
         """Soundness-fix review (Kimi P2 #1 / Claude): a refused detached-HEAD

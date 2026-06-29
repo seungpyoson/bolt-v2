@@ -41,16 +41,26 @@ from command_understanding import (
     CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT,
     cargo_args_for_target_routing_scan,
     cargo_subcommand,
-    cargo_subcommand_with_index,  # noqa: F401 - re-exported for command_understanding parity tests.
-    nextest_subcommand_with_index,  # noqa: F401 - re-exported for command_understanding parity tests.
-    python_call_command_argument,  # noqa: F401 - re-exported for command_understanding parity tests.
-    python_call_name,  # noqa: F401 - re-exported for command_understanding parity tests.
-    python_command_string,  # noqa: F401 - re-exported for command_understanding parity tests.
-    python_constant_string,  # noqa: F401 - re-exported for command_understanding parity tests.
+    cargo_subcommand_with_index,
+    nextest_subcommand_with_index,
+    python_call_command_argument,
+    python_call_name,
+    python_command_string,
+    python_constant_string,
     python_inline_command_payloads,
 )
 from ci_test_manifest import CiTestManifest, _mask_rust_non_code, build_test_manifest
 from rust_verification import CARGO_ALIAS_SUBCOMMANDS, CARGO_DISK_PREFLIGHT_SUBCOMMANDS
+
+
+COMMAND_UNDERSTANDING_PARITY_EXPORTS = (
+    cargo_subcommand_with_index,
+    nextest_subcommand_with_index,
+    python_call_command_argument,
+    python_call_name,
+    python_command_string,
+    python_constant_string,
+)
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -2008,12 +2018,35 @@ def shell_line_is_control_flow(line: str) -> bool:
     )
 
 
+def shell_line_is_function_definition(line: str) -> bool:
+    stripped = line.strip()
+    return (
+        re.match(r"^(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*\{", stripped)
+        is not None
+        or re.match(r"^function\s+[A-Za-z_][A-Za-z0-9_]*\b", stripped) is not None
+    )
+
+
+def shell_line_has_unclosed_quote(line: str) -> bool:
+    try:
+        shlex.split(line)
+    except ValueError:
+        return True
+    return False
+
+
 def run_body_required_command_count(lines: list[str], command: str) -> int:
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
-        if "<<" in stripped or shell_line_is_control_flow(stripped):
+        if (
+            "<<"
+            in stripped
+            or shell_line_is_control_flow(stripped)
+            or shell_line_is_function_definition(stripped)
+            or shell_line_has_unclosed_quote(stripped)
+        ):
             return 0
     return top_level_shell_commands(lines).count(command)
 
@@ -2027,7 +2060,7 @@ def block_required_run_command_count(block: list[str], command: str) -> int:
         value = inline.group(2).strip().strip("'\"")
         if value == command:
             return 1
-        if value not in {"|", ">"}:
+        if value != "|":
             continue
         return run_body_required_command_count(block_run_body_lines(block), command)
     return 0
@@ -6251,14 +6284,14 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
     "source-fence-static",
     "ci-lint-workflow",
 )
+ACTIONLINT_WORKFLOW_REQUIRED_COMMANDS = (
+    "python3 scripts/test_ci_storage_audit.py",
+)
 CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/test_ci_storage_audit.py",
     "python3 scripts/test_root_bin_sidecars.py",
     "python3 scripts/test_ci_input_sets.py",
     "python3 scripts/test_rust_test_targets.py",
-)
-ACTIONLINT_WORKFLOW_REQUIRED_COMMANDS = (
-    "python3 scripts/test_ci_storage_audit.py",
 )
 
 

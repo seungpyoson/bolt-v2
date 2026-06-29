@@ -94,7 +94,7 @@ class CiStorageTripwireTests(unittest.TestCase):
                 cap_source = "operator policy"
                 owner = "@ci-owner"
                 escalation = "Inspect the P0 ci-storage-audit JSON and open the relevant control issue."
-                update_cadence = "weekly scheduled run plus workflow_dispatch"
+                update_cadence = "weekly scheduled run"
                 issue_labels = ["infra", "ops", "github_actions"]
 
                 [storage_tripwire.issue_match]
@@ -110,13 +110,13 @@ class CiStorageTripwireTests(unittest.TestCase):
                 [storage_tripwire.workflow]
                 path = ".github/workflows/ci-storage-tripwire.yml"
                 job_id = "storage-tripwire"
-                job_if = "${{ github.ref_name == github.event.repository.default_branch }}"
+                job_if = "${{ github.event_name == 'schedule' }}"
                 runner_var = "CI_RUNNER_GITHUB_HOSTED"
                 schedule_cron = "17 9 * * 1"
                 concurrency_group = "ci-storage-tripwire"
                 cancel_in_progress = false
                 run_command = "python3 scripts/ci_storage_tripwire.py apply-live --repo \\"$GITHUB_REPOSITORY\\" --branch \\"$GITHUB_REF_NAME\\""
-                triggers = ["schedule", "workflow_dispatch"]
+                triggers = ["schedule"]
                 permissions = { contents = "read", actions = "read", issues = "write" }
                 required_fragments = [
                   "uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
@@ -192,7 +192,6 @@ class CiStorageTripwireTests(unittest.TestCase):
             on:
               schedule:
                 - cron: "17 9 * * 1"
-              workflow_dispatch:
 
             permissions:
               contents: read
@@ -206,7 +205,7 @@ class CiStorageTripwireTests(unittest.TestCase):
             jobs:
               storage-tripwire:
                 name: storage-tripwire
-                if: ${{ github.ref_name == github.event.repository.default_branch }}
+                if: ${{ github.event_name == 'schedule' }}
                 runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
                 steps:
                   - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -736,13 +735,13 @@ class CiStorageTripwireTests(unittest.TestCase):
                 [storage_tripwire.workflow]
                 path = ".github/workflows/ci-storage-tripwire.yml"
                 job_id = "storage-tripwire"
-                job_if = "${{ github.ref_name == github.event.repository.default_branch }}"
+                job_if = "${{ github.event_name == 'schedule' }}"
                 runner_var = "CI_RUNNER_GITHUB_HOSTED"
                 schedule_cron = "17 9 * * 1"
                 concurrency_group = "ci-storage-tripwire"
                 cancel_in_progress = false
                 run_command = "python3 scripts/ci_storage_tripwire.py apply-live --repo \\"$GITHUB_REPOSITORY\\" --branch \\"$GITHUB_REF_NAME\\""
-                triggers = ["schedule", "workflow_dispatch"]
+                triggers = ["schedule"]
                 permissions = { contents = "read", actions = "read", issues = "write" }
                 required_fragments = ["python3 scripts/ci_storage_tripwire.py", "apply-live"]
                 forbidden_fragments = ["actions/artifacts", "statuses/"]
@@ -792,13 +791,13 @@ class CiStorageTripwireTests(unittest.TestCase):
                 [storage_tripwire.workflow]
                 path = ".github/workflows/ci-storage-tripwire.yml"
                 job_id = "storage-tripwire"
-                job_if = "${{ github.ref_name == github.event.repository.default_branch }}"
+                job_if = "${{ github.event_name == 'schedule' }}"
                 runner_var = "CI_RUNNER_GITHUB_HOSTED"
                 schedule_cron = "17 9 * * 1"
                 concurrency_group = "ci-storage-tripwire"
                 cancel_in_progress = false
                 run_command = "python3 scripts/ci_storage_tripwire.py apply-live --repo \\"$GITHUB_REPOSITORY\\" --branch \\"$GITHUB_REF_NAME\\""
-                triggers = ["schedule", "workflow_dispatch"]
+                triggers = ["schedule"]
                 permissions = { contents = "read", actions = "read", issues = "write" }
                 required_fragments = ["python3 scripts/ci_storage_tripwire.py", "apply-live"]
                 forbidden_fragments = ["actions/artifacts", "statuses/"]
@@ -878,8 +877,25 @@ class CiStorageTripwireTests(unittest.TestCase):
 
         cases = [
             (
-                workflow.replace("  workflow_dispatch:\n", "  pull_request:\n"),
+                workflow.replace(
+                    '    - cron: "17 9 * * 1"\n',
+                    '    - cron: "17 9 * * 1"\n  workflow_dispatch:\n',
+                ),
                 "triggers must match",
+            ),
+            (
+                workflow.replace(
+                    "\npermissions:\n",
+                    "\ndefaults:\n  run:\n    working-directory: /tmp\n\npermissions:\n",
+                ),
+                "top-level keys",
+            ),
+            (
+                workflow.replace(
+                    "\npermissions:\n",
+                    "\nenv:\n  PYTHONPATH: /tmp\n\npermissions:\n",
+                ),
+                "top-level keys",
             ),
             (
                 workflow.replace(
@@ -897,11 +913,25 @@ class CiStorageTripwireTests(unittest.TestCase):
                     "    name: storage-tripwire\n",
                     "    name: storage-tripwire\n    permissions:\n      checks: write\n      statuses: write\n",
                 ),
-                "job-level permissions",
+                "job keys",
             ),
             (
                 workflow.replace(
-                    "    if: ${{ github.ref_name == github.event.repository.default_branch }}\n",
+                    "    name: storage-tripwire\n",
+                    "    name: storage-tripwire\n    env:\n      PYTHONPATH: /tmp\n",
+                ),
+                "job keys",
+            ),
+            (
+                workflow.replace(
+                    "    name: storage-tripwire\n",
+                    "    name: storage-tripwire\n    defaults:\n      run:\n        working-directory: /tmp\n",
+                ),
+                "job keys",
+            ),
+            (
+                workflow.replace(
+                    "    if: ${{ github.event_name == 'schedule' }}\n",
                     "    if: ${{ github.ref_name == 'main' }}\n",
                 ),
                 "job if",

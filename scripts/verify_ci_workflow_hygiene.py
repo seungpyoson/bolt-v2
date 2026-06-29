@@ -13283,6 +13283,30 @@ def workflow_schedule_crons(workflow_text: str) -> tuple[list[str], list[str]]:
     return crons, extras
 
 
+def workflow_top_level_keys(workflow_text: str) -> list[str]:
+    keys: list[str] = []
+    for line in workflow_text.splitlines():
+        clean = strip_comment(line).rstrip()
+        if not clean or clean.startswith((" ", "\t")):
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+):(?:\s*.*)?", clean)
+        if match is not None:
+            keys.append(match.group(1))
+    return keys
+
+
+def storage_tripwire_job_top_level_keys(job_lines: list[str]) -> list[str]:
+    keys: list[str] = []
+    for line in job_lines:
+        clean = strip_comment(line).rstrip()
+        if not clean:
+            continue
+        match = re.fullmatch(r"    ([A-Za-z0-9_.-]+):(?:\s*.*)?", clean)
+        if match is not None:
+            keys.append(match.group(1))
+    return keys
+
+
 def storage_tripwire_expected_checkout_action(required_fragments: tuple[str, ...]) -> str | None:
     actions = [
         fragment.removeprefix("uses: ").strip()
@@ -13326,6 +13350,10 @@ def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str
         return [f"{workflow_name} must exist"]
 
     errors: list[str] = []
+    workflow_keys = workflow_top_level_keys(workflow_text)
+    allowed_workflow_keys = {"name", "on", "permissions", "concurrency", "jobs"}
+    if set(workflow_keys) != allowed_workflow_keys or len(workflow_keys) != len(set(workflow_keys)):
+        errors.append(f"{workflow_name} top-level keys must match the storage tripwire workflow contract")
     if workflow_trigger_keys(workflow_text) != set(workflow_contract.triggers):
         errors.append(f"{workflow_name} triggers must match storage_tripwire.workflow.triggers")
     schedule_crons, schedule_extras = workflow_schedule_crons(workflow_text)
@@ -13358,6 +13386,10 @@ def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str
         errors.append(f"{workflow_name} must define configured storage tripwire job")
         return errors
     job_text = "\n".join(job)
+    job_keys = storage_tripwire_job_top_level_keys(job)
+    allowed_job_keys = {"name", "if", "runs-on", "steps"}
+    if set(job_keys) != allowed_job_keys or len(job_keys) != len(set(job_keys)):
+        errors.append(f"{workflow_name} storage tripwire job keys must match the workflow contract")
     if job_if_value(job) != workflow_contract.job_if:
         errors.append(f"{workflow_name} storage tripwire job if must match storage_tripwire.workflow.job_if")
     actual_var = extract_job_runs_on_var(job)

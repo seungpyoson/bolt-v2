@@ -5,7 +5,7 @@ storage_cap_bytes = 107374182400
 cap_source = "operator early-warning threshold; GitHub billing cap is not exposed by the read-only billing usage endpoint"
 owner = "@seungpyoson"
 escalation = "Inspect the ci-storage-audit snapshot, then continue the active #939 storage-control child issue that owns the crossed surface."
-update_cadence = "weekly scheduled run plus workflow_dispatch"
+update_cadence = "weekly scheduled run"
 issue_labels = ["infra", "ops", "github_actions"]
 
 [storage_tripwire.issue_match]
@@ -21,13 +21,13 @@ suffix = " -->"
 [storage_tripwire.workflow]
 path = ".github/workflows/ci-storage-tripwire.yml"
 job_id = "storage-tripwire"
-job_if = "${{ github.ref_name == github.event.repository.default_branch }}"
+job_if = "${{ github.event_name == 'schedule' }}"
 runner_var = "CI_RUNNER_GITHUB_HOSTED"
 schedule_cron = "17 9 * * 1"
 concurrency_group = "ci-storage-tripwire"
 cancel_in_progress = false
 run_command = "python3 scripts/ci_storage_tripwire.py apply-live --repo \"$GITHUB_REPOSITORY\" --branch \"$GITHUB_REF_NAME\""
-triggers = ["schedule", "workflow_dispatch"]
+triggers = ["schedule"]
 permissions = { contents = "read", actions = "read", issues = "write" }
 required_fragments = [
   "uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",

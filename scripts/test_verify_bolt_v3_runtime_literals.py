@@ -219,6 +219,27 @@ def test_bypass_shapes_emit() -> None:
     )
 
 
+def test_bool_literals_emit_as_runtime_candidates() -> None:
+    emitted = {
+        (literal.kind, literal.literal)
+        for literal in scan_source(
+            """
+            pub const LIVE_SUBMIT: bool = true;
+            pub fn bool_probe(input: bool) -> bool {
+                let fallback = false;
+                let true_identifier = input;
+                let _text = "true_is_only_text_here";
+                fallback || LIVE_SUBMIT || true_identifier
+            }
+            """
+        )
+    }
+    expected = {("bool", "true"), ("bool", "false")}
+    missing = expected - emitted
+    if missing:
+        raise AssertionError(f"missing bool literals {sorted(missing)} from emitted {sorted(emitted)}")
+
+
 def test_context_shape_bypasses_emit() -> None:
     assert_emits(
         """
@@ -427,12 +448,43 @@ reason = "invalid probe"
         VERIFIER.AUDIT_PATH = original_audit_path
 
 
+def test_runtime_policy_classification_is_hard_fail() -> None:
+    original_audit_path = VERIFIER.AUDIT_PATH
+    try:
+        with tempfile.TemporaryDirectory() as scratch_dir:
+            scratch = Path(scratch_dir) / "audit.toml"
+            scratch.write_text(
+                """
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = "\\"operator_runtime_flag\\""
+context = "const POLICY: &str = \\"operator_runtime_flag\\";"
+classification = "runtime-policy"
+reason = "operator policy values must be config-sourced, not allowlisted"
+""".lstrip(),
+                encoding="utf-8",
+            )
+            VERIFIER.AUDIT_PATH = scratch
+            try:
+                VERIFIER.load_allowed()
+            except ValueError as error:
+                message = str(error)
+                if "runtime-policy" not in message or "config-sourced" not in message:
+                    raise AssertionError(f"unexpected runtime-policy error: {error}") from error
+            else:
+                raise AssertionError("expected runtime-policy classification to hard-fail")
+    finally:
+        VERIFIER.AUDIT_PATH = original_audit_path
+
+
 def main() -> int:
     tests = [
         test_scan_universe,
         test_cfg_test_module_ranges,
         test_cfg_test_item_stripping_keeps_following_production_literals,
         test_bypass_shapes_emit,
+        test_bool_literals_emit_as_runtime_candidates,
         test_context_shape_bypasses_emit,
         test_multiline_log_diagnostics_are_ignored_by_callsite,
         test_strategy_prefixed_placeholder_literals_are_not_name_bypassed,
@@ -442,6 +494,7 @@ def main() -> int:
         test_char_literals_do_not_corrupt_scanning,
         test_allowlist_exactness,
         test_provider_credential_log_modules_are_provider_scoped,
+        test_runtime_policy_classification_is_hard_fail,
     ]
     for test in tests:
         test()

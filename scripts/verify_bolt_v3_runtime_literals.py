@@ -5,6 +5,12 @@ This verifier scans every current production Rust source file under `src/`,
 skips `#[cfg(test)] mod tests` regions and diagnostics by rule, then requires
 every remaining candidate runtime literal to be explicitly allowlisted with a
 rationale.
+
+H1 decision: keep this as a Rust lexical scanner with audit-backed exactness
+instead of introducing an AST parser. The existing verifier already owns the
+runtime-literal audit, strips test regions, and has exact allowlist self-tests;
+bool tokens can be recognized safely in that lexer state without claiming to
+close string-interpolation macro residuals such as `format!("{}", true)`.
 """
 
 from __future__ import annotations
@@ -25,6 +31,9 @@ AUDIT_PATH = REPO_ROOT / "docs/bolt-v3/research/runtime-literals/bolt-v3-runtime
 SCAN_GLOBS = (
     "src/**/*.rs",
 )
+HARD_FAIL_CLASSIFICATIONS = {
+    "runtime-policy",
+}
 
 DIAGNOSTIC_WORDS = (
     "already",
@@ -118,6 +127,12 @@ def load_allowed() -> set[tuple[str, str, str, str]]:
         if missing:
             joined = ", ".join(missing)
             raise ValueError(f"{AUDIT_PATH}: allowlist row missing {joined}: {row!r}")
+        if row["classification"] in HARD_FAIL_CLASSIFICATIONS:
+            raise ValueError(
+                f"{AUDIT_PATH}: {row['classification']} is a hard-fail classification; "
+                f"operator runtime policy literals must be config-sourced, not allowlisted: "
+                f"{row!r}"
+            )
         if row["classification"] == "provider_credential_log_module" and (
             not row["path"].startswith("src/bolt_v3_providers/")
             or row["path"] == "src/bolt_v3_providers/mod.rs"
@@ -377,6 +392,22 @@ def scan_file(path: Path) -> list[Literal]:
             index = string_end
             continue
 
+        bool_end = rust_bool_literal_end(text, index)
+        if bool_end is not None:
+            start = index
+            index = bool_end
+            literals.append(
+                Literal(
+                    rel,
+                    line,
+                    "bool",
+                    text[start:index],
+                    current_context(),
+                    call_context(text, start),
+                )
+            )
+            continue
+
         number_end = rust_number_literal_end(text, index)
         if number_end is not None:
             start = index
@@ -402,6 +433,19 @@ def scan_file(path: Path) -> list[Literal]:
 
 def is_ident_char(char: str) -> bool:
     return char.isalnum() or char == "_"
+
+
+def rust_bool_literal_end(text: str, start: int) -> int | None:
+    for literal in ("false", "true"):
+        end = start + len(literal)
+        if not text.startswith(literal, start):
+            continue
+        if is_ident_char(text[start - 1] if start > 0 else ""):
+            return None
+        if is_ident_char(text[end] if end < len(text) else ""):
+            return None
+        return end
+    return None
 
 
 def rust_number_literal_end(text: str, start: int) -> int | None:

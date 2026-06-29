@@ -113,6 +113,7 @@ class LoggingConfig:
     audit_path: str
     max_log_bytes: int
     rotated_log_retention_days: int
+    report_error_max_chars: int
     heartbeat_path: str
     heartbeat_stale_days: int
     lane_r_log_path: str
@@ -227,6 +228,7 @@ CONFIG_KEYS = frozenset({
     "clean-merged.logging.audit_path",
     "clean-merged.logging.max_log_bytes",
     "clean-merged.logging.rotated_log_retention_days",
+    "clean-merged.logging.report_error_max_chars",
     "clean-merged.logging.heartbeat_path",
     "clean-merged.logging.heartbeat_stale_days",
     "clean-merged.logging.lane_r_log_path",
@@ -333,6 +335,8 @@ def load_config(repo_root: pathlib.Path) -> Config:
         max_log_bytes=_config_positive_int(flat, "clean-merged.logging.max_log_bytes"),
         rotated_log_retention_days=_config_positive_int(
             flat, "clean-merged.logging.rotated_log_retention_days"),
+        report_error_max_chars=_config_positive_int(
+            flat, "clean-merged.logging.report_error_max_chars"),
         heartbeat_path=_config_str(flat, "clean-merged.logging.heartbeat_path"),
         heartbeat_stale_days=_config_positive_int(
             flat, "clean-merged.logging.heartbeat_stale_days"),
@@ -391,7 +395,7 @@ _REPORT_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
-def _safe_report_error(raw: str, *, limit: int = 200) -> str:
+def _safe_report_error(raw: str, *, limit: int) -> str:
     """Sanitize subprocess stderr before it reaches reports or audit logs."""
     text = raw.strip()
     for pattern, replacement in _REPORT_SECRET_PATTERNS:
@@ -519,7 +523,9 @@ def write_backup_ref(repo_root: pathlib.Path, branch: str, tip: str) -> str:
     return ref
 
 
-def delete_branch_ref_cas(repo_root: pathlib.Path, branch: str, expected_sha: str) -> tuple[bool, str]:
+def delete_branch_ref_cas(
+    repo_root: pathlib.Path, branch: str, expected_sha: str, *, report_error_max_chars: int,
+) -> tuple[bool, str]:
     """CAS delete via `git update-ref -d refs/heads/<branch> <expected_sha>`.
 
     We do NOT use `git branch -d` because its merged-ness check is against HEAD
@@ -531,7 +537,7 @@ def delete_branch_ref_cas(repo_root: pathlib.Path, branch: str, expected_sha: st
     """
     out = _git(repo_root, ["update-ref", "-d", f"refs/heads/{branch}", expected_sha],
                check=False)
-    return out.returncode == 0, _safe_report_error(out.stderr)
+    return out.returncode == 0, _safe_report_error(out.stderr, limit=report_error_max_chars)
 
 
 # ---------------------------------------------------------------------------
@@ -755,6 +761,7 @@ def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> Non
 
 def gh_merged_pr_for_branch(
     repo_root: pathlib.Path, branch: str, timeout: float, limit: int,
+    report_error_max_chars: int,
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
     """Return (prs, error). prs=None means gh trouble (keep the branch)."""
     cmd = [
@@ -770,9 +777,12 @@ def gh_merged_pr_for_branch(
     except subprocess.TimeoutExpired:
         return None, "gh timeout"
     except OSError as exc:
-        return None, f"gh unavailable: {_safe_report_error(str(exc))}"
+        return None, f"gh unavailable: {_safe_report_error(str(exc), limit=report_error_max_chars)}"
     if out.returncode != 0:
-        return None, f"gh exit {out.returncode}: {_safe_report_error(out.stderr)}"
+        return None, (
+            f"gh exit {out.returncode}: "
+            f"{_safe_report_error(out.stderr, limit=report_error_max_chars)}"
+        )
     try:
         prs = json.loads(out.stdout) if out.stdout.strip() else []
     except json.JSONDecodeError as exc:
@@ -885,8 +895,10 @@ def gh_merged_pr_for_branch_cached(
         if age < config.lane_r.cache_ttl_s:
             return prs, None
     prs, err = gh_merged_pr_for_branch(
-        repo_root, branch, config.lane_r.gh_timeout_s, config.lane_r.gh_limit)
-    safe_err = _safe_report_error(err) if isinstance(err, str) else err
+        repo_root, branch, config.lane_r.gh_timeout_s, config.lane_r.gh_limit,
+        config.logging.report_error_max_chars)
+    safe_err = (_safe_report_error(err, limit=config.logging.report_error_max_chars)
+                if isinstance(err, str) else err)
     if prs is not None:
         cache[cache_key] = {"fetched_at": now, "prs": prs}
         _save_gh_cache(cache_path, cache, config.lane_r.cache_ttl_s)
@@ -1073,7 +1085,8 @@ def _sync_fetch_record(repo_root: pathlib.Path, config: Config, *, apply: bool) 
     if fetch.returncode != 0:
         return _lane_s_record(
             config, "fetch-prune-failed",
-            _safe_report_error(fetch.stderr) or "git fetch failed",
+            _safe_report_error(
+                fetch.stderr, limit=config.logging.report_error_max_chars) or "git fetch failed",
         )
     return _lane_s_record(config, "fetched-pruned", f"remote {config.remote_name}")
 
@@ -1103,7 +1116,8 @@ def _fetch_preview_trunk(
     if fetch.returncode != 0:
         return None, _lane_s_record(
             config, "preview-fetch-failed",
-            _safe_report_error(fetch.stderr) or "git fetch failed",
+            _safe_report_error(
+                fetch.stderr, limit=config.logging.report_error_max_chars) or "git fetch failed",
         )
     return resolve_ref_sha(repo_root, temp_ref), None
 
@@ -1113,7 +1127,7 @@ def _delete_preview_ref(
 ) -> dict[str, Any] | None:
     delete = _git(repo_root, ["update-ref", "-d", temp_ref, expected_sha], check=False)
     if delete.returncode != 0:
-        reason = _safe_report_error(delete.stderr)
+        reason = _safe_report_error(delete.stderr, limit=config.logging.report_error_max_chars)
         return _lane_s_record(
             config, "preview-ref-cleanup-failed",
             reason or f"could not delete {temp_ref}",
@@ -1260,7 +1274,9 @@ def _fast_forward_trunk_ref(
         return (
             _lane_s_record(
                 config, "fast-forward-cas-refused",
-                _safe_report_error(ff.stderr) or "update-ref CAS failed",
+                _safe_report_error(
+                    ff.stderr, limit=config.logging.report_error_max_chars)
+                or "update-ref CAS failed",
                 tip_sha=local_sha,
             ),
             False,
@@ -1282,7 +1298,9 @@ def _fast_forward_trunk_ref(
     return (
         _lane_s_record(
             config, "fast-forward-failed",
-            _safe_report_error(ff.stderr) or "git merge --ff-only failed",
+            _safe_report_error(
+                ff.stderr, limit=config.logging.report_error_max_chars)
+            or "git merge --ff-only failed",
             tip_sha=local_sha,
             worktree=str(trunk_worktree),
         ),
@@ -1350,7 +1368,9 @@ def run_lane_h(
                                 "reason": "branch became worktree-bound after eligibility check"})
                 continue
             backup = write_backup_ref(repo_root, br.name, fresh_tip)
-            ok, err = delete_branch_ref_cas(repo_root, br.name, fresh_tip)
+            ok, err = delete_branch_ref_cas(
+                repo_root, br.name, fresh_tip,
+                report_error_max_chars=config.logging.report_error_max_chars)
             action = "deleted" if ok else "delete-cas-refused"
             reason = "" if ok else err
             records.append({"lane": "H", "branch": br.name, "tip_sha": fresh_tip,
@@ -1412,7 +1432,9 @@ def run_lane_r(
                                     "reason": "branch became worktree-bound after eligibility"})
                     continue
                 backup = write_backup_ref(repo_root, br.name, fresh_tip)
-                ok, err = delete_branch_ref_cas(repo_root, br.name, fresh_tip)
+                ok, err = delete_branch_ref_cas(
+                    repo_root, br.name, fresh_tip,
+                    report_error_max_chars=config.logging.report_error_max_chars)
                 records.append({"lane": "R", "branch": br.name, "tip_sha": fresh_tip,
                                 "action": "deleted" if ok else "delete-cas-refused",
                                 "reason": "" if ok else err, "backup_ref": backup,
@@ -1447,7 +1469,9 @@ def run_lane_r(
                                 "reason": "branch became worktree-bound after gh match"})
                 continue
             backup = write_backup_ref(repo_root, br.name, fresh_tip)
-            ok, err = delete_branch_ref_cas(repo_root, br.name, fresh_tip)
+            ok, err = delete_branch_ref_cas(
+                repo_root, br.name, fresh_tip,
+                report_error_max_chars=config.logging.report_error_max_chars)
             action = "deleted" if ok else "delete-cas-refused"
             records.append({"lane": "R", "branch": br.name, "tip_sha": fresh_tip,
                             "action": action, "reason": "" if ok else err,
@@ -1498,7 +1522,8 @@ def _archive_worktree(
     except subprocess.TimeoutExpired:
         return False, "tar timeout"
     if out.returncode != 0:
-        return False, _safe_report_error(out.stderr)
+        return False, _safe_report_error(
+            out.stderr, limit=config.logging.report_error_max_chars)
     # integrity check (round-5.5: catch TimeoutExpired — a malformed/huge
     # archive could hang tar, and uncaught it would propagate out of Lane W's
     # per-iteration except as a crash here, or out of cmd_purge_quarantine
@@ -1512,7 +1537,10 @@ def _archive_worktree(
                 archive_path.unlink(missing_ok=True)
             except OSError:
                 pass
-            return False, f"archive integrity check failed: {_safe_report_error(verify.stderr)}"
+            return False, (
+                "archive integrity check failed: "
+                f"{_safe_report_error(verify.stderr, limit=config.logging.report_error_max_chars)}"
+            )
     except subprocess.TimeoutExpired:
         try:
             archive_path.unlink(missing_ok=True)
@@ -1757,7 +1785,8 @@ def run_lane_w(
                     if rm.returncode != 0:
                         rec = {"lane": "W", "branch": label, "tip_sha": wt.head,
                                 "worktree": str(wt.path), "action": "remove-failed-after-archive",
-                                "reason": _safe_report_error(rm.stderr),
+                                "reason": _safe_report_error(
+                                    rm.stderr, limit=config.logging.report_error_max_chars),
                                 "quarantine_path": str(quarantine)}
                         records.append(rec)
                         write_audit(repo_root, config, rec)
@@ -1815,7 +1844,8 @@ def run_lane_w(
                                 backup_ref = write_backup_ref(repo_root, wt.branch, fresh_tip)
                                 # CAS delete with the FRESH tip (not the stale wt.head).
                                 ok_del, err_del = delete_branch_ref_cas(
-                                    repo_root, wt.branch, fresh_tip)
+                                    repo_root, wt.branch, fresh_tip,
+                                    report_error_max_chars=config.logging.report_error_max_chars)
                                 branch_action = "branch-deleted" if ok_del else "branch-delete-failed"
                                 err = err_del if not ok_del else ""
                     else:

@@ -132,6 +132,7 @@ audit_format = "jsonl"
 audit_path = "<git-common-dir>/clean-merged.log"
 max_log_bytes = 1048576
 rotated_log_retention_days = 30
+report_error_max_chars = 200
 heartbeat_path = "<git-common-dir>/clean-merged.heartbeat"
 heartbeat_stale_days = 7
 lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"
@@ -374,7 +375,7 @@ class LaneRTests(unittest.TestCase):
         empty_bin.mkdir()
 
         with mock.patch.dict(os.environ, {"PATH": str(empty_bin)}):
-            prs, err = cm.gh_merged_pr_for_branch(self.work, "feat/missing-gh", 5, 100)
+            prs, err = cm.gh_merged_pr_for_branch(self.work, "feat/missing-gh", 5, 100, 200)
 
         self.assertIsNone(prs)
         self.assertIsNotNone(err)
@@ -389,7 +390,7 @@ class LaneRTests(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, "[]", "")
 
         with mock.patch.object(cm.subprocess, "run", fake_run):
-            prs, err = cm.gh_merged_pr_for_branch(self.work, "feat/closed", 5, 37)
+            prs, err = cm.gh_merged_pr_for_branch(self.work, "feat/closed", 5, 37, 200)
 
         self.assertEqual(prs, [])
         self.assertIsNone(err)
@@ -414,7 +415,7 @@ class LaneRTests(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
         with mock.patch.object(cm.subprocess, "run", fake_run):
-            prs, err = cm.gh_merged_pr_for_branch(self.work, "feat/no-number", 5, 100)
+            prs, err = cm.gh_merged_pr_for_branch(self.work, "feat/no-number", 5, 100, 200)
 
         self.assertIsNone(prs)
         self.assertIn("invalid PR payload", err or "")
@@ -1124,6 +1125,26 @@ class ReportRedactionTests(unittest.TestCase):
         self.assertNotIn("user:secret-token", record["reason"])
         self.assertIn("<redacted>", record["reason"])
 
+    def test_fetch_failure_reason_uses_configured_report_limit(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8").replace(
+                "report_error_max_chars = 200", "report_error_max_chars = 12"),
+            encoding="utf-8",
+        )
+        config = cm.load_config(self.work)
+
+        def fake_git(
+            repo_root: pathlib.Path, args: list[str], **kwargs: Any,
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args, 128, "", "fatal: abcdefghijklmnopqrstuvwxyz")
+
+        with mock.patch.object(cm, "_git", fake_git):
+            record = cm._sync_fetch_record(self.work, config, apply=True)
+
+        self.assertLessEqual(len(record["reason"]), 12)
+
     def test_report_error_redacts_common_secret_forms(self) -> None:
         raw = (
             "Authorization: Bearer ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "
@@ -1131,7 +1152,7 @@ class ReportRedactionTests(unittest.TestCase):
             "github_pat_11AAAAAAAAAAAAAAAAAAAA_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         )
 
-        safe = cm._safe_report_error(raw)
+        safe = cm._safe_report_error(raw, limit=self.config.logging.report_error_max_chars)
 
         self.assertNotIn("ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", safe)
         self.assertNotIn("secret-token", safe)
@@ -1248,6 +1269,7 @@ class CleanupContractTests(unittest.TestCase):
             .replace("archive_verify_timeout_s = 30", "archive_verify_timeout_s = 3")
             .replace("heartbeat_stale_days = 7", "heartbeat_stale_days = 2")
             .replace("rotated_log_retention_days = 30", "rotated_log_retention_days = 3")
+            .replace("report_error_max_chars = 200", "report_error_max_chars = 44")
             .replace(
                 'lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"',
                 'lane_r_log_path = "<git-common-dir>/custom-lane-r.log"',
@@ -1261,6 +1283,7 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(config.lane_w.archive_timeout_s, 12)
         self.assertEqual(config.lane_w.archive_verify_timeout_s, 3)
         self.assertEqual(config.logging.rotated_log_retention_days, 3)
+        self.assertEqual(config.logging.report_error_max_chars, 44)
         self.assertEqual(config.logging.heartbeat_stale_days, 2)
         self.assertEqual(config.logging.lane_r_log_path, "<git-common-dir>/custom-lane-r.log")
 
@@ -1352,7 +1375,10 @@ class GhCacheTests(unittest.TestCase):
         config = cm.load_config(self.work)
         call_count = {"n": 0}
 
-        def counting_fake(repo_root: pathlib.Path, branch: str, timeout: float, limit: int):
+        def counting_fake(
+            repo_root: pathlib.Path, branch: str, timeout: float, limit: int,
+            report_error_max_chars: int,
+        ):
             call_count["n"] += 1
             return [], None
 
@@ -1369,7 +1395,10 @@ class GhCacheTests(unittest.TestCase):
         config = cm.load_config(self.work)
         call_count = {"n": 0}
 
-        def counting_fake(repo_root: pathlib.Path, branch: str, timeout: float, limit: int):
+        def counting_fake(
+            repo_root: pathlib.Path, branch: str, timeout: float, limit: int,
+            report_error_max_chars: int,
+        ):
             call_count["n"] += 1
             return [], None
 

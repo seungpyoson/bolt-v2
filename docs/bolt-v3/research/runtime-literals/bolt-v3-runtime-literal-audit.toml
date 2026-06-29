@@ -941,7 +941,7 @@ classification = "diagnostic_separator"
 reason = "This joins configured client venues for a fail-closed setup diagnostic; the venue values themselves come from TOML config."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/transport_scope.rs"
 kind = "string"
 literal = '''", "'''
 context = '''missing_clients.join(", ")'''
@@ -949,7 +949,7 @@ classification = "diagnostic_separator"
 reason = "This separator joins configured client identifiers in a fail-closed setup diagnostic; the client values themselves come from TOML."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/transport_scope.rs"
 kind = "string"
 literal = '''"strategy references unconfigured client(s): {}"'''
 context = '''"strategy references unconfigured client(s): {}",'''
@@ -14666,7 +14666,7 @@ classification = "live_node_fail_closed_diagnostic_template"
 reason = "The live-node IV client validator joins fail-closed config diagnostics; the referenced profile/source/client identifiers are TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/transport_scope.rs"
 kind = "string"
 literal = '''"multiple execution clients share venue `{}` in the live transport scope: {}; only one execution client may be active per venue"'''
 context = '''"multiple execution clients share venue `{}` in the live transport scope: {}; only one execution client may be active per venue",'''
@@ -14674,7 +14674,7 @@ classification = "live_node_fail_closed_diagnostic_template"
 reason = "Fail-closed live transport diagnostic for multiple strategy-referenced execution clients on one NT venue; venue and client identifiers are TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/transport_scope.rs"
 kind = "string"
 literal = '''", "'''
 context = '''client_keys.join(", ")'''

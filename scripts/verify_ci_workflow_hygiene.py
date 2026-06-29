@@ -41,12 +41,12 @@ from command_understanding import (
     CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT,
     cargo_args_for_target_routing_scan,
     cargo_subcommand,
-    cargo_subcommand_with_index,
-    nextest_subcommand_with_index,
-    python_call_command_argument,
-    python_call_name,
-    python_command_string,
-    python_constant_string,
+    cargo_subcommand_with_index,  # noqa: F401 - re-exported for command_understanding parity tests.
+    nextest_subcommand_with_index,  # noqa: F401 - re-exported for command_understanding parity tests.
+    python_call_command_argument,  # noqa: F401 - re-exported for command_understanding parity tests.
+    python_call_name,  # noqa: F401 - re-exported for command_understanding parity tests.
+    python_command_string,  # noqa: F401 - re-exported for command_understanding parity tests.
+    python_constant_string,  # noqa: F401 - re-exported for command_understanding parity tests.
     python_inline_command_payloads,
 )
 from ci_test_manifest import CiTestManifest, _mask_rust_non_code, build_test_manifest
@@ -6195,6 +6195,9 @@ CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/test_ci_input_sets.py",
     "python3 scripts/test_rust_test_targets.py",
 )
+ACTIONLINT_WORKFLOW_REQUIRED_COMMANDS = (
+    "python3 scripts/test_ci_storage_audit.py",
+)
 
 
 def local_verification_inner_errors(
@@ -11951,6 +11954,13 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
             (f"{file_name}: {error}" for error in cache_same_run_transport_errors(file_name, text)),
         )
         if file_name == "actionlint.yml" or file_name.endswith("/actionlint.yml"):
+            actionlint_text = uncommented_text(text.splitlines())
+            for required_command in ACTIONLINT_WORKFLOW_REQUIRED_COMMANDS:
+                command_count = actionlint_text.count(required_command)
+                if command_count == 0:
+                    errors.append(f"{file_name}: actionlint workflow must run {required_command}")
+                elif command_count > 1:
+                    errors.append(f"{file_name}: actionlint workflow must run {required_command} exactly once")
             add_unique_errors(
                 errors,
                 (

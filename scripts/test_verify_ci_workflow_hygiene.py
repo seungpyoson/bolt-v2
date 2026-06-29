@@ -6286,12 +6286,29 @@ def assert_actionlint_requires_pr_event_types() -> None:
         ("ready_for_review", "types: [opened, synchronize, reopened, edited]"),
         ("edited", "types: [opened, synchronize, reopened, ready_for_review]"),
     ):
-        bad = replace_once(workflow, f"types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
+        bad = replace_once(workflow, "types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
         bad_errors = verifier.verify_repo_automation_texts({workflow_name: bad})
         if not any(f"pull_request types must include {missing_type}" in error for error in bad_errors):
             raise AssertionError(
                 f"actionlint workflow must require {missing_type} in pull_request types, got: {bad_errors}"
             )
+
+
+def assert_actionlint_runs_ci_storage_audit_tests() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/actionlint.yml"
+    workflow = repo_workflow_text(workflow_name)
+    errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
+    if any("must run python3 scripts/test_ci_storage_audit.py" in error for error in errors):
+        raise AssertionError(f"actionlint workflow must run storage audit tests, got: {errors}")
+
+    missing = replace_once(workflow, "          python3 scripts/test_ci_storage_audit.py\n", "")
+    missing_errors = verifier.verify_repo_automation_texts({workflow_name: missing})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in missing_errors
+    ):
+        raise AssertionError(f"actionlint storage audit test wiring drift was silent, got: {missing_errors}")
 
 
 def assert_ci_docs_pass_stub_is_absent() -> None:
@@ -10915,9 +10932,9 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         stale_fingerprint_with_decoy,
         "  nextest-fingerprint-reuse:",
         "      - name: Resolve nextest fingerprint reuse",
-        f"""      - name: Decoy resolver command
+        """      - name: Decoy resolver command
         run: |
-          echo 'python3 scripts/ci_provenance.py resolve-fingerprint --current-run-id "${{{{ github.run_id }}}}" --current-fingerprint "${{{{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}}}" | tee -a "$GITHUB_OUTPUT"'
+          echo 'python3 scripts/ci_provenance.py resolve-fingerprint --current-run-id "${{ github.run_id }}" --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}" | tee -a "$GITHUB_OUTPUT"'
 
       - name: Resolve nextest fingerprint reuse""",
     )
@@ -13710,6 +13727,7 @@ def main() -> int:
     assert_backtester_ci_defers_managed_heavy_on_draft_prs()
     assert_actionlint_rejects_stale_config_variables()
     assert_actionlint_requires_pr_event_types()
+    assert_actionlint_runs_ci_storage_audit_tests()
     assert_ci_docs_pass_stub_is_absent()
     assert_source_fence_static_ignores_comments()
     assert_local_verification_gate_recipes_are_enforced()

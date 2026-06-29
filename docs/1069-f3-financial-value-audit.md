@@ -21,7 +21,8 @@ NoDefaultProbe}`. Each marked financial value implements one private
 `DefaultProbe` adds the same method name for every `T: Default`. Adding
 `#[derive(Default)]`, `#[cfg_attr(..., derive(Default))]`, macro-generated
 `Default`, or a manual `impl Default` to a marked financial type makes the
-marker const ambiguous during Rust compilation.
+`assert_financial_value_not_default!` marker const ambiguous during Rust
+compilation.
 
 The legacy Python fence remains responsible for production `*_default()` style
 calls, plus the existing default-call residue patterns.

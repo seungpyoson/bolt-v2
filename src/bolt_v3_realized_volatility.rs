@@ -8,10 +8,9 @@ use std::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::bolt_v3_numeric::financial_value_private::{DefaultProbe as _, NoDefaultProbe as _};
 use crate::bolt_v3_numeric::{
     FinancialValue, HALF_F64, MILLIS_PER_SECOND_F64, POWER_OF_TWO, UNIT_F64, ZERO_F64,
-    financial_value_private, is_positive_finite,
+    assert_financial_value_not_default, financial_value_private, is_positive_finite,
 };
 
 const ZERO_MILLIS_U64: u64 = u64::MIN;
@@ -275,7 +274,7 @@ impl financial_value_private::NoDefaultProbe for ValidRealizedVol {
 }
 impl FinancialValue for ValidRealizedVol {}
 
-const _: fn() = ValidRealizedVol::financial_value_default_readd_fence;
+assert_financial_value_not_default!(ValidRealizedVol);
 
 impl ValidRealizedVol {
     pub fn new(value: f64) -> Option<Self> {
@@ -300,7 +299,7 @@ impl financial_value_private::NoDefaultProbe for ReadyRealizedVol {
 }
 impl FinancialValue for ReadyRealizedVol {}
 
-const _: fn() = ReadyRealizedVol::financial_value_default_readd_fence;
+assert_financial_value_not_default!(ReadyRealizedVol);
 
 impl ReadyRealizedVol {
     pub fn get(self) -> f64 {

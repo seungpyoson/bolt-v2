@@ -74,7 +74,20 @@ pub trait FinancialValue:
 {
 }
 
-use financial_value_private::{DefaultProbe as _, NoDefaultProbe as _};
+macro_rules! assert_financial_value_not_default {
+    ($type:ty) => {
+        const _: fn() = {
+            use crate::bolt_v3_numeric::financial_value_private::{DefaultProbe, NoDefaultProbe};
+
+            let _default_probe: fn() = <f64 as DefaultProbe>::financial_value_default_readd_fence;
+            let _no_default_probe: fn() =
+                <$type as NoDefaultProbe>::financial_value_default_readd_fence;
+            <$type>::financial_value_default_readd_fence
+        };
+    };
+}
+
+pub(crate) use assert_financial_value_not_default;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct ProbabilityValue(f64);
@@ -100,7 +113,7 @@ impl financial_value_private::NoDefaultProbe for ProbabilityValue {
 }
 impl FinancialValue for ProbabilityValue {}
 
-const _: fn() = ProbabilityValue::financial_value_default_readd_fence;
+assert_financial_value_not_default!(ProbabilityValue);
 
 pub(crate) fn bounded_probability_from_finite(value: f64) -> Option<ProbabilityValue> {
     if !value.is_finite() {

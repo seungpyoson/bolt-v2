@@ -58,6 +58,24 @@ pub struct BinaryOracleMakerConfig {
     /// submit-rate and venue REST caps are NOT config knobs — they come from
     /// `risk.nautilus.max_order_submit_rate` and the venue egress model.
     pub requote_min_interval_ms: u64,
+    /// Configured submit-governor weight used when classifying a fresh-submit
+    /// requote throttle block.
+    pub requote_throttle_fresh_submit_submit_weight: u64,
+    /// Configured REST-budget weight used when classifying a fresh-submit requote
+    /// throttle block.
+    pub requote_throttle_fresh_submit_rest_weight: u64,
+    /// Configured submit-governor weight used when classifying a cancel/resubmit
+    /// requote throttle block.
+    pub requote_throttle_cancel_resubmit_submit_weight: u64,
+    /// Configured REST-budget weight used when classifying a cancel/resubmit
+    /// requote throttle block.
+    pub requote_throttle_cancel_resubmit_rest_weight: u64,
+    /// Configured submit-governor weight used when classifying a standalone-cancel
+    /// requote throttle block.
+    pub requote_throttle_cancel_submit_weight: u64,
+    /// Configured REST-budget weight used when classifying a standalone-cancel
+    /// requote throttle block.
+    pub requote_throttle_cancel_rest_weight: u64,
     /// Interval (ms) of the maker's autonomous quote/refresh timer — how often the
     /// runtime re-resolves its active markets and (in later slices) requotes. The
     /// loop cadence; distinct from `requote_min_interval_ms`, which is a per-leg
@@ -87,6 +105,29 @@ pub struct BinaryOracleMakerConfig {
     pub markets: Vec<MakerMarketDeclaration>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequoteThrottleWeights {
+    pub fresh_submit_submit_weight: u64,
+    pub fresh_submit_rest_weight: u64,
+    pub cancel_resubmit_submit_weight: u64,
+    pub cancel_resubmit_rest_weight: u64,
+    pub cancel_submit_weight: u64,
+    pub cancel_rest_weight: u64,
+}
+
+impl BinaryOracleMakerConfig {
+    pub fn requote_throttle_weights(&self) -> RequoteThrottleWeights {
+        RequoteThrottleWeights {
+            fresh_submit_submit_weight: self.requote_throttle_fresh_submit_submit_weight,
+            fresh_submit_rest_weight: self.requote_throttle_fresh_submit_rest_weight,
+            cancel_resubmit_submit_weight: self.requote_throttle_cancel_resubmit_submit_weight,
+            cancel_resubmit_rest_weight: self.requote_throttle_cancel_resubmit_rest_weight,
+            cancel_submit_weight: self.requote_throttle_cancel_submit_weight,
+            cancel_rest_weight: self.requote_throttle_cancel_rest_weight,
+        }
+    }
+}
+
 /// Zero-sized factory the `StrategyBuilder` trait is implemented for (in
 /// `mod.rs`). Mirrors `BinaryOracleEdgeTakerBuilder`.
 #[derive(Debug)]
@@ -111,6 +152,16 @@ const MU_MIN_CLASSIFIED_SAMPLES_FIELD: &str = "mu_min_classified_samples";
 const MU_STALE_WINDOW_MS_FIELD: &str = "mu_stale_window_ms";
 const MU_MIN_FLOOR_FIELD: &str = "mu_min_floor";
 const REQUOTE_MIN_INTERVAL_MS_FIELD: &str = "requote_min_interval_ms";
+const REQUOTE_THROTTLE_FRESH_SUBMIT_SUBMIT_WEIGHT_FIELD: &str =
+    "requote_throttle_fresh_submit_submit_weight";
+const REQUOTE_THROTTLE_FRESH_SUBMIT_REST_WEIGHT_FIELD: &str =
+    "requote_throttle_fresh_submit_rest_weight";
+const REQUOTE_THROTTLE_CANCEL_RESUBMIT_SUBMIT_WEIGHT_FIELD: &str =
+    "requote_throttle_cancel_resubmit_submit_weight";
+const REQUOTE_THROTTLE_CANCEL_RESUBMIT_REST_WEIGHT_FIELD: &str =
+    "requote_throttle_cancel_resubmit_rest_weight";
+const REQUOTE_THROTTLE_CANCEL_SUBMIT_WEIGHT_FIELD: &str = "requote_throttle_cancel_submit_weight";
+const REQUOTE_THROTTLE_CANCEL_REST_WEIGHT_FIELD: &str = "requote_throttle_cancel_rest_weight";
 const QUOTE_INTERVAL_MS_FIELD: &str = "quote_interval_ms";
 const MARKETS_FIELD: &str = "markets";
 const MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD: &str = "market_portfolio_max_active_markets";
@@ -160,6 +211,12 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
                 | MU_STALE_WINDOW_MS_FIELD
                 | MU_MIN_FLOOR_FIELD
                 | REQUOTE_MIN_INTERVAL_MS_FIELD
+                | REQUOTE_THROTTLE_FRESH_SUBMIT_SUBMIT_WEIGHT_FIELD
+                | REQUOTE_THROTTLE_FRESH_SUBMIT_REST_WEIGHT_FIELD
+                | REQUOTE_THROTTLE_CANCEL_RESUBMIT_SUBMIT_WEIGHT_FIELD
+                | REQUOTE_THROTTLE_CANCEL_RESUBMIT_REST_WEIGHT_FIELD
+                | REQUOTE_THROTTLE_CANCEL_SUBMIT_WEIGHT_FIELD
+                | REQUOTE_THROTTLE_CANCEL_REST_WEIGHT_FIELD
                 | QUOTE_INTERVAL_MS_FIELD
                 | MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD
                 | MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD
@@ -303,6 +360,12 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            requote_throttle_fresh_submit_submit_weight = 1
+            requote_throttle_fresh_submit_rest_weight = 1
+            requote_throttle_cancel_resubmit_submit_weight = 1
+            requote_throttle_cancel_resubmit_rest_weight = 2
+            requote_throttle_cancel_submit_weight = 0
+            requote_throttle_cancel_rest_weight = 1
             quote_interval_ms = 1000
             market_portfolio_max_active_markets = 3
             market_portfolio_total_bankroll_notional = 1500.0
@@ -332,6 +395,12 @@ mod tests {
         assert_eq!(config.mu_stale_window_ms, 60_000);
         assert_eq!(config.mu_min_floor, 0.05);
         assert_eq!(config.requote_min_interval_ms, 500);
+        assert_eq!(config.requote_throttle_fresh_submit_submit_weight, 1);
+        assert_eq!(config.requote_throttle_fresh_submit_rest_weight, 1);
+        assert_eq!(config.requote_throttle_cancel_resubmit_submit_weight, 1);
+        assert_eq!(config.requote_throttle_cancel_resubmit_rest_weight, 2);
+        assert_eq!(config.requote_throttle_cancel_submit_weight, 0);
+        assert_eq!(config.requote_throttle_cancel_rest_weight, 1);
         assert_eq!(config.quote_interval_ms, 1000);
         assert_eq!(config.market_portfolio_max_active_markets, 3);
         assert_eq!(config.market_portfolio_total_bankroll_notional, 1500.0);
@@ -394,9 +463,17 @@ mod tests {
             mu_min_classified_samples = 4
             mu_stale_window_ms = 60000
             requote_min_interval_ms = 500
+            requote_throttle_fresh_submit_submit_weight = 1
+            requote_throttle_fresh_submit_rest_weight = 1
+            requote_throttle_cancel_resubmit_submit_weight = 1
+            requote_throttle_cancel_resubmit_rest_weight = 2
+            requote_throttle_cancel_submit_weight = 0
+            requote_throttle_cancel_rest_weight = 1
             market_portfolio_max_active_markets = 3
             market_portfolio_total_bankroll_notional = 1500.0
             market_portfolio_min_slot_notional = 100.0
+            quote_interval_ms = 1000
+            markets_config_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         }
         .into();
         assert!(
@@ -418,8 +495,16 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            requote_throttle_fresh_submit_submit_weight = 1
+            requote_throttle_fresh_submit_rest_weight = 1
+            requote_throttle_cancel_resubmit_submit_weight = 1
+            requote_throttle_cancel_resubmit_rest_weight = 2
+            requote_throttle_cancel_submit_weight = 0
+            requote_throttle_cancel_rest_weight = 1
+            quote_interval_ms = 1000
             market_portfolio_max_active_markets = 3
             market_portfolio_total_bankroll_notional = 1500.0
+            markets_config_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         }
         .into();
         assert!(

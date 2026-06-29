@@ -16834,6 +16834,54 @@ classification = "strategy_config_field_name"
 reason = "Stable maker config field label for the requote min-interval (the requote budget's same-tick throttle) used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"requote_throttle_fresh_submit_submit_weight"'''
+context = '''"requote_throttle_fresh_submit_submit_weight";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the fresh-submit submit-governor throttle weight; the runtime value is required from [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"requote_throttle_fresh_submit_rest_weight"'''
+context = '''"requote_throttle_fresh_submit_rest_weight";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the fresh-submit REST throttle weight; the runtime value is required from [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"requote_throttle_cancel_resubmit_submit_weight"'''
+context = '''"requote_throttle_cancel_resubmit_submit_weight";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the cancel/resubmit submit-governor throttle weight; the runtime value is required from [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"requote_throttle_cancel_resubmit_rest_weight"'''
+context = '''"requote_throttle_cancel_resubmit_rest_weight";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the cancel/resubmit REST throttle weight; the runtime value is required from [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"requote_throttle_cancel_submit_weight"'''
+context = '''const REQUOTE_THROTTLE_CANCEL_SUBMIT_WEIGHT_FIELD: &str = "requote_throttle_cancel_submit_weight";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the standalone-cancel submit-governor throttle weight; the runtime value is required from [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"requote_throttle_cancel_rest_weight"'''
+context = '''const REQUOTE_THROTTLE_CANCEL_REST_WEIGHT_FIELD: &str = "requote_throttle_cancel_rest_weight";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the standalone-cancel REST throttle weight; the runtime value is required from [parameters.runtime]."
+
+[[allowed]]
 path = "src/bolt_v3_reference_price.rs"
 kind = "string"
 literal = '''"source_id"'''
@@ -17818,10 +17866,58 @@ classification = "strategy_runtime_schema_field"
 reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"requote_throttle_fresh_submit_submit_weight"'''
+context = '''"requote_throttle_fresh_submit_submit_weight",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name for the fresh-submit submit-governor throttle weight; the runtime value is operator-owned in [parameters.runtime] and validated against the intrinsic submit-command floor."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"requote_throttle_fresh_submit_rest_weight"'''
+context = '''"requote_throttle_fresh_submit_rest_weight",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name for the fresh-submit REST throttle weight; the runtime value is operator-owned in [parameters.runtime] and validated against the intrinsic REST-call floor."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"requote_throttle_cancel_resubmit_submit_weight"'''
+context = '''"requote_throttle_cancel_resubmit_submit_weight",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name for the cancel/resubmit submit-governor throttle weight; the runtime value is operator-owned in [parameters.runtime] and validated against the intrinsic submit-command floor."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"requote_throttle_cancel_resubmit_rest_weight"'''
+context = '''"requote_throttle_cancel_resubmit_rest_weight",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name for the cancel/resubmit REST throttle weight; the runtime value is operator-owned in [parameters.runtime] and validated against the intrinsic cancel/resubmit REST-call floor."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"requote_throttle_cancel_submit_weight"'''
+context = '''"requote_throttle_cancel_submit_weight",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name for the standalone-cancel submit-governor throttle weight; the runtime value is operator-owned in [parameters.runtime] and validated against the intrinsic zero-submit floor."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"requote_throttle_cancel_rest_weight"'''
+context = '''"requote_throttle_cancel_rest_weight",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name for the standalone-cancel REST throttle weight; the runtime value is operator-owned in [parameters.runtime] and validated against the intrinsic REST-call floor."
+
+[[allowed]]
 path = "src/bolt_v3_requote_budget.rs"
 kind = "number"
 literal = '''1'''
-context = '''const SUBMIT_COMMAND_COST: u64 = 1;'''
+context = '''pub(crate) const SUBMIT_COMMAND_COST: u64 = 1;'''
 classification = "requote_budget_structural_unit_cost"
 reason = "One NT submit command costs exactly one token against the submit-governor budget. A structural protocol unit (a submit is one submit command), not an operator-tunable value; the tunable cap (max_order_submit_rate) is TOML-owned and passed into RequoteBudget::new by callers."
 
@@ -17829,7 +17925,7 @@ reason = "One NT submit command costs exactly one token against the submit-gover
 path = "src/bolt_v3_requote_budget.rs"
 kind = "number"
 literal = '''1'''
-context = '''const REST_CALL_COST: u64 = 1;'''
+context = '''pub(crate) const REST_CALL_COST: u64 = 1;'''
 classification = "requote_budget_structural_unit_cost"
 reason = "One venue CLOB REST call costs exactly one token against the REST budget. A structural protocol unit (a cancel or submit is one REST call), not an operator-tunable value; the tunable cap (venue clob_per_minute) is TOML/venue-contract-owned and passed into RequoteBudget::new by callers."
 
@@ -17837,9 +17933,9 @@ reason = "One venue CLOB REST call costs exactly one token against the REST budg
 path = "src/bolt_v3_requote_budget.rs"
 kind = "number"
 literal = '''0'''
-context = '''self.try_reserve(now_ms, 0, REST_CALL_COST)'''
+context = '''pub(crate) const STANDALONE_CANCEL_SUBMIT_COMMAND_COST: u64 = 0;'''
 classification = "requote_budget_standalone_cancel_zero_submit_cost"
-reason = "A standalone cancel issues zero submit commands (a cancel is not a submit), so it charges the submit-governor budget nothing. A structural protocol fact, not a tunable value."
+reason = "A standalone cancel issues zero submit commands (a cancel is not a submit), so it charges the submit-governor budget nothing. A structural protocol fact shared with H6 lower-bound validation, not a tunable value."
 
 [[allowed]]
 path = "src/bolt_v3_requote_budget.rs"
@@ -18896,54 +18992,6 @@ literal = '''"no"'''
 context = '''const REQUOTE_THROTTLE_LEG_NO: &str = "no";'''
 classification = '''requote_throttle_evidence_leg_label'''
 reason = '''Canonical maker evidence label for the no/down quote leg; it records which leg was throttled and does not configure quoting behavior.'''
-
-[[allowed]]
-path = '''src/strategies/binary_oracle_maker/mod.rs'''
-kind = '''number'''
-literal = '''1'''
-context = '''const REQUOTE_THROTTLE_FRESH_SUBMIT_SUBMIT_COST: u64 = 1;'''
-classification = '''requote_throttle_structural_unit_cost'''
-reason = '''A fresh quote submit consumes exactly one submit-command token; this is a structural accounting unit mirrored from RequoteBudget semantics, not an operator-tunable value.'''
-
-[[allowed]]
-path = '''src/strategies/binary_oracle_maker/mod.rs'''
-kind = '''number'''
-literal = '''1'''
-context = '''const REQUOTE_THROTTLE_FRESH_SUBMIT_REST_COST: u64 = 1;'''
-classification = '''requote_throttle_structural_unit_cost'''
-reason = '''A fresh quote submit consumes exactly one venue REST token; this is a structural accounting unit mirrored from RequoteBudget semantics, not an operator-tunable value.'''
-
-[[allowed]]
-path = '''src/strategies/binary_oracle_maker/mod.rs'''
-kind = '''number'''
-literal = '''1'''
-context = '''const REQUOTE_THROTTLE_CANCEL_RESUBMIT_SUBMIT_COST: u64 = 1;'''
-classification = '''requote_throttle_structural_unit_cost'''
-reason = '''A cancel/resubmit requote includes one replacement submit command; this is protocol accounting structure, not an operator-tunable value.'''
-
-[[allowed]]
-path = '''src/strategies/binary_oracle_maker/mod.rs'''
-kind = '''number'''
-literal = '''2'''
-context = '''const REQUOTE_THROTTLE_CANCEL_RESUBMIT_REST_COST: u64 = 2;'''
-classification = '''requote_throttle_structural_unit_cost'''
-reason = '''A cancel/resubmit requote includes one cancel REST call and one submit REST call; this is protocol accounting structure, not an operator-tunable value.'''
-
-[[allowed]]
-path = '''src/strategies/binary_oracle_maker/mod.rs'''
-kind = '''number'''
-literal = '''0'''
-context = '''const REQUOTE_THROTTLE_CANCEL_SUBMIT_COST: u64 = 0;'''
-classification = '''requote_throttle_structural_unit_cost'''
-reason = '''A standalone cancel consumes zero submit-command tokens because it does not submit a new order; this is structural accounting, not an operator-tunable value.'''
-
-[[allowed]]
-path = '''src/strategies/binary_oracle_maker/mod.rs'''
-kind = '''number'''
-literal = '''1'''
-context = '''const REQUOTE_THROTTLE_CANCEL_REST_COST: u64 = 1;'''
-classification = '''requote_throttle_structural_unit_cost'''
-reason = '''A standalone cancel consumes exactly one venue REST token; this is structural accounting, not an operator-tunable value.'''
 
 # --- #885 Slice 2: loss-governor stale-halt evidence (RCA #885) ---
 [[allowed]]

@@ -43,6 +43,10 @@ use crate::bolt_v3_operator_artifacts::{
     build_head_sha_matches_current, is_lowercase_sha256, json_artifact_sha256,
 };
 use crate::bolt_v3_providers::resolve_fee_provider;
+use crate::bolt_v3_requote_budget::{
+    CANCEL_RESUBMIT_REST_COST, REST_CALL_COST, STANDALONE_CANCEL_SUBMIT_COMMAND_COST,
+    SUBMIT_COMMAND_COST,
+};
 use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
 };
@@ -131,6 +135,12 @@ struct RuntimeParametersBlock {
     mu_stale_window_ms: u64,
     mu_min_floor: f64,
     requote_min_interval_ms: u64,
+    requote_throttle_fresh_submit_submit_weight: u64,
+    requote_throttle_fresh_submit_rest_weight: u64,
+    requote_throttle_cancel_resubmit_submit_weight: u64,
+    requote_throttle_cancel_resubmit_rest_weight: u64,
+    requote_throttle_cancel_submit_weight: u64,
+    requote_throttle_cancel_rest_weight: u64,
     quote_interval_ms: u64,
 }
 
@@ -477,6 +487,48 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
             "{context}: parameters.runtime.requote_min_interval_ms must be > 0 (a zero requote interval disables the same-tick throttle the requote budget relies on, so the budget rejects construction)"
         ));
     }
+    validate_requote_throttle_weight_floor(
+        context,
+        "requote_throttle_fresh_submit_submit_weight",
+        runtime.requote_throttle_fresh_submit_submit_weight,
+        SUBMIT_COMMAND_COST,
+        &mut errors,
+    );
+    validate_requote_throttle_weight_floor(
+        context,
+        "requote_throttle_fresh_submit_rest_weight",
+        runtime.requote_throttle_fresh_submit_rest_weight,
+        REST_CALL_COST,
+        &mut errors,
+    );
+    validate_requote_throttle_weight_floor(
+        context,
+        "requote_throttle_cancel_resubmit_submit_weight",
+        runtime.requote_throttle_cancel_resubmit_submit_weight,
+        SUBMIT_COMMAND_COST,
+        &mut errors,
+    );
+    validate_requote_throttle_weight_floor(
+        context,
+        "requote_throttle_cancel_resubmit_rest_weight",
+        runtime.requote_throttle_cancel_resubmit_rest_weight,
+        CANCEL_RESUBMIT_REST_COST,
+        &mut errors,
+    );
+    validate_requote_throttle_weight_floor(
+        context,
+        "requote_throttle_cancel_submit_weight",
+        runtime.requote_throttle_cancel_submit_weight,
+        STANDALONE_CANCEL_SUBMIT_COMMAND_COST,
+        &mut errors,
+    );
+    validate_requote_throttle_weight_floor(
+        context,
+        "requote_throttle_cancel_rest_weight",
+        runtime.requote_throttle_cancel_rest_weight,
+        REST_CALL_COST,
+        &mut errors,
+    );
     if runtime.quote_interval_ms == 0 {
         errors.push(format!(
             "{context}: parameters.runtime.quote_interval_ms must be > 0 (a zero quote-loop interval would schedule a degenerate timer that never advances the runtime's market resolution and requote cadence)"
@@ -513,6 +565,20 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
         ));
     }
     errors
+}
+
+fn validate_requote_throttle_weight_floor(
+    context: &str,
+    field: &str,
+    value: u64,
+    intrinsic_floor: u64,
+    errors: &mut Vec<String>,
+) {
+    if value < intrinsic_floor {
+        errors.push(format!(
+            "{context}: parameters.runtime.{field} ({value}) must be >= the intrinsic requote action cost ({intrinsic_floor}); understating the venue/API call count would make requote-throttle evidence fail open"
+        ));
+    }
 }
 
 fn validate_market_portfolio_policy(
@@ -985,6 +1051,36 @@ fn insert_runtime_knobs(
         "requote_min_interval_ms",
         runtime.requote_min_interval_ms,
     )?;
+    insert_u64_field(
+        table,
+        "requote_throttle_fresh_submit_submit_weight",
+        runtime.requote_throttle_fresh_submit_submit_weight,
+    )?;
+    insert_u64_field(
+        table,
+        "requote_throttle_fresh_submit_rest_weight",
+        runtime.requote_throttle_fresh_submit_rest_weight,
+    )?;
+    insert_u64_field(
+        table,
+        "requote_throttle_cancel_resubmit_submit_weight",
+        runtime.requote_throttle_cancel_resubmit_submit_weight,
+    )?;
+    insert_u64_field(
+        table,
+        "requote_throttle_cancel_resubmit_rest_weight",
+        runtime.requote_throttle_cancel_resubmit_rest_weight,
+    )?;
+    insert_u64_field(
+        table,
+        "requote_throttle_cancel_submit_weight",
+        runtime.requote_throttle_cancel_submit_weight,
+    )?;
+    insert_u64_field(
+        table,
+        "requote_throttle_cancel_rest_weight",
+        runtime.requote_throttle_cancel_rest_weight,
+    )?;
     insert_u64_field(table, "quote_interval_ms", runtime.quote_interval_ms)?;
     Ok(())
 }
@@ -1070,6 +1166,12 @@ mod tests {
             mu_stale_window_ms: 60_000,
             mu_min_floor: 0.05,
             requote_min_interval_ms: 500,
+            requote_throttle_fresh_submit_submit_weight: 1,
+            requote_throttle_fresh_submit_rest_weight: 1,
+            requote_throttle_cancel_resubmit_submit_weight: 1,
+            requote_throttle_cancel_resubmit_rest_weight: 2,
+            requote_throttle_cancel_submit_weight: 0,
+            requote_throttle_cancel_rest_weight: 1,
             quote_interval_ms: 1000,
         }
     }
@@ -1298,6 +1400,12 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            requote_throttle_fresh_submit_submit_weight = 1
+            requote_throttle_fresh_submit_rest_weight = 1
+            requote_throttle_cancel_resubmit_submit_weight = 1
+            requote_throttle_cancel_resubmit_rest_weight = 2
+            requote_throttle_cancel_submit_weight = 0
+            requote_throttle_cancel_rest_weight = 1
             quote_interval_ms = 1000
 
             [parameters.market_portfolio]
@@ -1636,6 +1744,21 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("requote_min_interval_ms")),
             "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_requote_throttle_weight_below_intrinsic_cost() {
+        let errors = bounds_errors(RuntimeParametersBlock {
+            requote_throttle_cancel_resubmit_rest_weight: 1,
+            ..valid_runtime()
+        });
+        assert!(
+            errors.iter().any(|error| {
+                error.contains("requote_throttle_cancel_resubmit_rest_weight")
+                    && error.contains("intrinsic requote action cost")
+            }),
+            "understating the cancel/resubmit REST weight must fail closed: {errors:?}"
         );
     }
 
@@ -2565,6 +2688,12 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            requote_throttle_fresh_submit_submit_weight = 1
+            requote_throttle_fresh_submit_rest_weight = 1
+            requote_throttle_cancel_resubmit_submit_weight = 1
+            requote_throttle_cancel_resubmit_rest_weight = 2
+            requote_throttle_cancel_submit_weight = 0
+            requote_throttle_cancel_rest_weight = 1
             quote_interval_ms = 1000
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
@@ -2595,6 +2724,12 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            requote_throttle_fresh_submit_submit_weight = 1
+            requote_throttle_fresh_submit_rest_weight = 1
+            requote_throttle_cancel_resubmit_submit_weight = 1
+            requote_throttle_cancel_resubmit_rest_weight = 2
+            requote_throttle_cancel_submit_weight = 0
+            requote_throttle_cancel_rest_weight = 1
             quote_interval_ms = 1000
             surprise = 1
             "#,
@@ -2612,6 +2747,38 @@ mod tests {
     }
 
     #[test]
+    fn parameters_block_rejects_missing_requote_throttle_weight() {
+        let toml = format!(
+            "{}{}{}{}",
+            r#"
+            [runtime]
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+            mu_min_floor = 0.05
+            requote_min_interval_ms = 500
+            quote_interval_ms = 1000
+            requote_throttle_fresh_submit_submit_weight = 1
+            requote_throttle_fresh_submit_rest_weight = 1
+            requote_throttle_cancel_resubmit_submit_weight = 1
+            requote_throttle_cancel_submit_weight = 0
+            requote_throttle_cancel_rest_weight = 1
+            "#,
+            VALID_MARKET_PORTFOLIO_TOML,
+            VALID_MARKETS_TOML,
+            valid_backtest_toml()
+        );
+        let parameters: Value = toml::from_str(&toml).expect("raw [parameters] toml parses");
+        let error = deserialize_parameters_block(&parameters)
+            .expect_err("missing requote_throttle_cancel_resubmit_rest_weight must fail closed");
+        assert!(
+            error.contains("requote_throttle_cancel_resubmit_rest_weight"),
+            "the missing-key rejection must name the absent H6 field: {error}"
+        );
+    }
+
+    #[test]
     fn parameters_block_rejects_unknown_backtest_key() {
         let toml = format!(
             "{}{}{}{}",
@@ -2623,6 +2790,12 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            requote_throttle_fresh_submit_submit_weight = 1
+            requote_throttle_fresh_submit_rest_weight = 1
+            requote_throttle_cancel_resubmit_submit_weight = 1
+            requote_throttle_cancel_resubmit_rest_weight = 2
+            requote_throttle_cancel_submit_weight = 0
+            requote_throttle_cancel_rest_weight = 1
             quote_interval_ms = 1000
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
@@ -2700,6 +2873,12 @@ mod tests {
                 mu_stale_window_ms = 60000
                 mu_min_floor = 0.05
                 requote_min_interval_ms = 500
+                requote_throttle_fresh_submit_submit_weight = 1
+                requote_throttle_fresh_submit_rest_weight = 1
+                requote_throttle_cancel_resubmit_submit_weight = 1
+                requote_throttle_cancel_resubmit_rest_weight = 2
+                requote_throttle_cancel_submit_weight = 0
+                requote_throttle_cancel_rest_weight = 1
                 quote_interval_ms = 1000
                 "#,
                 VALID_MARKET_PORTFOLIO_TOML
@@ -2721,6 +2900,12 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            requote_throttle_fresh_submit_submit_weight = 1
+            requote_throttle_fresh_submit_rest_weight = 1
+            requote_throttle_cancel_resubmit_submit_weight = 1
+            requote_throttle_cancel_resubmit_rest_weight = 2
+            requote_throttle_cancel_submit_weight = 0
+            requote_throttle_cancel_rest_weight = 1
             quote_interval_ms = 1000
             "#,
             r#"
@@ -2755,6 +2940,12 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            requote_throttle_fresh_submit_submit_weight = 1
+            requote_throttle_fresh_submit_rest_weight = 1
+            requote_throttle_cancel_resubmit_submit_weight = 1
+            requote_throttle_cancel_resubmit_rest_weight = 2
+            requote_throttle_cancel_submit_weight = 0
+            requote_throttle_cancel_rest_weight = 1
             quote_interval_ms = 1000
             "#,
             valid_backtest_toml()
@@ -2797,6 +2988,12 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            requote_throttle_fresh_submit_submit_weight = 1
+            requote_throttle_fresh_submit_rest_weight = 1
+            requote_throttle_cancel_resubmit_submit_weight = 1
+            requote_throttle_cancel_resubmit_rest_weight = 2
+            requote_throttle_cancel_submit_weight = 0
+            requote_throttle_cancel_rest_weight = 1
             quote_interval_ms = 1000
             "#,
             r#"
@@ -2851,6 +3048,12 @@ mod tests {
         assert_eq!(config.mu_stale_window_ms, 60_000);
         assert_eq!(config.mu_min_floor, 0.05);
         assert_eq!(config.requote_min_interval_ms, 500);
+        assert_eq!(config.requote_throttle_fresh_submit_submit_weight, 1);
+        assert_eq!(config.requote_throttle_fresh_submit_rest_weight, 1);
+        assert_eq!(config.requote_throttle_cancel_resubmit_submit_weight, 1);
+        assert_eq!(config.requote_throttle_cancel_resubmit_rest_weight, 2);
+        assert_eq!(config.requote_throttle_cancel_submit_weight, 0);
+        assert_eq!(config.requote_throttle_cancel_rest_weight, 1);
         assert_eq!(config.market_portfolio_max_active_markets, 3);
         assert_eq!(config.market_portfolio_total_bankroll_notional, 1500.0);
         assert_eq!(config.market_portfolio_min_slot_notional, 100.0);

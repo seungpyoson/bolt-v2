@@ -118,10 +118,13 @@ impl RequoteBudget {
 
 /// Structural token cost of one NT submit command against the submit-governor
 /// budget. A submit (fresh or resubmit) issues exactly one submit command.
-const SUBMIT_COMMAND_COST: u64 = 1;
+pub(crate) const SUBMIT_COMMAND_COST: u64 = 1;
 /// Structural token cost of one venue REST call against the CLOB REST budget.
 /// Every cancel and every submit is exactly one REST call.
-const REST_CALL_COST: u64 = 1;
+pub(crate) const REST_CALL_COST: u64 = 1;
+/// Structural submit-command cost of a standalone cancel: cancelling an existing
+/// resting order does not issue an NT submit command.
+pub(crate) const STANDALONE_CANCEL_SUBMIT_COMMAND_COST: u64 = 0;
 /// REST cost of a cancel+resubmit reprice cycle: the cancel REST call plus the
 /// resubmit REST call. The venue lacks an in-place modify, so a reprice is always
 /// two REST calls.
@@ -180,7 +183,11 @@ impl RequoteBudgetPair {
     /// Reserve budget for a standalone cancel (no resubmit): zero submit commands
     /// and one REST call.
     pub fn try_reserve_cancel(&mut self, now_ms: u64) -> bool {
-        self.try_reserve(now_ms, 0, REST_CALL_COST)
+        self.try_reserve(
+            now_ms,
+            STANDALONE_CANCEL_SUBMIT_COMMAND_COST,
+            REST_CALL_COST,
+        )
     }
 
     /// Granted submit commands currently counted inside the submit-governor window.

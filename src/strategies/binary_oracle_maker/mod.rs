@@ -83,7 +83,8 @@ pub mod mu;
 pub mod runtime;
 
 pub use config::{
-    BinaryOracleMakerBuilder, BinaryOracleMakerConfig, parse_config, validate_config,
+    BinaryOracleMakerBuilder, BinaryOracleMakerConfig, RequoteThrottleWeights, parse_config,
+    validate_config,
 };
 
 /// The archetype key for the maker — its `StrategyBuilder::kind`,
@@ -92,12 +93,6 @@ pub use config::{
 pub const KEY: &str = "binary_oracle_maker";
 const REQUOTE_THROTTLE_LEG_YES: &str = "yes";
 const REQUOTE_THROTTLE_LEG_NO: &str = "no";
-const REQUOTE_THROTTLE_FRESH_SUBMIT_SUBMIT_COST: u64 = 1;
-const REQUOTE_THROTTLE_FRESH_SUBMIT_REST_COST: u64 = 1;
-const REQUOTE_THROTTLE_CANCEL_RESUBMIT_SUBMIT_COST: u64 = 1;
-const REQUOTE_THROTTLE_CANCEL_RESUBMIT_REST_COST: u64 = 2;
-const REQUOTE_THROTTLE_CANCEL_SUBMIT_COST: u64 = 0;
-const REQUOTE_THROTTLE_CANCEL_REST_COST: u64 = 1;
 
 /// Binary-oracle market-making strategy. Carries the NautilusTrader envelope
 /// (`core`), its parsed config, and the per-instrument μ (informed-fraction)
@@ -330,7 +325,8 @@ impl BinaryOracleMaker {
                 .retain(|key| !(key.family_key == family_key && key.leg == leg));
             return Ok(());
         };
-        let bound_by = requote_throttle_bound(action_cost_class, budget, now_ms);
+        let weights = self.config.requote_throttle_weights();
+        let bound_by = requote_throttle_bound(action_cost_class, &weights, budget, now_ms);
         let key = RequoteThrottleDedupeKey {
             family_key: family_key.to_string(),
             leg,
@@ -685,22 +681,22 @@ fn requote_action_cost_class(
 
 fn requote_throttle_bound(
     action_cost_class: BoltV3RequoteActionCostClass,
+    weights: &RequoteThrottleWeights,
     budget: &RequoteBudgetPair,
     now_ms: u64,
 ) -> BoltV3RequoteThrottleBound {
     let (submit_cost, rest_cost) = match action_cost_class {
         BoltV3RequoteActionCostClass::FreshSubmit => (
-            REQUOTE_THROTTLE_FRESH_SUBMIT_SUBMIT_COST,
-            REQUOTE_THROTTLE_FRESH_SUBMIT_REST_COST,
+            weights.fresh_submit_submit_weight,
+            weights.fresh_submit_rest_weight,
         ),
         BoltV3RequoteActionCostClass::CancelResubmit => (
-            REQUOTE_THROTTLE_CANCEL_RESUBMIT_SUBMIT_COST,
-            REQUOTE_THROTTLE_CANCEL_RESUBMIT_REST_COST,
+            weights.cancel_resubmit_submit_weight,
+            weights.cancel_resubmit_rest_weight,
         ),
-        BoltV3RequoteActionCostClass::Cancel => (
-            REQUOTE_THROTTLE_CANCEL_SUBMIT_COST,
-            REQUOTE_THROTTLE_CANCEL_REST_COST,
-        ),
+        BoltV3RequoteActionCostClass::Cancel => {
+            (weights.cancel_submit_weight, weights.cancel_rest_weight)
+        }
     };
     if let Some(last_emit_ms) = budget.last_emit_ms() {
         if now_ms < last_emit_ms {
@@ -1187,6 +1183,12 @@ mod tests {
             mu_stale_window_ms: TEST_STALE_WINDOW_MS,
             mu_min_floor: TEST_MU_FLOOR,
             requote_min_interval_ms: TEST_REQUOTE_MIN_INTERVAL_MS,
+            requote_throttle_fresh_submit_submit_weight: 1,
+            requote_throttle_fresh_submit_rest_weight: 1,
+            requote_throttle_cancel_resubmit_submit_weight: 1,
+            requote_throttle_cancel_resubmit_rest_weight: 2,
+            requote_throttle_cancel_submit_weight: 0,
+            requote_throttle_cancel_rest_weight: 1,
             quote_interval_ms: TEST_QUOTE_INTERVAL_MS,
             market_portfolio_max_active_markets: 3,
             market_portfolio_total_bankroll_notional: 1500.0,
@@ -1329,6 +1331,14 @@ mod tests {
     fn requote_throttle_bound_throttles_same_millisecond_reemit() {
         use crate::bolt_v3_requote_budget::RequoteBudget;
 
+        let weights = RequoteThrottleWeights {
+            fresh_submit_submit_weight: 1,
+            fresh_submit_rest_weight: 1,
+            cancel_resubmit_submit_weight: 1,
+            cancel_resubmit_rest_weight: 2,
+            cancel_submit_weight: 0,
+            cancel_rest_weight: 1,
+        };
         let mut remaining_budget = RequoteBudgetPair::new(
             RequoteBudget::new(40, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
             RequoteBudget::new(100, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
@@ -1342,6 +1352,7 @@ mod tests {
         assert_eq!(
             requote_throttle_bound(
                 BoltV3RequoteActionCostClass::CancelResubmit,
+                &weights,
                 &remaining_budget,
                 1_000,
             ),
@@ -1361,6 +1372,7 @@ mod tests {
         assert_eq!(
             requote_throttle_bound(
                 BoltV3RequoteActionCostClass::CancelResubmit,
+                &weights,
                 &exhausted_budget,
                 1_000,
             ),
@@ -1373,11 +1385,42 @@ mod tests {
         assert_eq!(
             requote_throttle_bound(
                 BoltV3RequoteActionCostClass::CancelResubmit,
+                &weights,
                 &remaining_budget,
                 1_001,
             ),
             BoltV3RequoteThrottleBound::MinInterval,
             "strictly-later ticks inside the interval remain bounded by MinInterval"
+        );
+    }
+
+    #[test]
+    fn requote_throttle_bound_uses_configured_weight() {
+        use crate::bolt_v3_requote_budget::RequoteBudget;
+
+        let weights = RequoteThrottleWeights {
+            fresh_submit_submit_weight: 1,
+            fresh_submit_rest_weight: 1,
+            cancel_resubmit_submit_weight: 1,
+            cancel_resubmit_rest_weight: 3,
+            cancel_submit_weight: 0,
+            cancel_rest_weight: 1,
+        };
+        let mut budget = RequoteBudgetPair::new(
+            RequoteBudget::new(100, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
+            RequoteBudget::new(3, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
+        );
+        assert!(budget.try_reserve_fresh_submit(1_000));
+
+        assert_eq!(
+            requote_throttle_bound(
+                BoltV3RequoteActionCostClass::CancelResubmit,
+                &weights,
+                &budget,
+                1_000,
+            ),
+            BoltV3RequoteThrottleBound::RestCallWindow,
+            "a configured cancel/resubmit REST weight of 3 must bind a cap of 3 after one fresh submit; the old hardcoded weight of 2 would leave the action classified as WindowCap"
         );
     }
 }

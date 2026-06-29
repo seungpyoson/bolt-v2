@@ -412,6 +412,70 @@ def test_allowlist_exactness() -> None:
         )
 
 
+H6_REQUOTE_THROTTLE_WEIGHT_FIELDS = (
+    "requote_throttle_fresh_submit_submit_weight",
+    "requote_throttle_fresh_submit_rest_weight",
+    "requote_throttle_cancel_resubmit_submit_weight",
+    "requote_throttle_cancel_resubmit_rest_weight",
+    "requote_throttle_cancel_submit_weight",
+    "requote_throttle_cancel_rest_weight",
+)
+
+
+def _repo_text(relative_path: str) -> str:
+    return (VERIFIER.REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def test_h6_requote_throttle_weights_are_runtime_config_sourced() -> None:
+    config = _repo_text("src/strategies/binary_oracle_maker/config.rs")
+    archetype = _repo_text("src/strategies/binary_oracle_maker/archetype.rs")
+    maker = _repo_text("src/strategies/binary_oracle_maker/mod.rs")
+
+    for field in H6_REQUOTE_THROTTLE_WEIGHT_FIELDS:
+        declaration = f"pub {field}: u64,"
+        if declaration not in config:
+            raise AssertionError(f"consumer config missing required H6 field: {declaration}")
+        runtime_declaration = f"{field}: u64,"
+        if runtime_declaration not in archetype:
+            raise AssertionError(
+                f"[parameters.runtime] block missing required H6 field: {runtime_declaration}"
+            )
+        insertion = f'"{field}",'
+        if insertion not in archetype:
+            raise AssertionError(f"raw maker config does not thread H6 field {field}")
+
+    if "fn requote_throttle_bound(\n    action_cost_class: BoltV3RequoteActionCostClass,\n    weights: &RequoteThrottleWeights," not in maker:
+        raise AssertionError("requote_throttle_bound must consume config-backed H6 weights")
+
+    for stale_const in (
+        "REQUOTE_THROTTLE_FRESH_SUBMIT_SUBMIT_COST",
+        "REQUOTE_THROTTLE_FRESH_SUBMIT_REST_COST",
+        "REQUOTE_THROTTLE_CANCEL_RESUBMIT_SUBMIT_COST",
+        "REQUOTE_THROTTLE_CANCEL_RESUBMIT_REST_COST",
+        "REQUOTE_THROTTLE_CANCEL_SUBMIT_COST",
+        "REQUOTE_THROTTLE_CANCEL_REST_COST",
+    ):
+        if stale_const in maker:
+            raise AssertionError(f"H6 stale hardcoded classifier constant remains: {stale_const}")
+
+
+def test_h6_requote_throttle_weights_fail_closed_on_missing_runtime_key() -> None:
+    archetype = _repo_text("src/strategies/binary_oracle_maker/archetype.rs")
+    missing_test = "parameters_block_rejects_missing_requote_throttle_weight"
+    if missing_test not in archetype:
+        raise AssertionError(f"missing H6 Rust negative test: {missing_test}")
+
+    valid_fixture = "fn valid_strategy_toml"
+    fixture_start = archetype.find(valid_fixture)
+    if fixture_start == -1:
+        raise AssertionError(f"missing maker fixture function {valid_fixture}")
+    next_function = archetype.find("\n    fn ", fixture_start + len(valid_fixture))
+    fixture = archetype[fixture_start : None if next_function == -1 else next_function]
+    for field in H6_REQUOTE_THROTTLE_WEIGHT_FIELDS:
+        if f"{field} =" not in fixture:
+            raise AssertionError(f"valid maker TOML fixture missing [parameters.runtime].{field}")
+
+
 def test_provider_credential_log_modules_are_provider_scoped() -> None:
     original_audit_path = VERIFIER.AUDIT_PATH
     invalid_paths = [

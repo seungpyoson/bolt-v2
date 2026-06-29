@@ -1226,6 +1226,52 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(config.logging.heartbeat_stale_days, 2)
         self.assertEqual(config.logging.lane_r_log_path, "<git-common-dir>/custom-lane-r.log")
 
+    def test_cli_print_remote_name_uses_config(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8").replace(
+                'remote_name = "origin"', 'remote_name = "upstream"'),
+            encoding="utf-8",
+        )
+
+        proc = run_clean_proc(self.work, "--print-remote-name")
+
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "upstream")
+
+    def test_cli_print_remote_name_fails_loud_without_config(self) -> None:
+        (self.work / "config" / "clean-merged.toml").unlink()
+
+        proc = run_clean_proc(self.work, "--print-remote-name")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn("config/clean-merged.toml", proc.stderr)
+
+    def test_setup_uses_configured_remote_name(self) -> None:
+        source = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+
+        self.assertIn("--print-remote-name", source)
+        self.assertIn("remote.${clean_merged_remote}.prune", source)
+        self.assertNotIn("remote.origin.prune", source)
+
+    def test_docs_do_not_hardcode_configured_heartbeat_latency(self) -> None:
+        source = (REPO_ROOT / "docs" / "ops" / "clean-merged-design.md").read_text(
+            encoding="utf-8")
+        normalized = " ".join(source.split())
+        normalized_lower = normalized.lower()
+
+        self.assertNotIn("real detection latency is 7 days", source)
+        self.assertIn("configured heartbeat stale threshold (default 7 days)", normalized)
+        self.assertNotIn("fail-open (corrupt/tampered", source)
+        self.assertIn("invalid or future-dated gh cache entries fail closed", normalized_lower)
+
+    def test_post_rewrite_comment_uses_configured_trunk(self) -> None:
+        source = (REPO_ROOT / ".githooks" / "post-rewrite").read_text(encoding="utf-8")
+
+        self.assertNotIn("local main", source)
+        self.assertIn("configured trunk", source)
+
 
 # ---------------------------------------------------------------------------
 # gh cache (A3)
@@ -1517,6 +1563,8 @@ class HookEndToEndTests(unittest.TestCase):
         source = (REPO_ROOT / ".githooks" / "post-merge").read_text(encoding="utf-8")
         self.assertIn("--redirect-output-to-lane-r-log", source)
         self.assertIn("setsid", source)
+        self.assertIn('setsid python3 "$script" --reconcile', source)
+        self.assertNotIn('(setsid python3 "$script"', source)
         self.assertNotIn("clean-merged.lane-r.log", source)
 
     def test_redirect_output_to_configured_lane_r_log(self) -> None:
@@ -1536,6 +1584,30 @@ class HookEndToEndTests(unittest.TestCase):
 
         self.assertEqual(proc.stdout, "")
         self.assertTrue(log_path.is_file())
+        self.assertIn("[clean-merged] doctor", log_path.read_text(encoding="utf-8"))
+
+    def test_redirect_output_rotates_lane_r_log(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8")
+            .replace("max_log_bytes = 1048576", "max_log_bytes = 10")
+            .replace(
+                'lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"',
+                'lane_r_log_path = "<git-common-dir>/custom-lane-r.log"',
+            ),
+            encoding="utf-8",
+        )
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        log_path = common / "custom-lane-r.log"
+        log_path.write_text("old content that exceeds the configured cap\n", encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--doctor", "--redirect-output-to-lane-r-log")
+
+        self.assertEqual(proc.stdout, "")
+        self.assertTrue(log_path.with_suffix(log_path.suffix + ".1").is_file())
+        self.assertIn("old content", log_path.with_suffix(log_path.suffix + ".1").read_text(
+            encoding="utf-8"))
         self.assertIn("[clean-merged] doctor", log_path.read_text(encoding="utf-8"))
 
     def test_post_rewrite_fires_on_rebase_pull(self) -> None:

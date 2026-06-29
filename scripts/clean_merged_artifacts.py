@@ -564,6 +564,16 @@ def _release_lock(fd: int) -> None:
     os.close(fd)
 
 
+def _rotate_log_if_needed(log_path: pathlib.Path, max_bytes: int) -> None:
+    if log_path.exists() and log_path.stat().st_size > max_bytes:
+        rotated = log_path.with_suffix(log_path.suffix + ".1")
+        try:
+            rotated.unlink(missing_ok=True)
+            log_path.rename(rotated)
+        except OSError:
+            pass
+
+
 def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any]) -> None:
     log_path = _resolve_path(repo_root, config.logging.audit_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -574,12 +584,7 @@ def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any])
         return
     try:
         if log_path.exists() and log_path.stat().st_size > config.logging.max_log_bytes:
-            rotated = log_path.with_suffix(log_path.suffix + ".1")
-            try:
-                rotated.unlink(missing_ok=True)
-                log_path.rename(rotated)
-            except OSError:
-                pass
+            _rotate_log_if_needed(log_path, config.logging.max_log_bytes)
         record_with_ts = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **record}
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record_with_ts, ensure_ascii=False, sort_keys=True) + "\n")
@@ -2027,9 +2032,12 @@ def _python_runtime_status() -> str:
     return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} ({toml_status})"
 
 
-def _redirect_output_to(path: pathlib.Path) -> Any:
+def _redirect_output_to(path: pathlib.Path, max_bytes: int) -> Any:
     path.parent.mkdir(parents=True, exist_ok=True)
+    _rotate_log_if_needed(path, max_bytes)
     handle = path.open("a", encoding="utf-8", buffering=1)
+    # dup2 gives stdout/stderr independent descriptors; the returned handle
+    # only keeps the target open until the dup has completed.
     os.dup2(handle.fileno(), sys.stdout.fileno())
     os.dup2(handle.fileno(), sys.stderr.fileno())
     return handle
@@ -2294,6 +2302,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help=argparse.SUPPRESS)
     p.add_argument("--redirect-output-to-lane-r-log", action="store_true",
                    help=argparse.SUPPRESS)
+    p.add_argument("--print-remote-name", action="store_true",
+                   help=argparse.SUPPRESS)
     return p
 
 
@@ -2386,13 +2396,22 @@ def main(argv: list[str] | None = None) -> int:
         # surface the diagnostic and exit non-zero.
         if not args.quiet:
             print(f"[{SCRIPT_NAME}] error: {exc}", file=sys.stderr)
+        if args.print_remote_name:
+            return 1
         if args.doctor:
             return cmd_doctor_on_error(repo_root=pathlib.Path.cwd(), exc=exc)
         return 0
 
+    if args.print_remote_name:
+        print(config.remote_name)
+        return 0
+
     if args.redirect_output_to_lane_r_log:
         try:
-            _redirect_output_to(_resolve_path(repo_root, config.logging.lane_r_log_path))
+            _redirect_output_to(
+                _resolve_path(repo_root, config.logging.lane_r_log_path),
+                config.logging.max_log_bytes,
+            )
         except OSError as exc:
             if not args.quiet:
                 print(f"[{SCRIPT_NAME}] lane R log redirect failed: {exc}", file=sys.stderr)

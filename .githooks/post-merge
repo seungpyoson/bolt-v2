@@ -42,7 +42,7 @@ python3 "$script" --lane h --apply --quiet >/dev/null 2>&1 || true
 # Lane R: detached with strict gh timeout. Python owns the configured log path
 # so the hook does not duplicate TOML parsing in bash.
 if command -v setsid >/dev/null 2>&1; then
-    (setsid python3 "$script" --reconcile --apply --quiet --redirect-output-to-lane-r-log </dev/null >/dev/null 2>&1 || true) &
+    setsid python3 "$script" --reconcile --apply --quiet --redirect-output-to-lane-r-log </dev/null >/dev/null 2>&1 &
 else
     (python3 "$script" --reconcile --apply --quiet --redirect-output-to-lane-r-log </dev/null >/dev/null 2>&1 || true) &
 fi

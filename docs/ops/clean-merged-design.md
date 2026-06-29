@@ -156,7 +156,7 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
 - Restructure existing `post-checkout` (its `prev_head != 000…` early-exit
   moves BELOW our dispatch so cleanup runs first when gated).
 - Extend existing `post-rewrite` (Entire CLI line preserved).
-- `git config remote.origin.prune true` owned here (NO DUAL PATHS).
+- `git config remote.<configured-remote>.prune true` owned here (NO DUAL PATHS).
 - `post-merge` also spawns Lane R detached.
 - `just clean-merged-doctor`: install state, hook-marker presence, config
   validity, gh availability, last-run heartbeat freshness, quarantine disk
@@ -225,13 +225,13 @@ in two specific ways. Stated precisely:)
   script fail-opens for hook lanes and `--doctor` reports `tomllib=no` with the
   Python 3.11+ requirement. The fail-open contract is intentional — a hook that
   broke `git pull` over a missing dep would be strictly worse. Detection still
-  depends on `--doctor`'s heartbeat-freshness check (config-backed threshold);
-  doctor is
-  opt-in/pull-based (no cron/launchd wiring), so real detection latency is 7
-  days + however long until someone runs doctor. The failure cost equals the
-  no-tool baseline (merged branches linger; committed work stays reachable via
-  reflog); prior deletions are backup-ref protected. Run
-  `just clean-merged-doctor` periodically.
+  depends on `--doctor`'s heartbeat-freshness check (configured heartbeat
+  stale threshold (default 7 days)); doctor is opt-in/pull-based (no
+  cron/launchd wiring), so real detection latency is the configured heartbeat
+  stale threshold (default 7 days) + however long until someone runs doctor.
+  The failure cost equals the no-tool baseline (merged branches linger;
+  committed work stays reachable via reflog); prior deletions are backup-ref
+  protected. Run `just clean-merged-doctor` periodically.
 - **Lane R gh cost under slowdown** (round-soundness GPT/Kimi). Lane R is
   spawned detached on every `post-merge`; each non-ancestor branch triggers a
   per-branch gh query (config-backed timeout each). On a repo with ~40 branches
@@ -240,15 +240,13 @@ in two specific ways. Stated precisely:)
   potential gh rate-limit pressure. Mitigated by per-branch TTL cache + the fail-safe
   "gh trouble → keep branch" contract. If gh is persistently slow, squash-merged
   branches accumulate until an online manual reconcile. No data loss.
-- **Future-dated `fetched_at` in cache** (round-5.5 polish-2 Claude). A
-  cache entry with `fetched_at` set to a future timestamp (clock skew, manual
-  tampering) computes `age = now - future = negative`, which is finite and
-  `< ttl` → treated as permanently live. Pre-existing behavior (not introduced
-  by any fix round). Only reachable via direct cache-file editing; the tool
-  itself always writes `fetched_at = time.time()`. Accepted: the cache is
-  fail-open (corrupt/tampered → bypass → fresh gh call); a permanently-live
-  stale entry at worst delays cleanup for one branch, never causes a wrong
-  delete (headRefOid is always recomputed against the live tip).
+- **Invalid or future-dated gh cache entries fail closed.** A cache entry with
+  malformed PR payloads, non-finite timestamps, or `fetched_at` in the future
+  keeps the branch and avoids a fresh gh call for that branch until a later
+  successful save prunes the invalid entry. Whole-file cache corruption also
+  keeps branches and is surfaced by `--doctor` with the cache path so the
+  operator can delete the file if needed. This favors no false deletes over
+  cache self-healing.
 - **No `fsync` before `os.replace`** (round-5.5 Grok P2). Atomic manifest/cache
   writes use `tmp.write_text()` + `os.replace()` without an intervening
   `fsync`. A power-loss between write and replace could lose the tmp file's

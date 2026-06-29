@@ -273,6 +273,44 @@ fn operator_strings_reject_zero_width_format_characters_before_hashing() {
 }
 
 #[test]
+fn grouping_proof_wildcard_is_only_numeric_hyperliquid_reachability() {
+    let mut group = valid_group();
+    group.source_kind = OutcomeGroupSourceKind::Hyperliquid;
+    group.grouping_proof = Some(GroupingProof::HyperliquidOutcome {
+        question: 42,
+        outcome_indices: vec![0, 1],
+        proof_fingerprint: hash('d'),
+    });
+    group.metadata_fingerprint = expected_metadata_fingerprint(&group);
+
+    assert!(
+        ValidatedOutcomeGroup::validate(&group).is_ok(),
+        "the grouping-proof wildcard is decision-safe because HyperliquidOutcome carries numeric IDs plus a SHA-checked fingerprint, not operator text"
+    );
+
+    let mut text_bearing = valid_group();
+    if let Some(GroupingProof::OperatorAttested { attestation_id, .. }) =
+        text_bearing.grouping_proof.as_mut()
+    {
+        *attestation_id = "role-binding\0shadow".to_string();
+    } else {
+        text_bearing.grouping_proof = Some(GroupingProof::OperatorAttested {
+            settlement_contract_id: "contract-a".to_string(),
+            attestation_id: "role-binding\0shadow".to_string(),
+            attestation_sha256: hash('e'),
+            proof_fingerprint: hash('f'),
+        });
+    }
+    text_bearing.metadata_fingerprint = expected_metadata_fingerprint(&text_bearing);
+
+    assert!(
+        ValidatedOutcomeGroup::validate(&text_bearing)
+            .is_err_and(|error| error.is_invalid_operator_string()),
+        "text-bearing grouping proofs must still fail closed before metadata fingerprint acceptance"
+    );
+}
+
+#[test]
 fn duplicate_or_extraneous_non_standard_payout_vectors_reject() {
     let mut duplicate = valid_group();
     duplicate

@@ -6280,6 +6280,12 @@ mod tests {
         HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
         HyperliquidProductSubmitProofBinding, write_hyperliquid_live_submit_approval_artifact,
     };
+    use crate::bolt_v3_submit_admission::{
+        BoltV3CapitalAdmissionRejectReason, BoltV3CompiledOrderAdmissionEvidence,
+        BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledProductKind,
+        BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind,
+        BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
+    };
     use nautilus_core::{UUID4, UnixNanos};
     use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
     use nautilus_model::enums::{
@@ -6459,6 +6465,64 @@ mod tests {
             .expect("account state should publish an unreconciled sizing state");
         assert_eq!(state.order_lifecycle.source, "nt_order_lifecycle_seed");
         assert!(!state.order_lifecycle.all_open_orders_attributed);
+    }
+
+    #[test]
+    fn startup_rebuild_zero_position_seed_keeps_sell_admission_closed() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+
+        let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
+
+        assert_eq!(rebuild.missing_nt_account_cache_balance, None);
+        assert_eq!(runtime.capital_admission_reconciled(), Some(true));
+        let state = runtime
+            .submit_admission
+            .capital_admission_state_snapshot()
+            .expect("authoritative empty NT position cache should seed capital admission state");
+        let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
+        assert_eq!(product.yes_position, Decimal::ZERO);
+        assert_eq!(product.no_position, Decimal::ZERO);
+
+        let request = BoltV3SubmitAdmissionRequest {
+            strategy_id: "startup-zero-position-strategy".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            client_order_id: "startup-zero-position-sell".to_string(),
+            instrument_id: "condition-fixture-yes.POLYMARKET".to_string(),
+            notional: Decimal::new(4, 0),
+            order_side: OrderSide::Sell,
+            order_quantity: Decimal::ONE,
+            intent_kind: BoltV3SubmitIntentKind::Entry,
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            risk_reducing_exit_proof: None,
+            kill_switch_forced_reduction: None,
+            admission_evidence: Some(BoltV3CompiledOrderAdmissionEvidence {
+                venue_id: "POLYMARKET".to_string(),
+                product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
+                side: BoltV3CompiledOrderSide::Sell,
+                quantity: Decimal::ONE,
+                effective_price: Decimal::new(40, 2),
+                order_kind: BoltV3CompiledOrderKind::Limit,
+                liquidity: BoltV3CompiledOrderLiquidity::Taker,
+                quote_set_id: None,
+                prediction_market_outcome: Some(PredictionMarketOutcomeSide::Yes),
+            }),
+        };
+
+        let error = runtime
+            .submit_admission
+            .admit_at(&request, 2_100)
+            .expect_err("zero cached position must reject sell admission");
+
+        assert!(matches!(
+            error,
+            BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+                reason: BoltV3CapitalAdmissionRejectReason::CapitalAdmissionRejected,
+            }
+        ));
     }
 
     #[test]
@@ -8655,6 +8719,115 @@ configured_source_param = "configured-value"
 
         assert!(error.contains("invalid NT option-chain series_id"));
         assert!(error.contains("configured-invalid-option-series"));
+    }
+
+    #[test]
+    fn iv_event_binding_wildcard_only_ignores_mismatched_source_selector_pairs() {
+        let iv = toml::from_str::<IvRootConfig>(
+            r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "configured-profile"
+enabled_products = ["source_health", "iv_point"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_derived_points = 2
+max_source_health_events = 2
+max_source_event_future_skew_ns = 0
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention"] } }
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[profiles.audit_policy]
+profile_id = "configured-profile"
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health", "iv_point"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "configured-greeks-source"
+selector_fingerprint = "configured-greeks-selector"
+source_kind = "option_greeks"
+client_id = "configured-client"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["BTC-20240101-50000-C.DERIBIT"]
+
+[profiles.sources.selector.nt_params]
+
+[profiles.sources.params]
+
+[[profiles.sources]]
+source_id = "configured-mismatched-source"
+selector_fingerprint = "configured-mismatched-selector"
+source_kind = "option_greeks"
+client_id = "configured-client"
+subscription_generation = 8
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredMismatchedGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_custom_implied_volatility"
+custom_iv_data_type = "ConfiguredCustomIvEvent"
+custom_iv_data_fields = ["configured_iv"]
+
+[profiles.sources.selector.nt_params]
+
+[profiles.sources.params]
+"#,
+        )
+        .expect("synthetic IV root should deserialize");
+        let runtime = IvRuntimeEngine::from_iv_root(&IvRootConfig {
+            schema_version: 1,
+            profiles: Vec::new(),
+        })
+        .expect("empty IV runtime should construct for handler wiring");
+
+        let bindings = wire_bolt_v3_iv_runtime_event_bindings(&iv, &runtime)
+            .expect("mismatched source/selector pair should be ignored, not bound");
+
+        assert_eq!(
+            bindings.option_greeks.len(),
+            1,
+            "valid option-greeks source must still bind while the mismatched pair stays unbound"
+        );
+        assert!(bindings.option_chains.is_empty());
+        assert!(
+            bindings.custom_data.is_empty(),
+            "the wildcard must not reinterpret an option-greeks source as custom data"
+        );
     }
 
     #[test]

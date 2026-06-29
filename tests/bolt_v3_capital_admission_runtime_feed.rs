@@ -1,6 +1,6 @@
 use crate::support;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bolt_v2::bolt_v3_capital_admission::{
     CapitalAdmissionLifecycleAction, CapitalAdmissionPolicy, FeeSlippagePolicy,
@@ -8,6 +8,7 @@ use bolt_v2::bolt_v3_capital_admission::{
 };
 use bolt_v2::bolt_v3_capital_admission_runtime_feed::{
     CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
+    capital_admission_oversell_conservation_violation_count,
     subscribe_capital_admission_runtime_feed,
 };
 use bolt_v2::bolt_v3_capital_admission_state::{
@@ -49,6 +50,57 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 use ustr::Ustr;
+
+#[derive(Default)]
+struct CapturingLogger {
+    records: Mutex<Vec<(log::Level, String)>>,
+}
+
+impl log::Log for CapturingLogger {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .push((record.level(), record.args().to_string()));
+    }
+
+    fn flush(&self) {}
+}
+
+impl CapturingLogger {
+    fn reset(&self) {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .clear();
+    }
+
+    fn records(&self) -> Vec<(log::Level, String)> {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .clone()
+    }
+}
+
+static CAPTURING_LOGGER: OnceLock<&'static CapturingLogger> = OnceLock::new();
+static CAPTURING_LOGGER_OBSERVERS: Mutex<()> = Mutex::new(());
+
+fn install_capturing_logger() -> &'static CapturingLogger {
+    static INSTALL_OUTCOME: OnceLock<bool> = OnceLock::new();
+    let logger = CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
+    let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
+    assert!(
+        installed,
+        "capturing logger could not claim the global log slot; another logger is installed"
+    );
+    log::set_max_level(log::LevelFilter::Trace);
+    logger
+}
 
 #[test]
 fn runtime_feed_uses_verified_nt_msgbus_symbols() {
@@ -1546,6 +1598,122 @@ fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
             1_150,
         )
         .expect_err("sell above post-fill inventory should reject");
+    assert_eq!(
+        second,
+        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+            reason: BoltV3CapitalAdmissionRejectReason::CapitalAdmissionRejected,
+        }
+    );
+}
+
+#[test]
+fn oversell_fill_underflow_logs_and_counts_conservation_violation_without_reopening_sells() {
+    let logger = install_capturing_logger();
+    let _observer_guard = CAPTURING_LOGGER_OBSERVERS
+        .lock()
+        .expect("capturing logger observer mutex poisoned");
+    logger.reset();
+    let metric_before = capital_admission_oversell_conservation_violation_count();
+
+    let admission = Arc::new(capital_admission_configured_admission());
+    arm_default(&admission);
+    let mut config = runtime_feed_config();
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
+    product.conditional_token_allowance = Decimal::new(3, 0);
+    let mut feed = CapitalAdmissionRuntimeFeed::new(config, admission.clone());
+    let _ = feed.on_account_state(&account_state(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        900,
+        100.0,
+    ));
+    seed_venue_spendability(&mut feed, 925);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_cache_snapshot(
+            Vec::<String>::new(),
+            Decimal::new(3, 0),
+            Decimal::ZERO,
+            1_000
+        )
+        .is_some()
+    );
+    rebuild_empty_capital_admission(&admission);
+
+    let mut request = capital_admission_sell_submit_request("client-order-1");
+    request.order_quantity = Decimal::new(3, 0);
+    request
+        .admission_evidence
+        .as_mut()
+        .expect("capital admission request should carry evidence")
+        .quantity = Decimal::new(3, 0);
+    admission
+        .admit_at(&request, 1_010)
+        .expect("sell within seeded YES inventory should admit")
+        .commit_submitted();
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-oversell",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(10),
+            OrderSide::Sell,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("known overfilled sell fill should still close the known reservation");
+    assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Released);
+
+    let state = admission
+        .capital_admission_state_snapshot()
+        .expect("over-sell fill should publish clamped inventory");
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_order_fill");
+    assert_eq!(product.yes_position, Decimal::ZERO);
+    assert_eq!(product.conditional_token_allowance, Decimal::ZERO);
+    assert_eq!(
+        capital_admission_oversell_conservation_violation_count(),
+        metric_before + 1,
+        "over-sell underflow must increment the conservation-violation metric"
+    );
+
+    let matching = logger
+        .records()
+        .into_iter()
+        .filter(|(_, message)| {
+            message.contains("capital admission over-sell conservation violation")
+                && message.contains("position_underflow=true")
+                && message.contains("allowance_underflow=true")
+                && message.contains("client_order_id=client-order-1")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matching.len(),
+        1,
+        "over-sell underflow must emit one structured error log; got {matching:?}"
+    );
+    assert_eq!(matching[0].0, log::Level::Error);
+
+    let second = admission
+        .admit_at(
+            &capital_admission_sell_submit_request("client-order-2"),
+            1_150,
+        )
+        .expect_err("clamped post-underflow inventory must keep the next sell rejected");
     assert_eq!(
         second,
         BoltV3SubmitAdmissionError::CapitalAdmissionRejected {

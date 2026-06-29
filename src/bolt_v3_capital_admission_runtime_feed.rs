@@ -1,6 +1,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use nautilus_common::msgbus::{
@@ -37,6 +40,40 @@ const CAPITAL_ADMISSION_ORDER_TERMINAL_SOURCE: &str = stringify!(nt_order_termin
 const NT_ACCOUNT_STATE_PORTFOLIO_SOURCE: &str = stringify!(nt_account_state);
 const NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE: &str = "nt_account_cache";
 const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";
+
+const CAPITAL_ADMISSION_OVERSELL_CONSERVATION_VIOLATION_INITIAL_COUNT: u64 = u64::MIN;
+const CAPITAL_ADMISSION_OVERSELL_CONSERVATION_VIOLATION_INCREMENT: u64 = true as u64;
+
+static CAPITAL_ADMISSION_OVERSELL_CONSERVATION_VIOLATIONS: AtomicU64 =
+    AtomicU64::new(CAPITAL_ADMISSION_OVERSELL_CONSERVATION_VIOLATION_INITIAL_COUNT);
+
+pub fn capital_admission_oversell_conservation_violation_count() -> u64 {
+    CAPITAL_ADMISSION_OVERSELL_CONSERVATION_VIOLATIONS.load(Ordering::Relaxed)
+}
+
+fn record_capital_admission_oversell_conservation_violation(
+    client_order_id: &str,
+    instrument_id: &str,
+    fill_quantity: Decimal,
+    outcome_position_before: Decimal,
+    conditional_token_allowance_before: Decimal,
+    position_underflow: bool,
+    allowance_underflow: bool,
+    observed_at_ns: u64,
+) {
+    CAPITAL_ADMISSION_OVERSELL_CONSERVATION_VIOLATIONS.fetch_add(
+        CAPITAL_ADMISSION_OVERSELL_CONSERVATION_VIOLATION_INCREMENT,
+        Ordering::Relaxed,
+    );
+    log::error!(
+        "capital admission over-sell conservation violation: client_order_id={client_order_id} \
+         instrument_id={instrument_id} fill_quantity={fill_quantity} \
+         outcome_position_before={outcome_position_before} \
+         conditional_token_allowance_before={conditional_token_allowance_before} \
+         position_underflow={position_underflow} allowance_underflow={allowance_underflow} \
+         observed_at_ns={observed_at_ns}",
+    );
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct PositionFillTradeKey {
@@ -436,6 +473,7 @@ impl CapitalAdmissionRuntimeFeed {
             && self.record_new_position_fill_trade_id(fill_trade_key, observed_at_ns);
         if fill_changes_position || unknown_external_fill_changes_position {
             self.component_builder.record_fill_position_delta(
+                &client_order_id,
                 &instrument_id,
                 side,
                 fill_quantity,
@@ -785,6 +823,7 @@ impl CapitalAdmissionRuntimeComponentBuilder {
 
     fn record_fill_position_delta(
         &mut self,
+        client_order_id: &str,
         instrument_id: &str,
         side: BoltV3CompiledOrderSide,
         fill_quantity: Decimal,
@@ -804,13 +843,30 @@ impl CapitalAdmissionRuntimeComponentBuilder {
                 snapshot.conditional_token_allowance += fill_quantity;
             }
             BoltV3CompiledOrderSide::Sell => {
-                *outcome_position = outcome_position
-                    .checked_sub(fill_quantity)
+                let outcome_position_before = *outcome_position;
+                let allowance_before = snapshot.conditional_token_allowance;
+                let next_outcome_position = outcome_position_before.checked_sub(fill_quantity);
+                let next_allowance = allowance_before.checked_sub(fill_quantity);
+                let position_underflow =
+                    next_outcome_position.is_none_or(|position| position < Decimal::ZERO);
+                let allowance_underflow =
+                    next_allowance.is_none_or(|allowance| allowance < Decimal::ZERO);
+                if position_underflow || allowance_underflow {
+                    record_capital_admission_oversell_conservation_violation(
+                        client_order_id,
+                        instrument_id,
+                        fill_quantity,
+                        outcome_position_before,
+                        allowance_before,
+                        position_underflow,
+                        allowance_underflow,
+                        observed_at_ns,
+                    );
+                }
+                *outcome_position = next_outcome_position
                     .filter(|position| *position > Decimal::ZERO)
                     .unwrap_or(Decimal::ZERO);
-                snapshot.conditional_token_allowance = snapshot
-                    .conditional_token_allowance
-                    .checked_sub(fill_quantity)
+                snapshot.conditional_token_allowance = next_allowance
                     .filter(|allowance| *allowance > Decimal::ZERO)
                     .unwrap_or(Decimal::ZERO);
             }

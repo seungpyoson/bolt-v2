@@ -241,6 +241,39 @@ fn account_state_heartbeat_preserves_portfolio_loss_components() {
 }
 
 #[test]
+fn portfolio_pnl_map_or_zero_fallback_is_only_reachable_after_portfolio_pnl_observed() {
+    let source = support::repo_text("src/bolt_v3_loss_runtime_feed.rs");
+    let portfolio_snapshot_updates = source
+        .split("pub fn on_portfolio_snapshot")
+        .nth(1)
+        .and_then(|tail| tail.split("pub fn on_account_state").next())
+        .expect("portfolio snapshot handler should precede account-state handler");
+    assert!(
+        portfolio_snapshot_updates.contains("let daily_pnl = daily_pnl(snapshot, currency)?;"),
+        "portfolio snapshot must fail closed before marking portfolio PnL observed when daily PnL is absent"
+    );
+    assert!(
+        portfolio_snapshot_updates.contains("self.state.update_rolling_pnl(")
+            && portfolio_snapshot_updates.contains("self.state.daily_pnl = Some(")
+            && portfolio_snapshot_updates.contains("self.state.portfolio_pnl_observed = true;"),
+        "portfolio_pnl_observed must be set only on the path that also materializes daily and rolling PnL"
+    );
+
+    let heartbeat_branch = source
+        .split("if self.state.portfolio_pnl_observed {")
+        .nth(1)
+        .and_then(|tail| tail.split("let daily_pnl = {").next())
+        .expect("account-state heartbeat branch should guard the map_or fallback");
+    assert!(
+        heartbeat_branch.contains(".daily_pnl")
+            && heartbeat_branch.contains(".map_or(Decimal::ZERO")
+            && heartbeat_branch.contains(".rolling_pnl")
+            && heartbeat_branch.contains(".map_or(Decimal::ZERO"),
+        "the zero fallback remains scoped to the already-observed portfolio heartbeat branch"
+    );
+}
+
+#[test]
 fn halt_action_handler_receives_snapshot_init_time_as_now() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(

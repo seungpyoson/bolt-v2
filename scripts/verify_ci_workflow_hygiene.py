@@ -1993,11 +1993,43 @@ def block_run_command_count(block: list[str], command: str) -> int:
             return 1
         if value not in {"|", ">"}:
             continue
-        return sum(
-            1
-            for nested in block[index + 1 :]
-            if strip_comment(nested).strip() == command
+        return sum(1 for nested in block_run_body_lines(block) if nested.strip() == command)
+    return 0
+
+
+def shell_line_is_control_flow(line: str) -> bool:
+    stripped = line.strip()
+    return (
+        re.match(
+            r"^(if|then|elif|else|fi|for|while|until|case|esac|select|do|done)\b",
+            stripped,
         )
+        is not None
+    )
+
+
+def run_body_required_command_count(lines: list[str], command: str) -> int:
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if "<<" in stripped or shell_line_is_control_flow(stripped):
+            return 0
+    return top_level_shell_commands(lines).count(command)
+
+
+def block_required_run_command_count(block: list[str], command: str) -> int:
+    for line in block:
+        clean = strip_comment(line)
+        inline = YAML_RUN_LINE_RE.match(clean)
+        if inline is None:
+            continue
+        value = inline.group(2).strip().strip("'\"")
+        if value == command:
+            return 1
+        if value not in {"|", ">"}:
+            continue
+        return run_body_required_command_count(block_run_body_lines(block), command)
     return 0
 
 
@@ -2009,13 +2041,28 @@ def job_run_command_count(job_lines: list[str], command: str) -> int:
     return sum(block_run_command_count(block, command) for block in step_blocks(job_lines))
 
 
+def step_is_unconditional(block: list[str]) -> bool:
+    items = block_top_level_items(block)
+    return items is not None and "if" not in items
+
+
+def job_unconditional_run_command_count(job_lines: list[str], command: str) -> int:
+    if job_if_value(job_lines) != "":
+        return 0
+    return sum(
+        block_required_run_command_count(block, command)
+        for block in step_blocks(job_lines)
+        if step_is_unconditional(block)
+    )
+
+
 def job_runs_command(job_lines: list[str], command: str) -> bool:
     return job_run_command_count(job_lines, command) > 0
 
 
 def workflow_run_command_count(workflow_text: str, command: str) -> int:
     return sum(
-        job_run_command_count(job_lines, command)
+        job_unconditional_run_command_count(job_lines, command)
         for job_lines in parse_jobs(workflow_text).values()
     )
 

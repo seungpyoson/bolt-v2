@@ -857,6 +857,55 @@ class CiStorageTripwireTests(unittest.TestCase):
             with self.assertRaisesRegex(ci_storage_tripwire.TripwireError, "page_size"):
                 ci_storage_tripwire.load_policy(policy_path)
 
+    def test_policy_rejects_duplicate_workflow_contract_key_allowlists(self) -> None:
+        cases = [
+            ("top_level_keys", 'top_level_keys = ["name", "on", "name"]'),
+            ("job_keys", 'job_keys = ["name", "if", "name"]'),
+        ]
+        for key, replacement in cases:
+            with self.subTest(key=key):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = pathlib.Path(tmp)
+                    policy_text = self.write_policy(root).read_text(encoding="utf-8")
+                    policy_path = self.write_policy(
+                        root,
+                        policy_text.replace(
+                            f'{key} = ["name", ',
+                            replacement + "\n# disabled duplicate fixture = [",
+                            1,
+                        ),
+                    )
+
+                    with self.assertRaisesRegex(ci_storage_tripwire.TripwireError, "duplicates"):
+                        ci_storage_tripwire.load_policy(policy_path)
+
+    def test_policy_rejects_malformed_workflow_contract_key_allowlists(self) -> None:
+        cases = [
+            ("top_level_keys", 'top_level_keys = ["name", "\\"env\\""]'),
+            ("top_level_keys", 'top_level_keys = ["name", "<invalid-storage-tripwire-key>"]'),
+            ("job_keys", 'job_keys = ["name", "continue on error"]'),
+            ("job_keys", "job_keys = []"),
+        ]
+        for key, replacement in cases:
+            with self.subTest(key=key, replacement=replacement):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = pathlib.Path(tmp)
+                    policy_text = self.write_policy(root).read_text(encoding="utf-8")
+                    policy_path = self.write_policy(
+                        root,
+                        policy_text.replace(
+                            f'{key} = ["name", ',
+                            replacement + "\n# disabled malformed fixture = [",
+                            1,
+                        ),
+                    )
+
+                    with self.assertRaisesRegex(
+                        ci_storage_tripwire.TripwireError,
+                        "valid YAML key identifiers|non-empty string list",
+                    ):
+                        ci_storage_tripwire.load_policy(policy_path)
+
     def test_workflow_contract_is_driven_by_tripwire_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -928,6 +977,13 @@ class CiStorageTripwireTests(unittest.TestCase):
                 workflow.replace(
                     "\npermissions:\n",
                     '\n"permissions":\n  contents: write\n\npermissions:\n',
+                ),
+                "top-level keys",
+            ),
+            (
+                workflow.replace(
+                    "\npermissions:\n",
+                    "\n- not-a-mapping\n\npermissions:\n",
                 ),
                 "top-level keys",
             ),
@@ -1045,6 +1101,14 @@ class CiStorageTripwireTests(unittest.TestCase):
                     "        continue-on-error: ${{ github.ref_name != '' }}\n        run: |\n",
                 ),
                 "continue-on-error",
+            ),
+            (
+                workflow.replace("        run: |\n", '        "continue-on-error": true\n        run: |\n'),
+                "continue-on-error",
+            ),
+            (
+                workflow.replace("    runs-on:", "    - malformed\n    runs-on:", 1),
+                "job keys",
             ),
             (
                 workflow + "\n          gh api repos/$GITHUB_REPOSITORY/actions/artifacts\n",

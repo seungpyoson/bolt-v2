@@ -28,6 +28,7 @@ import ci_storage_audit
 
 
 STORAGE_TRIPWIRE_TABLE_RE = re.compile(r"(?m)^\s*\[\[?\s*storage_tripwire(?:\s*\]|\.)")
+WORKFLOW_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 class TripwireError(RuntimeError):
@@ -180,6 +181,13 @@ def require_unique_string_list(table: Mapping[str, Any], key: str, field: str) -
     return values
 
 
+def require_workflow_key_list(table: Mapping[str, Any], key: str, field: str) -> tuple[str, ...]:
+    values = require_unique_string_list(table, key, field)
+    if any(WORKFLOW_KEY_RE.fullmatch(value) is None for value in values):
+        raise TripwireError(f"{field}.{key} must contain valid YAML key identifiers")
+    return values
+
+
 def require_string_mapping(table: Mapping[str, Any], key: str, field: str) -> dict[str, str]:
     value = table.get(key)
     if (
@@ -268,8 +276,8 @@ def load_policy_text(text: str, *, source: str) -> StorageTripwirePolicy:
         workflow_path=require_string(workflow_table, "path", "storage_tripwire.workflow"),
         job_id=require_string(workflow_table, "job_id", "storage_tripwire.workflow"),
         job_if=require_string(workflow_table, "job_if", "storage_tripwire.workflow"),
-        top_level_keys=require_unique_string_list(workflow_table, "top_level_keys", "storage_tripwire.workflow"),
-        job_keys=require_unique_string_list(workflow_table, "job_keys", "storage_tripwire.workflow"),
+        top_level_keys=require_workflow_key_list(workflow_table, "top_level_keys", "storage_tripwire.workflow"),
+        job_keys=require_workflow_key_list(workflow_table, "job_keys", "storage_tripwire.workflow"),
         runner_var=require_string(workflow_table, "runner_var", "storage_tripwire.workflow"),
         schedule_cron=require_string(workflow_table, "schedule_cron", "storage_tripwire.workflow"),
         concurrency_group=require_string(workflow_table, "concurrency_group", "storage_tripwire.workflow"),

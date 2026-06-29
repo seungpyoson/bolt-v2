@@ -228,7 +228,7 @@ def source_fence_static_commands(justfile_text: str) -> tuple[str, ...]:
         stripped = line.strip()
         if is_just_recipe_header(line):
             active = just_recipe_name(line) == SOURCE_FENCE_STATIC_RECIPE
-        elif active and stripped and not stripped.startswith("#"):
+        elif active and stripped and not stripped.startswith("#") and line != line.lstrip():
             commands.append(stripped)
     return tuple(commands)
 

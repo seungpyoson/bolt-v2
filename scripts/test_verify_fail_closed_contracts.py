@@ -42,10 +42,7 @@ def write_justfile(root: Path, *, include_test: bool = True, include_verifier: b
     write_file(
         root,
         "justfile",
-        f"""
-        source-fence-static-inner:
-        {command_block}
-        """,
+        f"source-fence-static-inner:\n{command_block}\n",
     )
 
 
@@ -614,6 +611,19 @@ def test_source_fence_static_wiring_is_required() -> None:
         assert findings == [expected], findings
 
 
+def test_source_fence_static_parser_requires_indented_commands() -> None:
+    verifier = load_verifier()
+    justfile_text = """
+    source-fence-static-inner:
+        python3 scripts/test_verify_fail_closed_contracts.py
+    python3 scripts/verify_fail_closed_contracts.py
+    """
+
+    commands = verifier.source_fence_static_commands(textwrap.dedent(justfile_text).lstrip())
+
+    assert commands == ("python3 scripts/test_verify_fail_closed_contracts.py",), commands
+
+
 def test_classified_degradation_requires_central_exception() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1051,6 +1061,7 @@ def main() -> int:
         test_config_excludes_nested_test_files,
         test_repo_config_excludes_nested_script_test_files,
         test_source_fence_static_wiring_is_required,
+        test_source_fence_static_parser_requires_indented_commands,
         test_classified_degradation_requires_central_exception,
         test_stale_central_exception_fails_closed,
         test_dot_prefixed_exception_path_is_normalized,

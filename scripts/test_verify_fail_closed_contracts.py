@@ -32,6 +32,23 @@ def write_file(root: Path, rel_path: str, text: str) -> None:
     path.write_text(textwrap.dedent(text).lstrip(), encoding="utf-8")
 
 
+def write_justfile(root: Path, *, include_test: bool = True, include_verifier: bool = True) -> None:
+    commands = []
+    if include_test:
+        commands.append("python3 scripts/test_verify_fail_closed_contracts.py")
+    if include_verifier:
+        commands.append("python3 scripts/verify_fail_closed_contracts.py")
+    command_block = "\n".join(f"    {command}" for command in commands)
+    write_file(
+        root,
+        "justfile",
+        f"""
+        source-fence-static-inner:
+        {command_block}
+        """,
+    )
+
+
 def config_text(
     *,
     version: str = "1",
@@ -78,6 +95,7 @@ def exception_entry(*, rule_id: str = "FLC003", path: str, line: str = "4",
 
 def write_config(root: Path) -> None:
     write_file(root, "ci/fail-closed-contracts.toml", config_text())
+    write_justfile(root)
 
 
 def collect(root: Path) -> list[str]:
@@ -531,6 +549,7 @@ def test_config_excludes_nested_test_files() -> None:
             "ci/fail-closed-contracts.toml",
             config_text(exclude_globs='["pkg/test_*.py", "pkg/**/test_*.py"]'),
         )
+        write_justfile(root)
         write_file(
             root,
             "pkg/test_top_level.py",
@@ -565,6 +584,34 @@ def test_repo_config_excludes_nested_script_test_files() -> None:
 
     assert "scripts/test_*.py" in config.exclude_globs
     assert "scripts/**/test_*.py" in config.exclude_globs
+
+
+def test_source_fence_static_wiring_is_required() -> None:
+    cases = (
+        (False, True, "python3 scripts/test_verify_fail_closed_contracts.py"),
+        (True, False, "python3 scripts/verify_fail_closed_contracts.py"),
+    )
+    for include_test, include_verifier, expected_command in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_config(root)
+            write_justfile(root, include_test=include_test, include_verifier=include_verifier)
+            write_file(
+                root,
+                "pkg/precise.py",
+                """
+                def load_contract(value):
+                    try:
+                        return int(value)
+                    except ValueError:
+                        return None
+                """,
+            )
+
+            findings = collect(root)
+
+        expected = f"source-fence-static-inner must run {expected_command}"
+        assert findings == [expected], findings
 
 
 def test_classified_degradation_requires_central_exception() -> None:
@@ -1003,6 +1050,7 @@ def main() -> int:
         test_nested_precise_exception_return_inside_handler_is_not_outer_handler_return,
         test_config_excludes_nested_test_files,
         test_repo_config_excludes_nested_script_test_files,
+        test_source_fence_static_wiring_is_required,
         test_classified_degradation_requires_central_exception,
         test_stale_central_exception_fails_closed,
         test_dot_prefixed_exception_path_is_normalized,

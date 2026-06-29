@@ -231,6 +231,11 @@ pub struct PolymarketExecutionConfig {
     pub retry_delay_max_ms: u64,
     pub ack_timeout_secs: u64,
     pub fee_cache_ttl_secs: u64,
+    pub data_api_positions_page_size: u32,
+    pub data_api_positions_size_threshold: String,
+    pub data_api_positions_redeemable: bool,
+    pub data_api_positions_sort_by: String,
+    pub data_api_positions_sort_direction: String,
     pub transport_backend: TransportBackend,
     pub on_chain_collateral: Option<PolymarketOnChainCollateralConfig>,
 }
@@ -499,6 +504,10 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
         ("retry_delay_max_ms", execution.retry_delay_max_ms),
         ("ack_timeout_secs", execution.ack_timeout_secs),
         ("fee_cache_ttl_secs", execution.fee_cache_ttl_secs),
+        (
+            "data_api_positions_page_size",
+            execution.data_api_positions_page_size as u64,
+        ),
     ];
     for (field, value) in positive_fields {
         if *value == 0 {
@@ -513,7 +522,57 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
             execution.retry_delay_initial_ms, execution.retry_delay_max_ms
         ));
     }
+    validate_data_api_positions_size_threshold(
+        key,
+        &execution.data_api_positions_size_threshold,
+        &mut errors,
+    );
+    validate_trimmed_non_empty_execution_string(
+        key,
+        "data_api_positions_sort_by",
+        &execution.data_api_positions_sort_by,
+        &mut errors,
+    );
+    validate_trimmed_non_empty_execution_string(
+        key,
+        "data_api_positions_sort_direction",
+        &execution.data_api_positions_sort_direction,
+        &mut errors,
+    );
     errors
+}
+
+fn validate_data_api_positions_size_threshold(key: &str, value: &str, errors: &mut Vec<String>) {
+    let field = "data_api_positions_size_threshold";
+    validate_trimmed_non_empty_execution_string(key, field, value, errors);
+    let Ok(threshold) = value.parse::<Decimal>() else {
+        errors.push(format!(
+            "clients.{key}.execution.{field} must be a valid decimal string"
+        ));
+        return;
+    };
+    if threshold.is_sign_negative() {
+        errors.push(format!(
+            "clients.{key}.execution.{field} must be a non-negative decimal string"
+        ));
+    }
+}
+
+fn validate_trimmed_non_empty_execution_string(
+    key: &str,
+    field: &str,
+    value: &str,
+    errors: &mut Vec<String>,
+) {
+    if value.is_empty() {
+        errors.push(format!("clients.{key}.execution.{field} must not be empty"));
+        return;
+    }
+    if value.trim() != value {
+        errors.push(format!(
+            "clients.{key}.execution.{field} must not contain leading or trailing whitespace"
+        ));
+    }
 }
 
 fn validate_on_chain_collateral(key: &str, execution: &PolymarketExecutionConfig) -> Vec<String> {

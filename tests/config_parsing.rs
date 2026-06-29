@@ -194,6 +194,11 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
+data_api_positions_page_size = 100
+data_api_positions_size_threshold = "0"
+data_api_positions_redeemable = false
+data_api_positions_sort_by = "TOKENS"
+data_api_positions_sort_direction = "DESC"
 transport_backend = "sockudo"
 "#;
     let parsed: PolymarketExecutionConfig =
@@ -219,6 +224,11 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
+data_api_positions_page_size = 100
+data_api_positions_size_threshold = "0"
+data_api_positions_redeemable = false
+data_api_positions_sort_by = "TOKENS"
+data_api_positions_sort_direction = "DESC"
 transport_backend = "sockudo"
 "#;
     let err = toml::from_str::<PolymarketExecutionConfig>(exec_toml)
@@ -5595,6 +5605,11 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
+data_api_positions_page_size = 100
+data_api_positions_size_threshold = "0"
+data_api_positions_redeemable = false
+data_api_positions_sort_by = "TOKENS"
+data_api_positions_sort_direction = "DESC"
 transport_backend = "sockudo"
 "#;
 
@@ -6044,6 +6059,11 @@ retry_delay_initial_ms = 0
 retry_delay_max_ms = 0
 ack_timeout_secs = 0
 fee_cache_ttl_secs = 0
+data_api_positions_page_size = 0
+data_api_positions_size_threshold = "0"
+data_api_positions_redeemable = false
+data_api_positions_sort_by = "TOKENS"
+data_api_positions_sort_direction = "DESC"
 transport_backend = "sockudo"
 
 [clients.polymarket_main.secrets]
@@ -6067,6 +6087,7 @@ passphrase_ssm_path = "/bolt/polymarket/api-passphrase"
         "clients.polymarket_main.execution.retry_delay_max_ms must be a positive integer",
         "clients.polymarket_main.execution.ack_timeout_secs must be a positive integer",
         "clients.polymarket_main.execution.fee_cache_ttl_secs must be a positive integer",
+        "clients.polymarket_main.execution.data_api_positions_page_size must be a positive integer",
     ];
     for needle in expected {
         assert!(
@@ -8650,6 +8671,44 @@ fn polymarket_execution_config_rejects_malformed_data_api_redeemable() {
     assert!(
         rendered.contains("data_api_positions_redeemable") && rendered.contains("invalid type"),
         "malformed redeemable rejection should name the key and type error, got: {rendered}"
+    );
+}
+
+#[test]
+fn rejects_fixture_root_missing_polymarket_data_api_page_size() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("data_api_positions_page_size = 100\n", "");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("missing page-size mutation should parse as raw root");
+    let messages = validate_root_only(&root);
+    let rendered = messages.join("\n");
+
+    assert!(
+        rendered.contains("clients.polymarket_main.execution")
+            && rendered.contains("missing field `data_api_positions_page_size`"),
+        "missing page-size validation should fail closed and name the key, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_fixture_root_malformed_polymarket_data_api_size_threshold() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "data_api_positions_size_threshold = \"0\"",
+        "data_api_positions_size_threshold = \"not-a-decimal\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("malformed size-threshold mutation should parse raw root");
+    let messages = validate_root_only(&root);
+    let rendered = messages.join("\n");
+
+    assert!(
+        rendered.contains(
+            "clients.polymarket_main.execution.data_api_positions_size_threshold must be a valid decimal string"
+        ),
+        "malformed size-threshold validation should fail closed and name the key, got: {messages:#?}"
     );
 }
 

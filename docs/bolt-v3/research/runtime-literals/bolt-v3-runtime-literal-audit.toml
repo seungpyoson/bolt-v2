@@ -5381,12 +5381,36 @@ classification = "readiness_probe_validation_diagnostic"
 reason = "This is a TOML validation diagnostic for readiness_probe configuration, not a runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
-kind = "number"
-literal = '''100'''
-context = '''const POLYMARKET_DATA_API_PAGE_SIZE: u32 = 100;'''
-classification = "polymarket_data_api_pagination_size"
-reason = "Fixed Polymarket Data API positions page size for the readiness read window, not an operator-configured value."
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"data_api_positions_page_size"'''
+context = '''"data_api_positions_page_size",'''
+classification = "provider_execution_config_toml_field"
+reason = "This is a Polymarket execution TOML field-name allowlist entry used for validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"data_api_positions_size_threshold"'''
+context = '''let field = "data_api_positions_size_threshold";'''
+classification = "provider_execution_config_toml_field"
+reason = "This is a Polymarket execution TOML field-name allowlist entry used for validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"data_api_positions_sort_by"'''
+context = '''"data_api_positions_sort_by",'''
+classification = "provider_execution_config_toml_field"
+reason = "This is a Polymarket execution TOML field-name allowlist entry used for validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"data_api_positions_sort_direction"'''
+context = '''"data_api_positions_sort_direction",'''
+classification = "provider_execution_config_toml_field"
+reason = "This is a Polymarket execution TOML field-name allowlist entry used for validation diagnostics; the runtime value remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
@@ -5403,38 +5427,6 @@ literal = '''"application/json"'''
 context = '''const POLYMARKET_DATA_API_CONTENT_TYPE_JSON: &str = "application/json";'''
 classification = "http_protocol_media_type"
 reason = "Standard JSON media type for the Data API request, fixed by protocol, not config."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
-kind = "string"
-literal = '''"0"'''
-context = '''const POLYMARKET_DATA_API_POSITIONS_SIZE_THRESHOLD: &str = "0";'''
-classification = "polymarket_data_api_query_value"
-reason = "Fixed Data API positions size-threshold query value pinning the read window, not an operator-configured value."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
-kind = "string"
-literal = '''"false"'''
-context = '''const POLYMARKET_DATA_API_POSITIONS_REDEEMABLE: &str = "false";'''
-classification = "polymarket_data_api_query_value"
-reason = "Fixed Data API positions redeemable query value pinning the read window, not an operator-configured value."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
-kind = "string"
-literal = '''"TOKENS"'''
-context = '''const POLYMARKET_DATA_API_POSITIONS_SORT_BY: &str = "TOKENS";'''
-classification = "polymarket_data_api_query_value"
-reason = "Fixed Data API positions sort-by enum value defined by the vendor, not an operator-configured value."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
-kind = "string"
-literal = '''"DESC"'''
-context = '''const POLYMARKET_DATA_API_POSITIONS_SORT_DIRECTION: &str = "DESC";'''
-classification = "polymarket_data_api_query_value"
-reason = "Fixed Data API positions sort-direction enum value defined by the vendor, not an operator-configured value."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
@@ -5456,7 +5448,7 @@ reason = "Fixed Data API query parameter name defined by the vendor, not an oper
 path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
 kind = "string"
 literal = '''"limit"'''
-context = '''("limit".to_string(), limit.to_string()),'''
+context = '''("limit".to_string(), query.page_size.to_string()),'''
 classification = "polymarket_data_api_query_param_name"
 reason = "Fixed Data API query parameter name defined by the vendor, not an operator-configured value."
 
@@ -5472,7 +5464,7 @@ reason = "Fixed Data API query parameter name defined by the vendor, not an oper
 path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
 kind = "string"
 literal = '''"sizeThreshold"'''
-context = '''"sizeThreshold".to_string(),'''
+context = '''("sizeThreshold".to_string(), query.size_threshold.clone()),'''
 classification = "polymarket_data_api_query_param_name"
 reason = "Fixed Data API query parameter name defined by the vendor, not an operator-configured value."
 
@@ -5480,7 +5472,7 @@ reason = "Fixed Data API query parameter name defined by the vendor, not an oper
 path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
 kind = "string"
 literal = '''"redeemable"'''
-context = '''"redeemable".to_string(),'''
+context = '''("redeemable".to_string(), query.redeemable.to_string()),'''
 classification = "polymarket_data_api_query_param_name"
 reason = "Fixed Data API query parameter name defined by the vendor, not an operator-configured value."
 
@@ -5488,7 +5480,7 @@ reason = "Fixed Data API query parameter name defined by the vendor, not an oper
 path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
 kind = "string"
 literal = '''"sortBy"'''
-context = '''"sortBy".to_string(),'''
+context = '''("sortBy".to_string(), query.sort_by.clone()),'''
 classification = "polymarket_data_api_query_param_name"
 reason = "Fixed Data API query parameter name defined by the vendor, not an operator-configured value."
 
@@ -5496,7 +5488,7 @@ reason = "Fixed Data API query parameter name defined by the vendor, not an oper
 path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
 kind = "string"
 literal = '''"sortDirection"'''
-context = '''"sortDirection".to_string(),'''
+context = '''("sortDirection".to_string(), query.sort_direction.clone()),'''
 classification = "polymarket_data_api_query_param_name"
 reason = "Fixed Data API query parameter name defined by the vendor, not an operator-configured value."
 

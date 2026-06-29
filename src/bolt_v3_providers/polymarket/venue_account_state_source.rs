@@ -19,21 +19,32 @@ use crate::{
 
 const CLOB_V2_OPEN_ORDERS_PATH: &str = "/data/orders";
 const POLYMARKET_DATA_API_POSITIONS_PATH: &str = "/positions";
-const POLYMARKET_DATA_API_PAGE_SIZE: u32 = 100;
 const POLYMARKET_DATA_API_CONTENT_TYPE_HEADER: &str = "Content-Type";
 const POLYMARKET_DATA_API_CONTENT_TYPE_JSON: &str = "application/json";
-/// Data-API positions query values: smallest position size to return,
-/// whether already-redeemed positions are included, and the sort order the
-/// venue applies before paging. All three pin the read window the readiness
-/// probe depends on, so they are named rather than inlined.
-const POLYMARKET_DATA_API_POSITIONS_SIZE_THRESHOLD: &str = "0";
-const POLYMARKET_DATA_API_POSITIONS_REDEEMABLE: &str = "false";
-const POLYMARKET_DATA_API_POSITIONS_SORT_BY: &str = "TOKENS";
-const POLYMARKET_DATA_API_POSITIONS_SORT_DIRECTION: &str = "DESC";
 /// Defensive fallback for a Data-API position record that omits `redeemable`:
 /// an absent flag is treated as a non-redeemable (still-open) position so the
 /// readiness proof never silently drops an active position.
 const POSITION_REDEEMABLE_WHEN_ABSENT: bool = false;
+
+struct DataApiPositionsQuery {
+    page_size: u32,
+    size_threshold: String,
+    redeemable: bool,
+    sort_by: String,
+    sort_direction: String,
+}
+
+impl DataApiPositionsQuery {
+    fn from_execution_config(config: &super::PolymarketExecutionConfig) -> Self {
+        Self {
+            page_size: config.data_api_positions_page_size,
+            size_threshold: config.data_api_positions_size_threshold.clone(),
+            redeemable: config.data_api_positions_redeemable,
+            sort_by: config.data_api_positions_sort_by.clone(),
+            sort_direction: config.data_api_positions_sort_direction.clone(),
+        }
+    }
+}
 
 pub async fn materialize_venue_account_state_source_from_configured_account_queries(
     request: VenueAccountStateSourceMaterializationRequest<'_>,
@@ -68,6 +79,7 @@ pub async fn materialize_venue_account_state_source_from_configured_account_quer
     let cfg: super::PolymarketExecutionConfig = execution.clone().try_into().map_err(|_| {
         BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid { field: "execution" }
     })?;
+    let positions_query = DataApiPositionsQuery::from_execution_config(&cfg);
     let secrets = super::secrets_for(execution_client_id, request.resolved).map_err(|_| {
         BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
             field: "resolved_secrets",
@@ -127,6 +139,7 @@ pub async fn materialize_venue_account_state_source_from_configured_account_quer
             &cfg.base_url_data_api,
             cfg.http_timeout_secs,
             &account_address,
+            &positions_query,
         )
     })
     .await
@@ -143,6 +156,7 @@ pub async fn materialize_venue_account_state_source_from_configured_account_quer
                 &cfg.base_url_data_api,
                 cfg.http_timeout_secs,
                 &account_address,
+                &positions_query,
             )
         },
         |positions| has_active_positions(positions),
@@ -204,6 +218,7 @@ async fn fetch_non_redeemable_positions(
     base_url: &str,
     timeout_secs: u64,
     user_address: &str,
+    query: &DataApiPositionsQuery,
 ) -> Result<Vec<ReadinessDataApiPosition>, BoltV3OperatorArtifactError> {
     let client = HttpClient::new(
         HashMap::from([
@@ -229,7 +244,7 @@ async fn fetch_non_redeemable_positions(
     let mut offset = 0_u32;
 
     loop {
-        let params = positions_request_params(user_address, POLYMARKET_DATA_API_PAGE_SIZE, offset);
+        let params = positions_request_params(user_address, offset, query);
         let response = client
             .request_with_params(
                 Method::GET,
@@ -261,7 +276,7 @@ async fn fetch_non_redeemable_positions(
             })?;
         let count = page.len() as u32;
         positions.extend(page);
-        if count < POLYMARKET_DATA_API_PAGE_SIZE {
+        if count < query.page_size {
             break;
         }
         offset += count;
@@ -270,27 +285,19 @@ async fn fetch_non_redeemable_positions(
     Ok(positions)
 }
 
-fn positions_request_params(user_address: &str, limit: u32, offset: u32) -> Vec<(String, String)> {
+fn positions_request_params(
+    user_address: &str,
+    offset: u32,
+    query: &DataApiPositionsQuery,
+) -> Vec<(String, String)> {
     vec![
         ("user".to_string(), user_address.to_string()),
-        ("limit".to_string(), limit.to_string()),
+        ("limit".to_string(), query.page_size.to_string()),
         ("offset".to_string(), offset.to_string()),
-        (
-            "sizeThreshold".to_string(),
-            POLYMARKET_DATA_API_POSITIONS_SIZE_THRESHOLD.to_string(),
-        ),
-        (
-            "redeemable".to_string(),
-            POLYMARKET_DATA_API_POSITIONS_REDEEMABLE.to_string(),
-        ),
-        (
-            "sortBy".to_string(),
-            POLYMARKET_DATA_API_POSITIONS_SORT_BY.to_string(),
-        ),
-        (
-            "sortDirection".to_string(),
-            POLYMARKET_DATA_API_POSITIONS_SORT_DIRECTION.to_string(),
-        ),
+        ("sizeThreshold".to_string(), query.size_threshold.clone()),
+        ("redeemable".to_string(), query.redeemable.to_string()),
+        ("sortBy".to_string(), query.sort_by.clone()),
+        ("sortDirection".to_string(), query.sort_direction.clone()),
     ]
 }
 
@@ -378,12 +385,26 @@ mod tests {
         }
     }
 
+    fn data_api_positions_query() -> DataApiPositionsQuery {
+        DataApiPositionsQuery {
+            page_size: 100,
+            size_threshold: "0".to_string(),
+            redeemable: false,
+            sort_by: "TOKENS".to_string(),
+            sort_direction: "DESC".to_string(),
+        }
+    }
+
     #[test]
     fn positions_request_params_exclude_redeemable_positions() {
-        let params = positions_request_params("0xabc", 100, 0);
+        let query = data_api_positions_query();
+        let params = positions_request_params("0xabc", 0, &query);
 
+        assert!(params.contains(&("limit".to_string(), "100".to_string())));
         assert!(params.contains(&("redeemable".to_string(), "false".to_string())));
         assert!(params.contains(&("sizeThreshold".to_string(), "0".to_string())));
+        assert!(params.contains(&("sortBy".to_string(), "TOKENS".to_string())));
+        assert!(params.contains(&("sortDirection".to_string(), "DESC".to_string())));
     }
 
     #[test]

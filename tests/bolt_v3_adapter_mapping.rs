@@ -1449,6 +1449,11 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
+data_api_positions_page_size = 100
+data_api_positions_size_threshold = "0"
+data_api_positions_redeemable = false
+data_api_positions_sort_by = "TOKENS"
+data_api_positions_sort_direction = "DESC"
 transport_backend = "sockudo"
 "#;
     let root: BoltV3RootConfig =

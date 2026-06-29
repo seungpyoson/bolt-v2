@@ -139,6 +139,7 @@ use crate::bolt_v3_feed_health::{
 
 mod subscriptions;
 
+#[cfg(test)]
 use self::subscriptions::{
     BookSubscriptionEvent, LiveInputSubscriptionRetryEvent, ReferencePriceSubscribeEvent,
     ResolutionStrikeSubscribeEvent,

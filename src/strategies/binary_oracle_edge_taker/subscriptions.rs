@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use nautilus_common::actor::DataActor;
 use nautilus_core::Params;
 #[cfg(not(test))]
 use nautilus_model::enums::BookType;

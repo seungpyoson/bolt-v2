@@ -6310,6 +6310,43 @@ def assert_actionlint_runs_ci_storage_audit_tests() -> None:
     ):
         raise AssertionError(f"actionlint storage audit test wiring drift was silent, got: {missing_errors}")
 
+    name_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "      - name: python3 scripts/test_ci_storage_audit.py\n",
+    )
+    name_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: name_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in name_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit step-name decoy was silent, got: {name_decoy_errors}")
+
+    echo_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          echo 'python3 scripts/test_ci_storage_audit.py'\n",
+    )
+    echo_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: echo_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in echo_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit echo decoy was silent, got: {echo_decoy_errors}")
+
+    duplicated = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          python3 scripts/test_ci_storage_audit.py\n",
+    )
+    duplicated_errors = verifier.verify_repo_automation_texts({workflow_name: duplicated})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py exactly once" in error
+        for error in duplicated_errors
+    ):
+        raise AssertionError(f"actionlint storage audit duplicate command was silent, got: {duplicated_errors}")
+
 
 def assert_ci_docs_pass_stub_is_absent() -> None:
     workflow_path = REPO_ROOT / ".github/workflows/ci-docs-pass-stub.yml"

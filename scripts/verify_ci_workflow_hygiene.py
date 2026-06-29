@@ -1982,7 +1982,7 @@ def github_cache_blocks(job_lines: list[str]) -> list[list[str]]:
     )
 
 
-def block_runs_command(block: list[str], command: str) -> bool:
+def block_run_command_count(block: list[str], command: str) -> int:
     for index, line in enumerate(block):
         clean = strip_comment(line)
         inline = YAML_RUN_LINE_RE.match(clean)
@@ -1990,19 +1990,34 @@ def block_runs_command(block: list[str], command: str) -> bool:
             continue
         value = inline.group(2).strip().strip("'\"")
         if value == command:
-            return True
+            return 1
         if value not in {"|", ">"}:
             continue
-        for nested in block[index + 1 :]:
-            nested_clean = strip_comment(nested).strip()
-            if nested_clean == command:
-                return True
-        return False
-    return False
+        return sum(
+            1
+            for nested in block[index + 1 :]
+            if strip_comment(nested).strip() == command
+        )
+    return 0
+
+
+def block_runs_command(block: list[str], command: str) -> bool:
+    return block_run_command_count(block, command) > 0
+
+
+def job_run_command_count(job_lines: list[str], command: str) -> int:
+    return sum(block_run_command_count(block, command) for block in step_blocks(job_lines))
 
 
 def job_runs_command(job_lines: list[str], command: str) -> bool:
-    return any(block_runs_command(block, command) for block in step_blocks(job_lines))
+    return job_run_command_count(job_lines, command) > 0
+
+
+def workflow_run_command_count(workflow_text: str, command: str) -> int:
+    return sum(
+        job_run_command_count(job_lines, command)
+        for job_lines in parse_jobs(workflow_text).values()
+    )
 
 
 def block_has_target_dir_opt_in(block: list[str]) -> bool:
@@ -11954,9 +11969,8 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
             (f"{file_name}: {error}" for error in cache_same_run_transport_errors(file_name, text)),
         )
         if file_name == "actionlint.yml" or file_name.endswith("/actionlint.yml"):
-            actionlint_text = uncommented_text(text.splitlines())
             for required_command in ACTIONLINT_WORKFLOW_REQUIRED_COMMANDS:
-                command_count = actionlint_text.count(required_command)
+                command_count = workflow_run_command_count(text, required_command)
                 if command_count == 0:
                     errors.append(f"{file_name}: actionlint workflow must run {required_command}")
                 elif command_count > 1:

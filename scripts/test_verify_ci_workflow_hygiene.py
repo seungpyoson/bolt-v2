@@ -2634,6 +2634,34 @@ def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
 
+def assert_ci_workflow_dispatch_config_errors_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    config_text = ci_provenance_config_fixture()
+    invalid_config = replace_once(
+        config_text,
+        "\n[ci_provenance.dispatch]\n",
+        "\n[ci_provenance.dispatch_disabled]\n",
+    )
+    expected = "github-actions runner config invalid: ci_provenance.dispatch must be a table"
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        verifier.DEFAULT_RUNNERS_CONFIG = write_temp_runner_config(pathlib.Path(tmp), invalid_config)
+        try:
+            dispatch_input, input_errors = verifier.configured_ci_provenance_dispatch_input()
+            dispatch_names, name_errors = verifier.configured_ci_provenance_dispatch_names()
+            workflow_errors = verifier.verify_workflow(workflow)
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+
+    if dispatch_input is not None or not any(expected in error for error in input_errors):
+        raise AssertionError(f"dispatch input helper must fail closed on invalid config, got: {input_errors}")
+    if dispatch_names is not None or not any(expected in error for error in name_errors):
+        raise AssertionError(f"dispatch name helper must fail closed on invalid config, got: {name_errors}")
+    if not any(expected in error for error in workflow_errors):
+        raise AssertionError(f"workflow verification must report invalid dispatch config, got: {workflow_errors}")
+
+
 def assert_test_archive_sccache_fail_open_contract() -> None:
     # #1011: the S3 sccache compile cache must never be able to fail the required
     # test-archive build. Lock the fail-open invariants so a future edit can't
@@ -12990,6 +13018,7 @@ def main() -> int:
     assert_ci_policy_real_workflows_keep_event_sender_binding_clean()
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
+    assert_ci_workflow_dispatch_config_errors_are_reported()
     assert_test_archive_sccache_fail_open_contract()
     assert_test_archive_sccache_retry_preserves_compile_failures()
     assert_ci_detector_forces_build_on_workflow_dispatch()

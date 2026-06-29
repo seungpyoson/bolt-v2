@@ -291,11 +291,14 @@ def fallback_config(module, **overrides):
         ),
         "expected_bot_login": "github-actions[bot]",
         "comment_marker": "<!-- ai-pr-reviewer-glm -->",
+        "notice_marker": "<!-- ai-pr-reviewer-glm-notice -->",
         "source_label": "GLM direct fallback (`configured-glm-model`)",
     }
     values.update(overrides)
     if "source_label" not in overrides and values["provider"] == "Kimi":
         values["source_label"] = "Kimi Code CLI (`configured-kimi-model`)"
+    if "notice_marker" not in overrides and values["provider"] == "Kimi":
+        values["notice_marker"] = "<!-- ai-pr-reviewer-kimi-notice -->"
     return module.FallbackConfig(**values)
 
 
@@ -1036,9 +1039,53 @@ def test_posts_failure_notice_when_glm_fallback_fails() -> None:
         raise AssertionError("expected ReviewFailed")
 
     assert len(github.posted) == 1, github.posted
+    assert github.posted[0].startswith("<!-- ai-pr-reviewer-glm-notice -->")
+    assert not github.posted[0].startswith("<!-- ai-pr-reviewer-glm -->")
     assert "GLM review did not produce a deliverable" in github.posted[0]
     assert "provider rejected request" in github.posted[0]
     assert "GLM_API_KEY" not in github.posted[0]
+
+
+def test_failure_notice_does_not_overwrite_existing_review_marker_comment() -> None:
+    module = load_script()
+    run_url = "https://github.com/seungpyoson/bolt-v2/actions/runs/1"
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "id": 42,
+                "body": (
+                    "<!-- ai-pr-reviewer-glm -->\n\n"
+                    "## GLM PR Review\n\n"
+                    f"- Action run: {run_url}\n\n"
+                    "existing review body\n"
+                ),
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+    glm = FakeGLM(fail=True)
+
+    try:
+        module.run_fallback_review(
+            github=github,
+            reviewer=glm,
+            config=fallback_config(
+                module,
+                run_url=run_url,
+            ),
+        )
+    except module.ReviewFailed:
+        pass
+    else:
+        raise AssertionError("expected ReviewFailed")
+
+    assert not github.updated, github.updated
+    assert len(github.posted) == 1, github.posted
+    assert github.posted[0].startswith("<!-- ai-pr-reviewer-glm-notice -->")
+    assert "GLM review did not produce a deliverable" in github.posted[0]
 
 
 def test_sets_failure_notice_output_after_posting_failure_notice() -> None:
@@ -1397,6 +1444,7 @@ def test_posts_failure_notice_when_kimi_fallback_fails() -> None:
         raise AssertionError("expected ReviewFailed")
 
     assert len(github.posted) == 1, github.posted
+    assert github.posted[0].startswith("<!-- ai-pr-reviewer-kimi-notice -->")
     assert "Kimi review did not produce a deliverable" in github.posted[0]
     assert "provider rejected request" in github.posted[0]
 
@@ -1759,6 +1807,7 @@ def main() -> int:
     test_github_client_upserts_marker_comments_through_http_api()
     test_github_client_keeps_paginated_marker_comments_distinct()
     test_posts_failure_notice_when_glm_fallback_fails()
+    test_failure_notice_does_not_overwrite_existing_review_marker_comment()
     test_sets_failure_notice_output_after_posting_failure_notice()
     test_kimi_fallback_uses_same_chunked_deliverable_contract()
     test_source_label_template_substitutes_configured_model()

@@ -1,0 +1,304 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, labeled]
+    paths-ignore:
+      - "docs/*.md"
+      - "docs/**/*.md"
+      - "README*"
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+concurrency:
+  group: claude-code-review-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  claude-review:
+    name: Claude review
+    if: >-
+      ${{
+        (
+          github.event_name == 'pull_request'
+          && github.event.pull_request.draft == false
+          && github.event.pull_request.head.repo.full_name == github.repository
+        )
+        || (
+          github.event_name == 'issue_comment'
+          && github.event.issue.pull_request
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+          && contains(github.event.comment.body, '@claude')
+        )
+        || (
+          github.event_name == 'pull_request_review_comment'
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+          && contains(github.event.comment.body, '@claude')
+        )
+        || (
+          github.event_name == 'pull_request_review'
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)
+          && contains(github.event.review.body || '', '@claude')
+        )
+      }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    # Job-level timeouts cannot read the TOML loaded later in this job; keep
+    # this in sync with ci/ai-review.toml [claude.workflow].job_timeout_minutes.
+    timeout-minutes: 35
+    steps:
+      - name: Check AI review pause switches
+        id: pause
+        env:
+          AI_REVIEW_PAUSED: ${{ vars.AI_REVIEW_PAUSED }}
+          AI_REVIEW_CLAUDE_PAUSED: ${{ vars.AI_REVIEW_CLAUDE_PAUSED }}
+        run: |
+          paused=false
+          reason=""
+          if [ "$AI_REVIEW_PAUSED" = "true" ]; then
+            paused=true
+            reason="AI_REVIEW_PAUSED=true"
+          elif [ "$AI_REVIEW_CLAUDE_PAUSED" = "true" ]; then
+            paused=true
+            reason="AI_REVIEW_CLAUDE_PAUSED=true"
+          fi
+          echo "paused=${paused}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+          if [ "$paused" = "true" ]; then
+            {
+              echo "### Claude review paused"
+              echo
+              echo "Claude review was skipped because \`${reason}\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Checkout repository
+        if: steps.pause.outputs.paused != 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Load AI review runtime config
+        if: steps.pause.outputs.paused != 'true'
+        id: runtime-config
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
+          claude = config["claude"]
+          workflow = claude["workflow"]
+
+          def emit(name, value):
+              if isinstance(value, bool):
+                  value = "true" if value else "false"
+              elif isinstance(value, list):
+                  value = ",".join(value)
+              print(f"{name}={value}")
+
+          emit("claude_model", claude["model"])
+          emit("claude_track_progress", claude["track_progress"])
+          emit("claude_allowed_tools", claude["allowed_tools"])
+          emit("claude_max_turns", workflow["max_turns"])
+          emit("claude_primary_timeout_minutes", workflow["primary_timeout_minutes"])
+          PY
+
+      - name: Decide whether Claude should review
+        if: steps.pause.outputs.paused != 'true'
+        id: review-decision
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_ACTION: ${{ github.event.action }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BEFORE_SHA: ${{ github.event.before }}
+          PR_AFTER_SHA: ${{ github.event.after || github.event.pull_request.head.sha }}
+          PR_LABEL_NAME: ${{ github.event.label.name }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import fnmatch
+          import json
+          import os
+          import subprocess
+          import time
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
+          smart = config["claude"]["smart_trigger"]
+          event_name = os.environ["EVENT_NAME"]
+          action = os.environ["PR_ACTION"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          pr_number = os.environ["PR_NUMBER"]
+          event_head_sha = os.environ["PR_HEAD_SHA"]
+          event_before_sha = os.environ["PR_BEFORE_SHA"]
+          event_after_sha = os.environ["PR_AFTER_SHA"] or event_head_sha
+          event_label_name = os.environ["PR_LABEL_NAME"]
+          review_labels = set(smart["review_labels"])
+
+          def emit(should_review, reason):
+              print(f"should_review={'true' if should_review else 'false'}")
+              print(f"reason={reason}")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+                  summary.write("### Claude review decision\n\n")
+                  summary.write(f"- Decision: {'review' if should_review else 'skip'}\n")
+                  summary.write(f"- Reason: `{reason}`\n")
+
+          def gh_json(*args):
+              payload = subprocess.check_output(("gh", *args), text=True)
+              return json.loads(payload)
+
+          def compare_files(before_sha, after_sha):
+              if (
+                  not before_sha
+                  or not after_sha
+                  or set(before_sha) == {"0"}
+                  or set(after_sha) == {"0"}
+                  or before_sha == after_sha
+              ):
+                  return None
+              payload = gh_json("api", f"repos/{repo}/compare/{before_sha}...{after_sha}")
+              files = payload.get("files", [])
+              if not isinstance(files, list):
+                  return None
+              return [file["filename"] for file in files if isinstance(file, dict) and isinstance(file.get("filename"), str)]
+
+          def pushed_files():
+              try:
+                  files = compare_files(event_before_sha, event_after_sha)
+                  if files is not None:
+                      return files, "pushed-range"
+              except subprocess.CalledProcessError:
+                  pass
+
+              try:
+                  commit = gh_json("api", f"repos/{repo}/commits/{event_head_sha}")
+                  parents = commit.get("parents", [])
+                  if isinstance(parents, list) and parents and isinstance(parents[0], dict):
+                      parent_sha = parents[0].get("sha")
+                      if isinstance(parent_sha, str):
+                          files = compare_files(parent_sha, event_head_sha)
+                          if files is not None:
+                              return files, "head-commit"
+              except subprocess.CalledProcessError:
+                  pass
+
+              return subprocess.check_output(
+                  ("gh", "pr", "diff", pr_number, "--repo", repo, "--name-only"),
+                  text=True,
+              ).splitlines(), "pr-diff-fallback"
+
+          if event_name != "pull_request":
+              pr_payload = gh_json("api", f"repos/{repo}/pulls/{pr_number}")
+              head_repo = pr_payload.get("head", {}).get("repo", {}).get("full_name")
+              if head_repo != repo:
+                  emit(False, "fork-pr-manual-mention")
+                  raise SystemExit(0)
+              emit(True, "manual-mention")
+              raise SystemExit(0)
+
+          if action == "labeled":
+              emit(event_label_name in review_labels, "review-label" if event_label_name in review_labels else "non-review-label")
+              raise SystemExit(0)
+
+          if action != "synchronize":
+              emit(True, action)
+              raise SystemExit(0)
+
+          debounce_seconds = int(smart["debounce_seconds"])
+          if debounce_seconds > 0:
+              time.sleep(debounce_seconds)
+
+          pr = gh_json("pr", "view", pr_number, "--repo", repo, "--json", "headRefOid,labels")
+          current_head_sha = pr["headRefOid"]
+          if current_head_sha != event_head_sha:
+              emit(False, "stale-synchronize-event")
+              raise SystemExit(0)
+
+          labels = {label["name"] for label in pr.get("labels", [])}
+          if labels & review_labels:
+              emit(True, "review-label")
+              raise SystemExit(0)
+
+          changed_files, file_source = pushed_files()
+          review_paths = tuple(smart["review_paths"])
+          for changed_file in changed_files:
+              if any(fnmatch.fnmatch(changed_file, pattern) for pattern in review_paths):
+                  emit(True, f"review-path-{file_source}")
+                  raise SystemExit(0)
+
+          emit(False, f"no-review-path-or-label-{file_source}")
+          PY
+
+      - name: Check AI review model freshness
+        id: model-freshness
+        if: >-
+          ${{
+            steps.pause.outputs.paused != 'true'
+            && steps.review-decision.outputs.should_review == 'true'
+          }}
+        continue-on-error: true
+        run: |
+          python3 scripts/verify_ai_review_model_freshness.py --live --advisory --provider claude
+
+      - name: Run Claude Code review
+        id: claude
+        if: >-
+          ${{
+            steps.pause.outputs.paused != 'true'
+            && steps.review-decision.outputs.should_review == 'true'
+          }}
+        continue-on-error: true
+        timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.claude_primary_timeout_minutes) }}
+        uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            contents: read
+          track_progress: ${{ steps.runtime-config.outputs.claude_track_progress }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER (pull_request and review events): ${{ github.event.pull_request.number }}
+            PR NUMBER (issue_comment events): ${{ github.event.issue.number }}
+            MODEL FRESHNESS WARNING: ${{ steps.model-freshness.outputs.claude_warning }}
+
+            You are a read-only PR reviewer for this repository. Review the pull request diff and post only GitHub PR feedback:
+            - Use only the tools granted through the configured Claude arguments.
+            - Prefer line-specific findings when the configured GitHub inline-comment tool supports them, and pass `confirmed: true` whenever that tool requires confirmation.
+            - Use configured GitHub PR comment, diff, and view commands only as needed.
+            - Do not edit files, write files, commit, push, or run git commands.
+            - Do not display, quote, or infer secrets or credentials.
+
+            Apply AGENTS.md as the authoritative governance source. Treat every unique substantive issue as a finding. At minimum, check:
+            - **NO HARDCODES**: runtime values must come from TOML config; flag string literals for IDs, quantities, timeouts, or other runtime values in code.
+            - **NO DUAL PATHS**: flag parallel ways to do the same thing, including duplicate config formats, secret sources, or build paths.
+            - **NO DEBTS**: flag TODOs, "fix later" notes, unpinned dependencies, or uncommitted/generated leftovers.
+            - **NO CREDENTIAL DISPLAY**: flag code that cats, prints, logs, echoes, or otherwise exposes API keys, private keys, secrets, or `.env` contents.
+            - **PURE RUST BINARY**: flag Python layers, PyO3, maturin, pip, or non-NT integration paths for the runtime binary.
+            - **SSM IS THE SINGLE SECRET SOURCE**: product/runtime credentials must resolve from AWS SSM via `aws-sdk-ssm`; flag AWS CLI subprocesses, 1Password CLI use, environment-variable fallbacks, or alternate secret backends. GitHub Actions repository automation may use only GitHub's ephemeral `GITHUB_TOKEN` for GitHub API operations.
+            - **GROUP BY CHANGE**: values that share a lifecycle should live in one config section.
+            - **DO NOT REFERENCE BOLT V1**: flag reads, imports, or dependencies on `~/Projects/Claude/bolt/`; NT source should come from `~/.cargo/git/checkouts/nautilus_trader-*/` or GitHub.
+            - **STRATEGIES PRODUCE INTENT ONLY**: strategies emit order intent and strategy-local signal state only; admission, venue rules, fillability, rounding, minimum size, fee-adjusted sizing, and submit gating belong in shared NT-based execution/admission modules.
+            - **CHAINLINK DATA STREAMS: TESTNET IS PRODUCTION**: do not object merely because `price_to_beat` uses testnet; still check config-schema compatibility, service health, fail-closed behavior, and exact-head verification.
+            - **PROVIDER/RUNTIME BOUNDARY EVIDENCE IS REGISTERED**: feeder code depending on provider runtime bytes or metadata must be represented in the authoritative boundary registry and guarded by source-fence evidence or an issue-bound, expiring non-WebSocket deferral. WebSocket-frame evidence must not be deferred.
+            - **Evidence-Driven Verification**: every implementation claim should map to tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit risk acceptance. Trading, admission, secrets, and config changes need fail-closed evidence for invalid or missing inputs plus exact-head proof before live operation.
+            - **Scope Discipline**: flag out-of-scope changes, hidden adjacent issue work, and missing claimed scope. Do not treat a PR as closing broader work unless the diff satisfies it.
+            - **Review Bar & Merge Mechanics**: do not downgrade real issues into notes. Flag unresolved review-thread, stale-review, required-reviewer, or merge-rule bypass risks if the diff touches those controls.
+
+            Prefer concise findings with file and line context. If there are no substantive findings, post a short summary of what you checked and any residual verification gaps.
+          claude_args: |
+            --max-turns ${{ steps.runtime-config.outputs.claude_max_turns }}
+            --model ${{ steps.runtime-config.outputs.claude_model }}
+            --allowedTools "${{ steps.runtime-config.outputs.claude_allowed_tools }}"

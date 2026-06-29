@@ -2,14 +2,11 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
-    str::FromStr,
 };
 
 use anyhow::{Context, Result};
 use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
-use nautilus_core::{Params, UnixNanos};
-#[cfg(not(test))]
-use nautilus_model::enums::BookType;
+use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{CustomData, DataType, IndexPriceUpdate, QuoteTick, TradeTick},
     enums::PositionSide,
@@ -71,17 +68,12 @@ use crate::{
     },
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::is_observed_open_side,
-    bolt_v3_providers::{
-        STRIKE_FETCH_INSTRUMENT_ID_PARAM, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
-        normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
-        resolution_strike_fetch_request_data_type,
-    },
+    bolt_v3_providers::normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     bolt_v3_reference_price::{
         ReferencePriceSelection, ReferencePriceSelector, ReferencePriceSourceHealth,
         ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceSubscriptionRequest,
         ReferencePriceUpdate, ReferenceQuote, reference_price_source_is_runtime_available,
         reference_price_source_is_unsupported,
-        reference_price_subscription_requests as build_reference_price_subscription_requests,
     },
     bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{
@@ -143,6 +135,18 @@ use self::exposure::{
 };
 use crate::bolt_v3_feed_health::{
     ForcedFlatInputs, ForcedFlatReason, evaluate_forced_flat_predicates,
+};
+
+mod subscriptions;
+
+use self::subscriptions::{
+    BookSubscriptionEvent, LiveInputSubscriptionRetryEvent, ReferencePriceSubscribeEvent,
+    ResolutionStrikeSubscribeEvent,
+};
+#[cfg(test)]
+use self::subscriptions::{
+    REFERENCE_PRICE_SUBSCRIBE_ACTION, REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
+    ResolutionStrikeFetchTrigger,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1250,47 +1254,6 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn retry_missing_live_input_subscriptions_at(&mut self, now_ms: u64) {
-        self.refresh_realized_volatility_snapshot_at(now_ms);
-        let signal_missing = self.pricing.spot_price().is_none();
-        let reference_missing =
-            self.config.reference_current_price.is_some() && self.reference_price_quotes.is_empty();
-        let realized_volatility_missing = self
-            .pricing
-            .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id)
-            .is_none();
-
-        if !(signal_missing || reference_missing || realized_volatility_missing) {
-            return;
-        }
-
-        log::info!(
-            "binary_oracle_edge_taker retrying missing live input subscriptions: strategy_id={} signal_missing={} reference_missing={} realized_volatility_missing={}",
-            self.config.strategy_id,
-            signal_missing,
-            reference_missing,
-            realized_volatility_missing,
-        );
-        self.record_live_input_subscription_retry_event(LiveInputSubscriptionRetryEvent {
-            signal_missing,
-            reference_missing,
-            realized_volatility_missing,
-        });
-
-        if reference_missing {
-            self.unsubscribe_reference_prices();
-            self.subscribe_reference_prices();
-        }
-        if signal_missing {
-            self.unsubscribe_signal_quotes();
-            self.subscribe_signal_quotes();
-        }
-        if realized_volatility_missing {
-            self.unsubscribe_realized_volatility_sources();
-            self.subscribe_realized_volatility_sources();
-        }
-    }
-
     fn refresh_fee_readiness(&mut self) {
         refresh_fee_readiness_for_active(&mut self.active, self.context.fee_provider());
     }
@@ -1400,156 +1363,6 @@ impl BinaryOracleEdgeTaker {
             self.selection_missing_since_ms = None;
         }
         self.apply_selection_snapshot(snapshot);
-    }
-
-    fn signal_instrument_id(&self) -> Option<InstrumentId> {
-        self.config
-            .signal_instrument_id
-            .as_deref()
-            .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
-    }
-
-    fn signal_client_id(&self) -> Option<ClientId> {
-        self.config.signal_venue.as_deref().map(ClientId::from)
-    }
-
-    fn resolution_instrument_id(&self) -> Option<InstrumentId> {
-        self.config
-            .resolution_instrument_id
-            .as_deref()
-            .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
-    }
-
-    fn resolution_client_id(&self) -> Option<ClientId> {
-        self.config
-            .resolution_client_id
-            .as_deref()
-            .map(ClientId::from)
-    }
-
-    /// True when the configured resolution instrument resolves THIS instance's
-    /// `underlying_asset`: its leading symbol segment (before the `-USD` quote)
-    /// must equal `underlying_asset` (e.g. `BTC-USD.CHAINLINK` for a `BTC`
-    /// instance). One strategy instance trades exactly one asset, so this is the
-    /// fail-closed binding that stops a wrong-asset feed (or a wrapped-asset
-    /// variant) from ever supplying the strike.
-    fn resolution_instrument_resolves_underlying_asset(&self, instrument_id: InstrumentId) -> bool {
-        instrument_id
-            .symbol
-            .as_str()
-            .split('-')
-            .next()
-            .is_some_and(|asset| asset.eq_ignore_ascii_case(self.config.underlying_asset.as_str()))
-    }
-
-    fn subscribe_signal_quotes(&mut self) {
-        if let Some(instrument_id) = self.signal_instrument_id() {
-            let client_id = self.signal_client_id();
-            #[cfg(not(test))]
-            self.subscribe_quotes(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-    }
-
-    fn subscribe_realized_volatility_sources(&mut self) {
-        let surface_id = self.config.realized_volatility_surface_id.clone();
-        let quote_requests = self
-            .context
-            .realized_volatility_quote_subscription_requests_for_surface(&surface_id);
-        let trade_requests = self
-            .context
-            .realized_volatility_trade_subscription_requests_for_surface(&surface_id);
-        let index_requests = self
-            .context
-            .realized_volatility_index_subscription_requests_for_surface(&surface_id);
-
-        // Defense-in-depth: make a zero-subscription configured surface observable. For a
-        // validated config this is typically unreachable because policy requires at least one
-        // enabled quorum source, but it still catches a validation regression or
-        // no-ready-source edge that would otherwise leave pricing silently
-        // `RealizedVolNotReady`. Pricing fails closed regardless; this warning is the only
-        // operator signal.
-        if quote_requests.is_empty() && trade_requests.is_empty() && index_requests.is_empty() {
-            log::warn!(
-                "binary_oracle_edge_taker configured RV surface `{}` has no enabled subscribable sources; pricing will stay RealizedVolNotReady (strategy_id={})",
-                surface_id,
-                self.config.strategy_id
-            );
-        }
-
-        for (instrument_id, client_id) in quote_requests {
-            #[cfg(not(test))]
-            self.subscribe_quotes(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-        for (instrument_id, client_id) in trade_requests {
-            #[cfg(not(test))]
-            self.subscribe_trades(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-        for (instrument_id, client_id) in index_requests {
-            #[cfg(not(test))]
-            self.subscribe_index_prices(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-    }
-
-    fn unsubscribe_signal_quotes(&mut self) {
-        if let Some(instrument_id) = self.signal_instrument_id() {
-            let client_id = self.signal_client_id();
-            #[cfg(not(test))]
-            self.unsubscribe_quotes(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-    }
-
-    fn subscribe_reference_prices(&mut self) {
-        for subscription in self.reference_price_subscription_requests() {
-            #[cfg(not(test))]
-            self.subscribe_data(
-                subscription.data_type.clone(),
-                Some(subscription.client_id),
-                Some(subscription.params.clone()),
-            );
-            self.record_reference_price_subscribe_event(ReferencePriceSubscribeEvent::subscribe(
-                &subscription,
-            ));
-        }
-    }
-
-    fn unsubscribe_reference_prices(&mut self) {
-        for subscription in self.reference_price_subscription_requests() {
-            #[cfg(not(test))]
-            self.unsubscribe_data(
-                subscription.data_type.clone(),
-                Some(subscription.client_id),
-                Some(subscription.params.clone()),
-            );
-            self.record_reference_price_subscribe_event(ReferencePriceSubscribeEvent::unsubscribe(
-                &subscription,
-            ));
-        }
-    }
-
-    fn reference_price_subscription_requests(&self) -> Vec<ReferencePriceSubscriptionRequest> {
-        let Some(reference_price) = &self.config.reference_current_price else {
-            return Vec::new();
-        };
-        match build_reference_price_subscription_requests(reference_price) {
-            Ok(subscriptions) => subscriptions,
-            Err(error) => {
-                log::error!(
-                    "binary_oracle_edge_taker invalid reference price subscription request: {error}; strategy_id={}",
-                    self.config.strategy_id,
-                );
-                Vec::new()
-            }
-        }
     }
 
     fn observe_reference_price_update(&mut self, update: &ReferencePriceUpdate) {
@@ -1927,166 +1740,6 @@ impl BinaryOracleEdgeTaker {
         if let Some(health) = self.reference_price_source_health.get_mut(source_id) {
             health.update(status, observed_ts_ms, received_ts_ms);
         }
-    }
-
-    fn unsubscribe_realized_volatility_sources(&mut self) {
-        let surface_id = self.config.realized_volatility_surface_id.clone();
-        for (instrument_id, client_id) in self
-            .context
-            .realized_volatility_quote_subscription_requests_for_surface(&surface_id)
-        {
-            #[cfg(not(test))]
-            self.unsubscribe_quotes(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-        for (instrument_id, client_id) in self
-            .context
-            .realized_volatility_trade_subscription_requests_for_surface(&surface_id)
-        {
-            #[cfg(not(test))]
-            self.unsubscribe_trades(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-        for (instrument_id, client_id) in self
-            .context
-            .realized_volatility_index_subscription_requests_for_surface(&surface_id)
-        {
-            #[cfg(not(test))]
-            self.unsubscribe_index_prices(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-    }
-
-    /// Fetches the live resolution strike for the current market interval.
-    ///
-    /// The first call keeps one durable index-price subscription open so NT
-    /// will route the provider's [`IndexPriceUpdate`] into `on_index_price`.
-    /// Later retry ticks use provider-owned custom fetch commands with unique
-    /// data types, avoiding NT's per-instrument index subscribe dedup.
-    fn subscribe_resolution_strike(&mut self) {
-        let (Some(resolution_instrument_id), Some(resolution_client_id), Some(interval_start_ms)) = (
-            self.resolution_instrument_id(),
-            self.resolution_client_id(),
-            self.active.interval_start_ms,
-        ) else {
-            return;
-        };
-        // Fail-closed asset binding: refuse to subscribe a resolution instrument
-        // that does not resolve this instance's underlying asset, so a
-        // misconfigured (wrong-asset or wrapped-variant) feed can never bind the
-        // strike. The entry gate stays blocked while price_to_beat is None.
-        if !self.resolution_instrument_resolves_underlying_asset(resolution_instrument_id) {
-            log::error!(
-                "binary_oracle_edge_taker resolution instrument {} does not resolve underlying asset {}; refusing live strike subscribe (fail-closed): strategy_id={}",
-                resolution_instrument_id,
-                self.config.underlying_asset,
-                self.config.strategy_id,
-            );
-            return;
-        }
-        let window_open_unix_seconds = interval_start_ms / MILLIS_PER_SECOND_U64;
-        let mut params = Params::new();
-        params.insert(
-            STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM.to_string(),
-            serde_json::json!(window_open_unix_seconds),
-        );
-        if self.resolution_strike_index_subscription.as_ref() != Some(&resolution_instrument_id) {
-            let previous_custom_subscription = self.resolution_strike_custom_subscription.take();
-            #[cfg(not(test))]
-            if let Some(data_type) = previous_custom_subscription {
-                self.unsubscribe_data(data_type, Some(resolution_client_id), None);
-            }
-            #[cfg(test)]
-            let _ = previous_custom_subscription;
-
-            let previous_index_subscription = self
-                .resolution_strike_index_subscription
-                .replace(resolution_instrument_id);
-            #[cfg(not(test))]
-            if let Some(instrument_id) = previous_index_subscription {
-                self.unsubscribe_index_prices(instrument_id, Some(resolution_client_id), None);
-            }
-            #[cfg(test)]
-            let _ = previous_index_subscription;
-
-            #[cfg(not(test))]
-            self.subscribe_index_prices(
-                resolution_instrument_id,
-                Some(resolution_client_id),
-                Some(params.clone()),
-            );
-            #[cfg(test)]
-            let _ = (resolution_client_id, params);
-            self.record_resolution_strike_subscribe_event(
-                ResolutionStrikeSubscribeEvent::durable_index(
-                    resolution_instrument_id,
-                    window_open_unix_seconds,
-                ),
-            );
-            return;
-        }
-
-        params.insert(
-            STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
-            serde_json::json!(resolution_instrument_id.to_string()),
-        );
-        self.resolution_strike_fetch_sequence = self
-            .resolution_strike_fetch_sequence
-            .wrapping_add(COUNTER_INCREMENT_U64);
-        let data_type = resolution_strike_fetch_request_data_type(
-            resolution_instrument_id,
-            self.resolution_strike_fetch_sequence,
-        );
-        let previous_custom_subscription = self
-            .resolution_strike_custom_subscription
-            .replace(data_type.clone());
-        #[cfg(not(test))]
-        {
-            if let Some(previous_data_type) = previous_custom_subscription {
-                self.unsubscribe_data(previous_data_type, Some(resolution_client_id), None);
-            }
-            self.subscribe_data(data_type.clone(), Some(resolution_client_id), Some(params));
-        }
-        #[cfg(test)]
-        let _ = (resolution_client_id, previous_custom_subscription, params);
-        self.record_resolution_strike_subscribe_event(
-            ResolutionStrikeSubscribeEvent::custom_fetch(
-                resolution_instrument_id,
-                window_open_unix_seconds,
-                self.resolution_strike_fetch_sequence,
-                data_type,
-            ),
-        );
-    }
-
-    fn unsubscribe_resolution_strike(&mut self) {
-        let Some(resolution_client_id) = self.resolution_client_id() else {
-            self.resolution_strike_index_subscription = None;
-            self.resolution_strike_custom_subscription = None;
-            return;
-        };
-        if let Some(data_type) = self.resolution_strike_custom_subscription.take() {
-            #[cfg(not(test))]
-            self.unsubscribe_data(data_type, Some(resolution_client_id), None);
-            #[cfg(test)]
-            let _ = data_type;
-        }
-        if let Some(instrument_id) = self.resolution_strike_index_subscription.take() {
-            #[cfg(not(test))]
-            self.unsubscribe_index_prices(instrument_id, Some(resolution_client_id), None);
-            #[cfg(test)]
-            let _ = instrument_id;
-        }
-    }
-
-    fn replace_book_subscriptions(&mut self, next: OutcomeBookSubscriptions) {
-        let current = self.book_subscriptions.clone();
-        unsubscribe_missing_books(self, &current, &next);
-        subscribe_new_books(self, &current, &next);
-        self.book_subscriptions = next;
     }
 
     fn current_market_id(&self) -> Option<&str> {
@@ -6482,253 +6135,6 @@ impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
         let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
         trader.borrow_mut().add_strategy(strategy)?;
         Ok(strategy_id)
-    }
-}
-
-fn unsubscribe_missing_books(
-    strategy: &mut BinaryOracleEdgeTaker,
-    current: &OutcomeBookSubscriptions,
-    next: &OutcomeBookSubscriptions,
-) {
-    if let Some(instrument_id) = current.up_instrument_id
-        && next.up_instrument_id != Some(instrument_id)
-    {
-        #[cfg(not(test))]
-        strategy.unsubscribe_book_deltas(instrument_id, None, None);
-        #[cfg(not(test))]
-        strategy.unsubscribe_trades(instrument_id, None, None);
-        strategy.active.trade_flow.remove(&instrument_id);
-        strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
-    }
-    if let Some(instrument_id) = current.down_instrument_id
-        && next.down_instrument_id != Some(instrument_id)
-    {
-        #[cfg(not(test))]
-        strategy.unsubscribe_book_deltas(instrument_id, None, None);
-        #[cfg(not(test))]
-        strategy.unsubscribe_trades(instrument_id, None, None);
-        strategy.active.trade_flow.remove(&instrument_id);
-        strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
-    }
-    if let Some(instrument_id) = current.tracked_position_instrument_id
-        && next.tracked_position_instrument_id != Some(instrument_id)
-    {
-        #[cfg(not(test))]
-        strategy.unsubscribe_book_deltas(instrument_id, None, None);
-        #[cfg(not(test))]
-        strategy.unsubscribe_trades(instrument_id, None, None);
-        strategy.active.trade_flow.remove(&instrument_id);
-        strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
-    }
-}
-
-fn subscribe_new_books(
-    strategy: &mut BinaryOracleEdgeTaker,
-    current: &OutcomeBookSubscriptions,
-    next: &OutcomeBookSubscriptions,
-) {
-    if let Some(instrument_id) = next.up_instrument_id
-        && current.up_instrument_id != Some(instrument_id)
-    {
-        #[cfg(not(test))]
-        strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
-        #[cfg(not(test))]
-        strategy.subscribe_trades(instrument_id, None, None);
-        let trade_flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&strategy.config));
-        strategy.active.trade_flow.insert(instrument_id, trade_flow);
-        strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
-    }
-    if let Some(instrument_id) = next.down_instrument_id
-        && current.down_instrument_id != Some(instrument_id)
-    {
-        #[cfg(not(test))]
-        strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
-        #[cfg(not(test))]
-        strategy.subscribe_trades(instrument_id, None, None);
-        let trade_flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&strategy.config));
-        strategy.active.trade_flow.insert(instrument_id, trade_flow);
-        strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
-    }
-    if let Some(instrument_id) = next.tracked_position_instrument_id
-        && current.tracked_position_instrument_id != Some(instrument_id)
-    {
-        #[cfg(not(test))]
-        strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
-        #[cfg(not(test))]
-        strategy.subscribe_trades(instrument_id, None, None);
-        let trade_flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&strategy.config));
-        strategy.active.trade_flow.insert(instrument_id, trade_flow);
-        strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BookSubscriptionEvent {
-    action: &'static str,
-    instrument_id: InstrumentId,
-}
-
-const BOOK_SUBSCRIBE_ACTION: &str = stringify!(subscribe);
-const BOOK_UNSUBSCRIBE_ACTION: &str = stringify!(unsubscribe);
-
-impl BookSubscriptionEvent {
-    fn subscribe(instrument_id: InstrumentId) -> Self {
-        Self {
-            action: BOOK_SUBSCRIBE_ACTION,
-            instrument_id,
-        }
-    }
-
-    fn unsubscribe(instrument_id: InstrumentId) -> Self {
-        Self {
-            action: BOOK_UNSUBSCRIBE_ACTION,
-            instrument_id,
-        }
-    }
-}
-
-impl BinaryOracleEdgeTaker {
-    fn record_book_subscription_event(&mut self, event: BookSubscriptionEvent) {
-        #[cfg(test)]
-        self.book_subscription_events.push(event);
-        #[cfg(not(test))]
-        let _ = event;
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LiveInputSubscriptionRetryEvent {
-    signal_missing: bool,
-    reference_missing: bool,
-    realized_volatility_missing: bool,
-}
-
-impl BinaryOracleEdgeTaker {
-    fn record_live_input_subscription_retry_event(
-        &mut self,
-        event: LiveInputSubscriptionRetryEvent,
-    ) {
-        #[cfg(test)]
-        self.live_input_subscription_retry_events.push(event);
-        #[cfg(not(test))]
-        let _ = event;
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReferencePriceSubscribeEvent {
-    action: &'static str,
-    source_id: String,
-    provider: String,
-    client_id: ClientId,
-    data_type: DataType,
-    params: Params,
-}
-
-const REFERENCE_PRICE_SUBSCRIBE_ACTION: &str = stringify!(subscribe);
-const REFERENCE_PRICE_UNSUBSCRIBE_ACTION: &str = stringify!(unsubscribe);
-
-impl ReferencePriceSubscribeEvent {
-    fn subscribe(subscription: &ReferencePriceSubscriptionRequest) -> Self {
-        Self::from_subscription(REFERENCE_PRICE_SUBSCRIBE_ACTION, subscription)
-    }
-
-    fn unsubscribe(subscription: &ReferencePriceSubscriptionRequest) -> Self {
-        Self::from_subscription(REFERENCE_PRICE_UNSUBSCRIBE_ACTION, subscription)
-    }
-
-    fn from_subscription(
-        action: &'static str,
-        subscription: &ReferencePriceSubscriptionRequest,
-    ) -> Self {
-        Self {
-            action,
-            source_id: subscription.source_id.clone(),
-            provider: subscription.provider.clone(),
-            client_id: subscription.client_id,
-            data_type: subscription.data_type.clone(),
-            params: subscription.params.clone(),
-        }
-    }
-}
-
-impl BinaryOracleEdgeTaker {
-    fn record_reference_price_subscribe_event(&mut self, event: ReferencePriceSubscribeEvent) {
-        #[cfg(test)]
-        self.reference_price_subscribe_events.push(event);
-        #[cfg(not(test))]
-        let _ = event;
-    }
-}
-
-/// One recorded resolution-strike fetch trigger. Constructed unconditionally
-/// so the production ordering is the same code the test observes; only the
-/// storage is test-only (see
-/// [`BinaryOracleEdgeTaker::record_resolution_strike_subscribe_event`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ResolutionStrikeSubscribeEvent {
-    action: &'static str,
-    trigger: ResolutionStrikeFetchTrigger,
-    instrument_id: InstrumentId,
-    window_open_unix_seconds: u64,
-    request_sequence: Option<u64>,
-    custom_data_type: Option<DataType>,
-}
-
-const RESOLUTION_STRIKE_SUBSCRIBE_ACTION: &str = stringify!(subscribe);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResolutionStrikeFetchTrigger {
-    DurableIndex,
-    CustomFetch,
-}
-
-impl ResolutionStrikeSubscribeEvent {
-    fn durable_index(instrument_id: InstrumentId, window_open_unix_seconds: u64) -> Self {
-        Self {
-            action: RESOLUTION_STRIKE_SUBSCRIBE_ACTION,
-            trigger: ResolutionStrikeFetchTrigger::DurableIndex,
-            instrument_id,
-            window_open_unix_seconds,
-            request_sequence: None,
-            custom_data_type: None,
-        }
-    }
-
-    fn custom_fetch(
-        instrument_id: InstrumentId,
-        window_open_unix_seconds: u64,
-        request_sequence: u64,
-        custom_data_type: DataType,
-    ) -> Self {
-        Self {
-            action: RESOLUTION_STRIKE_SUBSCRIBE_ACTION,
-            trigger: ResolutionStrikeFetchTrigger::CustomFetch,
-            instrument_id,
-            window_open_unix_seconds,
-            request_sequence: Some(request_sequence),
-            custom_data_type: Some(custom_data_type),
-        }
-    }
-}
-
-impl BinaryOracleEdgeTaker {
-    fn record_resolution_strike_subscribe_event(&mut self, event: ResolutionStrikeSubscribeEvent) {
-        #[cfg(test)]
-        self.resolution_strike_subscribe_events.push(event);
-        #[cfg(not(test))]
-        let _ = event;
-    }
-
-    #[cfg(test)]
-    fn resolution_strike_subscribe_count(&self) -> u32 {
-        u32::try_from(
-            self.resolution_strike_subscribe_events
-                .iter()
-                .filter(|event| event.action == RESOLUTION_STRIKE_SUBSCRIBE_ACTION)
-                .count(),
-        )
-        .unwrap_or(u32::MAX)
     }
 }
 

@@ -1009,7 +1009,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     glm_ungated_freshness = verify_variant(
         glm_text=glm.replace(
-            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.glm-secret.outputs.configured == 'true'\n",
+            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.glm-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true'\n",
             "      - name: Check AI review model freshness\n        id: model-freshness\n",
             1,
         ),
@@ -1062,7 +1062,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     kimi_ungated_freshness = verify_variant(
         kimi_text=kimi.replace(
-            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.kimi-secret.outputs.configured == 'true'\n",
+            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.kimi-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true'\n",
             "      - name: Check AI review model freshness\n        id: model-freshness\n",
             1,
         ),
@@ -1131,8 +1131,8 @@ def run_self_tests(repo_root: Path) -> None:
 
     stamp_continue_on_error = verify_variant(
         glm_text=glm.replace(
-            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.glm-secret.outputs.configured == 'true'\n        env:",
-            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.glm-secret.outputs.configured == 'true'\n        continue-on-error: true\n        env:",
+            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'true'\n        env:",
+            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'true'\n        continue-on-error: true\n        env:",
             1,
         ),
     )

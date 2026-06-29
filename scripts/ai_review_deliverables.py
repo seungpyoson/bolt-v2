@@ -59,6 +59,7 @@ class FallbackConfig:
     deliverable_markers: tuple[str, ...] = ()
     expected_bot_login: str = ""
     comment_marker: str = ""
+    notice_marker: str = ""
     review_intro: str = ""
     source_label: str = ""
 
@@ -463,6 +464,24 @@ def post_or_update_marker_comment(*, github: Any, config: FallbackConfig, body: 
     existing = latest_marker_comment(
         comments=github.list_issue_comments(),
         marker=config.comment_marker,
+        expected_bot_login=config.expected_bot_login,
+        run_url=config.run_url,
+        part_key=comment_part_key(body),
+    )
+    if existing is None:
+        github.post_issue_comment(body)
+        return
+    github.update_issue_comment(int(existing["id"]), body)
+
+
+def post_or_update_notice_comment(*, github: Any, config: FallbackConfig, body: str) -> None:
+    marker = config.notice_marker or config.comment_marker
+    if not marker:
+        github.post_issue_comment(body)
+        return
+    existing = latest_marker_comment(
+        comments=github.list_issue_comments(),
+        marker=marker,
         expected_bot_login=config.expected_bot_login,
         run_url=config.run_url,
         part_key=comment_part_key(body),
@@ -1111,7 +1130,8 @@ def sanitize_detail(value: str) -> str:
 
 def render_failure_notice(*, provider: str, config: FallbackConfig, error: BaseException) -> str:
     detail = sanitize_detail(str(error))
-    marker = f"{config.comment_marker}\n\n" if config.comment_marker else ""
+    marker_value = config.notice_marker or config.comment_marker
+    marker = f"{marker_value}\n\n" if marker_value else ""
     source = f"\n        - Source: {config.source_label}" if config.source_label else ""
     return marker + textwrap.dedent(
         f"""\
@@ -1203,7 +1223,7 @@ def run_fallback_review(*, github: Any, reviewer: Any, config: FallbackConfig) -
         return "fallback-posted" if result == "review-posted" else result
     except Exception as exc:
         try:
-            post_or_update_marker_comment(
+            post_or_update_notice_comment(
                 github=github,
                 config=config,
                 body=render_failure_notice(provider=config.provider, config=config, error=exc),
@@ -1372,6 +1392,7 @@ def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
         deliverable_markers=config_str_tuple(glm_config, "deliverable_markers"),
         expected_bot_login=config_str(github_config, "expected_bot_login"),
         comment_marker=comment_marker,
+        notice_marker=config_str(glm_config, "notice_marker"),
         source_label=source_label_from_template(glm_config, model=model),
     )
     if not api_key:
@@ -1441,6 +1462,7 @@ def build_kimi_config_from_env(args: argparse.Namespace, *, repo: str, pr_number
         deliverable_markers=(marker,),
         expected_bot_login=config_str(github_config, "expected_bot_login"),
         comment_marker=marker,
+        notice_marker=config_str(kimi_config, "notice_marker"),
         review_intro=review_intro,
         source_label=source_label_from_template(kimi_config, model=model),
     )

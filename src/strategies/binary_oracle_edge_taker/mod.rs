@@ -15,7 +15,7 @@ use nautilus_model::{
     enums::PositionSide,
 };
 use nautilus_model::{
-    enums::{OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
+    enums::{OrderSide, OrderType, TimeInForce},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
@@ -39,12 +39,11 @@ use crate::{
     },
     bolt_v3_config::{ReferencePriceBlock, ReferencePriceDriftPolicy},
     bolt_v3_decision_evidence::{
-        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory, BoltV3ExitBlockedReason,
-        BoltV3ExitDecisionEvidence, BoltV3ExitDecisionOutcome, BoltV3ExitEvaluationEvidence,
-        BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker, BoltV3ExitTriggerSource,
-        BoltV3ExposureOccupancy, BoltV3ForcedFlatReason, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
-        BoltV3RvGateResult, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory, BoltV3ExitDecisionEvidence,
+        BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker,
+        BoltV3ExitTriggerSource, BoltV3ExposureOccupancy, BoltV3ForcedFlatReason,
+        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OutcomeSide,
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
         realized_vol_blocker_to_exit_evidence, realized_volatility_aggregation_evidence_label,
         realized_volatility_block_reason_evidence_label,
         realized_volatility_pricing_component_evidence_label,
@@ -141,14 +140,22 @@ use self::entry_decision::{
     entry_skip_reason_category_from_str, push_executable_edge_pricing_block,
 };
 
+mod exit_decision;
+
+use self::exit_decision::{
+    ExitDecision, ExitDecisionDedupeKey, ExitEvaluation, ExitEvaluationLogFields,
+    ExitEvaluationTriggerContext, ExitOutcomeKey, ExitSubmissionDecision, evaluate_exit_decision,
+    exit_decision_evidence_from_optional,
+};
+
 mod orders;
 
-use self::orders::{
-    ConfiguredNtOrderTemplate, ExitOrderExecutionConfig, parse_configured_oms_type,
-    parse_configured_order_side, parse_configured_position_side,
-};
 #[cfg(test)]
 use self::orders::{EntryOrderPlanInputs, build_entry_order_plan};
+use self::orders::{
+    ExitOrderExecutionConfig, parse_configured_oms_type, parse_configured_order_side,
+    parse_configured_position_side,
+};
 
 mod runtime_state;
 
@@ -5812,226 +5819,6 @@ fn best_healthy_oracle_price(snapshot: &ReferenceSnapshot) -> Option<f64> {
         .and_then(|venue| venue.observed_price)
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct ExitEvaluation {
-    position_outcome_side: Option<OutcomeSide>,
-    forced_flat_reasons: Vec<ForcedFlatReason>,
-    hold_ev_bps: Option<f64>,
-    exit_ev_bps: Option<f64>,
-    exit_decision: Option<ExitDecision>,
-    blocked_reason: Option<&'static str>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ExitSubmissionDecision {
-    evaluation: ExitEvaluation,
-    instrument_id: Option<InstrumentId>,
-    order_type: Option<OrderType>,
-    order_side: Option<OrderSide>,
-    position_side: Option<PositionSide>,
-    time_in_force: Option<TimeInForce>,
-    price: Option<f64>,
-    quantity: Option<Quantity>,
-    client_order_id: Option<ClientOrderId>,
-    is_post_only: Option<bool>,
-    is_reduce_only: Option<bool>,
-    is_quote_quantity: Option<bool>,
-    expire_time_unix_nanos: Option<u64>,
-    trigger_price: Option<f64>,
-    activation_price: Option<f64>,
-    trigger_type: Option<TriggerType>,
-    trigger_instrument_id: Option<InstrumentId>,
-    trailing_offset: Option<f64>,
-    trailing_offset_type: Option<TrailingOffsetType>,
-    blocked_reason: Option<&'static str>,
-    forced_flat_reasons: Vec<ForcedFlatReason>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ExitEvaluationTriggerContext {
-    source: BoltV3ExitTriggerSource,
-    ts_event_ms: u64,
-    ts_init_ms: Option<u64>,
-}
-
-impl ExitEvaluationTriggerContext {
-    const fn new(
-        source: BoltV3ExitTriggerSource,
-        ts_event_ms: u64,
-        ts_init_ms: Option<u64>,
-    ) -> Self {
-        Self {
-            source,
-            ts_event_ms,
-            ts_init_ms,
-        }
-    }
-
-    const fn unknown(now_ms: u64) -> Self {
-        Self::new(BoltV3ExitTriggerSource::Unknown, now_ms, None)
-    }
-}
-
-impl ExitSubmissionDecision {
-    fn execution_config(&self) -> Option<ExitOrderExecutionConfig> {
-        Some(ExitOrderExecutionConfig {
-            side: self.order_side?,
-            position_side: self.position_side?,
-            order_template: ConfiguredNtOrderTemplate {
-                order_type: self.order_type?,
-                time_in_force: self.time_in_force?,
-                expire_time_unix_nanos: self.expire_time_unix_nanos,
-                trigger_price: self.trigger_price,
-                activation_price: self.activation_price,
-                trigger_type: self.trigger_type,
-                trigger_instrument_id: self.trigger_instrument_id,
-                trailing_offset: self.trailing_offset,
-                trailing_offset_type: self.trailing_offset_type,
-                is_post_only: self.is_post_only?,
-                is_reduce_only: self.is_reduce_only?,
-                is_quote_quantity: self.is_quote_quantity?,
-            },
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ExitEvaluationLogFields {
-    market_id: Option<String>,
-    phase: SelectionPhase,
-    position_outcome_side: Option<OutcomeSide>,
-    position_id: Option<PositionId>,
-    position_instrument_id: Option<InstrumentId>,
-    position_quantity: Option<Quantity>,
-    position_avg_px_open: Option<f64>,
-    forced_flat_reasons: Vec<ForcedFlatReason>,
-    spot_price: Option<f64>,
-    spot_venue_name: Option<String>,
-    reference_current_price: Option<f64>,
-    interval_open: Option<f64>,
-    seconds_to_expiry: Option<u64>,
-    realized_vol: Option<f64>,
-    realized_vol_source_venue: Option<String>,
-    realized_vol_source_ts_ms: Option<u64>,
-    rv_surface_id: String,
-    rv_snapshot_as_of_ms: Option<u64>,
-    rv_snapshot_ready: bool,
-    rv_snapshot_blockers: Vec<BoltV3ExitRvSnapshotBlocker>,
-    rv_source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
-    rv_gate_result: BoltV3ExitRvGateResult,
-    rv_future_dating_delta_ms: Option<u64>,
-    exit_eval_now_ms: u64,
-    exit_trigger_source: BoltV3ExitTriggerSource,
-    trigger_ts_event_ms: u64,
-    trigger_ts_init_ms: Option<u64>,
-    pricing_kurtosis: f64,
-    exit_hysteresis_bps: i64,
-    fair_probability_up: Option<f64>,
-    fair_probability_down: Option<f64>,
-    uncertainty_band_probability: Option<f64>,
-    up_fee_bps: Option<f64>,
-    down_fee_bps: Option<f64>,
-    hold_ev_bps: Option<f64>,
-    exit_ev_bps: Option<f64>,
-    exit_decision: Option<ExitDecision>,
-    historical_entry_fee_rate_known: bool,
-    historical_entry_fee_rate_reason: &'static str,
-    final_fee_amount_known: bool,
-    final_fee_amount_reason: &'static str,
-    submission_instrument_id: Option<InstrumentId>,
-    submission_order_side: Option<OrderSide>,
-    submission_price: Option<f64>,
-    submission_quantity: Option<Quantity>,
-    submission_client_order_id: Option<ClientOrderId>,
-    submission_blocked_reason: Option<&'static str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExitDecision {
-    Hold,
-    Exit,
-    ExitFailClosed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ExitDecisionDedupeKey {
-    market_id: Option<String>,
-    position_id: Option<String>,
-    forced_flat_reasons: Vec<BoltV3ForcedFlatReason>,
-    exit_decision: BoltV3ExitDecisionOutcome,
-    blocked_reason: Option<BoltV3ExitBlockedReason>,
-}
-
-impl BoltV3ExitDecisionEvidence {
-    fn from_exit_decision(
-        strategy_id: String,
-        ts_ms: u64,
-        fields: &ExitEvaluationLogFields,
-        forced_flat_inputs: ForcedFlatEvidenceInputs,
-    ) -> Self {
-        let blocked_reason = fields
-            .submission_blocked_reason
-            .map(exit_block_reason_to_evidence);
-        let exit_decision = if blocked_reason.is_some() {
-            BoltV3ExitDecisionOutcome::Blocked
-        } else {
-            match fields.exit_decision {
-                Some(ExitDecision::Hold) => BoltV3ExitDecisionOutcome::Hold,
-                Some(ExitDecision::Exit) => BoltV3ExitDecisionOutcome::Exit,
-                Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionOutcome::ExitFailClosed,
-                None => BoltV3ExitDecisionOutcome::Blocked,
-            }
-        };
-        Self {
-            strategy_id,
-            market_id: fields.market_id.clone(),
-            position_id: fields
-                .position_id
-                .map(|position_id| position_id.to_string()),
-            position_instrument_id: fields
-                .position_instrument_id
-                .map(|instrument_id| instrument_id.to_string()),
-            position_outcome_side: fields.position_outcome_side.map(outcome_side_to_evidence),
-            forced_flat_reasons: fields
-                .forced_flat_reasons
-                .iter()
-                .map(forced_flat_reason_to_evidence)
-                .collect(),
-            hold_ev_bps: option_evidence_number(fields.hold_ev_bps),
-            exit_ev_bps: option_evidence_number(fields.exit_ev_bps),
-            realized_vol: option_evidence_number(fields.realized_vol),
-            realized_vol_source_venue: fields.realized_vol_source_venue.clone(),
-            realized_vol_source_ts_ms: fields.realized_vol_source_ts_ms,
-            exit_eval_now_ms: fields.exit_eval_now_ms,
-            exit_trigger_source: fields.exit_trigger_source,
-            trigger_ts_event_ms: fields.trigger_ts_event_ms,
-            trigger_ts_init_ms: fields.trigger_ts_init_ms,
-            rv_surface_id: fields.rv_surface_id.clone(),
-            rv_snapshot_as_of_ms: fields.rv_snapshot_as_of_ms,
-            rv_snapshot_ready: fields.rv_snapshot_ready,
-            rv_snapshot_blockers: fields.rv_snapshot_blockers.clone(),
-            rv_source_diagnostics: fields.rv_source_diagnostics.clone(),
-            rv_gate_result: fields.rv_gate_result,
-            rv_future_dating_delta_ms: fields.rv_future_dating_delta_ms,
-            exit_hysteresis_bps: fields.exit_hysteresis_bps.to_string(),
-            exit_decision,
-            blocked_reason,
-            client_order_id: fields
-                .submission_client_order_id
-                .map(|client_order_id| client_order_id.to_string()),
-            seconds_to_market_end: fields.seconds_to_expiry,
-            ts_ms,
-            stale_reference_after_ms: forced_flat_inputs.stale_reference_after_ms,
-            last_reference_ts_ms: forced_flat_inputs.last_reference_ts_ms,
-            min_liquidity_required: forced_flat_inputs.min_liquidity_required,
-            liquidity_available: forced_flat_inputs.liquidity_available,
-            frozen: forced_flat_inputs.frozen,
-            metadata_matches_selection: forced_flat_inputs.metadata_matches_selection,
-            fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
-        }
-    }
-}
-
 fn option_evidence_number(value: Option<f64>) -> Option<String> {
     value.filter(|value| value.is_finite()).map(evidence_number)
 }
@@ -6053,32 +5840,6 @@ fn forced_flat_reason_to_evidence(reason: &ForcedFlatReason) -> BoltV3ForcedFlat
     }
 }
 
-fn exit_block_reason_to_evidence(reason: &str) -> BoltV3ExitBlockedReason {
-    match reason {
-        EXIT_BLOCK_REASON_NO_OPEN_POSITION => BoltV3ExitBlockedReason::NoOpenPosition,
-        EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING => BoltV3ExitBlockedReason::ExitAlreadyPending,
-        EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING => {
-            BoltV3ExitBlockedReason::EntryOrderStillWorking
-        }
-        EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE => {
-            BoltV3ExitBlockedReason::ExitDecisionUnavailable
-        }
-        EXIT_BLOCK_REASON_EXIT_HOLD => BoltV3ExitBlockedReason::ExitHold,
-        EXIT_BLOCK_REASON_OPEN_POSITION_MISSING => BoltV3ExitBlockedReason::OpenPositionMissing,
-        EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID => {
-            BoltV3ExitBlockedReason::ExitOrderConfigInvalid
-        }
-        EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED => {
-            BoltV3ExitBlockedReason::ExitQuoteQuantityUnsupported
-        }
-        EXIT_BLOCK_REASON_EXIT_PRICE_MISSING => BoltV3ExitBlockedReason::ExitPriceMissing,
-        EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE => {
-            BoltV3ExitBlockedReason::ExitQuantityNotPositive
-        }
-        _ => unreachable!("unknown exit blocked reason `{reason}`"),
-    }
-}
-
 fn exposure_occupancy_to_evidence(occupancy: ExposureOccupancy) -> BoltV3ExposureOccupancy {
     match occupancy {
         ExposureOccupancy::PendingEntry => BoltV3ExposureOccupancy::PendingEntry,
@@ -6088,18 +5849,6 @@ fn exposure_occupancy_to_evidence(occupancy: ExposureOccupancy) -> BoltV3Exposur
         ExposureOccupancy::UnsupportedObserved => BoltV3ExposureOccupancy::UnsupportedObserved,
         ExposureOccupancy::BlindRecovery => BoltV3ExposureOccupancy::BlindRecovery,
     }
-}
-
-/// Stable key for #885 exit-evaluation evidence flood-gating. Two exit evaluations
-/// with the same key produce the same RCA story, so only the first is recorded
-/// durably (subsequent identical ticks are suppressed). Deliberately excludes the
-/// client_order_id (re-minted per attempt) and timestamps so a per-tick flood
-/// collapses to one record. `Ord` lets it key a `BTreeMap` without a new import.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct ExitOutcomeKey {
-    exit_decision: BoltV3ExitDecisionOutcome,
-    submission_blocked_reason: Option<&'static str>,
-    rv_gate_result: BoltV3RvGateResult,
 }
 
 fn should_report_one_position_gate_violation(occupancy: ExposureOccupancy) -> bool {
@@ -6116,42 +5865,6 @@ fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
         || reason == EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
         || reason == EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
         || reason == EXIT_BLOCK_REASON_EXIT_HOLD)
-}
-
-/// Map the strategy-internal [`ExitDecision`] to the closed evidence enum. `None`
-/// (blocked before a decision was computed, e.g. exit already pending or entry order
-/// still working) maps to `Hold` — no exit action was taken — and the durable record's
-/// `submission_blocked_reason` field separately explains why.
-fn exit_decision_evidence_from_optional(
-    decision: Option<ExitDecision>,
-) -> BoltV3ExitDecisionOutcome {
-    match decision {
-        Some(ExitDecision::Hold) | None => BoltV3ExitDecisionOutcome::Hold,
-        Some(ExitDecision::Exit) => BoltV3ExitDecisionOutcome::Exit,
-        Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionOutcome::ExitFailClosed,
-    }
-}
-
-fn evaluate_exit_decision(
-    hold_ev_bps: Option<f64>,
-    exit_ev_bps: Option<f64>,
-    exit_hysteresis_bps: f64,
-) -> ExitDecision {
-    let Some(hold_ev_bps) = hold_ev_bps.filter(|value| value.is_finite()) else {
-        return ExitDecision::ExitFailClosed;
-    };
-    let Some(exit_ev_bps) = exit_ev_bps.filter(|value| value.is_finite()) else {
-        return ExitDecision::ExitFailClosed;
-    };
-    if !exit_hysteresis_bps.is_finite() {
-        return ExitDecision::ExitFailClosed;
-    }
-
-    if exit_ev_bps >= hold_ev_bps - exit_hysteresis_bps {
-        ExitDecision::Exit
-    } else {
-        ExitDecision::Hold
-    }
 }
 
 #[cfg(test)]

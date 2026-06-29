@@ -142,7 +142,6 @@ class FakeGitHub:
     def update_pull_review_comment(self, comment_id: int, body: str) -> None:
         self.updated_review_comments.append((comment_id, body))
 
-
 class FakeGLM:
     def __init__(self, *, fail: bool = False, response: str | None = None, failure_message: str | None = None) -> None:
         self.fail = fail
@@ -1548,6 +1547,127 @@ def test_render_notice_redacts_new_provider_secret_env_names() -> None:
     assert "provider returned ***" in notice
 
 
+def test_review_comment_includes_model_freshness_warning_at_top() -> None:
+    module = load_script()
+    warning = "Kimi model update available: ci/ai-review.toml uses a pinned model; a newer coding model is available."
+    previous_warning = os.environ.get("AI_REVIEW_MODEL_FRESHNESS_WARNING")
+    os.environ["AI_REVIEW_MODEL_FRESHNESS_WARNING"] = warning
+    try:
+        body = module.render_review_comment_body(
+            config=fallback_config(module, provider="Kimi", comment_marker="<!-- ai-pr-reviewer-kimi -->"),
+            total_chunks=1,
+            sections=["### Chunk 1/1\n\nNo hard-evidence findings."],
+        )
+    finally:
+        if previous_warning is None:
+            os.environ.pop("AI_REVIEW_MODEL_FRESHNESS_WARNING", None)
+        else:
+            os.environ["AI_REVIEW_MODEL_FRESHNESS_WARNING"] = previous_warning
+
+    assert body.startswith("<!-- ai-pr-reviewer-kimi -->\n\n> [!WARNING]\n> Kimi model update available")
+    assert "\n\n## Kimi PR Review" in body
+
+
+def test_model_freshness_notice_updates_existing_marker_comment() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "id": 123,
+                "body": "<!-- ai-review-model-freshness-notice-kimi -->\n\nold body",
+                "user": {"login": "github-actions[bot]", "type": "Bot"},
+            }
+        ],
+    )
+
+    module.post_model_freshness_notice(
+        github=github,
+        provider="Kimi",
+        pr_number=895,
+        run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+        warning="Kimi model update available: update the pinned model.",
+        expected_bot_login="github-actions[bot]",
+        marker_template="<!-- ai-review-model-freshness-notice-{provider} -->",
+    )
+
+    assert not github.posted
+    assert len(github.updated) == 1
+    assert github.updated[0][0] == 123
+    assert github.updated[0][1].startswith("<!-- ai-review-model-freshness-notice-kimi -->")
+    assert "Kimi model update available" in github.updated[0][1]
+
+
+def test_model_freshness_notice_marker_comes_from_config_template() -> None:
+    module = load_script()
+
+    body = module.render_model_freshness_notice(
+        provider="GLM PR-Agent",
+        pr_number=895,
+        run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+        warning="GLM model update available: update the pinned model.",
+        marker_template="<!-- configured-model-freshness-notice-{provider} -->",
+    )
+
+    assert body.startswith("<!-- configured-model-freshness-notice-glm-pr-agent -->")
+    assert "GLM model update available" in body
+
+
+def test_existing_pr_agent_review_comment_gets_model_freshness_warning() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "id": 456,
+                "body": "## PR Reviewer Guide\n\nExisting GLM review.",
+                "created_at": "2026-06-22T12:30:00Z",
+                "updated_at": "2026-06-22T12:30:00Z",
+                "user": {"login": "github-actions[bot]", "type": "Bot"},
+            }
+        ],
+    )
+
+    updated = module.prepend_model_freshness_warning_to_existing_review(
+        github=github,
+        started_at="2026-06-22T12:00:00Z",
+        markers=("## PR Reviewer Guide",),
+        warning="GLM model update available: update the pinned model.",
+        expected_bot_login="github-actions[bot]",
+    )
+
+    assert updated == 1
+    assert len(github.updated) == 1
+    assert github.updated[0][1].startswith("> [!WARNING]\n> GLM model update available")
+    assert "## PR Reviewer Guide" in github.updated[0][1]
+
+
+def test_existing_pr_agent_pull_review_is_not_mutated_for_model_freshness_warning() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        reviews=[
+            {
+                "id": 789,
+                "body": "## PR Reviewer Guide\n\nExisting GLM review.",
+                "submitted_at": "2026-06-22T12:30:00Z",
+                "user": {"login": "github-actions[bot]", "type": "Bot"},
+            }
+        ],
+    )
+
+    updated = module.prepend_model_freshness_warning_to_existing_review(
+        github=github,
+        started_at="2026-06-22T12:00:00Z",
+        markers=("## PR Reviewer Guide",),
+        warning="GLM model update available: update the pinned model.",
+        expected_bot_login="github-actions[bot]",
+    )
+
+    assert updated == 0
+    assert not github.updated
+
+
 def test_notice_env_outputs_shell_safe_marker_and_bot_login() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -1653,6 +1773,11 @@ def main() -> int:
     test_kimi_cli_client_uses_documented_env_auth_path()
     test_render_notice_redacts_secret_values()
     test_render_notice_redacts_new_provider_secret_env_names()
+    test_review_comment_includes_model_freshness_warning_at_top()
+    test_model_freshness_notice_updates_existing_marker_comment()
+    test_model_freshness_notice_marker_comes_from_config_template()
+    test_existing_pr_agent_review_comment_gets_model_freshness_warning()
+    test_existing_pr_agent_pull_review_is_not_mutated_for_model_freshness_warning()
     test_notice_env_outputs_shell_safe_marker_and_bot_login()
     test_notice_env_fails_closed_without_notice_marker()
     test_pr_agent_prompt_pins_no_findings_contract()

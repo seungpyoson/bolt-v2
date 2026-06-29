@@ -187,7 +187,7 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
         if tmp_name is not None:
             try:
                 os.unlink(tmp_name)
-            except BaseException:
+            except OSError:
                 pass
         raise
 

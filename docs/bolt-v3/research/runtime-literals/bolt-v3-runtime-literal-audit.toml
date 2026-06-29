@@ -14618,7 +14618,7 @@ classification = "capital_pool_config_enum_value"
 reason = "Supported TOML product-kind discriminator that requires binary-product metadata when submit admission is enabled."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
 kind = "number"
 literal = '''0'''
 context = '''observed_at_ns: 0,'''
@@ -14634,7 +14634,7 @@ classification = "iv_helper_contract_literal"
 reason = "IV derivation validates the configured helper parameter signature against the pinned NT helper ABI; operator helper selection remains policy/config-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
 kind = "string"
 literal = '''"bolt_configured_binary_product"'''
 context = '''source: "bolt_configured_binary_product".to_string(),'''

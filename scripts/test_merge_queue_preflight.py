@@ -559,6 +559,7 @@ def assert_preflight_artifact_classification_is_declarative() -> None:
         "batch_verifier_failed": ("verifier", "batch", "ready"),
         "base_mismatch": ("identity", "pr", "inconclusive"),
         "head_mismatch": ("identity", "pr", "blocked"),
+        "head_unavailable": ("identity", "pr", "inconclusive"),
         "metadata_unavailable": ("readiness", "pr", "inconclusive"),
         "required_check_failed": ("readiness", "pr", "blocked"),
         "required_check_pending": ("readiness", "pr", "inconclusive"),
@@ -703,18 +704,22 @@ def write_fake_gh(
     views: dict[int, dict[str, object]],
     checks: dict[int, list[dict[str, object]]] | None = None,
     failed_views: dict[int, str] | None = None,
+    check_exit_codes: dict[int, int] | None = None,
 ) -> pathlib.Path:
     bin_dir = root / "bin"
     bin_dir.mkdir()
     path = bin_dir / "gh"
+    checks_by_pr = {pr: [] for pr in views} | (checks or {})
+    check_exit_codes_by_pr = {pr: 0 for pr in views} | (check_exit_codes or {})
     write(
         path,
         "#!/usr/bin/env python3\n"
         "import json\n"
         "import sys\n"
         f"views = {views!r}\n"
-        f"checks = {(checks or {})!r}\n"
+        f"checks = {checks_by_pr!r}\n"
         f"failed_views = {(failed_views or {})!r}\n"
+        f"check_exit_codes = {check_exit_codes_by_pr!r}\n"
         "args = sys.argv[1:]\n"
         "if len(args) >= 3 and args[0:2] == ['pr', 'view']:\n"
         "    if int(args[2]) in failed_views:\n"
@@ -722,7 +727,9 @@ def write_fake_gh(
         "        raise SystemExit(1)\n"
         "    print(json.dumps(views[int(args[2])]))\n"
         "elif len(args) >= 3 and args[0:2] == ['pr', 'checks']:\n"
-        "    print(json.dumps(checks.get(int(args[2]), [])))\n"
+        "    pr = int(args[2])\n"
+        "    print(json.dumps(checks[pr]))\n"
+        "    raise SystemExit(check_exit_codes[pr])\n"
         "else:\n"
         "    raise SystemExit(f'unexpected gh args: {args}')\n",
     )
@@ -1507,6 +1514,50 @@ def assert_required_check_pending_is_inconclusive() -> None:
         assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "pending check contract")
 
 
+def assert_required_check_exit_code_one_stays_readiness_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks={1: [{"name": "gate", "state": "FAILURE", "bucket": "fail", "workflow": "CI"}]},
+            check_exit_codes={1: 1},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 2, "failed check rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        assert_equal(len(blocked), 1, "failed check blocked count")
+        assert_equal(blocked[0]["pr"], 1, "failed check pr")
+        assert_equal(blocked[0]["type"], "required_check_failed", "failed check type")
+        assert_equal(payload["lane_statuses"]["readiness"], "blocked", "failed check readiness lane")
+        assert_equal((payload["verdict"], payload["contract_exit_code"]), ("blocked", 2), "failed check contract")
+
+
+def assert_required_check_exit_code_two_stays_readiness_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks={1: [{"name": "gate", "state": "CANCELLED", "bucket": "cancel", "workflow": "CI"}]},
+            check_exit_codes={1: 2},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 2, "cancelled check rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        assert_equal(len(blocked), 1, "cancelled check blocked count")
+        assert_equal(blocked[0]["pr"], 1, "cancelled check pr")
+        assert_equal(blocked[0]["type"], "required_check_failed", "cancelled check type")
+        assert_equal(payload["lane_statuses"]["readiness"], "blocked", "cancelled check readiness lane")
+        assert_equal((payload["verdict"], payload["contract_exit_code"]), ("blocked", 2), "cancelled check contract")
+
+
 def assert_partial_gh_metadata_failure_preserves_other_readiness() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -1534,6 +1585,65 @@ def assert_partial_gh_metadata_failure_preserves_other_readiness() -> None:
         warnings = payload.get("metadata_warnings")
         if not isinstance(warnings, list) or "PR #2" not in warnings[0]:
             raise AssertionError(payload)
+
+
+def assert_fetch_failure_after_readiness_is_inconclusive_not_tool_error() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        missing_head = "1" * 40
+        bin_dir = write_fake_gh(
+            root,
+            views={
+                1: approved_pr_view(head),
+                2: approved_pr_view(missing_head),
+            },
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--expected-head-sha",
+            f"2={missing_head}",
+            "--verifier-profile",
+            "none",
+            "--json",
+            "1",
+            "2",
+        ]
+        env = os.environ.copy()
+        env["PATH"] = str(bin_dir) + os.pathsep + env["PATH"]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 3, "missing fetch rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 2 or blocked[0]["type"] != "head_unavailable":
+            raise AssertionError(payload)
+        assert_equal(
+            blocked[0]["reason"],
+            "PR #2 head ref was not found; ensure the PR exists and has a fetchable head",
+            "missing fetch reason",
+        )
+        if [batch["prs"] for batch in payload["batches"]] != [[1]]:
+            raise AssertionError(payload)
+        assert_equal(payload["lane_statuses"]["identity"], "inconclusive", "missing fetch identity lane")
+        assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "missing fetch contract")
 
 
 def assert_invalid_pr_input_is_rejected() -> None:
@@ -1709,7 +1819,10 @@ def main() -> int:
     assert_head_oid_mismatch_blocks_pr()
     assert_wrong_base_ref_is_inconclusive()
     assert_required_check_pending_is_inconclusive()
+    assert_required_check_exit_code_one_stays_readiness_failure()
+    assert_required_check_exit_code_two_stays_readiness_failure()
     assert_partial_gh_metadata_failure_preserves_other_readiness()
+    assert_fetch_failure_after_readiness_is_inconclusive_not_tool_error()
     assert_invalid_pr_input_is_rejected()
     assert_missing_expected_base_sha_is_rejected()
     assert_missing_expected_head_sha_is_rejected()

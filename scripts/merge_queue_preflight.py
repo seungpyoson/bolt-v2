@@ -31,6 +31,7 @@ CONFLICT_LINE_RE = re.compile(r"^\d{6} [0-9a-f]{40} [123]\t(.+)$")
 PR_REF_PREFIX = "refs/pull/"
 FETCH_HEAD = "FETCH_HEAD"
 PROFILE_NONE = "none"
+GH_PR_CHECKS_JSON_RETURNCODES = (0, 1, 2, 8)
 STATUS_READY = "ready"
 STATUS_BLOCKED = "blocked"
 STATUS_INCONCLUSIVE = "inconclusive"
@@ -196,6 +197,7 @@ PREFLIGHT_ARTIFACT_CLASSIFICATIONS = {
     "batch_verifier_failed": (LANE_VERIFIER, "batch", STATUS_READY),
     "base_mismatch": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
     "head_mismatch": (LANE_IDENTITY, "pr", STATUS_BLOCKED),
+    "head_unavailable": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
     "metadata_unavailable": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
     "required_check_failed": (LANE_READINESS, "pr", STATUS_BLOCKED),
     "required_check_pending": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
@@ -410,13 +412,14 @@ def head_identity_findings(
 ) -> tuple[dict[str, object], ...]:
     return tuple(
         finding
-        for pr, expected_head_sha in expected_heads.items()
+        for pr, actual_head in actual_heads.items()
+        for expected_head_sha in (expected_heads[pr],)
         for finding in HEAD_IDENTITY_FINDING_BUILDERS[
-            expected_head_sha == actual_heads[pr].sha
+            expected_head_sha == actual_head.sha
         ](
             pr=pr,
             expected_head_sha=expected_head_sha,
-            actual_head_sha=actual_heads[pr].sha,
+            actual_head_sha=actual_head.sha,
         )
     )
 
@@ -458,13 +461,14 @@ def head_identity_blocks(
 ) -> list[dict[str, object]]:
     return [
         block
-        for pr, expected_head_sha in expected_heads.items()
+        for pr, actual_head in actual_heads.items()
+        for expected_head_sha in (expected_heads[pr],)
         for block in HEAD_IDENTITY_BLOCK_BUILDERS[
-            expected_head_sha == actual_heads[pr].sha
+            expected_head_sha == actual_head.sha
         ](
             pr=pr,
             expected_head_sha=expected_head_sha,
-            actual_head_sha=actual_heads[pr].sha,
+            actual_head_sha=actual_head.sha,
         )
     ]
 
@@ -1341,7 +1345,15 @@ def fetch_base(repo: pathlib.Path, origin: str, base: str) -> str:
 
 
 def fetch_pr_head(repo: pathlib.Path, origin: str, pr_number: int) -> PrHead:
-    git(repo, "fetch", "--quiet", origin, f"{PR_REF_PREFIX}{pr_number}/head")
+    missing_ref_message = "couldn't find remote ref"
+    try:
+        git(repo, "fetch", "--quiet", origin, f"{PR_REF_PREFIX}{pr_number}/head")
+    except PreflightError as exc:
+        if missing_ref_message not in str(exc):
+            raise
+        raise PreflightError(
+            f"PR #{pr_number} head ref was not found; ensure the PR exists and has a fetchable head"
+        ) from exc
     sha = git(repo, "rev-parse", FETCH_HEAD).stdout.strip()
     if SHA_RE.fullmatch(sha) is None:
         raise PreflightError(f"PR #{pr_number} did not resolve to a commit SHA")
@@ -1467,7 +1479,11 @@ def verifier_block(pr: int, result: VerifierResult, output_policy: OutputPolicy)
     }
 
 
-def gh_json(args: Sequence[str]) -> object:
+def gh_json(
+    args: Sequence[str],
+    *,
+    allowed_returncodes: Sequence[int] = (0,),
+) -> object:
     try:
         completed = subprocess.run(
             ["gh", *args],
@@ -1478,7 +1494,7 @@ def gh_json(args: Sequence[str]) -> object:
         )
     except FileNotFoundError as exc:
         raise PreflightError("gh executable not found") from exc
-    if completed.returncode not in {0, 8}:
+    if completed.returncode not in allowed_returncodes:
         raise PreflightError(f"gh {' '.join(args)} failed: {completed.stderr}{completed.stdout}")
     try:
         return json.loads(completed.stdout or "[]")
@@ -1552,7 +1568,8 @@ def pr_readiness(
             "--required",
             "--json",
             "name,state,bucket,workflow",
-        ]
+        ],
+        allowed_returncodes=GH_PR_CHECKS_JSON_RETURNCODES,
     )
     if not isinstance(checks, list):
         raise PreflightError(f"gh pr checks {pr_number} did not return a list")
@@ -1576,7 +1593,6 @@ def readiness_for_wave(
     *,
     use_gh: bool,
     base: str,
-    heads: dict[int, PrHead],
 ) -> tuple[list[dict[str, object]], list[str]]:
     if not use_gh:
         return [pr_readiness(pr, use_gh=False) for pr in pr_numbers], []
@@ -1589,7 +1605,6 @@ def readiness_for_wave(
                     pr,
                     use_gh=True,
                     expected_base=base,
-                    fetched_head=heads[pr].sha,
                 )
             )
         except PreflightError as exc:
@@ -1606,6 +1621,65 @@ def readiness_for_wave(
                 }
             )
     return readiness, metadata_warnings
+
+
+def readiness_with_fetched_heads(
+    readiness: Sequence[dict[str, object]],
+    *,
+    base: str,
+    heads: Mapping[int, PrHead],
+) -> list[dict[str, object]]:
+    updated: list[dict[str, object]] = []
+    for item in readiness:
+        pr = int(item["pr"])
+        head = heads.get(pr)
+        metadata = item.get("metadata")
+        if head is None or not isinstance(metadata, dict):
+            updated.append(item)
+            continue
+        checks = item.get("checks")
+        if not isinstance(checks, list):
+            updated.append(item)
+            continue
+        issues = readiness_issues(
+            metadata,
+            checks,
+            expected_base=base,
+            fetched_head=head.sha,
+        )
+        updated.append(
+            {
+                **item,
+                "warnings": [issue.message for issue in issues],
+                "warning_details": [issue.as_json() for issue in issues],
+            }
+        )
+    return updated
+
+
+def fetch_available_pr_heads(
+    *,
+    repo: pathlib.Path,
+    origin: str,
+    requested: Sequence[int],
+    blocked_numbers: set[int],
+) -> tuple[dict[int, PrHead], list[dict[str, object]]]:
+    heads: dict[int, PrHead] = {}
+    blocks: list[dict[str, object]] = []
+    for pr in requested:
+        if pr in blocked_numbers:
+            continue
+        try:
+            heads[pr] = fetch_pr_head(repo, origin, pr)
+        except PreflightError as exc:
+            blocks.append(
+                {
+                    "pr": pr,
+                    "reason": str(exc),
+                    "type": "head_unavailable",
+                }
+            )
+    return heads, blocks
 
 
 def metadata_unavailable_block(readiness: dict[str, object]) -> dict[str, object] | None:
@@ -1710,14 +1784,26 @@ def preflight(
     expected_heads = expected_head_map(expected_head_inputs, requested)
     actual_base_sha = fetch_base(repo, origin, base)
     base_sha = expected_base_sha
-    heads = {head.number: head for head in (fetch_pr_head(repo, origin, pr) for pr in requested)}
     readiness, metadata_warnings = readiness_for_wave(
         requested,
         use_gh=use_gh,
         base=base,
+    )
+    initial_readiness_blocks = readiness_blocks(readiness)
+    initial_blocked_numbers = {int(block["pr"]) for block in initial_readiness_blocks}
+    heads, head_fetch_blocks = fetch_available_pr_heads(
+        repo=repo,
+        origin=origin,
+        requested=requested,
+        blocked_numbers=initial_blocked_numbers,
+    )
+    readiness = readiness_with_fetched_heads(
+        readiness,
+        base=base,
         heads=heads,
     )
     blocked_prs = [
+        *head_fetch_blocks,
         *head_identity_blocks(expected_heads=expected_heads, actual_heads=heads),
         *readiness_blocks(readiness),
     ]

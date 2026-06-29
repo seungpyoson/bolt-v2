@@ -160,8 +160,8 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
 - `git config remote.<configured-remote>.prune true` owned here (NO DUAL PATHS).
 - `post-merge` also spawns Lane R detached.
 - `just clean-merged-doctor`: install state, hook-marker presence, config
-  validity, gh availability, last-run heartbeat freshness, quarantine disk
-  usage, backup-ref count.
+  validity, gh availability, gh cache health, last-run heartbeat freshness,
+  quarantine disk usage, backup-ref count, and rotated-log usage.
 
 ## Audit log (JSONL)
 

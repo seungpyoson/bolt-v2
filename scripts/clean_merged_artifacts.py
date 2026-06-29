@@ -61,9 +61,8 @@ LOCK_FILE = "clean-merged.lock"
 # Internal marker that _lane_w_eligible prefixes onto the reason for a refused
 # detached-HEAD worktree; run_lane_w strips it and maps it to the distinct
 # 'refused-detached-head' action. Single source of truth shared by the producer
-# and the consumer (round-soundness-fix review: a one-sided edit to a duplicated
-# literal would silently drop the label AND leak the marker into the
-# operator-facing reason).
+# and the consumer so a one-sided edit cannot silently drop the label or leak
+# the marker into the operator-facing reason.
 _REFUSED_DETACHED_SENTINEL = "__REFUSED_DETACHED_HEAD__:"
 
 
@@ -150,23 +149,19 @@ def _resolve_repo_root(start: pathlib.Path) -> pathlib.Path:
 def _main_worktree_root(repo_root: pathlib.Path) -> pathlib.Path:
     """Resolve the MAIN worktree root (where config/docs live), not a feature worktree.
 
-    Round-5 (GPT/Claude/Gemini/Kimi P1): the prior implementation assumed
-    `git rev-parse --git-common-dir` returns `<main>/.git`, then took `.parent`
-    to get `<main>`. That's wrong inside a SUBMODULE, where --git-common-dir
-    returns `<super>/.git/modules/<name>` (its parent is INSIDE the superproject
-    git dir, not a working tree).
+    Do not infer this from `git rev-parse --git-common-dir`. Inside a
+    submodule that returns `<super>/.git/modules/<name>`, whose parent is
+    inside the superproject git dir rather than a working tree.
 
     Hardened approach: parse `git worktree list --porcelain` and return the
     FIRST worktree's path. Idempotent and correct for normal repos, linked
     worktrees, and submodules-in-their-own-working-tree.
 
-    Limitation (round-5.5 Claude F-C1, documented): for a SUBMODULE, this
-    returns the submodule's main worktree (correct), but `load_config` then
-    looks for `config/clean-merged.toml` there. Most submodules don't have
-    one → ConfigError → safe no-op (main returns 0; hook's || true handles it).
-    The tool does NOT pick up the superproject's config and does NOT operate
-    on superproject refs from inside a submodule. Documented as a known limit;
-    full submodule support deferred behind an explicit future slice.
+    Submodule limitation: this returns the submodule's main worktree, but
+    `load_config` then looks for `config/clean-merged.toml` there. Most
+    submodules do not have one, so ConfigError becomes a safe no-op. The tool
+    does not pick up the superproject's config and does not operate on
+    superproject refs from inside a submodule.
     """
     try:
         out = subprocess.run(
@@ -531,8 +526,8 @@ def delete_branch_ref_cas(
     We do NOT use `git branch -d` because its merged-ness check is against HEAD
     or the branch's upstream — not the trunk we already verified ancestor-against.
     When Lane H runs from a hook while HEAD is on a feature branch (or behind
-    trunk), `branch -d` may refuse eligible branches (Claude/GPT round-4 P1-2).
-    The is_ancestor(<B>, <trunk>) check above already proved merged-ness; CAS
+    trunk), `branch -d` may refuse eligible branches. The
+    is_ancestor(<B>, <trunk>) check above already proved merged-ness; CAS
     deletes exactly that tip and refuses on SHA drift.
     """
     out = _git(repo_root, ["update-ref", "-d", f"refs/heads/{branch}", expected_sha],
@@ -554,9 +549,8 @@ def _resolve_path(repo_root: pathlib.Path, raw: str) -> pathlib.Path:
 def _acquire_lock(lock_path: pathlib.Path, exclusive: bool = True) -> int | None:
     """Acquire fcntl.flock on lock_path. Returns fd, or None if it would block.
 
-    Round-4 P2 (Claude): the exclusive case previously had no LOCK_NB, so it
-    blocked indefinitely (the "another instance holds the lock; aborting"
-    branch was dead code). Now non-blocking in both modes.
+    Non-blocking in both shared and exclusive modes so callers can preserve
+    the fail-open "another instance holds the lock; aborting" behavior.
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
@@ -667,16 +661,16 @@ def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any])
 
 
 def _atomic_write_text(path: pathlib.Path, text: str) -> None:
-    """Atomic write via tmp + os.replace (round-5 P1 by GPT/Kimi/Grok).
+    """Atomic write via tmp + os.replace.
 
     Plain pathlib.Path.write_text() truncates-then-writes; an interruption
     leaves the file empty or partial JSON. For manifests whose integrity gates
     purge decisions, that's a data-loss vector. Atomic rename guarantees the
     file is either the previous content or the new content, never partial.
 
-    Round-5.5 (Kimi/Grok P2): try/finally unlinks the tmp file if we crash
-    between write_text and os.replace, so orphan .tmp.<pid> files don't
-    accumulate across many crashes.
+    The try/finally unlinks the tmp file if we crash between write_text and
+    os.replace, so orphan .tmp.<pid> files don't accumulate across many
+    crashes.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
@@ -729,8 +723,7 @@ def _load_gh_cache(path: pathlib.Path) -> tuple[dict[str, Any] | None, str | Non
 
 
 def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> None:
-    """Atomic write via tmp + os.replace (round-4 P2 by Kimi/Grok/GPT) +
-    TTL-based eviction (round-5 P2 by GPT/Claude/Gemini/Kimi/Grok).
+    """Atomic write via tmp + os.replace plus TTL-based eviction.
 
     Concurrent detached Lane R processes RMW the cache; non-atomic
     path.write_text() can interleave/truncate. Atomic rename makes the worst
@@ -871,10 +864,10 @@ def gh_merged_pr_for_branch_cached(
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
     """Per-branch gh result with TTL cache (avoids re-querying on every hook fire).
 
-    Cache key is (branch, tip-sha[:12]) — round-4.5 self-review / Grok P2: keyed
-    by branch alone, a stale negative result (no merged PR for tip A) would
-    suppress cleanup for up to TTL after tip advances to a merged squash commit B.
-    Keying by (branch, tip) invalidates the entry automatically when the tip moves.
+    Cache key is (branch, tip-sha[:12]). Keying by branch alone lets a stale
+    negative result for tip A suppress cleanup after the branch advances to
+    merged squash commit B. Keying by (branch, tip) invalidates the entry
+    automatically when the tip moves.
 
     Stored under <git-common-dir>/clean-merged-gh-cache.json. Missing entries
     and exact-shape stale entries query gh. Corrupt cache state fails closed.
@@ -1359,8 +1352,8 @@ def run_lane_h(
                                 "action": "skipped-tip-moved",
                                 "reason": f"tip drifted {br.sha[:12]} -> {fresh_tip[:12]}"})
                 continue
-            # Re-verify worktree binding (round-4 P0): a worktree may have been
-            # bound to this branch between function entry and the CAS delete.
+            # Re-verify worktree binding: a worktree may have been bound to
+            # this branch between function entry and the CAS delete.
             fresh_bound = worktree_bound_branches(repo_root)
             if br.name in fresh_bound:
                 records.append({"lane": "H", "branch": br.name, "tip_sha": br.sha,
@@ -1524,10 +1517,8 @@ def _archive_worktree(
     if out.returncode != 0:
         return False, _safe_report_error(
             out.stderr, limit=config.logging.report_error_max_chars)
-    # integrity check (round-5.5: catch TimeoutExpired — a malformed/huge
-    # archive could hang tar, and uncaught it would propagate out of Lane W's
-    # per-iteration except as a crash here, or out of cmd_purge_quarantine
-    # entirely killing the rest of the sweep).
+    # Integrity check: a malformed or huge archive could hang tar. Keep that
+    # failure scoped to this archive instead of killing the rest of the sweep.
     try:
         verify = subprocess.run(["tar", "-tzf", str(archive_path)],
                                 capture_output=True, text=True,
@@ -1557,23 +1548,21 @@ def _lane_w_eligible(
 ) -> tuple[bool, str, dict[str, Any] | None]:
     """Verify Lane H/R eligibility from inside Lane W (ref still exists).
 
-    Soundness (GPT P0 / Kimi RECOVERY_HOLE, round-soundness): detached-HEAD
-    worktrees are REFUSED by default. Scenario defeated: operator makes an
+    Detached-HEAD worktrees are refused by default. If an operator makes an
     exploratory commit in a detached worktree, resets back to trunk, then runs
-    Lane W. The worktree's HEAD is now at trunk (ancestor-of-trunk → previously
-    eligible), but the reset-away commit lives only in the worktree's reflog.
-    Lane W's archive captures the post-reset working tree (NOT the orphaned
-    commit), `git worktree remove` deletes the worktree's reflog with the
-    admin entry, and the commit becomes unreachable — permanently lost after
-    gc. Default refuse; require explicit --allow-detached-removal to override
-    after accepting that reflog-only commits in detached worktrees will not be
+    Lane W, the worktree's HEAD is now eligible but the reset-away commit lives
+    only in the worktree's reflog. Lane W's archive captures the post-reset
+    working tree, not the orphaned commit; `git worktree remove` deletes the
+    worktree's reflog with the admin entry, and the commit becomes unreachable
+    after gc. Require explicit --allow-detached-removal to override after
+    accepting that reflog-only commits in detached worktrees will not be
     preserved by the archive.
     """
     if branch is None:
         if not allow_detached_removal:
-            # Round-soundness-fix review (Kimi P2 #1): distinct reason so Lane W
-            # can label this as 'refused-detached-head' in the audit log instead
-            # of burying it under the generic 'skipped-not-eligible' action.
+            # Distinct reason prefix so Lane W can label this as
+            # 'refused-detached-head' in the audit log instead of burying it
+            # under the generic 'skipped-not-eligible' action.
             return (False, _REFUSED_DETACHED_SENTINEL
                     + " detached-HEAD worktree refused "
                     "(use --allow-detached-removal to override; "
@@ -1608,10 +1597,10 @@ def run_lane_w(
     trunk_sha = effective_trunk_sha(repo_root, config, trunk_sha_override)
     if not trunk_sha:
         return records
-    # `cur` must reflect the INVOKER's branch, not repo_root's (round-5 Grok P1):
-    # if the operator runs Lane W from inside a feature worktree while repo_root
-    # resolves to the main worktree, the active-worktree skip would not protect
-    # the invoker's worktree.
+    # `cur` must reflect the invoker's branch, not repo_root's. If the operator
+    # runs Lane W from inside a feature worktree while repo_root resolves to the
+    # main worktree, the active-worktree skip would not protect the invoker's
+    # worktree.
     invoke_root = invoke_root or repo_root
     cur = current_branch(invoke_root)
     skip_branches = protected_branch_names(config, cur, keep)
@@ -1629,27 +1618,18 @@ def run_lane_w(
         return records
 
     try:
-        # Hoist loop invariants (round-5.5 polish: Claude P3-4, Kimi P3).
         main_root_resolved = main_root.resolve()
         invoke_root_resolved = invoke_root.resolve()
         for wt in worktrees:
             wt_path_resolved = wt.path.resolve()
             try:
                 # skip main checkout and currently active worktree
-                # round-5 Grok P1: also skip the invoker's worktree path
-                # explicitly (in case invoke_root's branch resolution missed it
-                # — e.g. detached HEAD in the invoker).
-                # round-5.5 Grok P2: use .resolve() consistently so macOS
-                # /tmp ↔ /private/tmp symlinks can't defeat the check.
-                # round-5.5 polish review (Claude P3-1, GPT P2, Kimi P2): restore
-                # the `wt.branch is not None` guard. Without it, when the invoker
-                # is detached (cur=None), every detached worktree (wt.branch=None)
-                # matches via None==None → True → silently skipped. Over-skipping
-                # (under-cleaning), not data loss, but a real correctness bug.
-                # The detached invoker itself is still protected by the
-                # invoke_root.resolve() path check below.
-                # round-5.5 polish review (Claude P3-4, Kimi P3): hoist .resolve()
-                # calls out of the loop — they're loop invariants.
+                # explicitly, in case branch resolution missed it (for example
+                # detached HEAD in the invoker). Resolve paths consistently so
+                # macOS /tmp ↔ /private/tmp symlinks cannot defeat the check.
+                # Keep the `wt.branch is not None` guard so a detached invoker
+                # does not make every detached worktree match via None == None;
+                # the detached invoker itself is protected by the path check.
                 if (wt_path_resolved == main_root_resolved
                         or (wt.branch is not None and wt.branch == cur)
                         or wt_path_resolved == invoke_root_resolved):
@@ -1657,12 +1637,10 @@ def run_lane_w(
                 if wt.branch in skip_branches:
                     continue
                 label = wt.branch or f"detached-{wt.head[:8]}"
-                # gemini-code-assist P2: if the worktree dir was manually deleted
-                # from disk (rm -rf without `git worktree remove`), git commands
-                # on the missing path would raise CalledProcessError. Check
-                # existence first so the operator gets a clean diagnostic and a
-                # hint to run `git worktree prune` to clean up the stale admin
-                # entry.
+                # If the worktree dir was manually deleted from disk, git
+                # commands on the missing path would raise CalledProcessError.
+                # Check existence first so the operator gets a clean diagnostic
+                # and a hint to run `git worktree prune`.
                 if not wt.path.is_dir():
                     records.append({"lane": "W", "branch": label, "tip_sha": wt.head,
                                     "worktree": str(wt.path), "action": "skipped-missing-dir",
@@ -1674,10 +1652,10 @@ def run_lane_w(
                     allow_detached_removal=allow_detached_removal,
                 )
                 if not eligible:
-                    # Round-soundness-fix review (Kimi P2 #1): map the
-                    # detached-refusal sentinel to a distinct action label so
-                    # doctor / audit-log queries can find these specifically
-                    # rather than digging through generic skipped-not-eligible.
+                    # Map the detached-refusal sentinel to a distinct action
+                    # label so doctor / audit-log queries can find these
+                    # specifically rather than digging through the generic
+                    # skipped-not-eligible action.
                     if reason.startswith(_REFUSED_DETACHED_SENTINEL):
                         action = "refused-detached-head"
                         reason = reason[len(_REFUSED_DETACHED_SENTINEL):].strip()
@@ -1719,7 +1697,7 @@ def run_lane_w(
                     # TOCTOU revalidate right before archive (still under our lock).
                     # Re-run hidden-bits + ignored too: another process could have
                     # set assume-unchanged/skip-worktree OR dropped an ignored file
-                    # in the window since the upfront guards (round-4 P1 by Grok).
+                    # in the window since the upfront guards.
                     clean2, clean_reason2 = is_worktree_clean(wt.path)
                     if not clean2:
                         records.append({"lane": "W", "branch": label, "tip_sha": wt.head,
@@ -1743,7 +1721,7 @@ def run_lane_w(
                     # prepare quarantine dir; archive + manifest live INSIDE it.
                     # Write a minimal manifest IMMEDIATELY so a crash between here
                     # and the final manifest update still leaves a recoverable
-                    # trail (round-4 P1 by GPT).
+                    # trail.
                     quarantine.mkdir(parents=True, exist_ok=True)
                     archive_path = quarantine / "worktree.tar.gz"
                     minimal_manifest = {
@@ -1768,10 +1746,9 @@ def run_lane_w(
                         write_audit(repo_root, config, rec)
                         continue
                     # remove the worktree (plain; refuses if dirty — final TOCTOU safety net)
-                    # Round-5 (Claude/Grok P2): audit the recovery_hint BEFORE the
-                    # remove call. Previously the worktree-removed-branch-pending
-                    # audit was written AFTER the flip, so a crash between remove
-                    # and flip left no recovery_hint pointing at the quarantine.
+                    # Audit the recovery_hint before the remove call. If a crash
+                    # happens between remove and manifest flip, the audit log
+                    # still points at the quarantine.
                     write_audit(repo_root, config, {
                         "lane": "W", "branch": label, "tip_sha": wt.head,
                         "worktree": str(wt.path), "quarantine_path": str(quarantine),
@@ -1795,26 +1772,21 @@ def run_lane_w(
                     # worktree_remove_ok RIGHT NOW (before branch-delete / final
                     # manifest write) so a crash between here and the end of the
                     # iteration leaves the quarantine entry purge-eligible.
-                    # (round-4.5 self-review: previously the minimal manifest
-                    # stayed worktree_remove_ok=False until the final write,
-                    # so a crash left the entry unpurgeable forever.)
                     minimal_manifest["worktree_remove_ok"] = True
                     minimal_manifest["worktree_removed_at"] = (
                         dt.datetime.now(dt.timezone.utc).isoformat())
                     _atomic_write_text(quarantine / "clean-merged.manifest.json",
                         json.dumps(minimal_manifest, indent=2, sort_keys=True))
-                    # Worktree gone. Re-read the branch tip now (round-4 P0 by Kimi/GPT):
-                    # a commit may have landed in the worktree between list_worktrees()
-                    # and now. If it moved, we must NOT delete with the stale SHA —
-                    # the new commit would be lost (the backup ref points to the old tip).
+                    # Worktree gone. Re-read the branch tip now; a commit may
+                    # have landed in the worktree between list_worktrees() and
+                    # now. If it moved, we must not delete with the stale SHA.
                     fresh_tip = wt.head
                     if wt.branch:
                         fresh_tip_out = _git(repo_root, ["rev-parse", wt.branch], check=False)
                         if fresh_tip_out.returncode == 0:
                             fresh_tip = fresh_tip_out.stdout.strip()
                     # Audit IMMEDIATELY so a crash between here and branch-delete
-                    # leaves a forensic trail. Include recovery_hint this time
-                    # (round-4 P1 by Kimi).
+                    # leaves a forensic trail with the recovery hint.
                     rec_worktree_removed = {
                         "lane": "W", "branch": label, "tip_sha": fresh_tip,
                         "worktree": str(wt.path), "quarantine_path": str(quarantine),
@@ -1888,7 +1860,7 @@ def run_lane_w(
                 records.append(rec)
                 try:
                     write_audit(repo_root, config, rec)
-                except Exception:
+                except (OSError, TypeError, ValueError):
                     pass
     finally:
         _release_lock(fd)
@@ -1913,7 +1885,7 @@ def cmd_purge_quarantine(
     grace = grace_days if grace_days is not None else config.lane_w.quarantine_grace_days
     cutoff = time.time() - grace * 86400
     # Acquire the same lock Lane W holds so a concurrent sweep can't race us
-    # mid-manifest-write (round-4 P1 by Kimi).
+    # mid-manifest-write.
     main_common = git_common_dir(repo_root)
     lock_path = main_common / LOCK_FILE
     fd = _acquire_lock(lock_path)
@@ -1939,16 +1911,10 @@ def cmd_purge_quarantine(
                 skipped += 1
                 continue
             if not manifest.get("worktree_remove_ok"):
-                # Round-4.5 self-review: a dir with manifest but
-                # worktree_remove_ok=False is a stuck half-state (archive-failed,
-                # remove-failed-after-archive, or a crash between worktree-remove
-                # and the manifest flip). Hold for grace, then purge as cruft.
-                #
-                # Round-5 (Grok P1): do NOT rmtree if worktree.tar.gz exists and
-                # verifies with tar -tzf — that archive is the only recovery
-                # surface for the (already-removed) worktree's tracked content
-                # when the branch ref has been deleted by a later sweep. Log it
-                # loudly and skip; operator must delete explicitly.
+                # A dir with manifest but worktree_remove_ok=False is a stuck
+                # half-state. Hold for grace, then purge as cruft unless an
+                # intact archive is present; that archive may be the only
+                # recovery surface for an already-removed worktree.
                 try:
                     mtime = child.stat().st_mtime
                 except OSError:
@@ -1957,15 +1923,10 @@ def cmd_purge_quarantine(
                 if mtime > cutoff:
                     continue
                 archive_file = child / "worktree.tar.gz"
-                # Round-5.5 polish (GPT P2 #4): if a prior run already verified
-                # this archive AND recorded verified_archive_at, skip the tar
-                # call entirely. The mtime-bump handles positive grace; this
-                # handles --purge-quarantine 0 too.
-                # Round-5.5 polish-2 (GPT P2, Claude P3-1): gate on
-                # archive_file.is_file() too — if the archive was deleted/
-                # corrupted externally, the flag alone must NOT pin an empty
-                # dir forever. Cheap stat; preserves the no-re-tar optimization
-                # for intact archives.
+                # If a prior run already verified this archive and recorded
+                # verified_archive_at, skip the tar call entirely. Also require
+                # the archive file to exist so the flag alone cannot pin an
+                # empty dir forever.
                 already_verified = (bool(manifest.get("verified_archive_at"))
                                     and archive_file.is_file())
                 if already_verified:
@@ -1984,12 +1945,9 @@ def cmd_purge_quarantine(
                                                 timeout=config.lane_w.archive_verify_timeout_s)
                         if verify.returncode == 0:
                             # Verified archive present — refuse to delete; surface.
-                            # Round-5.5 Claude F3: touch mtime on skip so we
-                            # don't re-spawn tar -tzf for this dir on every run.
-                            # Round-5.5 polish (GPT P2 #4): also persist a
-                            # verified_archive_at manifest field so --purge-quarantine 0
-                            # (where mtime-bump alone is insufficient because
-                            # cutoff=now) still skips re-verification.
+                            # Touch mtime and persist verified_archive_at so
+                            # future purge runs can skip re-verifying an intact
+                            # pinned archive.
                             try:
                                 os.utime(child, None)
                             except OSError:
@@ -2067,10 +2025,9 @@ def cmd_prune_backups(
     """Prune backup refs older than `days`.
 
     Backup ref names embed the creation timestamp: refs/clean-merged/<branch>-<sha>-<unix_ts>.
-    Round-4 P1 (Claude/GPT): pruning by %(committerdate:unix) used the ORIGINAL
-    commit's date, not the backup's creation time — so a backup created today
-    for a year-old commit was immediately prune-eligible (effective recovery
-    window ~0s). We now parse the embedded creation timestamp from the ref name.
+    Parse that embedded creation timestamp rather than the target commit date,
+    so a backup created today for an old commit still gets the full recovery
+    window.
     """
     out = _git(repo_root, ["for-each-ref", "--format=%(refname)", "refs/clean-merged/"])
     cutoff = time.time() - days * 86400
@@ -2103,23 +2060,13 @@ def cmd_prune_backups(
 def _is_disabled(env_value: str | None) -> bool:
     """Shared kill-switch truthiness so bash hooks and Python agree.
 
-    Round-4 (Claude P1-5) flagged the original split-brain: bash used
-    `[ -n ... ]` (any non-empty disables), Python used `== "1"` only — so
-    CLEAN_MERGED_DISABLED=0 silenced hooks but enabled manual runs. Round-4's
-    fix updated Python only; round-4.5 self-review caught that bash was still
-    on `[ -n ]`, leaving the parity claim false. Bash hooks now use a `case`
-    block matching this exact rule.
-
     Shared rule: empty/0/false/no/off (case-insensitive) = enabled;
     anything else = disabled.
 
-    Round-5.5 (Kimi/Claude/Grok/GPT P2): documented contract is ASCII
-    whitespace only. Python's `.strip()` would also strip Unicode whitespace
-    (NBSP, em space, etc.); bash's `[[:space:]]` is locale-dependent and in
-    a C/POSIX locale matches ASCII only. The realistic env-var values never
-    contain Unicode whitespace; we deliberately accept the residual split
-    for the rare NBSP-padded value rather than complicate the bash helper.
-    Operators should set CLEAN_MERGED_DISABLED to a bare ASCII value.
+    The documented contract is ASCII whitespace only. Python's `.strip()`
+    would also strip Unicode whitespace while bash's `[[:space:]]` is
+    locale-dependent and usually ASCII-only. Operators should set
+    CLEAN_MERGED_DISABLED to a bare ASCII value.
     """
     if env_value is None:
         return False
@@ -2143,7 +2090,7 @@ def _redirect_output_to(path: pathlib.Path, max_bytes: int, rotated_retention_da
 
 
 def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
-    """Doctor path that runs even when config parse failed (round-4 P1-6).
+    """Doctor path that runs even when config parse failed.
 
     main() catches ConfigError before the doctor dispatch and returned 0 — so
     the one failure doctor most needs to report was unsurfaced. This helper
@@ -2229,7 +2176,7 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
         print("  core.hooksPath           = (unset; hooks would live in .git/hooks)")
         problems.append("core.hooksPath unset; clean-merged hooks not active")
 
-    # remote.<remote>.prune (round-4 P2: was hardcoded to origin)
+    # remote.<remote>.prune must follow the configured remote name.
     prune_key = f"remote.{config.remote_name}.prune"
     prune = _git(repo_root, ["config", "--get", prune_key], check=False)
     print(f"  {prune_key:25s} = {prune.stdout.strip() or '(unset)'}")
@@ -2270,19 +2217,13 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     else:
         print("  heartbeat                = (none yet)")
 
-    # quarantine disk usage (round-4 P2: doctor reported count, not bytes;
-    # round-5.5 Claude F2: also surface pinned verified-archive cruft dirs that
-    # are intentionally never auto-purged — operator needs visibility to clean
-    # them up manually when they're no longer wanted.
-    # round-5.5 polish (Kimi P2/P3, Claude P3-7): pinned state is intentional
-    # safety behavior, not a malfunction — report as info, NOT a problem.
-    # round-5.5 polish-2 (GPT P2 #2, Claude P3-2): predicate on actual archive
-    # PRESENCE (worktree.tar.gz exists), not on the internal verified_archive_at
-    # field. Old pinned dirs created before that field existed are still visible,
-    # and a flag-only check would mis-report a dir whose archive was deleted
-    # externally. Doctor does NOT re-run tar -tzf (expensive on every doctor
-    # invocation); "pinned" here means "stuck dir with an archive file present,"
-    # not "archive verified intact."
+    # Quarantine disk usage and pinned verified-archive cruft visibility.
+    # Pinned state is intentional safety behavior, not a malfunction, so report
+    # it as info rather than a problem. Predicate on archive presence instead
+    # of an internal manifest flag so old pinned dirs and externally deleted
+    # archives are reported accurately. Doctor does not re-run tar -tzf; here
+    # "pinned" means "stuck dir with an archive file present," not "archive
+    # verified intact."
     q = _resolve_path(repo_root, config.lane_w.quarantine_dir)
     if q.is_dir():
         entries = [c for c in q.iterdir() if c.is_dir()]
@@ -2477,29 +2418,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    # Resolve to the MAIN worktree root, not the current worktree's root.
-    # (round-4.5 self-review / Kimi P1: if the operator runs Lane W from inside
-    # a worktree that Lane W removes, the cwd-based repo_root becomes invalid
-    # mid-sweep and subsequent _git calls raise FileNotFoundError. Pin to the
-    # main worktree root, which is never removed.)
+    # Resolve to the main worktree root, not the current worktree's root. If
+    # the operator runs Lane W from inside a worktree that Lane W removes, a
+    # cwd-based repo_root becomes invalid mid-sweep. Keep the invoker root too
+    # so Lane W can protect "the worktree I'm standing in" even when repo_root
+    # is the main worktree.
     #
-    # round-5 Grok P1: keep the INVOKER's root too so Lane W's active-worktree
-    # skip can detect "the worktree I'm standing in" — without this, `cur` would
-    # be the MAIN worktree's branch, and a Lane W run from inside a feature
-    # worktree would happily archive that very worktree.
-    #
-    # gemini-code-assist P2: _resolve_repo_root and (transitively) load_config
-    # can raise CleanMergedError (the parent of ConfigError). Catching only
-    # ConfigError left a crash path if invoked outside a git repo or if the
-    # git common dir couldn't be resolved. Catch the parent for graceful exit.
+    # _resolve_repo_root and load_config can raise CleanMergedError; catch the
+    # parent type so non-git dirs and bad common-dir resolution fail open.
     try:
         invoke_root = _resolve_repo_root(pathlib.Path.cwd())
         repo_root = _main_worktree_root(invoke_root)
         config = load_config(repo_root)
     except CleanMergedError as exc:
         # Don't crash the hook chain on config or git-resolution errors.
-        # Round-4 P1-6: BUT if the operator explicitly asked for --doctor,
-        # surface the diagnostic and exit non-zero.
+        # If the operator explicitly asked for diagnostics, surface the
+        # problem and exit non-zero.
         if not args.quiet:
             print(f"[{SCRIPT_NAME}] error: {exc}", file=sys.stderr)
         if args.print_remote_name:

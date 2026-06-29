@@ -11,11 +11,9 @@
 #
 # Never breaks the git op: every path exits 0; crashes/missing-deps no-op silently.
 
-# Shared kill-switch truthiness (round-4.5 self-review: round-4 fix updated Python
-# but left bash on `[ -n ]`, so CLEAN_MERGED_DISABLED=0 disabled hooks but enabled
-# Python. Bash now matches Python: empty/0/false/no/off = enabled; else disabled.
-# Round-5 P2: trim leading/trailing whitespace before the case so values like
-# "0 " or " false" (common in dotenv/heredoc) match Python's .strip().lower().)
+# Shared kill-switch truthiness: empty/0/false/no/off = enabled; anything else
+# disables. Trim leading/trailing whitespace before the case so values like
+# "0 " or " false" match Python's .strip().lower().
 _cm_disabled() {
     local v="${CLEAN_MERGED_DISABLED:-}"
     # trim leading whitespace

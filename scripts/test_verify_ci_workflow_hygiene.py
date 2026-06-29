@@ -54,138 +54,6 @@ EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'scripts/command_understanding.py'",
 )
 
-CI_PROVENANCE_TOML = """
-[ci_provenance]
-schema_version = 1
-artifact_name_template = "ci-provenance-attempt-{run_attempt}"
-workflow_key = "ci"
-workflow_name = "CI"
-workflow_path = ".github/workflows/ci.yml"
-fingerprint_source = "meter"
-
-[ci_provenance.full_ci]
-required_jobs = [
-  "detector",
-  "deny",
-  "clippy",
-  "check-aarch64",
-  "source-fence",
-  "nextest-fingerprint",
-  "test-archive",
-  "test",
-]
-conditional_jobs = ["build"]
-conditional_job_outputs = { build = "detector.build_required" }
-
-[ci_provenance.full_ci.jobs.detector]
-check_name = "detector"
-
-[ci_provenance.full_ci.jobs.deny]
-check_name = "deny"
-
-[ci_provenance.full_ci.jobs.clippy]
-check_name = "clippy"
-
-[ci_provenance.full_ci.jobs.check-aarch64]
-check_name = "check-aarch64"
-
-[ci_provenance.full_ci.jobs.source-fence]
-check_name = "source-fence"
-
-[ci_provenance.full_ci.jobs.nextest-fingerprint]
-check_name = "nextest fingerprint"
-
-[ci_provenance.full_ci.jobs.test-archive]
-check_name = "nextest archive"
-
-[ci_provenance.full_ci.jobs.test]
-check_name = "test"
-
-[ci_provenance.full_ci.jobs.build]
-check_name = "build"
-conditional = "detector.build_required"
-
-[ci_provenance.deploy]
-artifact_name = "bolt-v2-binary"
-require_source_event = "push"
-require_source_branch = "main"
-require_gate_check = true
-
-[ci_provenance.dispatch]
-workflow_input = "full_ci"
-run_name_default = "CI"
-run_name_full = "CI [dispatch:full]"
-run_name_iteration = "CI [dispatch:iteration]"
-proof_gate_job = "gate"
-
-[ci_provenance.gate_names]
-gate_required = "gate"
-gate_iteration = "gate-iteration"
-gate_dispatch_full = "gate-dispatch"
-backtester_required = "backtester-gate"
-backtester_iteration = "backtester-gate-iteration"
-backtester_dispatch_full = "backtester-gate-dispatch"
-
-[ci_provenance.docs]
-safe_paths = [
-  "AGENTS.md",
-  "CLAUDE.md",
-  "GEMINI.md",
-  "REASONIX.md",
-  "LICENSE",
-  "SECURITY.md",
-  ".github/ISSUE_TEMPLATE/**",
-  ".claude/**",
-  ".codex/**",
-  ".gemini/**",
-  ".opencode/**",
-  ".pi/**",
-  ".specify/**",
-]
-forbidden_ignored_build_paths = [
-  ".claude/rust-verification.toml",
-]
-non_heavy_required_jobs = ["detector"]
-
-[ci_provenance.api_limits]
-workflow_runs_per_page = 100
-run_jobs_per_page = 100
-run_artifacts_per_page = 100
-max_lookback_pages = 10
-max_lookback_age_seconds = 2592000
-
-[ci_provenance.artifacts]
-retention_days = 30
-
-[ci_provenance.policy]
-draft_pr_synchronize = "iteration"
-draft_pr_opened = "iteration"
-draft_pr_reopened = "iteration"
-draft_pr_edited = "iteration"
-converted_to_draft = "iteration"
-ready_pr = "iteration"
-ready_pr_edited_no_base = "iteration"
-ready_pr_reopened = "iteration"
-ready_for_review = "iteration"
-docs = "docs"
-workflow_dispatch = "iteration"
-workflow_dispatch_full_ci = "full"
-main_push = "full"
-merge_group = "full"
-mergify_temp_pr = "full"
-tag = "tag_reuse"
-unknown_event = "full"
-
-[ci_provenance.mergify]
-temp_pr_head_ref_prefix = "mergify/merge-queue/"
-mergify_temp_pr_actor_id = 37929162
-
-[ci_provenance.policy.override]
-force_full_ci = false
-ignore_emit_failure = false
-"""
-
-
 def load_verifier(
     path: pathlib.Path = VERIFIER_PATH, module_name: str = "verify_ci_workflow_hygiene"
 ):
@@ -636,6 +504,7 @@ jobs:
             --runner-arch "${{ runner.arch }}" \
             --output-path .nextest-archive-fingerprint/cache-key.txt
       - name: Upload nextest archive fingerprint
+        id: upload-nextest-fingerprint
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}
@@ -671,6 +540,16 @@ jobs:
     needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.result == 'success' && needs.nextest-fingerprint.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
+    outputs:
+      nextest_archive_cache_key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+      root_bin_sidecars_cache_key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+      archive_build_target_cache_key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
+      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}
+      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}
+      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}
+      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}
+      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}
+      archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
@@ -681,6 +560,15 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+      - name: Resolve root nextest cache keys
+        id: root-nextest-cache-keys
+        shell: bash
+        run: |
+          {
+            echo "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+            echo "root_bin_sidecars_cache_key=root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+            echo "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}"
+          } >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@example
         with:
           cache-on-failure: true
@@ -693,20 +581,20 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
       - name: Restore root binary sidecars
         id: root-bin-sidecars-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
-          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
       - name: Restore archive build target cache
         id: test-target-cache
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-
       - name: Install cargo-nextest
@@ -723,11 +611,12 @@ jobs:
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
           just test-archive "$NEXTEST_ARCHIVE_PATH"
       - name: Save nextest archive
+        id: nextest-archive-cache-save
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
       - name: Extract root binary sidecars
         if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
         run: |
@@ -753,17 +642,19 @@ jobs:
             --target-dir "$target_dir" \
             --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
       - name: Save root binary sidecars
+        id: root-bin-sidecars-cache-save
         if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
-          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
       - name: Save archive build target cache
+        id: test-target-cache-save
         if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
       - name: Run nextest archive partitions
         shell: bash
         run: |
@@ -783,6 +674,40 @@ jobs:
             echo "::endgroup::"
           done
           exit "$status"
+
+  cache-persistence-audit:
+    name: cache persistence audit
+    needs: [ci-policy, nextest-fingerprint-reuse, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@example
+      - name: Probe saved cache keys
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/ci_storage_audit.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --github-event-name "$GITHUB_EVENT_NAME" \
+            --github-ref "$GITHUB_REF" \
+            --github-base-ref "$GITHUB_BASE_REF" \
+            --github-default-branch "${{ github.event.repository.default_branch }}" \
+            --github-step-summary "$GITHUB_STEP_SUMMARY" \
+            --github-annotations \
+            --restore-hit "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_hit }}" \
+            --restore-hit "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}" \
+            --restore-hit "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_hit }}" \
+            --save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}" \
+            --save-outcome "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}" \
+            --save-outcome "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}" \
+            --cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}" \
+            --cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}" \
+            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"
 
   test:
     name: test
@@ -866,13 +791,14 @@ jobs:
           )
           echo "stage_dir=$stage_dir" >> "$GITHUB_OUTPUT"
       - name: Upload artifact
+        id: upload-bolt-v2-binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bolt-v2-binary
           path: |
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
-          retention-days: 3
+          retention-days: 30
 
   ci-provenance-emit:
     name: ci-provenance-emit
@@ -930,6 +856,7 @@ jobs:
             --conditional-job build.result=${{ needs.build.result }} \
             --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
       - name: Upload CI provenance
+        id: upload-ci-provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-provenance-attempt-${{ github.run_attempt }}
@@ -1526,6 +1453,32 @@ def write_rust_verification_policy_fixtures(root: pathlib.Path) -> None:
     bvs_policy.write_text(BASE_BVS_RUST_VERIFICATION_POLICY, encoding="utf-8")
 
 
+def write_runner_config_fixture(root: pathlib.Path) -> None:
+    runner_config = root / "ci" / "github-actions-runners.toml"
+    runner_config.parent.mkdir(parents=True, exist_ok=True)
+    runner_config.write_text((REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(), encoding="utf-8")
+    capture_config = root / "ci" / "chainlink-reference-fixture-capture-provenance.toml"
+    capture_config.write_text(
+        (REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml").read_text(),
+        encoding="utf-8",
+    )
+    actionlint = root / ".github" / "actionlint.yaml"
+    actionlint.parent.mkdir(parents=True, exist_ok=True)
+    actionlint.write_text((REPO_ROOT / ".github" / "actionlint.yaml").read_text(), encoding="utf-8")
+
+
+def write_temp_runner_config(root: pathlib.Path, config_text: str) -> pathlib.Path:
+    ci_dir = root / "ci"
+    ci_dir.mkdir(parents=True, exist_ok=True)
+    config_path = ci_dir / "github-actions-runners.toml"
+    config_path.write_text(config_text, encoding="utf-8")
+    (ci_dir / "chainlink-reference-fixture-capture-provenance.toml").write_text(
+        (REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml").read_text(),
+        encoding="utf-8",
+    )
+    return config_path
+
+
 def assert_clean(
     workflow: str = BASE_WORKFLOW,
     action: str = BASE_ACTION,
@@ -1572,6 +1525,34 @@ def assert_workflows_error(
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
 
 
+def artifact_retention_policy_errors(
+    workflows: dict[str, str] | None = None,
+    composite_actions: dict[str, str] | None = None,
+    verifier=None,
+) -> list[str]:
+    if verifier is None:
+        verifier = load_verifier()
+    if workflows is None:
+        workflows = {
+            ".github/workflows/ci.yml": BASE_WORKFLOW,
+            ".github/workflows/backtester-ci.yml": repo_workflow_text(".github/workflows/backtester-ci.yml"),
+        }
+    if composite_actions is None:
+        composite_actions = {}
+    return verifier.verify_artifact_retention_policy(workflows, composite_actions)
+
+
+def assert_artifact_retention_error(
+    fragment: str,
+    workflows: dict[str, str] | None = None,
+    composite_actions: dict[str, str] | None = None,
+    verifier=None,
+) -> None:
+    errors = artifact_retention_policy_errors(workflows, composite_actions, verifier)
+    if not any(fragment in error for error in errors):
+        raise AssertionError(f"expected artifact retention error containing {fragment!r}, got: {errors}")
+
+
 def without_job(workflow: str, job: str) -> str:
     lines = workflow.splitlines()
     start = next(i for i, line in enumerate(lines) if line == f"  {job}:")
@@ -1587,6 +1568,14 @@ def replace_once(text: str, old: str, new: str) -> str:
     if old not in text:
         raise AssertionError(f"fixture fragment not found: {old!r}")
     return text.replace(old, new, 1)
+
+
+def base_upload_artifact_action_line() -> str:
+    return next(
+        line.strip()
+        for line in BASE_WORKFLOW.splitlines()
+        if "uses: actions/upload-artifact@" in line
+    )
 
 
 def replace_once_after(text: str, anchor: str, old: str, new: str) -> str:
@@ -1627,16 +1616,14 @@ def strip_ci_provenance_config(config_text: str) -> str:
 
 
 def ci_provenance_config_fixture() -> str:
-    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text()
-    return strip_ci_provenance_config(config_text) + "\n" + CI_PROVENANCE_TOML
+    return (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text()
 
 
 def runner_config_load_error(config_text: str, verifier=None) -> str:
     if verifier is None:
         verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
-        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
-        config_path.write_text(config_text, encoding="utf-8")
+        config_path = write_temp_runner_config(pathlib.Path(tmp), config_text)
         try:
             verifier.load_github_actions_runners_config(config_path)
         except Exception as exc:  # noqa: BLE001 - loader raises domain errors.
@@ -2703,6 +2690,34 @@ def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
 
+def assert_ci_workflow_dispatch_config_errors_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    config_text = ci_provenance_config_fixture()
+    invalid_config = replace_once(
+        config_text,
+        "\n[ci_provenance.dispatch]\n",
+        "\n[ci_provenance.dispatch_disabled]\n",
+    )
+    expected = "github-actions runner config invalid: ci_provenance.dispatch must be a table"
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        verifier.DEFAULT_RUNNERS_CONFIG = write_temp_runner_config(pathlib.Path(tmp), invalid_config)
+        try:
+            dispatch_input, input_errors = verifier.configured_ci_provenance_dispatch_input()
+            dispatch_names, name_errors = verifier.configured_ci_provenance_dispatch_names()
+            workflow_errors = verifier.verify_workflow(workflow)
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+
+    if dispatch_input is not None or not any(expected in error for error in input_errors):
+        raise AssertionError(f"dispatch input helper must fail closed on invalid config, got: {input_errors}")
+    if dispatch_names is not None or not any(expected in error for error in name_errors):
+        raise AssertionError(f"dispatch name helper must fail closed on invalid config, got: {name_errors}")
+    if not any(expected in error for error in workflow_errors):
+        raise AssertionError(f"workflow verification must report invalid dispatch config, got: {workflow_errors}")
+
+
 def assert_test_archive_sccache_fail_open_contract() -> None:
     # #1011: the S3 sccache compile cache must never be able to fail the required
     # test-archive build. Lock the fail-open invariants so a future edit can't
@@ -3007,31 +3022,9 @@ def assert_capture_artifact_metadata_is_config_derived() -> None:
         '            --config "$CAPTURE_PROVENANCE_CONFIG" \\\n'
         '            --run-attempt "${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"\n'
     )
-    output_name = "          name: ${{ steps.provenance.outputs.artifact_name }}"
-    output_retention = "          retention-days: ${{ steps.provenance.outputs.retention_days }}"
     assert_error(
         "capture must derive artifact metadata from ci_provenance.py artifact-metadata",
         workflow.replace(metadata_command, "") if metadata_command in workflow else workflow,
-    )
-    assert_error(
-        "capture upload artifact name must come from provenance config",
-        replace_once(
-            workflow,
-            output_name,
-            "          name: chainlink-reference-fixture-capture-attempt-${{ github.run_attempt }}",
-        )
-        if output_name in workflow
-        else workflow,
-    )
-    assert_error(
-        "capture upload retention-days must come from provenance config",
-        replace_once(
-            workflow,
-            output_retention,
-            "          retention-days: 30",
-        )
-        if output_retention in workflow
-        else workflow,
     )
 
 
@@ -4336,6 +4329,285 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
 
+def assert_cache_persistence_audit_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "test-archive must expose cache persistence audit outputs",
+            replace_once(
+                workflow,
+                "      nextest_archive_cache_key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}\n",
+                "",
+            ),
+        ),
+        (
+            "test-archive archive build target cache hit output must be explicit when restore is skipped",
+            replace_once(
+                workflow,
+                "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}\n",
+                "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}\n",
+            ),
+        ),
+        (
+            "test-archive must expose cache persistence save outcomes",
+            replace_once(
+                workflow,
+                "      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}\n",
+                "",
+            ),
+        ),
+        (
+            "test-archive cache save steps must have stable ids for persistence evidence",
+            replace_once(
+                workflow,
+                "        id: nextest-archive-cache-save\n",
+                "        id: nextest-archive-save\n",
+            ),
+        ),
+        (
+            "test-archive cache restore steps must have stable ids for persistence evidence",
+            replace_once(
+                workflow,
+                "        id: nextest-archive-cache\n",
+                "        id: nextest-archive-restore\n",
+            ),
+        ),
+        (
+            "test-archive cache persistence keys must come from single-source cache key outputs",
+            replace_once(
+                workflow,
+                "      - name: Restore nextest archive\n",
+                """      - name: Emit cache persistence audit keys
+        id: cache-audit-keys
+        shell: bash
+        run: |
+          echo "nextest_archive_cache_key=duplicated-template" >> "$GITHUB_OUTPUT"
+
+      - name: Restore nextest archive
+""",
+            ),
+        ),
+        (
+            "test-archive must resolve root nextest cache keys",
+            replace_once(workflow, "        id: root-nextest-cache-keys\n", "        id: cache-keys\n"),
+        ),
+        (
+            "test-archive cache persistence keys must come from single-source cache key outputs",
+            replace_once(
+                workflow,
+                "root_bin_sidecars_cache_key=root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}",
+                "root_bin_sidecars_cache_key=root-bin-sidecars-bad-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}",
+            ),
+        ),
+        (
+            "test-archive cache persistence keys must come from single-source cache key outputs",
+            replace_once_after(
+                workflow,
+                "      - name: Resolve root nextest cache keys\n",
+                "'src/**', 'tests/**') }}",
+                "'src/**', 'tests/**', 'extra/**') }}",
+            ),
+        ),
+        (
+            "cache-persistence-audit job is required",
+            replace_once(workflow, "  cache-persistence-audit:\n", "  cache-persistence-audit-disabled:\n"),
+        ),
+        (
+            "cache-persistence-audit needs test-archive",
+            replace_once(
+                workflow,
+                "    needs: [ci-policy, nextest-fingerprint-reuse, test-archive]",
+                "    needs: [ci-policy, nextest-fingerprint-reuse]",
+            ),
+        ),
+        (
+            "cache-persistence-audit permissions must include actions: read",
+            replace_once(
+                workflow,
+                "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    permissions:\n      contents: read\n      actions: read\n",
+                "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    permissions:\n      contents: read\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit permissions must include actions: read",
+            replace_once(
+                replace_once(
+                    workflow,
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    permissions:\n      contents: read\n      actions: read\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    permissions:\n      contents: read\n",
+                ),
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          echo \"actions: read\" >/dev/null\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must use the workflow token for cache API reads",
+            replace_once(
+                replace_once(
+                    workflow,
+                    "          GH_TOKEN: ${{ github.token }}\n",
+                    "",
+                ),
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          echo 'GH_TOKEN: ${{ github.token }}' >/dev/null\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must run ci_storage_audit exact-key probes",
+            replace_once(workflow, "          python3 scripts/ci_storage_audit.py \\\n", "          python3 scripts/ci_storage_audit_probe.py \\\n"),
+        ),
+        (
+            "cache-persistence-audit must run ci_storage_audit exact-key probes",
+            replace_once(workflow, "          python3 scripts/ci_storage_audit.py \\\n", "          python3 scripts/ci_storage_audit.py.bak \\\n"),
+        ),
+        (
+            "cache-persistence-audit probe must be non-blocking",
+            replace_once(
+                workflow,
+                "      - name: Probe saved cache keys\n        continue-on-error: true\n",
+                "      - name: Probe saved cache keys\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit probe must be non-blocking",
+            replace_once(
+                workflow,
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n\n      - name: Probe saved cache keys\n        continue-on-error: true\n",
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n        continue-on-error: true\n\n      - name: Probe saved cache keys\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit probe must be non-blocking",
+            replace_once(
+                replace_once(
+                    workflow,
+                    "      - name: Probe saved cache keys\n        continue-on-error: true\n",
+                    "      - name: Probe saved cache keys\n",
+                ),
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          echo 'continue-on-error: true' >/dev/null\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must not add extra run steps",
+            replace_once(
+                workflow,
+                "      - name: Probe saved cache keys\n",
+                "      - name: Accidental blocking step\n        run: exit 1\n\n      - name: Probe saved cache keys\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must not add extra steps",
+            replace_once(
+                workflow,
+                "      - name: Probe saved cache keys\n",
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n\n      - name: Probe saved cache keys\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must delegate audit policy to ci_storage_audit",
+            replace_once(
+                workflow,
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          echo preparing cache audit\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must not suppress audit contract failures",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" || true\n',
+            ),
+        ),
+        (
+            "cache-persistence-audit must not suppress audit contract failures",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" || echo suppressed\n',
+            ),
+        ),
+        (
+            "cache-persistence-audit must not suppress audit contract failures",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"; true\n',
+            ),
+        ),
+        (
+            "cache-persistence-audit must not suppress audit contract failures",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" | cat\n',
+            ),
+        ),
+        (
+            "cache-persistence-audit must delegate audit policy to ci_storage_audit",
+            replace_once(
+                workflow,
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          grep -q ': missing;' \"$audit_log\"\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must delegate audit policy to ci_storage_audit",
+            replace_once(
+                workflow,
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          set +e\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must probe all root nextest cache keys",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                "",
+            ),
+        ),
+        (
+            "cache-persistence-audit must limit exact-key probes to restorable cache refs",
+            replace_once(
+                workflow,
+                '            --github-ref "$GITHUB_REF" \\\n',
+                "",
+            ),
+        ),
+        (
+            "cache-persistence-audit must write probe results to the job summary",
+            replace_once(workflow, '            --github-step-summary "$GITHUB_STEP_SUMMARY" \\\n', ""),
+        ),
+        (
+            "cache-persistence-audit must emit audit annotations from ci_storage_audit",
+            replace_once(workflow, "            --github-annotations \\\n", ""),
+        ),
+        (
+            "cache-persistence-audit must summarize cache restore hits",
+            replace_once(
+                workflow,
+                '            --restore-hit "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_hit }}" \\\n',
+                "",
+            ),
+        ),
+        (
+            "cache-persistence-audit must summarize cache save outcomes",
+            replace_once(
+                workflow,
+                '            --save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}" \\\n',
+                "",
+            ),
+        ),
+    ]
+    for expected, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(expected in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {expected!r}, got: {errors}")
+
+
 def assert_gate_policy_truth_table_gaps_are_reported() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
@@ -5093,10 +5365,12 @@ def assert_runner_contract_rejects_unmapped_workflow_jobs() -> None:
 def assert_runner_contract_accepts_flaky_detection_workflow_mapping() -> None:
     verifier = load_verifier()
     workflow_name = ".github/workflows/flaky-test-detection.yml"
+    smoke_workflow_name = ".github/workflows/flaky-test-detection-smoke.yml"
     workflow = """name: Flaky Test Detection
 
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * 1-5'
 
 jobs:
   flaky-detection-rust-root:
@@ -5114,13 +5388,42 @@ jobs:
     steps:
       - run: echo issue-789
 """
-    errors = verifier.verify_github_actions_runner_contract({workflow_name: workflow})
+    smoke_workflow = """name: Flaky Test Detection Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  flaky-detection-rust-root-smoke:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo root
+
+  flaky-detection-rust-backtester-smoke:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo backtester
+
+  flaky-detection-rust-backtester-issue-789-smoke:
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - run: echo issue-789
+"""
+    errors = verifier.verify_github_actions_runner_contract(
+        {
+            workflow_name: workflow,
+            smoke_workflow_name: smoke_workflow,
+        }
+    )
     if errors:
         raise AssertionError(f"flaky detection workflow runner contract must be mapped, got: {errors}")
 
 
 def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
-    workflow = repo_workflow_text(".github/workflows/flaky-test-detection.yml")
+    workflows = (
+        (".github/workflows/flaky-test-detection.yml", 2),
+        (".github/workflows/flaky-test-detection-smoke.yml", 2),
+    )
     pinned_v14_action = "uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14"
     expected_job_names = (
         "job_name: nextest archive",
@@ -5132,42 +5435,353 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
         "MERGIFY_TEST_JOB_NAME: bvs-test archive",
         "MERGIFY_TEST_JOB_NAME: bvs-test issue-789",
     )
-    if workflow.count(pinned_v14_action) != 3:
-        raise AssertionError("flaky-test-detection.yml must pin all Mergify uploads to the v14 action SHA")
-    if "flaky_test_detection:" in workflow:
-        raise AssertionError("flaky-test-detection.yml must not pass unsupported Mergify inputs")
-    if "MERGIFY_JOB_NAME:" in workflow:
-        raise AssertionError("flaky-test-detection.yml must pass job names through the Mergify job_name input")
-    for job_name in expected_job_names:
-        if job_name not in workflow:
-            raise AssertionError(f"flaky-test-detection.yml missing Mergify upload {job_name!r}")
-    for job_env in expected_cli_job_env:
-        if job_env not in workflow:
-            raise AssertionError(f"flaky-test-detection.yml missing current Mergify CLI env {job_env!r}")
-    if workflow.count("MERGIFY_TEST_EXIT_CODE=%s") != 3:
-        raise AssertionError("flaky-test-detection.yml must pass test runner exit codes to Mergify")
-    if workflow.count("python3 scripts/ci_input_sets.py hash backtester_cache") != 2:
-        raise AssertionError("flaky-test-detection.yml BVS jobs must use the shared backtester cache digest")
-    if "managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles(" in workflow:
-        raise AssertionError("flaky-test-detection.yml BVS target cache keys must not use inline hashFiles")
-    if workflow.count("managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}") != 2:
-        raise AssertionError("flaky-test-detection.yml BVS target cache keys must use the shared digest")
-    if "managed-target-bvs-v1-" in workflow or "flaky-root-test-" in workflow:
-        raise AssertionError("flaky-test-detection.yml must restore from production cache namespaces")
+    for workflow_path, expected_bvs_count in workflows:
+        workflow = repo_workflow_text(workflow_path)
+        if workflow.count(pinned_v14_action) != 3:
+            raise AssertionError(f"{workflow_path} must pin all Mergify uploads to the v14 action SHA")
+        if "flaky_test_detection:" in workflow:
+            raise AssertionError(f"{workflow_path} must not pass unsupported Mergify inputs")
+        if "MERGIFY_JOB_NAME:" in workflow:
+            raise AssertionError(f"{workflow_path} must pass job names through the Mergify job_name input")
+        for job_name in expected_job_names:
+            if job_name not in workflow:
+                raise AssertionError(f"{workflow_path} missing Mergify upload {job_name!r}")
+        for job_env in expected_cli_job_env:
+            if job_env not in workflow:
+                raise AssertionError(f"{workflow_path} missing current Mergify CLI env {job_env!r}")
+        if workflow.count("MERGIFY_TEST_EXIT_CODE=%s") != 3:
+            raise AssertionError(f"{workflow_path} must pass test runner exit codes to Mergify")
+        if workflow.count("python3 scripts/ci_input_sets.py hash backtester_cache") != expected_bvs_count:
+            raise AssertionError(f"{workflow_path} BVS jobs must use the shared backtester cache digest")
+        if "managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles(" in workflow:
+            raise AssertionError(f"{workflow_path} BVS target cache keys must not use inline hashFiles")
+        if workflow.count("managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}") != expected_bvs_count:
+            raise AssertionError(f"{workflow_path} BVS target cache keys must use the shared digest")
+        if "managed-target-bvs-v1-" in workflow or "flaky-root-test-" in workflow:
+            raise AssertionError(f"{workflow_path} must restore from production cache namespaces")
+
+
+def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
+    full_workflow = repo_workflow_text(".github/workflows/flaky-test-detection.yml")
+    smoke_workflow = repo_workflow_text(".github/workflows/flaky-test-detection-smoke.yml")
+    if "workflow_dispatch:" in full_workflow:
+        raise AssertionError("flaky-test-detection.yml must remain schedule-only")
+    if "schedule:" in smoke_workflow:
+        raise AssertionError("flaky-test-detection-smoke.yml must remain manual-only")
+    for workflow_path, workflow in (
+        (".github/workflows/flaky-test-detection.yml", full_workflow),
+        (".github/workflows/flaky-test-detection-smoke.yml", smoke_workflow),
+    ):
+        forbidden_fragments = (
+            "mode:",
+            "inputs.mode",
+            "github.event_name",
+            "fromJSON(",
+            "if: ${{ github.event_name",
+            "${{ steps.setup.outputs.managed_target_dir }}/nextest/default/junit-unit-",
+            "${{ steps.crate_target.outputs.dir }}/nextest/default/junit-unit-",
+        )
+        for fragment in forbidden_fragments:
+            if fragment in workflow:
+                raise AssertionError(f"{workflow_path} must not contain {fragment!r}")
+    smoke_fragments = (
+        "workflow_dispatch:",
+        "flaky-detection-rust-root-smoke:",
+        "flaky-detection-rust-backtester-smoke:",
+        "flaky-detection-rust-backtester-issue-789-smoke:",
+        "run_number: [1]",
+        "shard: [1]",
+    )
+    for fragment in smoke_fragments:
+        if fragment not in smoke_workflow:
+            raise AssertionError(f"flaky-test-detection-smoke.yml missing {fragment!r}")
+
+
+def assert_flaky_detection_workflow_split_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    full_workflow_name = ".github/workflows/flaky-test-detection.yml"
+    smoke_workflow_name = ".github/workflows/flaky-test-detection-smoke.yml"
+    good_full_workflow = """name: Flaky Test Detection
+
+on:
+  schedule:
+    - cron: '0 */12 * * 1-5'
+
+jobs:
+  flaky-detection-rust-root:
+    strategy:
+      matrix:
+        run_number: [1, 2, 3, 4, 5]
+    steps:
+      - name: Run tests
+        run: |
+          rc=0
+          set +e
+          just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast
+          rc=$?
+          set -e
+          printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+
+      - name: Stage JUnit report
+        run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+
+      - name: Upload test results to Mergify
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14
+        env:
+          MERGIFY_TEST_JOB_NAME: nextest archive
+        with:
+          job_name: nextest archive
+          report_path: "junit-*.xml"
+
+  flaky-detection-rust-backtester:
+    strategy:
+      matrix:
+        run_number: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Run tests
+        run: |
+          rc=0
+          set +e
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          rc=$?
+          set -e
+          printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+
+      - name: Stage JUnit report
+        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+
+      - name: Upload test results to Mergify
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14
+        env:
+          MERGIFY_TEST_JOB_NAME: bvs-test archive
+        with:
+          job_name: bvs-test archive
+          report_path: "junit-*.xml"
+
+  flaky-detection-rust-backtester-issue-789:
+    strategy:
+      matrix:
+        run_number: [1, 2, 3, 4, 5]
+    steps:
+      - name: Run tests
+        run: |
+          rc=0
+          set +e
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl
+          rc=$?
+          set -e
+          printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+
+      - name: Stage JUnit report
+        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+
+      - name: Upload test results to Mergify
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14
+        env:
+          MERGIFY_TEST_JOB_NAME: bvs-test issue-789
+        with:
+          job_name: bvs-test issue-789
+          report_path: "junit-*.xml"
+"""
+    good_smoke_workflow = """name: Flaky Test Detection Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  flaky-detection-rust-root-smoke:
+    strategy:
+      matrix:
+        run_number: [1]
+    steps:
+      - name: Run tests
+        run: |
+          rc=0
+          set +e
+          just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast
+          rc=$?
+          set -e
+          printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+
+      - name: Stage JUnit report
+        run: cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+
+      - name: Upload test results to Mergify
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14
+        env:
+          MERGIFY_TEST_JOB_NAME: nextest archive
+        with:
+          job_name: nextest archive
+          report_path: "junit-*.xml"
+
+  flaky-detection-rust-backtester-smoke:
+    strategy:
+      matrix:
+        run_number: [1]
+        shard: [1]
+    steps:
+      - name: Run tests
+        run: |
+          rc=0
+          set +e
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          rc=$?
+          set -e
+          printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+
+      - name: Stage JUnit report
+        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+
+      - name: Upload test results to Mergify
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14
+        env:
+          MERGIFY_TEST_JOB_NAME: bvs-test archive
+        with:
+          job_name: bvs-test archive
+          report_path: "junit-*.xml"
+
+  flaky-detection-rust-backtester-issue-789-smoke:
+    strategy:
+      matrix:
+        run_number: [1]
+    steps:
+      - name: Run tests
+        run: |
+          rc=0
+          set +e
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl
+          rc=$?
+          set -e
+          printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' "$rc" >> "$GITHUB_ENV"
+
+      - name: Stage JUnit report
+        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"
+
+      - name: Upload test results to Mergify
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14
+        env:
+          MERGIFY_TEST_JOB_NAME: bvs-test issue-789
+        with:
+          job_name: bvs-test issue-789
+          report_path: "junit-*.xml"
+"""
+    good_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: good_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    flaky_errors = [error for error in good_errors if "flaky-test-detection" in error]
+    if flaky_errors:
+        raise AssertionError(f"flaky detection workflow verifier must accept split workflows, got: {flaky_errors}")
+
+    oversized_smoke_workflow = good_smoke_workflow.replace(
+        "run_number: [1]",
+        "run_number: [1, 2, 3, 4, 5]",
+    ).replace("shard: [1]", "shard: [1, 2, 3, 4]")
+    oversized_smoke_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: good_full_workflow,
+            smoke_workflow_name: oversized_smoke_workflow,
+        }
+    )
+    if not any("root smoke job" in error and "run_number: [1]" in error for error in oversized_smoke_errors):
+        raise AssertionError(
+            f"flaky detection verifier must reject multi-run smoke root jobs, got: {oversized_smoke_errors}"
+        )
+    if not any("backtester smoke job" in error and "shard: [1]" in error for error in oversized_smoke_errors):
+        raise AssertionError(
+            f"flaky detection verifier must reject multi-shard smoke BVS jobs, got: {oversized_smoke_errors}"
+        )
+
+    missing_smoke_workflow = good_smoke_workflow.replace("  flaky-detection-rust-backtester-smoke:\n", "  removed-backtester-smoke:\n")
+    missing_smoke_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: good_full_workflow,
+            smoke_workflow_name: missing_smoke_workflow,
+        }
+    )
+    if not any("backtester smoke job" in error for error in missing_smoke_errors):
+        raise AssertionError(f"flaky detection verifier must reject missing BVS smoke job, got: {missing_smoke_errors}")
+
+    missing_workflow_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: good_full_workflow,
+        }
+    )
+    expected_missing_workflow_errors = [
+        f"{smoke_workflow_name}: flaky-test-detection required workflow is missing",
+    ]
+    assert missing_workflow_errors == expected_missing_workflow_errors, (
+        f"flaky detection verifier must report missing workflow files, got: {missing_workflow_errors}"
+    )
+
+    drift_cases = (
+        (
+            "workflow triggers must be ['workflow_dispatch']",
+            good_full_workflow,
+            good_smoke_workflow.replace("on:\n  workflow_dispatch:\n", "on:\n  workflow_dispatch:\n  push:\n", 1),
+        ),
+        (
+            "root smoke job missing 'if: success() || failure()'",
+            good_full_workflow,
+            good_smoke_workflow.replace("        if: success() || failure()\n", "", 1),
+        ),
+        (
+            "root smoke job missing 'set +e'",
+            good_full_workflow,
+            good_smoke_workflow.replace("          set +e\n", "", 1),
+        ),
+    )
+    for expected, full_workflow, smoke_workflow in drift_cases:
+        drift_errors = verifier.verify_flaky_test_detection_workflows(
+            {
+                full_workflow_name: full_workflow,
+                smoke_workflow_name: smoke_workflow,
+            }
+        )
+        if not any(expected in error for error in drift_errors):
+            raise AssertionError(f"flaky detection verifier must reject {expected!r}, got: {drift_errors}")
+
+    managed_target_workflow = good_full_workflow.replace(
+        'cp "target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        'cp "${{ steps.setup.outputs.managed_target_dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        1,
+    ).replace(
+        'cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        'cp "${{ steps.crate_target.outputs.dir }}/nextest/default/junit-unit-${{ matrix.run_number }}.xml"',
+        1,
+    )
+    managed_target_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: managed_target_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("root JUnit staging" in error for error in managed_target_errors):
+        raise AssertionError(f"flaky detection verifier must reject root managed-target staging, got: {managed_target_errors}")
+    if not any("backtester JUnit staging" in error for error in managed_target_errors):
+        raise AssertionError(f"flaky detection verifier must reject BVS managed-target staging, got: {managed_target_errors}")
 
 
 def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> None:
     verifier = load_verifier()
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
     with tempfile.TemporaryDirectory() as tmp:
-        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
         config_text = original_config.read_text()
-        config_path.write_text(
+        config_path = write_temp_runner_config(
+            pathlib.Path(tmp),
             config_text.replace(
                 '  "backtester_ci",\n',
                 "",
             ),
-            encoding="utf-8",
         )
         verifier.DEFAULT_RUNNERS_CONFIG = config_path
         try:
@@ -5184,9 +5798,9 @@ def assert_runner_contract_requires_meter_api_limits() -> None:
     verifier = load_verifier()
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
     with tempfile.TemporaryDirectory() as tmp:
-        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
         config_text = original_config.read_text()
-        config_path.write_text(
+        config_path = write_temp_runner_config(
+            pathlib.Path(tmp),
             config_text.replace(
                 """
 [meter.api_limits]
@@ -5198,7 +5812,6 @@ draft_timeline_items = 100
 """,
                 "",
             ),
-            encoding="utf-8",
         )
         verifier.DEFAULT_RUNNERS_CONFIG = config_path
         try:
@@ -5209,6 +5822,15 @@ draft_timeline_items = 100
             verifier.DEFAULT_RUNNERS_CONFIG = original_config
     if not any("meter.api_limits" in error for error in errors):
         raise AssertionError(f"runner contract must reject missing meter api limits, got: {errors}")
+
+    bool_config = original_config.read_text().replace(
+        "workflow_runs_per_page = 100",
+        "workflow_runs_per_page = true",
+        1,
+    )
+    error = runner_config_load_error(bool_config, verifier=verifier)
+    if "meter.api_limits.workflow_runs_per_page must be a positive integer" not in error:
+        raise AssertionError(f"runner contract must reject boolean meter api limit, got: {error!r}")
 
 
 def assert_runner_contract_requires_fingerprint_archive_tier_coupling() -> None:
@@ -5232,15 +5854,14 @@ def assert_runner_contract_requires_fingerprint_archive_tier_coupling() -> None:
     )
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
     with tempfile.TemporaryDirectory() as tmp:
-        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
         config_text = original_config.read_text()
-        config_path.write_text(
+        config_path = write_temp_runner_config(
+            pathlib.Path(tmp),
             replace_once(
                 config_text,
                 'nextest-fingerprint = "managed_heavy"',
                 'nextest-fingerprint = "managed_light"',
             ),
-            encoding="utf-8",
         )
         verifier.DEFAULT_RUNNERS_CONFIG = config_path
         try:
@@ -5788,6 +6409,20 @@ ci-lint-workflow-inner: require-local-verification-gate
     ):
         raise AssertionError(
             f"ci storage audit test wiring drift was silent, got: {missing_storage_audit_test_errors}"
+        )
+
+    duplicate_storage_audit_test = justfile_text.replace(
+        "    python3 scripts/test_ci_storage_audit.py\n",
+        "    python3 scripts/test_ci_storage_audit.py\n"
+        "    python3 scripts/test_ci_storage_audit.py\n",
+    )
+    duplicate_storage_audit_test_errors = verifier.verify_local_verification_gate_recipes(duplicate_storage_audit_test)
+    if not any(
+        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_audit.py exactly once" in error
+        for error in duplicate_storage_audit_test_errors
+    ):
+        raise AssertionError(
+            f"duplicate ci storage audit test wiring was silent, got: {duplicate_storage_audit_test_errors}"
         )
 
     missing_sidecar_test = justfile_text.replace("    python3 scripts/test_root_bin_sidecars.py\n", "")
@@ -8332,6 +8967,16 @@ def write_base_workflows(workflow_dir: pathlib.Path) -> None:
     (workflow_dir / "dispatch-ci-cancel.yml").write_text(BASE_DISPATCH_CI_CANCEL_WORKFLOW)
     (workflow_dir / "merge-readiness-finalizer.yml").write_text(BASE_MERGE_READINESS_FINALIZER_WORKFLOW)
     (workflow_dir / "coverage-enforcer.yml").write_text(BASE_COVERAGE_ENFORCER_WORKFLOW)
+    (workflow_dir / "flaky-test-detection.yml").write_text(repo_workflow_text(".github/workflows/flaky-test-detection.yml"))
+    (workflow_dir / "flaky-test-detection-smoke.yml").write_text(
+        repo_workflow_text(".github/workflows/flaky-test-detection-smoke.yml")
+    )
+
+
+def write_repo_workflows(workflow_dir: pathlib.Path) -> None:
+    workflow_dir.mkdir(parents=True)
+    for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.y*ml")):
+        (workflow_dir / path.name).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def run_verifier_main_with_no_mistakes(
@@ -8346,7 +8991,7 @@ def run_verifier_main_with_no_mistakes(
         verifier_path.write_text(VERIFIER_PATH.read_text())
 
         workflow_dir = tmp_path / ".github" / "workflows"
-        write_base_workflows(workflow_dir)
+        write_repo_workflows(workflow_dir)
         write_test_harness_fixture(
             tmp_path,
             manifest=base_test_harness_manifest(),
@@ -8366,6 +9011,7 @@ def run_verifier_main_with_no_mistakes(
         if write_mergify_config:
             (tmp_path / ".mergify.yml").write_text((REPO_ROOT / ".mergify.yml").read_text())
         write_rust_verification_policy_fixtures(tmp_path)
+        write_runner_config_fixture(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
@@ -8376,7 +9022,10 @@ def run_verifier_main_with_no_mistakes(
         return result, stdout.getvalue() + stderr.getvalue()
 
 
-def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, str]:
+def run_verifier_main_with_extra_action(
+    extra_action_text: str,
+    action_file_name: str = "action.yml",
+) -> tuple[int, str]:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
@@ -8384,7 +9033,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         verifier_path.write_text(VERIFIER_PATH.read_text())
 
         workflow_dir = tmp_path / ".github" / "workflows"
-        write_base_workflows(workflow_dir)
+        write_repo_workflows(workflow_dir)
         write_test_harness_fixture(
             tmp_path,
             manifest=base_test_harness_manifest(),
@@ -8396,7 +9045,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         action_path.parent.mkdir(parents=True)
         action_path.write_text(BASE_ACTION)
 
-        extra_action_path = tmp_path / ".github" / "actions" / "evade" / "action.yml"
+        extra_action_path = tmp_path / ".github" / "actions" / "evade" / action_file_name
         extra_action_path.parent.mkdir(parents=True)
         extra_action_path.write_text(extra_action_text)
 
@@ -8404,6 +9053,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         nextest_path.parent.mkdir(parents=True)
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
         write_rust_verification_policy_fixtures(tmp_path)
+        write_runner_config_fixture(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_action_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
@@ -8422,7 +9072,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         verifier_path.write_text(VERIFIER_PATH.read_text())
 
         workflow_dir = tmp_path / ".github" / "workflows"
-        write_base_workflows(workflow_dir)
+        write_repo_workflows(workflow_dir)
         (workflow_dir / workflow_name).write_text(workflow_text)
         write_test_harness_fixture(
             tmp_path,
@@ -8439,6 +9089,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         nextest_path.parent.mkdir(parents=True)
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
         write_rust_verification_policy_fixtures(tmp_path)
+        write_runner_config_fixture(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_workflow_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
@@ -8574,6 +9225,486 @@ jobs:
     expected_s3 = ".github/workflows/release.yml: S3 active mutable target cache must be rejected"
     if result == 0 or expected_raw_cargo not in output or expected_s3 not in output:
         raise AssertionError(f"additional workflow drift was silent: exit={result}, output={output!r}")
+
+
+def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
+    upload_artifact_action = base_upload_artifact_action_line()
+    verifier = load_verifier()
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        verifier.DEFAULT_RUNNERS_CONFIG = pathlib.Path(tmp) / "missing-github-actions-runners.toml"
+        try:
+            missing_config_errors = verifier.verify_artifact_retention_policy(
+                {".github/workflows/ci.yml": BASE_WORKFLOW},
+                {},
+            )
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    expected_missing_config = "managed runner config missing"
+    if not any(expected_missing_config in error for error in missing_config_errors):
+        raise AssertionError(
+            "artifact retention policy must fail closed without runner config, "
+            f"got: {missing_config_errors}"
+        )
+    assert_artifact_retention_error(
+        "artifact retention policy upload .github/workflows/backtester-ci.yml::issue_789::"
+        "upload-issue-789-first-pl source .github/workflows/backtester-ci.yml is missing from scanned sources",
+        workflows={".github/workflows/ci.yml": BASE_WORKFLOW},
+    )
+
+    unexpected_upload = BASE_WORKFLOW.replace(
+        "      - name: Detect build-affecting changes\n",
+        f"""      - name: Upload unexpected artifact
+        id: upload-unexpected-artifact
+        {upload_artifact_action}
+        with:
+          name: unexpected-artifact
+          path: unexpected.txt
+          retention-days: 1
+
+      - name: Detect build-affecting changes
+""",
+    )
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml::detector::upload-unexpected-artifact missing from artifact retention policy",
+        {".github/workflows/ci.yml": unexpected_upload},
+    )
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml nextest-fingerprint upload-nextest-fingerprint artifact ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }} must set retention-days",
+        {
+            ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
+                "          retention-days: 30\n",
+                "",
+                1,
+            )
+        },
+    )
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary retention-days 31 does not match configured retention-days 30",
+        {
+            ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 31",
+                1,
+            )
+        },
+    )
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary must set exactly one retention-days",
+        {
+            ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30\n          retention-days: 31",
+                1,
+            )
+        },
+    )
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml build upload-artifact step must set id for artifact retention policy",
+        {
+            ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
+                "        id: upload-bolt-v2-binary\n",
+                "",
+                1,
+            )
+        },
+    )
+    assert_artifact_retention_error(
+        "artifact retention policy upload .github/workflows/ci.yml::build::upload-bolt-v2-binary has no matching upload-artifact step",
+        {
+            ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
+                "        id: upload-bolt-v2-binary\n",
+                "        id: upload-renamed-binary\n",
+                1,
+            )
+        },
+    )
+    duplicate_binary_upload = BASE_WORKFLOW.replace(
+        "      - name: Upload artifact\n        id: upload-bolt-v2-binary\n",
+        f"""      - name: Duplicate binary upload id
+        id: upload-bolt-v2-binary
+        {upload_artifact_action}
+        with:
+          name: duplicate-binary
+          path: duplicate.txt
+          retention-days: 1
+
+      - name: Upload artifact
+        id: upload-bolt-v2-binary
+""",
+        1,
+    )
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml build upload-artifact step id upload-bolt-v2-binary is duplicated",
+        {".github/workflows/ci.yml": duplicate_binary_upload},
+    )
+    verifier = load_verifier()
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    lowered_transient_config = config_text.replace(
+        "[artifact_retention.classes.transient]\nmax_retention_days = 7",
+        "[artifact_retention.classes.transient]\nmax_retention_days = 5",
+        1,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        ci_dir = tmp_path / "ci"
+        ci_dir.mkdir(parents=True, exist_ok=True)
+        config_path = ci_dir / "github-actions-runners.toml"
+        config_path.write_text(lowered_transient_config, encoding="utf-8")
+        (ci_dir / "chainlink-reference-fixture-capture-provenance.toml").write_text(
+            (REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        verifier.DEFAULT_RUNNERS_CONFIG = config_path
+        try:
+            ceiling_errors = verifier.verify_artifact_retention_policy(
+                {
+                    ".github/workflows/backtester-ci.yml": repo_workflow_text(
+                        ".github/workflows/backtester-ci.yml"
+                    ),
+                },
+                {},
+            )
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    expected_ceiling = (
+        ".github/workflows/backtester-ci.yml issue_789 upload-issue-789-first-pl artifact "
+        "issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }} retention-days 7 "
+        "exceeds configured max 5"
+    )
+    if not any(expected_ceiling in error for error in ceiling_errors):
+        raise AssertionError(f"expected class ceiling exceedance error, got: {ceiling_errors}")
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml capture upload-capture-artifact artifact ${{ steps.provenance.outputs.artifact_name }} "
+        "retention-days must be a positive integer",
+        {
+            ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml").replace(
+                "          name: ${{ steps.provenance.outputs.artifact_name }}\n          path: ${{ env.CAPTURE_OUTPUT_DIR }}\n          if-no-files-found: error\n          retention-days: 30",
+                "          name: ${{ steps.provenance.outputs.artifact_name }}\n          path: ${{ env.CAPTURE_OUTPUT_DIR }}\n          if-no-files-found: error\n          retention-days: ${{ github.event.inputs.retention_days }}",
+                1,
+            ),
+            ".github/workflows/backtester-ci.yml": repo_workflow_text(".github/workflows/backtester-ci.yml"),
+        },
+    )
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml capture upload-capture-artifact artifact chainlink-reference-fixture-capture-attempt-${{ github.run_attempt }} "
+        "does not match configured name ${{ steps.provenance.outputs.artifact_name }}",
+        {
+            ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml").replace(
+                "          name: ${{ steps.provenance.outputs.artifact_name }}\n",
+                "          name: chainlink-reference-fixture-capture-attempt-${{ github.run_attempt }}\n",
+                1,
+            ),
+            ".github/workflows/backtester-ci.yml": repo_workflow_text(".github/workflows/backtester-ci.yml"),
+        },
+    )
+
+    extra_action = f"""
+name: Uploading composite
+runs:
+  using: composite
+  steps:
+    - name: Upload from composite
+      id: upload-composite-artifact
+      {upload_artifact_action}
+      with:
+        name: composite-artifact
+        path: composite.txt
+        retention-days: 1
+"""
+    result, output = run_verifier_main_with_extra_action(textwrap.dedent(extra_action))
+    expected = (
+        ".github/actions/evade/action.yml::__composite__::upload-composite-artifact "
+        "missing from artifact retention policy"
+    )
+    if result == 0 or expected not in output:
+        raise AssertionError(f"composite upload-artifact drift was silent: exit={result}, output={output!r}")
+    yaml_result, yaml_output = run_verifier_main_with_extra_action(
+        textwrap.dedent(extra_action),
+        "action.yaml",
+    )
+    yaml_expected = (
+        ".github/actions/evade/action.yaml::__composite__::upload-composite-artifact "
+        "missing from artifact retention policy"
+    )
+    if yaml_result == 0 or yaml_expected not in yaml_output:
+        raise AssertionError(
+            f"composite action.yaml upload-artifact drift was silent: exit={yaml_result}, output={yaml_output!r}"
+        )
+    nested_result, nested_output = run_verifier_main_with_extra_action(
+        textwrap.dedent(extra_action),
+        "nested/action.yml",
+    )
+    nested_expected = (
+        ".github/actions/evade/nested/action.yml::__composite__::upload-composite-artifact "
+        "missing from artifact retention policy"
+    )
+    if nested_result == 0 or nested_expected not in nested_output:
+        raise AssertionError(
+            f"nested composite upload-artifact drift was silent: exit={nested_result}, output={nested_output!r}"
+        )
+
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    noncanonical_config = config_text.replace(
+        '[artifact_retention.uploads.".github/workflows/ci.yml::build::upload-bolt-v2-binary"]',
+        '[artifact_retention.uploads."ci.yml::build::upload-bolt-v2-binary"]',
+        1,
+    )
+    error = runner_config_load_error(noncanonical_config, verifier=verifier)
+    if "artifact_retention.uploads source must use canonical repo path" not in error:
+        raise AssertionError(f"non-canonical retention source must fail config load, got: {error!r}")
+    nested_workflow_config = config_text.replace(
+        '[artifact_retention.uploads.".github/workflows/ci.yml::build::upload-bolt-v2-binary"]',
+        '[artifact_retention.uploads.".github/workflows/archive/ci.yml::build::upload-bolt-v2-binary"]',
+        1,
+    )
+    error = runner_config_load_error(nested_workflow_config, verifier=verifier)
+    if "artifact_retention.uploads source must use canonical repo path" not in error:
+        raise AssertionError(f"nested workflow retention source must fail config load, got: {error!r}")
+
+
+def assert_artifact_retention_config_ref_retention_is_exact() -> None:
+    verifier = load_verifier()
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    capture_config_text = (
+        REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml"
+    ).read_text(encoding="utf-8")
+    over_ceiling_capture_config = capture_config_text.replace(
+        "retention_days = 30",
+        "retention_days = 365",
+        1,
+    )
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        ci_dir = tmp_path / "ci"
+        ci_dir.mkdir()
+        runner_config = ci_dir / "github-actions-runners.toml"
+        runner_config.write_text(config_text, encoding="utf-8")
+        (ci_dir / "chainlink-reference-fixture-capture-provenance.toml").write_text(
+            over_ceiling_capture_config,
+            encoding="utf-8",
+        )
+        verifier.DEFAULT_RUNNERS_CONFIG = runner_config
+        try:
+            errors = verifier.verify_artifact_retention_policy(
+                {
+                    ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml"),
+                    ".github/workflows/backtester-ci.yml": repo_workflow_text(".github/workflows/backtester-ci.yml"),
+                },
+                {},
+            )
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    expected = (
+        ".github/workflows/ci.yml capture upload-capture-artifact artifact "
+        "${{ steps.provenance.outputs.artifact_name }} retention-days 30 "
+        "does not match configured retention-days 365"
+    )
+    if not any(expected in error for error in errors):
+        raise AssertionError(f"config-ref retention must be checked exactly, got: {errors}")
+
+
+def assert_ci_provenance_upload_name_comes_from_config_template() -> None:
+    verifier = load_verifier()
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    configured_config = (
+        config_text.replace(
+            'artifact_name_template = "ci-provenance-attempt-{run_attempt}"',
+            'artifact_name_template = "proof-bundle-{run_attempt}"',
+            1,
+        )
+    )
+    configured_workflow = BASE_WORKFLOW.replace(
+        "          name: ci-provenance-attempt-${{ github.run_attempt }}",
+        "          name: proof-bundle-${{ github.run_attempt }}",
+        1,
+    )
+    emit_lines = verifier.parse_jobs(configured_workflow)["ci-provenance-emit"]
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = write_temp_runner_config(pathlib.Path(tmp), configured_config)
+        verifier.DEFAULT_RUNNERS_CONFIG = config_path
+        try:
+            errors = verifier.ci_provenance_emit_upload_errors(emit_lines)
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    if errors:
+        raise AssertionError(f"ci provenance upload name must come from config template, got: {errors}")
+
+
+def assert_artifact_retention_config_refs_are_validated() -> None:
+    verifier = load_verifier()
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    capture_config_text = (
+        REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml"
+    ).read_text(encoding="utf-8")
+    binding_coverage_error = "artifact_retention.lookback_bindings must exactly cover config-ref retention uploads"
+    build_lookback_binding = """[artifact_retention.lookback_bindings.build_deploy]
+upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
+config_file = "ci/github-actions-runners.toml"
+retention_ref = "ci_provenance.artifacts.retention_days"
+lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
+
+"""
+    cases = {
+        "artifact_retention.classes.reuse-bound.max_retention_days must be a positive integer": config_text.replace(
+            "max_retention_days = 30",
+            "max_retention_days = true",
+            1,
+        ),
+        "artifact_retention.classes.reuse-bound has unexpected keys: ['allowed_refs']": config_text.replace(
+            "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30",
+            '[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30\nallowed_refs = ["refs/heads/main"]',
+            1,
+        ),
+        "ci_provenance.artifacts.retention_days must be a positive integer": config_text.replace(
+            "retention_days = 30",
+            "retention_days = true",
+            1,
+        ),
+        "ci_provenance.api_limits.max_lookback_age_seconds must not exceed artifact retention": config_text.replace(
+            "max_lookback_age_seconds = 2592000",
+            "max_lookback_age_seconds = 2592001",
+            1,
+        ),
+        "artifact_retention.classes.reuse-bound.max_retention_days_config_ref references missing TOML key": config_text.replace(
+            "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30",
+            '[artifact_retention.classes.reuse-bound]\nmax_retention_days_config_file = "ci/github-actions-runners.toml"\nmax_retention_days_config_ref = "ci_provenance.artifacts.missing"',
+            1,
+        ),
+        "artifact_retention.classes.reuse-bound must define exactly one max retention source": config_text.replace(
+            "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30",
+            '[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30\nmax_retention_days_config_file = "ci/github-actions-runners.toml"\nmax_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+            1,
+        ),
+        "artifact_retention.classes has unused classes: ['unused']": config_text.replace(
+            "[artifact_retention.classes.reuse-bound]\n",
+            "[artifact_retention.classes.unused]\nmax_retention_days = 1\n\n[artifact_retention.classes.reuse-bound]\n",
+            1,
+        ),
+        "artifact_name_template_vars_config_ref references missing TOML key": config_text.replace(
+            'artifact_name_template_vars_config_ref = "ci_provenance.artifact_name_template_vars"',
+            'artifact_name_template_vars_config_ref = "ci_provenance.missing_artifact_name_template_vars"',
+        ),
+        "ci_provenance.artifact_name_template missing template vars": config_text.replace(
+            "run_attempt = \"${{ github.run_attempt }}\"",
+            "run_number = \"${{ github.run_number }}\"",
+        ),
+        "ci_provenance.artifact_name_template has unused template vars": config_text.replace(
+            "run_attempt = \"${{ github.run_attempt }}\"",
+            "run_attempt = \"${{ github.run_attempt }}\"\nrun_number = \"${{ github.run_number }}\"",
+        ),
+        "ci_provenance.artifact_name_template_vars values must be non-empty strings": config_text.replace(
+            "run_attempt = \"${{ github.run_attempt }}\"",
+            "run_attempt = true",
+        ),
+        "has partial artifact name source; missing ['artifact_name_config_file']": config_text.replace(
+            'artifact_name_config_file = "ci/github-actions-runners.toml"\n'
+            'artifact_name_config_ref = "ci_provenance.deploy.artifact_name"',
+            'artifact_name_config_ref = "ci_provenance.deploy.artifact_name"',
+            1,
+        ),
+        "has partial artifact name source; missing ['artifact_name_template_config_file']": config_text.replace(
+            'artifact_name_template_config_file = "ci/github-actions-runners.toml"\n'
+            'artifact_name_template_config_ref = "ci_provenance.artifact_name_template"',
+            'artifact_name_template_config_ref = "ci_provenance.artifact_name_template"',
+            1,
+        ),
+        "must define exactly one artifact name source": config_text.replace(
+            'artifact_name_template_config_ref = "ci_provenance.artifact_name_template"',
+            'artifact_name = "ci-provenance-attempt-${{ github.run_attempt }}"\nartifact_name_template_config_ref = "ci_provenance.artifact_name_template"',
+            1,
+        ),
+        "has unexpected keys: ['artifact_name_prefix']": config_text.replace(
+            'artifact_name_template_vars_config_ref = "backtester.issue_789.artifact_name_template_vars"',
+            'artifact_name_template_vars_config_ref = "backtester.issue_789.artifact_name_template_vars"\nartifact_name_prefix = "issue-789-first-pl-"',
+            1,
+        ),
+        "has unexpected keys: ['retention_days_expression']": config_text.replace(
+            'artifact_class = "capture-provenance"\nretention_days_config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"',
+            'artifact_class = "capture-provenance"\nretention_days_expression = "${{ steps.provenance.outputs.retention_days }}"\nretention_days_config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"',
+            1,
+        ),
+        "retention_days_config_file must be a non-empty string": config_text.replace(
+            'retention_days_config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"',
+            'retention_days_config_file = "   "',
+            1,
+        ),
+        "retention_days_config_ref must be a non-empty string": config_text.replace(
+            '\nretention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+            '\nretention_days_config_ref = "   "',
+            1,
+        ),
+        "retention_days_config_ref references missing TOML key": config_text.replace(
+            '\nretention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+            '\nretention_days_config_ref = "ci_provenance.artifacts.missing"',
+            1,
+        ),
+        "artifact_retention.lookback_bindings.build_deploy.upload must reference a configured upload": config_text.replace(
+            'upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"',
+            'upload = ".github/workflows/ci.yml::build::missing-upload"',
+            1,
+        ),
+        "artifact_retention.lookback_bindings.build_deploy must match the upload retention source": config_text.replace(
+            'retention_ref = "ci_provenance.artifacts.retention_days"',
+            'retention_ref = "ci_provenance.api_limits.max_lookback_age_seconds"',
+            1,
+        ),
+        binding_coverage_error: config_text.replace(
+            build_lookback_binding,
+            "",
+            1,
+        ),
+    }
+    additional_cases = [
+        (
+            binding_coverage_error,
+            config_text
+        + """
+[artifact_retention.lookback_bindings.duplicate_build]
+upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
+config_file = "ci/github-actions-runners.toml"
+retention_ref = "ci_provenance.artifacts.retention_days"
+lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
+""",
+        ),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        for expected, mutated_config in (*cases.items(), *additional_cases):
+            config_path = write_temp_runner_config(pathlib.Path(tmp), mutated_config)
+            try:
+                verifier.load_github_actions_runners_config(config_path)
+            except ValueError as exc:
+                if expected not in str(exc):
+                    raise AssertionError(f"expected {expected!r}, got {exc}") from exc
+            else:
+                raise AssertionError(f"config mutation did not fail: {expected}")
+        capture_lookback_config = capture_config_text.replace(
+            "max_lookback_age_seconds = 2592000",
+            "max_lookback_age_seconds = 2592001",
+            1,
+        )
+        config_path = write_temp_runner_config(pathlib.Path(tmp), config_text)
+        config_path.with_name("chainlink-reference-fixture-capture-provenance.toml").write_text(
+            capture_lookback_config,
+            encoding="utf-8",
+        )
+        try:
+            verifier.load_github_actions_runners_config(config_path)
+        except ValueError as exc:
+            expected = "artifact_retention.lookback_bindings.capture: max lookback age must not exceed artifact retention"
+            if expected not in str(exc):
+                raise AssertionError(
+                    f"expected binding-level lookback error {expected!r}, got {exc!r}"
+                ) from exc
+        else:
+            raise AssertionError(
+                "artifact retention binding must reject lookback windows longer than external retention"
+            )
 
 
 def assert_v6_red_no_mistakes_raw_cargo_is_reported() -> None:
@@ -9119,6 +10250,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
           just bte-test-archive-run "$BVS_ISSUE_789_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl
       - name: Upload issue #789 first-P/L artifact
+        id: upload-issue-789-first-pl
         uses: actions/upload-artifact@example
         with:
           name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}
@@ -9525,10 +10657,10 @@ def remove_all_fragments_if_present(text: str, fragment: str) -> str:
 
 def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     cache_key_line = (
-        "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+        "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
     )
     inline_hashfiles_key_line = (
-        "          key: nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock') }}"
+        "nextest_archive_cache_key=nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock') }}"
     )
     assert_error(
         "nextest archive cache key must use nextest fingerprint output",
@@ -10258,6 +11390,10 @@ def main() -> int:
     assert_v6_red_static_path_classifier_ignores_host_filesystem_resolution()
     assert_v6_red_local_composite_actions_are_scanned()
     assert_v6_red_additional_workflows_are_scanned()
+    assert_artifact_retention_policy_spine_gaps_are_reported()
+    assert_artifact_retention_config_ref_retention_is_exact()
+    assert_ci_provenance_upload_name_comes_from_config_template()
+    assert_artifact_retention_config_refs_are_validated()
     assert_shell_logical_lines_handles_crlf_continuations()
     assert_workflow_hygiene_reviewer_regressions()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
@@ -10722,11 +11858,19 @@ def main() -> int:
         "test-archive must opt into managed target dir",
         replace_once(
             BASE_WORKFLOW,
-            '          include-nextest-version: "true"\n'
-            '          include-managed-target-dir: "true"\n'
-            "      - uses: Swatinem/rust-cache@example",
-            '          include-nextest-version: "true"\n'
-            "      - uses: Swatinem/rust-cache@example",
+            """      - uses: ./.github/actions/setup-environment
+        id: setup
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+          include-managed-target-dir: "true"
+      - name: Resolve root nextest cache keys""",
+            """      - uses: ./.github/actions/setup-environment
+        id: setup
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+      - name: Resolve root nextest cache keys""",
         ),
     )
     assert_error(
@@ -10739,7 +11883,7 @@ def main() -> int:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-
 """,
@@ -10751,11 +11895,12 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Save archive build target cache
+        id: test-target-cache-save
         if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
 """,
             "",
         ),
@@ -10798,7 +11943,7 @@ def main() -> int:
         "test-archive must save nextest archive cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Save nextest archive\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
+            "      - name: Save nextest archive\n        id: nextest-archive-cache-save\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
             "",
         ),
     )
@@ -10806,16 +11951,16 @@ def main() -> int:
         "nextest archive cache key must use nextest fingerprint output",
         replace_once(
             BASE_WORKFLOW,
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}",
-            "          key: nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock') }}",
+            "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}",
+            "nextest_archive_cache_key=nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock') }}",
         ),
     )
     assert_error(
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n      - name: Restore root binary sidecars",
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n          restore-keys: nextest-archive-v2-\n      - name: Restore root binary sidecars",
+            "          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}\n      - name: Restore root binary sidecars",
+            "          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}\n          restore-keys: nextest-archive-v2-\n      - name: Restore root binary sidecars",
         ),
     )
     # #400: every managed-target cache must declare a restore-keys prefix fallback.
@@ -10831,8 +11976,8 @@ def main() -> int:
         "test-archive managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-\n      - name: Install cargo-nextest",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}\n      - name: Install cargo-nextest",
+            "          key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-\n      - name: Install cargo-nextest",
+            "          key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}\n      - name: Install cargo-nextest",
         ),
     )
     assert_error(
@@ -11102,8 +12247,8 @@ def main() -> int:
         "actions/upload-artifact must be pinned to a 40-character SHA",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Upload artifact\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
-            "      - name: Upload artifact\n        uses: actions/upload-artifact@v7",
+            f"      - name: Upload artifact\n        id: upload-bolt-v2-binary\n        {base_upload_artifact_action_line()}",
+            "      - name: Upload artifact\n        id: upload-bolt-v2-binary\n        uses: actions/upload-artifact@v7",
         ),
     )
     assert_error(
@@ -11142,8 +12287,8 @@ def main() -> int:
         "nextest archive cache key must use nextest fingerprint output",
         replace_once(
             BASE_WORKFLOW,
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}",
-            "          key: nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('extra-input.txt', 'Cargo.lock') }}",
+            "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}",
+            "nextest_archive_cache_key=nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('extra-input.txt', 'Cargo.lock') }}",
         ),
     )
     assert_error(
@@ -11264,7 +12409,11 @@ def main() -> int:
     )
     assert_error(
         "test must check needs.test-archive.result",
-        replace_once(BASE_WORKFLOW, "needs.test-archive.result", "omitted.test-archive.result"),
+        replace_once(
+            BASE_WORKFLOW,
+            'if [[ "${{ needs.test-archive.result }}" != "success" ]]; then',
+            'if [[ "${{ omitted.test-archive.result }}" != "success" ]]; then',
+        ),
     )
     assert_error(
         "test must use always()",
@@ -11499,13 +12648,15 @@ def main() -> int:
             "uses: actions/upload-artifact@v7",
         ),
     )
-    assert_error(
-        "ci-provenance-emit retention-days must match TOML",
-        replace_once(
-            BASE_WORKFLOW,
-            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 30",
-            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 7",
-        ),
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml ci-provenance-emit upload-ci-provenance artifact ci-provenance-attempt-${{ github.run_attempt }} retention-days 31 does not match configured retention-days 30",
+        {
+            ".github/workflows/ci.yml": replace_once(
+                BASE_WORKFLOW,
+                "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 30",
+                "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 31",
+            )
+        },
     )
     assert_error(
         "gate must not read nextest_fingerprint",
@@ -11589,29 +12740,35 @@ def main() -> int:
         "ci.yml build upload must use the staged artifact directory",
         BASE_WORKFLOW.replace("${{ steps.managed_artifact.outputs.stage_dir }}", "$RUNNER_TEMP/bolt-v2-binary"),
     )
-    assert_error(
-        "ci.yml bolt-v2-binary retention-days must be 3",
-        replace_once(
-            BASE_WORKFLOW,
-            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
-            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
-        ),
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary retention-days 31 does not match configured retention-days 30",
+        {
+            ".github/workflows/ci.yml": replace_once(
+                BASE_WORKFLOW,
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 31",
+            )
+        },
     )
-    assert_error(
-        "ci.yml bolt-v2-binary retention-days must be 3",
-        replace_once(
-            BASE_WORKFLOW,
-            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
-            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256",
-        ),
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary must set retention-days",
+        {
+            ".github/workflows/ci.yml": replace_once(
+                BASE_WORKFLOW,
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256",
+            )
+        },
     )
-    assert_error(
-        "ci.yml bolt-v2-binary retention-days must be 3",
-        replace_once(
-            BASE_WORKFLOW,
-            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
-            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3\n          retention-days: 30",
-        ),
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary must set exactly one retention-days",
+        {
+            ".github/workflows/ci.yml": replace_once(
+                BASE_WORKFLOW,
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
+                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30\n          retention-days: 31",
+            )
+        },
     )
     assert_workflows_error(
         "advisory.yml advisories must include deny version",
@@ -12536,6 +13693,8 @@ def main() -> int:
     assert_runner_contract_rejects_unmapped_workflow_jobs()
     assert_runner_contract_accepts_flaky_detection_workflow_mapping()
     assert_flaky_detection_workflow_uses_supported_mergify_contract()
+    assert_flaky_detection_workflows_are_split_without_mode_gates()
+    assert_flaky_detection_workflow_split_gaps_are_reported()
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
     assert_runner_contract_requires_meter_api_limits()
     assert_runner_contract_requires_fingerprint_archive_tier_coupling()
@@ -12570,6 +13729,7 @@ def main() -> int:
     assert_ci_policy_real_workflows_keep_event_sender_binding_clean()
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
+    assert_ci_workflow_dispatch_config_errors_are_reported()
     assert_test_archive_sccache_fail_open_contract()
     assert_test_archive_sccache_retry_preserves_compile_failures()
     assert_ci_detector_forces_build_on_workflow_dispatch()
@@ -12579,6 +13739,7 @@ def main() -> int:
     assert_merge_group_support_gaps_are_reported()
     assert_mergify_config_gaps_are_reported()
     assert_ci_policy_heavy_lane_gaps_are_reported()
+    assert_cache_persistence_audit_gaps_are_reported()
     assert_gate_policy_truth_table_gaps_are_reported()
     assert_ci_concurrency_split_gaps_are_reported()
     assert_mergify_proof_pr_concurrency_gaps_are_reported()

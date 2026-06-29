@@ -709,6 +709,22 @@ class LaneWTests(unittest.TestCase):
         self.assertIn("feat/wt-dry-run", git(self.work, "branch", "--list"))
         self.assertIn("would-archive-and-remove", proc.stdout)
 
+    def test_lane_w_iteration_exception_audit_type_error_does_not_kill_sweep(self) -> None:
+        self._setup_merged_worktree_branch("feat/audit-typeerror")
+        config = cm.load_config(self.work)
+
+        with mock.patch.object(cm, "_lane_w_eligible",
+                               side_effect=RuntimeError("probe failure")):
+            with mock.patch.object(cm, "write_audit",
+                                   side_effect=TypeError("not json serializable")):
+                records = cm.run_lane_w(self.work, config, apply=False, keep=set(),
+                                        quiet=True, discard_ignored=False,
+                                        remove_nested=False, discard_hidden=False)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["action"], "iteration-exception")
+        self.assertIn("RuntimeError: probe failure", records[0]["reason"])
+
 
 # ---------------------------------------------------------------------------
 # Cross-cutting / infra tests
@@ -1352,7 +1368,23 @@ git config "remote.${{clean_merged_remote}}.prune" true
         self.assertIn("rotated_log_retention_days", normalized)
         self.assertIn("secret-redacted", normalized_lower)
         self.assertIn("report_error_max_chars", normalized)
+        self.assertIn("gh cache health", normalized_lower)
+        self.assertIn("rotated-log usage", normalized_lower)
         self.assertNotIn("Design provenance", source)
+
+    def test_clean_merged_production_comments_use_domain_language(self) -> None:
+        sources = [
+            REPO_ROOT / "scripts" / "clean_merged_artifacts.py",
+            REPO_ROOT / ".githooks" / "post-merge",
+            REPO_ROOT / ".githooks" / "post-checkout",
+        ]
+        combined = "\n".join(path.read_text(encoding="utf-8") for path in sources)
+
+        self.assertNotRegex(
+            combined,
+            r"(?i)\bround[- ]?\d|\bself-review\b|\bGPT\b|\bKimi\b|\bGrok\b|"
+            r"\bGemini\b|code-assist|RECOVERY_HOLE|Design provenance",
+        )
 
     def test_post_rewrite_comment_uses_configured_trunk(self) -> None:
         source = (REPO_ROOT / ".githooks" / "post-rewrite").read_text(encoding="utf-8")

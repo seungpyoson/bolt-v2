@@ -6,8 +6,8 @@
 #
 # Order matters: clean-merged's Lane H dispatch runs FIRST (gated to branch
 # checkouts landing on trunk), then the existing foreign-workspace warning runs
-# only when prev_head is zeros (new worktree creation). The previous structure
-# early-exited before any appended code could run — see issue #802 review round 3.
+# only when prev_head is zeros (new worktree creation). Keeping the dispatch
+# before that early-exit preserves cleanup on ordinary branch checkouts.
 #
 # Never breaks the git op: every path exits 0.
 

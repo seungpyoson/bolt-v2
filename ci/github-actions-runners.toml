@@ -87,6 +87,9 @@ kimi-cli-review = "github_hosted"
 [workflows.ai_review_coding_plan_smoke]
 smoke = "github_hosted"
 
+[workflows.ai_review_model_freshness]
+model-freshness = "github_hosted"
+
 [workflows.dispatch_ci_cancel]
 cancel-obsolete-dispatch = "github_hosted"
 

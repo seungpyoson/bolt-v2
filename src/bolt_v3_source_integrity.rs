@@ -27,7 +27,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub use crate::source_canonicalization::{
-    GATED_SOURCE_ROOTS, GatedSourceRoot, MAKER_KEY, OUTCOME_GROUP_KEY, STRATEGY_KEY,
+    GATED_SOURCE_ROOTS, GatedSourceRoot, LIVE_NODE_KEY, MAKER_KEY, OUTCOME_GROUP_KEY, STRATEGY_KEY,
     SUBMIT_ADMISSION_KEY, TEST_MODULE_SPLIT_MARKER, TEST_ONLY_INNER_CFG_MARKER,
     module_source_set_text as canonical_module_source_set_text,
     module_source_text as canonical_module_text,
@@ -228,7 +228,6 @@ mod tests {
                 "src/bolt_v3_executable_cost.rs",
                 "src/bolt_v3_sizing.rs",
                 "src/bolt_v3_taker_updown_signal.rs",
-                "src/bolt_v3_live_node",
             ]
         );
     }
@@ -242,6 +241,14 @@ mod tests {
         assert_eq!(
             registry_relative_roots(SUBMIT_ADMISSION_KEY),
             &["src/bolt_v3_submit_admission.rs"]
+        );
+    }
+
+    #[test]
+    fn live_node_source_set_is_the_live_node_directory() {
+        assert_eq!(
+            registry_relative_roots(LIVE_NODE_KEY),
+            &["src/bolt_v3_live_node"]
         );
     }
 

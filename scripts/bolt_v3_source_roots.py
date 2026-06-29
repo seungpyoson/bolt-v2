@@ -29,10 +29,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GATED_SOURCE_ROOTS_MANIFEST = REPO_ROOT / "gated_source_roots.manifest"
 
 # Registry keys; must match STRATEGY_KEY / SUBMIT_ADMISSION_KEY /
-# OUTCOME_GROUP_KEY / MAKER_KEY in src/source_canonicalization.rs and the
+# LIVE_NODE_KEY / OUTCOME_GROUP_KEY / MAKER_KEY in src/source_canonicalization.rs and the
 # ``[section]`` headers in the manifest.
 STRATEGY_KEY = "strategy"
 SUBMIT_ADMISSION_KEY = "submit_admission"
+LIVE_NODE_KEY = "live_node"
 OUTCOME_GROUP_KEY = "outcome_group"
 MAKER_KEY = "maker"
 
@@ -129,13 +130,14 @@ def _parse_manifest_text(
     for key in order:
         if not sections[key]:
             raise ValueError(f"{source_label}: section [{key}] has no roots")
-    # The manifest must declare EXACTLY these four registry keys (mirrors the
+    # The manifest must declare EXACTLY these five registry keys (mirrors the
     # build.rs parser): reject both missing and unexpected sections so a typo'd
     # header fails loudly here and on the Rust side instead of silently dropping
     # roots from the gated set.
     required_keys = (
         STRATEGY_KEY,
         SUBMIT_ADMISSION_KEY,
+        LIVE_NODE_KEY,
         OUTCOME_GROUP_KEY,
         MAKER_KEY,
     )
@@ -159,6 +161,8 @@ STRATEGY_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[STRATEGY_KEY]
 STRATEGY_SOURCE_ROOT = STRATEGY_SOURCE_ROOTS[0]
 SUBMIT_ADMISSION_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[SUBMIT_ADMISSION_KEY]
 SUBMIT_ADMISSION_SOURCE_ROOT = SUBMIT_ADMISSION_SOURCE_ROOTS[0]
+LIVE_NODE_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[LIVE_NODE_KEY]
+LIVE_NODE_SOURCE_ROOT = LIVE_NODE_SOURCE_ROOTS[0]
 OUTCOME_GROUP_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[OUTCOME_GROUP_KEY]
 MAKER_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[MAKER_KEY]
 # The maker's strategy-source directory, derived from the manifest (the single
@@ -183,6 +187,7 @@ MAKER_SOURCE_ROOT = _MAKER_STRATEGY_SOURCE_ROOTS[0]
 ALL_GATED_SOURCE_ROOTS = (
     *STRATEGY_SOURCE_ROOTS,
     *SUBMIT_ADMISSION_SOURCE_ROOTS,
+    *LIVE_NODE_SOURCE_ROOTS,
     *OUTCOME_GROUP_SOURCE_ROOTS,
     *MAKER_SOURCE_ROOTS,
 )

@@ -4,6 +4,9 @@ use std::{
     rc::Rc,
 };
 
+#[cfg(test)]
+use std::str::FromStr;
+
 use anyhow::{Context, Result};
 use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
 use nautilus_core::UnixNanos;

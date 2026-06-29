@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+#[cfg(not(test))]
 use nautilus_common::actor::DataActor;
 use nautilus_core::Params;
 #[cfg(not(test))]
@@ -356,6 +357,8 @@ impl BinaryOracleEdgeTaker {
             self.resolution_strike_custom_subscription = None;
             return;
         };
+        #[cfg(test)]
+        let _ = resolution_client_id;
         if let Some(data_type) = self.resolution_strike_custom_subscription.take() {
             #[cfg(not(test))]
             self.unsubscribe_data(data_type, Some(resolution_client_id), None);

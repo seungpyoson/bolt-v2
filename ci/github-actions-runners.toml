@@ -130,6 +130,16 @@ workflow_name = "CI"
 workflow_path = ".github/workflows/ci.yml"
 fingerprint_source = "meter"
 
+[ci_provenance.artifact_name_template_vars]
+run_attempt = "${{ github.run_attempt }}"
+
+[backtester.issue_789]
+artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"
+
+[backtester.issue_789.artifact_name_template_vars]
+run_id = "${{ github.run_id }}"
+run_attempt = "${{ github.run_attempt }}"
+
 [ci_provenance.full_ci]
 required_jobs = [
   "detector",
@@ -298,6 +308,76 @@ max_lookback_age_seconds = 2592000
 
 [ci_provenance.artifacts]
 retention_days = 30
+
+[artifact_retention.classes.reuse-bound]
+max_retention_days = 30
+
+[artifact_retention.classes.capture-provenance]
+max_retention_days = 30
+
+[artifact_retention.classes.transient]
+max_retention_days = 7
+
+[artifact_retention.uploads.".github/workflows/ci.yml::nextest-fingerprint::upload-nextest-fingerprint"]
+artifact_name = "${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}"
+artifact_class = "reuse-bound"
+retention_days_config_file = "ci/github-actions-runners.toml"
+retention_days_config_ref = "ci_provenance.artifacts.retention_days"
+
+[artifact_retention.uploads.".github/workflows/ci.yml::build::upload-bolt-v2-binary"]
+artifact_name_config_file = "ci/github-actions-runners.toml"
+artifact_name_config_ref = "ci_provenance.deploy.artifact_name"
+artifact_class = "reuse-bound"
+retention_days_config_file = "ci/github-actions-runners.toml"
+retention_days_config_ref = "ci_provenance.artifacts.retention_days"
+
+[artifact_retention.uploads.".github/workflows/ci.yml::ci-provenance-emit::upload-ci-provenance"]
+artifact_name_template_config_file = "ci/github-actions-runners.toml"
+artifact_name_template_config_ref = "ci_provenance.artifact_name_template"
+artifact_name_template_vars_config_file = "ci/github-actions-runners.toml"
+artifact_name_template_vars_config_ref = "ci_provenance.artifact_name_template_vars"
+artifact_class = "reuse-bound"
+retention_days_config_file = "ci/github-actions-runners.toml"
+retention_days_config_ref = "ci_provenance.artifacts.retention_days"
+
+[artifact_retention.uploads.".github/workflows/ci.yml::capture::upload-capture-artifact"]
+artifact_name = "${{ steps.provenance.outputs.artifact_name }}"
+artifact_class = "capture-provenance"
+retention_days_config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"
+retention_days_config_ref = "ci_provenance.artifacts.retention_days"
+
+[artifact_retention.uploads.".github/workflows/backtester-ci.yml::issue_789::upload-issue-789-first-pl"]
+artifact_name_template_config_file = "ci/github-actions-runners.toml"
+artifact_name_template_config_ref = "backtester.issue_789.artifact_name_template"
+artifact_name_template_vars_config_file = "ci/github-actions-runners.toml"
+artifact_name_template_vars_config_ref = "backtester.issue_789.artifact_name_template_vars"
+artifact_class = "transient"
+retention_days = 7
+
+# Every artifact reused from a prior run must have a binding here.
+[artifact_retention.lookback_bindings.build_deploy]
+upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
+config_file = "ci/github-actions-runners.toml"
+retention_ref = "ci_provenance.artifacts.retention_days"
+lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
+
+[artifact_retention.lookback_bindings.nextest_fingerprint]
+upload = ".github/workflows/ci.yml::nextest-fingerprint::upload-nextest-fingerprint"
+config_file = "ci/github-actions-runners.toml"
+retention_ref = "ci_provenance.artifacts.retention_days"
+lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
+
+[artifact_retention.lookback_bindings.ci_provenance]
+upload = ".github/workflows/ci.yml::ci-provenance-emit::upload-ci-provenance"
+config_file = "ci/github-actions-runners.toml"
+retention_ref = "ci_provenance.artifacts.retention_days"
+lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
+
+[artifact_retention.lookback_bindings.capture]
+upload = ".github/workflows/ci.yml::capture::upload-capture-artifact"
+config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"
+retention_ref = "ci_provenance.artifacts.retention_days"
+lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
 
 # Queue-only rework (#981): the Mergify queue runs in TEMP-PR mode, so merge_group
 # never fires and the SOLE producer of a green REQUIRED gate is the actor-verified

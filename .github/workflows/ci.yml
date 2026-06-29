@@ -630,6 +630,7 @@ jobs:
             --output-path .nextest-archive-fingerprint/cache-key.txt
 
       - name: Upload nextest archive fingerprint
+        id: upload-nextest-fingerprint
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}
@@ -1090,13 +1091,14 @@ jobs:
           echo "stage_dir=$stage_dir" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
+        id: upload-bolt-v2-binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bolt-v2-binary
           path: |
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
-          retention-days: 3
+          retention-days: 30
 
   capture:
     name: capture
@@ -1177,12 +1179,13 @@ jobs:
               --created-at "${{ steps.provenance.outputs.created_at }}"
 
       - name: Upload capture artifact
+        id: upload-capture-artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.provenance.outputs.artifact_name }}
           path: ${{ env.CAPTURE_OUTPUT_DIR }}
           if-no-files-found: error
-          retention-days: ${{ steps.provenance.outputs.retention_days }}
+          retention-days: 30
 
   capture-gate:
     name: capture-gate
@@ -1309,6 +1312,7 @@ jobs:
             --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
 
       - name: Upload CI provenance
+        id: upload-ci-provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-provenance-attempt-${{ github.run_attempt }}

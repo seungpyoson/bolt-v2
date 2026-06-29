@@ -88,10 +88,15 @@ use crate::{
 };
 
 #[cfg(test)]
-use nautilus_model::enums::{AggressorSide, BookAction};
+use nautilus_model::enums::{
+    AggressorSide, BookAction, OmsType as NtOmsType, TrailingOffsetType, TriggerType,
+};
 
 #[cfg(test)]
 use crate::{
+    bolt_v3_decision_evidence::{
+        BoltV3EntryPricingBlockReason, BoltV3ExitBlockedReason, BoltV3ExitDecisionOutcome,
+    },
     bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity},
     bolt_v3_numeric::sanitize_probability,
     bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
@@ -114,6 +119,8 @@ use self::selection::{
 mod config;
 
 pub use self::config::BinaryOracleEdgeTakerBuilder;
+#[cfg(test)]
+use self::config::BinaryOracleEdgeTakerOrderConfig;
 use self::config::{BinaryOracleEdgeTakerConfig, BinaryOracleEdgeTakerFieldType};
 
 mod exposure;

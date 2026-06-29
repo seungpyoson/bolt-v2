@@ -946,6 +946,19 @@ def assert_unsupported_mergify_queue_condition_does_not_match() -> None:
         None,
         "unsupported Mergify queue condition",
     )
+    assert_equal(
+        module.selected_mergify_queue_rule(
+            {
+                "queue_rules": [
+                    {"name": "unsupported", "queue_conditions": ["author = bot"]},
+                    {"name": "default", "queue_conditions": []},
+                ]
+            },
+            (),
+        ),
+        None,
+        "unsupported Mergify queue condition before default",
+    )
 
 
 def assert_unsupported_mergify_queue_condition_route_is_inconclusive() -> None:
@@ -956,6 +969,13 @@ def assert_unsupported_mergify_queue_condition_route_is_inconclusive() -> None:
                 {
                     "name": "unsupported",
                     "queue_conditions": ["author = bot"],
+                    "merge_conditions": [],
+                    "batch_size": 1,
+                    "batch_max_wait_time": "1 minute",
+                },
+                {
+                    "name": "default",
+                    "queue_conditions": [],
                     "merge_conditions": [],
                     "batch_size": 1,
                     "batch_max_wait_time": "1 minute",

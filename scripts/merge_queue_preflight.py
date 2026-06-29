@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import enum
 import json
 import os
 import pathlib
@@ -301,6 +302,21 @@ class ExpectedHeadMapViolation:
 
     def message(self) -> str:
         return self.message_template.format(prs=format_pr_numbers(self.prs))
+
+
+class MergifyQueueRuleMatchStatus(enum.Enum):
+    MATCHED = enum.auto()
+    NOT_MATCHED = enum.auto()
+    UNSUPPORTED = enum.auto()
+
+
+@dataclasses.dataclass(frozen=True)
+class MergifyQueueRuleMatch:
+    status: MergifyQueueRuleMatchStatus
+    rule: Mapping[str, object] | None = None
+
+    def stops_selection(self) -> bool:
+        return self.status is not MergifyQueueRuleMatchStatus.NOT_MATCHED
 
 
 def normalize_check_state(raw_state: str) -> str:
@@ -657,19 +673,32 @@ def mergify_queue_condition_labels(rule: Mapping[str, object]) -> frozenset[str]
     return frozenset(labels)
 
 
-def mergify_queue_rule_matches(rule: Mapping[str, object], labels: frozenset[str]) -> bool:
+def mergify_queue_rule_match(rule: object, labels: frozenset[str]) -> MergifyQueueRuleMatch:
+    if not isinstance(rule, Mapping):
+        return MergifyQueueRuleMatch(MergifyQueueRuleMatchStatus.UNSUPPORTED)
     condition_labels = mergify_queue_condition_labels(rule)
-    return condition_labels is not None and condition_labels.issubset(labels)
+    if condition_labels is None:
+        return MergifyQueueRuleMatch(MergifyQueueRuleMatchStatus.UNSUPPORTED)
+    if not condition_labels.issubset(labels):
+        return MergifyQueueRuleMatch(MergifyQueueRuleMatchStatus.NOT_MATCHED)
+    return MergifyQueueRuleMatch(MergifyQueueRuleMatchStatus.MATCHED, rule)
 
 
 def selected_mergify_queue_rule(
     config: Mapping[str, object],
     labels: tuple[str, ...],
 ) -> Mapping[str, object] | None:
-    for rule in tuple(config.get("queue_rules", ())):
-        if isinstance(rule, Mapping) and mergify_queue_rule_matches(rule, frozenset(labels)):
-            return rule
-    return None
+    label_set = frozenset(labels)
+    first_terminal_match = next(
+        (
+            match
+            for rule in tuple(config.get("queue_rules", ()))
+            for match in (mergify_queue_rule_match(rule, label_set),)
+            if match.stops_selection()
+        ),
+        MergifyQueueRuleMatch(MergifyQueueRuleMatchStatus.NOT_MATCHED),
+    )
+    return first_terminal_match.rule
 
 
 def mergify_queue_route_finding(

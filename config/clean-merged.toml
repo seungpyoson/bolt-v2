@@ -25,6 +25,9 @@ gh_timeout_s = 5
 # In-process cache TTL for gh query results (seconds). Per-branch cache stored
 # at <git-common-dir>/clean-merged-gh-cache.json; written atomically.
 cache_ttl_s = 300
+# Maximum merged PRs returned by each gh branch query. Exact headRefOid matching
+# prevents false positives; this controls cost/coverage.
+gh_limit = 100
 
 [clean-merged.lane_w]
 # Quarantine directory. Resolved relative to git-common-dir; NEVER inside a
@@ -42,6 +45,10 @@ remove_nested_repos = false
 # unless overridden. These files are invisible to --porcelain and silently
 # destroyed by `git worktree remove`.
 discard_hidden_index_bits = false
+# Hard timeout for creating the quarantine tar archive (seconds).
+archive_timeout_s = 120
+# Hard timeout for verifying the quarantine tar archive (seconds).
+archive_verify_timeout_s = 30
 
 [clean-merged.logging]
 # Audit log format. jsonl ensures escaped fields survive shell-sensitive
@@ -54,6 +61,10 @@ audit_path = "<git-common-dir>/clean-merged.log"
 max_log_bytes = 1048576
 # Heartbeat file written on every Lane H run; doctor checks freshness.
 heartbeat_path = "<git-common-dir>/clean-merged.heartbeat"
+# Doctor stale threshold for the Lane H heartbeat (days).
+heartbeat_stale_days = 7
+# Lane R hook-spawn stdout/stderr log path.
+lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"
 
 [clean-merged.backups]
 # Days before a backup ref under refs/clean-merged/ is prunable.

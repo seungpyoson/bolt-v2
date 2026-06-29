@@ -34,17 +34,17 @@ common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null 
 [ -n "$common_dir" ] || exit 0
 main_root="$(dirname "$common_dir")"
 script="$main_root/scripts/clean_merged_artifacts.py"
-log_dir="$common_dir"
 [ -f "$script" ] || exit 0
 
 # Lane H: synchronous, offline, reflog-safe. Bounded work; safe to run inline.
 python3 "$script" --lane h --apply --quiet >/dev/null 2>&1 || true
 
-# Lane R: detached with strict gh timeout. Subshell + </dev/null detaches so git
-# returns instantly; outputs to the audit log for forensics.
-(
-    python3 "$script" --reconcile --apply --quiet \
-        </dev/null >>"$log_dir/clean-merged.lane-r.log" 2>&1 || true
-) &
+# Lane R: detached with strict gh timeout. Python owns the configured log path
+# so the hook does not duplicate TOML parsing in bash.
+if command -v setsid >/dev/null 2>&1; then
+    (setsid python3 "$script" --reconcile --apply --quiet --redirect-output-to-lane-r-log </dev/null >/dev/null 2>&1 || true) &
+else
+    (python3 "$script" --reconcile --apply --quiet --redirect-output-to-lane-r-log </dev/null >/dev/null 2>&1 || true) &
+fi
 
 exit 0

@@ -25,21 +25,16 @@ prev_head="${1:-}"
 new_head="${2:-}"
 branch_checkout="${3:-0}"
 
-# --- clean-merged Lane H dispatch (best-effort against stale origin/main) ---
-# Round-4 P2 (Kimi/Grok): design said trunk-gated; implementation only checked
-# $3==1. Now also resolve the new HEAD's branch and dispatch only when landing
-# on the configured trunk. Lane H is read-mostly so running on every checkout
-# was harmless, but it added latency to every feature-branch switch.
+# --- clean-merged Lane H dispatch (best-effort against stale remote trunk) ---
+# Keep config parsing in Python: the hook gates only on branch checkout, and the
+# script gates the lane to the configured trunk after loading TOML.
 if [ "$branch_checkout" = "1" ] && ! _cm_disabled; then
     command -v python3 >/dev/null 2>&1 && {
-        new_head_branch="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
-        if [ "$new_head_branch" = "main" ] || [ "$new_head_branch" = "master" ]; then
-            common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-            if [ -n "$common_dir" ]; then
-                main_root="$(dirname "$common_dir")"
-                script="$main_root/scripts/clean_merged_artifacts.py"
-                [ -f "$script" ] && python3 "$script" --lane h --apply --quiet >/dev/null 2>&1 || true
-            fi
+        common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+        if [ -n "$common_dir" ]; then
+            main_root="$(dirname "$common_dir")"
+            script="$main_root/scripts/clean_merged_artifacts.py"
+            [ -f "$script" ] && python3 "$script" --lane h --apply --quiet --only-if-current-trunk >/dev/null 2>&1 || true
         fi
     } || true
 fi

@@ -41,8 +41,17 @@ import shutil
 import subprocess
 import sys
 import time
-import tomllib
 from typing import Any, Callable
+
+try:
+    import tomllib
+except ModuleNotFoundError as exc:
+    tomllib = None  # type: ignore[assignment]
+    _TOMLLIB_IMPORT_ERROR: ModuleNotFoundError | None = exc
+    _TOML_DECODE_ERROR: type[Exception] = ValueError
+else:
+    _TOMLLIB_IMPORT_ERROR = None
+    _TOML_DECODE_ERROR = tomllib.TOMLDecodeError
 
 SCRIPT_NAME = "clean-merged"
 HOOK_MARKER = f"# {SCRIPT_NAME}-managed"
@@ -60,6 +69,11 @@ _REFUSED_DETACHED_SENTINEL = "__REFUSED_DETACHED_HEAD__:"
 
 def _load_toml(path: pathlib.Path) -> dict[str, Any]:
     """Load clean-merged TOML through the single stdlib parser path."""
+    if _TOMLLIB_IMPORT_ERROR is not None or tomllib is None:
+        raise ConfigError(
+            "Python 3.11+ with stdlib tomllib is required to read "
+            f"{path}; current interpreter is {sys.executable}"
+        )
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
@@ -79,6 +93,7 @@ class ConfigError(CleanMergedError):
 class LaneRConfig:
     gh_timeout_s: float
     cache_ttl_s: float
+    gh_limit: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -88,6 +103,8 @@ class LaneWConfig:
     discard_ignored: bool
     remove_nested_repos: bool
     discard_hidden_index_bits: bool
+    archive_timeout_s: float
+    archive_verify_timeout_s: float
 
 
 @dataclasses.dataclass(frozen=True)
@@ -96,6 +113,8 @@ class LoggingConfig:
     audit_path: str
     max_log_bytes: int
     heartbeat_path: str
+    heartbeat_stale_days: int
+    lane_r_log_path: str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -195,15 +214,20 @@ CONFIG_KEYS = frozenset({
     "clean-merged.origin_owner",
     "clean-merged.lane_r.gh_timeout_s",
     "clean-merged.lane_r.cache_ttl_s",
+    "clean-merged.lane_r.gh_limit",
     "clean-merged.lane_w.quarantine_dir",
     "clean-merged.lane_w.quarantine_grace_days",
     "clean-merged.lane_w.discard_ignored",
     "clean-merged.lane_w.remove_nested_repos",
     "clean-merged.lane_w.discard_hidden_index_bits",
+    "clean-merged.lane_w.archive_timeout_s",
+    "clean-merged.lane_w.archive_verify_timeout_s",
     "clean-merged.logging.audit_format",
     "clean-merged.logging.audit_path",
     "clean-merged.logging.max_log_bytes",
     "clean-merged.logging.heartbeat_path",
+    "clean-merged.logging.heartbeat_stale_days",
+    "clean-merged.logging.lane_r_log_path",
     "clean-merged.backups.prune_after_days",
 })
 
@@ -266,7 +290,7 @@ def load_config(repo_root: pathlib.Path) -> Config:
         )
     try:
         data = _load_toml(cfg_path)
-    except tomllib.TOMLDecodeError as exc:
+    except _TOML_DECODE_ERROR as exc:
         raise ConfigError(f"invalid TOML in {cfg_path}: {exc}") from exc
 
     flat = _flatten_config(data)
@@ -287,6 +311,7 @@ def load_config(repo_root: pathlib.Path) -> Config:
     lane_r = LaneRConfig(
         gh_timeout_s=_config_positive_float(flat, "clean-merged.lane_r.gh_timeout_s"),
         cache_ttl_s=_config_positive_float(flat, "clean-merged.lane_r.cache_ttl_s"),
+        gh_limit=_config_positive_int(flat, "clean-merged.lane_r.gh_limit"),
     )
     lane_w = LaneWConfig(
         quarantine_dir=_config_str(flat, "clean-merged.lane_w.quarantine_dir"),
@@ -296,12 +321,18 @@ def load_config(repo_root: pathlib.Path) -> Config:
         remove_nested_repos=_config_bool(flat, "clean-merged.lane_w.remove_nested_repos"),
         discard_hidden_index_bits=_config_bool(
             flat, "clean-merged.lane_w.discard_hidden_index_bits"),
+        archive_timeout_s=_config_positive_float(flat, "clean-merged.lane_w.archive_timeout_s"),
+        archive_verify_timeout_s=_config_positive_float(
+            flat, "clean-merged.lane_w.archive_verify_timeout_s"),
     )
     logging_cfg = LoggingConfig(
         audit_format=_config_str(flat, "clean-merged.logging.audit_format"),
         audit_path=_config_str(flat, "clean-merged.logging.audit_path"),
         max_log_bytes=_config_positive_int(flat, "clean-merged.logging.max_log_bytes"),
         heartbeat_path=_config_str(flat, "clean-merged.logging.heartbeat_path"),
+        heartbeat_stale_days=_config_positive_int(
+            flat, "clean-merged.logging.heartbeat_stale_days"),
+        lane_r_log_path=_config_str(flat, "clean-merged.logging.lane_r_log_path"),
     )
     backups = BackupsConfig(
         prune_after_days=_config_positive_int(flat, "clean-merged.backups.prune_after_days"),
@@ -394,6 +425,11 @@ def current_branch(repo_root: pathlib.Path) -> str | None:
     if out.returncode != 0:
         return None  # detached HEAD
     return out.stdout.strip() or None
+
+
+def protected_branch_names(config: Config, current: str | None, keep: set[str]) -> set[str]:
+    """Branch identities protected from cleanup by configuration or invocation."""
+    return {b for b in (config.trunk_branch, current) if b} | keep
 
 
 def resolve_trunk_sha(repo_root: pathlib.Path, trunk: str, remote: str) -> str | None:
@@ -627,15 +663,12 @@ def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> Non
     pruned: dict[str, Any] = {}
     for key, entry in cache.items():
         if "@" not in key:
-            return
+            continue
         try:
-            _gh_cache_entry_age(entry, now)
-            _gh_cache_entry_prs(entry)
+            age = _gh_cache_entry_age(entry, now)
+            prs = _gh_cache_entry_prs(entry)
         except ValueError:
-            return
-    for key, entry in cache.items():
-        age = _gh_cache_entry_age(entry, now)
-        prs = _gh_cache_entry_prs(entry)
+            continue
         if age < ttl:
             assert isinstance(entry, dict)
             pruned[key] = {"fetched_at": entry["fetched_at"], "prs": prs}
@@ -648,17 +681,13 @@ def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> Non
 
 
 def gh_merged_pr_for_branch(
-    repo_root: pathlib.Path, branch: str, timeout: float,
+    repo_root: pathlib.Path, branch: str, timeout: float, limit: int,
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
     """Return (prs, error). prs=None means gh trouble (keep the branch)."""
     cmd = [
-        # --limit 100 (round-4.5: was 5; Kimi P1 noted that a branch reused
-        # >5x with the current tip = older PR would be missed. 100 covers any
-        # realistic reuse pattern; the headRefOid match makes false-positives
-        # impossible regardless of how many PRs are returned.)
         "gh", "pr", "list", "--head", branch, "--state", "merged",
         "--json", "number,headRefOid,baseRefName,headRepositoryOwner,isCrossRepository",
-        "--limit", "100",
+        "--limit", str(limit),
     ]
     try:
         out = subprocess.run(
@@ -735,6 +764,23 @@ def _entry_is_live(entry: Any, now: float, ttl: float) -> bool:
         return False
 
 
+def _gh_cache_health(path: pathlib.Path) -> str | None:
+    cache, err = _load_gh_cache(path)
+    if err is not None:
+        return err
+    assert cache is not None
+    now = time.time()
+    for key, entry in cache.items():
+        if "@" not in key:
+            return f"gh cache invalid key: {key!r}"
+        try:
+            _gh_cache_entry_age(entry, now)
+            _gh_cache_entry_prs(entry)
+        except ValueError as exc:
+            return f"gh cache invalid entry for {key}: {exc}"
+    return None
+
+
 def gh_merged_pr_for_branch_cached(
     repo_root: pathlib.Path, config: Config, branch: str, tip: str,
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
@@ -763,7 +809,8 @@ def gh_merged_pr_for_branch_cached(
             return None, "invalid cache entry"
         if age < config.lane_r.cache_ttl_s:
             return prs, None
-    prs, err = gh_merged_pr_for_branch(repo_root, branch, config.lane_r.gh_timeout_s)
+    prs, err = gh_merged_pr_for_branch(
+        repo_root, branch, config.lane_r.gh_timeout_s, config.lane_r.gh_limit)
     safe_err = _safe_report_error(err) if isinstance(err, str) else err
     if prs is not None:
         cache[cache_key] = {"fetched_at": now, "prs": prs}
@@ -1194,7 +1241,7 @@ def run_lane_h(
     branches = list_local_branches(repo_root)
     bound = worktree_bound_branches(repo_root)
 
-    skip_names = {b for b in (config.trunk_branch, "master", cur) if b} | keep
+    skip_names = protected_branch_names(config, cur, keep)
 
     for br in branches:
         if br.name in skip_names:
@@ -1259,7 +1306,7 @@ def run_lane_r(
     cur = current_branch(repo_root)
     branches = list_local_branches(repo_root)
     bound = worktree_bound_branches(repo_root)
-    skip_names = {b for b in (config.trunk_branch, "master", cur) if b} | keep
+    skip_names = protected_branch_names(config, cur, keep)
 
     gh_unavailable = False
     for br in branches:
@@ -1361,7 +1408,9 @@ def _quarantine_target(config: Config, repo_root: pathlib.Path, name: str, sha: 
     return base / f"{safe}-{sha[:12]}-{ts}-{pid}-{wt_hash}"
 
 
-def _archive_worktree(wt_path: pathlib.Path, archive_path: pathlib.Path) -> tuple[bool, str]:
+def _archive_worktree(
+    wt_path: pathlib.Path, archive_path: pathlib.Path, config: Config,
+) -> tuple[bool, str]:
     """Tar the worktree dir to archive_path. Returns (ok, error)."""
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     # tar from the parent so the archive contains the worktree basename
@@ -1369,7 +1418,8 @@ def _archive_worktree(wt_path: pathlib.Path, archive_path: pathlib.Path) -> tupl
     name = wt_path.name
     cmd = ["tar", "-czf", str(archive_path), "-C", str(parent), name]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        out = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=config.lane_w.archive_timeout_s)
     except subprocess.TimeoutExpired:
         return False, "tar timeout"
     if out.returncode != 0:
@@ -1380,7 +1430,8 @@ def _archive_worktree(wt_path: pathlib.Path, archive_path: pathlib.Path) -> tupl
     # entirely killing the rest of the sweep).
     try:
         verify = subprocess.run(["tar", "-tzf", str(archive_path)],
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True,
+                                timeout=config.lane_w.archive_verify_timeout_s)
         if verify.returncode != 0:
             try:
                 archive_path.unlink(missing_ok=True)
@@ -1460,7 +1511,7 @@ def run_lane_w(
     # the invoker's worktree.
     invoke_root = invoke_root or repo_root
     cur = current_branch(invoke_root)
-    skip_branches = {b for b in (config.trunk_branch, "master", cur) if b} | keep
+    skip_branches = protected_branch_names(config, cur, keep)
 
     worktrees = list_worktrees(repo_root)
     main_common = git_common_dir(repo_root)
@@ -1605,7 +1656,7 @@ def run_lane_w(
                     _atomic_write_text(quarantine / "clean-merged.manifest.json",
                         json.dumps(minimal_manifest, indent=2, sort_keys=True))
                     # tar the worktree to quarantine + verify integrity
-                    ok, err = _archive_worktree(wt.path, archive_path)
+                    ok, err = _archive_worktree(wt.path, archive_path, config)
                     if not ok:
                         rec = {"lane": "W", "branch": label, "tip_sha": wt.head,
                                 "worktree": str(wt.path), "action": "archive-failed",
@@ -1824,7 +1875,8 @@ def cmd_purge_quarantine(
                 if archive_file.is_file():
                     try:
                         verify = subprocess.run(["tar", "-tzf", str(archive_file)],
-                                                capture_output=True, text=True, timeout=30)
+                                                capture_output=True, text=True,
+                                                timeout=config.lane_w.archive_verify_timeout_s)
                         if verify.returncode == 0:
                             # Verified archive present — refuse to delete; surface.
                             # Round-5.5 Claude F3: touch mtime on skip so we
@@ -1970,6 +2022,19 @@ def _is_disabled(env_value: str | None) -> bool:
     return v not in ("", "0", "false", "no", "off")
 
 
+def _python_runtime_status() -> str:
+    toml_status = "tomllib=yes" if _TOMLLIB_IMPORT_ERROR is None else "tomllib=no"
+    return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} ({toml_status})"
+
+
+def _redirect_output_to(path: pathlib.Path) -> Any:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a", encoding="utf-8", buffering=1)
+    os.dup2(handle.fileno(), sys.stdout.fileno())
+    os.dup2(handle.fileno(), sys.stderr.fileno())
+    return handle
+
+
 def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
     """Doctor path that runs even when config parse failed (round-4 P1-6).
 
@@ -1979,8 +2044,7 @@ def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
     """
     print(f"[{SCRIPT_NAME}] doctor")
     print(f"  CONFIG ERROR             = {exc}")
-    print(f"  python                   = {sys.version_info.major}.{sys.version_info.minor} "
-          "(tomllib=yes)")
+    print(f"  python                   = {_python_runtime_status()}")
     try:
         common = git_common_dir(repo_root)
         print(f"  git-common-dir           = {common}")
@@ -2022,8 +2086,7 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     print(f"[{SCRIPT_NAME}] doctor")
 
     # Python / tomllib availability
-    py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    print(f"  python                   = {py_version} (tomllib=yes)")
+    print(f"  python                   = {_python_runtime_status()}")
 
     # config
     print(f"  config.enabled           = {config.enabled}")
@@ -2073,6 +2136,16 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     if not gh_ok:
         problems.append("gh CLI not available; Lane R cannot run")
 
+    cache_path = _gh_cache_path(repo_root)
+    cache_problem = _gh_cache_health(cache_path)
+    if cache_problem:
+        print(f"  gh cache                 = invalid ({cache_path})")
+        problems.append(f"gh cache invalid at {cache_path}: {cache_problem}")
+    elif cache_path.is_file():
+        print(f"  gh cache                 = ok ({cache_path})")
+    else:
+        print(f"  gh cache                 = (absent; will be created on Lane R)")
+
     # heartbeat freshness
     hb = _resolve_path(repo_root, config.logging.heartbeat_path)
     if hb.is_file():
@@ -2080,7 +2153,7 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
             hb_ts = dt.datetime.fromisoformat(hb.read_text(encoding="utf-8").strip())
             age = dt.datetime.now(dt.timezone.utc) - hb_ts
             print(f"  heartbeat age            = {age}")
-            if age > dt.timedelta(days=7):
+            if age > dt.timedelta(days=config.logging.heartbeat_stale_days):
                 problems.append(f"heartbeat stale ({age}); hook may be silently broken")
         except (ValueError, OSError):
             problems.append("heartbeat present but unreadable")
@@ -2217,6 +2290,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prune-backups", nargs="?", const=-1, type=int, default=None,
                    metavar="DAYS", help="prune backup refs older than DAYS")
     p.add_argument("--doctor", action="store_true", help="run diagnostic")
+    p.add_argument("--only-if-current-trunk", action="store_true",
+                   help=argparse.SUPPRESS)
+    p.add_argument("--redirect-output-to-lane-r-log", action="store_true",
+                   help=argparse.SUPPRESS)
     return p
 
 
@@ -2313,9 +2390,18 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_doctor_on_error(repo_root=pathlib.Path.cwd(), exc=exc)
         return 0
 
+    if args.redirect_output_to_lane_r_log:
+        try:
+            _redirect_output_to(_resolve_path(repo_root, config.logging.lane_r_log_path))
+        except OSError as exc:
+            if not args.quiet:
+                print(f"[{SCRIPT_NAME}] lane R log redirect failed: {exc}", file=sys.stderr)
+
     if _is_disabled(os.environ.get("CLEAN_MERGED_DISABLED")) or not config.enabled:
         if not args.quiet:
             print(f"[{SCRIPT_NAME}] disabled (kill switch)", file=sys.stderr)
+        return 0
+    if args.only_if_current_trunk and current_branch(invoke_root) != config.trunk_branch:
         return 0
 
     keep = set(args.keep)

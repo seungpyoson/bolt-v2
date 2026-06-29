@@ -8,9 +8,9 @@ Auto-cleanup of merged branches and worktrees. Always-on, agent-agnostic
 ## Problem
 
 Merged PRs leave local git branches and git worktrees. After Mergify merge
-waves, local state can also lag behind `origin/main`, so cleanup may evaluate
-branches and worktrees against stale remote-tracking refs unless the operator
-runs the manual sync lane first.
+waves, local state can also lag behind `<remote>/<configured-trunk>`, so cleanup
+may evaluate branches and worktrees against stale remote-tracking refs unless
+the operator runs the manual sync lane first.
 
 ## Hard constraints
 
@@ -27,14 +27,15 @@ runs the manual sync lane first.
 ### Lane S — Sync (manual, network-bound, fast-forward-only)
 
 - **Trigger:** manual only via `--sync-main`, normally through
-  `just clean-merged-backlog`. Hooks do not fetch or update `main`.
+  `just clean-merged-backlog`. Hooks do not fetch or update the configured
+  trunk.
 - **Dry-run default:** reports that `git fetch --prune <remote>` would run and
   that fast-forward safety would be evaluated after that fetch; it does not
   leave local branch or remote-tracking ref mutations, and it does not claim
   remote freshness from stale remote-tracking refs. When composed with cleanup
   lanes, dry-run fetches the remote trunk into a temporary preview ref, deletes
   that temp ref, and uses the preview SHA so Lane H/R/W can report exact
-  cleanup actions and refusals without advancing `main` or deleting
+  cleanup actions and refusals without advancing the configured trunk or deleting
   branches/worktrees. If the preview ref cannot be deleted, Lane S reports a
   refusal and later cleanup lanes do not run from that preview.
 - **Apply:** runs `git fetch --prune <remote>`, verifies local trunk is an
@@ -51,7 +52,8 @@ runs the manual sync lane first.
 
 - **Triggers:** `post-merge` (primary; FF verified — see
   `clean-merged-triggers.md`), `post-rewrite` (divergent rebase pull),
-  `post-checkout` (gated `$3==1 && target==trunk`, best-effort).
+  `post-checkout` (shell-gated `$3==1`, then Python-gated
+  `target==configured trunk`, best-effort).
 - **Synchronous by default.** Typical sweep is sub-second. Detach only if
   profiling demands, with non-blocking `fcntl.flock`, stdin→`/dev/null`,
   stdout/stderr→audit log.
@@ -64,17 +66,19 @@ runs the manual sync lane first.
 
 ### Lane R — Reconcile (hook-spawned detached OR manual; network-bound)
 
-- `post-merge` spawns Lane R detached (`setsid`, stdin→`/dev/null`,
-  stdout/stderr→log) with strict Python `subprocess.run(timeout=cfg)` on the
-  gh call and a 5-min cache. The git op returns instantly. Manual
+- `post-merge` spawns Lane R detached (`setsid` when available, otherwise a
+  background subprocess), stdin→`/dev/null`, and stdout/stderr redirected by
+  Python to the configured Lane R log path. It uses strict Python
+  `subprocess.run(timeout=cfg)` on the gh call and a config-backed cache TTL.
+  The git op returns instantly. Manual
   `just clean-merged --reconcile` for on-demand, or
   `just clean-merged-backlog` after merge waves when sync + worktree cleanup
   are both wanted.
 - **Skip worktree-bound branches** — those flow to Lane W.
-- **Per-branch gh query** (`--limit 100` plus exact `headRefOid` matching to
-  cover realistic branch reuse without accepting false positives): for each
-  non-ancestor, non-worktree-bound branch:
-  `gh pr list --head <B> --state merged --json number,headRefOid,baseRefName,headRepositoryOwner,isCrossRepository --limit 100`
+- **Per-branch gh query** (`--limit <cfg gh_limit>` plus exact `headRefOid`
+  matching to cover realistic branch reuse without accepting false positives):
+  for each non-ancestor, non-worktree-bound branch:
+  `gh pr list --head <B> --state merged --json number,headRefOid,baseRefName,headRepositoryOwner,isCrossRepository --limit <cfg gh_limit>`
   (`GH_PROMPT_DISABLED=1 GIT_TERMINAL_PROMPT=0`, Python timeout).
 - Match only if `headRefOid == git rev-parse <B>` AND `baseRefName == trunk`
   AND `headRepositoryOwner == <origin owner>` AND NOT `isCrossRepository`.
@@ -133,8 +137,9 @@ days of purge. **Purge only dirs whose manifest records `worktree_remove_ok`.**
 ## Config — `config/clean-merged.toml` (single source of truth)
 
 Read from the **main worktree** path (not the current worktree, which may be
-on a branch predating the config). Missing required keys fail loud; missing
-optional keys use documented defaults + warning. See the file for the schema.
+on a branch predating the config). Missing or unknown runtime keys fail loud;
+every runtime value lives in `config/clean-merged.toml`. See the file for the
+schema.
 
 ## Backup refs
 
@@ -174,8 +179,8 @@ in two specific ways. Stated precisely:)
   cannot auto-run hooks on clone without local config; there is no in-tree
   bootstrap. `just clean-merged-doctor` reports an unset hooksPath as a problem.
 - **Always-on for branch ref cleanup (Lane H + Lane R).** Every `git pull`
-  (incl. FF — empirically verified) and `git checkout main` fires the hooks
-  and cleans eligible branches automatically.
+  (incl. FF — empirically verified) and checkout of the configured trunk fires
+  the hooks and cleans eligible branches automatically.
 - **NOT always-on for worktree removal (Lane W).** Lane W is opt-in
   (`--include-worktrees` / `just clean-merged-backlog`). Worktree-bound
   branches that are merged upstream accumulate until the operator runs Lane W
@@ -216,20 +221,23 @@ in two specific ways. Stated precisely:)
 - **Silent hook-death detection latency** (round-soundness GPT/Kimi/Claude).
   If `python3` becomes unavailable (brew upgrade removes the symlink, PATH
   change after OS update), the hooks silently no-op via `command -v python3 ||
-  exit 0`. The fail-open contract is intentional — a hook that broke `git pull`
-  over a missing dep would be strictly worse. The only detector is
-  `--doctor`'s heartbeat-freshness check (7-day floor); doctor is opt-in/pull-
-  based (no cron/launchd wiring), so real detection latency is 7 days + however
-  long until someone runs doctor. The failure cost equals the no-tool baseline
-  (merged branches linger; committed work stays reachable via reflog); prior
-  deletions are backup-ref protected. Run `just clean-merged-doctor`
-  periodically.
+  exit 0`. If `python3` exists but lacks stdlib `tomllib` (Python <3.11), the
+  script fail-opens for hook lanes and `--doctor` reports `tomllib=no` with the
+  Python 3.11+ requirement. The fail-open contract is intentional — a hook that
+  broke `git pull` over a missing dep would be strictly worse. Detection still
+  depends on `--doctor`'s heartbeat-freshness check (config-backed threshold);
+  doctor is
+  opt-in/pull-based (no cron/launchd wiring), so real detection latency is 7
+  days + however long until someone runs doctor. The failure cost equals the
+  no-tool baseline (merged branches linger; committed work stays reachable via
+  reflog); prior deletions are backup-ref protected. Run
+  `just clean-merged-doctor` periodically.
 - **Lane R gh cost under slowdown** (round-soundness GPT/Kimi). Lane R is
   spawned detached on every `post-merge`; each non-ancestor branch triggers a
-  per-branch gh query (5s timeout each). On a repo with ~40 branches during a
-  gh slowdown, background work could reach ~200s per merge. The git op returns
-  instantly (detached); the cost is background CPU + potential gh rate-limit
-  pressure. Mitigated by per-branch TTL cache (5-min default) + the fail-safe
+  per-branch gh query (config-backed timeout each). On a repo with ~40 branches
+  during a gh slowdown, background work could last several minutes per merge.
+  The git op returns instantly (detached); the cost is background CPU +
+  potential gh rate-limit pressure. Mitigated by per-branch TTL cache + the fail-safe
   "gh trouble → keep branch" contract. If gh is persistently slow, squash-merged
   branches accumulate until an online manual reconcile. No data loss.
 - **Future-dated `fetched_at` in cache** (round-5.5 polish-2 Claude). A

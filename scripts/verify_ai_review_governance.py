@@ -430,6 +430,72 @@ def workflow_step_block(workflow_text: str, step_name: str) -> str:
     return ""
 
 
+def workflow_literal_block_value(block: str, key: str) -> str | None:
+    lines = block.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != f"{key}: |":
+            continue
+        base_indent = len(line) - len(line.lstrip())
+        value_lines: list[str] = []
+        for next_line in lines[index + 1 :]:
+            stripped = next_line.strip()
+            next_indent = len(next_line) - len(next_line.lstrip())
+            if stripped and next_indent <= base_indent:
+                break
+            value_lines.append(next_line[base_indent + 2 :] if len(next_line) >= base_indent + 2 else "")
+        return "\n".join(value_lines)
+    return None
+
+
+def yaml_scalar_entries(block: str) -> tuple[tuple[str, str], ...]:
+    entries: list[tuple[str, str]] = []
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, separator, value = stripped.partition(":")
+        if separator:
+            entries.append((key.strip(), value.strip()))
+    return tuple(entries)
+
+
+def verify_literal_block_unique_entries(
+    step_block: str,
+    *,
+    block_key: str,
+    expected_entries: dict[str, str],
+    label: str,
+) -> list[str]:
+    block = workflow_literal_block_value(step_block, block_key)
+    expected_description = ", ".join(
+        f"exactly one {key}: {value} entry" for key, value in expected_entries.items()
+    )
+    if block is None:
+        return [f"{label} must set {block_key} to {expected_description}"]
+
+    values_by_key: dict[str, list[str]] = {}
+    for key, value in yaml_scalar_entries(block):
+        values_by_key.setdefault(key, []).append(value)
+
+    mismatched = {
+        key: values_by_key.get(key, [])
+        for key, expected_value in expected_entries.items()
+        if values_by_key.get(key, []) != [expected_value]
+    }
+    if mismatched:
+        return [f"{label} must set {block_key} to {expected_description}; got {mismatched!r}"]
+    return []
+
+
+def verify_claude_additional_permissions_cap(claude_run_step: str) -> list[str]:
+    return verify_literal_block_unique_entries(
+        claude_run_step,
+        block_key="additional_permissions",
+        expected_entries={"contents": "read"},
+        label="Claude workflow review step",
+    )
+
+
 def verify_model_freshness_step_contracts(glm_workflow: str, kimi_workflow: str) -> list[str]:
     findings: list[str] = []
     provider_steps = (
@@ -941,8 +1007,7 @@ def verify_texts(
             findings.append("Claude workflow review step must be advisory via continue-on-error")
         if "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" not in claude_run_step:
             findings.append("Claude workflow review step must use CLAUDE_CODE_OAUTH_TOKEN")
-        if "additional_permissions: |" not in claude_run_step or "contents: read" not in claude_run_step:
-            findings.append("Claude workflow review step must cap Claude app token contents permission to read")
+        findings.extend(verify_claude_additional_permissions_cap(claude_run_step))
         if "anthropic_api_key:" in claude_run_step:
             findings.append("Claude workflow review step must not set anthropic_api_key alongside OAuth")
         if "--allowedTools" not in claude_run_step:
@@ -1132,7 +1197,7 @@ def run_self_tests(repo_root: Path) -> None:
         raise AssertionError("Claude review step must be advisory via continue-on-error")
     if "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" not in claude_review_step:
         raise AssertionError("Claude review step must use CLAUDE_CODE_OAUTH_TOKEN")
-    if "additional_permissions: |" not in claude_review_step or "contents: read" not in claude_review_step:
+    if verify_claude_additional_permissions_cap(claude_review_step):
         raise AssertionError("Claude review step must cap Claude app token contents permission to read")
     if "anthropic_api_key:" in claude_review_step:
         raise AssertionError("Claude review step must not set anthropic_api_key")
@@ -1181,7 +1246,7 @@ def run_self_tests(repo_root: Path) -> None:
     assert_finding(
         "Claude missing app token contents cap",
         claude_missing_additional_permissions,
-        "app token contents permission",
+        "exactly one contents: read",
     )
 
     claude_weakened_additional_permissions = verify_variant(
@@ -1190,7 +1255,20 @@ def run_self_tests(repo_root: Path) -> None:
     assert_finding(
         "Claude weakened app token contents cap",
         claude_weakened_additional_permissions,
-        "app token contents permission",
+        "exactly one contents: read",
+    )
+
+    claude_duplicate_additional_permissions = verify_variant(
+        claude_text=claude.replace(
+            "          additional_permissions: |\n            contents: read\n",
+            "          additional_permissions: |\n            contents: read\n            contents: write\n",
+            1,
+        ),
+    )
+    assert_finding(
+        "Claude duplicate app token contents cap",
+        claude_duplicate_additional_permissions,
+        "exactly one contents: read",
     )
 
     claude_missing_labeled_trigger = verify_variant(

@@ -6,6 +6,7 @@ import io
 import json
 import pathlib
 import sys
+import tempfile
 import unittest
 from typing import Any
 
@@ -783,6 +784,52 @@ class CiStorageAuditTests(unittest.TestCase):
         finally:
             os.chdir(original_cwd)
 
+    def test_cleanup_policy_discovery_ignores_marker_outside_policy_table(self) -> None:
+        original_paths = ci_storage_audit.repository_toml_paths
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = pathlib.Path(raw_tmp)
+            decoy = tmp / "decoy.toml"
+            policy_path = tmp / "policy.toml"
+            decoy.write_text("# [storage_audit.cleanup_feasibility]\n", encoding="utf-8")
+            policy_path.write_text(
+                """
+                [storage_audit.cleanup_feasibility]
+                schema_version = 1
+                default_class = "ambiguous"
+                default_decision = "KEEP"
+                default_keep_reason = "default keep"
+                protected_ref_keep_reason = "protected keep"
+                artifact_metadata_unavailable_keep_reason = "metadata keep"
+                active_run_keep_reason = "active keep"
+                status_unavailable_keep_reason = "status keep"
+                expiration_unknown_keep_reason = "expiration keep"
+                not_expired_keep_reason = "not expired keep"
+                billing_impact_unverifiable = "billing unavailable"
+                wait_and_remeasure = "wait"
+                protected_refs = []
+                protected_ref_prefixes = []
+                protected_ref_globs = []
+                active_run_statuses = ["queued"]
+                terminal_run_statuses = ["completed"]
+                workflow_run_fetch_limit = 1
+                billing_probe_paths = []
+
+                [[storage_audit.cleanup_feasibility.classes]]
+                id = "safe_keep"
+                name_equals = ["safe"]
+                name_prefixes = []
+                expired_decision = "KEEP"
+                keep_reason = "keep"
+                """,
+                encoding="utf-8",
+            )
+
+            ci_storage_audit.repository_toml_paths = lambda: [decoy, policy_path]
+            try:
+                self.assertEqual(ci_storage_audit.discover_cleanup_policy_path(), policy_path)
+            finally:
+                ci_storage_audit.repository_toml_paths = original_paths
+
     def test_ref_protection_normalizes_default_branch_and_tag_shapes(self) -> None:
         policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
         policy = ci_storage_audit.load_cleanup_policy_path(policy_path)
@@ -792,6 +839,7 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertTrue(ci_storage_audit.ref_is_protected(policy, "refs/tags/v0.1.0"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "tags/v0.1.0"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "tags/feature-branch"))
+        self.assertTrue(ci_storage_audit.ref_is_protected(policy, "v0.1.0"))
         self.assertTrue(ci_storage_audit.ref_is_protected(policy, "deploy/eu-west-2/2026-06-18-0ddd9f73"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "feature/artifact-observe"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "issue-955"))
@@ -840,8 +888,50 @@ class CiStorageAuditTests(unittest.TestCase):
                     },
                 )
 
-    def test_cleanup_feasibility_keeps_candidate_when_run_api_returns_wrong_identity(self) -> None:
-        policy = cleanup_candidate_policy("run-api-identity-policy")
+    def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_has_empty_canonical_ref(self) -> None:
+        policy = cleanup_candidate_policy("empty-canonical-ref-policy")
+        for raw_ref in ("refs/heads/", "refs/tags/"):
+            with self.subTest(raw_ref=raw_ref):
+                entry = ci_storage_audit.artifact_entry_from_raw(
+                    {
+                        "id": 1,
+                        "name": "nextest-archive",
+                        "size_in_bytes": 100,
+                        "created_at": "2026-06-01T00:00:00Z",
+                        "expires_at": "2026-06-15T00:00:00Z",
+                        "expired": True,
+                        "workflow_run": {
+                            "id": 501,
+                            "status": "completed",
+                            "ref": raw_ref,
+                            "head_sha": "a" * 40,
+                        },
+                    }
+                )
+
+                cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+                    FakeClient({}),
+                    repo="owner/repo",
+                    artifacts=cleanup_artifacts_with_entry(entry),
+                    policy=policy,
+                )
+
+                self.assertEqual(cleanup["candidate_count"], 0)
+                self.assertEqual(cleanup["metadata_unavailable_count"], 1)
+                self.assertEqual(cleanup["rows"][0]["decision"], "KEEP")
+                self.assertEqual(cleanup["rows"][0]["reason_code"], "artifact_metadata_unavailable")
+                self.assertEqual(
+                    cleanup["rows"][0]["metadata_failure"],
+                    {
+                        "field": "workflow_run.ref",
+                        "state": "invalid",
+                        "code": "artifact_ref_invalid",
+                    },
+                )
+
+    def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_is_version_tag_shaped(self) -> None:
+        policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
+        policy = ci_storage_audit.load_cleanup_policy_path(policy_path)
         entry = ci_storage_audit.artifact_entry_from_raw(
             {
                 "id": 1,
@@ -852,41 +942,84 @@ class CiStorageAuditTests(unittest.TestCase):
                 "expired": True,
                 "workflow_run": {
                     "id": 501,
-                    "head_branch": "feature/unverified-run-api",
-                    "head_sha": "a" * 40,
-                },
-            }
-        )
-        client = FakeClient(
-            {
-                "actions/runs/501": {
                     "status": "completed",
-                    "conclusion": "success",
-                    "head_branch": "feature/unverified-run-api",
+                    "head_branch": "v0.1.0",
                     "head_sha": "a" * 40,
                 },
             }
         )
 
         cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
-            client,
+            FakeClient(
+                {
+                    ("GLOBAL", "users/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                        "users/owner/settings/billing/actions",
+                        "billing unavailable",
+                    ),
+                    ("GLOBAL", "orgs/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                        "orgs/owner/settings/billing/actions",
+                        "billing unavailable",
+                    ),
+                }
+            ),
             repo="owner/repo",
             artifacts=cleanup_artifacts_with_entry(entry),
             policy=policy,
         )
 
         self.assertEqual(cleanup["candidate_count"], 0)
-        self.assertEqual(cleanup["unverified_candidate_count"], 1)
         self.assertEqual(cleanup["rows"][0]["decision"], "KEEP")
-        self.assertEqual(cleanup["rows"][0]["reason_code"], "workflow_status_unavailable")
-        self.assertEqual(
-            cleanup["rows"][0]["workflow_run"]["status_failure"],
-            {
-                "field": "workflow_run.api",
-                "state": "invalid",
-                "code": "workflow_run_api_invalid",
-            },
-        )
+        self.assertEqual(cleanup["rows"][0]["reason_code"], "protected_ref")
+
+    def test_cleanup_feasibility_keeps_candidate_when_run_api_returns_wrong_identity(self) -> None:
+        policy = cleanup_candidate_policy("run-api-identity-policy")
+        cases = (None, 999)
+        for fetched_run_id in cases:
+            with self.subTest(fetched_run_id=fetched_run_id):
+                entry = ci_storage_audit.artifact_entry_from_raw(
+                    {
+                        "id": 1,
+                        "name": "nextest-archive",
+                        "size_in_bytes": 100,
+                        "created_at": "2026-06-01T00:00:00Z",
+                        "expires_at": "2026-06-15T00:00:00Z",
+                        "expired": True,
+                        "workflow_run": {
+                            "id": 501,
+                            "head_branch": "feature/unverified-run-api",
+                            "head_sha": "a" * 40,
+                        },
+                    }
+                )
+                fetched_payload = {
+                    "status": "completed",
+                    "conclusion": "success",
+                    "head_branch": "feature/unverified-run-api",
+                    "head_sha": "a" * 40,
+                }
+                if fetched_run_id is not None:
+                    fetched_payload["id"] = fetched_run_id
+                client = FakeClient({"actions/runs/501": fetched_payload})
+
+                cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+                    client,
+                    repo="owner/repo",
+                    artifacts=cleanup_artifacts_with_entry(entry),
+                    policy=policy,
+                )
+
+                self.assertEqual(cleanup["candidate_count"], 0)
+                self.assertEqual(cleanup["unverified_candidate_count"], 1)
+                self.assertEqual(cleanup["rows"][0]["decision"], "KEEP")
+                self.assertEqual(cleanup["rows"][0]["reason_code"], "workflow_status_unavailable")
+                self.assertEqual(
+                    cleanup["rows"][0]["workflow_run"]["status_failure"],
+                    {
+                        "field": "workflow_run.api",
+                        "state": "invalid",
+                        "code": "workflow_run_api_invalid",
+                    },
+                )
 
     def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_has_surrounding_whitespace(self) -> None:
         policy = cleanup_candidate_policy("whitespace-ref-policy")
@@ -2138,6 +2271,51 @@ class CiStorageAuditTests(unittest.TestCase):
                 """,
                 label="whitespace-policy",
             )
+
+    def test_cleanup_policy_rejects_surrounding_whitespace_in_referenced_templates(self) -> None:
+        templates = (
+            " issue-789-first-pl-{run_id}-{run_attempt}",
+            "issue-789-first-pl- {run_id}-{run_attempt}",
+        )
+        for template in templates:
+            with self.subTest(template=template):
+                with self.assertRaisesRegex(ci_storage_audit.AuditError, "artifact_name_template"):
+                    ci_storage_audit.load_cleanup_policy_text(
+                        f"""
+                        [backtester.issue_789]
+                        artifact_name_template = "{template}"
+
+                        [storage_audit.cleanup_feasibility]
+                        schema_version = 1
+                        default_class = "unclassified"
+                        default_decision = "KEEP"
+                        default_keep_reason = "default keep"
+                        protected_ref_keep_reason = "protected keep"
+                        artifact_metadata_unavailable_keep_reason = "metadata keep"
+                        active_run_keep_reason = "active keep"
+                        status_unavailable_keep_reason = "status keep"
+                        expiration_unknown_keep_reason = "expiration keep"
+                        not_expired_keep_reason = "not expired keep"
+                        billing_impact_unverifiable = "billing unavailable"
+                        wait_and_remeasure = "wait"
+                        protected_refs = []
+                        protected_ref_prefixes = []
+                        protected_ref_globs = []
+                        active_run_statuses = ["queued"]
+                        terminal_run_statuses = ["completed"]
+                        workflow_run_fetch_limit = 1
+                        billing_probe_paths = []
+
+                        [[storage_audit.cleanup_feasibility.classes]]
+                        id = "backtester_payload"
+                        name_equals = []
+                        name_prefixes_from_templates = ["backtester.issue_789.artifact_name_template"]
+                        expired_decision = "DELETE-CANDIDATE"
+                        candidate_reason = "candidate"
+                        keep_reason = "keep"
+                        """,
+                        label="whitespace-template-policy",
+                    )
 
     def test_cleanup_policy_rejects_surrounding_whitespace_in_scalar_strings(self) -> None:
         with self.assertRaisesRegex(ci_storage_audit.AuditError, "default_class"):

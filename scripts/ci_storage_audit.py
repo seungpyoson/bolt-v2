@@ -202,7 +202,6 @@ CACHE_PERSISTENCE_MISSING_WARNING = (
 )
 KEEP_DECISION = "KEEP"
 DELETE_CANDIDATE_DECISION = "DELETE-CANDIDATE"
-CLEANUP_POLICY_SECTION_MARKER = "[storage_audit.cleanup_feasibility]"
 STATE_ABSENT = "absent"
 STATE_EMPTY = "empty"
 STATE_INVALID = "invalid"
@@ -672,16 +671,14 @@ def resolve_string_ref(document: dict[str, Any], dotted_ref: str, label: str) ->
         if not isinstance(current, dict) or part not in current:
             raise AuditError(f"{label} reference {dotted_ref!r} is missing")
         current = current[part]
-    if not isinstance(current, str) or not current:
-        raise AuditError(f"{label} reference {dotted_ref!r} must resolve to a non-empty string")
-    return current
+    return require_text(current, f"{label} reference {dotted_ref!r}")
 
 
 def template_prefix(template: str, label: str) -> str:
     prefix = template.split("{", 1)[0]
     if not prefix:
         raise AuditError(f"{label} template must have a literal prefix before the first placeholder")
-    return prefix
+    return require_text(prefix, f"{label} template prefix")
 
 
 def referenced_strings(
@@ -696,7 +693,11 @@ def referenced_strings(
     values: list[str] = []
     for ref in refs:
         value = resolve_string_ref(document, ref, f"{label}.{key}")
-        values.append(template_prefix(value, f"{label}.{key}") if prefix_from_template else value)
+        values.append(
+            template_prefix(value, f"{label}.{key} reference {ref!r}")
+            if prefix_from_template
+            else value
+        )
     return tuple(values)
 
 
@@ -873,6 +874,15 @@ def load_cleanup_policy_path(path: pathlib.Path) -> ArtifactCleanupPolicy:
         raise AuditError(f"{path}: could not read cleanup policy: {exc}") from exc
 
 
+def has_cleanup_policy_table(path: pathlib.Path) -> bool:
+    try:
+        document = tomllib.loads(path.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise AuditError(f"{path}: could not inspect TOML during cleanup policy discovery: {exc}") from exc
+    storage_audit = document.get("storage_audit")
+    return isinstance(storage_audit, dict) and isinstance(storage_audit.get("cleanup_feasibility"), dict)
+
+
 def repository_root_path() -> pathlib.Path:
     result = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
@@ -901,11 +911,7 @@ def repository_toml_paths() -> list[pathlib.Path]:
 def discover_cleanup_policy_path() -> pathlib.Path:
     candidates: list[pathlib.Path] = []
     for path in repository_toml_paths():
-        try:
-            text = path.read_text()
-        except OSError as exc:
-            raise AuditError(f"{path}: could not inspect TOML during cleanup policy discovery: {exc}") from exc
-        if CLEANUP_POLICY_SECTION_MARKER in text:
+        if has_cleanup_policy_table(path):
             candidates.append(path)
     if not candidates:
         raise AuditError("no tracked TOML file declares [storage_audit.cleanup_feasibility]")
@@ -1094,10 +1100,11 @@ def classify_cleanup_ref(value: Any, field: str, *, allow_canonical_refs: bool) 
     if ref.value.startswith(("heads/", "tags/")):
         return ClassifiedText(value=None, failure=input_failure(field, STATE_INVALID))
     if ref.value.startswith("refs/"):
-        if allow_canonical_refs and (
-            ref.value.startswith("refs/heads/") or ref.value.startswith("refs/tags/")
-        ):
-            return ref
+        if allow_canonical_refs:
+            if ref.value.startswith("refs/heads/") and ref.value.removeprefix("refs/heads/"):
+                return ref
+            if ref.value.startswith("refs/tags/") and ref.value.removeprefix("refs/tags/"):
+                return ref
         return ClassifiedText(value=None, failure=input_failure(field, STATE_INVALID))
     return ref
 

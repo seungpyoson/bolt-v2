@@ -68,7 +68,10 @@ jobs:
       - name: Run tests
         run: |
           rc=0
-          just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast || rc=$? || true
+          set +e
+          just test --config-file "$RUNNER_TEMP/nextest-junit.toml" --no-fail-fast
+          rc=$?
+          set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
 
       - name: Stage JUnit report
@@ -150,7 +153,10 @@ jobs:
       - name: Run tests
         run: |
           rc=0
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl || rc=$? || true
+          set +e
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          rc=$?
+          set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
 
       - name: Stage JUnit report
@@ -231,7 +237,10 @@ jobs:
       - name: Run tests
         run: |
           rc=0
-          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl || rc=$? || true
+          set +e
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" issue_789_first_real_free_data_taker_pl
+          rc=$?
+          set -e
           printf 'MERGIFY_TEST_EXIT_CODE=%s\n' "$rc" >> "$GITHUB_ENV"
 
       - name: Stage JUnit report

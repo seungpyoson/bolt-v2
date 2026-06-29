@@ -534,6 +534,22 @@ class LaneWTests(unittest.TestCase):
         self.assertTrue(captured.get("ref_present"),
                         "Lane W eligibility must run BEFORE the branch ref is deleted")
 
+    def test_lane_w_iteration_exception_audit_type_error_does_not_kill_sweep(self) -> None:
+        self._setup_merged_worktree_branch("feat/audit-typeerror")
+        config = cm.load_config(self.work)
+
+        with mock.patch.object(cm, "_lane_w_eligible",
+                               side_effect=RuntimeError("probe failure")):
+            with mock.patch.object(cm, "write_audit",
+                                   side_effect=TypeError("not json serializable")):
+                records = cm.run_lane_w(self.work, config, apply=False, keep=set(),
+                                        quiet=True, discard_ignored=False,
+                                        remove_nested=False, discard_hidden=False)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["action"], "iteration-exception")
+        self.assertIn("RuntimeError: probe failure", records[0]["reason"])
+
 
 # ---------------------------------------------------------------------------
 # Cross-cutting / infra tests

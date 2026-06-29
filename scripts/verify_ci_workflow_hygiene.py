@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 import functools
 import json
 import pathlib
@@ -12,7 +12,7 @@ import shlex
 import subprocess
 import sys
 import tomllib
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -24,6 +24,7 @@ from ci_provenance import (
     POLICY_ROWS,
     POLICY_VALUES,
     ProvenanceError,
+    check_lookback_le_retention,
     gate_name_collision_errors,
     github_actions_output_safe_check_name,
     policy_contract_errors,
@@ -65,6 +66,11 @@ DEFAULT_ACTIONLINT_CONFIG = REPO_ROOT / ".github" / "actionlint.yaml"
 DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
 DEFAULT_BVS_RUST_VERIFICATION_POLICY = REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
 JOB_RUNS_ON_VAR_RE = re.compile(r"^    runs-on:\s*\$\{\{\s*vars\.([A-Z0-9_]+)\s*\}\}\s*$")
+CONFIG_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+ARTIFACT_RETENTION_WORKFLOW_SOURCE_RE = re.compile(r"\.github/workflows/[^/]+\.ya?ml")
+ARTIFACT_RETENTION_ACTION_SOURCE_RE = re.compile(
+    r"\.github/actions/[^/]+(?:/[^/]+)*/action\.ya?ml"
+)
 WORKFLOW_RUNNER_CONFIG_KEYS = {
     "ci.yml": "ci",
     ".github/workflows/ci.yml": "ci",
@@ -92,6 +98,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/ai-review-kimi-cli.yml": "ai_review_kimi_cli",
     "ai-review-coding-plan-smoke.yml": "ai_review_coding_plan_smoke",
     ".github/workflows/ai-review-coding-plan-smoke.yml": "ai_review_coding_plan_smoke",
+    "ai-review-model-freshness.yml": "ai_review_model_freshness",
+    ".github/workflows/ai-review-model-freshness.yml": "ai_review_model_freshness",
     "advisory.yml": "advisory",
     ".github/workflows/advisory.yml": "advisory",
     "summary.yml": "summary",
@@ -108,8 +116,8 @@ DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
     (REPO_ROOT / "tests", "*.sh"),
     (REPO_ROOT / ".github" / "scripts", "*.sh"),
-    (REPO_ROOT / ".github" / "actions", "*/action.yml"),
-    (REPO_ROOT / ".github" / "actions", "*/action.yaml"),
+    (REPO_ROOT / ".github" / "actions", "**/action.yml"),
+    (REPO_ROOT / ".github" / "actions", "**/action.yaml"),
 )
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
 LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS = {"build", "clippy", "test"}
@@ -135,6 +143,49 @@ class CiPolicyResult(NamedTuple):
     backtester_gate_name: str
     expected_event_class: str
     reason: str
+
+
+class ArtifactRetentionClass(NamedTuple):
+    max_retention_days: int
+
+
+class ArtifactRetentionUploadSite(NamedTuple):
+    artifact_name: str
+    artifact_class: str
+    retention_days: int
+    retention_config_file: str | None
+    retention_config_ref: str | None
+
+
+class ArtifactRetentionLookbackBinding(NamedTuple):
+    upload: str
+    config_file: str
+    retention_ref: str
+    lookback_ref: str
+
+
+class ArtifactRetentionPolicy(NamedTuple):
+    classes: dict[str, ArtifactRetentionClass]
+    uploads: dict[str, ArtifactRetentionUploadSite]
+    lookback_bindings: dict[str, ArtifactRetentionLookbackBinding]
+
+
+class ArtifactRetentionResolvedInt(NamedTuple):
+    value: int
+    config_file: str | None
+    config_ref: str | None
+
+
+ArtifactRetentionSourceResolver = Callable[
+    [dict[str, object], pathlib.Path, dict[str, object], str],
+    object,
+]
+
+
+class ArtifactRetentionSourceMode(NamedTuple):
+    name: str
+    keys: tuple[str, ...]
+    resolver: ArtifactRetentionSourceResolver
 
 
 REQUIRED_JOBS = (
@@ -623,6 +674,106 @@ TEST_ARCHIVE_SIDECAR_PACK_GUARD = (
 )
 TEST_ARCHIVE_TARGET_CACHE_RESTORE_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_TARGET_CACHE_SAVE_GUARD = "if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}"
+TEST_ARCHIVE_TARGET_CACHE_KEY = (
+    "managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ "
+    "hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', "
+    "'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', "
+    "'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', "
+    "'.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', "
+    "'src/**', 'tests/**') }}"
+)
+TEST_ARCHIVE_CACHE_AUDIT_STEP = "Resolve root nextest cache keys"
+TEST_ARCHIVE_CACHE_AUDIT_STEP_ID = "id: root-nextest-cache-keys"
+TEST_ARCHIVE_CACHE_KEY_OUTPUT = "${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}"
+TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT = "${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}"
+TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT = "${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}"
+TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS = (
+    f"nextest_archive_cache_key: {TEST_ARCHIVE_CACHE_KEY_OUTPUT}",
+    f"root_bin_sidecars_cache_key: {TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT}",
+    f"archive_build_target_cache_key: {TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT}",
+    "nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}",
+    "root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}",
+    "archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}",
+)
+TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS = (
+    "nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}",
+    "root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}",
+    "archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}",
+)
+TEST_ARCHIVE_CACHE_SAVE_STEP_IDS = (
+    ("Save nextest archive", "id: nextest-archive-cache-save"),
+    ("Save root binary sidecars", "id: root-bin-sidecars-cache-save"),
+    ("Save archive build target cache", "id: test-target-cache-save"),
+)
+TEST_ARCHIVE_CACHE_RESTORE_STEP_IDS = (
+    ("Restore nextest archive", "id: nextest-archive-cache"),
+    ("Restore root binary sidecars", "id: root-bin-sidecars-cache"),
+    ("Restore archive build target cache", "id: test-target-cache"),
+)
+TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS = (
+    "nextest_archive_cache_key=",
+    "root_bin_sidecars_cache_key=",
+    "archive_build_target_cache_key=",
+)
+CACHE_PERSISTENCE_AUDIT_PROBE_STEP = "Probe saved cache keys"
+CACHE_PERSISTENCE_AUDIT_NEEDS = ("ci-policy", "nextest-fingerprint-reuse", "test-archive")
+CACHE_PERSISTENCE_AUDIT_CACHE_KEYS = (
+    '--cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}"',
+    '--cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}"',
+    '--cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"',
+)
+CACHE_PERSISTENCE_AUDIT_CACHE_REFS = (
+    '--github-event-name "$GITHUB_EVENT_NAME"',
+    '--github-ref "$GITHUB_REF"',
+    '--github-base-ref "$GITHUB_BASE_REF"',
+    '--github-default-branch "${{ github.event.repository.default_branch }}"',
+)
+CACHE_PERSISTENCE_AUDIT_SUMMARY_ARG = '--github-step-summary "$GITHUB_STEP_SUMMARY"'
+CACHE_PERSISTENCE_AUDIT_ANNOTATIONS_ARG = "--github-annotations"
+CACHE_PERSISTENCE_AUDIT_RESTORE_HIT_ARGS = (
+    '--restore-hit "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_hit }}"',
+    '--restore-hit "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}"',
+    '--restore-hit "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_hit }}"',
+)
+CACHE_PERSISTENCE_AUDIT_SAVE_OUTCOME_ARGS = (
+    '--save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}"',
+    '--save-outcome "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}"',
+    '--save-outcome "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}"',
+)
+CACHE_PERSISTENCE_AUDIT_PROBE_SCALAR_REQUIREMENTS = (
+    (
+        "cache-persistence-audit must use the workflow token for cache API reads",
+        "GH_TOKEN",
+        "${{ github.token }}",
+    ),
+)
+CACHE_PERSISTENCE_AUDIT_PROBE_COMMAND_REQUIREMENTS = (
+    (
+        "cache-persistence-audit must probe all root nextest cache keys",
+        CACHE_PERSISTENCE_AUDIT_CACHE_KEYS,
+    ),
+    (
+        "cache-persistence-audit must limit exact-key probes to restorable cache refs",
+        CACHE_PERSISTENCE_AUDIT_CACHE_REFS,
+    ),
+    (
+        "cache-persistence-audit must write probe results to the job summary",
+        (CACHE_PERSISTENCE_AUDIT_SUMMARY_ARG,),
+    ),
+    (
+        "cache-persistence-audit must emit audit annotations from ci_storage_audit",
+        (CACHE_PERSISTENCE_AUDIT_ANNOTATIONS_ARG,),
+    ),
+    (
+        "cache-persistence-audit must summarize cache restore hits",
+        CACHE_PERSISTENCE_AUDIT_RESTORE_HIT_ARGS,
+    ),
+    (
+        "cache-persistence-audit must summarize cache save outcomes",
+        CACHE_PERSISTENCE_AUDIT_SAVE_OUTCOME_ARGS,
+    ),
+)
+CACHE_PERSISTENCE_AUDIT_ARGV_PREFIX = ("python3", "scripts/ci_storage_audit.py")
 TEST_ARCHIVE_TEST_PROFILE_ENV = 'CARGO_PROFILE_TEST_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_BUILD_COMMAND = (
@@ -658,8 +809,6 @@ JUST_LANE_RE = re.compile(
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
 BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
-BOLT_V2_BINARY_ARTIFACT_NAME = "bolt-v2-binary"
-BOLT_V2_BINARY_RETENTION_DAYS = "3"
 # taiki-e/install-action must be pinned to a 40-hex commit SHA (mutable tags
 # like @v2 are rejected). The specific SHA is NOT enforced here — Dependabot
 # opens a PR with release notes for every bump and PR review is the human
@@ -1916,11 +2065,190 @@ def block_has_scalar(block: list[str], name: str, value: str) -> bool:
     return any(strip_comment(line).strip() == expected for line in block)
 
 
+def mapping_child_block(lines: list[str], name: str) -> list[str]:
+    expected = f"{name}:"
+    for index, line in enumerate(lines):
+        clean = strip_comment(line).rstrip()
+        if clean.strip() != expected:
+            continue
+        parent_indent = line_indent(clean)
+        block: list[str] = []
+        for nested in lines[index + 1:]:
+            nested_clean = strip_comment(nested).rstrip()
+            if not nested_clean.strip():
+                if block:
+                    block.append(nested_clean)
+                continue
+            if line_indent(nested_clean) <= parent_indent:
+                break
+            block.append(nested_clean)
+        return block
+    return []
+
+
 def block_input_value(block: list[str], name: str) -> str | None:
     for item_name, item_value in block_input_items(block):
         if item_name == name:
             return unquote_yaml_scalar(item_value)
     return None
+
+
+def artifact_retention_upload_key(source_name: str, job_id: str, step_id: str) -> str:
+    return f"{source_name}::{job_id}::{step_id}"
+
+
+def artifact_retention_source_is_canonical(source_name: str) -> bool:
+    return bool(
+        ARTIFACT_RETENTION_WORKFLOW_SOURCE_RE.fullmatch(source_name)
+        or ARTIFACT_RETENTION_ACTION_SOURCE_RE.fullmatch(source_name)
+    )
+
+
+def block_step_id(block: list[str]) -> str | None:
+    items = block_top_level_items(block)
+    if items is None:
+        return None
+    step_id = items.get("id")
+    return step_id if step_id else None
+
+
+def artifact_retention_upload_matches(site: ArtifactRetentionUploadSite, artifact_name: str) -> bool:
+    return artifact_name == site.artifact_name
+
+
+def artifact_retention_upload_name_expectation(site: ArtifactRetentionUploadSite) -> str:
+    return f"configured name {site.artifact_name}"
+
+
+def texts_have_upload_artifact_action(texts: Iterable[str]) -> bool:
+    return any(
+        "actions/upload-artifact@" in strip_comment(line)
+        for text in texts
+        for line in text.splitlines()
+    )
+
+
+def upload_artifact_retention_errors(
+    policy: ArtifactRetentionPolicy,
+    source_name: str,
+    job_id: str,
+    job_lines: list[str],
+    seen_upload_keys: set[str] | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    seen_step_ids: set[str] = set()
+    for block in action_blocks(job_lines, "actions/upload-artifact@"):
+        step_id = block_step_id(block)
+        if step_id is None:
+            errors.append(f"{source_name} {job_id} upload-artifact step must set id for artifact retention policy")
+            continue
+        if step_id in seen_step_ids:
+            errors.append(f"{source_name} {job_id} upload-artifact step id {step_id} is duplicated")
+            continue
+        seen_step_ids.add(step_id)
+        upload_key = artifact_retention_upload_key(source_name, job_id, step_id)
+        if seen_upload_keys is not None:
+            seen_upload_keys.add(upload_key)
+        site = policy.uploads.get(upload_key)
+        if site is None:
+            errors.append(f"{upload_key} missing from artifact retention policy")
+            continue
+        artifact_names = block_input_values(block, "name")
+        if len(artifact_names) != 1:
+            errors.append(f"{upload_key} upload-artifact step must set exactly one name")
+            continue
+        artifact_name = artifact_names[0]
+        label = f"{source_name} {job_id} {step_id} artifact {artifact_name}"
+        if not artifact_retention_upload_matches(site, artifact_name):
+            errors.append(
+                f"{label} does not match {artifact_retention_upload_name_expectation(site)}"
+            )
+            continue
+        class_policy = policy.classes[site.artifact_class]
+        retention_values = block_input_values(block, "retention-days")
+        if not retention_values:
+            errors.append(f"{label} must set retention-days")
+            continue
+        if len(retention_values) != 1:
+            errors.append(f"{label} must set exactly one retention-days")
+            continue
+        try:
+            retention_days = int(retention_values[0])
+        except ValueError:
+            errors.append(f"{label} retention-days must be a positive integer")
+            continue
+        if retention_days <= 0:
+            errors.append(f"{label} retention-days must be a positive integer")
+            continue
+        if retention_values[0] != str(site.retention_days):
+            errors.append(
+                f"{label} retention-days {retention_values[0]} "
+                f"does not match configured retention-days {site.retention_days}"
+            )
+            continue
+        if retention_days > class_policy.max_retention_days:
+            errors.append(
+                f"{label} retention-days {retention_days} "
+                f"exceeds configured max {class_policy.max_retention_days}"
+            )
+    return errors
+
+
+def verify_artifact_retention_policy(
+    workflows: dict[str, str],
+    composite_actions: dict[str, str],
+) -> list[str]:
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        if texts_have_upload_artifact_action((*workflows.values(), *composite_actions.values())):
+            return [
+                "github-actions runner config invalid: "
+                f"managed runner config missing: {DEFAULT_RUNNERS_CONFIG}"
+            ]
+        return []
+    try:
+        config = load_github_actions_runners_config()
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+
+    policy = config["artifact_retention"]
+    if not isinstance(policy, ArtifactRetentionPolicy):
+        return ["github-actions runner config invalid: artifact_retention policy did not load"]
+
+    errors: list[str] = []
+    seen_sources: set[str] = set()
+    seen_upload_keys: set[str] = set()
+    for file_name, workflow_text in sorted(workflows.items()):
+        seen_sources.add(file_name)
+        for job_id, job_lines in sorted(parse_jobs(workflow_text).items()):
+            errors.extend(upload_artifact_retention_errors(
+                policy,
+                file_name,
+                job_id,
+                job_lines,
+                seen_upload_keys,
+            ))
+
+    for file_name, automation_text in sorted(composite_actions.items()):
+        seen_sources.add(file_name)
+        errors.extend(upload_artifact_retention_errors(
+            policy,
+            file_name,
+            "__composite__",
+            automation_text.splitlines(),
+            seen_upload_keys,
+        ))
+
+    for upload_key in sorted(policy.uploads):
+        source_name = upload_key.split("::", 1)[0]
+        if source_name not in seen_sources:
+            errors.append(
+                f"artifact retention policy upload {upload_key} "
+                f"source {source_name} is missing from scanned sources"
+            )
+        elif upload_key not in seen_upload_keys:
+            errors.append(f"artifact retention policy upload {upload_key} has no matching upload-artifact step")
+
+    return errors
 
 
 def job_has_setup_input(job_lines: list[str], name: str, value: str | None = None) -> bool:
@@ -1950,6 +2278,233 @@ def job_opts_into_managed_target_dir(job_lines: list[str]) -> bool:
 
 def uncommented_text(lines: list[str]) -> str:
     return "\n".join(strip_comment(line) for line in lines)
+
+
+def append_missing_text_requirements(
+    errors: list[str],
+    text: str,
+    requirements: tuple[tuple[str, tuple[str, ...]], ...],
+) -> None:
+    for error, fragments in requirements:
+        if not all(fragment in text for fragment in fragments):
+            errors.append(error)
+
+
+def append_failed_contracts(errors: list[str], contracts: Iterable[tuple[str, bool]]) -> None:
+    errors.extend(error for error, passed in contracts if not passed)
+
+
+def block_run_body_lines(block: list[str]) -> list[str]:
+    for index, line in enumerate(block):
+        clean = strip_comment(line).rstrip()
+        match = YAML_RUN_LINE_RE.match(clean)
+        if match is None:
+            continue
+        value = match.group(2).strip().strip("'\"")
+        if value not in {"|", ">"}:
+            return [value] if value else []
+        run_indent = len(clean) - len(clean.lstrip(" "))
+        body_indent: int | None = None
+        body: list[str] = []
+        for nested in block[index + 1:]:
+            nested_clean = strip_comment(nested).rstrip()
+            if not nested_clean.strip():
+                body.append("")
+                continue
+            indent = len(nested_clean) - len(nested_clean.lstrip(" "))
+            if indent <= run_indent:
+                break
+            if body_indent is None:
+                body_indent = indent
+            body.append(nested_clean[body_indent:] if indent >= body_indent else nested_clean.lstrip())
+        return body
+    return []
+
+
+def line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def top_level_shell_commands(lines: list[str]) -> list[str]:
+    commands: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].rstrip()
+        if not line.strip() or line_indent(line) != 0:
+            index += 1
+            continue
+        parts = [line.strip()]
+        while parts[-1].endswith("\\") and index + 1 < len(lines):
+            index += 1
+            continuation = lines[index].strip()
+            if continuation:
+                parts.append(continuation)
+        commands.append(" ".join(parts))
+        index += 1
+    return commands
+
+
+def ordered_command_match(
+    commands: list[str],
+    predicates: tuple[Callable[[str], bool], ...],
+) -> bool:
+    cursor = -1
+    for predicate in predicates:
+        for index in range(cursor + 1, len(commands)):
+            if predicate(commands[index]):
+                cursor = index
+                break
+        else:
+            return False
+    return True
+
+
+def run_body_has_top_level_command(lines: list[str], command: str) -> bool:
+    return command in top_level_shell_commands(lines)
+
+
+def shell_line_exits(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    command = stripped.split(maxsplit=1)[0]
+    return command in {"exit", "return"}
+
+
+def run_body_has_single_terminal_exit(lines: list[str], command: str) -> bool:
+    significant_lines = [(index, line) for index, line in enumerate(lines) if line.strip()]
+    if not significant_lines:
+        return False
+    last_index, last_line = significant_lines[-1]
+    if line_indent(last_line) != 0 or last_line.strip() != command:
+        return False
+    exit_lines = [
+        (index, line)
+        for index, line in significant_lines
+        if shell_line_exits(line)
+    ]
+    return exit_lines == [(last_index, last_line)]
+
+
+def command_argv_has_prefix(command: str, expected_prefix: tuple[str, ...]) -> bool:
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    return tuple(argv[: len(expected_prefix)]) == expected_prefix
+
+
+CACHE_PERSISTENCE_AUDIT_FAILURE_MASKING_OPERATORS = {";", "&", "&&", "||", "|"}
+
+
+def command_has_failure_masking_shell_control(command: str) -> bool:
+    tokens = command_tokens_with_line_boundaries(command)
+    return any(token in CACHE_PERSISTENCE_AUDIT_FAILURE_MASKING_OPERATORS for token in tokens)
+
+
+def append_missing_cache_persistence_probe_structure(
+    errors: list[str],
+    run_lines: list[str],
+) -> None:
+    commands = top_level_shell_commands(run_lines)
+    command_text = "\n".join(commands)
+    append_failed_contracts(
+        errors,
+        (
+            (
+                "cache-persistence-audit must delegate audit policy to ci_storage_audit",
+                len(commands) == 1,
+            ),
+            (
+                "cache-persistence-audit must run ci_storage_audit exact-key probes",
+                command_argv_has_prefix(command_text, CACHE_PERSISTENCE_AUDIT_ARGV_PREFIX),
+            ),
+            (
+                "cache-persistence-audit must not suppress audit contract failures",
+                len(commands) == 1 and not command_has_failure_masking_shell_control(command_text),
+            ),
+        ),
+    )
+    append_missing_text_requirements(
+        errors,
+        command_text,
+        CACHE_PERSISTENCE_AUDIT_PROBE_COMMAND_REQUIREMENTS,
+    )
+
+
+def first_step_uses_checkout(step_blocks_: list[list[str]]) -> bool:
+    return len(step_blocks_) == 2 and any(line_uses_action(line, "actions/checkout@") for line in step_blocks_[0])
+
+
+def single_run_step_matches(run_blocks: list[list[str]], step_name: str) -> bool:
+    return len(run_blocks) == 1 and step_name_matches(run_blocks[0], step_name)
+
+
+def append_cache_persistence_audit_contract_errors(errors: list[str], jobs: dict[str, list[str]]) -> None:
+    audit_lines = jobs.get("cache-persistence-audit")
+    if audit_lines is None:
+        if "test-archive" in jobs:
+            errors.append("cache-persistence-audit job is required")
+        return
+
+    audit_text = uncommented_text(audit_lines)
+    audit_needs = extract_needs(audit_lines)
+    audit_permissions = mapping_child_block(audit_lines, "permissions")
+    audit_step_blocks = step_blocks(audit_lines)
+    audit_probe_block = named_step_block(audit_lines, CACHE_PERSISTENCE_AUDIT_PROBE_STEP)
+
+    append_failed_contracts(
+        errors,
+        (
+            *((f"cache-persistence-audit needs {need}", need in audit_needs) for need in CACHE_PERSISTENCE_AUDIT_NEEDS),
+            *(
+                (
+                    f"cache-persistence-audit permissions must include {permission_name}: read",
+                    block_has_scalar(audit_permissions, permission_name, "read"),
+                )
+                for permission_name in ("contents", "actions")
+            ),
+            ("cache-persistence-audit must use always()", job_if_uses_always(audit_lines)),
+            ("cache-persistence-audit must gate on full_ci_required", job_gates_on_full_ci_required(audit_lines)),
+            (
+                "cache-persistence-audit must require test-archive success",
+                "needs.test-archive.result == 'success'" in audit_text,
+            ),
+            (
+                "cache-persistence-audit must skip on validated nextest fingerprint reuse",
+                NEXTEST_REUSE_MISS_EXPR in audit_text,
+            ),
+            ("cache-persistence-audit must not add extra steps", len(audit_step_blocks) == 2),
+            ("cache-persistence-audit must checkout the repository before probing", first_step_uses_checkout(audit_step_blocks)),
+            (
+                f"cache-persistence-audit must include {CACHE_PERSISTENCE_AUDIT_PROBE_STEP} step",
+                audit_probe_block is not None,
+            ),
+        ),
+    )
+    if audit_probe_block is None:
+        return
+
+    audit_run_blocks = [block for block in audit_step_blocks if step_declares_run(block)]
+    audit_probe_run_lines = block_run_body_lines(audit_probe_block)
+    append_failed_contracts(
+        errors,
+        (
+            *(
+                (message, block_has_scalar(audit_probe_block, name, value))
+                for message, name, value in CACHE_PERSISTENCE_AUDIT_PROBE_SCALAR_REQUIREMENTS
+            ),
+            (
+                "cache-persistence-audit must not add extra run steps",
+                single_run_step_matches(audit_run_blocks, CACHE_PERSISTENCE_AUDIT_PROBE_STEP),
+            ),
+            (
+                "cache-persistence-audit probe must be non-blocking",
+                block_has_scalar(audit_probe_block, "continue-on-error", "true"),
+            ),
+        ),
+    )
+    append_missing_cache_persistence_probe_structure(errors, audit_probe_run_lines)
 
 
 def normalize_script_text(text: str) -> str:
@@ -2263,9 +2818,13 @@ def nextest_fingerprint_errors(fingerprint_lines: list[str], archive_lines: list
         or min(upload_block_indices) >= min(repo_controlled_indices)
     ):
         return ["nextest-fingerprint must publish nextest fingerprint before repo-controlled steps"]
-    if not cache_blocks or not all(block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY) for block in cache_blocks):
+    cache_key_step = named_step_block(archive_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
+    cache_key_step_text = uncommented_text(cache_key_step) if cache_key_step is not None else ""
+    if not cache_blocks or not all(block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY_OUTPUT) for block in cache_blocks):
         return ["nextest archive cache key must use nextest fingerprint output"]
     if any("hashFiles(" in (block_input_value(block, "key") or "") for block in cache_blocks):
+        return ["nextest archive cache key must use nextest fingerprint output"]
+    if TEST_ARCHIVE_CACHE_KEY not in cache_key_step_text:
         return ["nextest archive cache key must use nextest fingerprint output"]
     return []
 
@@ -2324,10 +2883,21 @@ def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
     expected_prefix = (
         f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-"
     )
-    # The exact `key:` value must carry the job-specific prefix. Checking the
-    # whole block's text would also match a prefix that only appears in
+    # The exact key source must carry the job-specific prefix. Checking the
+    # whole cache block's text would also match a prefix that only appears in
     # `restore-keys:`, masking key/restore-keys drift.
-    if not any(block_key_value_has_prefix(block, expected_prefix) for block in target_blocks):
+    key_sources = [
+        block_input_value(block, "key") or ""
+        for block in target_blocks
+    ]
+    if job == "test-archive" and all(
+        block_has_input(block, "key", TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT)
+        for block in target_blocks
+    ):
+        cache_key_step = named_step_block(job_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
+        if cache_key_step is not None:
+            key_sources.append(uncommented_text(cache_key_step))
+    if not any(expected_prefix in key_source for key_source in key_sources):
         return [f"{job} managed target cache key must isolate {expected_key}"]
 
     # #400: each managed-target cache MUST declare a restore-keys prefix fallback
@@ -2366,6 +2936,15 @@ def named_step_block(lines: list[str], step_name: str) -> list[str] | None:
         if any(name_re.match(strip_comment(line)) for line in block):
             return block
     return None
+
+
+def step_name_matches(block: list[str], step_name: str) -> bool:
+    name_re = re.compile(rf"^\s*(?:-\s*)?name:\s*{re.escape(step_name)}\s*$")
+    return any(name_re.match(strip_comment(line)) for line in block)
+
+
+def step_declares_run(block: list[str]) -> bool:
+    return any(YAML_RUN_LINE_RE.match(strip_comment(line).rstrip()) is not None for line in block)
 
 
 def first_step_running_command(job_lines: list[str], command: str) -> int | None:
@@ -5676,8 +6255,11 @@ def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
     if "ci-lint-workflow-inner" in recipes:
         ci_lint_inner_lines = active_recipe_lines(recipes, "ci-lint-workflow-inner")
         for required_command in CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS:
-            if not any(required_command in line for line in ci_lint_inner_lines):
+            command_count = sum(1 for line in ci_lint_inner_lines if required_command in line)
+            if command_count == 0:
                 errors.append(f"justfile ci-lint-workflow-inner must run {required_command}")
+            elif command_count > 1:
+                errors.append(f"justfile ci-lint-workflow-inner must run {required_command} exactly once")
     return errors
 
 
@@ -8591,22 +9173,18 @@ def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]
     return errors
 
 
-def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) -> list[str]:
+def ci_provenance_emit_upload_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
     upload_blocks = [
         block
         for block in action_blocks(job_lines, "actions/upload-artifact@")
-        if block_has_input(block, "name", "ci-provenance-attempt-${{ github.run_attempt }}")
+        if block_step_id(block) == "upload-ci-provenance"
     ]
     if not upload_blocks:
-        errors.append("ci-provenance-emit must upload configured provenance artifact")
+        errors.append("ci-provenance-emit must upload ci-provenance artifact from upload-ci-provenance")
         return errors
     if not any(block_has_input(block, "path", "ci-provenance.json") for block in upload_blocks):
         errors.append("ci-provenance-emit must upload ci-provenance.json")
-    if retention_days > 0 and not any(
-        block_has_input(block, "retention-days", str(retention_days)) for block in upload_blocks
-    ):
-        errors.append("ci-provenance-emit retention-days must match TOML")
     return errors
 
 
@@ -8628,13 +9206,6 @@ def capture_artifact_metadata_errors(job_lines: list[str]) -> list[str]:
     if not upload_blocks:
         errors.append("capture must upload CAPTURE_OUTPUT_DIR")
         return errors
-    if not any(block_has_input(block, "name", "${{ steps.provenance.outputs.artifact_name }}") for block in upload_blocks):
-        errors.append("capture upload artifact name must come from provenance config")
-    if not any(
-        block_has_input(block, "retention-days", "${{ steps.provenance.outputs.retention_days }}")
-        for block in upload_blocks
-    ):
-        errors.append("capture upload retention-days must come from provenance config")
     return errors
 
 
@@ -9139,53 +9710,42 @@ def workflow_permissions_have_issues_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+issues:\s+read\s*$", workflow_text) is not None
 
 
-def configured_ci_provenance_retention_days() -> int:
+def configured_ci_provenance_dispatch_input() -> tuple[str | None, list[str]]:
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
-        return -1
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        return None, [f"github-actions runner config invalid: {exc}"]
     ci_provenance = config.get("ci_provenance")
     if not isinstance(ci_provenance, dict):
-        return -1
-    artifacts = ci_provenance.get("artifacts")
-    if not isinstance(artifacts, dict):
-        return -1
-    retention_days = artifacts.get("retention_days")
-    return retention_days if isinstance(retention_days, int) else -1
-
-
-def configured_ci_provenance_dispatch_input() -> str:
-    try:
-        config = load_github_actions_runners_config()
-    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
-        return ""
-    ci_provenance = config.get("ci_provenance")
-    if not isinstance(ci_provenance, dict):
-        return ""
+        return None, ["ci/github-actions-runners.toml must define [ci_provenance]"]
     dispatch = ci_provenance.get("dispatch")
     if not isinstance(dispatch, dict):
-        return ""
+        return None, ["ci_provenance.dispatch must be a table"]
     workflow_input = dispatch.get("workflow_input")
-    return workflow_input if isinstance(workflow_input, str) else ""
+    if not isinstance(workflow_input, str) or not workflow_input.strip():
+        return None, ["ci_provenance.dispatch.workflow_input must be a non-empty string"]
+    return workflow_input, []
 
 
-def configured_ci_provenance_dispatch_names() -> dict[str, str]:
+def configured_ci_provenance_dispatch_names() -> tuple[dict[str, str] | None, list[str]]:
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
-        return {}
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        return None, [f"github-actions runner config invalid: {exc}"]
     ci_provenance = config.get("ci_provenance")
     if not isinstance(ci_provenance, dict):
-        return {}
+        return None, ["ci/github-actions-runners.toml must define [ci_provenance]"]
     dispatch = ci_provenance.get("dispatch")
     if not isinstance(dispatch, dict):
-        return {}
-    names = {
-        key: value
-        for key in ("workflow_input", "run_name_default", "run_name_full", "run_name_iteration")
-        if isinstance((value := dispatch.get(key)), str) and value
-    }
-    return names if len(names) == 4 else {}
+        return None, ["ci_provenance.dispatch must be a table"]
+    required_keys = ("workflow_input", "run_name_default", "run_name_full", "run_name_iteration")
+    missing = sorted(
+        key for key in required_keys
+        if not isinstance(dispatch.get(key), str) or not cast(str, dispatch.get(key)).strip()
+    )
+    if missing:
+        return None, [f"ci_provenance.dispatch must define non-empty string keys: {missing}"]
+    return {key: cast(str, dispatch[key]) for key in required_keys}, []
 
 
 def top_level_key_block_text(workflow_text: str, key: str) -> str:
@@ -9206,12 +9766,11 @@ def top_level_key_block_text(workflow_text: str, key: str) -> str:
 
 
 def workflow_run_name_errors(workflow_text: str) -> list[str]:
-    names = configured_ci_provenance_dispatch_names()
-    if not names:
-        return []
+    names, errors = configured_ci_provenance_dispatch_names()
+    if names is None:
+        return errors
     run_name_text = top_level_key_block_text(workflow_text, "run-name")
     full_predicate = f"github.event.inputs.{names['workflow_input']} == 'true'"
-    errors: list[str] = []
     if "run-name: >-" not in run_name_text:
         errors.append("workflow must define run-name for dispatch class markers")
     if full_predicate not in run_name_text:
@@ -9456,8 +10015,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
         )
     if is_ci_topology:
         errors.extend(workflow_pull_request_type_errors(workflow_text))
-        dispatch_input = configured_ci_provenance_dispatch_input()
-        if dispatch_input:
+        dispatch_input, dispatch_errors = configured_ci_provenance_dispatch_input()
+        if dispatch_errors:
+            errors.extend(dispatch_errors)
+        elif dispatch_input:
             errors.extend(
                 workflow_dispatch_input_errors(
                     workflow_text,
@@ -9647,27 +10208,35 @@ def verify_workflow(workflow_text: str) -> list[str]:
             for block in action_blocks(archive_lines, "actions/cache/save@")
             if block_has_input(block, "path", "${{ steps.setup.outputs.managed_target_dir }}")
         ]
+        cache_key_step = named_step_block(archive_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
+        cache_key_step_text = uncommented_text(cache_key_step) if cache_key_step is not None else ""
         target_cache_keys = [
             block_input_value(block, "key") or ""
             for block in target_restore_blocks + target_save_blocks
         ]
+        if cache_key_step_text:
+            target_cache_keys.append(cache_key_step_text)
         if TEST_ARCHIVE_PATH not in archive_text:
             errors.append("test-archive must declare nextest archive path")
         if TEST_ARCHIVE_SIDECAR_PATH not in archive_text:
             errors.append("test-archive must declare root binary sidecar path")
         if not archive_cache_blocks or not all(
-            block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY)
+            block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY_OUTPUT)
             for block in archive_cache_blocks
         ):
             errors.append("nextest archive cache key must use nextest fingerprint output")
         if any("hashFiles(" in (block_input_value(block, "key") or "") for block in archive_cache_blocks):
             errors.append("nextest archive cache key must use nextest fingerprint output")
+        if TEST_ARCHIVE_CACHE_KEY not in cache_key_step_text:
+            errors.append("nextest archive cache key must use nextest fingerprint output")
         if not sidecar_cache_blocks or not all(
-            block_has_input(block, "key", TEST_ARCHIVE_SIDECAR_CACHE_KEY)
+            block_has_input(block, "key", TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT)
             for block in sidecar_cache_blocks
         ):
             errors.append("root binary sidecar cache key must use nextest fingerprint output")
         if any("hashFiles(" in (block_input_value(block, "key") or "") for block in sidecar_cache_blocks):
+            errors.append("root binary sidecar cache key must use nextest fingerprint output")
+        if TEST_ARCHIVE_SIDECAR_CACHE_KEY not in cache_key_step_text:
             errors.append("root binary sidecar cache key must use nextest fingerprint output")
         if not job_has_setup_input(archive_lines, "include-managed-target-dir", '"true"'):
             errors.append("test-archive must opt into managed target dir")
@@ -9685,6 +10254,13 @@ def verify_workflow(workflow_text: str) -> list[str]:
             for block in target_save_blocks
         ):
             errors.append("test-archive must save target cache only on target cache miss")
+        if not target_restore_blocks or not target_save_blocks or not all(
+            block_has_input(block, "key", TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT)
+            for block in target_restore_blocks + target_save_blocks
+        ):
+            errors.append("test-archive managed target cache key must use root nextest cache key output")
+        if TEST_ARCHIVE_TARGET_CACHE_KEY not in cache_key_step_text:
+            errors.append("test-archive cache persistence keys must come from single-source cache key outputs")
         for required in ("src/**", "tests/**"):
             if not any(required in key for key in target_cache_keys):
                 errors.append(f"test-archive managed target cache key must include {required}")
@@ -9741,6 +10317,37 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must save root binary sidecar cache only on sidecar cache miss")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
+        for output in TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS:
+            if output not in archive_text:
+                errors.append("test-archive must expose cache persistence audit outputs")
+                break
+        if "archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}" in archive_text:
+            errors.append("test-archive archive build target cache hit output must be explicit when restore is skipped")
+        for output in TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS:
+            if output not in archive_text:
+                errors.append("test-archive must expose cache persistence save outcomes")
+                break
+        for label, step_id in TEST_ARCHIVE_CACHE_SAVE_STEP_IDS:
+            block = named_step_block(archive_lines, label)
+            if block is None or step_id not in uncommented_text(block):
+                errors.append("test-archive cache save steps must have stable ids for persistence evidence")
+                break
+        for label, step_id in TEST_ARCHIVE_CACHE_RESTORE_STEP_IDS:
+            block = named_step_block(archive_lines, label)
+            if block is None or step_id not in uncommented_text(block):
+                errors.append("test-archive cache restore steps must have stable ids for persistence evidence")
+                break
+        if "id: cache-audit-keys" in archive_text or "Emit cache persistence audit keys" in archive_text:
+            errors.append("test-archive cache persistence keys must come from single-source cache key outputs")
+        if cache_key_step is None or TEST_ARCHIVE_CACHE_AUDIT_STEP_ID not in cache_key_step_text:
+            errors.append("test-archive must resolve root nextest cache keys")
+        elif (
+            TEST_ARCHIVE_CACHE_KEY not in cache_key_step_text
+            or TEST_ARCHIVE_SIDECAR_CACHE_KEY not in cache_key_step_text
+            or TEST_ARCHIVE_TARGET_CACHE_KEY not in cache_key_step_text
+            or not all(output in cache_key_step_text for output in TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS)
+        ):
+            errors.append("test-archive cache persistence keys must come from single-source cache key outputs")
         # Fail-open contract for the S3 sccache compile cache (#1011): when the
         # opt-in is wired, the cache must never be able to fail the required build,
         # and cache use must be gated to trusted refs (the IAM trust scope is the
@@ -9818,6 +10425,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             if fragment not in archive_text:
                 errors.append("test-archive must aggregate partition failures")
                 break
+
+    append_cache_persistence_audit_contract_errors(errors, jobs)
 
     if "nextest-fingerprint-reuse" in jobs:
         reuse_lines = jobs["nextest-fingerprint-reuse"]
@@ -9909,12 +10518,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if not ci_provenance_emit_runs_emitter(emit_lines):
             errors.append("ci-provenance-emit must run provenance emitter")
         errors.extend(ci_provenance_emit_checks_needs(emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")))
-        errors.extend(
-            ci_provenance_emit_upload_errors(
-                emit_lines,
-                configured_ci_provenance_retention_days(),
-            )
-        )
+        errors.extend(ci_provenance_emit_upload_errors(emit_lines))
         if not ci_provenance_emit_records_secure_fingerprint(emit_lines):
             errors.append("ci-provenance-emit must record nextest fingerprint when present")
 
@@ -10060,15 +10664,10 @@ def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
     binary_upload_blocks = [
         block
         for block in action_blocks(build, "actions/upload-artifact@")
-        if block_has_input(block, "name", BOLT_V2_BINARY_ARTIFACT_NAME)
+        if block_step_id(block) == "upload-bolt-v2-binary"
     ]
-    if not binary_upload_blocks or any(
-        block_input_values(block, "retention-days") != [BOLT_V2_BINARY_RETENTION_DAYS]
-        for block in binary_upload_blocks
-    ):
-        errors.append(
-            f"{workflow_name} {BOLT_V2_BINARY_ARTIFACT_NAME} retention-days must be {BOLT_V2_BINARY_RETENTION_DAYS}"
-        )
+    if not binary_upload_blocks:
+        errors.append(f"{workflow_name} build must upload the staged binary from upload-bolt-v2-binary")
     return errors
 
 
@@ -10494,6 +11093,178 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
         ):
             errors.append("backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes")
     return errors
+
+
+FLAKY_TEST_DETECTION_SHARED_FORBIDDEN_FRAGMENTS = (
+    ("must not use dynamic matrix expressions", "fromJSON("),
+    ("must not inspect event names for smoke/full selection", "github.event_name"),
+    ("must not use mode inputs for smoke/full selection", "inputs.mode"),
+    (
+        "root JUnit staging must not copy from the cargo target dir",
+        "${{ steps.setup.outputs.managed_target_dir }}/nextest/default/junit-unit-",
+    ),
+    (
+        "backtester JUnit staging must not copy from the cargo target dir",
+        "${{ steps.crate_target.outputs.dir }}/nextest/default/junit-unit-",
+    ),
+)
+
+FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
+    ".github/workflows/flaky-test-detection.yml": {
+        "workflow_triggers": frozenset({"schedule"}),
+        "required_workflow_fragments": (),
+        "forbidden_workflow_fragments": (),
+        "jobs": (
+            (
+                "flaky-detection-rust-root",
+                "root full job",
+                (
+                    "run_number: [1, 2, 3, 4, 5]",
+                    "set +e",
+                    "rc=$?",
+                    "set -e",
+                    "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "if: success() || failure()",
+                ),
+            ),
+            (
+                "flaky-detection-rust-backtester",
+                "backtester full job",
+                (
+                    "run_number: [1, 2, 3, 4, 5]",
+                    "shard: [1, 2, 3, 4]",
+                    "set +e",
+                    "rc=$?",
+                    "set -e",
+                    "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "if: success() || failure()",
+                ),
+            ),
+            (
+                "flaky-detection-rust-backtester-issue-789",
+                "issue-789 full job",
+                (
+                    "run_number: [1, 2, 3, 4, 5]",
+                    "set +e",
+                    "rc=$?",
+                    "set -e",
+                    "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "if: success() || failure()",
+                ),
+            ),
+        ),
+    },
+    ".github/workflows/flaky-test-smoke.yml": {
+        "workflow_triggers": frozenset({"workflow_dispatch"}),
+        "required_workflow_fragments": (),
+        "forbidden_workflow_fragments": (),
+        "jobs": (
+            (
+                "flaky-smoke-rust-root",
+                "root smoke job",
+                (
+                    "run_number: [1]",
+                    "set +e",
+                    "rc=$?",
+                    "set -e",
+                    "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "if: success() || failure()",
+                ),
+            ),
+            (
+                "flaky-smoke-rust-backtester",
+                "backtester smoke job",
+                (
+                    "run_number: [1]",
+                    "shard: [1]",
+                    "set +e",
+                    "rc=$?",
+                    "set -e",
+                    "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "if: success() || failure()",
+                ),
+            ),
+            (
+                "flaky-smoke-rust-backtester-issue-789",
+                "issue-789 smoke job",
+                (
+                    "run_number: [1]",
+                    "set +e",
+                    "rc=$?",
+                    "set -e",
+                    "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "if: success() || failure()",
+                ),
+            ),
+        ),
+    },
+}
+FLAKY_TEST_DETECTION_REQUIRED_WORKFLOW_FILES = frozenset(FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS)
+
+
+def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object]) -> list[str]:
+    workflow_text = uncommented_text(text.splitlines())
+    expected_triggers = contract["workflow_triggers"]
+    jobs = parse_jobs(text)
+    expected_jobs = contract["jobs"]
+    expected_ids = {job_id for job_id, _label, _fragments in expected_jobs}
+    job_texts = {job_id: uncommented_text(job_lines) for job_id, job_lines in jobs.items()}
+    errors: list[str] = []
+    errors.extend(
+        f"flaky-test-detection workflow triggers must be {sorted(expected_triggers)}"
+        for actual_triggers in (workflow_trigger_keys(text),)
+        if actual_triggers != expected_triggers
+    )
+    errors.extend(
+        f"flaky-test-detection {message}"
+        for message, fragment in (
+            *FLAKY_TEST_DETECTION_SHARED_FORBIDDEN_FRAGMENTS,
+            *contract["forbidden_workflow_fragments"],
+        )
+        if fragment in workflow_text
+    )
+    errors.extend(
+        f"flaky-test-detection {message}"
+        for message, fragment in contract["required_workflow_fragments"]
+        if fragment not in workflow_text
+    )
+    if any(re.match(r"^    if:", line) for job_lines in jobs.values() for line in job_lines):
+        errors.append("flaky-test-detection workflows must not use job-level if gates")
+    if set(jobs) != expected_ids:
+        errors.append(f"flaky-test-detection workflow jobs must be {sorted(expected_ids)}")
+    for job_id, label, fragments in expected_jobs:
+        if job_id not in job_texts:
+            errors.append(f"flaky-test-detection missing {label} {job_id}")
+            continue
+        job_text = job_texts[job_id]
+        errors.extend(
+            f"flaky-test-detection {label} missing {fragment!r}"
+            for fragment in fragments
+            if fragment not in job_text
+        )
+    return errors
+
+
+def verify_flaky_test_detection_workflows(texts: dict[str, str]) -> list[str]:
+    missing_errors = [
+        f"{file_name}: flaky-test-detection required workflow is missing"
+        for file_name in sorted(FLAKY_TEST_DETECTION_REQUIRED_WORKFLOW_FILES - texts.keys())
+    ]
+    contract_errors = [
+        f"{file_name}: {error}"
+        for file_name in sorted(FLAKY_TEST_DETECTION_REQUIRED_WORKFLOW_FILES & texts.keys())
+        for error in flaky_test_detection_workflow_errors(
+            texts[file_name],
+            FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS[file_name],
+        )
+    ]
+    return missing_errors + contract_errors
 
 
 def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]:
@@ -11331,23 +12102,484 @@ def require_config_table(parent: dict[str, object], key: str, prefix: str) -> di
 
 def require_config_string(parent: dict[str, object], key: str, prefix: str) -> str:
     value = parent.get(key)
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{prefix}.{key} must be a non-empty string")
     return value
 
 
 def require_config_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
     value = parent.get(key)
-    if not isinstance(value, int) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{prefix}.{key} must be a positive integer")
     return value
 
 
 def require_config_string_list(parent: dict[str, object], key: str, prefix: str) -> list[str]:
     value = parent.get(key)
-    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
         raise ValueError(f"{prefix}.{key} must be a non-empty string list")
     return value
+
+
+def require_config_string_map(parent: dict[str, object], key: str, prefix: str) -> dict[str, str]:
+    value = parent.get(key)
+    if not isinstance(value, dict) or not value:
+        raise ValueError(f"{prefix}.{key} must be a non-empty string table")
+    if not all(isinstance(item_key, str) and item_key.strip() for item_key in value):
+        raise ValueError(f"{prefix}.{key} keys must be non-empty strings")
+    if not all(isinstance(item_value, str) and item_value.strip() for item_value in value.values()):
+        raise ValueError(f"{prefix}.{key} values must be non-empty strings")
+    return dict(value)
+
+
+def require_config_only_keys(parent: dict[str, object], allowed_keys: set[str], prefix: str) -> None:
+    unexpected_keys = sorted(set(parent) - allowed_keys)
+    if unexpected_keys:
+        raise ValueError(f"{prefix} has unexpected keys: {unexpected_keys!r}")
+
+
+def resolve_config_positive_int_ref(data: dict[str, object], ref: str, prefix: str) -> int:
+    keys = ref.split(".")
+    if not keys or any(not key for key in keys):
+        raise ValueError(f"{prefix} must be a dotted TOML key reference")
+    current: object = data
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            raise ValueError(f"{prefix} references missing TOML key {ref!r}")
+        current = current[key]
+    if isinstance(current, bool) or not isinstance(current, int) or current <= 0:
+        raise ValueError(f"{prefix} must reference a positive integer")
+    return current
+
+
+def resolve_config_string_ref(data: dict[str, object], ref: str, prefix: str) -> str:
+    keys = ref.split(".")
+    if not keys or any(not key for key in keys):
+        raise ValueError(f"{prefix} must be a dotted TOML key reference")
+    current: object = data
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            raise ValueError(f"{prefix} references missing TOML key {ref!r}")
+        current = current[key]
+    if not isinstance(current, str) or not current.strip():
+        raise ValueError(f"{prefix} must reference a non-empty string")
+    return current
+
+
+def resolve_config_string_map_ref(data: dict[str, object], ref: str, prefix: str) -> dict[str, str]:
+    keys = ref.split(".")
+    if not keys or any(not key for key in keys):
+        raise ValueError(f"{prefix} must be a dotted TOML key reference")
+    current: object = data
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            raise ValueError(f"{prefix} references missing TOML key {ref!r}")
+        current = current[key]
+    if not isinstance(current, dict) or not current:
+        raise ValueError(f"{prefix} must reference a non-empty string table")
+    if not all(isinstance(item_key, str) and item_key.strip() for item_key in current):
+        raise ValueError(f"{prefix} must reference a table with non-empty string keys")
+    if not all(isinstance(item_value, str) and item_value.strip() for item_value in current.values()):
+        raise ValueError(f"{prefix} must reference a table with non-empty string values")
+    return dict(current)
+
+
+def render_config_string_template(template: str, template_vars: dict[str, str], prefix: str) -> str:
+    placeholders = set(CONFIG_TEMPLATE_PLACEHOLDER_RE.findall(template))
+    if not placeholders:
+        raise ValueError(f"{prefix} must include at least one template placeholder")
+    missing_vars = sorted(placeholders - set(template_vars))
+    if missing_vars:
+        raise ValueError(f"{prefix} missing template vars: {missing_vars!r}")
+    unused_vars = sorted(set(template_vars) - placeholders)
+    if unused_vars:
+        raise ValueError(f"{prefix} has unused template vars: {unused_vars!r}")
+    rendered = template
+    for name in sorted(placeholders):
+        rendered = rendered.replace(f"{{{name}}}", template_vars[name])
+    return rendered
+
+
+def artifact_retention_select_source_mode(
+    raw: dict[str, object],
+    modes: tuple[ArtifactRetentionSourceMode, ...],
+    prefix: str,
+    field: str,
+) -> ArtifactRetentionSourceResolver:
+    complete_modes: list[ArtifactRetentionSourceMode] = []
+    partial_modes: list[ArtifactRetentionSourceMode] = []
+    for mode in modes:
+        present_keys = [key for key in mode.keys if key in raw]
+        if len(present_keys) == len(mode.keys):
+            complete_modes.append(mode)
+        elif present_keys:
+            partial_modes.append(mode)
+    if len(complete_modes) > 1 or (complete_modes and partial_modes):
+        raise ValueError(f"{prefix} must define exactly one {field} source")
+    if partial_modes:
+        missing_keys = [
+            key
+            for mode in partial_modes
+            for key in mode.keys
+            if key not in raw
+        ]
+        raise ValueError(
+            f"{prefix} has partial {field} source; missing {sorted(missing_keys)!r}"
+        )
+    if not complete_modes:
+        raise ValueError(f"{prefix} must define exactly one {field} source")
+    return complete_modes[0].resolver
+
+
+def resolve_repo_toml_config_file(config_path: pathlib.Path, file_ref: str, prefix: str) -> dict[str, object]:
+    if not isinstance(file_ref, str) or not file_ref.strip():
+        raise ValueError(f"{prefix} must be a non-empty string")
+    if "\\" in file_ref:
+        raise ValueError(f"{prefix} must be a POSIX repo-relative TOML path")
+    repo_path = pathlib.PurePosixPath(file_ref)
+    if repo_path.is_absolute() or any(part in {"", ".", ".."} for part in repo_path.parts):
+        raise ValueError(f"{prefix} must be a repo-relative TOML path")
+    if repo_path.suffix != ".toml":
+        raise ValueError(f"{prefix} must reference a TOML file")
+    repo_root = config_path.parent.parent.resolve()
+    file_path = repo_root.joinpath(*repo_path.parts)
+    if not file_path.is_file():
+        raise ValueError(f"{prefix} references missing TOML file {file_ref!r}")
+    if not file_path.resolve().is_relative_to(repo_root):
+        raise ValueError(f"{prefix} must resolve inside the repository")
+    return tomllib.loads(file_path.read_text(encoding="utf-8"))
+
+
+def resolve_artifact_retention_config_ref(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    file_key: str,
+    ref_key: str,
+    prefix: str,
+) -> tuple[dict[str, object], str, str]:
+    file_ref = require_config_string(raw, file_key, prefix)
+    ref = require_config_string(raw, ref_key, prefix)
+    target_config = resolve_repo_toml_config_file(config_path, file_ref, f"{prefix}.{file_key}")
+    return target_config, file_ref, ref
+
+
+def artifact_retention_literal_name_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> str:
+    del data, config_path
+    return require_config_string(raw, "artifact_name", prefix)
+
+
+def artifact_retention_config_ref_name_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> str:
+    target_config, _file_ref, ref = resolve_artifact_retention_config_ref(
+        data,
+        config_path,
+        raw,
+        "artifact_name_config_file",
+        "artifact_name_config_ref",
+        prefix,
+    )
+    return resolve_config_string_ref(target_config, ref, f"{prefix}.artifact_name_config_ref")
+
+
+def artifact_retention_template_name_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> str:
+    template_config, _template_file_ref, template_ref = resolve_artifact_retention_config_ref(
+        data,
+        config_path,
+        raw,
+        "artifact_name_template_config_file",
+        "artifact_name_template_config_ref",
+        prefix,
+    )
+    vars_config, _vars_file_ref, vars_ref = resolve_artifact_retention_config_ref(
+        data,
+        config_path,
+        raw,
+        "artifact_name_template_vars_config_file",
+        "artifact_name_template_vars_config_ref",
+        prefix,
+    )
+    artifact_name_template = resolve_config_string_ref(
+        template_config,
+        template_ref,
+        f"{prefix}.artifact_name_template_config_ref",
+    )
+    artifact_name_template_vars = resolve_config_string_map_ref(
+        vars_config,
+        vars_ref,
+        f"{prefix}.artifact_name_template_vars_config_ref",
+    )
+    return render_config_string_template(
+        artifact_name_template,
+        artifact_name_template_vars,
+        f"{prefix}.artifact_name_template_config_ref",
+    )
+
+
+def artifact_retention_literal_days_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> ArtifactRetentionResolvedInt:
+    del data, config_path
+    return ArtifactRetentionResolvedInt(
+        value=require_config_positive_int(raw, "retention_days", prefix),
+        config_file=None,
+        config_ref=None,
+    )
+
+
+def artifact_retention_config_ref_days_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> ArtifactRetentionResolvedInt:
+    target_config, file_ref, ref = resolve_artifact_retention_config_ref(
+        data,
+        config_path,
+        raw,
+        "retention_days_config_file",
+        "retention_days_config_ref",
+        prefix,
+    )
+    return ArtifactRetentionResolvedInt(
+        value=resolve_config_positive_int_ref(target_config, ref, f"{prefix}.retention_days_config_ref"),
+        config_file=file_ref,
+        config_ref=ref,
+    )
+
+
+def artifact_retention_literal_class_ceiling_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> ArtifactRetentionResolvedInt:
+    del data, config_path
+    return ArtifactRetentionResolvedInt(
+        value=require_config_positive_int(raw, "max_retention_days", prefix),
+        config_file=None,
+        config_ref=None,
+    )
+
+
+def artifact_retention_config_ref_class_ceiling_source(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> ArtifactRetentionResolvedInt:
+    target_config, file_ref, ref = resolve_artifact_retention_config_ref(
+        data,
+        config_path,
+        raw,
+        "max_retention_days_config_file",
+        "max_retention_days_config_ref",
+        prefix,
+    )
+    return ArtifactRetentionResolvedInt(
+        value=resolve_config_positive_int_ref(target_config, ref, f"{prefix}.max_retention_days_config_ref"),
+        config_file=file_ref,
+        config_ref=ref,
+    )
+
+
+ARTIFACT_RETENTION_NAME_SOURCE_MODES = (
+    ArtifactRetentionSourceMode("literal", ("artifact_name",), artifact_retention_literal_name_source),
+    ArtifactRetentionSourceMode(
+        "config_ref",
+        ("artifact_name_config_file", "artifact_name_config_ref"),
+        artifact_retention_config_ref_name_source,
+    ),
+    ArtifactRetentionSourceMode(
+        "template",
+        (
+            "artifact_name_template_config_file",
+            "artifact_name_template_config_ref",
+            "artifact_name_template_vars_config_file",
+            "artifact_name_template_vars_config_ref",
+        ),
+        artifact_retention_template_name_source,
+    ),
+)
+ARTIFACT_RETENTION_RETENTION_SOURCE_MODES = (
+    ArtifactRetentionSourceMode("literal", ("retention_days",), artifact_retention_literal_days_source),
+    ArtifactRetentionSourceMode(
+        "config_ref",
+        ("retention_days_config_file", "retention_days_config_ref"),
+        artifact_retention_config_ref_days_source,
+    ),
+)
+ARTIFACT_RETENTION_CLASS_CEILING_SOURCE_MODES = (
+    ArtifactRetentionSourceMode("literal", ("max_retention_days",), artifact_retention_literal_class_ceiling_source),
+    ArtifactRetentionSourceMode(
+        "config_ref",
+        ("max_retention_days_config_file", "max_retention_days_config_ref"),
+        artifact_retention_config_ref_class_ceiling_source,
+    ),
+)
+
+
+def validate_artifact_retention_config(data: dict[str, object], config_path: pathlib.Path) -> ArtifactRetentionPolicy:
+    artifact_retention = data.get("artifact_retention")
+    if not isinstance(artifact_retention, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [artifact_retention]")
+    require_config_only_keys(artifact_retention, {"classes", "uploads", "lookback_bindings"}, "artifact_retention")
+
+    raw_classes = require_config_table(artifact_retention, "classes", "artifact_retention")
+    classes: dict[str, ArtifactRetentionClass] = {}
+    for class_name, raw_class in sorted(raw_classes.items()):
+        if not isinstance(class_name, str) or not class_name:
+            raise ValueError("artifact_retention.classes keys must be non-empty strings")
+        if not isinstance(raw_class, dict):
+            raise ValueError(f"artifact_retention.classes.{class_name} must be a table")
+        prefix = f"artifact_retention.classes.{class_name}"
+        require_config_only_keys(
+            raw_class,
+            {"max_retention_days", "max_retention_days_config_file", "max_retention_days_config_ref"},
+            prefix,
+        )
+        max_retention_resolver = artifact_retention_select_source_mode(
+            raw_class,
+            ARTIFACT_RETENTION_CLASS_CEILING_SOURCE_MODES,
+            prefix,
+            "max retention",
+        )
+        max_retention = max_retention_resolver(data, config_path, raw_class, prefix)
+        if not isinstance(max_retention, ArtifactRetentionResolvedInt):
+            raise ValueError(f"{prefix} max retention source resolved invalid type")
+        classes[class_name] = ArtifactRetentionClass(
+            max_retention_days=max_retention.value,
+        )
+
+    raw_uploads = require_config_table(artifact_retention, "uploads", "artifact_retention")
+    uploads: dict[str, ArtifactRetentionUploadSite] = {}
+    for upload_key, raw_upload in sorted(raw_uploads.items()):
+        if not isinstance(upload_key, str) or not upload_key:
+            raise ValueError("artifact_retention.uploads keys must be non-empty strings")
+        key_parts = upload_key.split("::")
+        if len(key_parts) != 3 or any(not part for part in key_parts):
+            raise ValueError("artifact_retention.uploads keys must be source::job_id::step_id")
+        if not artifact_retention_source_is_canonical(key_parts[0]):
+            raise ValueError(
+                "artifact_retention.uploads source must use canonical repo path "
+                "under .github/workflows/ or .github/actions/"
+            )
+        if not isinstance(raw_upload, dict):
+            raise ValueError(f"artifact_retention.uploads.{upload_key} must be a table")
+        prefix = f"artifact_retention.uploads.{upload_key}"
+        require_config_only_keys(
+            raw_upload,
+            {
+                "artifact_name",
+                "artifact_name_config_file",
+                "artifact_name_config_ref",
+                "artifact_name_template_config_file",
+                "artifact_name_template_config_ref",
+                "artifact_name_template_vars_config_file",
+                "artifact_name_template_vars_config_ref",
+                "artifact_class",
+                "retention_days",
+                "retention_days_config_file",
+                "retention_days_config_ref",
+            },
+            prefix,
+        )
+        artifact_name_resolver = artifact_retention_select_source_mode(
+            raw_upload,
+            ARTIFACT_RETENTION_NAME_SOURCE_MODES,
+            prefix,
+            "artifact name",
+        )
+        artifact_name = artifact_name_resolver(data, config_path, raw_upload, prefix)
+        if not isinstance(artifact_name, str):
+            raise ValueError(f"{prefix} artifact name source resolved invalid type")
+        artifact_class = require_config_string(raw_upload, "artifact_class", prefix)
+        if artifact_class not in classes:
+            raise ValueError(f"{prefix}.artifact_class must reference a configured class")
+        retention_resolver = artifact_retention_select_source_mode(
+            raw_upload,
+            ARTIFACT_RETENTION_RETENTION_SOURCE_MODES,
+            prefix,
+            "retention-days",
+        )
+        retention = retention_resolver(data, config_path, raw_upload, prefix)
+        if not isinstance(retention, ArtifactRetentionResolvedInt):
+            raise ValueError(f"{prefix} retention-days source resolved invalid type")
+        uploads[upload_key] = ArtifactRetentionUploadSite(
+            artifact_name=artifact_name,
+            artifact_class=artifact_class,
+            retention_days=retention.value,
+            retention_config_file=retention.config_file,
+            retention_config_ref=retention.config_ref,
+        )
+
+    used_classes = {site.artifact_class for site in uploads.values()}
+    unused_classes = sorted(set(classes) - used_classes)
+    if unused_classes:
+        raise ValueError(f"artifact_retention.classes has unused classes: {unused_classes!r}")
+
+    raw_bindings = require_config_table(artifact_retention, "lookback_bindings", "artifact_retention")
+    lookback_bindings: dict[str, ArtifactRetentionLookbackBinding] = {}
+    for binding_name, raw_binding in sorted(raw_bindings.items()):
+        if not isinstance(binding_name, str) or not binding_name.strip():
+            raise ValueError("artifact_retention.lookback_bindings keys must be non-empty strings")
+        if not isinstance(raw_binding, dict):
+            raise ValueError(f"artifact_retention.lookback_bindings.{binding_name} must be a table")
+        prefix = f"artifact_retention.lookback_bindings.{binding_name}"
+        require_config_only_keys(raw_binding, {"upload", "config_file", "retention_ref", "lookback_ref"}, prefix)
+        upload = require_config_string(raw_binding, "upload", prefix)
+        config_file = require_config_string(raw_binding, "config_file", prefix)
+        retention_ref = require_config_string(raw_binding, "retention_ref", prefix)
+        lookback_ref = require_config_string(raw_binding, "lookback_ref", prefix)
+        if upload not in uploads:
+            raise ValueError(f"{prefix}.upload must reference a configured upload")
+        site = uploads[upload]
+        if site.retention_config_file != config_file or site.retention_config_ref != retention_ref:
+            raise ValueError(f"{prefix} must match the upload retention source")
+        binding_config = resolve_repo_toml_config_file(config_path, config_file, f"{prefix}.config_file")
+        retention_days = resolve_config_positive_int_ref(binding_config, retention_ref, f"{prefix}.retention_ref")
+        max_lookback_age_seconds = resolve_config_positive_int_ref(binding_config, lookback_ref, f"{prefix}.lookback_ref")
+        try:
+            check_lookback_le_retention(retention_days, max_lookback_age_seconds)
+        except ProvenanceError as exc:
+            raise ValueError(f"{prefix}: {exc}") from exc
+        lookback_bindings[binding_name] = ArtifactRetentionLookbackBinding(
+            upload=upload,
+            config_file=config_file,
+            retention_ref=retention_ref,
+            lookback_ref=lookback_ref,
+        )
+
+    required_binding_uploads = sorted(
+        upload_key
+        for upload_key, site in uploads.items()
+        if site.retention_config_file is not None and site.retention_config_ref is not None
+    )
+    declared_binding_uploads = sorted(binding.upload for binding in lookback_bindings.values())
+    if declared_binding_uploads != required_binding_uploads:
+        raise ValueError(
+            "artifact_retention.lookback_bindings must exactly cover config-ref retention uploads: "
+            f"expected {required_binding_uploads!r}, got {declared_binding_uploads!r}"
+        )
+
+    return ArtifactRetentionPolicy(classes=classes, uploads=uploads, lookback_bindings=lookback_bindings)
 
 
 def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
@@ -11372,6 +12604,16 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
     )
     if "{run_attempt}" not in artifact_name_template:
         raise ValueError("ci_provenance.artifact_name_template must include {run_attempt}")
+    artifact_name_template_vars = require_config_string_map(
+        ci_provenance,
+        "artifact_name_template_vars",
+        "ci_provenance",
+    )
+    render_config_string_template(
+        artifact_name_template,
+        artifact_name_template_vars,
+        "ci_provenance.artifact_name_template",
+    )
     if require_config_string(ci_provenance, "workflow_key", "ci_provenance") != "ci":
         raise ValueError("ci_provenance.workflow_key must be ci")
     require_config_string(ci_provenance, "workflow_name", "ci_provenance")
@@ -11485,10 +12727,19 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
     retention_days = require_config_positive_int(
         artifacts, "retention_days", "ci_provenance.artifacts"
     )
-    if api_limits["max_lookback_age_seconds"] > retention_days * 24 * 60 * 60:
+    try:
+        check_lookback_le_retention(
+            retention_days,
+            require_config_positive_int(
+                api_limits,
+                "max_lookback_age_seconds",
+                "ci_provenance.api_limits",
+            ),
+        )
+    except ProvenanceError as exc:
         raise ValueError(
             "ci_provenance.api_limits.max_lookback_age_seconds must not exceed artifact retention"
-        )
+        ) from exc
 
     policy = require_config_table(ci_provenance, "policy", "ci_provenance")
     unexpected_policy_keys = set(policy) - set(CI_PROVENANCE_POLICY_ROWS) - {"override"}
@@ -11555,6 +12806,7 @@ def load_github_actions_runners_config(
     if not isinstance(meter, dict):
         raise ValueError("ci/github-actions-runners.toml must define [meter]")
     ci_provenance = validate_ci_provenance_config(data)
+    artifact_retention = validate_artifact_retention_config(data, path)
     dispatch_cancel = validate_dispatch_cancel_config(data)
     meter_workflows = meter.get("included_workflows")
     if not isinstance(meter_workflows, list) or not all(
@@ -11572,7 +12824,7 @@ def load_github_actions_runners_config(
         "draft_timeline_items",
     ):
         value = meter_api_limits.get(key)
-        if not isinstance(value, int) or value <= 0:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError(f"meter.api_limits.{key} must be a positive integer")
     tier_to_var: dict[str, str] = {}
     managed_labels: list[str] = []
@@ -11601,6 +12853,7 @@ def load_github_actions_runners_config(
         "variables": sorted(tier_to_var.values()),
         "workflows": workflows,
         "ci_provenance": ci_provenance,
+        "artifact_retention": artifact_retention,
         "dispatch_cancel": dispatch_cancel,
     }
 
@@ -11665,7 +12918,7 @@ def verify_ci_runner_debug_workflow(workflows: dict[str, str]) -> list[str]:
         return []
     try:
         debug_config = load_ci_runner_debug_config()
-    except (ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return [f"ci runner debug config invalid: {exc}"]
 
     workflow_text = workflows[workflow_name]
@@ -11701,7 +12954,7 @@ def verify_dispatch_ci_cancel_workflow(workflows: dict[str, str]) -> list[str]:
         return []
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return [f"github-actions runner config invalid: {exc}"]
 
     ci_provenance = config["ci_provenance"]
@@ -11810,7 +13063,7 @@ def verify_merge_readiness_finalizer_workflow(workflows: dict[str, str]) -> list
         return []
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return [f"github-actions runner config invalid: {exc}"]
 
     ci_provenance = config["ci_provenance"]
@@ -11974,7 +13227,7 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
         return []
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return [f"github-actions runner config invalid: {exc}"]
 
     tier_to_var = config["tier_to_var"]
@@ -12088,7 +13341,7 @@ def verify_actionlint_runner_contract(
         return []
     try:
         config = load_github_actions_runners_config()
-    except (ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return [f"github-actions runner config invalid: {exc}"]
     if not actionlint_path.exists():
         return [f"actionlint config missing: {actionlint_path}"]
@@ -12140,7 +13393,13 @@ def main() -> int:
             continue
         for path in sorted(directory.glob(pattern)):
             repo_automation_texts[path.relative_to(REPO_ROOT).as_posix()] = path.read_text()
+    composite_action_texts = {
+        path: text
+        for path, text in repo_automation_texts.items()
+        if path.startswith(".github/actions/") and path.endswith(("/action.yml", "/action.yaml"))
+    }
     errors = verify_workflows(workflow_texts, action_text, nextest_config_text)
+    errors.extend(verify_artifact_retention_policy(workflow_texts, composite_action_texts))
     errors.extend(verify_github_actions_runner_contract(workflow_texts))
     errors.extend(verify_ci_runner_debug_workflow(workflow_texts))
     errors.extend(verify_dispatch_ci_cancel_workflow(workflow_texts))
@@ -12151,6 +13410,7 @@ def main() -> int:
     errors.extend(verify_coverage_enforcer_workflow(workflow_texts))
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
+    errors.extend(verify_flaky_test_detection_workflows(workflow_texts))
     errors.extend(verify_rust_verification_policies())
     errors.extend(verify_test_harness_manifest())
     if "justfile" in repo_automation_texts:

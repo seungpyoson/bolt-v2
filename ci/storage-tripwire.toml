@@ -11,6 +11,7 @@ issue_labels = ["infra", "ops", "github_actions"]
 [storage_tripwire.issue_match]
 result_limit = 2
 max_open_matches_per_marker = 1
+max_page_size = 100
 page_size = 100
 
 [storage_tripwire.marker]
@@ -20,6 +21,7 @@ suffix = " -->"
 [storage_tripwire.workflow]
 path = ".github/workflows/ci-storage-tripwire.yml"
 job_id = "storage-tripwire"
+job_if = "${{ github.ref_name == github.event.repository.default_branch }}"
 runner_var = "CI_RUNNER_GITHUB_HOSTED"
 schedule_cron = "17 9 * * 1"
 concurrency_group = "ci-storage-tripwire"
@@ -47,6 +49,9 @@ forbidden_fragments = [
   "check-runs",
   "checks/runs",
   "--method DELETE",
+  "-X DELETE",
+  "gh cache delete",
+  "gh run delete",
 ]
 
 [storage_tripwire.metrics.cache]

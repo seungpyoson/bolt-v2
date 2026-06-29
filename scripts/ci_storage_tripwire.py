@@ -27,7 +27,6 @@ if str(SCRIPT_DIR) not in sys.path:
 import ci_storage_audit
 
 
-GITHUB_API_MAX_PAGE_SIZE = 100
 STORAGE_TRIPWIRE_TABLE_RE = re.compile(r"(?m)^\s*\[\[?\s*storage_tripwire(?:\s*\]|\.)")
 
 
@@ -69,6 +68,7 @@ class MarkerPolicy:
 class WorkflowPolicy:
     workflow_path: str
     job_id: str
+    job_if: str
     runner_var: str
     schedule_cron: str
     concurrency_group: str
@@ -84,6 +84,7 @@ class WorkflowPolicy:
 class IssueMatchPolicy:
     result_limit: int
     max_open_matches_per_marker: int
+    max_page_size: int
     page_size: int
 
 
@@ -227,6 +228,11 @@ def load_policy_text(text: str, *, source: str) -> StorageTripwirePolicy:
     marker_table = require_table(root.get("marker"), "storage_tripwire.marker")
     workflow_table = require_table(root.get("workflow"), "storage_tripwire.workflow")
     metrics_table = require_table(root.get("metrics"), "storage_tripwire.metrics")
+    max_page_size = require_positive_int(
+        issue_match_table,
+        "max_page_size",
+        "storage_tripwire.issue_match",
+    )
     issue_match = IssueMatchPolicy(
         result_limit=require_positive_int(
             issue_match_table, "result_limit", "storage_tripwire.issue_match"
@@ -236,11 +242,12 @@ def load_policy_text(text: str, *, source: str) -> StorageTripwirePolicy:
             "max_open_matches_per_marker",
             "storage_tripwire.issue_match",
         ),
+        max_page_size=max_page_size,
         page_size=require_positive_int_at_most(
             issue_match_table,
             "page_size",
             "storage_tripwire.issue_match",
-            GITHUB_API_MAX_PAGE_SIZE,
+            max_page_size,
         ),
     )
     if issue_match.result_limit <= issue_match.max_open_matches_per_marker:
@@ -251,6 +258,7 @@ def load_policy_text(text: str, *, source: str) -> StorageTripwirePolicy:
     workflow = WorkflowPolicy(
         workflow_path=require_string(workflow_table, "path", "storage_tripwire.workflow"),
         job_id=require_string(workflow_table, "job_id", "storage_tripwire.workflow"),
+        job_if=require_string(workflow_table, "job_if", "storage_tripwire.workflow"),
         runner_var=require_string(workflow_table, "runner_var", "storage_tripwire.workflow"),
         schedule_cron=require_string(workflow_table, "schedule_cron", "storage_tripwire.workflow"),
         concurrency_group=require_string(workflow_table, "concurrency_group", "storage_tripwire.workflow"),
@@ -321,7 +329,7 @@ def load_policy(path: pathlib.Path) -> StorageTripwirePolicy:
 
 def repository_toml_paths(root: pathlib.Path) -> list[pathlib.Path]:
     result = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "*.toml"],
+        ["git", "-C", str(root), "ls-files", "--cached", "*.toml"],
         text=True,
         capture_output=True,
         check=False,
@@ -510,6 +518,19 @@ def issue_matches_desired_state(
     )
 
 
+def require_issue_number(issue: Mapping[str, Any], context: str) -> int:
+    value = issue.get("number")
+    if isinstance(value, bool):
+        raise TripwireError(f"{context} issue number must be a positive integer")
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TripwireError(f"{context} issue number must be a positive integer") from exc
+    if number <= 0:
+        raise TripwireError(f"{context} issue number must be a positive integer")
+    return number
+
+
 def apply_alerts(
     policy: StorageTripwirePolicy,
     evaluation: Mapping[str, Any],
@@ -523,6 +544,7 @@ def apply_alerts(
     updated: list[int] = []
     unchanged: list[int] = []
     labels = list(policy.issue_labels)
+    pending: list[dict[str, Any]] = []
     for threshold in breached:
         title = str(threshold["title"])
         body = render_issue_body(policy, evaluation, threshold)
@@ -534,15 +556,27 @@ def apply_alerts(
         )
         existing = existing_issue_by_marker(policy, matches, marker)
         if existing is None:
-            created_issue = client.create_issue(title=title, body=body, labels=labels)
-            created.append(int(created_issue["number"]))
+            pending.append({"action": "create", "title": title, "body": body})
             continue
-        number = int(existing["number"])
+        number = require_issue_number(existing, "matched")
         if issue_matches_desired_state(existing, title=title, body=body, labels=labels):
-            unchanged.append(number)
+            pending.append({"action": "unchanged", "number": number})
             continue
-        client.edit_issue(number=number, title=title, body=body, labels=labels)
-        updated.append(number)
+        pending.append({"action": "update", "number": number, "title": title, "body": body})
+
+    for alert in pending:
+        action = alert["action"]
+        if action == "create":
+            created_issue = client.create_issue(title=alert["title"], body=alert["body"], labels=labels)
+            created.append(require_issue_number(created_issue, "created"))
+        elif action == "update":
+            number = int(alert["number"])
+            client.edit_issue(number=number, title=alert["title"], body=alert["body"], labels=labels)
+            updated.append(number)
+        elif action == "unchanged":
+            unchanged.append(int(alert["number"]))
+        else:
+            raise TripwireError(f"unknown alert action {action!r}")
     return {"created": created, "updated": updated, "unchanged": unchanged}
 
 
@@ -641,7 +675,8 @@ def write_summary(text: str) -> None:
     raw_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not raw_path:
         return
-    pathlib.Path(raw_path).write_text(text + "\n", encoding="utf-8")
+    with pathlib.Path(raw_path).open("a", encoding="utf-8") as summary:
+        summary.write(text + "\n")
 
 
 def render_result(evaluation: Mapping[str, Any], apply_result: Mapping[str, list[int]] | None = None) -> str:

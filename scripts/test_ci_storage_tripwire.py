@@ -4,6 +4,7 @@ import contextlib
 import io
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -99,6 +100,7 @@ class CiStorageTripwireTests(unittest.TestCase):
                 [storage_tripwire.issue_match]
                 result_limit = 2
                 max_open_matches_per_marker = 1
+                max_page_size = 50
                 page_size = 50
 
                 [storage_tripwire.marker]
@@ -108,6 +110,7 @@ class CiStorageTripwireTests(unittest.TestCase):
                 [storage_tripwire.workflow]
                 path = ".github/workflows/ci-storage-tripwire.yml"
                 job_id = "storage-tripwire"
+                job_if = "${{ github.ref_name == github.event.repository.default_branch }}"
                 runner_var = "CI_RUNNER_GITHUB_HOSTED"
                 schedule_cron = "17 9 * * 1"
                 concurrency_group = "ci-storage-tripwire"
@@ -115,8 +118,18 @@ class CiStorageTripwireTests(unittest.TestCase):
                 run_command = "python3 scripts/ci_storage_tripwire.py apply-live --repo \\"$GITHUB_REPOSITORY\\" --branch \\"$GITHUB_REF_NAME\\""
                 triggers = ["schedule", "workflow_dispatch"]
                 permissions = { contents = "read", actions = "read", issues = "write" }
-                required_fragments = ["python3 scripts/ci_storage_tripwire.py", "apply-live"]
-                forbidden_fragments = ["actions/artifacts", "statuses/"]
+                required_fragments = [
+                  "uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+                  "persist-credentials: false",
+                  "GH_TOKEN: ${{ github.token }}",
+                  "GITHUB_REPOSITORY: ${{ github.repository }}",
+                  "GITHUB_REF_NAME: ${{ github.ref_name }}",
+                  "python3 scripts/ci_storage_tripwire.py",
+                  "apply-live",
+                  "--repo \\"$GITHUB_REPOSITORY\\"",
+                  "--branch \\"$GITHUB_REF_NAME\\"",
+                ]
+                forbidden_fragments = ["actions/artifacts", "statuses/", "-X DELETE", "gh cache delete"]
 
                 [storage_tripwire.metrics.cache]
                 label = "Actions cache listed bytes"
@@ -193,6 +206,7 @@ class CiStorageTripwireTests(unittest.TestCase):
             jobs:
               storage-tripwire:
                 name: storage-tripwire
+                if: ${{ github.ref_name == github.event.repository.default_branch }}
                 runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
                 steps:
                   - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -257,6 +271,48 @@ class CiStorageTripwireTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertFalse(payload["evaluation"]["breached"])
 
+    def test_evaluate_cli_returns_non_zero_on_breach(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            policy_path = self.write_policy(root)
+            audit_path = self.write_audit(root, 1200, 600)
+            stdout = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout):
+                exit_code = ci_storage_tripwire.main(
+                    [
+                        "--policy",
+                        str(policy_path),
+                        "evaluate",
+                        "--audit-json",
+                        str(audit_path),
+                        "--json",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 1)
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload["evaluation"]["breached"])
+
+    def test_policy_resolves_threshold_limit_config_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            policy_text = self.write_policy(root).read_text(encoding="utf-8").replace(
+                "limit_bytes = 2000",
+                'limit_config_ref = "storage_tripwire.storage_cap_bytes"',
+                1,
+            )
+            policy = ci_storage_tripwire.load_policy(self.write_policy(root, policy_text))
+            audit = ci_storage_tripwire.load_audit_json(self.write_audit(root, 500, 2500))
+
+            evaluation = ci_storage_tripwire.evaluate_tripwire(policy, audit)
+
+        artifact_threshold = next(
+            threshold for threshold in evaluation["thresholds"] if threshold["id"] == "artifact-over-cap"
+        )
+        self.assertEqual(artifact_threshold["limit_bytes"], policy.storage_cap_bytes)
+        self.assertFalse(artifact_threshold["breached"])
+
     def test_policy_discovery_fails_closed_when_git_inventory_is_unavailable(self) -> None:
         original_run = ci_storage_tripwire.subprocess.run
 
@@ -274,6 +330,28 @@ class CiStorageTripwireTests(unittest.TestCase):
                 ci_storage_tripwire.repository_toml_paths(pathlib.Path("."))
         finally:
             ci_storage_tripwire.subprocess.run = original_run  # type: ignore[assignment]
+
+    def test_policy_inventory_uses_tracked_toml_only(self) -> None:
+        original_run = ci_storage_tripwire.subprocess.run
+        calls: list[list[str]] = []
+
+        class SuccessfulGitInventory:
+            returncode = 0
+            stdout = "ci/storage-tripwire.toml\n"
+            stderr = ""
+
+        def record_git_inventory(cmd: list[str], **_kwargs: Any) -> SuccessfulGitInventory:
+            calls.append(cmd)
+            return SuccessfulGitInventory()
+
+        ci_storage_tripwire.subprocess.run = record_git_inventory  # type: ignore[assignment]
+        try:
+            paths = ci_storage_tripwire.repository_toml_paths(pathlib.Path("/repo"))
+        finally:
+            ci_storage_tripwire.subprocess.run = original_run  # type: ignore[assignment]
+
+        self.assertEqual(paths, [pathlib.Path("/repo/ci/storage-tripwire.toml")])
+        self.assertEqual(calls, [["git", "-C", "/repo", "ls-files", "--cached", "*.toml"]])
 
     def test_policy_discovery_fails_closed_on_malformed_tripwire_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -511,6 +589,36 @@ class CiStorageTripwireTests(unittest.TestCase):
         with self.assertRaisesRegex(ci_storage_tripwire.TripwireError, "multiple open issues"):
             ci_storage_tripwire.apply_alerts(policy, evaluation, fake)
 
+    def test_apply_preflights_all_markers_before_mutating_issues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            policy = ci_storage_tripwire.load_policy(self.write_policy(root))
+            audit = ci_storage_tripwire.load_audit_json(self.write_audit(root, 1200, 2500))
+            evaluation = ci_storage_tripwire.evaluate_tripwire(policy, audit)
+
+        fake = FakeIssueClient(
+            {
+                "<!-- ci-storage-tripwire:artifact-over-cap -->": [
+                    {
+                        "number": 41,
+                        "title": "artifact title",
+                        "body": "<!-- ci-storage-tripwire:artifact-over-cap -->\nold body",
+                    },
+                    {
+                        "number": 42,
+                        "title": "artifact duplicate",
+                        "body": "<!-- ci-storage-tripwire:artifact-over-cap -->\nold body",
+                    },
+                ]
+            }
+        )
+
+        with self.assertRaisesRegex(ci_storage_tripwire.TripwireError, "multiple open issues"):
+            ci_storage_tripwire.apply_alerts(policy, evaluation, fake)
+
+        self.assertEqual(fake.created, [])
+        self.assertEqual(fake.edited, [])
+
     def test_github_issue_client_lists_open_issues_by_marker(self) -> None:
         marker = "<!-- ci-storage-tripwire:cache-over-cap -->"
         client = RecordingGhIssueClient(
@@ -553,6 +661,22 @@ class CiStorageTripwireTests(unittest.TestCase):
         self.assertEqual(fields["per_page"], "50")
         self.assertTrue(paginate)
 
+    def test_github_issue_client_rejects_malformed_paginated_issue_response(self) -> None:
+        marker = "<!-- ci-storage-tripwire:cache-over-cap -->"
+        cases = [
+            ({}, "paginated list"),
+            ([{}], "pages must be lists"),
+        ]
+        for response, expected in cases:
+            with self.subTest(expected=expected):
+                client = RecordingGhIssueClient(response)
+                with self.assertRaisesRegex(ci_storage_tripwire.TripwireError, expected):
+                    client.find_open_issues_by_marker(
+                        marker=marker,
+                        result_limit=2,
+                        page_size=50,
+                    )
+
     def test_apply_does_not_touch_issues_when_no_threshold_crosses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -566,6 +690,23 @@ class CiStorageTripwireTests(unittest.TestCase):
 
         self.assertEqual(result, {"created": [], "updated": [], "unchanged": []})
         self.assertEqual(fake.calls, [])
+
+    def test_write_summary_appends_to_existing_step_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            summary_path = pathlib.Path(tmp) / "summary.md"
+            summary_path.write_text("existing\n", encoding="utf-8")
+            previous = os.environ.get("GITHUB_STEP_SUMMARY")
+            os.environ["GITHUB_STEP_SUMMARY"] = str(summary_path)
+            try:
+                ci_storage_tripwire.write_summary("new")
+            finally:
+                if previous is None:
+                    os.environ.pop("GITHUB_STEP_SUMMARY", None)
+                else:
+                    os.environ["GITHUB_STEP_SUMMARY"] = previous
+
+            self.assertEqual(summary_path.read_text(encoding="utf-8"), "existing\nnew\n")
+
     def test_policy_rejects_bool_positive_int(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -585,6 +726,7 @@ class CiStorageTripwireTests(unittest.TestCase):
                 [storage_tripwire.issue_match]
                 result_limit = 2
                 max_open_matches_per_marker = 1
+                max_page_size = 50
                 page_size = 50
 
                 [storage_tripwire.marker]
@@ -594,6 +736,7 @@ class CiStorageTripwireTests(unittest.TestCase):
                 [storage_tripwire.workflow]
                 path = ".github/workflows/ci-storage-tripwire.yml"
                 job_id = "storage-tripwire"
+                job_if = "${{ github.ref_name == github.event.repository.default_branch }}"
                 runner_var = "CI_RUNNER_GITHUB_HOSTED"
                 schedule_cron = "17 9 * * 1"
                 concurrency_group = "ci-storage-tripwire"
@@ -639,6 +782,7 @@ class CiStorageTripwireTests(unittest.TestCase):
                 [storage_tripwire.issue_match]
                 result_limit = 2
                 max_open_matches_per_marker = 1
+                max_page_size = 50
                 page_size = 50
 
                 [storage_tripwire.marker]
@@ -648,6 +792,7 @@ class CiStorageTripwireTests(unittest.TestCase):
                 [storage_tripwire.workflow]
                 path = ".github/workflows/ci-storage-tripwire.yml"
                 job_id = "storage-tripwire"
+                job_if = "${{ github.ref_name == github.event.repository.default_branch }}"
                 runner_var = "CI_RUNNER_GITHUB_HOSTED"
                 schedule_cron = "17 9 * * 1"
                 concurrency_group = "ci-storage-tripwire"
@@ -701,7 +846,7 @@ class CiStorageTripwireTests(unittest.TestCase):
                 root,
                 self.write_policy(root)
                 .read_text(encoding="utf-8")
-                .replace("page_size = 50", "page_size = 101"),
+                .replace("\npage_size = 50", "\npage_size = 51"),
             )
 
             with self.assertRaisesRegex(ci_storage_tripwire.TripwireError, "page_size"):
@@ -737,6 +882,13 @@ class CiStorageTripwireTests(unittest.TestCase):
                 "triggers must match",
             ),
             (
+                workflow.replace(
+                    '    - cron: "17 9 * * 1"\n',
+                    '    - cron: "17 9 * * 1"\n    - cron: "31 9 * * 1"\n',
+                ),
+                "schedule cron",
+            ),
+            (
                 workflow.replace("  actions: read\n", ""),
                 "permissions must match",
             ),
@@ -746,6 +898,19 @@ class CiStorageTripwireTests(unittest.TestCase):
                     "    name: storage-tripwire\n    permissions:\n      checks: write\n      statuses: write\n",
                 ),
                 "job-level permissions",
+            ),
+            (
+                workflow.replace(
+                    "    if: ${{ github.ref_name == github.event.repository.default_branch }}\n",
+                    "    if: ${{ github.ref_name == 'main' }}\n",
+                ),
+                "job if",
+            ),
+            (
+                workflow
+                + "\n  cleanup:\n    name: cleanup\n    runs-on: ubuntu-latest\n    steps:\n"
+                + "      - run: gh cache delete --all --repo \"$GITHUB_REPOSITORY\"\n",
+                "only the configured storage tripwire job",
             ),
             (
                 workflow.replace("  group: ci-storage-tripwire\n", "  group: drifted\n"),
@@ -760,8 +925,22 @@ class CiStorageTripwireTests(unittest.TestCase):
                 "runner_var",
             ),
             (
+                workflow.replace(
+                    "          GITHUB_REF_NAME: ${{ github.ref_name }}\n",
+                    "          GITHUB_REF_NAME: ${{ github.ref_name }}\n          EXTRA: value\n",
+                ),
+                "run step",
+            ),
+            (
+                workflow.replace(
+                    "          GH_TOKEN: ${{ github.token }}\n",
+                    "          GH_TOKEN: ${{ github.token }}\n      - uses: actions/setup-node@v4\n",
+                ),
+                "exactly checkout and run steps",
+            ),
+            (
                 workflow.replace(" apply-live ", " evaluate "),
-                "run command",
+                "run step",
             ),
             (
                 workflow.replace(
@@ -769,10 +948,17 @@ class CiStorageTripwireTests(unittest.TestCase):
                     '          echo \'python3 scripts/ci_storage_tripwire.py apply-live --repo "$GITHUB_REPOSITORY" --branch "$GITHUB_REF_NAME"\'\n'
                     "          python3 scripts/ci_storage_tripwire.py evaluate --audit-json audit.json --json\n",
                 ),
-                "run command",
+                "run step",
             ),
             (
                 workflow.replace("        run: |\n", "        continue-on-error: true\n        run: |\n"),
+                "continue-on-error",
+            ),
+            (
+                workflow.replace(
+                    "        run: |\n",
+                    "        continue-on-error: ${{ github.ref_name != '' }}\n        run: |\n",
+                ),
                 "continue-on-error",
             ),
             (

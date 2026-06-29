@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 import functools
 import json
 import pathlib
@@ -12013,6 +12013,48 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     return errors
 
 
+def workflow_schedule_crons(workflow_text: str) -> tuple[list[str], list[str]]:
+    crons: list[str] = []
+    extras: list[str] = []
+    for line in workflow_trigger_block(workflow_text, "schedule"):
+        clean = strip_comment(line).strip()
+        if not clean:
+            continue
+        match = re.fullmatch(r"-\s*cron:\s*(.+)", clean)
+        if match is None:
+            extras.append(clean)
+            continue
+        crons.append(yaml_scalar(match.group(1)))
+    return crons, extras
+
+
+def storage_tripwire_expected_checkout_action(required_fragments: tuple[str, ...]) -> str | None:
+    actions = [
+        fragment.removeprefix("uses: ").strip()
+        for fragment in required_fragments
+        if fragment.startswith("uses: ")
+    ]
+    return actions[0] if len(actions) == 1 else None
+
+
+def storage_tripwire_expected_persist_credentials(required_fragments: tuple[str, ...]) -> str | None:
+    values = [
+        fragment.split(":", 1)[1].strip()
+        for fragment in required_fragments
+        if fragment.startswith("persist-credentials:")
+    ]
+    return values[0] if len(values) == 1 else None
+
+
+def storage_tripwire_expected_env(required_fragments: tuple[str, ...]) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for fragment in required_fragments:
+        match = re.fullmatch(r"([A-Z][A-Z0-9_]*):\s*(.+)", fragment)
+        if match is not None:
+            env[match.group(1)] = match.group(2)
+    return env
+
+
 def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str) -> list[str]:
     try:
         policy = ci_storage_tripwire.load_policy_text(
@@ -12031,8 +12073,8 @@ def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str
     errors: list[str] = []
     if workflow_trigger_keys(workflow_text) != set(workflow_contract.triggers):
         errors.append(f"{workflow_name} triggers must match storage_tripwire.workflow.triggers")
-    schedule_block = "\n".join(workflow_trigger_block(workflow_text, "schedule"))
-    if workflow_contract.schedule_cron not in schedule_block:
+    schedule_crons, schedule_extras = workflow_schedule_crons(workflow_text)
+    if schedule_crons != [workflow_contract.schedule_cron] or schedule_extras:
         errors.append(f"{workflow_name} schedule cron must match storage_tripwire.workflow.schedule_cron")
 
     actual_permissions = scalar_mapping(top_level_block(workflow_text, "permissions"))
@@ -12054,22 +12096,51 @@ def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str
             )
 
     jobs = parse_jobs(workflow_text)
+    if set(jobs) != {workflow_contract.job_id}:
+        errors.append(f"{workflow_name} must define only the configured storage tripwire job")
     job = jobs.get(workflow_contract.job_id)
     if job is None:
         errors.append(f"{workflow_name} must define configured storage tripwire job")
         return errors
     job_text = "\n".join(job)
+    if job_if_value(job) != workflow_contract.job_if:
+        errors.append(f"{workflow_name} storage tripwire job if must match storage_tripwire.workflow.job_if")
     actual_var = extract_job_runs_on_var(job)
     if actual_var != workflow_contract.runner_var:
         errors.append(f"{workflow_name} storage tripwire runs-on must match storage_tripwire.workflow.runner_var")
 
-    if any(re.fullmatch(r"    permissions:\s*.*", line) for line in job):
+    if any(re.fullmatch(r"\s+permissions:\s*.*", line) for line in job):
         errors.append(f"{workflow_name} storage tripwire job must not define job-level permissions")
-    if any(re.fullmatch(r"\s+continue-on-error:\s*true\s*", line) for line in job):
+    if any(re.fullmatch(r"\s+continue-on-error:\s*.*", line) for line in job):
         errors.append(f"{workflow_name} storage tripwire job must not use continue-on-error")
 
-    if block_run_commands(job) != [workflow_contract.run_command]:
-        errors.append(f"{workflow_name} run command must match storage_tripwire.workflow.run_command")
+    steps = step_blocks(job)
+    if len(steps) != 2:
+        errors.append(f"{workflow_name} storage tripwire job must contain exactly checkout and run steps")
+    else:
+        checkout_action = storage_tripwire_expected_checkout_action(workflow_contract.required_fragments)
+        persist_credentials = storage_tripwire_expected_persist_credentials(workflow_contract.required_fragments)
+        expected_env = storage_tripwire_expected_env(workflow_contract.required_fragments)
+        checkout_items = block_top_level_items(steps[0])
+        if (
+            checkout_action is None
+            or persist_credentials is None
+            or checkout_items is None
+            or set(checkout_items) != {"uses", "with"}
+            or checkout_items.get("uses") != checkout_action
+            or block_nested_mapping_items(steps[0], "with") != {"persist-credentials": persist_credentials}
+        ):
+            errors.append(f"{workflow_name} checkout step must match storage_tripwire.workflow.required_fragments")
+        run_items = block_top_level_items(steps[1])
+        if (
+            not expected_env
+            or run_items is None
+            or set(run_items) != {"name", "env", "run"}
+            or not run_items.get("name")
+            or block_nested_mapping_items(steps[1], "env") != expected_env
+            or step_run_command(steps[1]) != workflow_contract.run_command
+        ):
+            errors.append(f"{workflow_name} run step must match storage_tripwire.workflow contract")
 
     for required in workflow_contract.required_fragments:
         if required not in job_text:

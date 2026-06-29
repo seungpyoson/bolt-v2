@@ -1,0 +1,39 @@
+name: Claude Action Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'Prompt to send to Claude'
+        required: false
+        default: 'Reply with exactly this token and nothing else: SMOKE_TEST_OK'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude (OAuth token auth)
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: ${{ inputs.prompt }}
+          claude_args: |
+            --max-turns 1
+
+      - name: Expose Claude output
+        run: |
+          echo "=== full outputs JSON ==="
+          echo '${{ toJSON(steps.claude.outputs) }}'

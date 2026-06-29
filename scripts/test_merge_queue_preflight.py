@@ -42,6 +42,7 @@ MERGIFY_REQUIRED_CHECK_WORKFLOWS = {
     "actionlint": "actionlint",
     "host-health": "CI",
 }
+MERGIFY_QUEUE_MAX_BATCH_SIZE = {"hotfix": 1, "default": 10}
 
 
 def expected_head_sha_args(
@@ -235,6 +236,7 @@ def mergify_queue_route_finding(pr: int, queue_rule: str, labels: list[str], que
             "queue_rule": queue_rule,
             "labels": labels,
             "queue_conditions": queue_conditions,
+            "max_batch_size": MERGIFY_QUEUE_MAX_BATCH_SIZE[queue_rule],
         },
     }
 
@@ -1083,6 +1085,11 @@ def assert_mergify_queue_routing_uses_pr_labels() -> None:
                 "check-success = host-health",
             ],
         ) in payload["findings"], payload["findings"]
+        assert_equal(
+            [batch["prs"] for batch in payload["batches"]],
+            [[1], [2]],
+            "mixed queue size-valid batches",
+        )
         assert_equal(payload["wave_status"], "split_advised", "mixed queue wave status")
 
 

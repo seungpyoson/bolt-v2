@@ -730,6 +730,7 @@ def mergify_queue_route_finding(
             "queue_rule": queue_rule,
             "labels": list(labels),
             "queue_conditions": queue_conditions,
+            "max_batch_size": mergify_queue_batch_max(rule),
         },
     }
 
@@ -1145,17 +1146,15 @@ def mergify_queue_batch_size_findings(
     return tuple(findings)
 
 
-def mergify_above_max_batch_limits(
+def mergify_batch_limits(
     findings: Sequence[Mapping[str, object]],
 ) -> dict[int, int]:
     limits: dict[int, int] = {}
     for finding in findings:
-        if finding["reason_code"] != "mergify_queue_batch_above_max":
+        if finding["reason_code"] != "mergify_queue_route_selected":
             continue
         evidence = dict(finding["evidence"])
-        max_batch_size = int(evidence["max_batch_size"])
-        for pr in tuple(evidence["prs"]):
-            limits[int(pr)] = max_batch_size
+        limits[int(evidence["pr"])] = int(evidence["max_batch_size"])
     return limits
 
 
@@ -2560,7 +2559,7 @@ def preflight_with_fetch_refs(
         readiness=readiness,
         required_check_workflows=required_check_workflows,
     )
-    batch_max_limits = mergify_above_max_batch_limits(mergify_findings)
+    batch_max_limits = mergify_batch_limits(mergify_findings)
     base_commits: dict[int, SyntheticCommit] = {}
     base_verifiers: dict[int, tuple[VerifierResult, ...]] = {}
     for pr in requested:

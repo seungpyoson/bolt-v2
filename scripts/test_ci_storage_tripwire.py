@@ -111,6 +111,8 @@ class CiStorageTripwireTests(unittest.TestCase):
                 path = ".github/workflows/ci-storage-tripwire.yml"
                 job_id = "storage-tripwire"
                 job_if = "${{ github.event_name == 'schedule' }}"
+                top_level_keys = ["name", "on", "permissions", "concurrency", "jobs"]
+                job_keys = ["name", "if", "runs-on", "steps"]
                 runner_var = "CI_RUNNER_GITHUB_HOSTED"
                 schedule_cron = "17 9 * * 1"
                 concurrency_group = "ci-storage-tripwire"
@@ -736,6 +738,8 @@ class CiStorageTripwireTests(unittest.TestCase):
                 path = ".github/workflows/ci-storage-tripwire.yml"
                 job_id = "storage-tripwire"
                 job_if = "${{ github.event_name == 'schedule' }}"
+                top_level_keys = ["name", "on", "permissions", "concurrency", "jobs"]
+                job_keys = ["name", "if", "runs-on", "steps"]
                 runner_var = "CI_RUNNER_GITHUB_HOSTED"
                 schedule_cron = "17 9 * * 1"
                 concurrency_group = "ci-storage-tripwire"
@@ -792,6 +796,8 @@ class CiStorageTripwireTests(unittest.TestCase):
                 path = ".github/workflows/ci-storage-tripwire.yml"
                 job_id = "storage-tripwire"
                 job_if = "${{ github.event_name == 'schedule' }}"
+                top_level_keys = ["name", "on", "permissions", "concurrency", "jobs"]
+                job_keys = ["name", "if", "runs-on", "steps"]
                 runner_var = "CI_RUNNER_GITHUB_HOSTED"
                 schedule_cron = "17 9 * * 1"
                 concurrency_group = "ci-storage-tripwire"
@@ -893,7 +899,35 @@ class CiStorageTripwireTests(unittest.TestCase):
             (
                 workflow.replace(
                     "\npermissions:\n",
+                    '\n"defaults":\n  run:\n    working-directory: /tmp\n\npermissions:\n',
+                ),
+                "top-level keys",
+            ),
+            (
+                workflow.replace(
+                    "\npermissions:\n",
                     "\nenv:\n  PYTHONPATH: /tmp\n\npermissions:\n",
+                ),
+                "top-level keys",
+            ),
+            (
+                workflow.replace(
+                    "\npermissions:\n",
+                    '\n"env":\n  PYTHONPATH: /tmp\n\npermissions:\n',
+                ),
+                "top-level keys",
+            ),
+            (
+                workflow.replace(
+                    "\npermissions:\n",
+                    '\n"run-name": storage-tripwire\n\npermissions:\n',
+                ),
+                "top-level keys",
+            ),
+            (
+                workflow.replace(
+                    "\npermissions:\n",
+                    '\n"permissions":\n  contents: write\n\npermissions:\n',
                 ),
                 "top-level keys",
             ),
@@ -918,6 +952,13 @@ class CiStorageTripwireTests(unittest.TestCase):
             (
                 workflow.replace(
                     "    name: storage-tripwire\n",
+                    '    name: storage-tripwire\n    "permissions":\n      actions: write\n',
+                ),
+                "job keys",
+            ),
+            (
+                workflow.replace(
+                    "    name: storage-tripwire\n",
                     "    name: storage-tripwire\n    env:\n      PYTHONPATH: /tmp\n",
                 ),
                 "job keys",
@@ -925,7 +966,21 @@ class CiStorageTripwireTests(unittest.TestCase):
             (
                 workflow.replace(
                     "    name: storage-tripwire\n",
+                    '    name: storage-tripwire\n    "env":\n      PYTHONPATH: /tmp\n',
+                ),
+                "job keys",
+            ),
+            (
+                workflow.replace(
+                    "    name: storage-tripwire\n",
                     "    name: storage-tripwire\n    defaults:\n      run:\n        working-directory: /tmp\n",
+                ),
+                "job keys",
+            ),
+            (
+                workflow.replace(
+                    "    name: storage-tripwire\n",
+                    "    name: storage-tripwire\n    'defaults':\n      run:\n        working-directory: /tmp\n",
                 ),
                 "job keys",
             ),

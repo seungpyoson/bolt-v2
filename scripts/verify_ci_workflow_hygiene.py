@@ -13283,27 +13283,47 @@ def workflow_schedule_crons(workflow_text: str) -> tuple[list[str], list[str]]:
     return crons, extras
 
 
+INVALID_STORAGE_TRIPWIRE_KEY = "<invalid-storage-tripwire-key>"
+
+
+def storage_tripwire_key_at_indent(line: str, indent: int) -> str | None:
+    clean = strip_comment(line).rstrip()
+    if not clean:
+        return None
+    actual_indent = len(clean) - len(clean.lstrip(" "))
+    if actual_indent != indent:
+        return None
+    match = re.fullmatch(rf"\s{{{indent}}}({YAML_KEY_PATTERN})\s*:\s*.*", clean)
+    if match is None:
+        return INVALID_STORAGE_TRIPWIRE_KEY
+    return unquote_yaml_scalar(match.group(1))
+
+
+def storage_tripwire_key_at_any_indent(line: str) -> str | None:
+    clean = strip_comment(line).rstrip()
+    if not clean:
+        return None
+    match = re.fullmatch(rf"\s*({YAML_KEY_PATTERN})\s*:\s*.*", clean)
+    if match is None:
+        return None
+    return unquote_yaml_scalar(match.group(1))
+
+
 def workflow_top_level_keys(workflow_text: str) -> list[str]:
     keys: list[str] = []
     for line in workflow_text.splitlines():
-        clean = strip_comment(line).rstrip()
-        if not clean or clean.startswith((" ", "\t")):
-            continue
-        match = re.fullmatch(r"([A-Za-z0-9_.-]+):(?:\s*.*)?", clean)
-        if match is not None:
-            keys.append(match.group(1))
+        key = storage_tripwire_key_at_indent(line, 0)
+        if key is not None:
+            keys.append(key)
     return keys
 
 
 def storage_tripwire_job_top_level_keys(job_lines: list[str]) -> list[str]:
     keys: list[str] = []
     for line in job_lines:
-        clean = strip_comment(line).rstrip()
-        if not clean:
-            continue
-        match = re.fullmatch(r"    ([A-Za-z0-9_.-]+):(?:\s*.*)?", clean)
-        if match is not None:
-            keys.append(match.group(1))
+        key = storage_tripwire_key_at_indent(line, 4)
+        if key is not None:
+            keys.append(key)
     return keys
 
 
@@ -13351,7 +13371,7 @@ def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str
 
     errors: list[str] = []
     workflow_keys = workflow_top_level_keys(workflow_text)
-    allowed_workflow_keys = {"name", "on", "permissions", "concurrency", "jobs"}
+    allowed_workflow_keys = set(workflow_contract.top_level_keys)
     if set(workflow_keys) != allowed_workflow_keys or len(workflow_keys) != len(set(workflow_keys)):
         errors.append(f"{workflow_name} top-level keys must match the storage tripwire workflow contract")
     if workflow_trigger_keys(workflow_text) != set(workflow_contract.triggers):
@@ -13387,7 +13407,7 @@ def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str
         return errors
     job_text = "\n".join(job)
     job_keys = storage_tripwire_job_top_level_keys(job)
-    allowed_job_keys = {"name", "if", "runs-on", "steps"}
+    allowed_job_keys = set(workflow_contract.job_keys)
     if set(job_keys) != allowed_job_keys or len(job_keys) != len(set(job_keys)):
         errors.append(f"{workflow_name} storage tripwire job keys must match the workflow contract")
     if job_if_value(job) != workflow_contract.job_if:
@@ -13396,9 +13416,9 @@ def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str
     if actual_var != workflow_contract.runner_var:
         errors.append(f"{workflow_name} storage tripwire runs-on must match storage_tripwire.workflow.runner_var")
 
-    if any(re.fullmatch(r"\s+permissions:\s*.*", line) for line in job):
+    if any(storage_tripwire_key_at_indent(line, 4) == "permissions" for line in job):
         errors.append(f"{workflow_name} storage tripwire job must not define job-level permissions")
-    if any(re.fullmatch(r"\s+continue-on-error:\s*.*", line) for line in job):
+    if any(storage_tripwire_key_at_any_indent(line) == "continue-on-error" for line in job):
         errors.append(f"{workflow_name} storage tripwire job must not use continue-on-error")
 
     steps = step_blocks(job)

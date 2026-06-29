@@ -622,10 +622,10 @@ clean-merged *args:
 clean-merged-doctor:
     python3 scripts/clean_merged_artifacts.py --doctor
 
-# clean-merged: one-time bulk reclaim of the worktree backlog.
+# clean-merged: post-merge-wave sync + one-time bulk reclaim of the worktree backlog.
 # Prints a dry-run first; pass --apply to actually archive+remove.
 clean-merged-backlog *args:
-    python3 scripts/clean_merged_artifacts.py --include-worktrees {{args}}
+    python3 scripts/clean_merged_artifacts.py --sync-main --reconcile --include-worktrees {{args}}
 
 # clean-merged: prune quarantine archives and backup refs older than DAYS (default 30).
 clean-merged-purge days='30':
@@ -640,8 +640,9 @@ setup:
     # Ensure managed hooks are executable (git warns + skips otherwise).
     chmod +x .githooks/post-merge .githooks/post-checkout .githooks/post-rewrite 2>/dev/null || true
 
-    echo "Enabling remote.origin.prune (auto-prune deleted upstreams on fetch)..."
-    git config remote.origin.prune true
+    clean_merged_remote="$(python3 scripts/clean_merged_artifacts.py --print-remote-name)"
+    echo "Enabling remote.${clean_merged_remote}.prune (auto-prune deleted upstreams on fetch)..."
+    git config "remote.${clean_merged_remote}.prune" true
 
     echo "Adding {{target}} target..."
     rustup target add {{target}}

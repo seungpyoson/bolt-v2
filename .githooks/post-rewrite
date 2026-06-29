@@ -4,7 +4,7 @@
 #
 # Fires after `git pull --rebase` with divergent local (actual rebase, not FF),
 # `git rebase`, and `git commit --amend`. Covers the Lane H trigger gap when an
-# operator has pull.rebase=true and the local main has divergent commits.
+# operator has pull.rebase=true and the local configured trunk has divergent commits.
 #
 # Never breaks the git op: every path exits 0.
 

@@ -877,8 +877,10 @@ def load_cleanup_policy_path(path: pathlib.Path) -> ArtifactCleanupPolicy:
 def has_cleanup_policy_table(path: pathlib.Path) -> bool:
     try:
         document = tomllib.loads(path.read_text())
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except OSError as exc:
         raise AuditError(f"{path}: could not inspect TOML during cleanup policy discovery: {exc}") from exc
+    except tomllib.TOMLDecodeError:
+        return False
     storage_audit = document.get("storage_audit")
     return isinstance(storage_audit, dict) and isinstance(storage_audit.get("cleanup_feasibility"), dict)
 
@@ -1619,6 +1621,14 @@ def ref_is_protected(policy: ArtifactCleanupPolicy, ref: str | None) -> bool:
     )
 
 
+def cleanup_ref_namespace_failure(ref: str | None) -> InputFailure | None:
+    if ref is None:
+        return None
+    if ref.startswith(("refs/heads/", "refs/tags/")):
+        return None
+    return input_failure(FIELD_ARTIFACT_REF, STATE_INVALID)
+
+
 def artifact_identity_failure(entry: dict[str, Any]) -> InputFailure | None:
     stored_failure = parsed_failure(entry.get("artifact_id_failure"), "artifact artifact_id_failure")
     if stored_failure is not None:
@@ -1663,7 +1673,10 @@ def should_fetch_workflow_run(
         return False
     ref_failure = artifact_ref_failure(entry)
     if ref_failure is None:
-        if ref_is_protected(policy, artifact_ref(entry)):
+        ref = artifact_ref(entry)
+        if ref_is_protected(policy, ref):
+            return False
+        if cleanup_ref_namespace_failure(ref) is not None:
             return False
     elif ref_failure.state != STATE_ABSENT:
         return False
@@ -1768,6 +1781,15 @@ def cleanup_decision_for_entry(
             reason_code=REASON_PROTECTED_REF,
             reason=policy.protected_ref_keep_reason,
             metadata_failure=None,
+        )
+    ref_namespace_failure = cleanup_ref_namespace_failure(ref)
+    if rule.expired_decision == DELETE_CANDIDATE_DECISION and ref_namespace_failure is not None:
+        return CleanupDecision(
+            class_id=class_id,
+            decision=KEEP_DECISION,
+            reason_code=REASON_ARTIFACT_METADATA_UNAVAILABLE,
+            reason=policy.artifact_metadata_unavailable_keep_reason,
+            metadata_failure=ref_namespace_failure,
         )
     if rule.expired_decision == KEEP_DECISION:
         return CleanupDecision(

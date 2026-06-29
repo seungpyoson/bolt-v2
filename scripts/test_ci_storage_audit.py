@@ -557,7 +557,12 @@ class CiStorageAuditTests(unittest.TestCase):
                             "created_at": "2026-06-01T00:00:00Z",
                             "expires_at": "2026-06-15T00:00:00Z",
                             "expired": True,
-                            "workflow_run": {"id": 501, "head_branch": "feature/done", "head_sha": "a" * 40},
+                            "workflow_run": {
+                                "id": 501,
+                                "ref": "refs/heads/feature/done",
+                                "head_branch": "feature/done",
+                                "head_sha": "a" * 40,
+                            },
                         },
                         {
                             "id": 2,
@@ -566,7 +571,12 @@ class CiStorageAuditTests(unittest.TestCase):
                             "created_at": "2026-06-20T00:00:00Z",
                             "expires_at": "2026-07-20T00:00:00Z",
                             "expired": False,
-                            "workflow_run": {"id": 502, "head_branch": "feature/future", "head_sha": "b" * 40},
+                            "workflow_run": {
+                                "id": 502,
+                                "ref": "refs/heads/feature/future",
+                                "head_branch": "feature/future",
+                                "head_sha": "b" * 40,
+                            },
                         },
                         {
                             "id": 3,
@@ -575,7 +585,12 @@ class CiStorageAuditTests(unittest.TestCase):
                             "created_at": "2026-06-02T00:00:00Z",
                             "expires_at": "2026-06-16T00:00:00Z",
                             "expired": True,
-                            "workflow_run": {"id": 503, "head_branch": "feature/proof", "head_sha": "c" * 40},
+                            "workflow_run": {
+                                "id": 503,
+                                "ref": "refs/heads/feature/proof",
+                                "head_branch": "feature/proof",
+                                "head_sha": "c" * 40,
+                            },
                         },
                         {
                             "id": 4,
@@ -584,7 +599,12 @@ class CiStorageAuditTests(unittest.TestCase):
                             "created_at": "2026-06-03T00:00:00Z",
                             "expires_at": "2026-06-17T00:00:00Z",
                             "expired": True,
-                            "workflow_run": {"id": 504, "head_branch": "feature/unknown", "head_sha": "d" * 40},
+                            "workflow_run": {
+                                "id": 504,
+                                "ref": "refs/heads/feature/unknown",
+                                "head_branch": "feature/unknown",
+                                "head_sha": "d" * 40,
+                            },
                         },
                         {
                             "id": 5,
@@ -602,7 +622,12 @@ class CiStorageAuditTests(unittest.TestCase):
                             "created_at": "2026-06-05T00:00:00Z",
                             "expires_at": "2026-06-19T00:00:00Z",
                             "expired": True,
-                            "workflow_run": {"id": 506, "head_branch": "feature/live", "head_sha": "f" * 40},
+                            "workflow_run": {
+                                "id": 506,
+                                "ref": "refs/heads/feature/live",
+                                "head_branch": "feature/live",
+                                "head_sha": "f" * 40,
+                            },
                         },
                     ],
                 },
@@ -618,6 +643,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     "id": 501,
                     "status": "completed",
                     "conclusion": "success",
+                    "ref": "refs/heads/feature/done",
                     "head_branch": "feature/done",
                     "head_sha": "a" * 40,
                 },
@@ -625,6 +651,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     "id": 506,
                     "status": "in_progress",
                     "conclusion": None,
+                    "ref": "refs/heads/feature/live",
                     "head_branch": "feature/live",
                     "head_sha": "f" * 40,
                 },
@@ -789,8 +816,10 @@ class CiStorageAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw_tmp:
             tmp = pathlib.Path(raw_tmp)
             decoy = tmp / "decoy.toml"
+            malformed = tmp / "malformed.toml"
             policy_path = tmp / "policy.toml"
             decoy.write_text("# [storage_audit.cleanup_feasibility]\n", encoding="utf-8")
+            malformed.write_text("[not valid", encoding="utf-8")
             policy_path.write_text(
                 """
                 [storage_audit.cleanup_feasibility]
@@ -824,7 +853,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            ci_storage_audit.repository_toml_paths = lambda: [decoy, policy_path]
+            ci_storage_audit.repository_toml_paths = lambda: [decoy, malformed, policy_path]
             try:
                 self.assertEqual(ci_storage_audit.discover_cleanup_policy_path(), policy_path)
             finally:
@@ -839,12 +868,14 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertTrue(ci_storage_audit.ref_is_protected(policy, "refs/tags/v0.1.0"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "tags/v0.1.0"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "tags/feature-branch"))
-        self.assertTrue(ci_storage_audit.ref_is_protected(policy, "v0.1.0"))
+        self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v0.1.0"))
         self.assertTrue(ci_storage_audit.ref_is_protected(policy, "deploy/eu-west-2/2026-06-18-0ddd9f73"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "feature/artifact-observe"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "issue-955"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "incident-2026-06-28"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v2-cleanup"))
+        self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v2.0-cleanup"))
+        self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v2.0/feature"))
 
     def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_has_unsupported_shape(self) -> None:
         policy = cleanup_candidate_policy("unsupported-ref-policy")
@@ -929,47 +960,58 @@ class CiStorageAuditTests(unittest.TestCase):
                     },
                 )
 
-    def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_is_version_tag_shaped(self) -> None:
+    def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_is_ambiguous_bare_ref(self) -> None:
         policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
         policy = ci_storage_audit.load_cleanup_policy_path(policy_path)
-        entry = ci_storage_audit.artifact_entry_from_raw(
-            {
-                "id": 1,
-                "name": "nextest-archive",
-                "size_in_bytes": 100,
-                "created_at": "2026-06-01T00:00:00Z",
-                "expires_at": "2026-06-15T00:00:00Z",
-                "expired": True,
-                "workflow_run": {
-                    "id": 501,
-                    "status": "completed",
-                    "head_branch": "v0.1.0",
-                    "head_sha": "a" * 40,
-                },
-            }
-        )
+        for raw_ref in ("v0.1.0", "release-1.0", "v2.0-cleanup", "v2.0/feature", "feature/artifact"):
+            with self.subTest(raw_ref=raw_ref):
+                entry = ci_storage_audit.artifact_entry_from_raw(
+                    {
+                        "id": 1,
+                        "name": "nextest-archive",
+                        "size_in_bytes": 100,
+                        "created_at": "2026-06-01T00:00:00Z",
+                        "expires_at": "2026-06-15T00:00:00Z",
+                        "expired": True,
+                        "workflow_run": {
+                            "id": 501,
+                            "status": "completed",
+                            "head_branch": raw_ref,
+                            "head_sha": "a" * 40,
+                        },
+                    }
+                )
 
-        cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
-            FakeClient(
-                {
-                    ("GLOBAL", "users/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
-                        "users/owner/settings/billing/actions",
-                        "billing unavailable",
+                cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+                    FakeClient(
+                        {
+                            ("GLOBAL", "users/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                                "users/owner/settings/billing/actions",
+                                "billing unavailable",
+                            ),
+                            ("GLOBAL", "orgs/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                                "orgs/owner/settings/billing/actions",
+                                "billing unavailable",
+                            ),
+                        }
                     ),
-                    ("GLOBAL", "orgs/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
-                        "orgs/owner/settings/billing/actions",
-                        "billing unavailable",
-                    ),
-                }
-            ),
-            repo="owner/repo",
-            artifacts=cleanup_artifacts_with_entry(entry),
-            policy=policy,
-        )
+                    repo="owner/repo",
+                    artifacts=cleanup_artifacts_with_entry(entry),
+                    policy=policy,
+                )
 
-        self.assertEqual(cleanup["candidate_count"], 0)
-        self.assertEqual(cleanup["rows"][0]["decision"], "KEEP")
-        self.assertEqual(cleanup["rows"][0]["reason_code"], "protected_ref")
+                self.assertEqual(cleanup["candidate_count"], 0)
+                self.assertEqual(cleanup["metadata_unavailable_count"], 1)
+                self.assertEqual(cleanup["rows"][0]["decision"], "KEEP")
+                self.assertEqual(cleanup["rows"][0]["reason_code"], "artifact_metadata_unavailable")
+                self.assertEqual(
+                    cleanup["rows"][0]["metadata_failure"],
+                    {
+                        "field": "workflow_run.ref",
+                        "state": "invalid",
+                        "code": "artifact_ref_invalid",
+                    },
+                )
 
     def test_cleanup_feasibility_keeps_candidate_when_run_api_returns_wrong_identity(self) -> None:
         policy = cleanup_candidate_policy("run-api-identity-policy")
@@ -986,6 +1028,7 @@ class CiStorageAuditTests(unittest.TestCase):
                         "expired": True,
                         "workflow_run": {
                             "id": 501,
+                            "ref": "refs/heads/feature/unverified-run-api",
                             "head_branch": "feature/unverified-run-api",
                             "head_sha": "a" * 40,
                         },
@@ -994,6 +1037,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 fetched_payload = {
                     "status": "completed",
                     "conclusion": "success",
+                    "ref": "refs/heads/feature/unverified-run-api",
                     "head_branch": "feature/unverified-run-api",
                     "head_sha": "a" * 40,
                 }
@@ -1380,7 +1424,11 @@ class CiStorageAuditTests(unittest.TestCase):
                             "created_at": "2026-06-01T00:00:00Z",
                             "expires_at": "2026-06-15T00:00:00Z",
                             "expired": True,
-                            "workflow_run": {"id": 501, "head_branch": "feature/done"},
+                            "workflow_run": {
+                                "id": 501,
+                                "ref": "refs/heads/feature/done",
+                                "head_branch": "feature/done",
+                            },
                         },
                         {
                             "id": 2,
@@ -1389,7 +1437,11 @@ class CiStorageAuditTests(unittest.TestCase):
                             "created_at": "2026-06-02T00:00:00Z",
                             "expires_at": "2026-06-16T00:00:00Z",
                             "expired": True,
-                            "workflow_run": {"id": 502, "head_branch": "feature/unfetched"},
+                            "workflow_run": {
+                                "id": 502,
+                                "ref": "refs/heads/feature/unfetched",
+                                "head_branch": "feature/unfetched",
+                            },
                         },
                     ],
                 },
@@ -1397,6 +1449,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     "id": 501,
                     "status": "completed",
                     "conclusion": "success",
+                    "ref": "refs/heads/feature/done",
                     "head_branch": "feature/done",
                 },
             }
@@ -1444,6 +1497,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     "id": 501,
                     "status": "completed",
                     "conclusion": "success",
+                    "ref": "refs/heads/feature/recovered-ref",
                     "head_branch": "feature/recovered-ref",
                     "head_sha": "a" * 40,
                 },
@@ -1461,7 +1515,7 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(cleanup["candidate_bytes"], 100)
         self.assertEqual(cleanup["metadata_unavailable_count"], 0)
         self.assertEqual(cleanup["rows"][0]["decision"], "DELETE-CANDIDATE")
-        self.assertEqual(cleanup["rows"][0]["workflow_run"]["ref"], "feature/recovered-ref")
+        self.assertEqual(cleanup["rows"][0]["workflow_run"]["ref"], "refs/heads/feature/recovered-ref")
         self.assertEqual(cleanup["rows"][0]["workflow_run"]["ref_failure"], None)
         self.assertEqual(cleanup["rows"][0]["workflow_run"]["status"], "completed")
         self.assertEqual(cleanup["rows"][0]["workflow_run"]["status_source"], "run_api")
@@ -1480,6 +1534,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 "workflow_run": {
                     "id": 501,
                     "status": True,
+                    "ref": "refs/heads/feature/invalid-status",
                     "head_branch": "feature/invalid-status",
                     "head_sha": "a" * 40,
                 },
@@ -1491,6 +1546,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     "id": 501,
                     "status": "completed",
                     "conclusion": "success",
+                    "ref": "refs/heads/feature/invalid-status",
                     "head_branch": "feature/invalid-status",
                 },
             }
@@ -1522,6 +1578,7 @@ class CiStorageAuditTests(unittest.TestCase):
             (
                 {
                     "id": 501,
+                    "ref": "refs/heads/feature/status-absent",
                     "head_branch": "feature/status-absent",
                 },
                 "workflow_run.status",
@@ -1561,6 +1618,7 @@ class CiStorageAuditTests(unittest.TestCase):
                         "expired": True,
                         "workflow_run": {
                             "id": 501,
+                            "ref": f"refs/heads/feature/{expected_state}",
                             "head_branch": f"feature/{expected_state}",
                             "head_sha": "a" * 40,
                         },
@@ -1640,7 +1698,7 @@ class CiStorageAuditTests(unittest.TestCase):
                         "id": True,
                         "status": None,
                         "conclusion": None,
-                        "ref": "feature/bool-id",
+                        "ref": "refs/heads/feature/bool-id",
                         "head_branch": "feature/bool-id",
                         "head_sha": "a" * 40,
                         "event": None,
@@ -1713,7 +1771,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     "workflow_run": {
                         "status": None,
                         "conclusion": None,
-                        "ref": "feature/absent-id",
+                        "ref": "refs/heads/feature/absent-id",
                         "head_branch": "feature/absent-id",
                         "head_sha": "a" * 40,
                         "event": None,
@@ -2271,6 +2329,52 @@ class CiStorageAuditTests(unittest.TestCase):
                 """,
                 label="whitespace-policy",
             )
+
+    def test_cleanup_policy_rejects_surrounding_whitespace_in_referenced_name_matchers(self) -> None:
+        cases = (
+            ("name_equals_from", "artifact_names.exact", 'exact = " nextest-archive"'),
+            ("name_prefixes_from", "artifact_names.prefix", 'prefix = " nextest-"'),
+        )
+        for matcher_key, reference, referenced_value in cases:
+            with self.subTest(matcher_key=matcher_key):
+                with self.assertRaisesRegex(ci_storage_audit.AuditError, reference):
+                    ci_storage_audit.load_cleanup_policy_text(
+                        f"""
+                        [artifact_names]
+                        {referenced_value}
+
+                        [storage_audit.cleanup_feasibility]
+                        schema_version = 1
+                        default_class = "unclassified"
+                        default_decision = "KEEP"
+                        default_keep_reason = "default keep"
+                        protected_ref_keep_reason = "protected keep"
+                        artifact_metadata_unavailable_keep_reason = "metadata keep"
+                        active_run_keep_reason = "active keep"
+                        status_unavailable_keep_reason = "status keep"
+                        expiration_unknown_keep_reason = "expiration keep"
+                        not_expired_keep_reason = "not expired keep"
+                        billing_impact_unverifiable = "billing unavailable"
+                        wait_and_remeasure = "wait"
+                        protected_refs = []
+                        protected_ref_prefixes = []
+                        protected_ref_globs = []
+                        active_run_statuses = ["queued"]
+                        terminal_run_statuses = ["completed"]
+                        workflow_run_fetch_limit = 1
+                        billing_probe_paths = []
+
+                        [[storage_audit.cleanup_feasibility.classes]]
+                        id = "nextest_archive"
+                        name_equals = []
+                        name_prefixes = []
+                        {matcher_key} = ["{reference}"]
+                        expired_decision = "DELETE-CANDIDATE"
+                        candidate_reason = "candidate"
+                        keep_reason = "keep"
+                        """,
+                        label=f"{matcher_key}-whitespace-policy",
+                    )
 
     def test_cleanup_policy_rejects_surrounding_whitespace_in_referenced_templates(self) -> None:
         templates = (

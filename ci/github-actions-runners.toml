@@ -404,7 +404,6 @@ protected_ref_globs = [
   "archive/*",
   "deploy/*",
   "tag-archive-*",
-  "v[0-9]*.[0-9]*",
 ]
 active_run_statuses = ["queued", "in_progress", "waiting", "requested", "pending"]
 terminal_run_statuses = ["completed"]

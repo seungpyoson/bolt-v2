@@ -113,6 +113,8 @@ jobs:
           PR_ACTION: ${{ github.event.action }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BEFORE_SHA: ${{ github.event.before }}
+          PR_AFTER_SHA: ${{ github.event.after || github.event.pull_request.head.sha }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import fnmatch
@@ -130,6 +132,8 @@ jobs:
           repo = os.environ["GITHUB_REPOSITORY"]
           pr_number = os.environ["PR_NUMBER"]
           event_head_sha = os.environ["PR_HEAD_SHA"]
+          event_before_sha = os.environ["PR_BEFORE_SHA"]
+          event_after_sha = os.environ["PR_AFTER_SHA"] or event_head_sha
 
           def emit(should_review, reason):
               print(f"should_review={'true' if should_review else 'false'}")
@@ -142,6 +146,46 @@ jobs:
           def gh_json(*args):
               payload = subprocess.check_output(("gh", *args), text=True)
               return json.loads(payload)
+
+          def compare_files(before_sha, after_sha):
+              if (
+                  not before_sha
+                  or not after_sha
+                  or set(before_sha) == {"0"}
+                  or set(after_sha) == {"0"}
+                  or before_sha == after_sha
+              ):
+                  return None
+              payload = gh_json("api", f"repos/{repo}/compare/{before_sha}...{after_sha}")
+              files = payload.get("files", [])
+              if not isinstance(files, list):
+                  return None
+              return [file["filename"] for file in files if isinstance(file, dict) and isinstance(file.get("filename"), str)]
+
+          def pushed_files():
+              try:
+                  files = compare_files(event_before_sha, event_after_sha)
+                  if files is not None:
+                      return files, "pushed-range"
+              except subprocess.CalledProcessError:
+                  pass
+
+              try:
+                  commit = gh_json("api", f"repos/{repo}/commits/{event_head_sha}")
+                  parents = commit.get("parents", [])
+                  if isinstance(parents, list) and parents and isinstance(parents[0], dict):
+                      parent_sha = parents[0].get("sha")
+                      if isinstance(parent_sha, str):
+                          files = compare_files(parent_sha, event_head_sha)
+                          if files is not None:
+                              return files, "head-commit"
+              except subprocess.CalledProcessError:
+                  pass
+
+              return subprocess.check_output(
+                  ("gh", "pr", "diff", pr_number, "--repo", repo, "--name-only"),
+                  text=True,
+              ).splitlines(), "pr-diff-fallback"
 
           if event_name != "pull_request":
               emit(True, "manual-mention")
@@ -167,17 +211,14 @@ jobs:
               emit(True, "review-label")
               raise SystemExit(0)
 
-          changed_files = subprocess.check_output(
-              ("gh", "pr", "diff", pr_number, "--repo", repo, "--name-only"),
-              text=True,
-          ).splitlines()
+          changed_files, file_source = pushed_files()
           review_paths = tuple(smart["review_paths"])
           for changed_file in changed_files:
               if any(fnmatch.fnmatch(changed_file, pattern) for pattern in review_paths):
-                  emit(True, "review-path")
+                  emit(True, f"review-path-{file_source}")
                   raise SystemExit(0)
 
-          emit(False, "no-review-path-or-label")
+          emit(False, f"no-review-path-or-label-{file_source}")
           PY
 
       - name: Check AI review model freshness

@@ -6393,6 +6393,7 @@ ci-lint-workflow:
 ci-lint-workflow-inner: require-local-verification-gate
     python3 scripts/test_verify_ci_workflow_hygiene.py
     python3 scripts/test_ci_storage_audit.py
+    python3 scripts/test_ci_storage_tripwire.py
     python3 scripts/test_root_bin_sidecars.py
     python3 scripts/test_ci_input_sets.py
     python3 scripts/test_rust_test_targets.py
@@ -6409,6 +6410,16 @@ ci-lint-workflow-inner: require-local-verification-gate
     ):
         raise AssertionError(
             f"ci storage audit test wiring drift was silent, got: {missing_storage_audit_test_errors}"
+        )
+
+    missing_storage_tripwire_test = justfile_text.replace("    python3 scripts/test_ci_storage_tripwire.py\n", "")
+    missing_storage_tripwire_test_errors = verifier.verify_local_verification_gate_recipes(missing_storage_tripwire_test)
+    if not any(
+        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_tripwire.py" in error
+        for error in missing_storage_tripwire_test_errors
+    ):
+        raise AssertionError(
+            f"ci storage tripwire test wiring drift was silent, got: {missing_storage_tripwire_test_errors}"
         )
 
     duplicate_storage_audit_test = justfile_text.replace(
@@ -8979,6 +8990,13 @@ def write_repo_workflows(workflow_dir: pathlib.Path) -> None:
         (workflow_dir / path.name).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
+def write_storage_tripwire_policy_fixture(root: pathlib.Path) -> pathlib.Path:
+    policy_path = root / "ci" / "storage-tripwire.toml"
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text((REPO_ROOT / "ci" / "storage-tripwire.toml").read_text(encoding="utf-8"), encoding="utf-8")
+    return policy_path
+
+
 def run_verifier_main_with_no_mistakes(
     no_mistakes_text: str,
     *,
@@ -9012,13 +9030,19 @@ def run_verifier_main_with_no_mistakes(
             (tmp_path / ".mergify.yml").write_text((REPO_ROOT / ".mergify.yml").read_text())
         write_rust_verification_policy_fixtures(tmp_path)
         write_runner_config_fixture(tmp_path)
+        storage_policy_path = write_storage_tripwire_policy_fixture(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
+        original_discover_policy = temp_verifier.ci_storage_tripwire.discover_policy_path
+        temp_verifier.ci_storage_tripwire.discover_policy_path = lambda _root: storage_policy_path
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            result = temp_verifier.main()
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = temp_verifier.main()
+        finally:
+            temp_verifier.ci_storage_tripwire.discover_policy_path = original_discover_policy
         return result, stdout.getvalue() + stderr.getvalue()
 
 
@@ -9054,13 +9078,19 @@ def run_verifier_main_with_extra_action(
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
         write_rust_verification_policy_fixtures(tmp_path)
         write_runner_config_fixture(tmp_path)
+        storage_policy_path = write_storage_tripwire_policy_fixture(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_action_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
+        original_discover_policy = temp_verifier.ci_storage_tripwire.discover_policy_path
+        temp_verifier.ci_storage_tripwire.discover_policy_path = lambda _root: storage_policy_path
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            result = temp_verifier.main()
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = temp_verifier.main()
+        finally:
+            temp_verifier.ci_storage_tripwire.discover_policy_path = original_discover_policy
         return result, stdout.getvalue() + stderr.getvalue()
 
 
@@ -9090,13 +9120,19 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
         write_rust_verification_policy_fixtures(tmp_path)
         write_runner_config_fixture(tmp_path)
+        storage_policy_path = write_storage_tripwire_policy_fixture(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_workflow_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
+        original_discover_policy = temp_verifier.ci_storage_tripwire.discover_policy_path
+        temp_verifier.ci_storage_tripwire.discover_policy_path = lambda _root: storage_policy_path
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            result = temp_verifier.main()
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = temp_verifier.main()
+        finally:
+            temp_verifier.ci_storage_tripwire.discover_policy_path = original_discover_policy
         return result, stdout.getvalue() + stderr.getvalue()
 
 
@@ -13757,6 +13793,10 @@ def main() -> int:
     real_workflows = verifier.repo_workflow_texts()
     runner_errors = verifier.verify_github_actions_runner_contract(real_workflows)
     assert not runner_errors, runner_errors
+    storage_policy_path = verifier.ci_storage_tripwire.discover_policy_path(REPO_ROOT)
+    storage_policy = storage_policy_path.read_text(encoding="utf-8")
+    storage_errors = verifier.verify_storage_tripwire_workflow(real_workflows, storage_policy)
+    assert not storage_errors, storage_errors
     actionlint_errors = verifier.verify_actionlint_runner_contract(real_workflows)
     assert not actionlint_errors, actionlint_errors
     dispatch_cancel_errors = verifier.verify_dispatch_ci_cancel_workflow(real_workflows)
@@ -13767,7 +13807,6 @@ def main() -> int:
     assert not progress_errors, progress_errors
     finalizer_errors = verifier.verify_merge_readiness_finalizer_workflow(real_workflows)
     assert not finalizer_errors, finalizer_errors
-
     print("OK: CI workflow hygiene verifier self-tests passed.")
     return 0
 

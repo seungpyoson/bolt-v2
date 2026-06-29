@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 import functools
 import json
 import pathlib
@@ -51,6 +51,7 @@ from command_understanding import (
 )
 from ci_test_manifest import CiTestManifest, _mask_rust_non_code, build_test_manifest
 from rust_verification import CARGO_ALIAS_SUBCOMMANDS, CARGO_DISK_PREFLIGHT_SUBCOMMANDS
+import ci_storage_tripwire
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -86,6 +87,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/merge-readiness-finalizer.yml": "merge_readiness_finalizer",
     "coverage-enforcer.yml": "coverage_enforcer",
     ".github/workflows/coverage-enforcer.yml": "coverage_enforcer",
+    "ci-storage-tripwire.yml": "ci_storage_tripwire",
+    ".github/workflows/ci-storage-tripwire.yml": "ci_storage_tripwire",
     "ci-runner-debug.yml": "ci_runner_debug",
     ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
     "rust-probe.yml": "rust_probe",
@@ -107,6 +110,7 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     "stale.yml": "stale",
     ".github/workflows/stale.yml": "stale",
 }
+STORAGE_TRIPWIRE_RUNNER_CONFIG_KEY = "ci_storage_tripwire"
 SSH_RUNNER_ACTION_RE = re.compile(r"^ubicloud/ssh-runner@[0-9a-f]{40}$")
 DEFAULT_REPO_AUTOMATION_FILES = (
     REPO_ROOT / "justfile",
@@ -968,6 +972,47 @@ def top_level_block(workflow_text: str, key: str) -> list[str]:
             block.append(child_clean)
         return block
     return []
+
+
+def yaml_scalar(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1]
+    return stripped
+
+
+def scalar_mapping(block_lines: list[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in block_lines:
+        clean = strip_comment(line).strip()
+        match = re.fullmatch(r"([A-Za-z-]+):\s*(.+)", clean)
+        if match:
+            values[match.group(1)] = yaml_scalar(match.group(2))
+    return values
+
+
+def block_run_commands(lines: list[str]) -> list[str]:
+    commands: list[str] = []
+    run_indent: int | None = None
+    for line in lines:
+        clean = strip_comment(line).rstrip()
+        if run_indent is not None:
+            if clean and len(clean) - len(clean.lstrip(" ")) <= run_indent:
+                run_indent = None
+            else:
+                command = clean.strip()
+                if command:
+                    commands.append(command)
+                continue
+        match = re.fullmatch(r"(\s*)run:\s*(.*)", clean)
+        if match is None:
+            continue
+        value = match.group(2).strip()
+        if value == "|":
+            run_indent = len(match.group(1))
+        elif value:
+            commands.append(yaml_scalar(value))
+    return commands
 
 
 # The merge_group concurrency group must isolate every queue entry on its own
@@ -6191,6 +6236,7 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
 )
 CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/test_ci_storage_audit.py",
+    "python3 scripts/test_ci_storage_tripwire.py",
     "python3 scripts/test_root_bin_sidecars.py",
     "python3 scripts/test_ci_input_sets.py",
     "python3 scripts/test_rust_test_targets.py",
@@ -13222,6 +13268,201 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     return errors
 
 
+def workflow_schedule_crons(workflow_text: str) -> tuple[list[str], list[str]]:
+    crons: list[str] = []
+    extras: list[str] = []
+    for line in workflow_trigger_block(workflow_text, "schedule"):
+        clean = strip_comment(line).strip()
+        if not clean:
+            continue
+        match = re.fullmatch(r"-\s*cron:\s*(.+)", clean)
+        if match is None:
+            extras.append(clean)
+            continue
+        crons.append(yaml_scalar(match.group(1)))
+    return crons, extras
+
+
+INVALID_STORAGE_TRIPWIRE_KEY = "<invalid-storage-tripwire-key>"
+
+
+def storage_tripwire_key_at_indent(line: str, indent: int) -> str | None:
+    clean = strip_comment(line).rstrip()
+    if not clean:
+        return None
+    actual_indent = len(clean) - len(clean.lstrip(" "))
+    if actual_indent != indent:
+        return None
+    match = re.fullmatch(rf"\s{{{indent}}}({YAML_KEY_PATTERN})\s*:\s*.*", clean)
+    if match is None:
+        return INVALID_STORAGE_TRIPWIRE_KEY
+    return unquote_yaml_scalar(match.group(1))
+
+
+def storage_tripwire_key_at_any_indent(line: str) -> str | None:
+    clean = strip_comment(line).rstrip()
+    if not clean:
+        return None
+    match = re.fullmatch(rf"\s*({YAML_KEY_PATTERN})\s*:\s*.*", clean)
+    if match is None:
+        return None
+    return unquote_yaml_scalar(match.group(1))
+
+
+def workflow_top_level_keys(workflow_text: str) -> list[str]:
+    keys: list[str] = []
+    for line in workflow_text.splitlines():
+        key = storage_tripwire_key_at_indent(line, 0)
+        if key is not None:
+            keys.append(key)
+    return keys
+
+
+def storage_tripwire_job_top_level_keys(job_lines: list[str]) -> list[str]:
+    keys: list[str] = []
+    for line in job_lines:
+        key = storage_tripwire_key_at_indent(line, 4)
+        if key is not None:
+            keys.append(key)
+    return keys
+
+
+def storage_tripwire_expected_checkout_action(required_fragments: tuple[str, ...]) -> str | None:
+    actions = [
+        fragment.removeprefix("uses: ").strip()
+        for fragment in required_fragments
+        if fragment.startswith("uses: ")
+    ]
+    return actions[0] if len(actions) == 1 else None
+
+
+def storage_tripwire_expected_persist_credentials(required_fragments: tuple[str, ...]) -> str | None:
+    values = [
+        fragment.split(":", 1)[1].strip()
+        for fragment in required_fragments
+        if fragment.startswith("persist-credentials:")
+    ]
+    return values[0] if len(values) == 1 else None
+
+
+def storage_tripwire_expected_env(required_fragments: tuple[str, ...]) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for fragment in required_fragments:
+        match = re.fullmatch(r"([A-Z][A-Z0-9_]*):\s*(.+)", fragment)
+        if match is not None:
+            env[match.group(1)] = match.group(2)
+    return env
+
+
+def verify_storage_tripwire_workflow(workflows: dict[str, str], policy_text: str) -> list[str]:
+    try:
+        policy = ci_storage_tripwire.load_policy_text(
+            policy_text,
+            source="storage tripwire policy",
+        )
+    except ci_storage_tripwire.TripwireError as exc:
+        return [f"storage tripwire policy invalid: {exc}"]
+
+    workflow_contract = policy.workflow
+    workflow_name = workflow_contract.workflow_path
+    workflow_text = workflows.get(workflow_name)
+    if workflow_text is None:
+        return [f"{workflow_name} must exist"]
+
+    errors: list[str] = []
+    workflow_keys = workflow_top_level_keys(workflow_text)
+    allowed_workflow_keys = set(workflow_contract.top_level_keys)
+    if set(workflow_keys) != allowed_workflow_keys or len(workflow_keys) != len(set(workflow_keys)):
+        errors.append(f"{workflow_name} top-level keys must match the storage tripwire workflow contract")
+    if workflow_trigger_keys(workflow_text) != set(workflow_contract.triggers):
+        errors.append(f"{workflow_name} triggers must match storage_tripwire.workflow.triggers")
+    schedule_crons, schedule_extras = workflow_schedule_crons(workflow_text)
+    if schedule_crons != [workflow_contract.schedule_cron] or schedule_extras:
+        errors.append(f"{workflow_name} schedule cron must match storage_tripwire.workflow.schedule_cron")
+
+    actual_permissions = scalar_mapping(top_level_block(workflow_text, "permissions"))
+    if actual_permissions != dict(workflow_contract.permissions):
+        errors.append(f"{workflow_name} permissions must match storage_tripwire.workflow.permissions")
+
+    expected_concurrency = {
+        "group": workflow_contract.concurrency_group,
+        "cancel-in-progress": str(workflow_contract.cancel_in_progress).lower(),
+    }
+    actual_concurrency = scalar_mapping(top_level_block(workflow_text, "concurrency"))
+    if actual_concurrency != expected_concurrency:
+        errors.append(f"{workflow_name} concurrency must match storage_tripwire.workflow concurrency settings")
+
+    for forbidden in workflow_contract.forbidden_fragments:
+        if forbidden in workflow_text:
+            errors.append(
+                f"{workflow_name} must not contain forbidden workflow fragment from storage_tripwire.workflow.forbidden_fragments"
+            )
+
+    jobs = parse_jobs(workflow_text)
+    if set(jobs) != {workflow_contract.job_id}:
+        errors.append(f"{workflow_name} must define only the configured storage tripwire job")
+    job = jobs.get(workflow_contract.job_id)
+    if job is None:
+        errors.append(f"{workflow_name} must define configured storage tripwire job")
+        return errors
+    job_text = "\n".join(job)
+    job_keys = storage_tripwire_job_top_level_keys(job)
+    allowed_job_keys = set(workflow_contract.job_keys)
+    if set(job_keys) != allowed_job_keys or len(job_keys) != len(set(job_keys)):
+        errors.append(f"{workflow_name} storage tripwire job keys must match the workflow contract")
+    if job_if_value(job) != workflow_contract.job_if:
+        errors.append(f"{workflow_name} storage tripwire job if must match storage_tripwire.workflow.job_if")
+    actual_var = extract_job_runs_on_var(job)
+    if actual_var != workflow_contract.runner_var:
+        errors.append(f"{workflow_name} storage tripwire runs-on must match storage_tripwire.workflow.runner_var")
+
+    if any(storage_tripwire_key_at_indent(line, 4) == "permissions" for line in job):
+        errors.append(f"{workflow_name} storage tripwire job must not define job-level permissions")
+    if any(storage_tripwire_key_at_any_indent(line) == "continue-on-error" for line in job):
+        errors.append(f"{workflow_name} storage tripwire job must not use continue-on-error")
+
+    steps = step_blocks(job)
+    if len(steps) != 2:
+        errors.append(f"{workflow_name} storage tripwire job must contain exactly checkout and run steps")
+    else:
+        checkout_action = storage_tripwire_expected_checkout_action(workflow_contract.required_fragments)
+        persist_credentials = storage_tripwire_expected_persist_credentials(workflow_contract.required_fragments)
+        expected_env = storage_tripwire_expected_env(workflow_contract.required_fragments)
+        checkout_items = block_top_level_items(steps[0])
+        if (
+            checkout_action is None
+            or persist_credentials is None
+            or checkout_items is None
+            or set(checkout_items) != {"uses", "with"}
+            or checkout_items.get("uses") != checkout_action
+            or block_nested_mapping_items(steps[0], "with") != {"persist-credentials": persist_credentials}
+        ):
+            errors.append(f"{workflow_name} checkout step must match storage_tripwire.workflow.required_fragments")
+        run_items = block_top_level_items(steps[1])
+        if (
+            not expected_env
+            or run_items is None
+            or set(run_items) != {"name", "env", "run"}
+            or not run_items.get("name")
+            or block_nested_mapping_items(steps[1], "env") != expected_env
+            or step_run_command(steps[1]) != workflow_contract.run_command
+        ):
+            errors.append(f"{workflow_name} run step must match storage_tripwire.workflow contract")
+
+    for required in workflow_contract.required_fragments:
+        if required not in job_text:
+            errors.append(f"{workflow_name} job must contain storage_tripwire.workflow.required_fragments")
+    return errors
+
+
+def has_storage_tripwire_workflow(workflows: Mapping[str, str]) -> bool:
+    return any(
+        workflow_path in workflows
+        for workflow_path, config_key in WORKFLOW_RUNNER_CONFIG_KEYS.items()
+        if config_key == STORAGE_TRIPWIRE_RUNNER_CONFIG_KEY
+    )
+
+
 def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
     if not DEFAULT_RUNNERS_CONFIG.exists():
         return []
@@ -13408,6 +13649,22 @@ def main() -> int:
         errors.extend(verify_merge_readiness_ci_job(ci_workflow))
     errors.extend(verify_merge_readiness_finalizer_workflow(workflow_texts))
     errors.extend(verify_coverage_enforcer_workflow(workflow_texts))
+    try:
+        storage_tripwire_policy = ci_storage_tripwire.discover_policy_path(REPO_ROOT)
+        errors.extend(
+            verify_storage_tripwire_workflow(
+                workflow_texts,
+                storage_tripwire_policy.read_text(encoding="utf-8"),
+            )
+        )
+    except ci_storage_tripwire.NoTripwirePolicyError as exc:
+        if has_storage_tripwire_workflow(workflow_texts):
+            errors.append(f"storage tripwire policy discovery failed: {exc}")
+    except ci_storage_tripwire.TripwirePolicyInventoryError as exc:
+        if has_storage_tripwire_workflow(workflow_texts):
+            errors.append(f"storage tripwire policy discovery failed: {exc}")
+    except ci_storage_tripwire.TripwireError as exc:
+        errors.append(f"storage tripwire policy discovery failed: {exc}")
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_flaky_test_detection_workflows(workflow_texts))

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import re
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -16,9 +17,15 @@ from typing import Callable, Iterable, cast
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = Path("ci/fail-closed-contracts.toml")
 DEFAULT_EXCEPTIONS_CONFIG = Path("ci/fail-closed-exceptions.toml")
+JUSTFILE = Path("justfile")
 CONFIG_TABLE = "fail_closed_contracts"
 EXCEPTIONS_TABLE = "fail_closed_exceptions"
 SUPPORTED_CONFIG_VERSION = 1
+SOURCE_FENCE_STATIC_RECIPE = "source-fence-static-inner"
+REQUIRED_SOURCE_FENCE_COMMANDS = (
+    "python3 scripts/test_verify_fail_closed_contracts.py",
+    "python3 scripts/verify_fail_closed_contracts.py",
+)
 
 
 @dataclass(frozen=True)
@@ -204,6 +211,72 @@ def load_exceptions(path: Path, valid_rule_ids: frozenset[str]) -> Exceptions:
 
 def rel_name(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
+
+
+def strip_just_comment(line: str) -> str:
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(line):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char == "#" and (index == 0 or line[index - 1].isspace()):
+            return line[:index].rstrip()
+    return line.rstrip()
+
+
+def is_just_recipe_header(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or line != line.lstrip() or stripped.startswith("#") or ":=" in stripped:
+        return False
+    header, separator, _tail = stripped.partition(":")
+    if not separator:
+        return False
+    parts = header.split()
+    return bool(parts) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", parts[0]) is not None
+
+
+def just_recipe_name(line: str) -> str:
+    return line.strip().partition(":")[0].split()[0]
+
+
+def source_fence_static_commands(justfile_text: str) -> tuple[str, ...]:
+    commands: list[str] = []
+    active = False
+    for line in justfile_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if line == line.lstrip():
+            active = False
+            if is_just_recipe_header(line):
+                active = just_recipe_name(line) == SOURCE_FENCE_STATIC_RECIPE
+        elif active and not stripped.startswith("#"):
+            command = strip_just_comment(stripped)
+            if command:
+                commands.append(command)
+    return tuple(commands)
+
+
+def source_fence_wiring_findings(root: Path) -> list[str]:
+    try:
+        justfile_text = (root / JUSTFILE).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return [f"{SOURCE_FENCE_STATIC_RECIPE} recipe missing from {JUSTFILE}"]
+    commands = source_fence_static_commands(justfile_text)
+    return [
+        f"{SOURCE_FENCE_STATIC_RECIPE} must run {command}"
+        for command in REQUIRED_SOURCE_FENCE_COMMANDS
+        if command not in commands
+    ]
 
 
 def selected_paths(root: Path, config: Config) -> list[Path]:
@@ -406,6 +479,7 @@ def collect_findings(
         exceptions_path or config_path.with_name(DEFAULT_EXCEPTIONS_CONFIG.name),
         frozenset(config.rule_ids.values()),
     )
+    source_fence_findings = source_fence_wiring_findings(root)
     raw_findings = [
         raw_finding
         for path in selected_paths(root, config)
@@ -424,7 +498,7 @@ def collect_findings(
         f"{STALE_EXCEPTION_RULE_ID}:{key.path}:{key.line}: stale fail-closed exception for {key.rule_id}"
         for key in stale
     )
-    return findings
+    return source_fence_findings + findings
 
 
 def main(argv: list[str] | None = None) -> int:

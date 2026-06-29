@@ -72,6 +72,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/backtester-ci.yml": "backtester_ci",
     "flaky-test-detection.yml": "flaky_test_detection",
     ".github/workflows/flaky-test-detection.yml": "flaky_test_detection",
+    "flaky-test-detection-smoke.yml": "flaky_test_detection_smoke",
+    ".github/workflows/flaky-test-detection-smoke.yml": "flaky_test_detection_smoke",
     "dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     ".github/workflows/dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     "merge-readiness-finalizer.yml": "merge_readiness_finalizer",
@@ -10917,6 +10919,178 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
     return errors
 
 
+FLAKY_TEST_DETECTION_SHARED_FORBIDDEN_FRAGMENTS = (
+    ("must not use dynamic matrix expressions", "fromJSON("),
+    ("must not inspect event names for smoke/full selection", "github.event_name"),
+    ("must not use mode inputs for smoke/full selection", "inputs.mode"),
+    (
+        "root JUnit staging must not copy from the cargo target dir",
+        "${{ steps.setup.outputs.managed_target_dir }}/nextest/default/junit-unit-",
+    ),
+    (
+        "backtester JUnit staging must not copy from the cargo target dir",
+        "${{ steps.crate_target.outputs.dir }}/nextest/default/junit-unit-",
+    ),
+)
+
+FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
+    ".github/workflows/flaky-test-detection.yml": {
+        "workflow_triggers": frozenset({"schedule"}),
+        "required_workflow_fragments": (),
+        "forbidden_workflow_fragments": (),
+        "jobs": (
+            (
+                "flaky-detection-rust-root",
+                "root full job",
+                (
+                    "run_number: [1, 2, 3, 4, 5]",
+                    "set +e",
+                    "rc=$?",
+                    "set -e",
+                    "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "if: success() || failure()",
+                ),
+            ),
+            (
+                "flaky-detection-rust-backtester",
+                "backtester full job",
+                (
+                    "run_number: [1, 2, 3, 4, 5]",
+                    "shard: [1, 2, 3, 4]",
+                    "set +e",
+                    "rc=$?",
+                    "set -e",
+                    "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "if: success() || failure()",
+                ),
+            ),
+            (
+                "flaky-detection-rust-backtester-issue-789",
+                "issue-789 full job",
+                (
+                    "run_number: [1, 2, 3, 4, 5]",
+                    "set +e",
+                    "rc=$?",
+                    "set -e",
+                    "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "if: success() || failure()",
+                ),
+            ),
+        ),
+    },
+    ".github/workflows/flaky-test-detection-smoke.yml": {
+        "workflow_triggers": frozenset({"workflow_dispatch"}),
+        "required_workflow_fragments": (),
+        "forbidden_workflow_fragments": (),
+        "jobs": (
+            (
+                "flaky-detection-rust-root-smoke",
+                "root smoke job",
+                (
+                    "run_number: [1]",
+                    "set +e",
+                    "rc=$?",
+                    "set -e",
+                    "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "if: success() || failure()",
+                ),
+            ),
+            (
+                "flaky-detection-rust-backtester-smoke",
+                "backtester smoke job",
+                (
+                    "run_number: [1]",
+                    "shard: [1]",
+                    "set +e",
+                    "rc=$?",
+                    "set -e",
+                    "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "if: success() || failure()",
+                ),
+            ),
+            (
+                "flaky-detection-rust-backtester-issue-789-smoke",
+                "issue-789 smoke job",
+                (
+                    "run_number: [1]",
+                    "set +e",
+                    "rc=$?",
+                    "set -e",
+                    "MERGIFY_TEST_EXIT_CODE=%s\\n",
+                    'crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml',
+                    "if: success() || failure()",
+                ),
+            ),
+        ),
+    },
+}
+FLAKY_TEST_DETECTION_REQUIRED_WORKFLOW_FILES = frozenset(FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS)
+
+
+def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object]) -> list[str]:
+    workflow_text = uncommented_text(text.splitlines())
+    expected_triggers = contract["workflow_triggers"]
+    jobs = parse_jobs(text)
+    expected_jobs = contract["jobs"]
+    expected_ids = {job_id for job_id, _label, _fragments in expected_jobs}
+    job_texts = {job_id: uncommented_text(job_lines) for job_id, job_lines in jobs.items()}
+    errors: list[str] = []
+    errors.extend(
+        f"flaky-test-detection workflow triggers must be {sorted(expected_triggers)}"
+        for actual_triggers in (workflow_trigger_keys(text),)
+        if actual_triggers != expected_triggers
+    )
+    errors.extend(
+        f"flaky-test-detection {message}"
+        for message, fragment in (
+            *FLAKY_TEST_DETECTION_SHARED_FORBIDDEN_FRAGMENTS,
+            *contract["forbidden_workflow_fragments"],
+        )
+        if fragment in workflow_text
+    )
+    errors.extend(
+        f"flaky-test-detection {message}"
+        for message, fragment in contract["required_workflow_fragments"]
+        if fragment not in workflow_text
+    )
+    if any(re.match(r"^    if:", line) for job_lines in jobs.values() for line in job_lines):
+        errors.append("flaky-test-detection workflows must not use job-level if gates")
+    if set(jobs) != expected_ids:
+        errors.append(f"flaky-test-detection workflow jobs must be {sorted(expected_ids)}")
+    for job_id, label, fragments in expected_jobs:
+        if job_id not in job_texts:
+            errors.append(f"flaky-test-detection missing {label} {job_id}")
+            continue
+        job_text = job_texts[job_id]
+        errors.extend(
+            f"flaky-test-detection {label} missing {fragment!r}"
+            for fragment in fragments
+            if fragment not in job_text
+        )
+    return errors
+
+
+def verify_flaky_test_detection_workflows(texts: dict[str, str]) -> list[str]:
+    missing_errors = [
+        f"{file_name}: flaky-test-detection required workflow is missing"
+        for file_name in sorted(FLAKY_TEST_DETECTION_REQUIRED_WORKFLOW_FILES - texts.keys())
+    ]
+    contract_errors = [
+        f"{file_name}: {error}"
+        for file_name in sorted(FLAKY_TEST_DETECTION_REQUIRED_WORKFLOW_FILES & texts.keys())
+        for error in flaky_test_detection_workflow_errors(
+            texts[file_name],
+            FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS[file_name],
+        )
+    ]
+    return missing_errors + contract_errors
+
+
 def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]:
     if not file_name.endswith("backtester-ci.yml"):
         return []
@@ -12572,6 +12746,7 @@ def main() -> int:
     errors.extend(verify_coverage_enforcer_workflow(workflow_texts))
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
+    errors.extend(verify_flaky_test_detection_workflows(workflow_texts))
     errors.extend(verify_rust_verification_policies())
     errors.extend(verify_test_harness_manifest())
     if "justfile" in repo_automation_texts:

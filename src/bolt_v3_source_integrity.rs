@@ -228,6 +228,7 @@ mod tests {
                 "src/bolt_v3_executable_cost.rs",
                 "src/bolt_v3_sizing.rs",
                 "src/bolt_v3_taker_updown_signal.rs",
+                "src/bolt_v3_live_node",
             ]
         );
     }

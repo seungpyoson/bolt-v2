@@ -175,7 +175,6 @@ class ProvenanceConfig:
     run_artifacts_per_page: int
     max_lookback_pages: int
     max_lookback_age_seconds: int
-    artifact_retention_days: int
     policy: dict[str, str]
     gate_names: dict[str, str]
     required_checks: dict[str, RequiredCheckConfig]
@@ -279,9 +278,14 @@ def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
 
 def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
     value = parent.get(key)
-    if not isinstance(value, int) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ProvenanceError(f"{prefix}.{key} must be a positive integer")
     return value
+
+
+def check_lookback_le_retention(retention_days: int, max_lookback_age_seconds: int) -> None:
+    if max_lookback_age_seconds > retention_days * 24 * 60 * 60:
+        raise ProvenanceError("max lookback age must not exceed artifact retention")
 
 
 def require_bool(parent: dict[str, object], key: str, prefix: str) -> bool:
@@ -670,7 +674,7 @@ def load_config(
             )
         shard_count = job_table.get("shard_count")
         if check_name_template is not None:
-            if not isinstance(shard_count, int) or shard_count <= 0:
+            if isinstance(shard_count, bool) or not isinstance(shard_count, int) or shard_count <= 0:
                 raise ProvenanceError(f"ci_provenance.full_ci.jobs.{job}.shard_count must be a positive integer")
             if "{shard}" not in check_name_template:
                 raise ProvenanceError(
@@ -716,8 +720,7 @@ def load_config(
     max_lookback_age_seconds = require_positive_int(
         api_limits, "max_lookback_age_seconds", "ci_provenance.api_limits"
     )
-    if max_lookback_age_seconds > retention_days * 24 * 60 * 60:
-        raise ProvenanceError("max lookback age must not exceed artifact retention")
+    check_lookback_le_retention(retention_days, max_lookback_age_seconds)
 
     unexpected_policy_keys = sorted(set(policy_table) - set(POLICY_ROWS) - {"override"})
     if unexpected_policy_keys:
@@ -828,7 +831,6 @@ def load_config(
             api_limits, "max_lookback_pages", "ci_provenance.api_limits"
         ),
         max_lookback_age_seconds=max_lookback_age_seconds,
-        artifact_retention_days=retention_days,
         policy=policy,
         gate_names=gate_names,
         required_checks=required_checks,
@@ -2830,7 +2832,6 @@ def main(argv: list[str] | None = None) -> int:
         if mode == "artifact-metadata":
             run_attempt = positive_int_value(args.run_attempt, "run_attempt")
             print(f"artifact_name={provenance_artifact_name(config, run_attempt)}")
-            print(f"retention_days={config.artifact_retention_days}")
         elif mode == "ci-policy":
             result = evaluate_ci_policy(
                 config,

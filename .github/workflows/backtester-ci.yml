@@ -546,12 +546,14 @@ jobs:
           just bte-test-archive-run "$BVS_ISSUE_789_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl
 
       - name: Upload issue #789 first-P/L artifact
+        id: upload-issue-789-first-pl
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}
           path: crates/backtesting-vertical-slice/target/issue-789-first-pl/result.json
           if-no-files-found: error
+          retention-days: 7
 
   gate:
     name: ${{ needs.ci-policy.outputs.backtester_gate_name }}

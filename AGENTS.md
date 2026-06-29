@@ -12,7 +12,8 @@ Repo governance for agents; higher-level standing instructions apply.
 ## Agent & Plugin Discipline
 
 - Do not create per-agent policy docs unless the tool loads them and the policy cannot live in `AGENTS.md`. For tools that do not load it, pass `AGENTS.md` as read-only context; add `.specify/memory/constitution.md` only when SpecKit principles or gates matter.
-- `.pr_agent.toml` mirrors the critical AI-review subset for PR-Agent, which cannot load arbitrary repo files in GitHub Actions. Keep that mirror current with this file; `scripts/verify_ai_review_governance.py` checks the mirror in CI.
+- `ci/ai-review.toml` is the machine-readable AI-review mirror authority for PR-Agent, which cannot load arbitrary repo files in GitHub Actions; `scripts/verify_ai_review_governance.py` checks `.pr_agent.toml` against that config in CI.
+- AI review deliverables must identify the reviewer source and exact configured model. Runtime source/model labels and comment markers come from `ci/ai-review.toml`; workflow and prompt text must not embed those runtime values.
 - Do not patch plugin caches as durable fixes; use repo governance, SpecKit templates, verified extension/override surfaces, or regenerated adapters. Generated prompts may recommend strict TDD — use Evidence-Driven Verification unless the user, active spec, or risk requires TDD.
 
 ## Scope Discipline
@@ -27,7 +28,7 @@ Repo governance for agents; higher-level standing instructions apply.
 3. **NO DEBTS** — no TODO, no "fix later", no unpinned dependencies, no uncommitted work.
 4. **NO CREDENTIAL DISPLAY** — never cat/print/log API keys, private keys, secrets.
 5. **PURE RUST BINARY** — standalone Rust `LiveNode` using NT's Rust API directly. No Python layer, PyO3, maturin, or pip.
-6. **SSM IS THE SINGLE SECRET SOURCE** — all credentials resolve from AWS SSM via `aws-sdk-ssm`. No AWS CLI subprocess, no 1Password CLI, no environment variable fallbacks, no other secret backends.
+6. **SSM IS THE SINGLE SECRET SOURCE** — product/runtime credentials resolve from AWS SSM via `aws-sdk-ssm`. No AWS CLI subprocess, no 1Password CLI, no environment variable fallbacks, no other secret backends. GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN` only for GitHub API operations; do not add alternate GitHub token names.
 7. **GROUP BY CHANGE** — values that share a lifecycle live in one config section; a wallet, credential-set, or venue swap must require one edit.
 8. **DO NOT REFERENCE BOLT V1** — do not read, import, or depend on `~/Projects/Claude/bolt/`. NT source is in `~/.cargo/git/checkouts/nautilus_trader-*/` or GitHub.
 9. **STRATEGIES PRODUCE INTENT ONLY** — strategies emit order intent and strategy-local signal state only. Admissibility, venue rules, fillability, rounding, minimum size, fee-adjusted sizing, and submit gating live in shared NT-based execution/admission modules. Submit mechanics under `src/strategies/*` are rejected unless explicitly approved as strategy-local signal logic.

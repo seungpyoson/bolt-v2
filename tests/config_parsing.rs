@@ -8581,6 +8581,78 @@ fn rejects_orphan_secrets_block_without_data_or_execution() {
     assert!(!rendered.contains("(venue="));
 }
 
+fn polymarket_execution_toml_with_data_api_read_window() -> &'static str {
+    r#"
+account_id = "POLYMARKET-001"
+signature_type = "poly_proxy"
+funder = "0x1111111111111111111111111111111111111111"
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+ack_timeout_secs = 5
+fee_cache_ttl_secs = 300
+data_api_positions_page_size = 100
+data_api_positions_size_threshold = "0"
+data_api_positions_redeemable = false
+data_api_positions_sort_by = "TOKENS"
+data_api_positions_sort_direction = "DESC"
+transport_backend = "sockudo"
+"#
+}
+
+#[test]
+fn polymarket_execution_config_owns_data_api_read_window() {
+    use bolt_v2::bolt_v3_providers::polymarket::PolymarketExecutionConfig;
+
+    let parsed: PolymarketExecutionConfig =
+        toml::from_str(polymarket_execution_toml_with_data_api_read_window())
+            .expect("polymarket execution read-window config should parse");
+
+    assert_eq!(parsed.data_api_positions_page_size, 100);
+    assert_eq!(parsed.data_api_positions_size_threshold, "0");
+    assert!(!parsed.data_api_positions_redeemable);
+    assert_eq!(parsed.data_api_positions_sort_by, "TOKENS");
+    assert_eq!(parsed.data_api_positions_sort_direction, "DESC");
+}
+
+#[test]
+fn polymarket_execution_config_rejects_missing_data_api_page_size() {
+    use bolt_v2::bolt_v3_providers::polymarket::PolymarketExecutionConfig;
+
+    let mutated = polymarket_execution_toml_with_data_api_read_window()
+        .replace("data_api_positions_page_size = 100\n", "");
+    let err = toml::from_str::<PolymarketExecutionConfig>(&mutated)
+        .expect_err("missing data_api_positions_page_size must fail closed");
+    let rendered = err.to_string();
+
+    assert!(
+        rendered.contains("missing field `data_api_positions_page_size`"),
+        "missing page-size rejection should name the key, got: {rendered}"
+    );
+}
+
+#[test]
+fn polymarket_execution_config_rejects_malformed_data_api_redeemable() {
+    use bolt_v2::bolt_v3_providers::polymarket::PolymarketExecutionConfig;
+
+    let mutated = polymarket_execution_toml_with_data_api_read_window().replace(
+        "data_api_positions_redeemable = false",
+        "data_api_positions_redeemable = \"false\"",
+    );
+    let err = toml::from_str::<PolymarketExecutionConfig>(&mutated)
+        .expect_err("malformed data_api_positions_redeemable must fail closed");
+    let rendered = err.to_string();
+
+    assert!(
+        rendered.contains("data_api_positions_redeemable") && rendered.contains("invalid type"),
+        "malformed redeemable rejection should name the key and type error, got: {rendered}"
+    );
+}
+
 #[test]
 fn rejects_ssm_paths_missing_leading_slash() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};

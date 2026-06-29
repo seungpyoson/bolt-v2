@@ -1483,6 +1483,8 @@ fn updown_outcome_instrument(
 mod tests {
     use super::*;
 
+    use std::collections::BTreeSet;
+
     use nautilus_core::Params;
     use nautilus_model::{
         enums::AssetClass,
@@ -2176,10 +2178,10 @@ mod tests {
     fn cadence_slug_contract_matches_independent_pins() {
         // Authoritative bidirectional drift guard, colocated with the single
         // source it protects. The seam tests in the parent module iterate a
-        // pinned list, so they catch a CHANGED or REMOVED pair but cannot catch
-        // an ADDED cadence. Comparing the whole slice against an independent
-        // restatement fails closed in every direction: a changed token, an added
-        // cadence, or a removed cadence all break this.
+        // pinned list, so they catch a CHANGED or REMOVED pair but cannot
+        // prove the runtime contract's key set is closed. The explicit key-set
+        // assertion catches any added or removed cadence, and the ordered pair
+        // assertion catches token or diagnostic-order drift.
         const PINS: &[(i64, &str)] = &[
             (60, "1m"),
             (300, "5m"),
@@ -2187,6 +2189,24 @@ mod tests {
             (3600, "1h"),
             (14400, "4h"),
         ];
+        let actual_keys = CADENCE_SLUG_CONTRACT
+            .iter()
+            .map(|(cadence_secs, _)| *cadence_secs)
+            .collect::<BTreeSet<_>>();
+        let pinned_keys = PINS
+            .iter()
+            .map(|(cadence_secs, _)| *cadence_secs)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            actual_keys.len(),
+            CADENCE_SLUG_CONTRACT.len(),
+            "updown cadence->slug contract contains a duplicate cadence key"
+        );
+        assert_eq!(
+            actual_keys, pinned_keys,
+            "updown cadence->slug contract key set drifted from its pinned expectation"
+        );
         assert_eq!(
             CADENCE_SLUG_CONTRACT, PINS,
             "updown cadence->slug contract drifted from its pinned expectation"

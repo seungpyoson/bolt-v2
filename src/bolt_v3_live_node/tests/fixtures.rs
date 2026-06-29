@@ -258,7 +258,7 @@ pub(super) fn generic_market_order(
 }
 
 pub(super) fn fixture_loaded_config() -> LoadedBoltV3Config {
-    let root_text = include_str!("../tests/fixtures/bolt_v3/root.toml");
+    let root_text = include_str!("../../../tests/fixtures/bolt_v3/root.toml");
     let mut root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
     let catalog_id = NEXT_TEST_CATALOG_ID.fetch_add(1, Ordering::Relaxed);
     root.persistence.catalog_directory = std::env::temp_dir()

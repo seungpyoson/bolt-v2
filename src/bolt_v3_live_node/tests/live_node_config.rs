@@ -305,7 +305,7 @@ fn live_node_config_maps_log_levels_from_uppercase_strings() {
 
 #[test]
 fn live_node_config_logger_literal_does_not_inherit_nt_defaults() {
-    let src = include_str!("bolt_v3_live_node.rs");
+    let src = include_str!("../../bolt_v3_live_node.rs");
     let logging_literal = src
         .split("let logging = LoggerConfig {")
         .nth(1)

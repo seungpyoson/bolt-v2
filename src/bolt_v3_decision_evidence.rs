@@ -11,6 +11,7 @@ use nautilus_model::orders::{Order, OrderAny};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+use crate::bolt_v3_bootstrap_deferral_alert::BoltV3BootstrapDeferralAlertEvidence;
 use crate::bolt_v3_capital_reservation::ReservationRejectionReason;
 use crate::bolt_v3_config::LoadedBoltV3Config;
 use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
@@ -51,6 +52,8 @@ pub const BOLT_V3_EXIT_EVALUATION_GATE_ID: &str = "bolt_v3.exit_evaluation";
 pub const BOLT_V3_EXIT_EVALUATION_RECORD_KIND: &str = "exit_evaluation";
 pub const BOLT_V3_ORDER_REJECT_GATE_ID: &str = "bolt_v3.order_reject";
 pub const BOLT_V3_ORDER_REJECT_RECORD_KIND: &str = "order_reject";
+pub const BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_GATE_ID: &str = "bolt_v3.bootstrap_deferral_alert";
+pub const BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_RECORD_KIND: &str = "bootstrap_deferral_alert";
 
 /// Single source of truth for the upper bound on retained reject-episode maps. Both
 /// the submit-admission reject-episode map and the venue/NT order-reject observer
@@ -122,6 +125,13 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
     fn record_loss_governor_halt(&self, evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()>;
     fn record_order_reject(&self, evidence: &BoltV3OrderRejectEvidence) -> Result<()>;
     fn record_requote_throttle(&self, throttle: &BoltV3RequoteThrottleEvidence) -> Result<()>;
+}
+
+pub trait BoltV3BootstrapAlertSink: std::fmt::Debug + Send + Sync {
+    fn record_bootstrap_deferral_alert(
+        &self,
+        alert: &BoltV3BootstrapDeferralAlertEvidence,
+    ) -> Result<()>;
 }
 
 /// Risk direction of a runtime trading decision, used by [`commit_decision`]
@@ -1342,6 +1352,16 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
     }
 }
 
+impl BoltV3BootstrapAlertSink for JsonlBoltV3DecisionEvidenceWriter {
+    fn record_bootstrap_deferral_alert(
+        &self,
+        alert: &BoltV3BootstrapDeferralAlertEvidence,
+    ) -> Result<()> {
+        let line = encode_bootstrap_deferral_alert_line(alert)?;
+        self.append_line(&line)
+    }
+}
+
 /// Validates `persistence.decision_evidence.order_intents_relative_path` as the
 /// single source of truth for the predicate: the trimmed value must be
 /// non-empty, relative, and contain no `..` component so it always stays under
@@ -1660,6 +1680,24 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
+            BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_RECORD_KIND,
+                    BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_GATE_ID,
+                    index,
+                )?;
+                let decoded: BootstrapDeferralAlertLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 bootstrap deferral alert line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_RECORD_KIND,
+                    BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_GATE_ID,
+                    index,
+                )?;
+            }
             other => {
                 return Err(anyhow!(
                     "unsupported bolt-v3 decision evidence kind `{other}` at line index {index}"
@@ -1949,6 +1987,24 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
+            BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_RECORD_KIND,
+                    BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_GATE_ID,
+                    index,
+                )?;
+                let decoded: BootstrapDeferralAlertLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 bootstrap deferral alert line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_RECORD_KIND,
+                    BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_GATE_ID,
+                    index,
+                )?;
+            }
             other => {
                 return Err(anyhow!(
                     "unsupported bolt-v3 decision evidence kind `{other}` at line index {index}"
@@ -2014,6 +2070,7 @@ fn decision_evidence_header_is_below_current_schema_non_recovery_record(
                 | BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND
                 | BOLT_V3_ORDER_REJECT_RECORD_KIND
                 | BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND
+                | BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_RECORD_KIND
         )
 }
 
@@ -2418,6 +2475,25 @@ impl AdmissionDecisionLineOwned {
     }
 }
 
+#[derive(Deserialize)]
+struct BootstrapDeferralAlertLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    alert: BoltV3BootstrapDeferralAlertEvidence,
+}
+
+impl BootstrapDeferralAlertLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.alert;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
 impl BasketAdmissionDecisionLineOwned {
     fn validate_header(
         &self,
@@ -2600,6 +2676,16 @@ struct RequoteThrottleLine<'a> {
     gate_version: &'static str,
     kind: &'static str,
     requote_throttle: &'a BoltV3RequoteThrottleEvidence,
+}
+
+#[derive(Serialize)]
+struct BootstrapDeferralAlertLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    alert: &'a BoltV3BootstrapDeferralAlertEvidence,
 }
 
 fn current_utc_ns() -> i64 {
@@ -2852,6 +2938,23 @@ fn encode_requote_throttle_line(throttle: &BoltV3RequoteThrottleEvidence) -> Res
     };
     let mut line =
         serde_json::to_vec(&envelope).context("failed to serialize requote throttle evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+fn encode_bootstrap_deferral_alert_line(
+    alert: &BoltV3BootstrapDeferralAlertEvidence,
+) -> Result<Vec<u8>> {
+    let envelope = BootstrapDeferralAlertLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_RECORD_KIND,
+        alert,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize bootstrap deferral alert evidence")?;
     line.extend_from_slice(b"\n");
     Ok(line)
 }
@@ -3773,5 +3876,41 @@ mod tests {
         assert_eq!(decoded.header.gate_id, BOLT_V3_ORDER_REJECT_GATE_ID);
         assert_eq!(decoded.header.kind, BOLT_V3_ORDER_REJECT_RECORD_KIND);
         assert_eq!(decoded.evidence, evidence);
+    }
+
+    #[test]
+    fn encode_bootstrap_deferral_alert_line_round_trips_through_owned_line() {
+        let alert =
+            crate::bolt_v3_bootstrap_deferral_alert::h7_bootstrap_deferral_alert_evidence(
+                crate::bolt_v3_bootstrap_deferral_alert::H7_BOOTSTRAP_CONST_HARD_DEADLINE_UNIX_SECS
+                    - crate::bolt_v3_bootstrap_deferral_alert::H7_BOOTSTRAP_CONST_PRE_EXPIRY_ALERT_WINDOW_SECS,
+            )
+            .expect("boundary timestamp should produce alert evidence");
+
+        let line = encode_bootstrap_deferral_alert_line(&alert).expect("alert should encode");
+        assert!(line.ends_with(b"\n"), "encoded line must end with newline");
+        let decoded: BootstrapDeferralAlertLineOwned =
+            serde_json::from_slice(&line[..line.len() - 1]).expect("line should decode");
+        decoded
+            .validate_header(
+                BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_RECORD_KIND,
+                BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_GATE_ID,
+                0,
+            )
+            .expect("encoded bootstrap-deferral alert header should validate");
+
+        assert_eq!(
+            decoded.header.schema_version,
+            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+        );
+        assert_eq!(
+            decoded.header.gate_id,
+            BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_GATE_ID
+        );
+        assert_eq!(
+            decoded.header.kind,
+            BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_RECORD_KIND
+        );
+        assert_eq!(decoded.alert, alert);
     }
 }

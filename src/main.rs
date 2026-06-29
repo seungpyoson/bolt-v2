@@ -15,7 +15,9 @@ use std::{
 
 use bolt_v2::{
     bolt_v3_atomic_io::{RUNTIME_CONFIG_FILE_MODE, write_atomic_file_with_mode},
+    bolt_v3_bootstrap_deferral_alert::h7_bootstrap_deferral_alert_evidence,
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_decision_evidence::{BoltV3BootstrapAlertSink, JsonlBoltV3DecisionEvidenceWriter},
     bolt_v3_deploy_target::{
         DeployTargetError, HostFactsSource, Imdsv2HostFactsSource, ObservedHostFacts,
         TargetVerifyOutcome, load_deploy_target, verify_deploy_target,
@@ -568,6 +570,7 @@ fn run_ops_launch_stage(
                 .resolved_secrets
                 .take()
                 .ok_or("ops launch start stage requires resolved secrets from secrets-resolve")?;
+            emit_h7_bootstrap_deferral_alert_if_due(&loaded)?;
             record_launch_identity_best_effort(
                 &context.profile,
                 &loaded,
@@ -576,6 +579,24 @@ fn run_ops_launch_stage(
             start_loaded_node_with_resolved(loaded, &resolved)
         }
     }
+}
+
+fn emit_h7_bootstrap_deferral_alert_if_due(
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let now_unix_secs = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let Some(alert) = h7_bootstrap_deferral_alert_evidence(now_unix_secs) else {
+        return Ok(());
+    };
+    log::warn!(
+        "{}",
+        serde_json::json!({
+            "ops_launch_h7_bootstrap_deferral_alert": &alert,
+        })
+    );
+    let writer = JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded)?;
+    writer.record_bootstrap_deferral_alert(&alert)?;
+    Ok(())
 }
 
 /// Build the durable launch identity from primitives. Pure: depends only on

@@ -19545,3 +19545,83 @@ literal = "0"
 context = '''|| envelope.ranges.max_quantity_policy_versions == 0'''
 classification = "policy_epoch_envelope_zero_bound_reject"
 reason = "A safety-policy envelope with zero quantity-policy versions cannot approve any prepared quantity-policy bundle; the bound is envelope-owned, while zero is the structural empty-bound rejection sentinel."
+
+[[allowed]]
+path = "src/bolt_v3_bootstrap_deferral_alert.rs"
+kind = "string"
+literal = '''"H7_ALERT_OWNER_UNASSIGNED"'''
+context = '''pub const H7_BOOTSTRAP_CONST_ALERT_OWNER: &str = "H7_ALERT_OWNER_UNASSIGNED";'''
+classification = "h7_bootstrap_deferral_alert_owner_placeholder"
+reason = "Named placeholder owner required by #1077 H7 so production operators can wire the alert to a real sink owner before merge/readiness; it is an audited bootstrap-deferral label, not a runtime trading value."
+
+[[allowed]]
+path = "src/bolt_v3_bootstrap_deferral_alert.rs"
+kind = "string"
+literal = '''"https://github.com/seungpyoson/bolt-v2/issues/1079"'''
+context = '''"https://github.com/seungpyoson/bolt-v2/issues/1079";'''
+classification = "h7_bootstrap_deferral_deadline_issue"
+reason = "Tracked hard-deadline elimination issue URL emitted in the H7 pre-expiry alert so the bootstrap-const deferral has an owner-visible close/renew target; not a runtime trading value."
+
+[[allowed]]
+path = "src/bolt_v3_bootstrap_deferral_alert.rs"
+kind = "number"
+literal = "1_785_456_000"
+context = '''pub const H7_BOOTSTRAP_CONST_HARD_DEADLINE_UNIX_SECS: u64 = 1_785_456_000;'''
+classification = "h7_bootstrap_deferral_deadline"
+reason = "Calendar deadline 2026-07-31T00:00:00Z for eliminating or explicitly renewing the H7 bootstrap-const exception; deliberately audited as part of the accepted deferral rather than moved to deploy.toml."
+
+[[allowed]]
+path = "src/bolt_v3_bootstrap_deferral_alert.rs"
+kind = "number"
+literal = "7"
+context = '''pub const H7_BOOTSTRAP_CONST_PRE_EXPIRY_ALERT_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;'''
+classification = "h7_bootstrap_deferral_alert_window"
+reason = "Seven-day pre-expiry window for the H7 calendar-bound deferral alert; audited with the bootstrap exception and not a runtime trading value."
+
+[[allowed]]
+path = "src/bolt_v3_bootstrap_deferral_alert.rs"
+kind = "number"
+literal = "24"
+context = '''pub const H7_BOOTSTRAP_CONST_PRE_EXPIRY_ALERT_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;'''
+classification = "h7_bootstrap_deferral_alert_window"
+reason = "Hours-per-day multiplier composing the seven-day H7 pre-expiry alert window; audited with the bootstrap exception and not a runtime trading value."
+
+[[allowed]]
+path = "src/bolt_v3_bootstrap_deferral_alert.rs"
+kind = "number"
+literal = "60"
+context = '''pub const H7_BOOTSTRAP_CONST_PRE_EXPIRY_ALERT_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;'''
+classification = "h7_bootstrap_deferral_alert_window"
+reason = "Minutes/seconds multiplier composing the seven-day H7 pre-expiry alert window; audited with the bootstrap exception and not a runtime trading value."
+
+[[allowed]]
+path = "src/bolt_v3_bootstrap_deferral_alert.rs"
+kind = "string"
+literal = '''"bolt_v3_bootstrap_const_deferral_pre_expiry_alert_total"'''
+context = '''"bolt_v3_bootstrap_const_deferral_pre_expiry_alert_total";'''
+classification = "h7_bootstrap_deferral_alert_metric"
+reason = "Stable metric name emitted with the H7 pre-expiry alert evidence record; identifies the alert counter and does not control trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_bootstrap_deferral_alert.rs"
+kind = "number"
+literal = "1"
+context = '''const H7_BOOTSTRAP_CONST_ALERT_METRIC_VALUE: u64 = 1;'''
+classification = "h7_bootstrap_deferral_alert_metric"
+reason = "Counter increment value for one emitted H7 pre-expiry alert event; a metric identity increment, not a runtime trading value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.bootstrap_deferral_alert"'''
+context = '''pub const BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_GATE_ID: &str = "bolt_v3.bootstrap_deferral_alert";'''
+classification = "h7_bootstrap_deferral_alert_evidence_gate"
+reason = "Stable JSONL decision-evidence gate id for the H7 bootstrap-deferral alert envelope; evidence routing metadata, not a runtime trading value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bootstrap_deferral_alert"'''
+context = '''pub const BOLT_V3_BOOTSTRAP_DEFERRAL_ALERT_RECORD_KIND: &str = "bootstrap_deferral_alert";'''
+classification = "h7_bootstrap_deferral_alert_evidence_kind"
+reason = "Stable JSONL decision-evidence record kind for the H7 bootstrap-deferral alert envelope; evidence routing metadata, not a runtime trading value."

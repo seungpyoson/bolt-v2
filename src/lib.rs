@@ -6,6 +6,7 @@ pub mod bolt_v3_basket_execution;
 pub mod bolt_v3_basket_store;
 pub mod bolt_v3_binary_outcome_edge;
 pub mod bolt_v3_book_sizing;
+pub mod bolt_v3_bootstrap_deferral_alert;
 pub mod bolt_v3_capital_admission;
 pub mod bolt_v3_capital_admission_runtime_feed;
 pub mod bolt_v3_capital_reservation;

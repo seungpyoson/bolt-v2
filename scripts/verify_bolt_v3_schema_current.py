@@ -63,7 +63,8 @@ DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE_TEMPLATE = (
     "Decision-evidence JSONL records use `schema_version = {version}` for `order_intent`, "
     "`admission_decision`, `strategy_input_snapshot`, `capital_admission_rebuild`, "
     "`submit_reservation_metadata`, `submit_reservation_fill`, `entry_skip`, "
-    "`exit_decision`, `loss_governor_halt`, and `requote_throttle` envelopes."
+    "`exit_decision`, `loss_governor_halt`, `requote_throttle`, and "
+    "`bootstrap_deferral_alert` envelopes."
 )
 STATUS_MAP_FORCED_EXIT_BUILDER_PHRASE = (
     "Order construction uses the shared `src/bolt_v3_order_intent.rs` builder for "
@@ -95,8 +96,8 @@ REQUIRED_SCHEMA_PHRASES = (
     "When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders",
     "`trigger_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TriggerType::Default`",
     "`trailing_offset_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TrailingOffsetType::Price`",
-    "Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, `fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, or `requote_throttle`.",
-    "The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `capital_admission_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, `submit_reservation_fill` for fill metadata, `entry_skip` for entry skip rationale, `exit_decision` for exit rationale, `loss_governor_halt` for loss-governor halt transitions, and `requote_throttle` for maker requote budget throttle transitions.",
+    "Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, `fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, `requote_throttle`, or `alert`.",
+    "The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `capital_admission_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, `submit_reservation_fill` for fill metadata, `entry_skip` for entry skip rationale, `exit_decision` for exit rationale, `loss_governor_halt` for loss-governor halt transitions, `requote_throttle` for maker requote budget throttle transitions, and `bootstrap_deferral_alert` for H7 bootstrap-const deferral pre-expiry alerts.",
     "`capital_admission_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-14 reservation records.",
 )
 STALE_STATUS_MAP_PHRASES = (

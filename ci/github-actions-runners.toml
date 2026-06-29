@@ -401,8 +401,6 @@ wait_and_remeasure = "wait and remeasure natural expiry/garbage collection befor
 protected_refs = ["main"]
 protected_ref_prefixes = ["refs/tags/"]
 protected_ref_globs = [
-  "refs/heads/main",
-  "refs/tags/*",
   "archive/*",
   "deploy/*",
   "tag-archive-*",
@@ -426,7 +424,7 @@ keep_reason = "nextest archive is retained until it expires"
 [[storage_audit.cleanup_feasibility.classes]]
 id = "backtester_payload"
 name_equals = ["bvs-test-payload"]
-name_prefixes = []
+name_prefixes_from_templates = ["backtester.issue_789.artifact_name_template"]
 expired_decision = "DELETE-CANDIDATE"
 candidate_reason = "expired backtester test payload outside protected refs"
 keep_reason = "backtester test payload is retained until it expires"
@@ -477,7 +475,6 @@ id = "personal_non_ci"
 name_equals = []
 name_prefixes = [
   "DynaMOS",
-  "DynaMOS_",
 ]
 expired_decision = "KEEP"
 keep_reason = "personal/non-CI artifact is not a cleanup candidate"

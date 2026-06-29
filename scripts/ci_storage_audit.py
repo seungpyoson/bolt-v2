@@ -535,6 +535,8 @@ def require_total_count(payload: dict[str, Any], label: str) -> int:
 def optional_text(value: Any) -> str | None:
     if value is None:
         return None
+    if value == "":
+        return None
     return require_text(value, "optional_text")
 
 
@@ -621,18 +623,14 @@ def require_policy_table(payload: dict[str, Any], key: str, label: str) -> dict[
 
 def require_policy_string(payload: dict[str, Any], key: str, label: str) -> str:
     value = payload.get(key)
-    if not isinstance(value, str) or not value:
-        raise AuditError(f"{label}.{key} must be a non-empty string")
-    return value
+    return require_text(value, f"{label}.{key}")
 
 
 def optional_policy_string(payload: dict[str, Any], key: str, label: str) -> str | None:
     value = payload.get(key)
     if value is None:
         return None
-    if not isinstance(value, str) or not value:
-        raise AuditError(f"{label}.{key} must be a non-empty string when present")
-    return value
+    return require_text(value, f"{label}.{key}")
 
 
 def optional_policy_string_list(payload: dict[str, Any], key: str, label: str) -> tuple[str, ...]:
@@ -875,16 +873,29 @@ def load_cleanup_policy_path(path: pathlib.Path) -> ArtifactCleanupPolicy:
         raise AuditError(f"{path}: could not read cleanup policy: {exc}") from exc
 
 
-def repository_toml_paths() -> list[pathlib.Path]:
+def repository_root_path() -> pathlib.Path:
     result = subprocess.run(
-        ["git", "ls-files", "*.toml"],
+        ["git", "rev-parse", "--show-toplevel"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AuditError(result.stderr.strip() or "git rev-parse failed while discovering repository root")
+    return pathlib.Path(require_text(result.stdout.strip(), "repository_root"))
+
+
+def repository_toml_paths() -> list[pathlib.Path]:
+    root = repository_root_path()
+    result = subprocess.run(
+        ["git", "-C", str(root), "ls-files", ":(top)*.toml"],
         text=True,
         capture_output=True,
         check=False,
     )
     if result.returncode != 0:
         raise AuditError(result.stderr.strip() or "git ls-files failed while discovering cleanup policy")
-    return [pathlib.Path(line) for line in result.stdout.splitlines() if line]
+    return [root / line for line in result.stdout.splitlines() if line]
 
 
 def discover_cleanup_policy_path() -> pathlib.Path:
@@ -932,10 +943,6 @@ CACHE_SNAPSHOT_ENTRY_CONTRACT = (
     FieldSpec("last_accessed_at", "last_accessed_at", require_optional_text, None),
     FieldSpec("size_bytes", "size_bytes", require_nonnegative_int),
 )
-ARTIFACT_ENTRY_CONTRACT = (
-    FieldSpec("name", "name", require_text),
-    FieldSpec("size_in_bytes", "size_bytes", require_nonnegative_int),
-)
 CACHE_USAGE_CONTRACT = (
     FieldSpec("available", "available", require_bool),
     FieldSpec("active_caches_count", "active_caches_count", require_nonnegative_int),
@@ -965,10 +972,6 @@ def cache_entry_from_raw(raw: Any, label: str = "actions/caches") -> dict[str, A
 
 def cache_snapshot_entry_from_raw(raw: Any, label: str = "cache_key_probes.entries") -> dict[str, Any]:
     return parse_contract_object(raw, label, CACHE_SNAPSHOT_ENTRY_CONTRACT)
-
-
-def artifact_entry_from_raw(raw: Any, label: str = "actions/artifacts") -> dict[str, Any]:
-    return parse_contract_object(raw, label, ARTIFACT_ENTRY_CONTRACT)
 
 
 def cache_usage_from_raw(raw: Any, label: str = "cache_usage") -> dict[str, Any]:
@@ -1084,11 +1087,26 @@ def require_labeled_pair(raw: str, field: str) -> tuple[str, str]:
     return raw.split("=", 1)
 
 
+def classify_cleanup_ref(value: Any, field: str, *, allow_canonical_refs: bool) -> ClassifiedText:
+    ref = classify_optional_text(value, field)
+    if ref.failure is not None or ref.value is None:
+        return ref
+    if ref.value.startswith(("heads/", "tags/")):
+        return ClassifiedText(value=None, failure=input_failure(field, STATE_INVALID))
+    if ref.value.startswith("refs/"):
+        if allow_canonical_refs and (
+            ref.value.startswith("refs/heads/") or ref.value.startswith("refs/tags/")
+        ):
+            return ref
+        return ClassifiedText(value=None, failure=input_failure(field, STATE_INVALID))
+    return ref
+
+
 def classify_workflow_ref(workflow_run: dict[str, Any]) -> ClassifiedText:
-    ref = classify_optional_text(workflow_run.get("ref"), FIELD_ARTIFACT_REF)
+    ref = classify_cleanup_ref(workflow_run.get("ref"), FIELD_ARTIFACT_REF, allow_canonical_refs=True)
     if ref.failure is not None or ref.value is not None:
         return ref
-    head_branch = classify_optional_text(workflow_run.get("head_branch"), FIELD_ARTIFACT_REF)
+    head_branch = classify_cleanup_ref(workflow_run.get("head_branch"), FIELD_ARTIFACT_REF, allow_canonical_refs=False)
     if head_branch.failure is not None or head_branch.value is not None:
         return head_branch
     return ClassifiedText(value=None, failure=input_failure(FIELD_ARTIFACT_REF, STATE_ABSENT))
@@ -1106,6 +1124,7 @@ def workflow_run_from_raw(
     if require_status and status.value is None and status.failure is None:
         status = ClassifiedText(value=None, failure=input_failure(FIELD_WORKFLOW_STATUS, STATE_ABSENT))
     ref = classify_workflow_ref(data)
+    head_branch = classify_cleanup_ref(data.get("head_branch"), FIELD_ARTIFACT_REF, allow_canonical_refs=False)
     head_sha = optional_text(data.get("head_sha"))
     return {
         "id": run_id.value,
@@ -1115,7 +1134,7 @@ def workflow_run_from_raw(
         "conclusion": optional_text(data.get("conclusion")),
         "ref": ref.value,
         "ref_failure": serialized_failure(ref.failure),
-        "head_branch": data.get("head_branch"),
+        "head_branch": head_branch.value,
         "head_sha": head_sha,
         "event": optional_text(data.get("event")),
         "status_source": "artifact_payload" if status.value is not None else "not_fetched",
@@ -1576,7 +1595,7 @@ def protected_ref_forms(ref: str) -> tuple[str, ...]:
         forms.extend((branch, f"refs/heads/{branch}"))
     elif ref.startswith("refs/tags/"):
         tag = ref.removeprefix("refs/tags/")
-        forms.extend((tag, f"tags/{tag}"))
+        forms.append(f"tags/{tag}")
     else:
         forms.append(f"refs/heads/{ref}")
     return tuple(dict.fromkeys(forms))
@@ -1665,6 +1684,12 @@ def fetch_workflow_run_metadata_payload(client: GhClient, run_id: int) -> Workfl
             failure=classify_api_unavailable_failure(exc, FIELD_WORKFLOW_RUN_API),
         )
     if not isinstance(payload, dict):
+        return WorkflowRunFetchResult(
+            payload=None,
+            failure=input_failure(FIELD_WORKFLOW_RUN_API, STATE_INVALID),
+        )
+    fetched_run_id = classify_positive_int(payload.get("id"), FIELD_WORKFLOW_RUN_ID)
+    if fetched_run_id.failure is not None or fetched_run_id.value != run_id:
         return WorkflowRunFetchResult(
             payload=None,
             failure=input_failure(FIELD_WORKFLOW_RUN_API, STATE_INVALID),
@@ -1874,6 +1899,10 @@ def api_response_summary(payload: Any) -> dict[str, Any]:
     return {"type": type(payload).__name__}
 
 
+def sanitized_probe_error(exc: AuditError) -> str:
+    return exc.kind.value
+
+
 def probe_billing_endpoint(
     client: GhClient,
     *,
@@ -1886,7 +1915,7 @@ def probe_billing_endpoint(
         try:
             payload = client.api_global(path)
         except (GhApiError, AuditError) as exc:
-            probes.append({"path": path, "status": "unavailable", "error": str(exc)})
+            probes.append({"path": path, "status": "unavailable", "error": sanitized_probe_error(exc)})
             continue
         return {
             "status": "available",

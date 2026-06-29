@@ -433,7 +433,9 @@ def verify_model_freshness_step_contracts(glm_workflow: str, kimi_workflow: str)
 
 
 def workflow_job_env_receives_provider_secret(workflow_text: str, api_key_name: str) -> bool:
-    return f"\n    env:\n      {api_key_name}:" in workflow_text
+    job_env_blocks = re.findall(r"(?m)^    env:\n((?:      [^\n]*\n?)*)", workflow_text)
+    provider_key = re.compile(rf"(?m)^      {re.escape(api_key_name)}:")
+    return any(provider_key.search(block) for block in job_env_blocks)
 
 
 def model_freshness_step_receives_provider_secret(block: str) -> bool:
@@ -1014,14 +1016,31 @@ def run_self_tests(repo_root: Path) -> None:
     )
     assert_finding("GLM ungated freshness step", glm_ungated_freshness, "must be gated on glm-secret")
 
-    glm_job_scope_secret = verify_variant(
+    glm_job_scope_secret_before_pr_number = verify_variant(
         glm_text=glm.replace(
             "    env:\n      PR_NUMBER:",
             "    env:\n      GLM_API_KEY: ${{ secrets.GLM_API_KEY }}\n      PR_NUMBER:",
             1,
         ),
     )
-    assert_finding("GLM job-scope secret", glm_job_scope_secret, "must not expose GLM_API_KEY at job scope")
+    assert_finding(
+        "GLM job-scope secret before PR_NUMBER",
+        glm_job_scope_secret_before_pr_number,
+        "must not expose GLM_API_KEY at job scope",
+    )
+
+    glm_job_scope_secret_after_pr_number = verify_variant(
+        glm_text=glm.replace(
+            "      PR_NUMBER: ${{ github.event.pull_request.number }}",
+            "      PR_NUMBER: ${{ github.event.pull_request.number }}\n      GLM_API_KEY: ${{ secrets.GLM_API_KEY }}",
+            1,
+        ),
+    )
+    assert_finding(
+        "GLM job-scope secret after PR_NUMBER",
+        glm_job_scope_secret_after_pr_number,
+        "must not expose GLM_API_KEY at job scope",
+    )
 
     glm_secret_expansion = verify_variant(
         glm_text=glm.replace(
@@ -1050,14 +1069,31 @@ def run_self_tests(repo_root: Path) -> None:
     )
     assert_finding("Kimi ungated freshness step", kimi_ungated_freshness, "must be gated on kimi-secret")
 
-    kimi_job_scope_secret = verify_variant(
+    kimi_job_scope_secret_before_pr_number = verify_variant(
         kimi_text=kimi.replace(
             "    env:\n      PR_NUMBER:",
             "    env:\n      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}\n      PR_NUMBER:",
             1,
         ),
     )
-    assert_finding("Kimi job-scope secret", kimi_job_scope_secret, "must not expose KIMI_API_KEY at job scope")
+    assert_finding(
+        "Kimi job-scope secret before PR_NUMBER",
+        kimi_job_scope_secret_before_pr_number,
+        "must not expose KIMI_API_KEY at job scope",
+    )
+
+    kimi_job_scope_secret_after_pr_number = verify_variant(
+        kimi_text=kimi.replace(
+            "      PR_NUMBER: ${{ github.event.pull_request.number }}",
+            "      PR_NUMBER: ${{ github.event.pull_request.number }}\n      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}",
+            1,
+        ),
+    )
+    assert_finding(
+        "Kimi job-scope secret after PR_NUMBER",
+        kimi_job_scope_secret_after_pr_number,
+        "must not expose KIMI_API_KEY at job scope",
+    )
 
     kimi_secret_expansion = verify_variant(
         kimi_text=kimi.replace(

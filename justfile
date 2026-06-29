@@ -314,6 +314,9 @@ ci-runner-minutes *args:
 ci-storage-audit *args: check-workspace
     python3 scripts/ci_storage_audit.py {{args}}
 
+ci-storage-tripwire *args: check-workspace
+    python3 scripts/ci_storage_tripwire.py {{args}}
+
 source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner
 
@@ -520,6 +523,9 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
         failed=1
     fi
     if ! python3 scripts/test_ci_storage_audit.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_ci_storage_tripwire.py; then
         failed=1
     fi
     if ! python3 scripts/test_find_same_sha_main_evidence.py; then

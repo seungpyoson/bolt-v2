@@ -14,8 +14,8 @@
 //! supplies.
 
 use crate::bolt_v3_numeric::{
-    QUADRATIC_RISK_DIVISOR, ZERO_F64, clamp_probability, is_non_negative_finite,
-    is_positive_finite, sanitize_non_negative,
+    ProbabilityValue, QUADRATIC_RISK_DIVISOR, ZERO_F64, bounded_probability_from_finite,
+    is_non_negative_finite, is_positive_finite, sanitize_non_negative,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,10 +56,13 @@ pub(crate) fn choose_robust_size(inputs: &RobustSizingInputs) -> f64 {
     // Dimensional contract: the EV fraction only scales the operator's dollar
     // target; it is never itself a dollar amount. A signal whose worst-case EV
     // reaches 2λ × ev_reference saturates the scale at the full target.
-    let target_scale = clamp_probability(
+    let Some(target_scale) = bounded_probability_from_finite(
         inputs.expected_ev_per_notional
             / (QUADRATIC_RISK_DIVISOR * inputs.risk_lambda * inputs.ev_reference_per_notional),
-    );
+    )
+    .map(ProbabilityValue::get) else {
+        return ZERO_F64;
+    };
     (sanitize_non_negative(inputs.order_notional_target) * target_scale).min(cap)
 }
 
@@ -110,7 +113,11 @@ pub(crate) fn maker_robust_size(
     // ratio only scales the operator's dollar target; it is never itself a
     // dollar amount. An edge at or beyond the reference saturates the scale at
     // the full target.
-    let edge_scale = clamp_probability(half_spread / reference_half_spread);
+    let Some(edge_scale) = bounded_probability_from_finite(half_spread / reference_half_spread)
+        .map(ProbabilityValue::get)
+    else {
+        return ZERO_F64;
+    };
     (sanitize_non_negative(order_notional_target) * edge_scale).min(cap)
 }
 
@@ -342,13 +349,12 @@ mod tests {
 
     #[test]
     fn maker_robust_size_requires_a_strictly_positive_protective_edge() {
-        // No-edge gate. The non-finite rows (NaN, +inf) are the load-bearing ones:
-        // with the `is_positive_finite(half_spread)` gate removed, clamp_probability
-        // passes NaN through (5.0 * NaN -> .min(cap) selects the cap) and maps +inf
-        // to a full-scale 1.0 (-> cap), so those two rows alone catch a dropped gate.
+        // No-edge gate. The bounded probability conversion also rejects
+        // non-finite ratios, so the non-finite rows are redundant fail-closed
+        // coverage rather than the sole proof of this pre-gate.
         // The 0.0/-0.01/-inf rows are independently floored to zero by
-        // clamp_probability(half_spread / reference) and pass with or without the
-        // gate; they are kept as ordinary boundary coverage, not as gate proof.
+        // the bounded conversion and pass with or without the gate; they are kept
+        // as ordinary boundary coverage, not as gate proof.
         for half_spread in [0.0, -0.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert_eq!(
                 maker_robust_size(half_spread, 0.10, 5.0, 10.0),

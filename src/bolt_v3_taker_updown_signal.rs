@@ -11,26 +11,27 @@
 
 use crate::bolt_v3_market_families::OutcomeSide;
 use crate::bolt_v3_numeric::{
-    BPS_DENOMINATOR, POWER_OF_TWO, UNIT_F64, ZERO_F64, clamp_probability, is_non_negative_finite,
-    is_positive_finite, sanitize_probability,
+    BPS_DENOMINATOR, POWER_OF_TWO, ProbabilityValue, UNIT_F64, ZERO_F64,
+    bounded_probability_from_finite, is_non_negative_finite, is_positive_finite,
+    sanitize_probability,
 };
 
 pub(crate) fn price_agreement_corr(observed_price: f64, anchor_price: f64) -> Option<f64> {
     if !is_positive_finite(observed_price) || !is_positive_finite(anchor_price) {
         return None;
     }
-    Some(clamp_probability(
+    bounded_probability_from_finite(
         UNIT_F64 - ((observed_price - anchor_price).abs() / anchor_price),
-    ))
+    )
+    .map(ProbabilityValue::get)
 }
 
 pub(crate) fn price_gap_probability(observed_price: f64, reference_price: f64) -> Option<f64> {
     if !is_positive_finite(observed_price) || !is_positive_finite(reference_price) {
         return None;
     }
-    Some(clamp_probability(
-        (observed_price - reference_price).abs() / reference_price,
-    ))
+    bounded_probability_from_finite((observed_price - reference_price).abs() / reference_price)
+        .map(ProbabilityValue::get)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,7 +73,7 @@ pub(crate) fn time_uncertainty_probability(
         return None;
     }
     let horizon_years = seconds_to_market_end as f64 / seconds_per_year;
-    Some(clamp_probability(realized_vol * horizon_years.sqrt()))
+    bounded_probability_from_finite(realized_vol * horizon_years.sqrt()).map(ProbabilityValue::get)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -93,8 +94,10 @@ pub(crate) fn compute_theta_scaler(inputs: &ThetaScalerInputs) -> Option<f64> {
         return None;
     }
 
-    let ratio =
-        clamp_probability(inputs.seconds_to_market_end as f64 / inputs.cadence_seconds as f64);
+    let ratio = bounded_probability_from_finite(
+        inputs.seconds_to_market_end as f64 / inputs.cadence_seconds as f64,
+    )?
+    .get();
     Some(UNIT_F64 + inputs.theta_decay_factor * (UNIT_F64 - ratio).powi(POWER_OF_TWO))
 }
 
@@ -129,8 +132,10 @@ pub(crate) fn compute_worst_case_ev_bps(
         return None;
     }
 
-    let p_lo = clamp_probability(fair_probability - uncertainty_band_probability);
-    let p_hi = clamp_probability(fair_probability + uncertainty_band_probability);
+    let p_lo =
+        bounded_probability_from_finite(fair_probability - uncertainty_band_probability)?.get();
+    let p_hi =
+        bounded_probability_from_finite(fair_probability + uncertainty_band_probability)?.get();
     let worst_case_success_probability = match side {
         OutcomeSide::Up => p_lo,
         OutcomeSide::Down => UNIT_F64 - p_hi,

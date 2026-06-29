@@ -14,8 +14,8 @@ use crate::{
         FairValuePricingRequest, FairValuePricingResult, FairValuePricingState,
     },
     bolt_v3_numeric::{
-        MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64, clamp_probability, is_positive_finite,
-        sanitize_probability,
+        MILLIS_PER_SECOND_U64, ProbabilityValue, UNIT_F64, ZERO_F64,
+        bounded_probability_from_finite, is_positive_finite, sanitize_probability,
     },
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_taker_updown_signal::{
@@ -196,18 +196,21 @@ impl TakerPricingState {
             .expect("validated signal/reference current prices should yield agreement");
         let lead_gap_probability = price_gap_probability(quote.price, reference_fair_value)
             .expect("validated signal/reference current prices should yield a gap");
+        let jitter_penalty_probability = if config.lead_jitter_max_ms == 0 {
+            Some(ZERO_F64)
+        } else {
+            bounded_probability_from_finite(jitter_ms as f64 / config.lead_jitter_max_ms as f64)
+                .map(ProbabilityValue::get)
+        };
         let eligible = agreement_corr >= config.lead_agreement_min_corr
             && jitter_ms <= config.lead_jitter_max_ms
-            && sanitize_probability(lead_gap_probability).is_some();
+            && sanitize_probability(lead_gap_probability).is_some()
+            && jitter_penalty_probability.is_some();
 
         if eligible {
             self.fair_value.observe_pricing_spot(quote);
             self.last_lead_gap_probability = Some(lead_gap_probability);
-            self.last_jitter_penalty_probability = Some(if config.lead_jitter_max_ms == 0 {
-                ZERO_F64
-            } else {
-                clamp_probability(jitter_ms as f64 / config.lead_jitter_max_ms as f64)
-            });
+            self.last_jitter_penalty_probability = jitter_penalty_probability;
             self.last_lead_agreement_corr = Some(agreement_corr);
             self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
             self.last_fast_venue_jitter_ms = Some(jitter_ms);
@@ -215,11 +218,7 @@ impl TakerPricingState {
         } else {
             self.fair_value.clear_pricing_spot();
             self.last_lead_gap_probability = Some(lead_gap_probability);
-            self.last_jitter_penalty_probability = Some(if config.lead_jitter_max_ms == 0 {
-                ZERO_F64
-            } else {
-                clamp_probability(jitter_ms as f64 / config.lead_jitter_max_ms as f64)
-            });
+            self.last_jitter_penalty_probability = jitter_penalty_probability;
             self.last_lead_agreement_corr = Some(agreement_corr);
             self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
             self.last_fast_venue_jitter_ms = Some(jitter_ms);

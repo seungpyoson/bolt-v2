@@ -134,7 +134,10 @@ fn main() {
     );
     let stderr = stderr(&output);
 
-    assert!(!output.status.success(), "non-finite probability must not compile");
+    assert!(
+        !output.status.success(),
+        "non-finite probability must not compile"
+    );
     assert!(
         stderr.contains("panicked") && stderr.contains("non-finite probability rejected"),
         "non-finite rejection must be the const-constructor failure, got:\n{stderr}"
@@ -160,7 +163,10 @@ fn main() {
     );
     let stderr = stderr(&output);
 
-    assert!(!output.status.success(), "out-of-range probability must not compile");
+    assert!(
+        !output.status.success(),
+        "out-of-range probability must not compile"
+    );
     assert!(
         stderr.contains("panicked") && stderr.contains("out-of-range probability rejected"),
         "out-of-range rejection must be the const-constructor failure, got:\n{stderr}"
@@ -170,6 +176,17 @@ fn main() {
 #[test]
 fn financial_value_type_default_compile_fails() {
     for (crate_name, source, expected_type) in [
+        (
+            "probability_value_default_probe",
+            r#"
+use bolt_v2::bolt_v3_numeric::ProbabilityValue;
+
+fn main() {
+    let _ = ProbabilityValue::default();
+}
+"#,
+            "ProbabilityValue",
+        ),
         (
             "usable_mu_default_probe",
             r#"
@@ -212,23 +229,42 @@ fn synthetic_default_readd_fence_rejects_derive_default() {
     let output = compile_standalone(
         "synthetic_default_readd_fence",
         r#"
-trait DefaultReaddFence {}
+trait NoDefaultProbe {
+    fn financial_value_default_readd_fence();
+}
 
-impl<T: Default> DefaultReaddFence for T {}
+trait DefaultProbe {
+    fn financial_value_default_readd_fence();
+}
+
+impl<T: Default> DefaultProbe for T {
+    fn financial_value_default_readd_fence() {}
+}
+
+use DefaultProbe as _;
+use NoDefaultProbe as _;
 
 macro_rules! macro_generated_financial_value {
     ($name:ident) => {
         #[derive(Default)]
         struct $name(f64);
 
-        impl DefaultReaddFence for $name {}
+        impl NoDefaultProbe for $name {
+            fn financial_value_default_readd_fence() {}
+        }
+
+        const _: fn() = $name::financial_value_default_readd_fence;
     };
 }
 
 #[cfg_attr(all(), derive(Default))]
 struct CfgAttrFinancialValue(f64);
 
-impl DefaultReaddFence for CfgAttrFinancialValue {}
+impl NoDefaultProbe for CfgAttrFinancialValue {
+    fn financial_value_default_readd_fence() {}
+}
+
+const _: fn() = CfgAttrFinancialValue::financial_value_default_readd_fence;
 
 macro_generated_financial_value!(MacroFinancialValue);
 
@@ -242,7 +278,7 @@ fn main() {}
         "synthetic derive(Default) re-add must be rejected"
     );
     assert!(
-        stderr.contains("conflicting implementations"),
-        "synthetic derive(Default) fence must fail by trait-impl conflict, got:\n{stderr}"
+        stderr.contains("multiple applicable items"),
+        "synthetic derive(Default) fence must fail by method-resolution ambiguity, got:\n{stderr}"
     );
 }

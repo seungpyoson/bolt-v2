@@ -62,9 +62,9 @@ use crate::{
         SelectedMarketSourceIdentity,
     },
     bolt_v3_numeric::{
-        BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, SECONDS_PER_YEAR_F64,
-        UNIT_F64, clamp_probability, is_non_negative_finite, is_positive_finite,
-        notional_float_tolerance,
+        BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, ProbabilityValue,
+        SECONDS_PER_YEAR_F64, UNIT_F64, bounded_probability_from_finite, is_non_negative_finite,
+        is_positive_finite, notional_float_tolerance,
     },
     bolt_v3_order_execution::{
         BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
@@ -2656,7 +2656,7 @@ impl BinaryOracleEdgeTaker {
         let time_uncertainty_probability =
             time_uncertainty_probability(realized_vol, seconds_to_expiry, SECONDS_PER_YEAR_F64)?;
         let fee_uncertainty_probability =
-            clamp_probability(up_fee_bps.max(down_fee_bps) / BPS_DENOMINATOR);
+            bounded_probability_from_finite(up_fee_bps.max(down_fee_bps) / BPS_DENOMINATOR)?.get();
         let lead_gap_probability = self.pricing.last_lead_gap_probability?;
         let jitter_penalty_probability = self.pricing.last_jitter_penalty_probability?;
 
@@ -3295,10 +3295,12 @@ impl BinaryOracleEdgeTaker {
         )?;
         let adjusted_probability_up = match side {
             OutcomeSide::Up => {
-                clamp_probability(fair_probability_up - uncertainty_band_probability)
+                bounded_probability_from_finite(fair_probability_up - uncertainty_band_probability)?
+                    .get()
             }
             OutcomeSide::Down => {
-                clamp_probability(fair_probability_up + uncertainty_band_probability)
+                bounded_probability_from_finite(fair_probability_up + uncertainty_band_probability)?
+                    .get()
             }
         };
         Some((uncertainty_band_probability, adjusted_probability_up))
@@ -5787,10 +5789,24 @@ impl BinaryOracleEdgeTaker {
         };
         evaluation.uncertainty_band_probability = Some(uncertainty_band_probability);
 
-        let up_adjusted_probability_up =
-            clamp_probability(fair_probability_up - uncertainty_band_probability);
-        let down_adjusted_probability_up =
-            clamp_probability(fair_probability_up + uncertainty_band_probability);
+        let Some(up_adjusted_probability_up) =
+            bounded_probability_from_finite(fair_probability_up - uncertainty_band_probability)
+                .map(ProbabilityValue::get)
+        else {
+            evaluation
+                .pricing_blocked_by
+                .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
+            return evaluation;
+        };
+        let Some(down_adjusted_probability_up) =
+            bounded_probability_from_finite(fair_probability_up + uncertainty_band_probability)
+                .map(ProbabilityValue::get)
+        else {
+            evaluation
+                .pricing_blocked_by
+                .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
+            return evaluation;
+        };
         let up_executable_edge = match up_probe {
             Ok(probe) => self.executable_edge_for_side(
                 OutcomeSide::Up,

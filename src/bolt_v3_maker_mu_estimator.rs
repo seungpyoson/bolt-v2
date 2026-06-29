@@ -20,7 +20,10 @@
 //! fair` — a zero-spread quote that earns no compensation for pick-off risk.
 //! Every threshold is supplied by the caller from TOML; nothing defaults.
 
-use crate::bolt_v3_numeric::{is_positive_finite, sanitize_probability};
+use crate::bolt_v3_numeric::financial_value_private::{DefaultProbe as _, NoDefaultProbe as _};
+use crate::bolt_v3_numeric::{
+    FinancialValue, financial_value_private, is_positive_finite, sanitize_probability,
+};
 use crate::bolt_v3_trade_flow::{SignedTrade, SignedTradeFlow};
 use nautilus_model::enums::AggressorSide;
 
@@ -62,6 +65,14 @@ pub struct MuHealthConfig {
 /// `crate::strategies::*`, keeping the dependency-direction fence green.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UsableMu(f64);
+
+impl financial_value_private::Sealed for UsableMu {}
+impl financial_value_private::NoDefaultProbe for UsableMu {
+    fn financial_value_default_readd_fence() {}
+}
+impl FinancialValue for UsableMu {}
+
+const _: fn() = UsableMu::financial_value_default_readd_fence;
 
 impl UsableMu {
     /// Wrap a gate-cleared μ. **Module-private** (not `pub(crate)`): the only

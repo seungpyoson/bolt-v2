@@ -53,16 +53,71 @@ pub(crate) fn notional_float_tolerance(reference_notional: f64) -> f64 {
     reference_notional.abs() * f64::EPSILON * NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER
 }
 
-pub(crate) fn clamp_probability(value: f64) -> f64 {
-    value.clamp(ZERO_F64, UNIT_F64)
+pub(crate) mod financial_value_private {
+    pub trait Sealed {}
+    pub trait NoDefaultProbe {
+        fn financial_value_default_readd_fence();
+    }
+
+    pub trait DefaultProbe {
+        fn financial_value_default_readd_fence();
+    }
+
+    impl<T: Default> DefaultProbe for T {
+        fn financial_value_default_readd_fence() {}
+    }
+}
+
+#[allow(private_bounds)]
+pub trait FinancialValue:
+    financial_value_private::Sealed + financial_value_private::NoDefaultProbe
+{
+}
+
+use financial_value_private::{DefaultProbe as _, NoDefaultProbe as _};
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ProbabilityValue(f64);
+
+impl ProbabilityValue {
+    pub const fn try_from_unit(value: f64) -> Option<Self> {
+        if value == value && value != f64::INFINITY && value != f64::NEG_INFINITY {
+            if value >= ZERO_F64 && value <= UNIT_F64 {
+                return Some(Self(value));
+            }
+        }
+        None
+    }
+
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl financial_value_private::Sealed for ProbabilityValue {}
+impl financial_value_private::NoDefaultProbe for ProbabilityValue {
+    fn financial_value_default_readd_fence() {}
+}
+impl FinancialValue for ProbabilityValue {}
+
+const _: fn() = ProbabilityValue::financial_value_default_readd_fence;
+
+pub(crate) fn bounded_probability_from_finite(value: f64) -> Option<ProbabilityValue> {
+    if !value.is_finite() {
+        return None;
+    }
+    let bounded = if value < ZERO_F64 {
+        ZERO_F64
+    } else if value > UNIT_F64 {
+        UNIT_F64
+    } else {
+        value
+    };
+    ProbabilityValue::try_from_unit(bounded)
 }
 
 pub(crate) fn sanitize_probability(value: f64) -> Option<f64> {
-    if value.is_finite() && (ZERO_F64..=UNIT_F64).contains(&value) {
-        Some(value)
-    } else {
-        None
-    }
+    ProbabilityValue::try_from_unit(value).map(ProbabilityValue::get)
 }
 
 pub(crate) fn sanitize_open_probability(value: f64, eps: f64) -> Option<f64> {
@@ -187,12 +242,41 @@ mod tests {
     }
 
     #[test]
-    fn clamp_probability_bounds_to_unit_interval() {
-        assert_eq!(clamp_probability(-0.5), ZERO_F64);
-        assert_eq!(clamp_probability(0.5), 0.5);
-        assert_eq!(clamp_probability(1.5), UNIT_F64);
-        assert_eq!(clamp_probability(ZERO_F64), ZERO_F64);
-        assert_eq!(clamp_probability(UNIT_F64), UNIT_F64);
+    fn probability_value_accepts_unit_interval_only() {
+        assert_eq!(
+            ProbabilityValue::try_from_unit(ZERO_F64).map(ProbabilityValue::get),
+            Some(ZERO_F64)
+        );
+        assert_eq!(
+            ProbabilityValue::try_from_unit(0.5).map(ProbabilityValue::get),
+            Some(0.5)
+        );
+        assert_eq!(
+            ProbabilityValue::try_from_unit(UNIT_F64).map(ProbabilityValue::get),
+            Some(UNIT_F64)
+        );
+        assert_eq!(ProbabilityValue::try_from_unit(-0.5), None);
+        assert_eq!(ProbabilityValue::try_from_unit(1.5), None);
+        assert_eq!(ProbabilityValue::try_from_unit(f64::NAN), None);
+        assert_eq!(ProbabilityValue::try_from_unit(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn bounded_probability_rejects_non_finite_before_bounding() {
+        assert_eq!(
+            bounded_probability_from_finite(-0.5).map(ProbabilityValue::get),
+            Some(ZERO_F64)
+        );
+        assert_eq!(
+            bounded_probability_from_finite(0.5).map(ProbabilityValue::get),
+            Some(0.5)
+        );
+        assert_eq!(
+            bounded_probability_from_finite(1.5).map(ProbabilityValue::get),
+            Some(UNIT_F64)
+        );
+        assert_eq!(bounded_probability_from_finite(f64::NAN), None);
+        assert_eq!(bounded_probability_from_finite(f64::INFINITY), None);
     }
 
     #[test]

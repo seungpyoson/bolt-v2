@@ -8,8 +8,10 @@ use std::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use crate::bolt_v3_numeric::financial_value_private::{DefaultProbe as _, NoDefaultProbe as _};
 use crate::bolt_v3_numeric::{
-    HALF_F64, MILLIS_PER_SECOND_F64, POWER_OF_TWO, UNIT_F64, ZERO_F64, is_positive_finite,
+    FinancialValue, HALF_F64, MILLIS_PER_SECOND_F64, POWER_OF_TWO, UNIT_F64, ZERO_F64,
+    financial_value_private, is_positive_finite,
 };
 
 const ZERO_MILLIS_U64: u64 = u64::MIN;
@@ -267,6 +269,14 @@ pub struct RealizedVolSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct ValidRealizedVol(f64);
 
+impl financial_value_private::Sealed for ValidRealizedVol {}
+impl financial_value_private::NoDefaultProbe for ValidRealizedVol {
+    fn financial_value_default_readd_fence() {}
+}
+impl FinancialValue for ValidRealizedVol {}
+
+const _: fn() = ValidRealizedVol::financial_value_default_readd_fence;
+
 impl ValidRealizedVol {
     pub fn new(value: f64) -> Option<Self> {
         if value.is_finite() && value >= ZERO_F64 {
@@ -283,6 +293,14 @@ impl ValidRealizedVol {
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct ReadyRealizedVol(ValidRealizedVol);
+
+impl financial_value_private::Sealed for ReadyRealizedVol {}
+impl financial_value_private::NoDefaultProbe for ReadyRealizedVol {
+    fn financial_value_default_readd_fence() {}
+}
+impl FinancialValue for ReadyRealizedVol {}
+
+const _: fn() = ReadyRealizedVol::financial_value_default_readd_fence;
 
 impl ReadyRealizedVol {
     pub fn get(self) -> f64 {

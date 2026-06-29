@@ -1057,8 +1057,9 @@ def release_fd_best_effort(fd: int) -> None:
         # SINK_TIMEOUT_SECONDS so a committed write is never reclassified.
         run_with_deadline(_release, CLEANUP_TIMEOUT_SECONDS, breaker_key="sink:file:cleanup")
     except (OSError, RuntimeError):  # a stalled/failed cleanup must not change the outcome
-        # TimeoutError (stall -> worker abandoned, fd/flock leaked) or any other
-        # error: the record is already committed, so cleanup never fails the write.
+        # TimeoutError (stall -> worker abandoned, fd/flock leaked) or
+        # thread-start RuntimeError: the record is already committed, so cleanup
+        # never fails the write.
         pass
 
 

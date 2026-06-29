@@ -55,12 +55,23 @@ def config_text(
     """
 
 
-def exceptions_text(*entries: str) -> str:
+def exceptions_text(*entries: str, version: str = "1") -> str:
     body = "\n".join(entries)
     return f"""
     [fail_closed_exceptions]
-    version = 1
+    version = {version}
     {body}
+    """
+
+
+def exception_entry(*, rule_id: str = "FLC003", path: str, line: str = "4",
+                    reason: str = '"Classified degradation fixture."') -> str:
+    return f"""
+    [[fail_closed_exceptions.exceptions]]
+    rule_id = "{rule_id}"
+    path = "{path}"
+    line = {line}
+    reason = {reason}
     """
 
 
@@ -154,6 +165,48 @@ def test_precise_exception_fixture_passes() -> None:
     assert findings == [], findings
 
 
+def test_project_exception_named_exception_is_not_broad() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/project_exception.py",
+            """
+            def load_contract(mymodule):
+                try:
+                    return parse()
+                except mymodule.Exception:
+                    return None
+            """,
+        )
+
+        findings = collect(root)
+
+    assert findings == [], findings
+
+
+def test_builtins_exception_qualified_name_is_broad() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/builtins_exception.py",
+            """
+            def load_contract(builtins):
+                try:
+                    return parse()
+                except builtins.Exception:
+                    return None
+            """,
+        )
+
+        findings = collect(root)
+
+    assert any(finding.startswith("FLC003:pkg/builtins_exception.py:4:") for finding in findings)
+
+
 def test_bare_return_fails_as_return_from_catch_all() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -215,6 +268,54 @@ def test_broad_except_tuple_sentinel_return_fails_closed() -> None:
         findings = collect(root)
 
     assert any(finding.startswith("FLC003:pkg/tuple_return.py:4:") for finding in findings)
+
+
+def test_self_logger_exception_classifies_logged_sentinel_return() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/self_logger.py",
+            """
+            def load_contract(self):
+                try:
+                    return parse()
+                except Exception:
+                    self.logger.exception("contract failed")
+                    return None
+            """,
+        )
+
+        findings = collect(root)
+
+    assert findings == [
+        "FLC004:pkg/self_logger.py:4: catch-all exception handler logs then returns a sentinel"
+    ], findings
+
+
+def test_chained_logger_exception_classifies_logged_sentinel_return() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/chained_logger.py",
+            """
+            def load_contract(get_logger):
+                try:
+                    return parse()
+                except Exception:
+                    get_logger().exception("contract failed")
+                    return None
+            """,
+        )
+
+        findings = collect(root)
+
+    assert findings == [
+        "FLC004:pkg/chained_logger.py:4: catch-all exception handler logs then returns a sentinel"
+    ], findings
 
 
 def test_conditional_sentinel_return_fails_closed() -> None:
@@ -436,13 +537,10 @@ def test_classified_degradation_requires_central_exception() -> None:
             root,
             "ci/fail-closed-exceptions.toml",
             exceptions_text(
-                """
-                [[fail_closed_exceptions.exceptions]]
-                rule_id = "FLC003"
-                path = "pkg/degraded.py"
-                line = 4
-                reason = "Classified degradation: caller receives null payload plus explicit error."
-                """
+                exception_entry(
+                    path="pkg/degraded.py",
+                    reason='"Classified degradation: caller receives null payload plus explicit error."',
+                )
             ),
         )
         findings_with_exception = collect(root)
@@ -459,13 +557,10 @@ def test_stale_central_exception_fails_closed() -> None:
             root,
             "ci/fail-closed-exceptions.toml",
             exceptions_text(
-                """
-                [[fail_closed_exceptions.exceptions]]
-                rule_id = "FLC003"
-                path = "pkg/missing.py"
-                line = 4
-                reason = "Fixture proves stale exception detection."
-                """
+                exception_entry(
+                    path="pkg/missing.py",
+                    reason='"Fixture proves stale exception detection."',
+                )
             ),
         )
 
@@ -474,22 +569,211 @@ def test_stale_central_exception_fails_closed() -> None:
     assert findings == ["FLC000:pkg/missing.py:4: stale fail-closed exception for FLC003"], findings
 
 
+def test_dot_prefixed_exception_path_is_normalized() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/degraded.py",
+            """
+            def load_contract():
+                try:
+                    return parse()
+                except Exception:
+                    return None
+            """,
+        )
+        write_file(
+            root,
+            "ci/fail-closed-exceptions.toml",
+            exceptions_text(
+                exception_entry(path="./pkg/degraded.py")
+            ),
+        )
+
+        findings = collect(root)
+
+    assert findings == [], findings
+
+
 def test_exception_config_rejects_invalid_shapes() -> None:
+    cases = [
+        (
+            "bad rule id",
+            exceptions_text(exception_entry(rule_id="FLC999", path="pkg/degraded.py")),
+            "exception rule_id",
+        ),
+        (
+            "duplicate entry",
+            exceptions_text(
+                exception_entry(path="pkg/degraded.py"),
+                exception_entry(path="pkg/degraded.py"),
+            ),
+            "duplicate fail-closed exception",
+        ),
+        (
+            "absolute path",
+            exceptions_text(exception_entry(path="/tmp/degraded.py")),
+            "repository-relative path",
+        ),
+        (
+            "parent path",
+            exceptions_text(exception_entry(path="pkg/../degraded.py")),
+            "repository-relative path",
+        ),
+        (
+            "zero line",
+            exceptions_text(exception_entry(path="pkg/degraded.py", line="0")),
+            "positive integer",
+        ),
+        (
+            "negative line",
+            exceptions_text(exception_entry(path="pkg/degraded.py", line="-1")),
+            "positive integer",
+        ),
+        (
+            "boolean line",
+            exceptions_text(exception_entry(path="pkg/degraded.py", line="true")),
+            "positive integer",
+        ),
+        (
+            "unsupported version",
+            exceptions_text(exception_entry(path="pkg/degraded.py"), version="2"),
+            "exceptions version",
+        ),
+        (
+            "boolean version",
+            exceptions_text(exception_entry(path="pkg/degraded.py"), version="true"),
+            "exceptions version",
+        ),
+        (
+            "empty reason",
+            exceptions_text(exception_entry(path="pkg/degraded.py", reason='""')),
+            "non-empty string",
+        ),
+        (
+            "non-list exceptions",
+            """
+            [fail_closed_exceptions]
+            version = 1
+            exceptions = "not a list"
+            """,
+            "exceptions must be a list of tables",
+        ),
+    ]
+    for label, exceptions_config, expected_message in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_config(root)
+            write_file(root, "ci/fail-closed-exceptions.toml", exceptions_config)
+
+            try:
+                collect(root)
+            except TypeError as exc:
+                assert expected_message in str(exc), (label, exc)
+            else:
+                raise AssertionError(f"accepted invalid fail-closed exception config: {label}")
+
+
+def test_exception_line_drift_fails_closed_both_ways() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/drifted.py",
+            """
+            HEADER = 1
+            def load_contract():
+                try:
+                    return parse()
+                except Exception:
+                    return None
+            """,
+        )
+        write_file(
+            root,
+            "ci/fail-closed-exceptions.toml",
+            exceptions_text(exception_entry(path="pkg/drifted.py", line="4")),
+        )
+
+        findings = collect(root)
+
+    assert findings == [
+        "FLC003:pkg/drifted.py:5: catch-all exception handler returns a sentinel",
+        "FLC000:pkg/drifted.py:4: stale fail-closed exception for FLC003",
+    ], findings
+
+
+def test_cli_reports_config_errors_without_traceback() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(root, "ci/fail-closed-contracts.toml", "not = [valid")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--root",
+                str(root),
+                "--config",
+                str(root / "ci" / "fail-closed-contracts.toml"),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    assert result.returncode == 2
+    assert "FAIL: fail-closed contract verifier configuration error:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_cli_reports_exception_config_errors_without_traceback() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_config(root)
         write_file(
             root,
             "ci/fail-closed-exceptions.toml",
-            exceptions_text(
-                """
-                [[fail_closed_exceptions.exceptions]]
-                rule_id = "FLC999"
-                path = "pkg/degraded.py"
-                line = 4
-                reason = "Bad rule id must fail closed."
-                """
-            ),
+            """
+            [wrong_table]
+            version = 1
+            """,
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--root",
+                str(root),
+                "--config",
+                str(root / "ci" / "fail-closed-contracts.toml"),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    assert result.returncode == 2
+    assert "FAIL: fail-closed contract verifier configuration error:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_exception_config_rejects_bad_rule_id() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "ci/fail-closed-exceptions.toml",
+            exceptions_text(exception_entry(rule_id="FLC999", path="pkg/degraded.py")),
         )
 
         try:
@@ -594,9 +878,13 @@ def main() -> int:
     tests = [
         test_bad_fixtures_fail_with_stable_rule_ids,
         test_precise_exception_fixture_passes,
+        test_project_exception_named_exception_is_not_broad,
+        test_builtins_exception_qualified_name_is_broad,
         test_bare_return_fails_as_return_from_catch_all,
         test_bare_except_sentinel_return_fails_closed,
         test_broad_except_tuple_sentinel_return_fails_closed,
+        test_self_logger_exception_classifies_logged_sentinel_return,
+        test_chained_logger_exception_classifies_logged_sentinel_return,
         test_conditional_sentinel_return_fails_closed,
         test_boolean_sentinel_return_fails_closed,
         test_conditional_broad_exception_type_fails_closed,
@@ -608,7 +896,12 @@ def main() -> int:
         test_repo_config_excludes_nested_script_test_files,
         test_classified_degradation_requires_central_exception,
         test_stale_central_exception_fails_closed,
+        test_dot_prefixed_exception_path_is_normalized,
         test_exception_config_rejects_invalid_shapes,
+        test_exception_line_drift_fails_closed_both_ways,
+        test_cli_reports_config_errors_without_traceback,
+        test_cli_reports_exception_config_errors_without_traceback,
+        test_exception_config_rejects_bad_rule_id,
         test_config_string_arrays_reject_invalid_shapes,
         test_exception_suppression_config_is_rejected,
         test_config_version_rejects_unsupported_shapes,

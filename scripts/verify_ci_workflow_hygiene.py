@@ -53,6 +53,16 @@ from ci_test_manifest import CiTestManifest, _mask_rust_non_code, build_test_man
 from rust_verification import CARGO_ALIAS_SUBCOMMANDS, CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 
 
+COMMAND_UNDERSTANDING_PARITY_EXPORTS = (
+    cargo_subcommand_with_index,
+    nextest_subcommand_with_index,
+    python_call_command_argument,
+    python_call_name,
+    python_command_string,
+    python_constant_string,
+)
+
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 DEFAULT_WORKFLOW = DEFAULT_WORKFLOW_DIR / "ci.yml"
@@ -1984,7 +1994,7 @@ def github_cache_blocks(job_lines: list[str]) -> list[list[str]]:
     )
 
 
-def block_runs_command(block: list[str], command: str) -> bool:
+def block_run_command_count(block: list[str], command: str) -> int:
     for index, line in enumerate(block):
         clean = strip_comment(line)
         inline = YAML_RUN_LINE_RE.match(clean)
@@ -1992,19 +2002,104 @@ def block_runs_command(block: list[str], command: str) -> bool:
             continue
         value = inline.group(2).strip().strip("'\"")
         if value == command:
-            return True
+            return 1
         if value not in {"|", ">"}:
             continue
-        for nested in block[index + 1 :]:
-            nested_clean = strip_comment(nested).strip()
-            if nested_clean == command:
-                return True
-        return False
+        return sum(1 for nested in block_run_body_lines(block) if nested.strip() == command)
+    return 0
+
+
+def shell_line_is_control_flow(line: str) -> bool:
+    stripped = line.strip()
+    return (
+        re.match(
+            r"^(if|then|elif|else|fi|for|while|until|case|esac|select|do|done)\b",
+            stripped,
+        )
+        is not None
+    )
+
+
+def shell_line_is_function_definition(line: str) -> bool:
+    stripped = line.strip()
+    name = r"[A-Za-z_][A-Za-z0-9_]*"
+    return (
+        re.match(rf"^(?:function\s+)?{name}\s*\(\)\s*(?:[{{(].*)?$", stripped) is not None
+        or re.match(rf"^function\s+{name}\b", stripped) is not None
+    )
+
+
+def shell_line_has_unclosed_quote(line: str) -> bool:
+    try:
+        shlex.split(line)
+    except ValueError:
+        return True
     return False
 
 
+def run_body_required_command_count(lines: list[str], command: str) -> int:
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if (
+            "<<"
+            in stripped
+            or shell_line_is_control_flow(stripped)
+            or shell_line_is_function_definition(stripped)
+            or shell_line_has_unclosed_quote(stripped)
+        ):
+            return 0
+    return top_level_shell_commands(lines).count(command)
+
+
+def block_required_run_command_count(block: list[str], command: str) -> int:
+    for line in block:
+        clean = strip_comment(line)
+        inline = YAML_RUN_LINE_RE.match(clean)
+        if inline is None:
+            continue
+        value = inline.group(2).strip().strip("'\"")
+        if value == command:
+            return 1
+        if value != "|":
+            continue
+        return run_body_required_command_count(block_run_body_lines(block), command)
+    return 0
+
+
+def block_runs_command(block: list[str], command: str) -> bool:
+    return block_run_command_count(block, command) > 0
+
+
+def job_run_command_count(job_lines: list[str], command: str) -> int:
+    return sum(block_run_command_count(block, command) for block in step_blocks(job_lines))
+
+
+def step_is_unconditional(block: list[str]) -> bool:
+    items = block_top_level_items(block)
+    return items is not None and "if" not in items
+
+
+def job_unconditional_run_command_count(job_lines: list[str], command: str) -> int:
+    if job_if_value(job_lines) != "":
+        return 0
+    return sum(
+        block_required_run_command_count(block, command)
+        for block in step_blocks(job_lines)
+        if step_is_unconditional(block)
+    )
+
+
 def job_runs_command(job_lines: list[str], command: str) -> bool:
-    return any(block_runs_command(block, command) for block in step_blocks(job_lines))
+    return job_run_command_count(job_lines, command) > 0
+
+
+def workflow_run_command_count(workflow_text: str, command: str) -> int:
+    return sum(
+        job_unconditional_run_command_count(job_lines, command)
+        for job_lines in parse_jobs(workflow_text).values()
+    )
 
 
 def block_has_target_dir_opt_in(block: list[str]) -> bool:
@@ -6190,6 +6285,9 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
     "fmt-check",
     "source-fence-static",
     "ci-lint-workflow",
+)
+ACTIONLINT_WORKFLOW_REQUIRED_COMMANDS = (
+    "python3 scripts/test_ci_storage_audit.py",
 )
 CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/test_ci_storage_audit.py",
@@ -11953,6 +12051,12 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
             (f"{file_name}: {error}" for error in cache_same_run_transport_errors(file_name, text)),
         )
         if file_name == "actionlint.yml" or file_name.endswith("/actionlint.yml"):
+            for required_command in ACTIONLINT_WORKFLOW_REQUIRED_COMMANDS:
+                command_count = workflow_run_command_count(text, required_command)
+                if command_count == 0:
+                    errors.append(f"{file_name}: actionlint workflow must run {required_command}")
+                elif command_count > 1:
+                    errors.append(f"{file_name}: actionlint workflow must run {required_command} exactly once")
             add_unique_errors(
                 errors,
                 (

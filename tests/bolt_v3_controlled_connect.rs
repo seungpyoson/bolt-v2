@@ -580,7 +580,11 @@ fn live_node_module_runs_nt_through_bolt_v3_wrapper() {
     //
     // This is a best-effort source fence, not a compile-time proof. Adding another
     // gated NT runner call requires updating the invariant checked here.
-    let source = include_str!("../src/bolt_v3_live_node.rs");
+    let source = concat!(
+        include_str!("../src/bolt_v3_live_node.rs"),
+        "\n",
+        include_str!("../src/bolt_v3_live_node/live_node_config.rs"),
+    );
     let live_run_body = source
         .split("pub async fn run_bolt_v3_live_node")
         .nth(1)
@@ -644,7 +648,7 @@ fn live_node_module_runs_nt_through_bolt_v3_wrapper() {
     ] {
         assert!(
             !source.contains(forbidden),
-            "src/bolt_v3_live_node.rs must remain a no-trade boundary; \
+            "bolt-v3 live-node module sources must remain a no-trade boundary; \
              source unexpectedly references `{forbidden}`"
         );
     }

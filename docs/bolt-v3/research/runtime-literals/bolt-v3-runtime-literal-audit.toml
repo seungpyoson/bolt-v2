@@ -917,7 +917,7 @@ classification = "diagnostic_template"
 reason = "Mirror of the internal BoltV3InstrumentFilterError::PeriodPairOverflow Display template on the public InstrumentFilterError enum, so operator triage output is preserved across the typed-error conversion. Not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/live_node_config.rs"
 kind = "number"
 literal = '''0'''
 context = '''(value != 0).then_some(value as f64)'''
@@ -925,7 +925,7 @@ classification = "toml_zero_as_none_encoding"
 reason = "Schema documents zero as the TOML encoding for NT None on selected optional second-based fields."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/live_node_config.rs"
 kind = "number"
 literal = '''0'''
 context = '''(value != 0).then_some(value)'''

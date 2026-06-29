@@ -8463,14 +8463,6 @@ reason = "Stable registry key for the submit-admission source root; an internal 
 [[allowed]]
 path = "src/source_canonicalization.rs"
 kind = "string"
-literal = '''"live_node"'''
-context = '''pub const LIVE_NODE_KEY: &str = "live_node";'''
-classification = "gated_source_registry_key"
-reason = "Stable registry key for the live-node source root; an internal registry identifier owned here, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
 literal = '''"outcome_group"'''
 context = '''pub const OUTCOME_GROUP_KEY: &str = "outcome_group";'''
 classification = "gated_source_registry_key"

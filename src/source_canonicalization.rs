@@ -428,8 +428,6 @@ const LF_LINE_ENDING: &str = "\n";
 pub const STRATEGY_KEY: &str = "strategy";
 /// Stable registry key for the submit-admission source root.
 pub const SUBMIT_ADMISSION_KEY: &str = "submit_admission";
-/// Stable registry key for the live-node source root.
-pub const LIVE_NODE_KEY: &str = "live_node";
 /// Stable registry key for the shared outcome-group substrate source set.
 pub const OUTCOME_GROUP_KEY: &str = "outcome_group";
 /// Stable registry key for the binary-oracle maker strategy source root.

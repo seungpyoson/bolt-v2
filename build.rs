@@ -65,8 +65,8 @@ fn emit_gated_source_roots(manifest_dir: &Path) {
 /// (`#`) and blank lines are ignored; `[key]` starts a section; every other line
 /// is a repo-relative root. Invalid roots (absolute, backslash, `.`/`..`/empty
 /// components) and structural errors fail the build with a file:line message.
-/// The manifest must declare exactly the five registry sections (`[strategy]`,
-/// `[submit_admission]`, `[live_node]`, `[outcome_group]`, `[maker]`): a missing or unexpected
+/// The manifest must declare exactly the four registry sections (`[strategy]`,
+/// `[submit_admission]`, `[outcome_group]`, `[maker]`): a missing or unexpected
 /// section fails the build. `scripts/bolt_v3_source_roots.py` enforces the same
 /// set and mirrors the two Unicode-sensitive primitives used here: line
 /// splitting on
@@ -122,20 +122,14 @@ fn parse_gated_source_roots(text: &str, manifest_path: &Path) -> Vec<(String, Ve
             manifest_path.display()
         );
     }
-    // The manifest must declare EXACTLY the five registry keys the crate consumes
-    // (STRATEGY_KEY / SUBMIT_ADMISSION_KEY / LIVE_NODE_KEY / OUTCOME_GROUP_KEY / MAKER_KEY in
+    // The manifest must declare EXACTLY the four registry keys the crate consumes
+    // (STRATEGY_KEY / SUBMIT_ADMISSION_KEY / OUTCOME_GROUP_KEY / MAKER_KEY in
     // `src/source_canonicalization.rs`). build.rs cannot import those crate consts,
     // so they are mirrored here; `scripts/bolt_v3_source_roots.py` enforces the
     // same set. Rejecting both missing AND unexpected sections means a typo'd
     // header (e.g. `[strategies]`) fails the build instead of silently dropping
     // roots from the gated set or panicking later at `registry_entry`.
-    const REQUIRED_KEYS: [&str; 5] = [
-        "strategy",
-        "submit_admission",
-        "live_node",
-        "outcome_group",
-        "maker",
-    ];
+    const REQUIRED_KEYS: [&str; 4] = ["strategy", "submit_admission", "outcome_group", "maker"];
     let keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
     for required in REQUIRED_KEYS {
         assert!(

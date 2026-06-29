@@ -574,17 +574,32 @@ def _rotate_log_if_needed(log_path: pathlib.Path, max_bytes: int) -> None:
             pass
 
 
+def _log_lock_path(log_path: pathlib.Path) -> pathlib.Path:
+    return log_path.with_suffix(log_path.suffix + ".lock")
+
+
+def _open_rotating_log(log_path: pathlib.Path, max_bytes: int) -> Any:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = _acquire_lock(_log_lock_path(log_path))
+    try:
+        if fd is not None:
+            _rotate_log_if_needed(log_path, max_bytes)
+        return log_path.open("a", encoding="utf-8", buffering=1)
+    finally:
+        if fd is not None:
+            _release_lock(fd)
+
+
 def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any]) -> None:
     log_path = _resolve_path(repo_root, config.logging.audit_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = log_path.with_suffix(log_path.suffix + ".lock")
+    lock_path = _log_lock_path(log_path)
     fd = _acquire_lock(lock_path)
     if fd is None:
         # best-effort; never break the op over logging
         return
     try:
-        if log_path.exists() and log_path.stat().st_size > config.logging.max_log_bytes:
-            _rotate_log_if_needed(log_path, config.logging.max_log_bytes)
+        _rotate_log_if_needed(log_path, config.logging.max_log_bytes)
         record_with_ts = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **record}
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record_with_ts, ensure_ascii=False, sort_keys=True) + "\n")
@@ -701,6 +716,8 @@ def gh_merged_pr_for_branch(
         )
     except subprocess.TimeoutExpired:
         return None, "gh timeout"
+    except OSError as exc:
+        return None, f"gh unavailable: {_safe_report_error(str(exc))}"
     if out.returncode != 0:
         return None, f"gh exit {out.returncode}: {_safe_report_error(out.stderr)}"
     try:
@@ -2033,9 +2050,7 @@ def _python_runtime_status() -> str:
 
 
 def _redirect_output_to(path: pathlib.Path, max_bytes: int) -> Any:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _rotate_log_if_needed(path, max_bytes)
-    handle = path.open("a", encoding="utf-8", buffering=1)
+    handle = _open_rotating_log(path, max_bytes)
     # dup2 gives stdout/stderr independent descriptors; the returned handle
     # only keeps the target open until the dup has completed.
     os.dup2(handle.fileno(), sys.stdout.fileno())
@@ -2138,8 +2153,11 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
         problems.append(f"{prune_key} != true (run `just setup`)")
 
     # gh
-    gh_check = subprocess.run(["gh", "--version"], capture_output=True, text=True)
-    gh_ok = gh_check.returncode == 0
+    try:
+        gh_check = subprocess.run(["gh", "--version"], capture_output=True, text=True)
+        gh_ok = gh_check.returncode == 0
+    except OSError:
+        gh_ok = False
     print(f"  gh available             = {gh_ok}")
     if not gh_ok:
         problems.append("gh CLI not available; Lane R cannot run")

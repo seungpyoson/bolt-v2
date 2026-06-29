@@ -368,6 +368,17 @@ class LaneRTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("feat/timeout", git(self.work, "branch", "--list"))
 
+    def test_gh_missing_binary_kept(self) -> None:
+        empty_bin = self.tmp / "empty-bin"
+        empty_bin.mkdir()
+
+        with mock.patch.dict(os.environ, {"PATH": str(empty_bin)}):
+            prs, err = cm.gh_merged_pr_for_branch(self.work, "feat/missing-gh", 5, 100)
+
+        self.assertIsNone(prs)
+        self.assertIsNotNone(err)
+        self.assertIn("gh unavailable", err)
+
     def test_gh_query_only_requests_merged_prs(self) -> None:
         """Closed-unmerged PRs must not enter Lane R's merged-branch authority."""
         captured: dict[str, Any] = {}
@@ -774,6 +785,20 @@ class InfraTests(unittest.TestCase):
         # returns 1 if problems found (hooks not installed in test env), 0 if all green;
         # both are acceptable; we only assert it runs to completion
         self.assertIn(rc, (0, 1))
+
+    def test_doctor_reports_missing_gh_without_traceback(self) -> None:
+        git_bin = shutil.which("git")
+        self.assertIsNotNone(git_bin, "git must be available for the test suite")
+        bin_dir = self.tmp / "git-only-bin"
+        bin_dir.mkdir()
+        (bin_dir / "git").symlink_to(git_bin)
+
+        proc = run_clean_proc(self.work, "--doctor", env={"PATH": str(bin_dir)})
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("gh available             = False", proc.stdout)
+        self.assertIn("gh CLI not available; Lane R cannot run", proc.stdout)
+        self.assertNotIn("Traceback", proc.stdout + proc.stderr)
 
     def test_doctor_heartbeat_stale_threshold_comes_from_config(self) -> None:
         cfg = self.work / "config" / "clean-merged.toml"
@@ -1248,12 +1273,34 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(proc.stdout, "")
         self.assertIn("config/clean-merged.toml", proc.stderr)
 
-    def test_setup_uses_configured_remote_name(self) -> None:
+    def test_setup_source_uses_configured_remote_name(self) -> None:
         source = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
 
         self.assertIn("--print-remote-name", source)
         self.assertIn("remote.${clean_merged_remote}.prune", source)
         self.assertNotIn("remote.origin.prune", source)
+
+    def test_setup_remote_prune_snippet_sets_configured_remote(self) -> None:
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8").replace(
+                'remote_name = "origin"', 'remote_name = "upstream"'),
+            encoding="utf-8",
+        )
+        _run(["git", "remote", "add", "upstream", "https://example.invalid/upstream.git"],
+             cwd=self.work)
+        script = f"""
+set -euo pipefail
+clean_merged_remote="$({sys.executable} {REPO_ROOT / "scripts" / "clean_merged_artifacts.py"} --print-remote-name)"
+git config "remote.${{clean_merged_remote}}.prune" true
+"""
+
+        _run(["bash", "-c", script], cwd=self.work)
+
+        self.assertEqual(git(self.work, "config", "--get", "remote.upstream.prune").strip(), "true")
+        origin_prune = _run(["git", "config", "--get", "remote.origin.prune"],
+                            cwd=self.work, check=False)
+        self.assertNotEqual(origin_prune.returncode, 0)
 
     def test_docs_do_not_hardcode_configured_heartbeat_latency(self) -> None:
         source = (REPO_ROOT / "docs" / "ops" / "clean-merged-design.md").read_text(
@@ -1265,6 +1312,7 @@ class CleanupContractTests(unittest.TestCase):
         self.assertIn("configured heartbeat stale threshold (default 7 days)", normalized)
         self.assertNotIn("fail-open (corrupt/tampered", source)
         self.assertIn("invalid or future-dated gh cache entries fail closed", normalized_lower)
+        self.assertNotIn("pre-purge warning", normalized_lower)
 
     def test_post_rewrite_comment_uses_configured_trunk(self) -> None:
         source = (REPO_ROOT / ".githooks" / "post-rewrite").read_text(encoding="utf-8")
@@ -1609,6 +1657,26 @@ class HookEndToEndTests(unittest.TestCase):
         self.assertIn("old content", log_path.with_suffix(log_path.suffix + ".1").read_text(
             encoding="utf-8"))
         self.assertIn("[clean-merged] doctor", log_path.read_text(encoding="utf-8"))
+
+    def test_lane_r_log_rotation_respects_existing_lock(self) -> None:
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip())
+        log_path = common / "clean-merged.lane-r.log"
+        log_path.write_text("old content that exceeds the configured cap\n", encoding="utf-8")
+        lock_fd = cm._acquire_lock(log_path.with_suffix(log_path.suffix + ".lock"))
+        self.assertIsNotNone(lock_fd)
+        assert lock_fd is not None
+        try:
+            handle = cm._open_rotating_log(log_path, 10)
+            try:
+                handle.write("new content\n")
+            finally:
+                handle.close()
+        finally:
+            cm._release_lock(lock_fd)
+
+        self.assertFalse(log_path.with_suffix(log_path.suffix + ".1").exists())
+        self.assertIn("new content", log_path.read_text(encoding="utf-8"))
 
     def test_post_rewrite_fires_on_rebase_pull(self) -> None:
         # Divergent local + remote forces an actual rebase on pull -> post-rewrite fires.

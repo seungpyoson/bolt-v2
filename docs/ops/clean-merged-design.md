@@ -131,8 +131,8 @@ Per candidate, atomic sequence under `fcntl.flock` on
 8. Write `<quarantine>/clean-merged.manifest.json`.
 
 Purge: `just clean-merged --purge-quarantine` removes quarantine dirs older
-than `<cfg grace_days>` (default 30). Pre-purge warning for items within 7
-days of purge. **Purge only dirs whose manifest records `worktree_remove_ok`.**
+than `<cfg grace_days>` (default 30). **Purge only dirs whose manifest records
+`worktree_remove_ok`.**
 
 ## Config — `config/clean-merged.toml` (single source of truth)
 
@@ -214,8 +214,7 @@ in two specific ways. Stated precisely:)
   gh unavailability → squash-merged branches accumulate until online manual
   reconcile. Documented; no data loss.
 - Quarantine grace 30d. After purge, moved tree is gone. Mitigated by
-  pre-purge warning + doctor disk-usage report + 30d alignment with
-  backup-ref pruning.
+  doctor disk-usage report + 30d alignment with backup-ref pruning.
 - Assume-unchanged/skip-worktree files default-refused; explicit override
   destroys hidden modifications.
 - **Silent hook-death detection latency** (round-soundness GPT/Kimi/Claude).

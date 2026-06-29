@@ -1170,3 +1170,51 @@ fn validate_operator_input<T>(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    struct ExpectedFailureSentinel {
+        floor: f64,
+        ceiling: Option<f64>,
+    }
+
+    fn expected_failure_sentinel(symbol: IvNtHelperSymbol) -> ExpectedFailureSentinel {
+        match symbol {
+            IvNtHelperSymbol::ImplyVolAndGreeks => ExpectedFailureSentinel {
+                floor: 1.0e-8,
+                ceiling: None,
+            },
+            IvNtHelperSymbol::RefineVolAndGreeks => ExpectedFailureSentinel {
+                floor: 1.0e-6,
+                ceiling: Some(10.0),
+            },
+        }
+    }
+
+    #[test]
+    fn nt_helper_failure_sentinels_are_closed_protocol_constants() {
+        for symbol in [
+            IvNtHelperSymbol::ImplyVolAndGreeks,
+            IvNtHelperSymbol::RefineVolAndGreeks,
+        ] {
+            let expected = expected_failure_sentinel(symbol);
+
+            assert_eq!(symbol.minimum_valid_output_floor(), expected.floor);
+            assert!(symbol.is_failure_sentinel(expected.floor));
+            assert!(symbol.is_failure_sentinel(expected.floor / 2.0));
+            assert!(!symbol.is_failure_sentinel(expected.floor * 2.0));
+
+            match expected.ceiling {
+                Some(ceiling) => {
+                    assert!(symbol.is_failure_sentinel(ceiling));
+                    assert!(symbol.is_failure_sentinel(ceiling * 2.0));
+                    assert!(!symbol.is_failure_sentinel(ceiling / 2.0));
+                }
+                None => assert!(!symbol.is_failure_sentinel(10.0)),
+            }
+        }
+    }
+}

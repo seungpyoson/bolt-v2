@@ -878,6 +878,7 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v2.0-cleanup"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v2.0/feature"))
         self.assertIn("pull_request", policy.branch_ref_events)
+        self.assertNotIn("push", policy.branch_ref_events)
         self.assertEqual(
             ci_storage_audit.classify_workflow_ref(
                 {"head_branch": "feature/pr-artifact", "event": "pull_request"},
@@ -891,6 +892,13 @@ class CiStorageAuditTests(unittest.TestCase):
                 branch_ref_events=policy.branch_ref_events,
             ).value,
             "feature/manual-artifact",
+        )
+        self.assertEqual(
+            ci_storage_audit.classify_workflow_ref(
+                {"head_branch": "v0.1.3", "event": "push"},
+                branch_ref_events=policy.branch_ref_events,
+            ).value,
+            "v0.1.3",
         )
 
     def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_has_unsupported_shape(self) -> None:
@@ -1047,6 +1055,67 @@ class CiStorageAuditTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(client.calls, [("actions/runs/501", None, False)])
+
+    def test_cleanup_feasibility_keeps_tag_push_bare_ref_with_committed_policy(self) -> None:
+        policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
+        policy = ci_storage_audit.load_cleanup_policy_path(policy_path)
+        entry = ci_storage_audit.artifact_entry_from_raw(
+            {
+                "id": 1,
+                "name": "nextest-archive",
+                "size_in_bytes": 100,
+                "created_at": "2026-06-01T00:00:00Z",
+                "expires_at": "2026-06-15T00:00:00Z",
+                "expired": True,
+                "workflow_run": {
+                    "id": 501,
+                    "status": "completed",
+                    "head_branch": "v0.1.3",
+                    "head_sha": "a" * 40,
+                },
+            }
+        )
+        client = FakeClient(
+            {
+                "actions/runs/501": {
+                    "id": 501,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "event": "push",
+                    "head_branch": "v0.1.3",
+                    "head_sha": "a" * 40,
+                },
+                ("GLOBAL", "users/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                    "users/owner/settings/billing/actions",
+                    "billing unavailable",
+                ),
+                ("GLOBAL", "orgs/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                    "orgs/owner/settings/billing/actions",
+                    "billing unavailable",
+                ),
+            }
+        )
+
+        cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+            client,
+            repo="owner/repo",
+            artifacts=cleanup_artifacts_with_entry(entry),
+            policy=policy,
+        )
+
+        self.assertEqual(cleanup["candidate_count"], 0)
+        self.assertEqual(cleanup["metadata_unavailable_count"], 1)
+        self.assertEqual(cleanup["rows"][0]["decision"], "KEEP")
+        self.assertEqual(cleanup["rows"][0]["reason_code"], "artifact_metadata_unavailable")
+        self.assertEqual(
+            cleanup["rows"][0]["metadata_failure"],
+            {
+                "field": "workflow_run.ref",
+                "state": "invalid",
+                "code": "artifact_ref_invalid",
+            },
+        )
+        self.assertEqual(client.calls, [("actions/runs/501", None, False)])
 
     def test_cleanup_feasibility_keeps_candidate_when_run_api_returns_wrong_identity(self) -> None:
         policy = cleanup_candidate_policy("run-api-identity-policy")

@@ -15,9 +15,7 @@ use nautilus_model::{
     enums::PositionSide,
 };
 use nautilus_model::{
-    enums::{
-        OmsType as NtOmsType, OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType,
-    },
+    enums::{OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
@@ -69,7 +67,6 @@ use crate::{
     bolt_v3_order_execution::{
         BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
     },
-    bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::is_observed_open_side,
     bolt_v3_providers::normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     bolt_v3_reference_price::{
@@ -121,9 +118,7 @@ use self::selection::{
 mod config;
 
 pub use self::config::BinaryOracleEdgeTakerBuilder;
-use self::config::{
-    BinaryOracleEdgeTakerConfig, BinaryOracleEdgeTakerFieldType, BinaryOracleEdgeTakerOrderConfig,
-};
+use self::config::{BinaryOracleEdgeTakerConfig, BinaryOracleEdgeTakerFieldType};
 
 mod exposure;
 
@@ -139,6 +134,15 @@ use crate::bolt_v3_feed_health::{
     ForcedFlatInputs, ForcedFlatReason, evaluate_forced_flat_predicates,
 };
 
+mod orders;
+
+use self::orders::{
+    ConfiguredNtOrderTemplate, ExitOrderExecutionConfig, parse_configured_oms_type,
+    parse_configured_order_side, parse_configured_position_side,
+};
+#[cfg(test)]
+use self::orders::{EntryOrderPlanInputs, build_entry_order_plan};
+
 mod subscriptions;
 
 #[cfg(test)]
@@ -152,83 +156,11 @@ use self::subscriptions::{
     ResolutionStrikeFetchTrigger,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ConfiguredNtOrderTemplate {
-    order_type: OrderType,
-    time_in_force: TimeInForce,
-    expire_time_unix_nanos: Option<u64>,
-    trigger_price: Option<f64>,
-    activation_price: Option<f64>,
-    trigger_type: Option<TriggerType>,
-    trigger_instrument_id: Option<InstrumentId>,
-    trailing_offset: Option<f64>,
-    trailing_offset_type: Option<TrailingOffsetType>,
-    is_post_only: bool,
-    is_reduce_only: bool,
-    is_quote_quantity: bool,
-}
-
-impl ConfiguredNtOrderTemplate {
-    fn nt_order_template(
-        &self,
-        prefix: &'static str,
-        price_precision: u8,
-    ) -> Result<NtOrderTemplate> {
-        Ok(NtOrderTemplate {
-            order_type: self.order_type,
-            time_in_force: self.time_in_force,
-            expire_time: expire_time_from_config(self.expire_time_unix_nanos),
-            trigger_price: trigger_price_from_config(prefix, self.trigger_price, price_precision)?,
-            activation_price: activation_price_from_config(
-                prefix,
-                self.activation_price,
-                price_precision,
-            )?,
-            trigger_type: self.trigger_type,
-            trigger_instrument_id: self.trigger_instrument_id,
-            trailing_offset: trailing_offset_from_config(prefix, self.trailing_offset)?,
-            trailing_offset_type: self.trailing_offset_type,
-            is_post_only: self.is_post_only,
-            is_reduce_only: self.is_reduce_only,
-            is_quote_quantity: self.is_quote_quantity,
-        })
-    }
-}
-
-impl From<&BinaryOracleEdgeTakerOrderConfig> for ConfiguredNtOrderTemplate {
-    fn from(order: &BinaryOracleEdgeTakerOrderConfig) -> Self {
-        Self {
-            order_type: order.order_type,
-            time_in_force: order.time_in_force,
-            expire_time_unix_nanos: order.expire_time_unix_nanos,
-            trigger_price: order.trigger_price,
-            activation_price: order.activation_price,
-            trigger_type: order.trigger_type,
-            trigger_instrument_id: order.trigger_instrument_id,
-            trailing_offset: order.trailing_offset,
-            trailing_offset_type: order.trailing_offset_type,
-            is_post_only: order.is_post_only,
-            is_reduce_only: order.is_reduce_only,
-            is_quote_quantity: order.is_quote_quantity,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct ExecutableEntryProbe {
     order_side: OrderSide,
     vwap: ExactSizeVwap,
     fee_bps: f64,
-}
-
-impl BinaryOracleEdgeTakerOrderConfig {
-    fn nt_order_template(
-        &self,
-        prefix: &'static str,
-        price_precision: u8,
-    ) -> Result<NtOrderTemplate> {
-        ConfiguredNtOrderTemplate::from(self).nt_order_template(prefix, price_precision)
-    }
 }
 
 #[cfg(test)]
@@ -4682,126 +4614,6 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn build_configured_entry_order(
-        &mut self,
-        instrument_id: InstrumentId,
-        order_side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        client_order_id: ClientOrderId,
-    ) -> Result<nautilus_model::orders::OrderAny> {
-        anyhow::ensure!(
-            !self.config.entry_order.is_reduce_only,
-            "entry_is_reduce_only must be false because binary_oracle_edge_taker entry orders open the managed position"
-        );
-        let template = self
-            .config
-            .entry_order
-            .nt_order_template(ORDER_CONFIGURATION_PREFIX_ENTRY, price.precision)?;
-        let mut order_factory = self.core.order_factory();
-        build_nt_order(
-            &mut order_factory,
-            ORDER_CONFIGURATION_PREFIX_ENTRY,
-            &template,
-            NtOrderBuildInputs {
-                instrument_id,
-                order_side,
-                quantity,
-                price: Some(price),
-                client_order_id,
-            },
-        )
-    }
-
-    fn exit_order_execution_config_from_order(
-        &self,
-        order: &BinaryOracleEdgeTakerOrderConfig,
-        side_field: &'static str,
-        position_side_field: &'static str,
-    ) -> Result<ExitOrderExecutionConfig> {
-        Ok(ExitOrderExecutionConfig {
-            side: parse_configured_order_side(side_field, &order.side)?,
-            position_side: parse_configured_position_side(
-                position_side_field,
-                &order.position_side,
-            )?,
-            order_template: ConfiguredNtOrderTemplate::from(order),
-        })
-    }
-
-    fn normal_exit_order_execution_config(&self) -> Result<ExitOrderExecutionConfig> {
-        self.exit_order_execution_config_from_order(
-            &self.config.exit_order,
-            CONFIG_FIELD_EXIT_ORDER_SIDE,
-            CONFIG_FIELD_EXIT_ORDER_POSITION_SIDE,
-        )
-    }
-
-    fn forced_exit_order_execution_config(&self) -> Result<ExitOrderExecutionConfig> {
-        self.exit_order_execution_config_from_order(
-            &self.config.forced_exit_order,
-            CONFIG_FIELD_FORCED_EXIT_ORDER_SIDE,
-            CONFIG_FIELD_FORCED_EXIT_ORDER_POSITION_SIDE,
-        )
-    }
-
-    fn exit_order_execution_config(&self, forced_flat: bool) -> Result<ExitOrderExecutionConfig> {
-        if forced_flat {
-            self.forced_exit_order_execution_config()
-        } else {
-            self.normal_exit_order_execution_config()
-        }
-    }
-
-    #[cfg(test)]
-    fn build_configured_exit_order(
-        &mut self,
-        instrument_id: InstrumentId,
-        order_side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        client_order_id: ClientOrderId,
-    ) -> Result<nautilus_model::orders::OrderAny> {
-        self.build_exit_order_with_execution_config(
-            self.normal_exit_order_execution_config()?,
-            instrument_id,
-            order_side,
-            quantity,
-            price,
-            client_order_id,
-        )
-    }
-
-    fn build_exit_order_with_execution_config(
-        &mut self,
-        order_config: ExitOrderExecutionConfig,
-        instrument_id: InstrumentId,
-        order_side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        client_order_id: ClientOrderId,
-    ) -> Result<nautilus_model::orders::OrderAny> {
-        anyhow::ensure!(
-            !order_config.order_template.is_quote_quantity,
-            "exit_is_quote_quantity must be false because exits are sized from base position quantity"
-        );
-        let template =
-            order_config.nt_order_template(ORDER_CONFIGURATION_PREFIX_EXIT, price.precision)?;
-        let mut order_factory = self.core.order_factory();
-        build_nt_order(
-            &mut order_factory,
-            ORDER_CONFIGURATION_PREFIX_EXIT,
-            &template,
-            NtOrderBuildInputs {
-                instrument_id,
-                order_side,
-                quantity,
-                price: Some(price),
-                client_order_id,
-            },
-        )
-    }
-
     #[cfg(test)]
     fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
         self.try_submit_exit_order_for_trigger(
@@ -6141,33 +5953,6 @@ impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
     }
 }
 
-const ORDER_SIDE_BUY_VALUE: &str = stringify!(buy);
-const ORDER_SIDE_SELL_VALUE: &str = stringify!(sell);
-const POSITION_SIDE_LONG_VALUE: &str = stringify!(long);
-const POSITION_SIDE_SHORT_VALUE: &str = stringify!(short);
-
-fn parse_configured_order_side(field: &str, value: &str) -> Result<OrderSide> {
-    match value {
-        ORDER_SIDE_BUY_VALUE => Ok(OrderSide::Buy),
-        ORDER_SIDE_SELL_VALUE => Ok(OrderSide::Sell),
-        _ => anyhow::bail!("{field} must be `buy` or `sell`, got `{value}`"),
-    }
-}
-
-fn parse_configured_position_side(field: &str, value: &str) -> Result<PositionSide> {
-    match value {
-        POSITION_SIDE_LONG_VALUE => Ok(PositionSide::Long),
-        POSITION_SIDE_SHORT_VALUE => Ok(PositionSide::Short),
-        _ => anyhow::bail!("{field} must be `long` or `short`, got `{value}`"),
-    }
-}
-
-fn parse_configured_oms_type(field: &str, value: &str) -> Result<NtOmsType> {
-    value
-        .parse::<NtOmsType>()
-        .with_context(|| format!("{field} must be a NautilusTrader OmsType, got `{value}`"))
-}
-
 fn expire_time_from_config(value: Option<u64>) -> Option<UnixNanos> {
     value.map(UnixNanos::from)
 }
@@ -6632,24 +6417,6 @@ struct ExitEvaluation {
     blocked_reason: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ExitOrderExecutionConfig {
-    side: OrderSide,
-    position_side: PositionSide,
-    order_template: ConfiguredNtOrderTemplate,
-}
-
-impl ExitOrderExecutionConfig {
-    fn nt_order_template(
-        &self,
-        prefix: &'static str,
-        price_precision: u8,
-    ) -> Result<NtOrderTemplate> {
-        self.order_template
-            .nt_order_template(prefix, price_precision)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 struct ExitSubmissionDecision {
     evaluation: ExitEvaluation,
@@ -6772,55 +6539,6 @@ struct ExitEvaluationLogFields {
     submission_quantity: Option<Quantity>,
     submission_client_order_id: Option<ClientOrderId>,
     submission_blocked_reason: Option<&'static str>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-struct EntryOrderPlanInputs {
-    client_order_id: ClientOrderId,
-    instrument_id: InstrumentId,
-    order_side: OrderSide,
-    quantity: Quantity,
-    price_precision: u8,
-    time_in_force: TimeInForce,
-    best_bid: f64,
-    best_ask: f64,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-struct EntryOrderPlan {
-    client_order_id: ClientOrderId,
-    instrument_id: InstrumentId,
-    order_side: OrderSide,
-    quantity: Quantity,
-    price: Price,
-    time_in_force: TimeInForce,
-}
-
-#[cfg(test)]
-fn build_entry_order_plan(inputs: &EntryOrderPlanInputs) -> Result<EntryOrderPlan> {
-    let raw_price = match inputs.order_side {
-        OrderSide::Buy => inputs.best_ask,
-        OrderSide::Sell => inputs.best_bid,
-        _ => anyhow::bail!(
-            "entry order side must be `buy` or `sell`, got `{:?}`",
-            inputs.order_side
-        ),
-    };
-    anyhow::ensure!(
-        raw_price.is_finite() && raw_price > 0.0,
-        "entry price must be positive"
-    );
-
-    Ok(EntryOrderPlan {
-        client_order_id: inputs.client_order_id,
-        instrument_id: inputs.instrument_id,
-        order_side: inputs.order_side,
-        quantity: inputs.quantity,
-        price: Price::new(raw_price, inputs.price_precision),
-        time_in_force: inputs.time_in_force,
-    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

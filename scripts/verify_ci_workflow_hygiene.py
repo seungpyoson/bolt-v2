@@ -11934,8 +11934,9 @@ def normalized_repo_file_name(file_name: str) -> str:
     normalized = file_name.replace("\\", "/")
     while normalized.startswith("./"):
         normalized = normalized[2:]
-    if normalized.startswith(str(REPO_ROOT).replace("\\", "/")):
-        normalized = normalized[len(str(REPO_ROOT).replace("\\", "/")) :].lstrip("/")
+    repo_root = REPO_ROOT.as_posix()
+    if normalized.startswith(repo_root):
+        normalized = normalized[len(repo_root) :].lstrip("/")
     return normalized
 
 

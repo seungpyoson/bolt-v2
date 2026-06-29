@@ -240,6 +240,7 @@ REASON_DEFAULT_KEEP = "default_keep"
 REASON_EXPIRATION_UNKNOWN = "expiration_status_unknown"
 REASON_ARTIFACT_METADATA_UNAVAILABLE = "artifact_metadata_unavailable"
 REASON_PROTECTED_REF = "protected_ref"
+REASON_NOT_EXPIRED = "not_expired"
 REASON_CLASS_KEEP = "class_keep"
 REASON_ACTIVE_RUN = "active_run"
 REASON_WORKFLOW_STATUS_UNAVAILABLE = "workflow_status_unavailable"
@@ -590,6 +591,8 @@ def classify_optional_text(value: Any, field: str) -> ClassifiedText:
         return ClassifiedText(value=None, failure=input_failure(field, STATE_INVALID))
     if not value:
         return ClassifiedText(value=None, failure=input_failure(field, STATE_EMPTY))
+    if value != value.strip():
+        return ClassifiedText(value=None, failure=input_failure(field, STATE_INVALID))
     return ClassifiedText(value=value, failure=None)
 
 
@@ -638,9 +641,7 @@ def optional_policy_string_list(payload: dict[str, Any], key: str, label: str) -
         raise AuditError(f"{label}.{key} must be a string list")
     result: list[str] = []
     for index, item in enumerate(value):
-        if not isinstance(item, str) or not item:
-            raise AuditError(f"{label}.{key}[{index}] must be a non-empty string")
-        result.append(item)
+        result.append(require_text(item, f"{label}.{key}[{index}]"))
     if len(set(result)) != len(result):
         raise AuditError(f"{label}.{key} must not contain duplicates")
     return tuple(result)
@@ -1714,8 +1715,8 @@ def cleanup_decision_for_entry(
         return CleanupDecision(
             class_id=class_id,
             decision=KEEP_DECISION,
-            reason_code=REASON_CLASS_KEEP,
-            reason=rule.keep_reason,
+            reason_code=REASON_NOT_EXPIRED,
+            reason=policy.not_expired_keep_reason,
             metadata_failure=None,
         )
     metadata_failure = artifact_metadata_failure(entry)

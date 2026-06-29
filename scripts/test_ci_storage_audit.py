@@ -661,7 +661,8 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(rows_by_id[1]["reason"], "expired test archive outside protected refs")
         self.assertEqual(rows_by_id[1]["workflow_run"]["status"], "completed")
         self.assertEqual(rows_by_id[2]["decision"], "KEEP")
-        self.assertEqual(rows_by_id[2]["reason"], "test archive is retained until it expires")
+        self.assertEqual(rows_by_id[2]["reason_code"], "not_expired")
+        self.assertEqual(rows_by_id[2]["reason"], "artifact has not expired")
         self.assertEqual(rows_by_id[3]["class"], "provenance")
         self.assertEqual(rows_by_id[3]["reason"], "provenance evidence is not a cleanup candidate")
         self.assertEqual(rows_by_id[4]["class"], "unclassified")
@@ -728,7 +729,7 @@ class CiStorageAuditTests(unittest.TestCase):
 
         self.assertEqual(cleanup["self_clear_horizon"]["source"], "row_argument")
         self.assertEqual(captured["rows"][0]["decision"], ci_storage_audit.KEEP_DECISION)
-        self.assertEqual(captured["rows"][0]["reason_code"], ci_storage_audit.REASON_CLASS_KEEP)
+        self.assertEqual(captured["rows"][0]["reason_code"], ci_storage_audit.REASON_NOT_EXPIRED)
 
     def test_committed_cleanup_policy_resolves_existing_artifact_config_references(self) -> None:
         policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
@@ -773,6 +774,45 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "issue-955"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "incident-2026-06-28"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v2-cleanup"))
+
+    def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_has_surrounding_whitespace(self) -> None:
+        policy = cleanup_candidate_policy("whitespace-ref-policy")
+        entry = ci_storage_audit.artifact_entry_from_raw(
+            {
+                "id": 1,
+                "name": "nextest-archive",
+                "size_in_bytes": 100,
+                "created_at": "2026-06-01T00:00:00Z",
+                "expires_at": "2026-06-15T00:00:00Z",
+                "expired": True,
+                "workflow_run": {
+                    "id": 501,
+                    "status": "completed",
+                    "head_branch": "main ",
+                    "head_sha": "a" * 40,
+                },
+            }
+        )
+
+        cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+            FakeClient({}),
+            repo="owner/repo",
+            artifacts=cleanup_artifacts_with_entry(entry),
+            policy=policy,
+        )
+
+        self.assertEqual(cleanup["candidate_count"], 0)
+        self.assertEqual(cleanup["metadata_unavailable_count"], 1)
+        self.assertEqual(cleanup["rows"][0]["decision"], "KEEP")
+        self.assertEqual(cleanup["rows"][0]["reason_code"], "artifact_metadata_unavailable")
+        self.assertEqual(
+            cleanup["rows"][0]["metadata_failure"],
+            {
+                "field": "workflow_run.ref",
+                "state": "invalid",
+                "code": "artifact_ref_invalid",
+            },
+        )
 
     def test_fetch_artifacts_rejects_malformed_artifact_rows(self) -> None:
         client = FakeClient(
@@ -1873,6 +1913,41 @@ class CiStorageAuditTests(unittest.TestCase):
                 keep_reason = "keep"
                 """,
                 label="malformed-billing-template-policy",
+            )
+
+    def test_cleanup_policy_rejects_surrounding_whitespace_in_string_lists(self) -> None:
+        with self.assertRaisesRegex(ci_storage_audit.AuditError, r"protected_refs\[0\]"):
+            ci_storage_audit.load_cleanup_policy_text(
+                """
+                [storage_audit.cleanup_feasibility]
+                schema_version = 1
+                default_class = "unclassified"
+                default_decision = "KEEP"
+                default_keep_reason = "default keep"
+                protected_ref_keep_reason = "protected keep"
+                artifact_metadata_unavailable_keep_reason = "metadata keep"
+                active_run_keep_reason = "active keep"
+                status_unavailable_keep_reason = "status keep"
+                expiration_unknown_keep_reason = "expiration keep"
+                not_expired_keep_reason = "not expired keep"
+                billing_impact_unverifiable = "billing unavailable"
+                wait_and_remeasure = "wait"
+                protected_refs = ["main "]
+                protected_ref_prefixes = []
+                protected_ref_globs = []
+                active_run_statuses = ["queued"]
+                terminal_run_statuses = ["completed"]
+                workflow_run_fetch_limit = 1
+                billing_probe_paths = []
+
+                [[storage_audit.cleanup_feasibility.classes]]
+                id = "safe_keep"
+                name_equals = ["safe"]
+                name_prefixes = []
+                expired_decision = "KEEP"
+                keep_reason = "keep"
+                """,
+                label="whitespace-policy",
             )
 
     def test_cleanup_policy_rejects_bool_schema_version(self) -> None:

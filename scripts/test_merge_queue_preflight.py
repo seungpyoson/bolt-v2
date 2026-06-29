@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -34,6 +36,12 @@ MERGIFY_REQUIRED_CHECK_NAMES = (
     "actionlint",
     "host-health",
 )
+MERGIFY_REQUIRED_CHECK_WORKFLOWS = {
+    "gate": "CI",
+    "backtester-gate": "Backtester CI",
+    "actionlint": "actionlint",
+    "host-health": "CI",
+}
 
 
 def expected_head_sha_args(
@@ -589,6 +597,8 @@ def assert_preflight_artifact_classification_is_declarative() -> None:
         "base_conflict": ("integration", "pr", "blocked"),
         "batch_conflict": ("integration", "batch", "ready"),
         "batch_verifier_failed": ("verifier", "batch", "ready"),
+        "batch_verifier_timeout": ("verifier", "batch", "inconclusive"),
+        "batch_verifier_unavailable": ("verifier", "batch", "inconclusive"),
         "base_mismatch": ("identity", "pr", "inconclusive"),
         "head_mismatch": ("identity", "pr", "blocked"),
         "head_fetch_failed": ("identity", "pr", "inconclusive"),
@@ -600,8 +610,11 @@ def assert_preflight_artifact_classification_is_declarative() -> None:
         "required_check_missing": ("readiness", "pr", "inconclusive"),
         "required_check_unknown": ("readiness", "pr", "inconclusive"),
         "required_check_stale": ("readiness", "pr", "inconclusive"),
+        "required_check_wrong_workflow": ("readiness", "pr", "inconclusive"),
         "readiness_failed": ("readiness", "pr", "blocked"),
         "verifier_failed": ("verifier", "pr", "blocked"),
+        "verifier_timeout": ("verifier", "pr", "inconclusive"),
+        "verifier_unavailable": ("verifier", "pr", "inconclusive"),
     }
     if module.PREFLIGHT_ARTIFACT_CLASSIFICATIONS != expected:
         raise AssertionError(module.PREFLIGHT_ARTIFACT_CLASSIFICATIONS)
@@ -717,8 +730,13 @@ def write_preflight_config(
     *,
     verifier_stream_max_lines: int = 40,
     verifier_stream_max_bytes: int = 4000,
+    verifier_timeout_seconds: int = 60,
 ) -> pathlib.Path:
     rendered_commands = ", ".join(json.dumps(command) for command in commands)
+    rendered_workflows = "\n".join(
+        f"{json.dumps(name)} = {json.dumps(workflow)}"
+        for name, workflow in MERGIFY_REQUIRED_CHECK_WORKFLOWS.items()
+    )
     path = root / "preflight.toml"
     write(
         path,
@@ -726,6 +744,10 @@ def write_preflight_config(
         'origin = "origin"\n'
         'base = "main"\n'
         f"default_verifier_profile = {json.dumps(profile)}\n\n"
+        "[merge_queue_preflight.timeouts]\n"
+        f"verifier_seconds = {verifier_timeout_seconds}\n\n"
+        "[merge_queue_preflight.required_check_workflows]\n"
+        f"{rendered_workflows}\n\n"
         "[merge_queue_preflight.output]\n"
         f"verifier_stream_max_lines = {verifier_stream_max_lines}\n"
         f"verifier_stream_max_bytes = {verifier_stream_max_bytes}\n\n"
@@ -774,7 +796,13 @@ def write_fake_gh(
     return bin_dir
 
 
-def approved_pr_view(head: str, *, base: str = "main", labels: tuple[str, ...] = ()) -> dict[str, object]:
+def approved_pr_view(
+    head: str,
+    *,
+    base: str = "main",
+    labels: tuple[str, ...] = (),
+    approving_reviewers: tuple[str, ...] = ("sp-reviewer",),
+) -> dict[str, object]:
     return {
         "number": 1,
         "state": "OPEN",
@@ -784,13 +812,22 @@ def approved_pr_view(head: str, *, base: str = "main", labels: tuple[str, ...] =
         "headRefOid": head,
         "baseRefName": base,
         "labels": [{"name": label} for label in labels],
+        "reviews": [
+            {"author": {"login": reviewer}, "state": "APPROVED"}
+            for reviewer in approving_reviewers
+        ],
         "title": "one",
         "url": "https://example.invalid/pull/1",
     }
 
 
 def passing_required_check(name: str = "gate") -> dict[str, object]:
-    return {"name": name, "state": "SUCCESS", "bucket": "pass", "workflow": "CI"}
+    return {
+        "name": name,
+        "state": "SUCCESS",
+        "bucket": "pass",
+        "workflow": MERGIFY_REQUIRED_CHECK_WORKFLOWS[name],
+    }
 
 
 def passing_required_checks(*prs: int) -> dict[int, list[dict[str, object]]]:
@@ -908,6 +945,45 @@ def assert_unsupported_mergify_queue_condition_does_not_match() -> None:
         ),
         None,
         "unsupported Mergify queue condition",
+    )
+
+
+def assert_unsupported_mergify_queue_condition_route_is_inconclusive() -> None:
+    module = load_preflight_module()
+    findings = module.available_mergify_config_route_and_batch_findings(
+        config={
+            "queue_rules": [
+                {
+                    "name": "unsupported",
+                    "queue_conditions": ["author = bot"],
+                    "merge_conditions": [],
+                    "batch_size": 1,
+                    "batch_max_wait_time": "1 minute",
+                }
+            ]
+        },
+        readiness=[
+            {
+                "pr": 1,
+                "metadata": {"labels": []},
+                "checks": [],
+            }
+        ],
+        required_check_workflows=MERGIFY_REQUIRED_CHECK_WORKFLOWS,
+    )
+    assert_equal(
+        findings,
+        (
+            {
+                "lane": "mergify_config",
+                "scope": "pr",
+                "status": "inconclusive",
+                "reason_code": "mergify_queue_route_unavailable",
+                "message": "PR #1 does not match a supported Mergify queue rule",
+                "evidence": {"pr": 1, "labels": []},
+            },
+        ),
+        "unsupported Mergify route production findings",
     )
 
 
@@ -1077,6 +1153,45 @@ def assert_stale_base_sha_is_inconclusive() -> None:
         assert_equal(rc, 3, "stale base rc")
         assert stale_base_finding(expected_base, actual_base) in payload["findings"], payload["findings"]
         assert_equal(payload["lane_statuses"]["identity"], "inconclusive", "stale base identity lane")
+
+
+def assert_unavailable_base_ref_is_inconclusive() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(root / "missing-origin.git"),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 3, "unavailable base rc")
+        payload = parse_json(result.stdout)
+        assert_equal(payload["actual_base_sha"], None, "unavailable base actual sha")
+        assert_equal(payload["lane_statuses"]["identity"], "inconclusive", "unavailable base identity lane")
+        reason_codes = {finding["reason_code"] for finding in payload["findings"]}
+        if "base_unavailable" not in reason_codes:
+            raise AssertionError(payload["findings"])
 
 
 def assert_stale_expected_head_sha_blocks_pr() -> None:
@@ -1392,6 +1507,201 @@ def assert_verifier_failure_blocks_bad_pr_before_batching() -> None:
             raise AssertionError(blocked)
         if "fail.txt is not allowed" not in blocked[0]["stdout_preview"]:
             raise AssertionError(blocked)
+
+
+def assert_missing_verifier_executable_is_inconclusive() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            "missing-preflight-verifier-command",
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 3, "missing verifier executable rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "verifier_unavailable":
+            raise AssertionError(payload)
+        assert_equal(payload["lane_statuses"]["verifier"], "inconclusive", "missing verifier lane")
+        assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "missing verifier contract")
+
+
+def assert_unexpected_exception_is_not_split_advised() -> None:
+    module = load_preflight_module()
+
+    def broken_preflight(**_kwargs: object) -> tuple[dict[str, object], int]:
+        raise RuntimeError("boom")
+
+    original_preflight = module.preflight
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        config = write_preflight_config(root, "none", [])
+        module.preflight = broken_preflight
+        try:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                result = module.main(
+                    [
+                        "--config",
+                        str(config),
+                        "--expected-base-sha",
+                        "a" * 40,
+                        "--expected-head-sha",
+                        f"1={'b' * 40}",
+                        "--no-gh",
+                        "--json",
+                        "1",
+                    ]
+                )
+        finally:
+            module.preflight = original_preflight
+    assert_equal(result, 4, "unexpected exception rc")
+    if "internal preflight failure" not in stderr.getvalue():
+        raise AssertionError(stderr.getvalue())
+
+
+def assert_verifier_timeout_is_inconclusive() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        verifier = root / "slow_verifier.py"
+        write(
+            verifier,
+            "import time\n"
+            "time.sleep(5)\n",
+        )
+        config = write_preflight_config(
+            root,
+            "slow",
+            [f"{sys.executable} {verifier}"],
+            verifier_timeout_seconds=1,
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--config",
+            str(config),
+            "--no-gh",
+            "--json",
+            "1",
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                cwd=fixture.repo,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=4,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError("preflight did not enforce verifier timeout") from exc
+        assert_equal(result.returncode, 3, "verifier timeout rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "verifier_timeout":
+            raise AssertionError(payload)
+        assert_equal(payload["lane_statuses"]["verifier"], "inconclusive", "verifier timeout lane")
+        assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "verifier timeout contract")
+
+
+def assert_batch_verifier_failure_is_split_advised() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        first_head = fixture.make_pr(1, {"one.txt": "one\n"})
+        second_head = fixture.make_pr(2, {"two.txt": "two\n"})
+        verifier = root / "reject_combined.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            "if Path('one.txt').exists() and Path('two.txt').exists():\n"
+            "    print('combined batch rejected')\n"
+            "    sys.exit(7)\n",
+        )
+        bin_dir = write_fake_gh(
+            root,
+            views={
+                1: approved_pr_view(first_head),
+                2: approved_pr_view(second_head),
+            },
+            checks=passing_required_checks(1, 2),
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={first_head}",
+            "--expected-head-sha",
+            f"2={second_head}",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            "1",
+            "2",
+        ]
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 1, "batch verifier failure rc")
+        payload = parse_json(result.stdout)
+        assert_equal([batch["prs"] for batch in payload["batches"]], [[1], [2]], "batch verifier failure batches")
+        conflicts = payload["conflicts"]
+        if len(conflicts) != 1 or conflicts[0]["pr"] != 2 or conflicts[0]["type"] != "batch_verifier_failed":
+            raise AssertionError(payload)
+        assert_equal(payload["wave_status"], "split_advised", "batch verifier failure wave status")
+        assert_equal((payload["verdict"], payload["contract_exit_code"]), ("split_advised", 1), "batch verifier failure contract")
 
 
 def assert_configured_verifier_profile_blocks_bad_pr() -> None:
@@ -1839,6 +2149,63 @@ def assert_required_check_missing_identity_is_inconclusive_at_runtime() -> None:
             )
 
 
+def assert_required_check_wrong_workflow_is_inconclusive_at_runtime() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        checks = passing_required_checks(1)[1]
+        checks[0] = {**checks[0], "workflow": "Wrong CI"}
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks={1: checks},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 3, "wrong check workflow rc")
+        payload = parse_json(result.stdout)
+        wrong_workflow_findings = [
+            finding
+            for finding in payload["findings"]
+            if finding["reason_code"] == "required_check_wrong_workflow"
+        ]
+        if len(wrong_workflow_findings) != 1:
+            raise AssertionError(payload["findings"])
+        evidence = wrong_workflow_findings[0]["evidence"]
+        assert_equal(evidence["check_name"], "gate", "wrong check workflow name")
+        assert_equal(evidence["workflow"], "Wrong CI", "wrong check workflow actual")
+        assert_equal(evidence["expected_workflow"], "CI", "wrong check workflow expected")
+        assert_equal(payload["lane_statuses"]["readiness"], "inconclusive", "wrong check workflow lane")
+
+
+def assert_selected_mergify_reviewer_must_approve_at_runtime() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head, approving_reviewers=("other-reviewer",))},
+            checks=passing_required_checks(1),
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 2, "required reviewer identity rc")
+        payload = parse_json(result.stdout)
+        reviewer_findings = [
+            finding
+            for finding in payload["findings"]
+            if finding["reason_code"] == "mergify_required_reviewer_missing"
+        ]
+        if len(reviewer_findings) != 1:
+            raise AssertionError(payload["findings"])
+        evidence = reviewer_findings[0]["evidence"]
+        assert_equal(evidence["pr"], 1, "required reviewer pr")
+        assert_equal(evidence["queue_rule"], "default", "required reviewer queue")
+        assert_equal(evidence["required_reviewers"], ["sp-reviewer"], "required reviewers")
+        assert_equal(evidence["approved_reviewers"], ["other-reviewer"], "approved reviewers")
+        assert_equal(payload["lane_statuses"]["readiness"], "blocked", "required reviewer lane")
+
+
 def assert_required_check_exit_code_one_stays_readiness_failure() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -2154,11 +2521,13 @@ def main() -> int:
     assert_mergify_config_snapshot_uses_base_blob()
     assert_fetches_use_private_refs_without_fetch_head()
     assert_unsupported_mergify_queue_condition_does_not_match()
+    assert_unsupported_mergify_queue_condition_route_is_inconclusive()
     assert_mergify_queue_routing_uses_pr_labels()
     assert_default_queue_above_max_is_split_advised()
     assert_default_queue_below_min_reports_wait_behavior()
     assert_invalid_mergify_config_does_not_route()
     assert_stale_base_sha_is_inconclusive()
+    assert_unavailable_base_ref_is_inconclusive()
     assert_stale_expected_head_sha_blocks_pr()
     assert_clean_prs_batch_together()
     assert_conflicting_pr_starts_later_batch()
@@ -2166,6 +2535,10 @@ def main() -> int:
     assert_order_dependent_conflict_context_is_reported()
     assert_pr_that_conflicts_with_base_is_blocked()
     assert_verifier_failure_blocks_bad_pr_before_batching()
+    assert_missing_verifier_executable_is_inconclusive()
+    assert_unexpected_exception_is_not_split_advised()
+    assert_verifier_timeout_is_inconclusive()
+    assert_batch_verifier_failure_is_split_advised()
     assert_configured_verifier_profile_blocks_bad_pr()
     assert_plain_output_includes_verifier_failure_details()
     assert_plain_output_omits_successful_verifier_streams()
@@ -2178,6 +2551,8 @@ def main() -> int:
     assert_empty_required_checks_are_inconclusive_at_runtime()
     assert_selected_mergify_check_missing_is_inconclusive_at_runtime()
     assert_required_check_missing_identity_is_inconclusive_at_runtime()
+    assert_required_check_wrong_workflow_is_inconclusive_at_runtime()
+    assert_selected_mergify_reviewer_must_approve_at_runtime()
     assert_required_check_exit_code_one_stays_readiness_failure()
     assert_required_check_exit_code_two_stays_readiness_failure()
     assert_partial_gh_metadata_failure_preserves_other_readiness()

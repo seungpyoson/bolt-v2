@@ -10,6 +10,7 @@ import os
 import pathlib
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -196,6 +197,8 @@ PREFLIGHT_ARTIFACT_CLASSIFICATIONS = {
     "base_conflict": (LANE_INTEGRATION, "pr", STATUS_BLOCKED),
     "batch_conflict": (LANE_INTEGRATION, "batch", STATUS_READY),
     "batch_verifier_failed": (LANE_VERIFIER, "batch", STATUS_READY),
+    "batch_verifier_timeout": (LANE_VERIFIER, "batch", STATUS_INCONCLUSIVE),
+    "batch_verifier_unavailable": (LANE_VERIFIER, "batch", STATUS_INCONCLUSIVE),
     "base_mismatch": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
     "head_mismatch": (LANE_IDENTITY, "pr", STATUS_BLOCKED),
     "head_fetch_failed": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
@@ -207,8 +210,11 @@ PREFLIGHT_ARTIFACT_CLASSIFICATIONS = {
     "required_check_missing": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
     "required_check_unknown": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
     "required_check_stale": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
+    "required_check_wrong_workflow": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
     "readiness_failed": (LANE_READINESS, "pr", STATUS_BLOCKED),
     "verifier_failed": (LANE_VERIFIER, "pr", STATUS_BLOCKED),
+    "verifier_timeout": (LANE_VERIFIER, "pr", STATUS_INCONCLUSIVE),
+    "verifier_unavailable": (LANE_VERIFIER, "pr", STATUS_INCONCLUSIVE),
 }
 CHECK_STATE_CLASSIFICATIONS = {
     "success": (STATUS_READY, "required_check_ready"),
@@ -357,6 +363,29 @@ def stale_base_identity_findings(
             "evidence": {
                 "expected_base_sha": expected_base_sha,
                 "actual_base_sha": actual_base_sha,
+            },
+        },
+    )
+
+
+def unavailable_base_identity_findings(
+    *,
+    expected_base_sha: str,
+    base: str,
+    reason: str,
+) -> tuple[dict[str, object], ...]:
+    return (
+        {
+            "lane": LANE_IDENTITY,
+            "scope": "run",
+            "status": STATUS_INCONCLUSIVE,
+            "reason_code": "base_unavailable",
+            "message": "base branch could not be fetched",
+            "evidence": {
+                "base": base,
+                "expected_base_sha": expected_base_sha,
+                "actual_base_sha": None,
+                "reason": reason,
             },
         },
     )
@@ -687,6 +716,8 @@ def mergify_queue_route_unavailable_finding(
 def mergify_route_queue_groups(route_findings: Sequence[Mapping[str, object]]) -> dict[str, list[int]]:
     groups: dict[str, list[int]] = {}
     for finding in route_findings:
+        if finding["reason_code"] != "mergify_queue_route_selected":
+            continue
         evidence = dict(finding["evidence"])
         groups.setdefault(str(evidence["queue_rule"]), []).append(int(evidence["pr"]))
     return groups
@@ -744,16 +775,87 @@ def mergify_required_reviewer_finding(rule: Mapping[str, object]) -> dict[str, o
     }
 
 
+def approved_reviewers(readiness: Mapping[str, object]) -> tuple[str, ...]:
+    metadata = dict(readiness.get("metadata", {}))
+    reviews = metadata.get("reviews", ())
+    if not isinstance(reviews, Sequence) or isinstance(reviews, (str, bytes)):
+        return ()
+    reviewers: set[str] = set()
+    for review in reviews:
+        if not isinstance(review, Mapping) or review.get("state") != "APPROVED":
+            continue
+        author = review.get("author")
+        if not isinstance(author, Mapping):
+            continue
+        login = author.get("login")
+        if isinstance(login, str) and login:
+            reviewers.add(login)
+    return tuple(sorted(reviewers))
+
+
+def mergify_required_reviewer_identity_finding(
+    *,
+    pr: int,
+    queue_rule: str,
+    required_reviewers: Sequence[str],
+    approved: Sequence[str],
+) -> dict[str, object]:
+    missing = tuple(reviewer for reviewer in required_reviewers if reviewer not in approved)
+    status = STATUS_READY if not missing else STATUS_BLOCKED
+    reason_code = (
+        "mergify_required_reviewer_approved"
+        if not missing
+        else "mergify_required_reviewer_missing"
+    )
+    message = (
+        f"PR #{pr} has approval from required Mergify reviewer"
+        if not missing
+        else f"PR #{pr} is missing approval from required Mergify reviewer"
+    )
+    return {
+        "lane": LANE_READINESS,
+        "scope": "pr",
+        "status": status,
+        "reason_code": reason_code,
+        "message": message,
+        "evidence": {
+            "pr": pr,
+            "queue_rule": queue_rule,
+            "required_reviewers": list(required_reviewers),
+            "approved_reviewers": list(approved),
+            "missing_reviewers": list(missing),
+        },
+    }
+
+
 def selected_mergify_required_reviewer_findings(
     *,
     config: Mapping[str, object],
     route_findings: Sequence[Mapping[str, object]],
+    readiness: Sequence[Mapping[str, object]],
 ) -> tuple[dict[str, object], ...]:
     rules_by_name = mergify_queue_rules_by_name(config)
-    return tuple(
+    readiness_by_pr = {int(item["pr"]): item for item in readiness}
+    queue_findings = tuple(
         mergify_required_reviewer_finding(rules_by_name[queue_rule])
         for queue_rule in sorted(mergify_route_queue_rules(route_findings))
     )
+    identity_findings = tuple(
+        mergify_required_reviewer_identity_finding(
+            pr=pr,
+            queue_rule=queue_rule,
+            required_reviewers=MERGIFY_REQUIRED_REVIEWER_RE.findall(
+                "\n".join(str(condition) for condition in tuple(rules_by_name[queue_rule]["merge_conditions"]))
+            ),
+            approved=approved_reviewers(readiness_by_pr[pr]),
+        )
+        for route_finding in route_findings
+        if route_finding["reason_code"] == "mergify_queue_route_selected"
+        for route_evidence in (dict(route_finding["evidence"]),)
+        for pr in (int(route_evidence["pr"]),)
+        for queue_rule in (str(route_evidence["queue_rule"]),)
+    )
+    return (*queue_findings, *identity_findings)
 
 
 def mergify_required_check_names(rule: Mapping[str, object]) -> tuple[str, ...]:
@@ -793,10 +895,34 @@ def duplicate_mergify_required_check_finding(
     )
 
 
+def wrong_workflow_mergify_required_check_finding(
+    *,
+    required_check: str,
+    expected_workflow: str,
+    actual_workflow: object,
+    actual_head: str,
+) -> dict[str, object]:
+    return {
+        "lane": LANE_READINESS,
+        "scope": "pr",
+        "status": STATUS_INCONCLUSIVE,
+        "reason_code": "required_check_wrong_workflow",
+        "message": f"required check {required_check} came from unexpected workflow",
+        "evidence": {
+            "check_name": required_check,
+            "expected_head": actual_head,
+            "actual_head": actual_head,
+            "workflow": actual_workflow,
+            "expected_workflow": expected_workflow,
+        },
+    }
+
+
 def mergify_required_check_finding(
     *,
     required_check: str,
     readiness: Mapping[str, object],
+    expected_workflow: str | None,
 ) -> dict[str, object] | None:
     checks = tuple(readiness.get("checks", ()))
     metadata = dict(readiness.get("metadata", {}))
@@ -810,6 +936,19 @@ def mergify_required_check_finding(
     if len(matches) > 1:
         return duplicate_mergify_required_check_finding(
             required_check=required_check,
+            actual_head=actual_head,
+        )
+    if expected_workflow is None:
+        return duplicate_mergify_required_check_finding(
+            required_check=required_check,
+            actual_head=actual_head,
+        )
+    actual_workflow = matches[0].get("workflow")
+    if actual_workflow != expected_workflow:
+        return wrong_workflow_mergify_required_check_finding(
+            required_check=required_check,
+            expected_workflow=expected_workflow,
+            actual_workflow=actual_workflow,
             actual_head=actual_head,
         )
     return required_check_state_finding(
@@ -840,6 +979,7 @@ def selected_mergify_required_check_findings(
     config: Mapping[str, object],
     route_findings: Sequence[Mapping[str, object]],
     readiness: Sequence[Mapping[str, object]],
+    required_check_workflows: Mapping[str, str],
 ) -> tuple[dict[str, object], ...]:
     rules_by_name = mergify_queue_rules_by_name(config)
     readiness_by_pr = {int(item["pr"]): item for item in readiness}
@@ -856,6 +996,7 @@ def selected_mergify_required_check_findings(
             finding = mergify_required_check_finding(
                 required_check=required_check,
                 readiness=item,
+                expected_workflow=required_check_workflows.get(required_check),
             )
             if finding is not None:
                 findings.append(
@@ -984,6 +1125,7 @@ def available_mergify_config_route_and_batch_findings(
     *,
     config: Mapping[str, object],
     readiness: Sequence[Mapping[str, object]],
+    required_check_workflows: Mapping[str, str],
 ) -> tuple[dict[str, object], ...]:
     route_findings = available_mergify_queue_route_findings(config=config, readiness=readiness)
     return (
@@ -992,6 +1134,7 @@ def available_mergify_config_route_and_batch_findings(
             config=config,
             route_findings=route_findings,
             readiness=readiness,
+            required_check_workflows=required_check_workflows,
         ),
         *selected_mergify_queue_proof_source_findings(
             config=config,
@@ -1000,6 +1143,7 @@ def available_mergify_config_route_and_batch_findings(
         *selected_mergify_required_reviewer_findings(
             config=config,
             route_findings=route_findings,
+            readiness=readiness,
         ),
         *mergify_queue_batch_size_findings(config=config, route_findings=route_findings),
     )
@@ -1009,6 +1153,7 @@ def unavailable_mergify_queue_route_findings(
     *,
     config: object,
     readiness: Sequence[Mapping[str, object]],
+    required_check_workflows: Mapping[str, str],
 ) -> tuple[dict[str, object], ...]:
     return ()
 
@@ -1024,6 +1169,7 @@ def mergify_config_findings(
     repo: pathlib.Path,
     base_sha: str,
     readiness: Sequence[Mapping[str, object]],
+    required_check_workflows: Mapping[str, str],
 ) -> tuple[dict[str, object], ...]:
     snapshot = mergify_config_snapshot_finding(repo=repo, base_sha=base_sha)
     if snapshot["status"] != STATUS_READY:
@@ -1042,6 +1188,7 @@ def mergify_config_findings(
         *MERGIFY_QUEUE_ROUTE_FINDING_BUILDERS[isinstance(config, Mapping)](
             config=config,
             readiness=readiness,
+            required_check_workflows=required_check_workflows,
         ),
     )
 
@@ -1243,6 +1390,7 @@ class CommandResult:
     returncode: int
     stdout: str
     stderr: str
+    failure_type: str | None = None
 
 
 @dataclasses.dataclass
@@ -1300,6 +1448,7 @@ class VerifierResult:
     returncode: int
     stdout: str
     stderr: str
+    classification: str = "verifier_failed"
 
     def as_public_json(self, output_policy: OutputPolicy) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -1307,6 +1456,7 @@ class VerifierResult:
             "returncode": self.returncode,
         }
         if self.returncode != 0:
+            payload["classification"] = self.classification
             for stream in VERIFIER_STREAMS:
                 preview = bounded_stream(self.stream(stream), output_policy)
                 payload.update(preview.as_fields(stream))
@@ -1422,6 +1572,8 @@ class PreflightConfig:
     base: str
     default_verifier_profile: str
     verifier_profiles: dict[str, tuple[str, ...]]
+    required_check_workflows: dict[str, str]
+    verifier_timeout_seconds: int
     output_policy: OutputPolicy
 
 
@@ -1481,21 +1633,54 @@ def run_command(
     cwd: pathlib.Path,
     check: bool = True,
     env: dict[str, str] | None = None,
+    timeout_seconds: int | None = None,
+    process_group: bool = False,
 ) -> CommandResult:
-    completed = subprocess.run(
-        list(args),
-        cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        env=env,
-    )
+    command_args = list(args)
+    try:
+        process = subprocess.Popen(
+            command_args,
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=process_group,
+        )
+    except FileNotFoundError:
+        result = CommandResult(
+            args=tuple(args),
+            returncode=127,
+            stdout="",
+            stderr=f"executable not found: {command_args[0]}\n",
+            failure_type="unavailable",
+        )
+        if check:
+            raise PreflightError(result.stderr.strip())
+        return result
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        returncode = process.returncode
+        failure_type = None
+    except subprocess.TimeoutExpired:
+        if process_group:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            process.kill()
+        stdout, stderr = process.communicate()
+        returncode = -signal.SIGKILL
+        timeout_message = f"command timed out after {timeout_seconds} seconds\n"
+        stderr = f"{stderr or ''}{timeout_message}"
+        failure_type = "timeout"
     result = CommandResult(
         args=tuple(args),
-        returncode=completed.returncode,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
+        returncode=returncode,
+        stdout=stdout or "",
+        stderr=stderr or "",
+        failure_type=failure_type,
     )
     if check and result.returncode != 0:
         rendered = " ".join(shlex.quote(part) for part in result.args)
@@ -1542,6 +1727,20 @@ def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> in
     return value
 
 
+def require_string_map(parent: dict[str, object], key: str, prefix: str) -> dict[str, str]:
+    value = parent.get(key)
+    if not isinstance(value, dict) or not value:
+        raise PreflightError(f"{prefix}.{key} must be a non-empty table")
+    result: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        if not isinstance(raw_key, str) or not raw_key:
+            raise PreflightError(f"{prefix}.{key} keys must be non-empty strings")
+        if not isinstance(raw_value, str) or not raw_value:
+            raise PreflightError(f"{prefix}.{key}.{raw_key} must be a non-empty string")
+        result[raw_key] = raw_value
+    return result
+
+
 def load_config(path: pathlib.Path) -> PreflightConfig:
     root = load_toml(path)
     settings = require_table(root, "merge_queue_preflight", "config")
@@ -1552,6 +1751,17 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
     )
     profiles_root = require_table(
         settings, "verifier_profiles", "config.merge_queue_preflight"
+    )
+    timeout_settings = require_table(settings, "timeouts", "config.merge_queue_preflight")
+    verifier_timeout_seconds = require_positive_int(
+        timeout_settings,
+        "verifier_seconds",
+        "config.merge_queue_preflight.timeouts",
+    )
+    required_check_workflows = require_string_map(
+        settings,
+        "required_check_workflows",
+        "config.merge_queue_preflight",
     )
     output_settings = require_table(settings, "output", "config.merge_queue_preflight")
     output_policy = OutputPolicy(
@@ -1589,6 +1799,8 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
         base=base,
         default_verifier_profile=default_profile,
         verifier_profiles=profiles,
+        required_check_workflows=required_check_workflows,
+        verifier_timeout_seconds=verifier_timeout_seconds,
         output_policy=output_policy,
     )
 
@@ -1749,6 +1961,7 @@ def run_verifier_commands(
     repo: pathlib.Path,
     commit: str,
     commands: Sequence[str],
+    timeout_seconds: int,
 ) -> tuple[VerifierResult, ...]:
     if not commands:
         return ()
@@ -1761,12 +1974,19 @@ def run_verifier_commands(
                 parts = shlex.split(command)
                 if not parts:
                     raise PreflightError("verifier command must not be empty")
-                completed = run_command(parts, cwd=worktree, check=False)
+                completed = run_command(
+                    parts,
+                    cwd=worktree,
+                    check=False,
+                    timeout_seconds=timeout_seconds,
+                    process_group=True,
+                )
                 verifier_result = VerifierResult(
                     command=command,
                     returncode=completed.returncode,
                     stdout=completed.stdout,
                     stderr=completed.stderr,
+                    classification=verifier_failure_classification(completed.failure_type),
                 )
                 results.append(verifier_result)
                 if verifier_result.returncode != 0:
@@ -1774,6 +1994,22 @@ def run_verifier_commands(
         finally:
             git(repo, "worktree", "remove", "--force", str(worktree), check=False)
     return tuple(results)
+
+
+def verifier_failure_classification(failure_type: str | None) -> str:
+    if failure_type == "timeout":
+        return "verifier_timeout"
+    if failure_type == "unavailable":
+        return "verifier_unavailable"
+    return "verifier_failed"
+
+
+def batch_verifier_artifact_type(result: VerifierResult) -> str:
+    if result.classification == "verifier_timeout":
+        return "batch_verifier_timeout"
+    if result.classification == "verifier_unavailable":
+        return "batch_verifier_unavailable"
+    return "batch_verifier_failed"
 
 
 def first_failed_verifier(results: Sequence[VerifierResult]) -> VerifierResult | None:
@@ -1787,7 +2023,7 @@ def verifier_block(pr: int, result: VerifierResult, output_policy: OutputPolicy)
     return {
         "pr": pr,
         "reason": f"verifier failed: {result.command}",
-        "type": "verifier_failed",
+        "type": result.classification,
         **result.as_public_json(output_policy),
     }
 
@@ -1872,7 +2108,7 @@ def pr_readiness(
             "view",
             str(pr_number),
             "--json",
-            "number,state,isDraft,mergeable,reviewDecision,headRefOid,baseRefName,labels,title,url",
+            "number,state,isDraft,mergeable,reviewDecision,headRefOid,baseRefName,labels,reviews,title,url",
         ]
     )
     if not isinstance(payload, dict):
@@ -2091,6 +2327,56 @@ def readiness_ready_findings(readiness: Sequence[Mapping[str, object]]) -> tuple
     )
 
 
+def unavailable_base_payload(
+    *,
+    base: str,
+    expected_base_sha: str,
+    expected_heads: Mapping[int, str],
+    requested: Sequence[int],
+    output_policy: OutputPolicy,
+    use_gh: bool,
+    reason: str,
+) -> tuple[dict[str, object], int]:
+    contract_findings = (
+        *unavailable_base_identity_findings(
+            expected_base_sha=expected_base_sha,
+            base=base,
+            reason=reason,
+        ),
+        *preflight_mode_findings(use_gh=use_gh),
+        *residual_risk_findings(),
+    )
+    contract_evaluation = evaluate_preflight_contract(
+        ContractEvidence(
+            findings=contract_findings,
+            artifacts=(),
+            wave_status=mergify_wave_status(contract_findings),
+        )
+    )
+    payload = {
+        "base": base,
+        "base_sha": expected_base_sha,
+        "actual_base_sha": None,
+        "expected_base_sha": expected_base_sha,
+        "expected_pr_heads": {str(number): sha for number, sha in expected_heads.items()},
+        "requested_prs": list(requested),
+        "pr_heads": {},
+        "readiness": [],
+        "metadata_warnings": [],
+        "residual_risks": list(RESIDUAL_RISK_REASON_CODES),
+        "batches": [],
+        "blocked_prs": [],
+        "conflicts": [],
+        "contract_exit_code": contract_evaluation["exit_code"],
+        "findings": contract_evaluation["findings"],
+        "lane_statuses": contract_evaluation["lane_statuses"],
+        "verdict": contract_evaluation["verdict"],
+        "wave_status": contract_evaluation["wave_status"],
+        "output_policy": output_policy.as_json(),
+    }
+    return payload, int(contract_evaluation["exit_code"])
+
+
 def preflight(
     *,
     repo: pathlib.Path,
@@ -2100,6 +2386,8 @@ def preflight(
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
+    verifier_timeout_seconds: int,
+    required_check_workflows: Mapping[str, str],
     output_policy: OutputPolicy,
     use_gh: bool,
 ) -> tuple[dict[str, object], int]:
@@ -2113,6 +2401,8 @@ def preflight(
             expected_head_inputs=expected_head_inputs,
             pr_numbers=pr_numbers,
             verifier_commands=verifier_commands,
+            verifier_timeout_seconds=verifier_timeout_seconds,
+            required_check_workflows=required_check_workflows,
             output_policy=output_policy,
             use_gh=use_gh,
             fetch_refs=fetch_refs,
@@ -2130,13 +2420,26 @@ def preflight_with_fetch_refs(
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
+    verifier_timeout_seconds: int,
+    required_check_workflows: Mapping[str, str],
     output_policy: OutputPolicy,
     use_gh: bool,
     fetch_refs: PrivateFetchRefs,
 ) -> tuple[dict[str, object], int]:
     requested = unique_preserving_order(pr_numbers)
     expected_heads = expected_head_map(expected_head_inputs, requested)
-    actual_base_sha = fetch_base(fetch_refs, origin, base)
+    try:
+        actual_base_sha = fetch_base(fetch_refs, origin, base)
+    except PreflightError as exc:
+        return unavailable_base_payload(
+            base=base,
+            expected_base_sha=expected_base_sha,
+            expected_heads=expected_heads,
+            requested=requested,
+            output_policy=output_policy,
+            use_gh=use_gh,
+            reason=str(exc),
+        )
     base_sha = expected_base_sha
     readiness, metadata_warnings = readiness_for_wave(
         requested,
@@ -2184,7 +2487,12 @@ def preflight_with_fetch_refs(
             )
             blocked_numbers.add(pr)
             continue
-        verifier_results = run_verifier_commands(repo, synthetic.commit, verifier_commands)
+        verifier_results = run_verifier_commands(
+            repo,
+            synthetic.commit,
+            verifier_commands,
+            verifier_timeout_seconds,
+        )
         failed = first_failed_verifier(verifier_results)
         if failed is not None:
             blocked_prs.append(verifier_block(pr, failed, output_policy))
@@ -2229,14 +2537,19 @@ def preflight_with_fetch_refs(
             current = base_commits[pr]
             current_verifiers = base_verifiers[pr]
             continue
-        candidate_verifiers = run_verifier_commands(repo, synthetic.commit, verifier_commands)
+        candidate_verifiers = run_verifier_commands(
+            repo,
+            synthetic.commit,
+            verifier_commands,
+            verifier_timeout_seconds,
+        )
         failed = first_failed_verifier(candidate_verifiers)
         if failed is not None:
             conflicts.append(
                 {
                     "pr": pr,
                     "against_batch": list(current.prs),
-                    "type": "batch_verifier_failed",
+                    "type": batch_verifier_artifact_type(failed),
                     **failed.as_public_json(output_policy),
                 }
             )
@@ -2269,7 +2582,12 @@ def preflight_with_fetch_refs(
             actual_base_sha=actual_base_sha,
         ),
         *head_identity_findings(expected_heads=expected_heads, actual_heads=heads),
-        *mergify_config_findings(repo=repo, base_sha=base_sha, readiness=readiness),
+        *mergify_config_findings(
+            repo=repo,
+            base_sha=base_sha,
+            readiness=readiness,
+            required_check_workflows=required_check_workflows,
+        ),
         *preflight_mode_findings(use_gh=use_gh),
         *readiness_ready_findings(readiness),
         *residual_risk_findings(),
@@ -2457,11 +2775,16 @@ def main(argv: list[str] | None = None) -> int:
             expected_head_inputs=args.expected_head_sha,
             pr_numbers=args.prs,
             verifier_commands=verifier_commands(config, args.verifier_profile, args.run_verifier),
+            verifier_timeout_seconds=config.verifier_timeout_seconds,
+            required_check_workflows=config.required_check_workflows,
             output_policy=config.output_policy,
             use_gh=not args.no_gh,
         )
     except PreflightError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return PREFLIGHT_USAGE_EXIT_CODE
+    except Exception as exc:
+        print(f"error: internal preflight failure: {exc}", file=sys.stderr)
         return PREFLIGHT_USAGE_EXIT_CODE
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))

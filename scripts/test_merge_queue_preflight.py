@@ -564,6 +564,10 @@ def assert_preflight_artifact_classification_is_declarative() -> None:
         "metadata_unavailable": ("readiness", "pr", "inconclusive"),
         "required_check_failed": ("readiness", "pr", "blocked"),
         "required_check_pending": ("readiness", "pr", "inconclusive"),
+        "required_check_skipped": ("readiness", "pr", "inconclusive"),
+        "required_check_missing": ("readiness", "pr", "inconclusive"),
+        "required_check_unknown": ("readiness", "pr", "inconclusive"),
+        "required_check_stale": ("readiness", "pr", "inconclusive"),
         "readiness_failed": ("readiness", "pr", "blocked"),
         "verifier_failed": ("verifier", "pr", "blocked"),
     }
@@ -807,6 +811,30 @@ def assert_mergify_config_snapshot_uses_base_blob() -> None:
         assert mergify_config_valid_finding(fixture.base, base_blob) in payload["findings"], payload["findings"]
 
 
+def assert_fetches_use_private_refs_without_fetch_head() -> None:
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    if "FETCH_HEAD" in source:
+        raise AssertionError("merge_queue_preflight.py must not read FETCH_HEAD")
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        fixture.make_pr(1, {"one.txt": "one\n"})
+        fetch_head = fixture.repo / ".git" / "FETCH_HEAD"
+        sentinel = "sentinel fetch head\n"
+        write(fetch_head, sentinel)
+        rc, stdout, _ = run_preflight(
+            fixture.repo,
+            fixture.remote,
+            "1",
+            expect_success=False,
+        )
+        payload = parse_json(stdout)
+        assert_equal(rc, 3, "private fetch no-gh rc")
+        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "private fetch pr heads")
+        assert_equal(fetch_head.read_text(encoding="utf-8"), sentinel, "FETCH_HEAD must not change")
+        leaked_refs = git(fixture.repo, "for-each-ref", "--format=%(refname)", "refs/preflight")
+        assert_equal(leaked_refs, "", "private fetch refs must be cleaned up")
+
+
 def assert_mergify_queue_routing_uses_pr_labels() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -896,6 +924,35 @@ def assert_default_queue_above_max_is_split_advised() -> None:
         payload = parse_json(result.stdout)
         assert_equal(payload["wave_status"], "split_advised", "default queue above max wave status")
         assert mergify_queue_batch_above_max_finding("default", list(heads), 10) in payload["findings"], payload["findings"]
+
+
+def assert_invalid_mergify_config_does_not_route() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        write(
+            fixture.repo / ".mergify.yml",
+            MERGIFY_YML.replace("label = hotfix", "label = urgent"),
+        )
+        base = commit(fixture.repo, "unsupported mergify route")
+        git(fixture.repo, "push", "origin", "main")
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(root, views={1: approved_pr_view(head)})
+        result = run_preflight_with_gh(
+            fixture.repo,
+            fixture.remote,
+            bin_dir,
+            "1",
+            expected_base_sha=base,
+        )
+        assert_equal(result.returncode, 3, "invalid mergify config rc")
+        payload = parse_json(result.stdout)
+        assert_equal(payload["lane_statuses"]["mergify_config"], "inconclusive", "invalid mergify lane")
+        reason_codes = {finding["reason_code"] for finding in payload["findings"]}
+        if "mergify_config_invalid" not in reason_codes:
+            raise AssertionError(payload["findings"])
+        if "mergify_queue_route_selected" in reason_codes:
+            raise AssertionError(payload["findings"])
 
 
 def assert_stale_base_sha_is_inconclusive() -> None:
@@ -1515,6 +1572,27 @@ def assert_required_check_pending_is_inconclusive() -> None:
         assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "pending check contract")
 
 
+def assert_required_check_neutral_is_inconclusive_at_runtime() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks={1: [{"name": "gate", "state": "NEUTRAL", "bucket": "pass", "workflow": "CI"}]},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 3, "neutral check rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        assert_equal(len(blocked), 1, "neutral check blocked count")
+        assert_equal(blocked[0]["pr"], 1, "neutral check pr")
+        assert_equal(blocked[0]["type"], "required_check_skipped", "neutral check type")
+        assert_equal(payload["lane_statuses"]["readiness"], "inconclusive", "neutral check readiness lane")
+        assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "neutral check contract")
+
+
 def assert_required_check_exit_code_one_stays_readiness_failure() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -1653,12 +1731,16 @@ def assert_non_missing_head_fetch_failure_is_inspection_error() -> None:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
         fixture.make_pr(1, {"one.txt": "one\n"})
-        heads, blocks = module.fetch_available_pr_heads(
-            repo=fixture.repo,
-            origin=str(root / "not-a-remote.git"),
-            requested=(1,),
-            blocked_numbers=set(),
-        )
+        fetch_refs = module.PrivateFetchRefs.create(fixture.repo)
+        try:
+            heads, blocks = module.fetch_available_pr_heads(
+                fetch_refs=fetch_refs,
+                origin=str(root / "not-a-remote.git"),
+                requested=(1,),
+                blocked_numbers=set(),
+            )
+        finally:
+            fetch_refs.cleanup()
         assert_equal(heads, {}, "inspection error heads")
         if len(blocks) != 1 or blocks[0]["pr"] != 1 or blocks[0]["type"] != "head_fetch_failed":
             raise AssertionError(blocks)
@@ -1822,8 +1904,10 @@ def main() -> int:
     assert_preflight_artifact_finding_uses_classification_table()
     assert_contract_evaluator_reduces_normalized_evidence()
     assert_mergify_config_snapshot_uses_base_blob()
+    assert_fetches_use_private_refs_without_fetch_head()
     assert_mergify_queue_routing_uses_pr_labels()
     assert_default_queue_above_max_is_split_advised()
+    assert_invalid_mergify_config_does_not_route()
     assert_stale_base_sha_is_inconclusive()
     assert_stale_expected_head_sha_blocks_pr()
     assert_clean_prs_batch_together()
@@ -1839,6 +1923,7 @@ def main() -> int:
     assert_head_oid_mismatch_blocks_pr()
     assert_wrong_base_ref_is_inconclusive()
     assert_required_check_pending_is_inconclusive()
+    assert_required_check_neutral_is_inconclusive_at_runtime()
     assert_required_check_exit_code_one_stays_readiness_failure()
     assert_required_check_exit_code_two_stays_readiness_failure()
     assert_partial_gh_metadata_failure_preserves_other_readiness()

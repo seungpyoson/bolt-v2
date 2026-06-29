@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -29,7 +30,7 @@ EXPECTED_HEAD_SHA_RE = re.compile(r"^(?P<pr>[1-9][0-9]*)=(?P<sha>[0-9a-f]{40})$"
 MERGIFY_REQUIRED_REVIEWER_RE = re.compile(r"(?:^|\n)approved-reviews-by = (?P<reviewer>[^\n]+)")
 CONFLICT_LINE_RE = re.compile(r"^\d{6} [0-9a-f]{40} [123]\t(.+)$")
 PR_REF_PREFIX = "refs/pull/"
-FETCH_HEAD = "FETCH_HEAD"
+PREFLIGHT_REF_PREFIX = "refs/preflight/merge_queue_preflight"
 PROFILE_NONE = "none"
 GH_PR_CHECKS_JSON_RETURNCODES = (0, 1, 2, 8)
 STATUS_READY = "ready"
@@ -202,6 +203,10 @@ PREFLIGHT_ARTIFACT_CLASSIFICATIONS = {
     "metadata_unavailable": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
     "required_check_failed": (LANE_READINESS, "pr", STATUS_BLOCKED),
     "required_check_pending": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
+    "required_check_skipped": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
+    "required_check_missing": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
+    "required_check_unknown": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
+    "required_check_stale": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
     "readiness_failed": (LANE_READINESS, "pr", STATUS_BLOCKED),
     "verifier_failed": (LANE_VERIFIER, "pr", STATUS_BLOCKED),
 }
@@ -224,6 +229,26 @@ CHECK_STATE_CLASSIFICATIONS = {
 }
 CHECK_STATE_UNKNOWN = (STATUS_INCONCLUSIVE, "required_check_unknown")
 CHECK_STATE_STALE = (STATUS_INCONCLUSIVE, "required_check_stale")
+CHECK_BUCKET_STATE_ALIASES = {
+    "pass": "success",
+    "success": "success",
+    "fail": "failure",
+    "failure": "failure",
+    "cancel": "cancelled",
+    "cancelled": "cancelled",
+    "pending": "pending",
+    "skipping": "skipped",
+    "skipped": "skipped",
+    "neutral": "neutral",
+}
+CHECK_STATE_ISSUE_MESSAGES = {
+    "required_check_failed": "required check failed: {name}",
+    "required_check_pending": "required check pending: {name}",
+    "required_check_skipped": "required check skipped: {name}",
+    "required_check_missing": "required check missing: {name}",
+    "required_check_unknown": "required check state or bucket is unknown: {name}",
+    "required_check_stale": "required check is stale: {name}",
+}
 VERIFIER_STREAMS = ("stdout", "stderr")
 PREFLIGHT_MODE_FINDINGS = {
     True: (),
@@ -842,14 +867,19 @@ def mergify_config_findings(
     readiness: Sequence[Mapping[str, object]],
 ) -> tuple[dict[str, object], ...]:
     snapshot = mergify_config_snapshot_finding(repo=repo, base_sha=base_sha)
+    if snapshot["status"] != STATUS_READY:
+        return (snapshot,)
+    validation = mergify_config_validation_finding(
+        repo=repo,
+        base_sha=base_sha,
+        blob_sha=str(snapshot["evidence"]["blob_sha"]),
+    )
+    if validation["status"] != STATUS_READY:
+        return (snapshot, validation)
     config = mergify_config_data(repo=repo, blob_sha=str(snapshot["evidence"]["blob_sha"]))
     return (
         snapshot,
-        mergify_config_validation_finding(
-            repo=repo,
-            base_sha=base_sha,
-            blob_sha=str(snapshot["evidence"]["blob_sha"]),
-        ),
+        validation,
         *MERGIFY_QUEUE_ROUTE_FINDING_BUILDERS[isinstance(config, Mapping)](
             config=config,
             readiness=readiness,
@@ -906,6 +936,84 @@ def classify_required_check_state(
     }
 
 
+def check_bucket_state(raw_bucket: object) -> str | None:
+    if not isinstance(raw_bucket, str):
+        return None
+    return CHECK_BUCKET_STATE_ALIASES.get(normalize_check_state(raw_bucket))
+
+
+def required_check_state_finding(
+    *,
+    check: Mapping[str, object],
+    expected_head: str,
+    actual_head: str,
+) -> dict[str, object] | None:
+    check_name = str(check.get("name", "<unknown>"))
+    state_finding = classify_required_check_state(
+        check_name=check_name,
+        raw_state=str(check.get("state", "missing")),
+        expected_head=expected_head,
+        actual_head=actual_head,
+        evidence={"workflow": check.get("workflow"), "bucket": check.get("bucket")},
+    )
+    candidates = [state_finding]
+    bucket_state = check_bucket_state(check.get("bucket"))
+    if bucket_state is None:
+        candidates.append(
+            classify_required_check_state(
+                check_name=check_name,
+                raw_state="unknown",
+                expected_head=expected_head,
+                actual_head=actual_head,
+                evidence={"workflow": check.get("workflow"), "bucket": check.get("bucket")},
+            )
+        )
+    else:
+        candidates.append(
+            classify_required_check_state(
+                check_name=check_name,
+                raw_state=bucket_state,
+                expected_head=expected_head,
+                actual_head=actual_head,
+                evidence={"workflow": check.get("workflow"), "bucket": check.get("bucket")},
+            )
+        )
+    finding = min(
+        candidates,
+        key=lambda candidate: CONTRACT_STATUS_RANK[str(candidate["status"])],
+    )
+    if finding["status"] == STATUS_READY:
+        return None
+    return finding
+
+
+def required_check_readiness_issue(
+    check: object,
+    *,
+    expected_head: str,
+    actual_head: str,
+) -> ReadinessIssue | None:
+    if not isinstance(check, Mapping):
+        return ReadinessIssue(
+            code="required_check_unknown",
+            message="required check metadata is malformed",
+        )
+    finding = required_check_state_finding(
+        check=check,
+        expected_head=expected_head,
+        actual_head=actual_head,
+    )
+    if finding is None:
+        return None
+    code = str(finding["reason_code"])
+    evidence = dict(finding["evidence"])
+    name = str(evidence["check_name"])
+    return ReadinessIssue(
+        code=code,
+        message=CHECK_STATE_ISSUE_MESSAGES[code].format(name=name),
+    )
+
+
 def preflight_artifact_finding(artifact: Mapping[str, object]) -> dict[str, object]:
     artifact_type = str(artifact["type"])
     lane, scope, status = PREFLIGHT_ARTIFACT_CLASSIFICATIONS[artifact_type]
@@ -957,6 +1065,27 @@ class CommandResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+@dataclasses.dataclass
+class PrivateFetchRefs:
+    repo: pathlib.Path
+    namespace: str
+    refs: list[str] = dataclasses.field(default_factory=list)
+
+    @classmethod
+    def create(cls, repo: pathlib.Path) -> "PrivateFetchRefs":
+        return cls(repo=repo, namespace=f"{PREFLIGHT_REF_PREFIX}/{uuid.uuid4().hex}")
+
+    def fetch_sha(self, origin: str, source: str, name: str) -> str:
+        ref = f"{self.namespace}/{name}"
+        git(self.repo, "fetch", "--quiet", "--no-write-fetch-head", origin, f"{source}:{ref}")
+        self.refs.append(ref)
+        return git(self.repo, "rev-parse", ref).stdout.strip()
+
+    def cleanup(self) -> None:
+        for ref in reversed(self.refs):
+            git(self.repo, "update-ref", "-d", ref, check=False)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1140,11 +1269,6 @@ DYNAMIC_READINESS_EXPECTATIONS = (
         "GitHub headRefOid {actual} does not match fetched PR head {expected}",
     ),
 )
-CHECK_BUCKET_ISSUES = {
-    "fail": ("required_check_failed", "required check failed: {name}"),
-    "cancel": ("required_check_failed", "required check failed: {name}"),
-    "pending": ("required_check_pending", "required check pending: {name}"),
-}
 READINESS_ISSUE_ARTIFACT_TYPES = {
     "base_mismatch": "base_mismatch",
     "draft": "readiness_failed",
@@ -1153,6 +1277,10 @@ READINESS_ISSUE_ARTIFACT_TYPES = {
     "not_open": "readiness_failed",
     "required_check_failed": "required_check_failed",
     "required_check_pending": "required_check_pending",
+    "required_check_skipped": "required_check_skipped",
+    "required_check_missing": "required_check_missing",
+    "required_check_unknown": "required_check_unknown",
+    "required_check_stale": "required_check_stale",
     "review_not_approved": "readiness_failed",
 }
 READINESS_ISSUE_STATUS_RANKS = {
@@ -1337,25 +1465,23 @@ def unique_preserving_order(values: Sequence[int]) -> tuple[int, ...]:
     return tuple(ordered)
 
 
-def fetch_base(repo: pathlib.Path, origin: str, base: str) -> str:
-    git(repo, "fetch", "--quiet", origin, base)
-    sha = git(repo, "rev-parse", FETCH_HEAD).stdout.strip()
+def fetch_base(fetch_refs: PrivateFetchRefs, origin: str, base: str) -> str:
+    sha = fetch_refs.fetch_sha(origin, base, "base")
     if SHA_RE.fullmatch(sha) is None:
         raise PreflightError(f"base {base!r} did not resolve to a commit SHA")
     return sha
 
 
-def fetch_pr_head(repo: pathlib.Path, origin: str, pr_number: int) -> PrHead:
+def fetch_pr_head(fetch_refs: PrivateFetchRefs, origin: str, pr_number: int) -> PrHead:
     missing_ref_message = "couldn't find remote ref"
     try:
-        git(repo, "fetch", "--quiet", origin, f"{PR_REF_PREFIX}{pr_number}/head")
+        sha = fetch_refs.fetch_sha(origin, f"{PR_REF_PREFIX}{pr_number}/head", f"pr-{pr_number}")
     except PreflightError as exc:
         if missing_ref_message not in str(exc):
             raise
         raise PreflightError(
             f"PR #{pr_number} head ref was not found; ensure the PR exists and has a fetchable head"
         ) from exc
-    sha = git(repo, "rev-parse", FETCH_HEAD).stdout.strip()
     if SHA_RE.fullmatch(sha) is None:
         raise PreflightError(f"PR #{pr_number} did not resolve to a commit SHA")
     return PrHead(number=pr_number, sha=sha)
@@ -1524,20 +1650,17 @@ def readiness_issues(
         for rule in DYNAMIC_READINESS_EXPECTATIONS
         if (issue := rule.evaluate(payload, expected_values)) is not None
     )
+    metadata_head = payload.get("headRefOid")
+    actual_check_head = str(metadata_head) if isinstance(metadata_head, str) else ""
+    expected_check_head = fetched_head or actual_check_head
     for check in checks:
-        if not isinstance(check, dict):
-            continue
-        bucket = check.get("bucket")
-        issue_template = CHECK_BUCKET_ISSUES.get(bucket)
-        if issue_template is None:
-            continue
-        code, message = issue_template
-        issues.append(
-            ReadinessIssue(
-                code=code,
-                message=message.format(name=check.get("name")),
-            )
+        issue = required_check_readiness_issue(
+            check,
+            expected_head=expected_check_head,
+            actual_head=actual_check_head,
         )
+        if issue is not None:
+            issues.append(issue)
     return tuple(issues)
 
 
@@ -1660,7 +1783,7 @@ def readiness_with_fetched_heads(
 
 def fetch_available_pr_heads(
     *,
-    repo: pathlib.Path,
+    fetch_refs: PrivateFetchRefs,
     origin: str,
     requested: Sequence[int],
     blocked_numbers: set[int],
@@ -1673,7 +1796,7 @@ def fetch_available_pr_heads(
         if pr in blocked_numbers:
             continue
         try:
-            heads[pr] = fetch_pr_head(repo, origin, pr)
+            heads[pr] = fetch_pr_head(fetch_refs, origin, pr)
         except PreflightError as exc:
             reason = str(exc)
             block_type = "head_unavailable"
@@ -1787,9 +1910,40 @@ def preflight(
     output_policy: OutputPolicy,
     use_gh: bool,
 ) -> tuple[dict[str, object], int]:
+    fetch_refs = PrivateFetchRefs.create(repo)
+    try:
+        return preflight_with_fetch_refs(
+            repo=repo,
+            origin=origin,
+            base=base,
+            expected_base_sha=expected_base_sha,
+            expected_head_inputs=expected_head_inputs,
+            pr_numbers=pr_numbers,
+            verifier_commands=verifier_commands,
+            output_policy=output_policy,
+            use_gh=use_gh,
+            fetch_refs=fetch_refs,
+        )
+    finally:
+        fetch_refs.cleanup()
+
+
+def preflight_with_fetch_refs(
+    *,
+    repo: pathlib.Path,
+    origin: str,
+    base: str,
+    expected_base_sha: str,
+    expected_head_inputs: Sequence[ExpectedHead],
+    pr_numbers: Sequence[int],
+    verifier_commands: Sequence[str],
+    output_policy: OutputPolicy,
+    use_gh: bool,
+    fetch_refs: PrivateFetchRefs,
+) -> tuple[dict[str, object], int]:
     requested = unique_preserving_order(pr_numbers)
     expected_heads = expected_head_map(expected_head_inputs, requested)
-    actual_base_sha = fetch_base(repo, origin, base)
+    actual_base_sha = fetch_base(fetch_refs, origin, base)
     base_sha = expected_base_sha
     readiness, metadata_warnings = readiness_for_wave(
         requested,
@@ -1799,7 +1953,7 @@ def preflight(
     initial_readiness_blocks = readiness_blocks(readiness)
     initial_blocked_numbers = {int(block["pr"]) for block in initial_readiness_blocks}
     heads, head_fetch_blocks = fetch_available_pr_heads(
-        repo=repo,
+        fetch_refs=fetch_refs,
         origin=origin,
         requested=requested,
         blocked_numbers=initial_blocked_numbers,

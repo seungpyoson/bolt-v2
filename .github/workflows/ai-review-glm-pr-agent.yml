@@ -7,7 +7,6 @@ on:
     paths-ignore:
       - "docs/*.md"
       - "docs/**/*.md"
-      - "*.md"
       - "README*"
 
 concurrency:

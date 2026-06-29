@@ -310,6 +310,26 @@ def assert_python_inline_payloads_match_current_verifiers() -> None:
             raise AssertionError(f"python_inline_command_payloads({tokens!r}) returned {values!r}")
 
 
+def assert_static_parity_exports_are_explicit() -> None:
+    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_client_under_test")
+    shared = load_shared_module()
+    exported_names = (
+        "cargo_subcommand_with_index",
+        "nextest_subcommand_with_index",
+        "python_call_command_argument",
+        "python_call_name",
+        "python_command_string",
+        "python_constant_string",
+    )
+    expected = tuple(getattr(shared, name) for name in exported_names)
+    actual = getattr(static, "COMMAND_UNDERSTANDING_PARITY_EXPORTS", None)
+    if actual != expected:
+        raise AssertionError("static command-understanding parity exports drifted")
+    for name, expected_helper in zip(exported_names, expected, strict=True):
+        if getattr(static, name) is not expected_helper:
+            raise AssertionError(f"verify_ci_workflow_hygiene.{name} no longer re-exports the shared helper")
+
+
 def assert_verifier_clients_use_shared_python_helpers() -> None:
     runtime = load_module(RUNTIME_VERIFIER, "rust_verification_client_under_test")
     static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_client_under_test")
@@ -544,6 +564,7 @@ def main() -> int:
     assert_load_module_caches_verifier_modules()
     assert_python_ast_helpers_match_current_verifiers()
     assert_python_inline_payloads_match_current_verifiers()
+    assert_static_parity_exports_are_explicit()
     assert_verifier_clients_use_shared_python_helpers()
     assert_shared_cargo_scanner_helpers_match_current_verifiers()
     assert_non_exported_candidate_helpers_are_characterized()

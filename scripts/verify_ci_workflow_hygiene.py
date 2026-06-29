@@ -2020,10 +2020,10 @@ def shell_line_is_control_flow(line: str) -> bool:
 
 def shell_line_is_function_definition(line: str) -> bool:
     stripped = line.strip()
+    name = r"[A-Za-z_][A-Za-z0-9_]*"
     return (
-        re.match(r"^(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*\{", stripped)
-        is not None
-        or re.match(r"^function\s+[A-Za-z_][A-Za-z0-9_]*\b", stripped) is not None
+        re.match(rf"^(?:function\s+)?{name}\s*\(\)\s*(?:[{{(].*)?$", stripped) is not None
+        or re.match(rf"^function\s+{name}\b", stripped) is not None
     )
 
 

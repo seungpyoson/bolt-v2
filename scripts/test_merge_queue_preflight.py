@@ -28,6 +28,12 @@ EXPECTED_RESIDUAL_RISKS = [
     "reset_on_external_merge",
     "max_parallel_checks_cost",
 ]
+MERGIFY_REQUIRED_CHECK_NAMES = (
+    "gate",
+    "backtester-gate",
+    "actionlint",
+    "host-health",
+)
 
 
 def expected_head_sha_args(
@@ -280,6 +286,28 @@ def mergify_queue_batch_above_max_finding(queue_rule: str, prs: list[int], max_b
     }
 
 
+def mergify_queue_batch_below_min_finding(
+    queue_rule: str,
+    prs: list[int],
+    min_batch_size: int,
+    batch_max_wait_time: str,
+) -> dict[str, object]:
+    return {
+        "lane": "mergify_config",
+        "scope": "queue",
+        "status": "ready",
+        "reason_code": "mergify_queue_batch_below_min_wait",
+        "message": f"Mergify queue rule {queue_rule} selected {len(prs)} PRs below min batch size {min_batch_size}",
+        "evidence": {
+            "queue_rule": queue_rule,
+            "prs": prs,
+            "selected_count": len(prs),
+            "min_batch_size": min_batch_size,
+            "batch_max_wait_time": batch_max_wait_time,
+        },
+    }
+
+
 def stale_base_finding(expected_base_sha: str, actual_base_sha: str) -> dict[str, object]:
     return {
         "lane": "identity",
@@ -352,7 +380,11 @@ def verifier_batch_ready_finding(batch: dict[str, object]) -> dict[str, object]:
     }
 
 
-def readiness_ready_finding(pr: int, head: str) -> dict[str, object]:
+def readiness_ready_finding(
+    pr: int,
+    head: str,
+    checks: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     return {
         "lane": "readiness",
         "scope": "pr",
@@ -365,7 +397,7 @@ def readiness_ready_finding(pr: int, head: str) -> dict[str, object]:
             "headRefOid": head,
             "mergeable": "MERGEABLE",
             "reviewDecision": "APPROVED",
-            "checks": [],
+            "checks": checks or [],
         },
     }
 
@@ -757,6 +789,20 @@ def approved_pr_view(head: str, *, base: str = "main", labels: tuple[str, ...] =
     }
 
 
+def passing_required_check(name: str = "gate") -> dict[str, object]:
+    return {"name": name, "state": "SUCCESS", "bucket": "pass", "workflow": "CI"}
+
+
+def passing_required_checks(*prs: int) -> dict[int, list[dict[str, object]]]:
+    return {
+        pr: [
+            passing_required_check(name)
+            for name in MERGIFY_REQUIRED_CHECK_NAMES
+        ]
+        for pr in prs
+    }
+
+
 def run_preflight_with_gh(
     repo: pathlib.Path,
     origin: pathlib.Path,
@@ -815,9 +861,15 @@ def assert_fetches_use_private_refs_without_fetch_head() -> None:
     source = SCRIPT_PATH.read_text(encoding="utf-8")
     if "FETCH_HEAD" in source:
         raise AssertionError("merge_queue_preflight.py must not read FETCH_HEAD")
+    if "--no-tags" not in source:
+        raise AssertionError("merge_queue_preflight.py must not mutate shared tag refs")
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
         fixture.make_pr(1, {"one.txt": "one\n"})
+        remote_only_tag = "preflight-remote-base"
+        git(fixture.repo, "tag", remote_only_tag, fixture.base)
+        git(fixture.repo, "push", "origin", f"refs/tags/{remote_only_tag}")
+        git(fixture.repo, "tag", "-d", remote_only_tag)
         fetch_head = fixture.repo / ".git" / "FETCH_HEAD"
         sentinel = "sentinel fetch head\n"
         write(fetch_head, sentinel)
@@ -831,8 +883,32 @@ def assert_fetches_use_private_refs_without_fetch_head() -> None:
         assert_equal(rc, 3, "private fetch no-gh rc")
         assert_equal(set(payload["pr_heads"].keys()), {"1"}, "private fetch pr heads")
         assert_equal(fetch_head.read_text(encoding="utf-8"), sentinel, "FETCH_HEAD must not change")
+        fetched_tag = git(fixture.repo, "tag", "--list", remote_only_tag)
+        assert_equal(fetched_tag, "", "private fetch must not auto-follow remote tags")
         leaked_refs = git(fixture.repo, "for-each-ref", "--format=%(refname)", "refs/preflight")
         assert_equal(leaked_refs, "", "private fetch refs must be cleaned up")
+
+
+def assert_unsupported_mergify_queue_condition_does_not_match() -> None:
+    module = load_preflight_module()
+    assert_equal(
+        module.mergify_queue_condition_labels({"queue_conditions": []}),
+        frozenset(),
+        "empty Mergify queue conditions",
+    )
+    assert_equal(
+        module.mergify_queue_condition_labels({"queue_conditions": ["label = hotfix"]}),
+        frozenset({"hotfix"}),
+        "label Mergify queue condition",
+    )
+    assert_equal(
+        module.selected_mergify_queue_rule(
+            {"queue_rules": [{"name": "unsupported", "queue_conditions": ["author = bot"]}]},
+            (),
+        ),
+        None,
+        "unsupported Mergify queue condition",
+    )
 
 
 def assert_mergify_queue_routing_uses_pr_labels() -> None:
@@ -847,13 +923,20 @@ def assert_mergify_queue_routing_uses_pr_labels() -> None:
                 1: approved_pr_view(hotfix_head, labels=("hotfix",)),
                 2: approved_pr_view(default_head),
             },
+            checks=passing_required_checks(1, 2),
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1", "2")
         assert_equal(result.returncode, 1, "queue routing rc")
         payload = parse_json(result.stdout)
-        assert readiness_ready_finding(1, hotfix_head) in payload["findings"], payload["findings"]
-        assert readiness_ready_finding(2, default_head) in payload["findings"], payload["findings"]
-        assert mergify_queue_route_finding(1, "hotfix", ["hotfix"], ["label = hotfix"]) in payload["findings"], payload["findings"]
+        assert readiness_ready_finding(1, hotfix_head, passing_required_checks(1)[1]) in payload["findings"], (
+            payload["findings"]
+        )
+        assert readiness_ready_finding(2, default_head, passing_required_checks(2)[2]) in payload["findings"], (
+            payload["findings"]
+        )
+        assert mergify_queue_route_finding(1, "hotfix", ["hotfix"], ["label = hotfix"]) in payload["findings"], (
+            payload["findings"]
+        )
         assert mergify_queue_route_finding(2, "default", [], []) in payload["findings"], payload["findings"]
         assert mergify_queue_proof_source_finding(
             "hotfix",
@@ -913,6 +996,7 @@ def assert_default_queue_above_max_is_split_advised() -> None:
         bin_dir = write_fake_gh(
             root,
             views={pr: approved_pr_view(head) for pr, head in heads.items()},
+            checks=passing_required_checks(*heads),
         )
         result = run_preflight_with_gh(
             fixture.repo,
@@ -924,6 +1008,24 @@ def assert_default_queue_above_max_is_split_advised() -> None:
         payload = parse_json(result.stdout)
         assert_equal(payload["wave_status"], "split_advised", "default queue above max wave status")
         assert mergify_queue_batch_above_max_finding("default", list(heads), 10) in payload["findings"], payload["findings"]
+
+
+def assert_default_queue_below_min_reports_wait_behavior() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"default.txt": "default\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks=passing_required_checks(1),
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 0, "default queue below min rc")
+        payload = parse_json(result.stdout)
+        assert_equal(payload["wave_status"], "ready", "default queue below min wave status")
+        assert_equal((payload["verdict"], payload["contract_exit_code"]), ("queue_as_one_wave", 0), "default queue below min contract")
+        assert mergify_queue_batch_below_min_finding("default", [1], 2, "5 minutes") in payload["findings"], payload["findings"]
 
 
 def assert_invalid_mergify_config_does_not_route() -> None:
@@ -1094,6 +1196,44 @@ def assert_conflicting_pr_starts_later_batch() -> None:
             "batch conflict batches",
         )
         assert_equal(payload["conflicts"], [expected], "batch conflict artifacts")
+
+
+def assert_ready_batch_conflict_is_split_advised() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        first_head = fixture.make_pr(1, {"shared.txt": "first\n"})
+        second_head = fixture.make_pr(2, {"shared.txt": "second\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={
+                1: approved_pr_view(first_head),
+                2: approved_pr_view(second_head),
+            },
+            checks=passing_required_checks(1, 2),
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1", "2")
+        assert_equal(result.returncode, 1, "ready batch conflict rc")
+        payload = parse_json(result.stdout)
+
+        expected = {
+            "pr": 2,
+            "against_batch": [1],
+            "files": ["shared.txt"],
+            "type": "batch_conflict",
+        }
+        assert_equal(
+            [batch["prs"] for batch in payload["batches"]],
+            [[1], [2]],
+            "ready batch conflict batches",
+        )
+        assert_equal(payload["conflicts"], [expected], "ready batch conflict artifacts")
+        assert_equal(payload["wave_status"], "split_advised", "ready batch conflict wave status")
+        assert_equal(
+            (payload["verdict"], payload["contract_exit_code"]),
+            ("split_advised", 1),
+            "ready batch conflict contract",
+        )
 
 
 def assert_order_dependent_conflict_context_is_reported() -> None:
@@ -1593,6 +1733,112 @@ def assert_required_check_neutral_is_inconclusive_at_runtime() -> None:
         assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "neutral check contract")
 
 
+def assert_empty_required_checks_are_inconclusive_at_runtime() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(root, views={1: approved_pr_view(head)})
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 3, "empty required checks rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        assert_equal(len(blocked), 1, "empty required checks blocked count")
+        assert_equal(blocked[0]["pr"], 1, "empty required checks pr")
+        assert_equal(blocked[0]["type"], "required_check_missing", "empty required checks type")
+        assert_equal(
+            payload["lane_statuses"]["readiness"],
+            "inconclusive",
+            "empty required checks readiness lane",
+        )
+        assert_equal(
+            (payload["verdict"], payload["contract_exit_code"]),
+            ("inconclusive", 3),
+            "empty required checks contract",
+        )
+
+
+def assert_selected_mergify_check_missing_is_inconclusive_at_runtime() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks={1: [passing_required_check("gate")]},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 3, "missing selected Mergify check rc")
+        payload = parse_json(result.stdout)
+        missing_findings = [
+            finding
+            for finding in payload["findings"]
+            if finding["reason_code"] == "required_check_missing"
+        ]
+        missing_contexts = {
+            (
+                finding["evidence"]["check_name"],
+                finding["evidence"]["pr"],
+                finding["evidence"]["queue_rule"],
+            )
+            for finding in missing_findings
+        }
+        assert_equal(
+            missing_contexts,
+            {
+                ("backtester-gate", 1, "default"),
+                ("actionlint", 1, "default"),
+                ("host-health", 1, "default"),
+            },
+            "missing selected Mergify check context",
+        )
+        assert_equal(
+            payload["lane_statuses"]["readiness"],
+            "inconclusive",
+            "missing selected Mergify check readiness lane",
+        )
+        assert_equal(
+            (payload["verdict"], payload["contract_exit_code"]),
+            ("inconclusive", 3),
+            "missing selected Mergify check contract",
+        )
+
+
+def assert_required_check_missing_identity_is_inconclusive_at_runtime() -> None:
+    cases = (
+        ("missing name", {"state": "SUCCESS", "bucket": "pass", "workflow": "CI"}),
+        ("missing workflow", {"name": "gate", "state": "SUCCESS", "bucket": "pass"}),
+    )
+    for label, check in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            fixture = GitFixture(root)
+            head = fixture.make_pr(1, {"one.txt": "one\n"})
+            bin_dir = write_fake_gh(
+                root,
+                views={1: approved_pr_view(head)},
+                checks={1: [check]},
+            )
+            result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+            assert_equal(result.returncode, 3, f"{label} check identity rc")
+            payload = parse_json(result.stdout)
+            blocked = payload["blocked_prs"]
+            assert_equal(len(blocked), 1, f"{label} check identity blocked count")
+            assert_equal(blocked[0]["pr"], 1, f"{label} check identity pr")
+            assert_equal(blocked[0]["type"], "required_check_unknown", f"{label} check identity type")
+            assert_equal(
+                payload["lane_statuses"]["readiness"],
+                "inconclusive",
+                f"{label} check identity readiness lane",
+            )
+            assert_equal(
+                (payload["verdict"], payload["contract_exit_code"]),
+                ("inconclusive", 3),
+                f"{label} check identity contract",
+            )
+
+
 def assert_required_check_exit_code_one_stays_readiness_failure() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -1647,6 +1893,7 @@ def assert_partial_gh_metadata_failure_preserves_other_readiness() -> None:
             root,
             views={1: approved_pr_view(head)},
             failed_views={2: "simulated metadata failure"},
+            checks=passing_required_checks(1),
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1", "2")
         assert_equal(result.returncode, 3, "partial metadata failure rc")
@@ -1678,6 +1925,7 @@ def assert_fetch_failure_after_readiness_is_inconclusive_not_tool_error() -> Non
                 1: approved_pr_view(head),
                 2: approved_pr_view(missing_head),
             },
+            checks=passing_required_checks(1, 2),
         )
         command = [
             sys.executable,
@@ -1905,13 +2153,16 @@ def main() -> int:
     assert_contract_evaluator_reduces_normalized_evidence()
     assert_mergify_config_snapshot_uses_base_blob()
     assert_fetches_use_private_refs_without_fetch_head()
+    assert_unsupported_mergify_queue_condition_does_not_match()
     assert_mergify_queue_routing_uses_pr_labels()
     assert_default_queue_above_max_is_split_advised()
+    assert_default_queue_below_min_reports_wait_behavior()
     assert_invalid_mergify_config_does_not_route()
     assert_stale_base_sha_is_inconclusive()
     assert_stale_expected_head_sha_blocks_pr()
     assert_clean_prs_batch_together()
     assert_conflicting_pr_starts_later_batch()
+    assert_ready_batch_conflict_is_split_advised()
     assert_order_dependent_conflict_context_is_reported()
     assert_pr_that_conflicts_with_base_is_blocked()
     assert_verifier_failure_blocks_bad_pr_before_batching()
@@ -1924,6 +2175,9 @@ def main() -> int:
     assert_wrong_base_ref_is_inconclusive()
     assert_required_check_pending_is_inconclusive()
     assert_required_check_neutral_is_inconclusive_at_runtime()
+    assert_empty_required_checks_are_inconclusive_at_runtime()
+    assert_selected_mergify_check_missing_is_inconclusive_at_runtime()
+    assert_required_check_missing_identity_is_inconclusive_at_runtime()
     assert_required_check_exit_code_one_stays_readiness_failure()
     assert_required_check_exit_code_two_stays_readiness_failure()
     assert_partial_gh_metadata_failure_preserves_other_readiness()

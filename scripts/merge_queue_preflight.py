@@ -28,6 +28,8 @@ MERGIFY_CONFIG_PATH = ".mergify.yml"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 EXPECTED_HEAD_SHA_RE = re.compile(r"^(?P<pr>[1-9][0-9]*)=(?P<sha>[0-9a-f]{40})$")
 MERGIFY_REQUIRED_REVIEWER_RE = re.compile(r"(?:^|\n)approved-reviews-by = (?P<reviewer>[^\n]+)")
+MERGIFY_CHECK_SUCCESS_RE = re.compile(r"(?:^|\n)check-success = (?P<check>[^\n]+)")
+MERGIFY_LABEL_CONDITION_RE = re.compile(r"^label = (?P<label>[^\n]+)$")
 CONFLICT_LINE_RE = re.compile(r"^\d{6} [0-9a-f]{40} [123]\t(.+)$")
 PR_REF_PREFIX = "refs/pull/"
 PREFLIGHT_REF_PREFIX = "refs/preflight/merge_queue_preflight"
@@ -111,19 +113,17 @@ MERGIFY_CONFIG_VALIDATION_STATES = {
         ".mergify.yml snapshot does not satisfy Mergify config contract",
     ),
 }
-MERGIFY_QUEUE_CONDITION_LABELS = {
-    (): frozenset(),
-    ("label = hotfix",): frozenset({"hotfix"}),
-}
-MERGIFY_BATCH_SIZE_EXTRACTORS = {
-    True: lambda batch_size: int(batch_size["max"]),
-    False: int,
-}
 MERGIFY_QUEUE_WAVE_STATUSES = {
     False: STATUS_READY,
     True: VERDICT_SPLIT_ADVISED,
 }
-MERGIFY_SPLIT_REASON_CODES = frozenset({"mergify_queue_batch_above_max"})
+MERGIFY_SPLIT_REASON_CODES = frozenset(
+    {
+        "batch_conflict",
+        "batch_verifier_failed",
+        "mergify_queue_batch_above_max",
+    }
+)
 MERGIFY_QUEUE_PROOF_SOURCE_STATES = {
     True: (
         STATUS_READY,
@@ -616,21 +616,31 @@ def readiness_label_names(readiness: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(sorted(str(dict(label)["name"]) for label in labels))
 
 
+def mergify_queue_condition_labels(rule: Mapping[str, object]) -> frozenset[str] | None:
+    labels: set[str] = set()
+    for condition in tuple(rule.get("queue_conditions", ())):
+        if not isinstance(condition, str):
+            return None
+        match = MERGIFY_LABEL_CONDITION_RE.fullmatch(condition)
+        if match is None:
+            return None
+        labels.add(match.group("label"))
+    return frozenset(labels)
+
+
 def mergify_queue_rule_matches(rule: Mapping[str, object], labels: frozenset[str]) -> bool:
-    condition_labels = MERGIFY_QUEUE_CONDITION_LABELS[tuple(rule["queue_conditions"])]
-    return condition_labels.issubset(labels)
+    condition_labels = mergify_queue_condition_labels(rule)
+    return condition_labels is not None and condition_labels.issubset(labels)
 
 
 def selected_mergify_queue_rule(
     config: Mapping[str, object],
     labels: tuple[str, ...],
-) -> Mapping[str, object]:
-    return next(
-        filter(
-            lambda rule: mergify_queue_rule_matches(rule, frozenset(labels)),
-            tuple(config["queue_rules"]),
-        )
-    )
+) -> Mapping[str, object] | None:
+    for rule in tuple(config.get("queue_rules", ())):
+        if isinstance(rule, Mapping) and mergify_queue_rule_matches(rule, frozenset(labels)):
+            return rule
+    return None
 
 
 def mergify_queue_route_finding(
@@ -652,6 +662,24 @@ def mergify_queue_route_finding(
             "queue_rule": queue_rule,
             "labels": list(labels),
             "queue_conditions": queue_conditions,
+        },
+    }
+
+
+def mergify_queue_route_unavailable_finding(
+    readiness: Mapping[str, object],
+    labels: tuple[str, ...],
+) -> dict[str, object]:
+    pr = int(readiness["pr"])
+    return {
+        "lane": LANE_MERGIFY_CONFIG,
+        "scope": "pr",
+        "status": STATUS_INCONCLUSIVE,
+        "reason_code": "mergify_queue_route_unavailable",
+        "message": f"PR #{pr} does not match a supported Mergify queue rule",
+        "evidence": {
+            "pr": pr,
+            "labels": list(labels),
         },
     }
 
@@ -728,6 +756,118 @@ def selected_mergify_required_reviewer_findings(
     )
 
 
+def mergify_required_check_names(rule: Mapping[str, object]) -> tuple[str, ...]:
+    merge_conditions = [str(condition) for condition in tuple(rule["merge_conditions"])]
+    return tuple(MERGIFY_CHECK_SUCCESS_RE.findall("\n".join(merge_conditions)))
+
+
+def check_name_matches(check: object, required_check: str) -> bool:
+    return isinstance(check, Mapping) and check.get("name") == required_check
+
+
+def missing_mergify_required_check_finding(
+    *,
+    required_check: str,
+    actual_head: str,
+) -> dict[str, object]:
+    return classify_required_check_state(
+        check_name=required_check,
+        raw_state="missing",
+        expected_head=actual_head,
+        actual_head=actual_head,
+        evidence={"workflow": None, "bucket": None},
+    )
+
+
+def duplicate_mergify_required_check_finding(
+    *,
+    required_check: str,
+    actual_head: str,
+) -> dict[str, object]:
+    return classify_required_check_state(
+        check_name=required_check,
+        raw_state="unknown",
+        expected_head=actual_head,
+        actual_head=actual_head,
+        evidence={"workflow": None, "bucket": None},
+    )
+
+
+def mergify_required_check_finding(
+    *,
+    required_check: str,
+    readiness: Mapping[str, object],
+) -> dict[str, object] | None:
+    checks = tuple(readiness.get("checks", ()))
+    metadata = dict(readiness.get("metadata", {}))
+    actual_head = str(metadata.get("headRefOid", ""))
+    matches = tuple(check for check in checks if check_name_matches(check, required_check))
+    if not matches:
+        return missing_mergify_required_check_finding(
+            required_check=required_check,
+            actual_head=actual_head,
+        )
+    if len(matches) > 1:
+        return duplicate_mergify_required_check_finding(
+            required_check=required_check,
+            actual_head=actual_head,
+        )
+    return required_check_state_finding(
+        check=matches[0],
+        expected_head=actual_head,
+        actual_head=actual_head,
+    )
+
+
+def mergify_required_check_context_finding(
+    finding: dict[str, object],
+    *,
+    pr: int,
+    queue_rule: str,
+) -> dict[str, object]:
+    return {
+        **finding,
+        "evidence": {
+            **dict(finding["evidence"]),
+            "pr": pr,
+            "queue_rule": queue_rule,
+        },
+    }
+
+
+def selected_mergify_required_check_findings(
+    *,
+    config: Mapping[str, object],
+    route_findings: Sequence[Mapping[str, object]],
+    readiness: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    rules_by_name = mergify_queue_rules_by_name(config)
+    readiness_by_pr = {int(item["pr"]): item for item in readiness}
+    findings: list[dict[str, object]] = []
+    for route_finding in route_findings:
+        if route_finding["reason_code"] != "mergify_queue_route_selected":
+            continue
+        route_evidence = dict(route_finding["evidence"])
+        pr = int(route_evidence["pr"])
+        queue_rule = str(route_evidence["queue_rule"])
+        rule = rules_by_name[queue_rule]
+        item = readiness_by_pr[pr]
+        for required_check in mergify_required_check_names(rule):
+            finding = mergify_required_check_finding(
+                required_check=required_check,
+                readiness=item,
+            )
+            if finding is not None:
+                findings.append(
+                    mergify_required_check_context_finding(
+                        finding,
+                        pr=pr,
+                        queue_rule=queue_rule,
+                    )
+                )
+    return tuple(findings)
+
+
 def mergify_queue_rules_by_name(config: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
     return {
         str(rule["name"]): rule
@@ -737,7 +877,16 @@ def mergify_queue_rules_by_name(config: Mapping[str, object]) -> dict[str, Mappi
 
 def mergify_queue_batch_max(rule: Mapping[str, object]) -> int:
     batch_size = rule["batch_size"]
-    return MERGIFY_BATCH_SIZE_EXTRACTORS[isinstance(batch_size, Mapping)](batch_size)
+    if isinstance(batch_size, Mapping):
+        return int(batch_size["max"])
+    return int(batch_size)
+
+
+def mergify_queue_batch_min(rule: Mapping[str, object]) -> int:
+    batch_size = rule["batch_size"]
+    if isinstance(batch_size, Mapping):
+        return int(batch_size["min"])
+    return int(batch_size)
 
 
 def mergify_queue_batch_above_max_finding(
@@ -761,34 +910,27 @@ def mergify_queue_batch_above_max_finding(
     }
 
 
-def selected_mergify_queue_batch_above_max_findings(
+def mergify_queue_batch_below_min_finding(
     *,
     queue_rule: str,
     prs: Sequence[int],
-    max_batch_size: int,
-) -> tuple[dict[str, object], ...]:
-    return (
-        mergify_queue_batch_above_max_finding(
-            queue_rule=queue_rule,
-            prs=prs,
-            max_batch_size=max_batch_size,
-        ),
-    )
-
-
-def selected_mergify_queue_batch_within_max_findings(
-    *,
-    queue_rule: str,
-    prs: Sequence[int],
-    max_batch_size: int,
-) -> tuple[dict[str, object], ...]:
-    return ()
-
-
-MERGIFY_BATCH_SIZE_FINDING_BUILDERS = {
-    True: selected_mergify_queue_batch_above_max_findings,
-    False: selected_mergify_queue_batch_within_max_findings,
-}
+    min_batch_size: int,
+    batch_max_wait_time: object,
+) -> dict[str, object]:
+    return {
+        "lane": LANE_MERGIFY_CONFIG,
+        "scope": "queue",
+        "status": STATUS_READY,
+        "reason_code": "mergify_queue_batch_below_min_wait",
+        "message": f"Mergify queue rule {queue_rule} selected {len(prs)} PRs below min batch size {min_batch_size}",
+        "evidence": {
+            "queue_rule": queue_rule,
+            "prs": list(prs),
+            "selected_count": len(prs),
+            "min_batch_size": min_batch_size,
+            "batch_max_wait_time": batch_max_wait_time,
+        },
+    }
 
 
 def mergify_queue_batch_size_findings(
@@ -798,16 +940,29 @@ def mergify_queue_batch_size_findings(
 ) -> tuple[dict[str, object], ...]:
     rules_by_name = mergify_queue_rules_by_name(config)
     groups = mergify_route_queue_groups(route_findings)
-    return tuple(
-        finding
-        for queue_rule, prs in groups.items()
-        for max_batch_size in (mergify_queue_batch_max(rules_by_name[queue_rule]),)
-        for finding in MERGIFY_BATCH_SIZE_FINDING_BUILDERS[len(prs) > max_batch_size](
-            queue_rule=queue_rule,
-            prs=prs,
-            max_batch_size=max_batch_size,
-        )
-    )
+    findings: list[dict[str, object]] = []
+    for queue_rule, prs in groups.items():
+        rule = rules_by_name[queue_rule]
+        min_batch_size = mergify_queue_batch_min(rule)
+        max_batch_size = mergify_queue_batch_max(rule)
+        if len(prs) > max_batch_size:
+            findings.append(
+                mergify_queue_batch_above_max_finding(
+                    queue_rule=queue_rule,
+                    prs=prs,
+                    max_batch_size=max_batch_size,
+                )
+            )
+        if len(prs) < min_batch_size:
+            findings.append(
+                mergify_queue_batch_below_min_finding(
+                    queue_rule=queue_rule,
+                    prs=prs,
+                    min_batch_size=min_batch_size,
+                    batch_max_wait_time=rule["batch_max_wait_time"],
+                )
+            )
+    return tuple(findings)
 
 
 def available_mergify_queue_route_findings(
@@ -816,13 +971,12 @@ def available_mergify_queue_route_findings(
     readiness: Sequence[Mapping[str, object]],
 ) -> tuple[dict[str, object], ...]:
     return tuple(
-        mergify_queue_route_finding(
-            item,
-            selected_mergify_queue_rule(config, labels),
-            labels,
-        )
+        mergify_queue_route_finding(item, rule, labels)
+        if rule is not None
+        else mergify_queue_route_unavailable_finding(item, labels)
         for item in filter(lambda candidate: "metadata" in candidate, readiness)
         for labels in (readiness_label_names(item),)
+        for rule in (selected_mergify_queue_rule(config, labels),)
     )
 
 
@@ -834,6 +988,11 @@ def available_mergify_config_route_and_batch_findings(
     route_findings = available_mergify_queue_route_findings(config=config, readiness=readiness)
     return (
         *route_findings,
+        *selected_mergify_required_check_findings(
+            config=config,
+            route_findings=route_findings,
+            readiness=readiness,
+        ),
         *selected_mergify_queue_proof_source_findings(
             config=config,
             route_findings=route_findings,
@@ -948,7 +1107,19 @@ def required_check_state_finding(
     expected_head: str,
     actual_head: str,
 ) -> dict[str, object] | None:
-    check_name = str(check.get("name", "<unknown>"))
+    raw_name = check.get("name")
+    raw_workflow = check.get("workflow")
+    valid_name = isinstance(raw_name, str) and bool(raw_name)
+    valid_workflow = isinstance(raw_workflow, str) and bool(raw_workflow)
+    check_name = raw_name if valid_name else "<unknown>"
+    if not valid_name or not valid_workflow:
+        return classify_required_check_state(
+            check_name=check_name,
+            raw_state="unknown",
+            expected_head=expected_head,
+            actual_head=actual_head,
+            evidence={"workflow": raw_workflow, "bucket": check.get("bucket")},
+        )
     state_finding = classify_required_check_state(
         check_name=check_name,
         raw_state=str(check.get("state", "missing")),
@@ -1052,10 +1223,17 @@ def mergify_route_queue_rules(findings: Sequence[Mapping[str, object]]) -> froze
     )
 
 
-def mergify_wave_status(findings: Sequence[Mapping[str, object]]) -> str:
+def mergify_wave_status(
+    findings: Sequence[Mapping[str, object]],
+    artifacts: Sequence[Mapping[str, object]] = (),
+) -> str:
+    split_reasons = frozenset(str(finding["reason_code"]) for finding in findings) | frozenset(
+        str(artifact["type"])
+        for artifact in artifacts
+    )
     return MERGIFY_QUEUE_WAVE_STATUSES[
         len(mergify_route_queue_rules(findings)) > 1
-        or bool(MERGIFY_SPLIT_REASON_CODES & frozenset(str(finding["reason_code"]) for finding in findings))
+        or bool(MERGIFY_SPLIT_REASON_CODES & split_reasons)
     ]
 
 
@@ -1079,7 +1257,15 @@ class PrivateFetchRefs:
 
     def fetch_sha(self, origin: str, source: str, name: str) -> str:
         ref = f"{self.namespace}/{name}"
-        git(self.repo, "fetch", "--quiet", "--no-write-fetch-head", origin, f"{source}:{ref}")
+        git(
+            self.repo,
+            "fetch",
+            "--quiet",
+            "--no-write-fetch-head",
+            "--no-tags",
+            origin,
+            f"{source}:{ref}",
+        )
         self.refs.append(ref)
         return git(self.repo, "rev-parse", ref).stdout.strip()
 
@@ -1653,6 +1839,13 @@ def readiness_issues(
     metadata_head = payload.get("headRefOid")
     actual_check_head = str(metadata_head) if isinstance(metadata_head, str) else ""
     expected_check_head = fetched_head or actual_check_head
+    if not checks:
+        issues.append(
+            ReadinessIssue(
+                code="required_check_missing",
+                message="required check evidence is unavailable",
+            )
+        )
     for check in checks:
         issue = required_check_readiness_issue(
             check,
@@ -1951,7 +2144,11 @@ def preflight_with_fetch_refs(
         base=base,
     )
     initial_readiness_blocks = readiness_blocks(readiness)
-    initial_blocked_numbers = {int(block["pr"]) for block in initial_readiness_blocks}
+    initial_blocked_numbers = {
+        int(block["pr"])
+        for block in initial_readiness_blocks
+        if PREFLIGHT_ARTIFACT_CLASSIFICATIONS[str(block["type"])][2] == STATUS_BLOCKED
+    }
     heads, head_fetch_blocks = fetch_available_pr_heads(
         fetch_refs=fetch_refs,
         origin=origin,
@@ -2083,7 +2280,7 @@ def preflight_with_fetch_refs(
         ContractEvidence(
             findings=contract_findings,
             artifacts=(*blocked_prs, *conflicts),
-            wave_status=mergify_wave_status(contract_findings),
+            wave_status=mergify_wave_status(contract_findings, (*blocked_prs, *conflicts)),
         )
     )
     payload = {

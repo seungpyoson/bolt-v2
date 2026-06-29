@@ -671,6 +671,16 @@ jobs:
     needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.result == 'success' && needs.nextest-fingerprint.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
+    outputs:
+      nextest_archive_cache_key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+      root_bin_sidecars_cache_key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+      archive_build_target_cache_key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
+      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}
+      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}
+      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}
+      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}
+      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}
+      archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
@@ -681,6 +691,15 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+      - name: Resolve root nextest cache keys
+        id: root-nextest-cache-keys
+        shell: bash
+        run: |
+          {
+            echo "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+            echo "root_bin_sidecars_cache_key=root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+            echo "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}"
+          } >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@example
         with:
           cache-on-failure: true
@@ -693,20 +712,20 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
       - name: Restore root binary sidecars
         id: root-bin-sidecars-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
-          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
       - name: Restore archive build target cache
         id: test-target-cache
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-
       - name: Install cargo-nextest
@@ -723,11 +742,12 @@ jobs:
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
           just test-archive "$NEXTEST_ARCHIVE_PATH"
       - name: Save nextest archive
+        id: nextest-archive-cache-save
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
       - name: Extract root binary sidecars
         if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
         run: |
@@ -753,17 +773,19 @@ jobs:
             --target-dir "$target_dir" \
             --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
       - name: Save root binary sidecars
+        id: root-bin-sidecars-cache-save
         if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
-          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
       - name: Save archive build target cache
+        id: test-target-cache-save
         if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
       - name: Run nextest archive partitions
         shell: bash
         run: |
@@ -783,6 +805,40 @@ jobs:
             echo "::endgroup::"
           done
           exit "$status"
+
+  cache-persistence-audit:
+    name: cache persistence audit
+    needs: [ci-policy, nextest-fingerprint-reuse, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@example
+      - name: Probe saved cache keys
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/ci_storage_audit.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --github-event-name "$GITHUB_EVENT_NAME" \
+            --github-ref "$GITHUB_REF" \
+            --github-base-ref "$GITHUB_BASE_REF" \
+            --github-default-branch "${{ github.event.repository.default_branch }}" \
+            --github-step-summary "$GITHUB_STEP_SUMMARY" \
+            --github-annotations \
+            --restore-hit "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_hit }}" \
+            --restore-hit "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}" \
+            --restore-hit "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_hit }}" \
+            --save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}" \
+            --save-outcome "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}" \
+            --save-outcome "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}" \
+            --cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}" \
+            --cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}" \
+            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"
 
   test:
     name: test
@@ -4336,6 +4392,285 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
 
+def assert_cache_persistence_audit_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "test-archive must expose cache persistence audit outputs",
+            replace_once(
+                workflow,
+                "      nextest_archive_cache_key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}\n",
+                "",
+            ),
+        ),
+        (
+            "test-archive archive build target cache hit output must be explicit when restore is skipped",
+            replace_once(
+                workflow,
+                "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}\n",
+                "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}\n",
+            ),
+        ),
+        (
+            "test-archive must expose cache persistence save outcomes",
+            replace_once(
+                workflow,
+                "      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}\n",
+                "",
+            ),
+        ),
+        (
+            "test-archive cache save steps must have stable ids for persistence evidence",
+            replace_once(
+                workflow,
+                "        id: nextest-archive-cache-save\n",
+                "        id: nextest-archive-save\n",
+            ),
+        ),
+        (
+            "test-archive cache restore steps must have stable ids for persistence evidence",
+            replace_once(
+                workflow,
+                "        id: nextest-archive-cache\n",
+                "        id: nextest-archive-restore\n",
+            ),
+        ),
+        (
+            "test-archive cache persistence keys must come from single-source cache key outputs",
+            replace_once(
+                workflow,
+                "      - name: Restore nextest archive\n",
+                """      - name: Emit cache persistence audit keys
+        id: cache-audit-keys
+        shell: bash
+        run: |
+          echo "nextest_archive_cache_key=duplicated-template" >> "$GITHUB_OUTPUT"
+
+      - name: Restore nextest archive
+""",
+            ),
+        ),
+        (
+            "test-archive must resolve root nextest cache keys",
+            replace_once(workflow, "        id: root-nextest-cache-keys\n", "        id: cache-keys\n"),
+        ),
+        (
+            "test-archive cache persistence keys must come from single-source cache key outputs",
+            replace_once(
+                workflow,
+                "root_bin_sidecars_cache_key=root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}",
+                "root_bin_sidecars_cache_key=root-bin-sidecars-bad-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}",
+            ),
+        ),
+        (
+            "test-archive cache persistence keys must come from single-source cache key outputs",
+            replace_once_after(
+                workflow,
+                "      - name: Resolve root nextest cache keys\n",
+                "'src/**', 'tests/**') }}",
+                "'src/**', 'tests/**', 'extra/**') }}",
+            ),
+        ),
+        (
+            "cache-persistence-audit job is required",
+            replace_once(workflow, "  cache-persistence-audit:\n", "  cache-persistence-audit-disabled:\n"),
+        ),
+        (
+            "cache-persistence-audit needs test-archive",
+            replace_once(
+                workflow,
+                "    needs: [ci-policy, nextest-fingerprint-reuse, test-archive]",
+                "    needs: [ci-policy, nextest-fingerprint-reuse]",
+            ),
+        ),
+        (
+            "cache-persistence-audit permissions must include actions: read",
+            replace_once(
+                workflow,
+                "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    permissions:\n      contents: read\n      actions: read\n",
+                "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    permissions:\n      contents: read\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit permissions must include actions: read",
+            replace_once(
+                replace_once(
+                    workflow,
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    permissions:\n      contents: read\n      actions: read\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    permissions:\n      contents: read\n",
+                ),
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          echo \"actions: read\" >/dev/null\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must use the workflow token for cache API reads",
+            replace_once(
+                replace_once(
+                    workflow,
+                    "          GH_TOKEN: ${{ github.token }}\n",
+                    "",
+                ),
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          echo 'GH_TOKEN: ${{ github.token }}' >/dev/null\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must run ci_storage_audit exact-key probes",
+            replace_once(workflow, "          python3 scripts/ci_storage_audit.py \\\n", "          python3 scripts/ci_storage_audit_probe.py \\\n"),
+        ),
+        (
+            "cache-persistence-audit must run ci_storage_audit exact-key probes",
+            replace_once(workflow, "          python3 scripts/ci_storage_audit.py \\\n", "          python3 scripts/ci_storage_audit.py.bak \\\n"),
+        ),
+        (
+            "cache-persistence-audit probe must be non-blocking",
+            replace_once(
+                workflow,
+                "      - name: Probe saved cache keys\n        continue-on-error: true\n",
+                "      - name: Probe saved cache keys\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit probe must be non-blocking",
+            replace_once(
+                workflow,
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n\n      - name: Probe saved cache keys\n        continue-on-error: true\n",
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n        continue-on-error: true\n\n      - name: Probe saved cache keys\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit probe must be non-blocking",
+            replace_once(
+                replace_once(
+                    workflow,
+                    "      - name: Probe saved cache keys\n        continue-on-error: true\n",
+                    "      - name: Probe saved cache keys\n",
+                ),
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          echo 'continue-on-error: true' >/dev/null\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must not add extra run steps",
+            replace_once(
+                workflow,
+                "      - name: Probe saved cache keys\n",
+                "      - name: Accidental blocking step\n        run: exit 1\n\n      - name: Probe saved cache keys\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must not add extra steps",
+            replace_once(
+                workflow,
+                "      - name: Probe saved cache keys\n",
+                "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n\n      - name: Probe saved cache keys\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must delegate audit policy to ci_storage_audit",
+            replace_once(
+                workflow,
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          echo preparing cache audit\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must not suppress audit contract failures",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" || true\n',
+            ),
+        ),
+        (
+            "cache-persistence-audit must not suppress audit contract failures",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" || echo suppressed\n',
+            ),
+        ),
+        (
+            "cache-persistence-audit must not suppress audit contract failures",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"; true\n',
+            ),
+        ),
+        (
+            "cache-persistence-audit must not suppress audit contract failures",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" | cat\n',
+            ),
+        ),
+        (
+            "cache-persistence-audit must delegate audit policy to ci_storage_audit",
+            replace_once(
+                workflow,
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          grep -q ': missing;' \"$audit_log\"\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must delegate audit policy to ci_storage_audit",
+            replace_once(
+                workflow,
+                "          python3 scripts/ci_storage_audit.py \\\n",
+                "          set +e\n          python3 scripts/ci_storage_audit.py \\\n",
+            ),
+        ),
+        (
+            "cache-persistence-audit must probe all root nextest cache keys",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"\n',
+                "",
+            ),
+        ),
+        (
+            "cache-persistence-audit must limit exact-key probes to restorable cache refs",
+            replace_once(
+                workflow,
+                '            --github-ref "$GITHUB_REF" \\\n',
+                "",
+            ),
+        ),
+        (
+            "cache-persistence-audit must write probe results to the job summary",
+            replace_once(workflow, '            --github-step-summary "$GITHUB_STEP_SUMMARY" \\\n', ""),
+        ),
+        (
+            "cache-persistence-audit must emit audit annotations from ci_storage_audit",
+            replace_once(workflow, "            --github-annotations \\\n", ""),
+        ),
+        (
+            "cache-persistence-audit must summarize cache restore hits",
+            replace_once(
+                workflow,
+                '            --restore-hit "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_hit }}" \\\n',
+                "",
+            ),
+        ),
+        (
+            "cache-persistence-audit must summarize cache save outcomes",
+            replace_once(
+                workflow,
+                '            --save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}" \\\n',
+                "",
+            ),
+        ),
+    ]
+    for expected, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(expected in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {expected!r}, got: {errors}")
+
+
 def assert_gate_policy_truth_table_gaps_are_reported() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
@@ -5788,6 +6123,20 @@ ci-lint-workflow-inner: require-local-verification-gate
     ):
         raise AssertionError(
             f"ci storage audit test wiring drift was silent, got: {missing_storage_audit_test_errors}"
+        )
+
+    duplicate_storage_audit_test = justfile_text.replace(
+        "    python3 scripts/test_ci_storage_audit.py\n",
+        "    python3 scripts/test_ci_storage_audit.py\n"
+        "    python3 scripts/test_ci_storage_audit.py\n",
+    )
+    duplicate_storage_audit_test_errors = verifier.verify_local_verification_gate_recipes(duplicate_storage_audit_test)
+    if not any(
+        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_audit.py exactly once" in error
+        for error in duplicate_storage_audit_test_errors
+    ):
+        raise AssertionError(
+            f"duplicate ci storage audit test wiring was silent, got: {duplicate_storage_audit_test_errors}"
         )
 
     missing_sidecar_test = justfile_text.replace("    python3 scripts/test_root_bin_sidecars.py\n", "")
@@ -9525,10 +9874,10 @@ def remove_all_fragments_if_present(text: str, fragment: str) -> str:
 
 def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     cache_key_line = (
-        "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+        "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
     )
     inline_hashfiles_key_line = (
-        "          key: nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock') }}"
+        "nextest_archive_cache_key=nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock') }}"
     )
     assert_error(
         "nextest archive cache key must use nextest fingerprint output",
@@ -10722,11 +11071,19 @@ def main() -> int:
         "test-archive must opt into managed target dir",
         replace_once(
             BASE_WORKFLOW,
-            '          include-nextest-version: "true"\n'
-            '          include-managed-target-dir: "true"\n'
-            "      - uses: Swatinem/rust-cache@example",
-            '          include-nextest-version: "true"\n'
-            "      - uses: Swatinem/rust-cache@example",
+            """      - uses: ./.github/actions/setup-environment
+        id: setup
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+          include-managed-target-dir: "true"
+      - name: Resolve root nextest cache keys""",
+            """      - uses: ./.github/actions/setup-environment
+        id: setup
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+      - name: Resolve root nextest cache keys""",
         ),
     )
     assert_error(
@@ -10739,7 +11096,7 @@ def main() -> int:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-
 """,
@@ -10751,11 +11108,12 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Save archive build target cache
+        id: test-target-cache-save
         if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
 """,
             "",
         ),
@@ -10798,7 +11156,7 @@ def main() -> int:
         "test-archive must save nextest archive cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Save nextest archive\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
+            "      - name: Save nextest archive\n        id: nextest-archive-cache-save\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
             "",
         ),
     )
@@ -10806,16 +11164,16 @@ def main() -> int:
         "nextest archive cache key must use nextest fingerprint output",
         replace_once(
             BASE_WORKFLOW,
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}",
-            "          key: nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock') }}",
+            "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}",
+            "nextest_archive_cache_key=nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock') }}",
         ),
     )
     assert_error(
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n      - name: Restore root binary sidecars",
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n          restore-keys: nextest-archive-v2-\n      - name: Restore root binary sidecars",
+            "          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}\n      - name: Restore root binary sidecars",
+            "          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}\n          restore-keys: nextest-archive-v2-\n      - name: Restore root binary sidecars",
         ),
     )
     # #400: every managed-target cache must declare a restore-keys prefix fallback.
@@ -10831,8 +11189,8 @@ def main() -> int:
         "test-archive managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-\n      - name: Install cargo-nextest",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}\n      - name: Install cargo-nextest",
+            "          key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-\n      - name: Install cargo-nextest",
+            "          key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}\n      - name: Install cargo-nextest",
         ),
     )
     assert_error(
@@ -11142,8 +11500,8 @@ def main() -> int:
         "nextest archive cache key must use nextest fingerprint output",
         replace_once(
             BASE_WORKFLOW,
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}",
-            "          key: nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('extra-input.txt', 'Cargo.lock') }}",
+            "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}",
+            "nextest_archive_cache_key=nextest-archive-v2-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('extra-input.txt', 'Cargo.lock') }}",
         ),
     )
     assert_error(
@@ -11264,7 +11622,11 @@ def main() -> int:
     )
     assert_error(
         "test must check needs.test-archive.result",
-        replace_once(BASE_WORKFLOW, "needs.test-archive.result", "omitted.test-archive.result"),
+        replace_once(
+            BASE_WORKFLOW,
+            'if [[ "${{ needs.test-archive.result }}" != "success" ]]; then',
+            'if [[ "${{ omitted.test-archive.result }}" != "success" ]]; then',
+        ),
     )
     assert_error(
         "test must use always()",
@@ -12579,6 +12941,7 @@ def main() -> int:
     assert_merge_group_support_gaps_are_reported()
     assert_mergify_config_gaps_are_reported()
     assert_ci_policy_heavy_lane_gaps_are_reported()
+    assert_cache_persistence_audit_gaps_are_reported()
     assert_gate_policy_truth_table_gaps_are_reported()
     assert_ci_concurrency_split_gaps_are_reported()
     assert_mergify_proof_pr_concurrency_gaps_are_reported()

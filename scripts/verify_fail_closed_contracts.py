@@ -105,7 +105,7 @@ EXCEPTIONS_KEYS = frozenset({"version", "exceptions"})
 EXCEPTION_ENTRY_KEYS = frozenset({"rule_id", "path", "line", "reason"})
 STALE_EXCEPTION_RULE_ID = "FLC000"
 LOGGER_RECEIVER_NAMES = frozenset({"log", "logger", "logging"})
-LOGGER_FACTORY_NAMES = frozenset({"get_log", "get_logger", "get_logging"})
+LOGGER_FACTORY_NAMES = frozenset({"get_log", "get_logger", "get_logging", "getLogger"})
 
 
 def strings(field_name: str, value: object) -> tuple[str, ...]:
@@ -437,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         findings = collect_findings(args.root, args.config, args.exceptions_config)
     except (OSError, KeyError, SyntaxError, TypeError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        print(f"FAIL: fail-closed contract verifier configuration error: {exc}", file=sys.stderr)
+        print(f"FAIL: fail-closed contract verifier input error: {exc}", file=sys.stderr)
         return 2
     if findings:
         print("FAIL: fail-closed contract violations:", file=sys.stderr)

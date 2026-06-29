@@ -13,6 +13,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "verify_fail_closed_contracts.py"
+INPUT_ERROR_PREFIX = "FAIL: fail-closed contract verifier input error:"
 
 
 def load_verifier():
@@ -315,6 +316,32 @@ def test_chained_logger_exception_classifies_logged_sentinel_return() -> None:
 
     assert findings == [
         "FLC004:pkg/chained_logger.py:4: catch-all exception handler logs then returns a sentinel"
+    ], findings
+
+
+def test_stdlib_getlogger_exception_classifies_logged_sentinel_return() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_file(
+            root,
+            "pkg/stdlib_getlogger.py",
+            """
+            import logging
+
+            def load_contract():
+                try:
+                    return parse()
+                except Exception:
+                    logging.getLogger(__name__).exception("contract failed")
+                    return None
+            """,
+        )
+
+        findings = collect(root)
+
+    assert findings == [
+        "FLC004:pkg/stdlib_getlogger.py:6: catch-all exception handler logs then returns a sentinel"
     ], findings
 
 
@@ -752,7 +779,7 @@ def test_cli_reports_config_errors_without_traceback() -> None:
         )
 
     assert result.returncode == 2
-    assert "FAIL: fail-closed contract verifier configuration error:" in result.stderr
+    assert INPUT_ERROR_PREFIX in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -786,7 +813,7 @@ def test_cli_reports_exception_config_errors_without_traceback() -> None:
         )
 
     assert result.returncode == 2
-    assert "FAIL: fail-closed contract verifier configuration error:" in result.stderr
+    assert INPUT_ERROR_PREFIX in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -813,7 +840,7 @@ def test_cli_reports_source_syntax_errors_without_traceback() -> None:
         )
 
     assert result.returncode == 2
-    assert "FAIL: fail-closed contract verifier configuration error:" in result.stderr
+    assert INPUT_ERROR_PREFIX in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -842,7 +869,7 @@ def test_cli_reports_source_decode_errors_without_traceback() -> None:
         )
 
     assert result.returncode == 2
-    assert "FAIL: fail-closed contract verifier configuration error:" in result.stderr
+    assert INPUT_ERROR_PREFIX in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -965,6 +992,7 @@ def main() -> int:
         test_broad_except_tuple_sentinel_return_fails_closed,
         test_self_logger_exception_classifies_logged_sentinel_return,
         test_chained_logger_exception_classifies_logged_sentinel_return,
+        test_stdlib_getlogger_exception_classifies_logged_sentinel_return,
         test_non_logger_exception_method_does_not_classify_as_logged,
         test_conditional_sentinel_return_fails_closed,
         test_boolean_sentinel_return_fails_closed,

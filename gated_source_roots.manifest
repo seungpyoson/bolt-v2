@@ -33,8 +33,9 @@ src/bolt_v3_binary_outcome_edge.rs
 src/bolt_v3_executable_cost.rs
 src/bolt_v3_sizing.rs
 src/bolt_v3_taker_updown_signal.rs
-# Test-only split files for the live-node module are production-empty because
-# each file starts with #![cfg(test)].
+# The live-node directory is gated for source integrity; it is not a strategy
+# implementation root, so strategy-local policy fences exclude it from strategy
+# code scans.
 src/bolt_v3_live_node
 
 [submit_admission]

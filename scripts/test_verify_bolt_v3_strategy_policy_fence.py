@@ -81,6 +81,28 @@ class StrategyPolicyFenceTests(unittest.TestCase):
                 VERIFIER.source_set_files = original_source_set_files
                 VERIFIER.REPO_ROOT = original_root
 
+    def test_live_node_gated_root_is_not_scanned_as_strategy_policy_source(self) -> None:
+        violations = self.collect_violations_for_temp_sources(
+            {
+                "src/bolt_v3_live_node/iv.rs": "fn allowed_live_node_binding() { msgbus::subscribe_any(pattern, handler, None); }\n",
+                "src/strategies/binary_oracle_edge_taker/mod.rs": "fn strategy_violation() { subscribe_any(topic, handler, None); }\n",
+            }
+        )
+
+        self.assertFalse(
+            any(
+                violation.path == "src/bolt_v3_live_node/iv.rs"
+                for violation in violations
+            )
+        )
+        self.assertTrue(
+            any(
+                violation.path == "src/strategies/binary_oracle_edge_taker/mod.rs"
+                and violation.label == "dead runtime-selection bus path"
+                for violation in violations
+            )
+        )
+
     def test_detects_removed_policy_hardcodes(self) -> None:
         labels = self.labels_for(
             """

@@ -8613,7 +8613,7 @@ classification = "build_head_env_name"
 reason = "This is a compile-time Cargo environment variable emitted by build.rs to bind the binary to the built source head."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"source params"'''
 context = '''insert_toml_params(&mut params, source_params, "source params")?;'''
@@ -8621,7 +8621,7 @@ classification = "iv_nt_binding_diagnostic_label"
 reason = "The live IV NT binding adapter labels TOML param conversion errors; the source params themselves remain profile-owned TOML values."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"selector nt_params"'''
 context = '''insert_toml_params(&mut params, selector_nt_params, "selector nt_params")?;'''
@@ -8629,7 +8629,7 @@ classification = "iv_nt_binding_diagnostic_label"
 reason = "The live IV NT binding adapter labels selector NT-param conversion errors; the NT params themselves remain selector-owned TOML values."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"snapshot_interval_ms"'''
 context = '''.and_then(|params| params.get_u64("snapshot_interval_ms"));'''
@@ -8637,7 +8637,7 @@ classification = "iv_nt_command_param_key"
 reason = "This is the NT option-chain command parameter key read from profile-owned TOML params before constructing the NT subscribe command."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"atm_percent:"'''
 context = '''if let Some(pct) = strike_range_policy.strip_prefix("atm_percent:") {'''
@@ -8645,7 +8645,7 @@ classification = "iv_nt_strike_range_policy_token"
 reason = "This is a typed parser token for converting profile-owned strike_range_policy TOML into NT StrikeRange::AtmPercent; the percentage remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"atm_relative:"'''
 context = '''if let Some(relative) = strike_range_policy.strip_prefix("atm_relative:") {'''
@@ -8653,7 +8653,7 @@ classification = "iv_nt_strike_range_policy_token"
 reason = "This is a typed parser token for converting profile-owned strike_range_policy TOML into NT StrikeRange::AtmRelative; the strike counts remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"fixed:"'''
 context = '''if let Some(fixed) = strike_range_policy.strip_prefix("fixed:") {'''
@@ -10121,7 +10121,7 @@ classification = "iv_registration_diagnostic_literal"
 reason = "IV strategy registration uses tuple-field indices and diagnostic templates while wiring config-owned query handles; this is not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"underlying_selectors"'''
 context = '''"underlying_selectors".to_string(),'''

@@ -6731,6 +6731,8 @@ source-fence-static-inner: require-local-verification-gate
     python3 scripts/test_lane_governor.py
     python3 scripts/test_verify_lane_governance.py
     python3 scripts/verify_lane_governance.py
+    python3 scripts/test_verify_fail_closed_contracts.py
+    python3 scripts/verify_fail_closed_contracts.py
 
 source-fence: source-fence-static
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
@@ -6785,6 +6787,30 @@ source-fence: source-fence-static
     missing_errors = verifier.verify_source_fence_static_recipe(missing_lane_check)
     if not any("must run python3 scripts/verify_lane_governance.py" in error for error in missing_errors):
         raise AssertionError(f"source-fence-static must require lane governance meta-check, got: {missing_errors}")
+
+    missing_fail_closed_verifier = justfile_text.replace(
+        "    python3 scripts/verify_fail_closed_contracts.py\n",
+        "",
+    )
+    missing_fail_closed_errors = verifier.verify_source_fence_static_recipe(missing_fail_closed_verifier)
+    if not any("must run python3 scripts/verify_fail_closed_contracts.py" in error for error in missing_fail_closed_errors):
+        raise AssertionError(f"source-fence-static must require fail-closed verifier, got: {missing_fail_closed_errors}")
+
+    missing_fail_closed_pair = justfile_text.replace(
+        "    python3 scripts/test_verify_fail_closed_contracts.py\n"
+        "    python3 scripts/verify_fail_closed_contracts.py\n",
+        "",
+    )
+    missing_fail_closed_pair_errors = verifier.verify_source_fence_static_recipe(missing_fail_closed_pair)
+    for command in (
+        "python3 scripts/test_verify_fail_closed_contracts.py",
+        "python3 scripts/verify_fail_closed_contracts.py",
+    ):
+        if not any(f"must run {command}" in error for error in missing_fail_closed_pair_errors):
+            raise AssertionError(
+                f"source-fence-static must require fail-closed command {command}, "
+                f"got: {missing_fail_closed_pair_errors}"
+            )
 
     commented_lane_test = justfile_text.replace(
         "    python3 scripts/test_lane_governor.py",

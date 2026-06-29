@@ -1350,6 +1350,9 @@ git config "remote.${{clean_merged_remote}}.prune" true
         self.assertIn("invalid or future-dated gh cache entries fail closed", normalized_lower)
         self.assertNotIn("pre-purge warning", normalized_lower)
         self.assertIn("rotated_log_retention_days", normalized)
+        self.assertIn("secret-redacted", normalized_lower)
+        self.assertIn("report_error_max_chars", normalized)
+        self.assertNotIn("Design provenance", source)
 
     def test_post_rewrite_comment_uses_configured_trunk(self) -> None:
         source = (REPO_ROOT / ".githooks" / "post-rewrite").read_text(encoding="utf-8")

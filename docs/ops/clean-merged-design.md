@@ -105,7 +105,8 @@ archive through the grace period.
 Candidates: worktrees whose bound branch is **eligible for deletion by Lane
 H/R rules** (ancestor of trunk OR gh-confirmed), OR detached-HEAD worktrees
 whose HEAD is ancestor of trunk. **Lane W runs BEFORE the branch ref is
-deleted** (the inversion that fixes the round-3 structural P0).
+deleted** so worktree-bound refs are removed only by Lane W's archive-first
+sequence.
 
 Per candidate, atomic sequence under `fcntl.flock` on
 `$(git rev-parse --git-common-dir)/clean-merged.lock`:
@@ -169,12 +170,13 @@ Path: `$(git rev-parse --git-common-dir)/clean-merged.log`. Rotation under
 retained for `rotated_log_retention_days` and reported by `--doctor`. Each
 record: `ts, lane, branch, tip_sha, action, reason, backup_ref,
 quarantine_path, recovery_hint` (structured pointer, not literal shell —
-survives shell-sensitive branch names).
+survives shell-sensitive branch names). Subprocess diagnostics stored in
+`reason` fields are secret-redacted first and then bounded by
+`report_error_max_chars`.
 
 ## Contract: what "always-on" actually means
 
-(round-soundness GPT/Kimi/Claude: the original "always-on" framing overclaimed
-in two specific ways. Stated precisely:)
+The "always-on" contract has two precise limits:
 
 - **Always-on per clone, after `just setup`.** The tool is inert in a fresh
   clone until `just setup` runs `git config core.hooksPath .githooks`. Git
@@ -204,14 +206,14 @@ in two specific ways. Stated precisely:)
 
 - Lane H only cleans non-worktree-bound branches. Worktree-bound branches
   flow to Lane W (explicit). Cost of never doing irreversible work in a hook.
-- **Detached-HEAD worktrees are refused by default** (round-soundness GPT P0 /
-  Kimi RECOVERY_HOLE). Scenario defeated: operator makes an exploratory commit
-  in a detached worktree, resets back to trunk, then runs Lane W. The worktree's
-  HEAD is at trunk (eligible), but the reset-away commit lives only in the
-  worktree's reflog. The archive captures the post-reset working tree (NOT the
-  orphaned commit); `git worktree remove` deletes the worktree's reflog with
-  the admin entry; the commit becomes unreachable. `--allow-detached-removal`
-  overrides after accepting that reflog-only commits are not preserved.
+- **Detached-HEAD worktrees are refused by default**. Scenario defeated:
+  operator makes an exploratory commit in a detached worktree, resets back to
+  trunk, then runs Lane W. The worktree's HEAD is at trunk (eligible), but the
+  reset-away commit lives only in the worktree's reflog. The archive captures
+  the post-reset working tree (NOT the orphaned commit); `git worktree remove`
+  deletes the worktree's reflog with the admin entry; the commit becomes
+  unreachable. `--allow-detached-removal` overrides after accepting that
+  reflog-only commits are not preserved.
 - Lane R hook-spawn runs gh per merge (detached, timeout-bounded). Persistent
   gh unavailability → squash-merged branches accumulate until online manual
   reconcile. Documented; no data loss.
@@ -219,27 +221,27 @@ in two specific ways. Stated precisely:)
   doctor disk-usage report + 30d alignment with backup-ref pruning.
 - Assume-unchanged/skip-worktree files default-refused; explicit override
   destroys hidden modifications.
-- **Silent hook-death detection latency** (round-soundness GPT/Kimi/Claude).
-  If `python3` becomes unavailable (brew upgrade removes the symlink, PATH
-  change after OS update), the hooks silently no-op via `command -v python3 ||
-  exit 0`. If `python3` exists but lacks stdlib `tomllib` (Python <3.11), the
-  script fail-opens for hook lanes and `--doctor` reports `tomllib=no` with the
-  Python 3.11+ requirement. The fail-open contract is intentional — a hook that
-  broke `git pull` over a missing dep would be strictly worse. Detection still
-  depends on `--doctor`'s heartbeat-freshness check (configured heartbeat
-  stale threshold (default 7 days)); doctor is opt-in/pull-based (no
-  cron/launchd wiring), so real detection latency is the configured heartbeat
-  stale threshold (default 7 days) + however long until someone runs doctor.
-  The failure cost equals the no-tool baseline (merged branches linger;
-  committed work stays reachable via reflog); prior deletions are backup-ref
-  protected. Run `just clean-merged-doctor` periodically.
-- **Lane R gh cost under slowdown** (round-soundness GPT/Kimi). Lane R is
-  spawned detached on every `post-merge`; each non-ancestor branch triggers a
-  per-branch gh query (config-backed timeout each). On a repo with ~40 branches
-  during a gh slowdown, background work could last several minutes per merge.
-  The git op returns instantly (detached); the cost is background CPU +
-  potential gh rate-limit pressure. Mitigated by per-branch TTL cache + the fail-safe
-  "gh trouble → keep branch" contract. If gh is persistently slow, squash-merged
+- **Silent hook-death detection latency**. If `python3` becomes unavailable
+  (brew upgrade removes the symlink, PATH change after OS update), the hooks
+  silently no-op via `command -v python3 || exit 0`. If `python3` exists but
+  lacks stdlib `tomllib` (Python <3.11), the script fail-opens for hook lanes
+  and `--doctor` reports `tomllib=no` with the Python 3.11+ requirement. The
+  fail-open contract is intentional — a hook that broke `git pull` over a
+  missing dep would be strictly worse. Detection still depends on `--doctor`'s
+  heartbeat-freshness check (configured heartbeat stale threshold (default 7
+  days)); doctor is opt-in/pull-based (no cron/launchd wiring), so real
+  detection latency is the configured heartbeat stale threshold (default 7
+  days) + however long until someone runs doctor. The failure cost equals the
+  no-tool baseline (merged branches linger; committed work stays reachable via
+  reflog); prior deletions are backup-ref protected. Run
+  `just clean-merged-doctor` periodically.
+- **Lane R gh cost under slowdown**. Lane R is spawned detached on every
+  `post-merge`; each non-ancestor branch triggers a per-branch gh query
+  (config-backed timeout each). On a repo with ~40 branches during a gh
+  slowdown, background work could last several minutes per merge. The git op
+  returns instantly (detached); the cost is background CPU + potential gh
+  rate-limit pressure. Mitigated by per-branch TTL cache + the fail-safe "gh
+  trouble → keep branch" contract. If gh is persistently slow, squash-merged
   branches accumulate until an online manual reconcile. No data loss.
 - **Invalid or future-dated gh cache entries fail closed.** A cache entry with
   malformed PR payloads, non-finite timestamps, or `fetched_at` in the future
@@ -248,36 +250,22 @@ in two specific ways. Stated precisely:)
   keeps branches and is surfaced by `--doctor` with the cache path so the
   operator can delete the file if needed. This favors no false deletes over
   cache self-healing.
-- **No `fsync` before `os.replace`** (round-5.5 Grok P2). Atomic manifest/cache
-  writes use `tmp.write_text()` + `os.replace()` without an intervening
+- **No `fsync` before `os.replace`**. Atomic manifest/cache writes use
+  `tmp.write_text()` + `os.replace()` without an intervening
   `fsync`. A power-loss between write and replace could lose the tmp file's
   content on some filesystems. Standard tradeoff for this class of tool; the
   target file is either the previous content or the new content (atomic rename
   guarantee), never partial. The worst case is a lost manifest update, not
   corruption. Accepted.
-- **`has_nested_git` not re-checked at Lane W TOCTOU point** (round-5
-  self-review). The hidden-bits, ignored-content, and dirty guards are all
-  re-run inside the `if apply:` block; `has_nested_git` is not (it walks the
-  full worktree and doubling the walk cost wasn't justified for the implausible
-  race — someone cloning a repo into the worktree mid-sweep). The upfront check
-  covers the common case. Accepted.
-- **TOCTOU under `--discard-ignored`** (round-3 disproved for default; accepted
-  for explicit override). In default mode, the tool refuses ANY ignored content
-  upfront (fail-closed). Under `--discard-ignored` (explicit operator opt-in),
-  a microsecond window exists between tar-finish and `git worktree remove` where
-  a new ignored file could appear and be deleted without being captured in the
-  archive. The operator explicitly accepted destructive treatment of ignored
-  content by passing the flag. Accepted.
-
-## Design provenance
-
-Three external adversarial review rounds (GPT, Kimi, Claude 44-subagent).
-Round 3 converged on the lane-ordering inversion (the structural P0: Lane R's
-`update-ref -d` bypasses git's worktree guard, bricking worktrees, so Lane W
-cannot clean them without `--force`). v4 fixes via Lane-W-owns-the-sequence.
-
-Implementation later revised Lane W's primitive from `git worktree move` to
-`tar` + `git worktree remove`: a moved worktree keeps its admin entry, leaving
-the branch bound and blocking immediate deletion. Archive-then-remove (under
-fail-closed guards + flock + integrity check) preserves the tree while
-allowing the branch to be deleted immediately.
+- **`has_nested_git` not re-checked at Lane W TOCTOU point**. The hidden-bits,
+  ignored-content, and dirty guards are all re-run inside the `if apply:`
+  block; `has_nested_git` is not (it walks the full worktree and doubling the
+  walk cost wasn't justified for the implausible race — someone cloning a repo
+  into the worktree mid-sweep). The upfront check covers the common case.
+  Accepted.
+- **TOCTOU under `--discard-ignored`**. In default mode, the tool refuses ANY
+  ignored content upfront (fail-closed). Under `--discard-ignored` (explicit
+  operator opt-in), a microsecond window exists between tar-finish and
+  `git worktree remove` where a new ignored file could appear and be deleted
+  without being captured in the archive. The operator explicitly accepted
+  destructive treatment of ignored content by passing the flag. Accepted.

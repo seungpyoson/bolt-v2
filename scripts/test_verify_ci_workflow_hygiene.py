@@ -6286,12 +6286,237 @@ def assert_actionlint_requires_pr_event_types() -> None:
         ("ready_for_review", "types: [opened, synchronize, reopened, edited]"),
         ("edited", "types: [opened, synchronize, reopened, ready_for_review]"),
     ):
-        bad = replace_once(workflow, f"types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
+        bad = replace_once(workflow, "types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
         bad_errors = verifier.verify_repo_automation_texts({workflow_name: bad})
         if not any(f"pull_request types must include {missing_type}" in error for error in bad_errors):
             raise AssertionError(
                 f"actionlint workflow must require {missing_type} in pull_request types, got: {bad_errors}"
             )
+
+
+def assert_actionlint_runs_ci_storage_audit_tests() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/actionlint.yml"
+    workflow = repo_workflow_text(workflow_name)
+    errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
+    if any("must run python3 scripts/test_ci_storage_audit.py" in error for error in errors):
+        raise AssertionError(f"actionlint workflow must run storage audit tests, got: {errors}")
+
+    missing = replace_once(workflow, "          python3 scripts/test_ci_storage_audit.py\n", "")
+    missing_errors = verifier.verify_repo_automation_texts({workflow_name: missing})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in missing_errors
+    ):
+        raise AssertionError(f"actionlint storage audit test wiring drift was silent, got: {missing_errors}")
+
+    name_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "      - name: python3 scripts/test_ci_storage_audit.py\n",
+    )
+    name_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: name_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in name_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit step-name decoy was silent, got: {name_decoy_errors}")
+
+    echo_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          echo 'python3 scripts/test_ci_storage_audit.py'\n",
+    )
+    echo_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: echo_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in echo_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit echo decoy was silent, got: {echo_decoy_errors}")
+
+    comment_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          # python3 scripts/test_ci_storage_audit.py\n",
+    )
+    comment_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: comment_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in comment_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit comment decoy was silent, got: {comment_decoy_errors}")
+
+    duplicated = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          python3 scripts/test_ci_storage_audit.py\n",
+    )
+    duplicated_errors = verifier.verify_repo_automation_texts({workflow_name: duplicated})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py exactly once" in error
+        for error in duplicated_errors
+    ):
+        raise AssertionError(f"actionlint storage audit duplicate command was silent, got: {duplicated_errors}")
+
+    skipped_job = replace_once(
+        workflow,
+        "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    steps:\n",
+        "    if: false\n    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    steps:\n",
+    )
+    skipped_job_errors = verifier.verify_repo_automation_texts({workflow_name: skipped_job})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in skipped_job_errors
+    ):
+        raise AssertionError(f"actionlint storage audit skipped-job decoy was silent, got: {skipped_job_errors}")
+
+    skipped_step = replace_once(
+        workflow,
+        "      - name: Verify AI review governance and storage audit safety tests\n        run: |\n",
+        "      - name: Verify AI review governance and storage audit safety tests\n"
+        "        if: false\n"
+        "        run: |\n",
+    )
+    skipped_step_errors = verifier.verify_repo_automation_texts({workflow_name: skipped_step})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in skipped_step_errors
+    ):
+        raise AssertionError(f"actionlint storage audit skipped-step decoy was silent, got: {skipped_step_errors}")
+
+    folded_scalar_decoy = replace_once(workflow, "        run: |\n", "        run: >\n")
+    folded_scalar_errors = verifier.verify_repo_automation_texts({workflow_name: folded_scalar_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in folded_scalar_errors
+    ):
+        raise AssertionError(f"actionlint storage audit folded-scalar decoy was silent, got: {folded_scalar_errors}")
+
+    heredoc_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          cat <<'EOF'\n"
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          EOF\n",
+    )
+    heredoc_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: heredoc_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in heredoc_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit heredoc decoy was silent, got: {heredoc_decoy_errors}")
+
+    false_branch = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          if false; then\n"
+        "            python3 scripts/test_ci_storage_audit.py\n"
+        "          fi\n",
+    )
+    false_branch_errors = verifier.verify_repo_automation_texts({workflow_name: false_branch})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in false_branch_errors
+    ):
+        raise AssertionError(f"actionlint storage audit false-branch decoy was silent, got: {false_branch_errors}")
+
+    function_body_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          run_storage_audit() {\n"
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          }\n",
+    )
+    function_body_errors = verifier.verify_repo_automation_texts({workflow_name: function_body_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in function_body_errors
+    ):
+        raise AssertionError(f"actionlint storage audit function-body decoy was silent, got: {function_body_errors}")
+
+    split_brace_function_body_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          run_storage_audit()\n"
+        "          {\n"
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          }\n",
+    )
+    split_brace_function_body_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: split_brace_function_body_decoy}
+    )
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in split_brace_function_body_errors
+    ):
+        raise AssertionError(
+            "actionlint storage audit split-brace function-body decoy was silent, "
+            f"got: {split_brace_function_body_errors}"
+        )
+
+    subshell_function_body_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          run_storage_audit() (\n"
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          )\n",
+    )
+    subshell_function_body_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: subshell_function_body_decoy}
+    )
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in subshell_function_body_errors
+    ):
+        raise AssertionError(
+            "actionlint storage audit subshell function-body decoy was silent, "
+            f"got: {subshell_function_body_errors}"
+        )
+
+    multiline_quote_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          echo \"\n"
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          \"\n",
+    )
+    multiline_quote_errors = verifier.verify_repo_automation_texts({workflow_name: multiline_quote_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in multiline_quote_errors
+    ):
+        raise AssertionError(f"actionlint storage audit multiline-quote decoy was silent, got: {multiline_quote_errors}")
+
+    env_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          echo \"not storage audit\"\n"
+        "        env:\n"
+        "          STORAGE_AUDIT_TEST: |\n"
+        "            python3 scripts/test_ci_storage_audit.py\n",
+    )
+    env_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: env_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in env_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit env decoy was silent, got: {env_decoy_errors}")
+
+    with_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          echo \"not storage audit\"\n"
+        "        with:\n"
+        "          storage_audit_command: |\n"
+        "            python3 scripts/test_ci_storage_audit.py\n",
+    )
+    with_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: with_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in with_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit with decoy was silent, got: {with_decoy_errors}")
 
 
 def assert_ci_docs_pass_stub_is_absent() -> None:
@@ -10977,9 +11202,9 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         stale_fingerprint_with_decoy,
         "  nextest-fingerprint-reuse:",
         "      - name: Resolve nextest fingerprint reuse",
-        f"""      - name: Decoy resolver command
+        """      - name: Decoy resolver command
         run: |
-          echo 'python3 scripts/ci_provenance.py resolve-fingerprint --current-run-id "${{{{ github.run_id }}}}" --current-fingerprint "${{{{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}}}" | tee -a "$GITHUB_OUTPUT"'
+          echo 'python3 scripts/ci_provenance.py resolve-fingerprint --current-run-id "${{ github.run_id }}" --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}" | tee -a "$GITHUB_OUTPUT"'
 
       - name: Resolve nextest fingerprint reuse""",
     )
@@ -13772,6 +13997,7 @@ def main() -> int:
     assert_backtester_ci_defers_managed_heavy_on_draft_prs()
     assert_actionlint_rejects_stale_config_variables()
     assert_actionlint_requires_pr_event_types()
+    assert_actionlint_runs_ci_storage_audit_tests()
     assert_ci_docs_pass_stub_is_absent()
     assert_source_fence_static_ignores_comments()
     assert_local_verification_gate_recipes_are_enforced()

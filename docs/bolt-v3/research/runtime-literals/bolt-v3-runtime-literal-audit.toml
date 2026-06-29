@@ -15986,7 +15986,7 @@ classification = "strategy_free_custom_data_diagnostic"
 reason = "Strategy-free reference health diagnostic for a custom-data subscription whose client id was not registered; the client id comes from validated TOML."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''0'''
 context = '''(0..max_targets)'''
@@ -15994,7 +15994,7 @@ classification = "strategy_free_probe_sampling_index"
 reason = "Deterministic metadata sampling index arithmetic; source-owned target counts and limits remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''0'''
 context = '''.unwrap_or(0);'''
@@ -16002,7 +16002,7 @@ classification = "strategy_free_probe_required_count_default"
 reason = "Diagnostic default for a probe with no installed fixed targets yet; subscription limits and required observations remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''0'''
 context = '''Some(0) => Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup('''
@@ -16010,7 +16010,7 @@ classification = "strategy_free_probe_fail_closed_boundary"
 reason = "Fail-closed validation boundary rejecting a zero metadata-response target cap; the cap itself is TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''0'''
 context = '''cursor: Cell::new(0),'''
@@ -16018,7 +16018,7 @@ classification = "strategy_free_probe_chunk_walk_index"
 reason = "Initial cursor for deterministic chunk-walk observation bookkeeping; target counts and subscriptions remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''1'''
 context = '''Some(min_observed) => min_observed.clamp(1, sampled_len.max(1)),'''
@@ -16026,7 +16026,7 @@ classification = "strategy_free_probe_minimum_observation_floor"
 reason = "Lower bound for a non-zero readiness observation requirement after TOML validation rejects zero metadata target caps."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''1'''
 context = '''let last_index = targets.len() - 1;'''
@@ -16034,7 +16034,7 @@ classification = "strategy_free_probe_sampling_index"
 reason = "Last-index arithmetic for deterministic metadata sampling; source-owned target counts and limits remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''1'''
 context = '''let last_sample = max_targets - 1;'''
@@ -16042,7 +16042,7 @@ classification = "strategy_free_probe_sampling_index"
 reason = "Last-sample arithmetic for deterministic metadata sampling; source-owned target counts and limits remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''1'''
 context = '''required_live_markets >= 1 && distinct_fired >= required_live_markets'''
@@ -16050,7 +16050,7 @@ classification = "strategy_free_probe_minimum_observation_floor"
 reason = "Readiness succeeds only after at least one configured or sampled market fires; required counts remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''2'''
 context = '''return vec![targets[targets.len() / 2].clone()];'''
@@ -16074,7 +16074,7 @@ classification = "strategy_free_probe_market_data_label"
 reason = "Diagnostic label for an already selected book subscription branch; the selected client and probe kind remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "string"
 literal = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} configured readiness_probe.quote_targets"'''
 context = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} configured readiness_probe.quote_targets",'''
@@ -16082,7 +16082,7 @@ classification = "strategy_free_probe_fail_closed_diagnostic"
 reason = "Fail-closed diagnostic comparing two TOML-owned readiness probe fields; it does not provide a runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "string"
 literal = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} source-owned metadata_response target(s) sampled this run"'''
 context = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} source-owned metadata_response target(s) sampled this run",'''
@@ -16090,7 +16090,7 @@ classification = "strategy_free_probe_fail_closed_diagnostic"
 reason = "Fail-closed diagnostic comparing a TOML-owned minimum with source-owned metadata targets observed during the probe."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "string"
 literal = '''"metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters or set clients.<id>.readiness_probe.allow_metadata_target_sampling=true before using this client for production readiness"'''
 context = '''"metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters or set clients.<id>.readiness_probe.allow_metadata_target_sampling=true before using this client for production readiness"'''

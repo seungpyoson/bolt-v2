@@ -35,8 +35,7 @@ use crate::{
         evaluate_binary_outcome_edge,
     },
     bolt_v3_book_sizing::{
-        OutcomeBookState, OutcomeBookSubscriptions, OutcomePreparedBooks,
-        should_replace_book_subscriptions,
+        OutcomeBookState, OutcomeBookSubscriptions, should_replace_book_subscriptions,
     },
     bolt_v3_config::{ReferencePriceBlock, ReferencePriceDriftPolicy},
     bolt_v3_decision_evidence::{
@@ -55,10 +54,7 @@ use crate::{
         ExactSizeVwap, ExecutableBookQuote, ExecutableCostBreakdown, executable_cost_breakdown,
         price_exact_size_vwap,
     },
-    bolt_v3_market_families::{
-        self, FairProbabilityInputs, MarketSelectionOutcome, OutcomeSide,
-        SelectedMarketSourceIdentity,
-    },
+    bolt_v3_market_families::{self, FairProbabilityInputs, OutcomeSide},
     bolt_v3_numeric::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, SECONDS_PER_YEAR_F64,
         UNIT_F64, clamp_probability, is_non_negative_finite, is_positive_finite,
@@ -89,10 +85,8 @@ use crate::{
         compute_worst_case_ev_bps, outcome_side_evidence_label, time_uncertainty_probability,
         uncertainty_band_probability,
     },
-    bolt_v3_trade_flow::{SignedTradeFlow, SignedTradeFlowConfig},
-    strategies::registry::{
-        BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
-    },
+    bolt_v3_trade_flow::SignedTradeFlowConfig,
+    strategies::registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError},
 };
 
 #[cfg(test)]
@@ -100,19 +94,23 @@ use nautilus_model::enums::{AggressorSide, BookAction};
 
 #[cfg(test)]
 use crate::{
+    bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity},
     bolt_v3_numeric::sanitize_probability,
     bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
     bolt_v3_taker_pricing::VenueTimingState,
     bolt_v3_taker_updown_signal::{price_agreement_corr, price_gap_probability},
+    strategies::registry::FeeProvider,
 };
 
 mod selection;
 
+#[cfg(test)]
+use self::selection::CandidateMarket;
 use self::selection::{
-    CandidateMarket, RuntimeSelectionSnapshot, SelectionPhase, SelectionState,
-    apply_selection_snapshot_to_active, idle_selection_snapshot, same_market_interval_rollover,
-    selected_market_on_execution_venue, selection_book_subscriptions,
-    selection_snapshot_from_instruments, strategy_input_market_selection_outcome,
+    RuntimeSelectionSnapshot, SelectionPhase, SelectionState, apply_selection_snapshot_to_active,
+    idle_selection_snapshot, same_market_interval_rollover, selected_market_on_execution_venue,
+    selection_book_subscriptions, selection_snapshot_from_instruments,
+    strategy_input_market_selection_outcome,
 };
 
 mod config;
@@ -143,6 +141,15 @@ use self::orders::{
 #[cfg(test)]
 use self::orders::{EntryOrderPlanInputs, build_entry_order_plan};
 
+mod runtime_state;
+
+use self::runtime_state::{
+    ActiveMarketState, MarketLifecycleLedger, OutcomeFeeState,
+    reference_current_price_boundary_changed, refresh_fee_readiness_for_active,
+};
+#[cfg(test)]
+use self::runtime_state::{EffectiveVenueState, ReferenceSnapshot, VenueHealth, VenueKind};
+
 mod subscriptions;
 
 #[cfg(test)]
@@ -161,90 +168,6 @@ struct ExecutableEntryProbe {
     order_side: OrderSide,
     vwap: ExactSizeVwap,
     fee_bps: f64,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-enum VenueHealth {
-    Healthy,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VenueKind {
-    Orderbook,
-    Oracle,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-struct EffectiveVenueState {
-    venue_name: String,
-    base_weight: f64,
-    effective_weight: f64,
-    stale: bool,
-    health: VenueHealth,
-    observed_ts_ms: Option<u64>,
-    venue_kind: VenueKind,
-    observed_price: Option<f64>,
-    observed_bid: Option<f64>,
-    observed_ask: Option<f64>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-struct ReferenceSnapshot {
-    ts_ms: u64,
-    topic: String,
-    fair_value: Option<f64>,
-    confidence: f64,
-    venues: Vec<EffectiveVenueState>,
-}
-
-impl OutcomePreparedBooks {
-    fn from_market(market: &CandidateMarket) -> Self {
-        Self {
-            up: OutcomeBookState::from_instrument_id(InstrumentId::from(
-                market.up.instrument_id.as_str(),
-            )),
-            down: OutcomeBookState::from_instrument_id(InstrumentId::from(
-                market.down.instrument_id.as_str(),
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ActiveMarketState {
-    phase: SelectionPhase,
-    market_id: Option<String>,
-    source_identity: Option<SelectedMarketSourceIdentity>,
-    instrument_id: Option<InstrumentId>,
-    outcome_fees: OutcomeFeeState,
-    price_to_beat: Option<f64>,
-    market_selection_outcome: MarketSelectionOutcome,
-    interval_start_ms: Option<u64>,
-    interval_end_ms: Option<u64>,
-    selection_published_at_ms: Option<u64>,
-    seconds_to_expiry_at_selection: Option<u64>,
-    interval_open: Option<f64>,
-    reference_current_price: Option<f64>,
-    reference_current_price_source_id: Option<String>,
-    reference_current_price_failed_over: Option<bool>,
-    reference_current_price_ts_ms: Option<u64>,
-    last_reference_ts_ms: Option<u64>,
-    last_resolution_ts_ms: Option<u64>,
-    /// Observable count of resolution-strike updates rejected because their
-    /// `window_open_ms` did not match this market's interval-open while the
-    /// market was configured (non-Idle). A configured mismatch is a fail-closed
-    /// anomaly distinct from an Idle drop; this counter makes it observable.
-    resolution_strike_window_mismatch_count: u64,
-    warmup_count: u64,
-    warmup_target: u64,
-    books: OutcomePreparedBooks,
-    trade_flow: BTreeMap<InstrumentId, SignedTradeFlow>,
-    fast_venue_incoherent: bool,
-    forced_flat: bool,
 }
 
 /// Project the strategy's trade-flow TOML knobs into the buffer's runtime config
@@ -320,16 +243,6 @@ fn reference_price_source_health_from_config(
             )
         })
         .collect()
-}
-
-fn reference_current_price_boundary_changed(
-    previous: &ActiveMarketState,
-    current: &ActiveMarketState,
-) -> bool {
-    previous.market_id != current.market_id
-        || previous.instrument_id != current.instrument_id
-        || previous.interval_start_ms != current.interval_start_ms
-        || previous.interval_end_ms != current.interval_end_ms
 }
 
 fn reference_price_source_provider_identifier<'a>(
@@ -606,254 +519,7 @@ impl PricingState {
     }
 }
 
-impl OutcomeBookSubscriptions {
-    fn from_market(market: &CandidateMarket) -> Self {
-        Self {
-            up_instrument_id: Some(InstrumentId::from(market.up.instrument_id.as_str())),
-            down_instrument_id: Some(InstrumentId::from(market.down.instrument_id.as_str())),
-            tracked_position_instrument_id: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OutcomeFeeState {
-    up_instrument_id: Option<InstrumentId>,
-    down_instrument_id: Option<InstrumentId>,
-    up_ready: bool,
-    down_ready: bool,
-}
-
-impl OutcomeFeeState {
-    fn empty() -> Self {
-        Self {
-            up_instrument_id: None,
-            down_instrument_id: None,
-            up_ready: false,
-            down_ready: false,
-        }
-    }
-
-    fn from_market(market: &CandidateMarket) -> Self {
-        Self {
-            up_instrument_id: Some(InstrumentId::from(market.up.instrument_id.as_str())),
-            down_instrument_id: Some(InstrumentId::from(market.down.instrument_id.as_str())),
-            up_ready: false,
-            down_ready: false,
-        }
-    }
-
-    fn instrument_ids(&self) -> Vec<InstrumentId> {
-        [self.up_instrument_id, self.down_instrument_id]
-            .into_iter()
-            .flatten()
-            .collect()
-    }
-
-    fn market_ready(&self) -> bool {
-        self.up_ready && self.down_ready
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MarketLifecycleLedger {
-    cooldown_expires_at_ms: Option<u64>,
-    churn_count: u64,
-}
-
-impl MarketLifecycleLedger {
-    fn empty() -> Self {
-        Self {
-            cooldown_expires_at_ms: None,
-            churn_count: INITIAL_COUNTER_U64,
-        }
-    }
-
-    fn in_cooldown(&self, now_ms: u64) -> bool {
-        self.cooldown_expires_at_ms
-            .is_some_and(|expiry_ms| now_ms < expiry_ms)
-    }
-}
-
 impl ActiveMarketState {
-    fn idle() -> Self {
-        Self {
-            phase: SelectionPhase::Idle,
-            market_id: None,
-            source_identity: None,
-            instrument_id: None,
-            outcome_fees: OutcomeFeeState::empty(),
-            price_to_beat: None,
-            market_selection_outcome: MarketSelectionOutcome::Current,
-            interval_start_ms: None,
-            interval_end_ms: None,
-            selection_published_at_ms: None,
-            seconds_to_expiry_at_selection: None,
-            interval_open: None,
-            reference_current_price: None,
-            reference_current_price_source_id: None,
-            reference_current_price_failed_over: None,
-            reference_current_price_ts_ms: None,
-            last_reference_ts_ms: None,
-            last_resolution_ts_ms: None,
-            resolution_strike_window_mismatch_count: INITIAL_COUNTER_U64,
-            warmup_count: INITIAL_COUNTER_U64,
-            warmup_target: INITIAL_COUNTER_U64,
-            books: OutcomePreparedBooks::empty(),
-            trade_flow: BTreeMap::new(),
-            fast_venue_incoherent: false,
-            forced_flat: false,
-        }
-    }
-
-    fn from_snapshot(snapshot: &RuntimeSelectionSnapshot, warmup_target: u64) -> Self {
-        match &snapshot.decision.state {
-            SelectionState::Active { market } => {
-                Self::from_market(market, warmup_target, SelectionPhase::Active, false)
-            }
-            #[cfg(test)]
-            SelectionState::Freeze { market, .. } => {
-                Self::from_market(market, warmup_target, SelectionPhase::Freeze, true)
-            }
-            SelectionState::Idle { .. } => {
-                let mut idle = Self::idle();
-                idle.forced_flat = true;
-                idle
-            }
-        }
-    }
-
-    fn from_market(
-        market: &CandidateMarket,
-        warmup_target: u64,
-        phase: SelectionPhase,
-        forced_flat: bool,
-    ) -> Self {
-        Self {
-            phase,
-            market_id: Some(market.market_id.clone()),
-            source_identity: Some(market.source_identity.clone()),
-            instrument_id: Some(InstrumentId::from(market.instrument_id.as_str())),
-            outcome_fees: OutcomeFeeState::from_market(market),
-            price_to_beat: market.price_to_beat,
-            market_selection_outcome: market.selection_outcome,
-            interval_start_ms: Some(market.start_ts_ms),
-            interval_end_ms: Some(market.expiration_ts_ms),
-            selection_published_at_ms: None,
-            seconds_to_expiry_at_selection: Some(market.seconds_to_end),
-            interval_open: None,
-            reference_current_price: None,
-            reference_current_price_source_id: None,
-            reference_current_price_failed_over: None,
-            reference_current_price_ts_ms: None,
-            last_reference_ts_ms: None,
-            last_resolution_ts_ms: None,
-            resolution_strike_window_mismatch_count: INITIAL_COUNTER_U64,
-            warmup_count: INITIAL_COUNTER_U64,
-            warmup_target,
-            books: OutcomePreparedBooks::from_market(market),
-            trade_flow: BTreeMap::new(),
-            fast_venue_incoherent: false,
-            forced_flat,
-        }
-    }
-
-    fn same_boundary(&self, other: &Self) -> bool {
-        self.phase == other.phase
-            && self.market_id == other.market_id
-            && self.instrument_id == other.instrument_id
-            && self.market_selection_outcome == other.market_selection_outcome
-            && self.interval_start_ms == other.interval_start_ms
-            && self.interval_end_ms == other.interval_end_ms
-    }
-
-    fn warmup_complete(&self) -> bool {
-        self.warmup_target > INITIAL_COUNTER_U64 && self.warmup_count >= self.warmup_target
-    }
-
-    fn apply_selection_timing(&mut self, snapshot: &RuntimeSelectionSnapshot) {
-        match &snapshot.decision.state {
-            SelectionState::Active { market } => {
-                self.selection_published_at_ms = Some(snapshot.published_at_ms);
-                self.market_selection_outcome = market.selection_outcome;
-                self.interval_end_ms = Some(market.expiration_ts_ms);
-                self.seconds_to_expiry_at_selection = Some(market.seconds_to_end);
-            }
-            #[cfg(test)]
-            SelectionState::Freeze { market, .. } => {
-                self.selection_published_at_ms = Some(snapshot.published_at_ms);
-                self.market_selection_outcome = market.selection_outcome;
-                self.interval_end_ms = Some(market.expiration_ts_ms);
-                self.seconds_to_expiry_at_selection = Some(market.seconds_to_end);
-            }
-            SelectionState::Idle { .. } => {
-                self.selection_published_at_ms = None;
-                self.market_selection_outcome = MarketSelectionOutcome::Current;
-                self.interval_end_ms = None;
-                self.seconds_to_expiry_at_selection = None;
-            }
-        }
-    }
-
-    fn seconds_to_expiry_at(&self, now_ms: u64) -> Option<u64> {
-        let published_at_ms = self.selection_published_at_ms?;
-        let seconds_to_expiry_at_selection = self.seconds_to_expiry_at_selection?;
-        let elapsed_seconds = now_ms.saturating_sub(published_at_ms) / MILLIS_PER_SECOND_U64;
-        Some(seconds_to_expiry_at_selection.saturating_sub(elapsed_seconds))
-    }
-
-    fn observe_reference_price_quote(&mut self, quote: &ReferenceQuote, failed_over: bool) -> bool {
-        if self.phase == SelectionPhase::Idle {
-            return false;
-        }
-        let Some(interval_start_ms) = self.interval_start_ms else {
-            return false;
-        };
-        if quote.observed_ts_ms() < interval_start_ms {
-            return false;
-        }
-        let same_reference_source = self
-            .reference_current_price_source_id
-            .as_deref()
-            .is_some_and(|source_id| source_id == quote.source_id());
-        if same_reference_source
-            && self
-                .reference_current_price_ts_ms
-                .is_some_and(|last_ts_ms| quote.observed_ts_ms() <= last_ts_ms)
-        {
-            return false;
-        }
-
-        self.reference_current_price = Some(quote.price());
-        self.reference_current_price_source_id = Some(quote.source_id().to_string());
-        self.reference_current_price_failed_over = Some(failed_over);
-        self.reference_current_price_ts_ms = Some(quote.observed_ts_ms());
-        self.last_reference_ts_ms = Some(quote.observed_ts_ms());
-        if self.interval_open.is_none()
-            && let Some(anchor_price) = self
-                .price_to_beat
-                .filter(|value| is_positive_finite(*value))
-        {
-            self.interval_open = Some(anchor_price);
-        }
-        if self.price_to_beat.is_some_and(is_positive_finite) {
-            self.warmup_count = self.warmup_count.saturating_add(COUNTER_INCREMENT_U64);
-        }
-        true
-    }
-
-    fn clear_reference_price_quote(&mut self) {
-        self.reference_current_price = None;
-        self.reference_current_price_source_id = None;
-        self.reference_current_price_failed_over = None;
-        self.reference_current_price_ts_ms = None;
-    }
-
-    fn reset_reference_price_quote(&mut self) {
-        self.clear_reference_price_quote();
-        self.last_reference_ts_ms = None;
-    }
-
     /// Binds the live resolution strike (Chainlink `IndexPriceUpdate`) to the
     /// market's interval-open boundary and sets it as the `price_to_beat`.
     ///
@@ -891,37 +557,6 @@ impl ActiveMarketState {
         }
         self.price_to_beat = Some(strike);
         self.last_resolution_ts_ms = Some(observed_ts_ms);
-    }
-
-    #[cfg(test)]
-    fn observe_reference_snapshot(&mut self, snapshot: &ReferenceSnapshot) {
-        if self.phase == SelectionPhase::Idle {
-            return;
-        }
-        let Some(interval_start_ms) = self.interval_start_ms else {
-            return;
-        };
-        let Some(anchor_price) = self
-            .price_to_beat
-            .filter(|value| is_positive_finite(*value))
-        else {
-            return;
-        };
-        if snapshot.ts_ms < interval_start_ms {
-            return;
-        }
-        if self
-            .last_reference_ts_ms
-            .is_some_and(|last_ts_ms| snapshot.ts_ms <= last_ts_ms)
-        {
-            return;
-        }
-
-        self.last_reference_ts_ms = Some(snapshot.ts_ms);
-        if self.interval_open.is_none() {
-            self.interval_open = Some(anchor_price);
-        }
-        self.warmup_count += 1;
     }
 }
 
@@ -6009,22 +5644,6 @@ fn trailing_offset_from_config(
                 .ok_or_else(|| anyhow::anyhow!("{prefix}_trailing_offset must be decimal"))
         })
         .transpose()
-}
-
-fn refresh_fee_readiness_for_active(
-    active: &mut ActiveMarketState,
-    fee_provider: &dyn FeeProvider,
-) {
-    active.outcome_fees.up_ready = active
-        .outcome_fees
-        .up_instrument_id
-        .and_then(|instrument_id| fee_provider.fee_bps(instrument_id))
-        .is_some();
-    active.outcome_fees.down_ready = active
-        .outcome_fees
-        .down_instrument_id
-        .and_then(|instrument_id| fee_provider.fee_bps(instrument_id))
-        .is_some();
 }
 
 const INITIAL_COUNTER_U64: u64 = 0;

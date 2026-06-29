@@ -1417,9 +1417,14 @@ impl BoltV3SubmitAdmissionState {
             let current_execution_client_count = inner
                 .admitted_order_count_by_execution_client
                 .get(&request.execution_client_id)
-                .copied()
-                .unwrap_or(0);
-            let Some(next_execution_client_count) = current_execution_client_count.checked_add(1)
+                .copied();
+
+            let next_execution_client_count_opt = match current_execution_client_count {
+                Some(count) => count.checked_add(1),
+                None => Some(1),
+            };
+
+            let Some(next_execution_client_count) = next_execution_client_count_opt
             else {
                 if let Some(rollback) = evaluation.rollback.as_ref() {
                     rollback_capital_admission_reservation(&mut inner, rollback);
@@ -1540,11 +1545,12 @@ impl BoltV3SubmitAdmissionState {
                 Err(BoltV3SubmitAdmissionError::CountCapExhausted)
             }
             BoltV3AdmissionOutcome::RejectedCapitalAdmission => {
-                Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
-                    reason: evaluation
-                        .capital_admission_rejection
-                        .unwrap_or(BoltV3CapitalAdmissionRejectReason::Rejected),
-                })
+                let reason = evaluation.capital_admission_rejection.ok_or_else(|| {
+                    BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                        reason: "capital admission rejection reason missing in evaluation".to_string(),
+                    }
+                })?;
+                Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected { reason })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
                 Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid)
@@ -1888,11 +1894,12 @@ impl BoltV3SubmitAdmissionState {
                 Err(BoltV3SubmitAdmissionError::CountCapExhausted)
             }
             BoltV3AdmissionOutcome::RejectedCapitalAdmission => {
-                Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
-                    reason: evaluation
-                        .capital_admission_rejection
-                        .unwrap_or(BoltV3CapitalAdmissionRejectReason::Rejected),
-                })
+                let reason = evaluation.capital_admission_rejection.ok_or_else(|| {
+                    BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                        reason: "capital admission rejection reason missing in evaluation".to_string(),
+                    }
+                })?;
+                Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected { reason })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
                 Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid)

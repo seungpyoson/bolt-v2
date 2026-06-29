@@ -71,9 +71,8 @@ use crate::{
     bolt_v3_providers::normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     bolt_v3_reference_price::{
         ReferencePriceSelection, ReferencePriceSelector, ReferencePriceSourceHealth,
-        ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceSubscriptionRequest,
-        ReferencePriceUpdate, ReferenceQuote, reference_price_source_is_runtime_available,
-        reference_price_source_is_unsupported,
+        ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceUpdate, ReferenceQuote,
+        reference_price_source_is_runtime_available, reference_price_source_is_unsupported,
     },
     bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{

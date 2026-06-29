@@ -19,9 +19,10 @@ jobs:
       - name: Start Jules advisory session
         id: invoke-jules
         continue-on-error: true
-        timeout-minutes: 10
+        timeout-minutes: ${{ fromJSON(vars.JULES_SESSION_TIMEOUT_MINUTES) }}
         env:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          JULES_SESSIONS_ENDPOINT: ${{ vars.JULES_SESSIONS_ENDPOINT }}
           JULES_STARTING_BRANCH: ${{ github.event.repository.default_branch }}
           JULES_PROMPT: |
             You are Jules running code-maintenance automation for this repository.
@@ -56,7 +57,7 @@ jobs:
                 }
               },
               automationMode: "AUTO_CREATE_PR",
-              requirePlanApproval: false
+              requirePlanApproval: true
             }' > "$RUNNER_TEMP/jules_payload.json"
 
           curl --silent --show-error --fail-with-body \
@@ -65,10 +66,16 @@ jobs:
             --header "x-goog-api-key: ${JULES_API_KEY}" \
             --data @"$RUNNER_TEMP/jules_payload.json" \
             --output "$RUNNER_TEMP/jules_response.json" \
-            "https://jules.googleapis.com/v1alpha/sessions"
+            "$JULES_SESSIONS_ENDPOINT"
 
           jq -e '.name and .id' "$RUNNER_TEMP/jules_response.json" >/dev/null
 
-      - name: Jules advisory status notice
+      - name: Jules advisory success notice
+        if: ${{ steps.invoke-jules.outcome == 'success' }}
         run: |
-          echo "::notice::Jules advisory automation is non-blocking and emits no merge signal. Verified Jules session evidence is the Start Jules advisory session step passing with a session id. Unavailable Jules results remain advisory only."
+          echo "::notice::Jules advisory session started and returned a session id. Jules remains non-blocking and emits no merge signal."
+
+      - name: Jules advisory unavailable warning
+        if: ${{ steps.invoke-jules.outcome != 'success' }}
+        run: |
+          echo "::warning::Jules advisory session did not start. Unavailable Jules results remain advisory only and emit no merge signal."

@@ -1572,6 +1572,163 @@ def assert_workflows_error(
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
 
 
+JULES_ADVISORY_GOOD_WORKFLOW = """\
+name: Jules Weekly Cleanup
+
+on:
+  schedule:
+    - cron: "17 8 * * 1"
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  jules-weekly-cleanup:
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - name: Start Jules advisory session
+        id: invoke-jules
+        continue-on-error: true
+        timeout-minutes: ${{ fromJSON(vars.JULES_SESSION_TIMEOUT_MINUTES) }}
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          JULES_SESSIONS_ENDPOINT: ${{ vars.JULES_SESSIONS_ENDPOINT }}
+          JULES_STARTING_BRANCH: ${{ github.event.repository.default_branch }}
+          JULES_PROMPT: |
+            You are Jules running code-maintenance automation for this repository.
+            - You are advisory only and not a required gate.
+            - Create a draft pull request only when you have a small verified cleanup change.
+            - Label any pull request with agent:jules.
+            - No AWS access.
+            - No trading, runtime, deploy, live, market data, or order execution access.
+        run: |
+          jq -n \\
+            --arg repo_full_name "$GITHUB_REPOSITORY" \\
+            --arg branch "$JULES_STARTING_BRANCH" \\
+            --arg prompt "$JULES_PROMPT" \\
+            '{
+              prompt: $prompt,
+              sourceContext: {
+                source: "sources/github/\\($repo_full_name)",
+                githubRepoContext: {
+                  startingBranch: $branch
+                }
+              },
+              automationMode: "AUTO_CREATE_PR",
+              requirePlanApproval: true
+            }' > "$RUNNER_TEMP/jules_payload.json"
+
+          curl --silent --show-error --fail-with-body \\
+            --request POST \\
+            --header "Content-Type: application/json" \\
+            --header "x-goog-api-key: ${JULES_API_KEY}" \\
+            --data @"$RUNNER_TEMP/jules_payload.json" \\
+            --output "$RUNNER_TEMP/jules_response.json" \\
+            "$JULES_SESSIONS_ENDPOINT"
+
+          jq -e '.name and .id' "$RUNNER_TEMP/jules_response.json" >/dev/null
+
+      - name: Jules advisory success notice
+        if: ${{ steps.invoke-jules.outcome == 'success' }}
+        run: |
+          echo "::notice::Jules advisory session started and returned a session id. Jules remains non-blocking and emits no merge signal."
+
+      - name: Jules advisory unavailable warning
+        if: ${{ steps.invoke-jules.outcome != 'success' }}
+        run: |
+          echo "::warning::Jules advisory session did not start. Unavailable Jules results remain advisory only and emit no merge signal."
+"""
+
+
+def assert_jules_advisory_workflow_contracts() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/weekly-cleanup.yml"
+    clean_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: JULES_ADVISORY_GOOD_WORKFLOW}
+    )
+    if clean_errors:
+        raise AssertionError(f"known-good Jules workflow must be clean, got: {clean_errors}")
+
+    cases = (
+        (
+            "Jules advisory workflows must require plan approval",
+            replace_once(JULES_ADVISORY_GOOD_WORKFLOW, "requirePlanApproval: true", "requirePlanApproval: false"),
+        ),
+        (
+            "Jules advisory workflows must use configured session timeout variable",
+            replace_once(
+                JULES_ADVISORY_GOOD_WORKFLOW,
+                "timeout-minutes: ${{ fromJSON(vars.JULES_SESSION_TIMEOUT_MINUTES) }}",
+                "timeout-minutes: 10",
+            ),
+        ),
+        (
+            "Jules advisory workflows must use configured sessions endpoint variable",
+            replace_once(
+                JULES_ADVISORY_GOOD_WORKFLOW,
+                '"$JULES_SESSIONS_ENDPOINT"',
+                '"https://jules.googleapis.com/v1alpha/sessions"',
+            ),
+        ),
+        (
+            "Jules advisory workflows must emit verified session notice only on invoke success",
+            replace_once(
+                JULES_ADVISORY_GOOD_WORKFLOW,
+                "if: ${{ steps.invoke-jules.outcome == 'success' }}",
+                "if: ${{ always() }}",
+            ),
+        ),
+        (
+            "Jules advisory workflows must warn when invocation is unavailable",
+            replace_once(
+                JULES_ADVISORY_GOOD_WORKFLOW,
+                "if: ${{ steps.invoke-jules.outcome != 'success' }}",
+                "if: ${{ steps.invoke-jules.outcome == 'success' }}",
+            ),
+        ),
+        (
+            "Jules advisory workflows must not use AWS commands",
+            replace_once(
+                JULES_ADVISORY_GOOD_WORKFLOW,
+                "          jq -e '.name and .id' \"$RUNNER_TEMP/jules_response.json\" >/dev/null",
+                "          jq -e '.name and .id' \"$RUNNER_TEMP/jules_response.json\" >/dev/null\n          aws sts get-caller-identity",
+            ),
+        ),
+    )
+    for fragment, workflow in cases:
+        errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected Jules contract error containing {fragment!r}, got: {errors}")
+
+    secret_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/workflows/ci.yml": """\
+jobs:
+  test:
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: echo no
+"""
+        }
+    )
+    if not any("JULES_API_KEY may only be used by Jules advisory workflows" in error for error in secret_errors):
+        raise AssertionError(f"Jules secret boundary drift was silent: {secret_errors}")
+
+    real_jules_workflows = {
+        path: repo_workflow_text(path)
+        for path in (
+            ".github/workflows/weekly-cleanup.yml",
+            ".github/workflows/performance-improver.yml",
+            ".github/workflows/tech-debt-review.yml",
+        )
+    }
+    real_errors = verifier.verify_repo_automation_texts(real_jules_workflows)
+    if real_errors:
+        raise AssertionError(f"real Jules workflows must satisfy advisory contract, got: {real_errors}")
+
+
 def without_job(workflow: str, job: str) -> str:
     lines = workflow.splitlines()
     start = next(i for i, line in enumerate(lines) if line == f"  {job}:")
@@ -12539,6 +12696,7 @@ def main() -> int:
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
     assert_runner_contract_requires_meter_api_limits()
     assert_runner_contract_requires_fingerprint_archive_tier_coupling()
+    assert_jules_advisory_workflow_contracts()
     assert_debug_workflow_rejects_non_manual_trigger()
     assert_debug_workflow_checks_each_ssh_runner_step()
     assert_bootstrap_uses_onepassword_key_generation()

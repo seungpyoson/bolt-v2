@@ -115,6 +115,18 @@ DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / ".github" / "actions", "*/action.yml"),
     (REPO_ROOT / ".github" / "actions", "*/action.yaml"),
 )
+JULES_ADVISORY_WORKFLOW_PATHS = frozenset(
+    (
+        ".github/workflows/weekly-cleanup.yml",
+        ".github/workflows/performance-improver.yml",
+        ".github/workflows/tech-debt-review.yml",
+    )
+)
+JULES_ADVISORY_ENDPOINT_VARIABLE = "JULES_SESSIONS_ENDPOINT"
+JULES_ADVISORY_TIMEOUT_VARIABLE = "JULES_SESSION_TIMEOUT_MINUTES"
+JULES_ADVISORY_SECRET = "JULES_API_KEY"
+JULES_AWS_COMMAND_RE = re.compile(r"(^|[\s;&|])aws([ \t\r\n;&|]|$)")
+GITHUB_SECRET_REF_RE = re.compile(r"secrets\.([A-Z0-9_]+)")
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
 LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS = {"build", "clippy", "test"}
 LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS = set(CARGO_DISK_PREFLIGHT_SUBCOMMANDS) | set(CARGO_ALIAS_SUBCOMMANDS)
@@ -11145,6 +11157,92 @@ def backtester_nextest_archive_recipe_errors(file_name: str, text: str) -> list[
     return errors
 
 
+def normalized_repo_file_name(file_name: str) -> str:
+    normalized = file_name.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    if normalized.startswith(str(REPO_ROOT).replace("\\", "/")):
+        normalized = normalized[len(str(REPO_ROOT).replace("\\", "/")) :].lstrip("/")
+    return normalized
+
+
+def jules_advisory_workflow_contract_errors(file_name: str, text: str) -> list[str]:
+    normalized = normalized_repo_file_name(file_name)
+    workflow_path = (
+        normalized
+        if normalized.startswith(".github/workflows/")
+        else f".github/workflows/{normalized}"
+    )
+    is_allowed_jules_workflow = workflow_path in JULES_ADVISORY_WORKFLOW_PATHS
+    errors: list[str] = []
+    if JULES_ADVISORY_SECRET in text and not is_allowed_jules_workflow:
+        return ["JULES_API_KEY may only be used by Jules advisory workflows"]
+    if not is_allowed_jules_workflow:
+        return []
+
+    required = (
+        ("permissions: {}", "Jules advisory workflows must use empty permissions"),
+        (
+            f"{JULES_ADVISORY_SECRET}: ${{{{ secrets.{JULES_ADVISORY_SECRET} }}}}",
+            "Jules advisory workflows must use only the JULES_API_KEY secret",
+        ),
+        (
+            f"JULES_SESSIONS_ENDPOINT: ${{{{ vars.{JULES_ADVISORY_ENDPOINT_VARIABLE} }}}}",
+            "Jules advisory workflows must use configured sessions endpoint variable",
+        ),
+        (
+            f"timeout-minutes: ${{{{ fromJSON(vars.{JULES_ADVISORY_TIMEOUT_VARIABLE}) }}}}",
+            "Jules advisory workflows must use configured session timeout variable",
+        ),
+        ('"$JULES_SESSIONS_ENDPOINT"', "Jules advisory workflows must use configured sessions endpoint variable"),
+        ('automationMode: "AUTO_CREATE_PR"', "Jules advisory workflows must use Jules PR automation mode"),
+        ("requirePlanApproval: true", "Jules advisory workflows must require plan approval"),
+        ("continue-on-error: true", "Jules advisory workflows must remain non-blocking"),
+        ("Create a draft pull request only", "Jules advisory workflows must constrain Jules to draft PRs"),
+        ("Label any pull request with agent:jules", "Jules advisory workflows must label Jules PRs"),
+    )
+    for needle, message in required:
+        if needle not in text:
+            errors.append(message)
+
+    if "https://jules.googleapis.com" in text:
+        errors.append("Jules advisory workflows must use configured sessions endpoint variable")
+    if "timeout-minutes: 10" in text:
+        errors.append("Jules advisory workflows must use configured session timeout variable")
+    if "requirePlanApproval: false" in text:
+        errors.append("Jules advisory workflows must require plan approval")
+    if "Verified Jules session evidence" in text:
+        errors.append("Jules advisory workflows must not claim verified session evidence on unavailable results")
+
+    secret_refs = set(GITHUB_SECRET_REF_RE.findall(text))
+    extra_secrets = secret_refs - {JULES_ADVISORY_SECRET}
+    if extra_secrets:
+        errors.append(
+            "Jules advisory workflows must not reference non-Jules secrets: "
+            + ", ".join(sorted(extra_secrets))
+        )
+    for forbidden in ("github.token", "GITHUB_TOKEN", "role-to-assume:", "aws-actions/"):
+        if forbidden in text:
+            errors.append("Jules advisory workflows must not use GitHub token or AWS credentials")
+            break
+
+    shell_text = "\n".join(yaml_run_shell_texts(uncommented_text(text.splitlines())))
+    if JULES_AWS_COMMAND_RE.search(shell_text) is not None or "AWS_" in shell_text:
+        errors.append("Jules advisory workflows must not use AWS commands")
+
+    success_if = "if: ${{ steps.invoke-jules.outcome == 'success' }}"
+    success_notice = "::notice::Jules advisory session started and returned a session id"
+    if success_if not in text or success_notice not in text:
+        errors.append("Jules advisory workflows must emit verified session notice only on invoke success")
+
+    unavailable_if = "if: ${{ steps.invoke-jules.outcome != 'success' }}"
+    unavailable_warning = "::warning::Jules advisory session did not start"
+    if unavailable_if not in text or unavailable_warning not in text:
+        errors.append("Jules advisory workflows must warn when invocation is unavailable")
+
+    return errors
+
+
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
@@ -11182,6 +11280,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in cache_same_run_transport_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in jules_advisory_workflow_contract_errors(file_name, text)),
         )
         if file_name == "actionlint.yml" or file_name.endswith("/actionlint.yml"):
             add_unique_errors(
@@ -11543,6 +11645,39 @@ def validate_dispatch_cancel_config(data: dict[str, object]) -> dict[str, object
     return section
 
 
+def validate_jules_advisory_config(data: dict[str, object]) -> dict[str, object]:
+    section = data.get("jules_advisory")
+    if not isinstance(section, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [jules_advisory]")
+    workflow_paths = require_config_string_list(
+        section, "workflow_paths", "jules_advisory"
+    )
+    if set(workflow_paths) != JULES_ADVISORY_WORKFLOW_PATHS:
+        raise ValueError("jules_advisory.workflow_paths must match Jules advisory workflows")
+    secret = require_config_string(section, "secret", "jules_advisory")
+    if secret != JULES_ADVISORY_SECRET:
+        raise ValueError("jules_advisory.secret must be JULES_API_KEY")
+    sessions_endpoint_variable = require_config_string(
+        section, "sessions_endpoint_variable", "jules_advisory"
+    )
+    if sessions_endpoint_variable != JULES_ADVISORY_ENDPOINT_VARIABLE:
+        raise ValueError("jules_advisory.sessions_endpoint_variable must be JULES_SESSIONS_ENDPOINT")
+    timeout_variable = require_config_string(
+        section, "session_timeout_minutes_variable", "jules_advisory"
+    )
+    if timeout_variable != JULES_ADVISORY_TIMEOUT_VARIABLE:
+        raise ValueError("jules_advisory.session_timeout_minutes_variable must be JULES_SESSION_TIMEOUT_MINUTES")
+    if section.get("require_plan_approval") is not True:
+        raise ValueError("jules_advisory.require_plan_approval must be true")
+    return {
+        "workflow_paths": sorted(workflow_paths),
+        "secret": secret,
+        "sessions_endpoint_variable": sessions_endpoint_variable,
+        "session_timeout_minutes_variable": timeout_variable,
+        "require_plan_approval": True,
+    }
+
+
 def load_github_actions_runners_config(
     path: pathlib.Path | None = None,
 ) -> dict[str, object]:
@@ -11560,6 +11695,7 @@ def load_github_actions_runners_config(
         raise ValueError("ci/github-actions-runners.toml must define [meter]")
     ci_provenance = validate_ci_provenance_config(data)
     dispatch_cancel = validate_dispatch_cancel_config(data)
+    jules_advisory = validate_jules_advisory_config(data)
     meter_workflows = meter.get("included_workflows")
     if not isinstance(meter_workflows, list) or not all(
         isinstance(workflow, str) and workflow for workflow in meter_workflows
@@ -11602,10 +11738,17 @@ def load_github_actions_runners_config(
         "tier_to_var": tier_to_var,
         "managed_labels": sorted(set(managed_labels)),
         "meter_included_workflows": sorted(set(meter_workflows)),
-        "variables": sorted(tier_to_var.values()),
+        "variables": sorted(
+            set(tier_to_var.values())
+            | {
+                jules_advisory["sessions_endpoint_variable"],
+                jules_advisory["session_timeout_minutes_variable"],
+            }
+        ),
         "workflows": workflows,
         "ci_provenance": ci_provenance,
         "dispatch_cancel": dispatch_cancel,
+        "jules_advisory": jules_advisory,
     }
 
 

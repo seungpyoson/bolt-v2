@@ -588,6 +588,53 @@ class CiStorageAuditTests(unittest.TestCase):
         )
         self.assertEqual(client.global_calls, [("repos/owner/repo/actions/cache/usage", None, False)])
 
+    def test_cleanup_feasibility_passes_report_rows_to_self_clear_horizon(self) -> None:
+        policy = cleanup_candidate_policy("row-horizon-policy")
+        captured: dict[str, list[dict[str, Any]]] = {}
+        original_horizon = ci_storage_audit.cleanup_self_clear_horizon
+
+        def fake_horizon(rows: list[dict[str, Any]]) -> dict[str, Any]:
+            captured["rows"] = rows
+            return {"expires_at": "2026-07-20T00:00:00Z", "source": "row_argument"}
+
+        ci_storage_audit.cleanup_self_clear_horizon = fake_horizon
+        try:
+            cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+                FakeClient({}),
+                repo="owner/repo",
+                artifacts={
+                    "total_bytes": 200,
+                    "expired_bytes": 0,
+                    "non_expired_bytes": 200,
+                    "unknown_expiration_bytes": 0,
+                    "entries": [
+                        {
+                            "artifact_id": 2,
+                            "name": "nextest-archive",
+                            "size_bytes": 200,
+                            "created_at": "2026-06-20T00:00:00Z",
+                            "expires_at": "2026-07-20T00:00:00Z",
+                            "expired": False,
+                            "expiration_failure": None,
+                            "workflow_run": {
+                                "id": 502,
+                                "status": "completed",
+                                "conclusion": "success",
+                                "ref": "feature/future",
+                                "head_sha": "b" * 40,
+                            },
+                        }
+                    ],
+                },
+                policy=policy,
+            )
+        finally:
+            ci_storage_audit.cleanup_self_clear_horizon = original_horizon
+
+        self.assertEqual(cleanup["self_clear_horizon"]["source"], "row_argument")
+        self.assertEqual(captured["rows"][0]["decision"], ci_storage_audit.KEEP_DECISION)
+        self.assertEqual(captured["rows"][0]["reason_code"], ci_storage_audit.REASON_CLASS_KEEP)
+
     def test_committed_cleanup_policy_resolves_existing_artifact_config_references(self) -> None:
         policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
 

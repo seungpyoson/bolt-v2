@@ -1026,12 +1026,9 @@ def fetch_required_checks(client: GhClient, branch: str) -> dict[str, Any]:
 
 
 def cleanup_rule_for_name(policy: ArtifactCleanupPolicy, name: str) -> ArtifactClassRule | None:
-    matches = [
-        rule for rule in policy.classes
-        if name in rule.name_equals or any(name.startswith(prefix) for prefix in rule.name_prefixes)
-    ]
-    if len(matches) == 1:
-        return matches[0]
+    for rule in policy.classes:
+        if name in rule.name_equals or any(name.startswith(prefix) for prefix in rule.name_prefixes):
+            return rule
     return None
 
 
@@ -1445,10 +1442,11 @@ def build_artifact_cleanup_feasibility(
             and row.get("reason_code") == REASON_ARTIFACT_METADATA_UNAVAILABLE
         ),
         "expected_reclaim_proxy_bytes": candidate_bytes,
+        # GitHub billing probes expose aggregate usage, not per-candidate reclaim.
         "measured_billed_reclaim_bytes": None,
         "reclaim_basis": "listed_artifact_bytes_proxy",
         "billing": billing,
-        "self_clear_horizon": cleanup_self_clear_horizon(entries),
+        "self_clear_horizon": cleanup_self_clear_horizon(rows),
         "wait_and_remeasure": policy.wait_and_remeasure,
         "workflow_run_metadata": {
             "fetches": workflow_run_fetches,

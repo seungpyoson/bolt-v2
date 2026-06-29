@@ -859,6 +859,18 @@ class ReviewRound2HardeningTests(unittest.TestCase):
         finally:
             sys.stderr = saved_err
 
+    def test_log_stderr_swallows_deadline_runtime_error(self) -> None:
+        def raise_runtime_error(*_args, **_kwargs):
+            raise RuntimeError("can't start new thread")
+
+        original = self.sampler.run_with_deadline
+        self.sampler.run_with_deadline = raise_runtime_error
+        try:
+            # Must not raise.
+            self.sampler.log_stderr("anything")
+        finally:
+            self.sampler.run_with_deadline = original
+
     def test_log_stderr_blocking_write_returns_within_sink_deadline(self) -> None:
         sampler = self.sampler
         saved_timeout = sampler.SINK_TIMEOUT_SECONDS

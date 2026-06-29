@@ -207,7 +207,7 @@ def merge_paginated_payload(payload: Any) -> Any:
     merged: dict[str, Any] = {}
     merged_items: list[Any] = []
     saw_list_page = False
-    for page in payload:
+    for index, page in enumerate(payload):
         if isinstance(page, list):
             if merged:
                 raise AuditError("paginated payload mixed page shapes")
@@ -215,7 +215,7 @@ def merge_paginated_payload(payload: Any) -> Any:
             merged_items.extend(page)
             continue
         if not isinstance(page, dict):
-            continue
+            raise AuditError(f"paginated page {index} is not an object or list")
         if saw_list_page:
             raise AuditError("paginated payload mixed page shapes")
         for key, value in page.items():
@@ -752,7 +752,7 @@ def merge_workflow_run_metadata(entry: dict[str, Any], payload: dict[str, Any]) 
         require_status=True,
     )
     for key, value in refreshed.items():
-        if value is not None and key != "status_source":
+        if key != "status_source":
             workflow_run[key] = value
     workflow_run["status_source"] = "run_api"
 
@@ -1048,9 +1048,6 @@ def protected_ref_forms(ref: str) -> tuple[str, ...]:
     elif ref.startswith("refs/tags/"):
         tag = ref.removeprefix("refs/tags/")
         forms.extend((tag, f"tags/{tag}"))
-    elif ref.startswith("tags/"):
-        tag = ref.removeprefix("tags/")
-        forms.extend((tag, f"refs/tags/{tag}"))
     else:
         forms.append(f"refs/heads/{ref}")
     return tuple(dict.fromkeys(forms))
@@ -1078,6 +1075,10 @@ def artifact_metadata_failure(entry: dict[str, Any]) -> InputFailure | None:
     identity_failure = artifact_identity_failure(entry)
     if identity_failure is not None:
         return identity_failure
+    return artifact_ref_failure(entry)
+
+
+def artifact_ref_failure(entry: dict[str, Any]) -> InputFailure | None:
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
     stored_ref_failure = parsed_failure(workflow_run.get("ref_failure"), "artifact workflow_run.ref_failure")
     if stored_ref_failure is not None:
@@ -1103,15 +1104,19 @@ def should_fetch_workflow_run(
         return False
     if entry.get("expired") is not True:
         return False
-    if artifact_metadata_failure(entry) is not None:
+    if artifact_identity_failure(entry) is not None:
         return False
-    if ref_is_protected(policy, artifact_ref(entry)):
+    ref_failure = artifact_ref_failure(entry)
+    if ref_failure is None:
+        if ref_is_protected(policy, artifact_ref(entry)):
+            return False
+    elif ref_failure.state != STATE_ABSENT:
         return False
     workflow_run = require_object(entry["workflow_run"], "artifact workflow_run")
     if workflow_status_failure(workflow_run) is not None:
         return False
     status = classify_optional_text(workflow_run.get("status"), FIELD_WORKFLOW_STATUS)
-    return status.value is None
+    return status.value is None or ref_failure is not None
 
 
 def workflow_run_id_from_entry(entry: dict[str, Any]) -> ClassifiedInt:

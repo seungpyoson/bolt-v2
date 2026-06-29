@@ -313,7 +313,6 @@ protected_ref_prefixes = ["refs/tags/"]
 protected_ref_globs = [
   "refs/heads/main",
   "refs/tags/*",
-  "tags/*",
   "archive/*",
   "deploy/*",
   "tag-archive-*",

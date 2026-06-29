@@ -671,7 +671,8 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertTrue(ci_storage_audit.ref_is_protected(policy, "main"))
         self.assertTrue(ci_storage_audit.ref_is_protected(policy, "refs/heads/main"))
         self.assertTrue(ci_storage_audit.ref_is_protected(policy, "refs/tags/v0.1.0"))
-        self.assertTrue(ci_storage_audit.ref_is_protected(policy, "tags/v0.1.0"))
+        self.assertFalse(ci_storage_audit.ref_is_protected(policy, "tags/v0.1.0"))
+        self.assertFalse(ci_storage_audit.ref_is_protected(policy, "tags/feature-branch"))
         self.assertTrue(ci_storage_audit.ref_is_protected(policy, "deploy/eu-west-2/2026-06-18-0ddd9f73"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "feature/artifact-observe"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "issue-955"))
@@ -1022,6 +1023,51 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(rows_by_id[2]["workflow_run"]["status_source"], "fetch_limit")
         self.assertEqual(cleanup["unverified_candidate_bytes"], 200)
         self.assertEqual(cleanup["workflow_run_metadata"]["fetch_limit_reached"], True)
+
+    def test_cleanup_feasibility_recovers_absent_ref_from_workflow_run_api(self) -> None:
+        policy = cleanup_candidate_policy("recover-ref-policy")
+        entry = ci_storage_audit.artifact_entry_from_raw(
+            {
+                "id": 1,
+                "name": "nextest-archive",
+                "size_in_bytes": 100,
+                "created_at": "2026-06-01T00:00:00Z",
+                "expires_at": "2026-06-15T00:00:00Z",
+                "expired": True,
+                "workflow_run": {
+                    "id": 501,
+                    "head_sha": "a" * 40,
+                },
+            }
+        )
+        client = FakeClient(
+            {
+                "actions/runs/501": {
+                    "id": 501,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "head_branch": "feature/recovered-ref",
+                    "head_sha": "a" * 40,
+                },
+            }
+        )
+
+        cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+            client,
+            repo="owner/repo",
+            artifacts=cleanup_artifacts_with_entry(entry),
+            policy=policy,
+        )
+
+        self.assertEqual(cleanup["candidate_count"], 1)
+        self.assertEqual(cleanup["candidate_bytes"], 100)
+        self.assertEqual(cleanup["metadata_unavailable_count"], 0)
+        self.assertEqual(cleanup["rows"][0]["decision"], "DELETE-CANDIDATE")
+        self.assertEqual(cleanup["rows"][0]["workflow_run"]["ref"], "feature/recovered-ref")
+        self.assertEqual(cleanup["rows"][0]["workflow_run"]["ref_failure"], None)
+        self.assertEqual(cleanup["rows"][0]["workflow_run"]["status"], "completed")
+        self.assertEqual(cleanup["rows"][0]["workflow_run"]["status_source"], "run_api")
+        self.assertEqual(client.calls, [("actions/runs/501", None, False)])
 
     def test_cleanup_feasibility_does_not_refetch_after_invalid_artifact_status(self) -> None:
         policy = cleanup_candidate_policy("invalid-artifact-status-policy")
@@ -1841,6 +1887,18 @@ class CiStorageAuditTests(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(ci_storage_audit.AuditError, "mixed page shapes"):
+            ci_storage_audit.merge_paginated_payload(payload)
+
+    def test_merge_paginated_payload_rejects_malformed_page_shape(self) -> None:
+        payload = [
+            {
+                "total_count": 2,
+                "artifacts": [{"name": "first", "size_in_bytes": 1}],
+            },
+            None,
+        ]
+
+        with self.assertRaisesRegex(ci_storage_audit.AuditError, "paginated page 1"):
             ci_storage_audit.merge_paginated_payload(payload)
 
     def test_human_bytes_uses_binary_units(self) -> None:

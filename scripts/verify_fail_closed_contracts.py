@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import re
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -212,9 +213,35 @@ def rel_name(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def strip_just_comment(line: str) -> str:
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(line):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char == "#" and (index == 0 or line[index - 1].isspace()):
+            return line[:index].rstrip()
+    return line.rstrip()
+
+
 def is_just_recipe_header(line: str) -> bool:
     stripped = line.strip()
-    return bool(stripped) and line == line.lstrip() and not stripped.startswith("#") and ":" in stripped
+    if not stripped or line != line.lstrip() or stripped.startswith("#") or ":=" in stripped:
+        return False
+    header, separator, _tail = stripped.partition(":")
+    if not separator:
+        return False
+    parts = header.split()
+    return bool(parts) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", parts[0]) is not None
 
 
 def just_recipe_name(line: str) -> str:
@@ -226,10 +253,16 @@ def source_fence_static_commands(justfile_text: str) -> tuple[str, ...]:
     active = False
     for line in justfile_text.splitlines():
         stripped = line.strip()
-        if is_just_recipe_header(line):
-            active = just_recipe_name(line) == SOURCE_FENCE_STATIC_RECIPE
-        elif active and stripped and not stripped.startswith("#") and line != line.lstrip():
-            commands.append(stripped)
+        if not stripped:
+            continue
+        if line == line.lstrip():
+            active = False
+            if is_just_recipe_header(line):
+                active = just_recipe_name(line) == SOURCE_FENCE_STATIC_RECIPE
+        elif active and not stripped.startswith("#"):
+            command = strip_just_comment(stripped)
+            if command:
+                commands.append(command)
     return tuple(commands)
 
 

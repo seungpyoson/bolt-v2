@@ -632,6 +632,50 @@ def test_source_fence_static_parser_requires_indented_commands() -> None:
     assert commands == ("python3 scripts/test_verify_fail_closed_contracts.py",), commands
 
 
+def test_source_fence_static_parser_ignores_inline_comments() -> None:
+    verifier = load_verifier()
+    justfile_text = """
+    source-fence-static-inner:
+        python3 scripts/test_verify_fail_closed_contracts.py  # self-test guard
+        python3 scripts/verify_fail_closed_contracts.py  # verifier guard
+    """
+
+    commands = verifier.source_fence_static_commands(textwrap.dedent(justfile_text).lstrip())
+
+    assert commands == (
+        "python3 scripts/test_verify_fail_closed_contracts.py",
+        "python3 scripts/verify_fail_closed_contracts.py",
+    ), commands
+
+
+def test_source_fence_static_parser_stops_at_top_level_non_recipe_lines() -> None:
+    verifier = load_verifier()
+    justfile_text = """
+    source-fence-static-inner:
+        python3 scripts/test_verify_fail_closed_contracts.py
+    import "other.just"
+        python3 scripts/verify_fail_closed_contracts.py
+    """
+
+    commands = verifier.source_fence_static_commands(textwrap.dedent(justfile_text).lstrip())
+
+    assert commands == ("python3 scripts/test_verify_fail_closed_contracts.py",), commands
+
+
+def test_source_fence_static_parser_ignores_malformed_top_level_colon_lines() -> None:
+    verifier = load_verifier()
+    justfile_text = """
+    source-fence-static-inner:
+        python3 scripts/test_verify_fail_closed_contracts.py
+    := value
+        python3 scripts/verify_fail_closed_contracts.py
+    """
+
+    commands = verifier.source_fence_static_commands(textwrap.dedent(justfile_text).lstrip())
+
+    assert commands == ("python3 scripts/test_verify_fail_closed_contracts.py",), commands
+
+
 def test_classified_degradation_requires_central_exception() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1071,6 +1115,9 @@ def main() -> int:
         test_source_fence_static_wiring_is_required,
         test_repo_source_fence_static_wiring_is_current,
         test_source_fence_static_parser_requires_indented_commands,
+        test_source_fence_static_parser_ignores_inline_comments,
+        test_source_fence_static_parser_stops_at_top_level_non_recipe_lines,
+        test_source_fence_static_parser_ignores_malformed_top_level_colon_lines,
         test_classified_degradation_requires_central_exception,
         test_stale_central_exception_fails_closed,
         test_dot_prefixed_exception_path_is_normalized,

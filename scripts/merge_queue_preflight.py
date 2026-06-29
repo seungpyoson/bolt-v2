@@ -661,9 +661,19 @@ def readiness_label_names(readiness: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(sorted(str(dict(label)["name"]) for label in labels))
 
 
+def mergify_queue_conditions(rule: Mapping[str, object]) -> tuple[object, ...] | None:
+    value = rule.get("queue_conditions", ())
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return None
+    return tuple(value)
+
+
 def mergify_queue_condition_labels(rule: Mapping[str, object]) -> frozenset[str] | None:
+    conditions = mergify_queue_conditions(rule)
+    if conditions is None:
+        return None
     labels: set[str] = set()
-    for condition in tuple(rule.get("queue_conditions", ())):
+    for condition in conditions:
         if not isinstance(condition, str):
             return None
         match = MERGIFY_LABEL_CONDITION_RE.fullmatch(condition)
@@ -1133,6 +1143,32 @@ def mergify_queue_batch_size_findings(
                 )
             )
     return tuple(findings)
+
+
+def mergify_above_max_batch_limits(
+    findings: Sequence[Mapping[str, object]],
+) -> dict[int, int]:
+    limits: dict[int, int] = {}
+    for finding in findings:
+        if finding["reason_code"] != "mergify_queue_batch_above_max":
+            continue
+        evidence = dict(finding["evidence"])
+        max_batch_size = int(evidence["max_batch_size"])
+        for pr in tuple(evidence["prs"]):
+            limits[int(pr)] = max_batch_size
+    return limits
+
+
+def batch_max_size(prs: Sequence[int], limits: Mapping[int, int]) -> int | None:
+    candidates = tuple(limits[pr] for pr in prs if pr in limits)
+    if not candidates:
+        return None
+    return min(candidates)
+
+
+def batch_would_exceed_max(prs: Sequence[int], limits: Mapping[int, int]) -> bool:
+    max_size = batch_max_size(prs, limits)
+    return max_size is not None and len(prs) > max_size
 
 
 def available_mergify_queue_route_findings(
@@ -2346,10 +2382,30 @@ READINESS_READY_FINDING_BUILDERS = {
 }
 
 
-def readiness_ready_findings(readiness: Sequence[Mapping[str, object]]) -> tuple[dict[str, object], ...]:
+def non_ready_readiness_prs(findings: Sequence[Mapping[str, object]]) -> frozenset[int]:
+    prs: set[int] = set()
+    for finding in findings:
+        if finding["lane"] != LANE_READINESS or finding["scope"] != "pr":
+            continue
+        if finding["status"] == STATUS_READY:
+            continue
+        evidence = finding.get("evidence")
+        if not isinstance(evidence, Mapping) or "pr" not in evidence:
+            continue
+        prs.add(int(evidence["pr"]))
+    return frozenset(prs)
+
+
+def readiness_ready_findings(
+    readiness: Sequence[Mapping[str, object]],
+    *,
+    related_findings: Sequence[Mapping[str, object]] = (),
+) -> tuple[dict[str, object], ...]:
+    suppressed_prs = non_ready_readiness_prs(related_findings)
     return tuple(
         finding
         for item in readiness
+        if int(item["pr"]) not in suppressed_prs
         for finding in READINESS_READY_FINDING_BUILDERS[
             "metadata" in item and not tuple(item["warning_details"])
         ](item)
@@ -2498,6 +2554,13 @@ def preflight_with_fetch_refs(
         *readiness_blocks(readiness),
     ]
     blocked_numbers = {int(block["pr"]) for block in blocked_prs}
+    mergify_findings = mergify_config_findings(
+        repo=repo,
+        base_sha=base_sha,
+        readiness=readiness,
+        required_check_workflows=required_check_workflows,
+    )
+    batch_max_limits = mergify_above_max_batch_limits(mergify_findings)
     base_commits: dict[int, SyntheticCommit] = {}
     base_verifiers: dict[int, tuple[VerifierResult, ...]] = {}
     for pr in requested:
@@ -2544,6 +2607,19 @@ def preflight_with_fetch_refs(
             current_verifiers = base_verifiers[pr]
             continue
         candidate_prs = [*current.prs, pr]
+        if batch_would_exceed_max(candidate_prs, batch_max_limits):
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=current.commit,
+                    prs=current.prs,
+                    verifiers=current_verifiers,
+                )
+            )
+            batch_index += 1
+            current = base_commits[pr]
+            current_verifiers = base_verifiers[pr]
+            continue
         synthetic = synthesize_merge(repo, current.commit, pr_head.sha, candidate_prs)
         if isinstance(synthetic, MergeResult):
             conflicts.append(
@@ -2611,14 +2687,9 @@ def preflight_with_fetch_refs(
             actual_base_sha=actual_base_sha,
         ),
         *head_identity_findings(expected_heads=expected_heads, actual_heads=heads),
-        *mergify_config_findings(
-            repo=repo,
-            base_sha=base_sha,
-            readiness=readiness,
-            required_check_workflows=required_check_workflows,
-        ),
+        *mergify_findings,
         *preflight_mode_findings(use_gh=use_gh),
-        *readiness_ready_findings(readiness),
+        *readiness_ready_findings(readiness, related_findings=mergify_findings),
         *residual_risk_findings(),
         *integration_batch_ready_findings(batches),
         *verifier_batch_ready_findings(batches, output_policy),

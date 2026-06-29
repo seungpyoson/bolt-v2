@@ -939,6 +939,11 @@ def assert_unsupported_mergify_queue_condition_does_not_match() -> None:
         "label Mergify queue condition",
     )
     assert_equal(
+        module.mergify_queue_condition_labels({"queue_conditions": 5}),
+        None,
+        "scalar Mergify queue conditions",
+    )
+    assert_equal(
         module.selected_mergify_queue_rule(
             {"queue_rules": [{"name": "unsupported", "queue_conditions": ["author = bot"]}]},
             (),
@@ -1103,6 +1108,11 @@ def assert_default_queue_above_max_is_split_advised() -> None:
         assert_equal(result.returncode, 1, "default queue above max rc")
         payload = parse_json(result.stdout)
         assert_equal(payload["wave_status"], "split_advised", "default queue above max wave status")
+        assert_equal(
+            [batch["prs"] for batch in payload["batches"]],
+            [list(range(1, 11)), [11]],
+            "default queue above max size-valid batches",
+        )
         assert mergify_queue_batch_above_max_finding("default", list(heads), 10) in payload["findings"], payload["findings"]
 
 
@@ -2123,6 +2133,12 @@ def assert_selected_mergify_check_missing_is_inconclusive_at_runtime() -> None:
             },
             "missing selected Mergify check context",
         )
+        readiness_findings = [
+            finding
+            for finding in payload["findings"]
+            if finding["reason_code"] == "readiness_ready"
+        ]
+        assert_equal(readiness_findings, [], "missing selected Mergify check readiness-ready findings")
         assert_equal(
             payload["lane_statuses"]["readiness"],
             "inconclusive",
@@ -2195,6 +2211,12 @@ def assert_required_check_wrong_workflow_is_inconclusive_at_runtime() -> None:
         assert_equal(evidence["check_name"], "gate", "wrong check workflow name")
         assert_equal(evidence["workflow"], "Wrong CI", "wrong check workflow actual")
         assert_equal(evidence["expected_workflow"], "CI", "wrong check workflow expected")
+        readiness_findings = [
+            finding
+            for finding in payload["findings"]
+            if finding["reason_code"] == "readiness_ready"
+        ]
+        assert_equal(readiness_findings, [], "wrong check workflow readiness-ready findings")
         assert_equal(payload["lane_statuses"]["readiness"], "inconclusive", "wrong check workflow lane")
 
 

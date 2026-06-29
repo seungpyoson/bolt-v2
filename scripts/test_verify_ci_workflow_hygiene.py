@@ -8842,6 +8842,11 @@ lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
             "retention_days = true",
             1,
         ),
+        "ci_provenance.api_limits.max_lookback_age_seconds must not exceed artifact retention": config_text.replace(
+            "max_lookback_age_seconds = 2592000",
+            "max_lookback_age_seconds = 2592001",
+            1,
+        ),
         "artifact_retention.classes.reuse-bound.max_retention_days_config_ref references missing TOML key": config_text.replace(
             "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30",
             '[artifact_retention.classes.reuse-bound]\nmax_retention_days_config_file = "ci/github-actions-runners.toml"\nmax_retention_days_config_ref = "ci_provenance.artifacts.missing"',

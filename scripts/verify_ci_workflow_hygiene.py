@@ -79,8 +79,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/backtester-ci.yml": "backtester_ci",
     "flaky-test-detection.yml": "flaky_test_detection",
     ".github/workflows/flaky-test-detection.yml": "flaky_test_detection",
-    "flaky-test-detection-smoke.yml": "flaky_test_detection_smoke",
-    ".github/workflows/flaky-test-detection-smoke.yml": "flaky_test_detection_smoke",
+    "flaky-test-smoke.yml": "flaky_test_smoke",
+    ".github/workflows/flaky-test-smoke.yml": "flaky_test_smoke",
     "dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     ".github/workflows/dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     "merge-readiness-finalizer.yml": "merge_readiness_finalizer",
@@ -11208,13 +11208,13 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
             ),
         ),
     },
-    ".github/workflows/flaky-test-detection-smoke.yml": {
+    ".github/workflows/flaky-test-smoke.yml": {
         "workflow_triggers": frozenset({"workflow_dispatch"}),
         "required_workflow_fragments": (),
         "forbidden_workflow_fragments": (),
         "jobs": (
             (
-                "flaky-detection-rust-root-smoke",
+                "flaky-smoke-rust-root",
                 "root smoke job",
                 (
                     "run_number: [1]",
@@ -11227,7 +11227,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                 ),
             ),
             (
-                "flaky-detection-rust-backtester-smoke",
+                "flaky-smoke-rust-backtester",
                 "backtester smoke job",
                 (
                     "run_number: [1]",
@@ -11241,7 +11241,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                 ),
             ),
             (
-                "flaky-detection-rust-backtester-issue-789-smoke",
+                "flaky-smoke-rust-backtester-issue-789",
                 "issue-789 smoke job",
                 (
                     "run_number: [1]",

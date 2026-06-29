@@ -372,6 +372,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 "let cursor = usize::default();",
                 "let value = maybe_value.unwrap_or_default();",
                 "entry.or_default();",
+                "let value = legacy_runtime_default();",
                 # A hand-written `impl Default` bypasses the derive/`::default(`
                 # patterns, so the fence matches the `impl Default for` form
                 # directly (the StrategyRegistry/Imdsv2HostFactsSource class).
@@ -412,6 +413,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 "production type default",
                 "production unwrap_or_default",
                 "production or_default",
+                "production legacy *_default()",
                 "production impl Default",
                 "production impl Default",
                 "production impl Default",
@@ -455,6 +457,15 @@ class LegacyDefaultFenceTests(unittest.TestCase):
             fence.find_violations_in_text(
                 "src/bolt_v3_validate.rs",
                 "let nt_data_default = nautilus_live::config::LiveDataEngineConfig::default();",
+            ),
+            [],
+        )
+
+    def test_allows_url_known_default_port_reference(self) -> None:
+        self.assertEqual(
+            fence.find_violations_in_text(
+                "src/bolt_v3_validate.rs",
+                "let same_port = joined.port_or_known_default() == base.port_or_known_default();",
             ),
             [],
         )

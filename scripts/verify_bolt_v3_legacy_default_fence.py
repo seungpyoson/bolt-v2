@@ -131,6 +131,10 @@ FORBIDDEN_DEFAULTS = (
         re.compile(r"\.\s*unwrap_or_default\s*\("),
         "production unwrap_or_default",
     ),
+    (
+        re.compile(r"(?<![A-Za-z0-9_:.])[A-Za-z_][A-Za-z0-9_]*_default\s*\("),
+        "production legacy *_default()",
+    ),
 )
 
 
@@ -171,6 +175,8 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
 
 
 def is_allowed_default_reference(path: str, line: str) -> bool:
+    if path == "src/bolt_v3_validate.rs" and "port_or_known_default()" in line:
+        return True
     return path == "src/bolt_v3_validate.rs" and any(
         marker in line
         for marker in (

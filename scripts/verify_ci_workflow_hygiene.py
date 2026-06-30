@@ -11276,25 +11276,44 @@ def one_indexed_sequence(values: tuple[int, ...]) -> bool:
     return values == tuple(range(1, len(values) + 1))
 
 
-def bte_test_invocation_count(job_text: str) -> int:
-    return len(
-        re.findall(
-            r"(?m)(?:^|[;&|]+\s*|\bthen\s+|\bdo\s+|\{\s*)\s*just\s+bte-test\b",
-            job_text,
-        )
-    )
+def named_step_run_block(job_text: str, step_name: str) -> str | None:
+    lines = job_text.splitlines()
+    for line_number, line in enumerate(lines):
+        if line.strip() != f"- name: {step_name}":
+            continue
+        for run_line_number in range(line_number + 1, len(lines)):
+            run_line = lines[run_line_number]
+            if run_line.strip().startswith("- name: "):
+                break
+            if run_line.strip() != "run: |":
+                continue
+            run_indent = len(run_line) - len(run_line.lstrip())
+            block_lines: list[str] = []
+            for body_line in lines[run_line_number + 1 :]:
+                if body_line.strip():
+                    body_indent = len(body_line) - len(body_line.lstrip())
+                    if body_indent <= run_indent:
+                        break
+                block_lines.append(body_line)
+            return "\n".join(block_lines)
+        return None
+    return None
 
 
-def has_dead_bte_test_guard(job_text: str) -> bool:
-    return re.search(r"(?m)^\s*if\s+false\s*;?\s*then\b", job_text) is not None
+def bte_test_invocation_count(run_block: str) -> int:
+    return len(re.findall(r"\bjust\s+bte-test\b", run_block))
 
 
-def shard_partition_argument_denominators(job_text: str) -> tuple[int, ...]:
+def has_bte_run_control_flow(run_block: str) -> bool:
+    return re.search(r"(?m)(?:^|[;&|]\s*)\s*(?:if|while|until|for|case)\b", run_block) is not None
+
+
+def shard_partition_argument_denominators(run_block: str) -> tuple[int, ...]:
     return tuple(
         int(denominator)
         for denominator in re.findall(
             r"(?m)^\s*just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
-            job_text,
+            run_block,
         )
     )
 
@@ -11452,12 +11471,16 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             if fragment not in job_text
         )
         if label in {"backtester full job", "backtester smoke job"}:
-            invocation_count = bte_test_invocation_count(job_text)
+            bte_run_block = named_step_run_block(job_text, "Run tests")
+            if bte_run_block is None:
+                errors.append(f"flaky-test-detection {label} must have a Run tests run block")
+                bte_run_block = ""
+            invocation_count = bte_test_invocation_count(bte_run_block)
             if invocation_count != 1:
                 errors.append(f"flaky-test-detection {label} must have exactly one just bte-test invocation")
-            if has_dead_bte_test_guard(job_text):
-                errors.append(f"flaky-test-detection {label} must not guard just bte-test behind if false")
-            denominators = shard_partition_argument_denominators(job_text)
+            if has_bte_run_control_flow(bte_run_block):
+                errors.append(f"flaky-test-detection {label} must keep just bte-test in a simple Run tests block")
+            denominators = shard_partition_argument_denominators(bte_run_block)
             if len(denominators) != 1:
                 errors.append(f"flaky-test-detection {label} must have one matrix.shard partition argument")
         if label == "backtester full job":

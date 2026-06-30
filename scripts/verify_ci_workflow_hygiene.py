@@ -13571,6 +13571,13 @@ class StorageCleanupAlertWorkflowContract(NamedTuple):
     concurrency_group: str
     cancel_in_progress: bool
     run_command: str
+    json_artifact_action: str
+    json_artifact_step_id: str
+    json_artifact_upload_if: str
+    json_artifact_name: str
+    json_artifact_path: str
+    json_artifact_if_no_files_found: str
+    json_artifact_retention_days: int
     triggers: tuple[str, ...]
     permissions: Mapping[str, str]
     required_fragments: tuple[str, ...]
@@ -13602,6 +13609,13 @@ def load_storage_cleanup_alert_workflow_contract(config_text: str) -> StorageCle
         concurrency_group=require_config_string(workflow, "concurrency_group", prefix),
         cancel_in_progress=require_config_bool(workflow, "cancel_in_progress", prefix),
         run_command=require_config_string(workflow, "run_command", prefix),
+        json_artifact_action=require_config_string(workflow, "json_artifact_action", prefix),
+        json_artifact_step_id=require_config_string(workflow, "json_artifact_step_id", prefix),
+        json_artifact_upload_if=require_config_string(workflow, "json_artifact_upload_if", prefix),
+        json_artifact_name=require_config_string(workflow, "json_artifact_name", prefix),
+        json_artifact_path=require_config_string(workflow, "json_artifact_path", prefix),
+        json_artifact_if_no_files_found=require_config_string(workflow, "json_artifact_if_no_files_found", prefix),
+        json_artifact_retention_days=require_config_positive_int(workflow, "json_artifact_retention_days", prefix),
         triggers=tuple(require_config_string_list(workflow, "triggers", prefix)),
         permissions=require_config_string_map(workflow, "permissions", prefix),
         required_fragments=tuple(require_config_string_list(workflow, "required_fragments", prefix)),
@@ -13673,8 +13687,8 @@ def verify_storage_cleanup_alert_workflow(workflows: dict[str, str], runners_con
         errors.append(f"{workflow_name} storage cleanup alert job must not use continue-on-error")
 
     steps = step_blocks(job)
-    if len(steps) != 2:
-        errors.append(f"{workflow_name} storage cleanup alert job must contain exactly checkout and run steps")
+    if len(steps) != 3:
+        errors.append(f"{workflow_name} storage cleanup alert job must contain exactly checkout, run, and upload steps")
     else:
         checkout_action = storage_tripwire_expected_checkout_action(workflow_contract.required_fragments)
         persist_credentials = storage_tripwire_expected_persist_credentials(workflow_contract.required_fragments)
@@ -13699,6 +13713,23 @@ def verify_storage_cleanup_alert_workflow(workflows: dict[str, str], runners_con
             or step_run_command(steps[1]) != workflow_contract.run_command
         ):
             errors.append(f"{workflow_name} run step must match storage_audit.cleanup_feasibility_alert.workflow contract")
+        upload_items = block_top_level_items(steps[2])
+        expected_upload_with = {
+            "name": workflow_contract.json_artifact_name,
+            "path": workflow_contract.json_artifact_path,
+            "if-no-files-found": workflow_contract.json_artifact_if_no_files_found,
+            "retention-days": str(workflow_contract.json_artifact_retention_days),
+        }
+        if (
+            upload_items is None
+            or set(upload_items) != {"name", "id", "if", "uses", "with"}
+            or upload_items.get("name") != "Upload cleanup feasibility JSON"
+            or upload_items.get("id") != workflow_contract.json_artifact_step_id
+            or upload_items.get("if") != workflow_contract.json_artifact_upload_if
+            or upload_items.get("uses") != workflow_contract.json_artifact_action
+            or block_nested_mapping_items(steps[2], "with") != expected_upload_with
+        ):
+            errors.append(f"{workflow_name} upload step must match storage_audit.cleanup_feasibility_alert.workflow contract")
 
     for required in workflow_contract.required_fragments:
         if required not in job_text:

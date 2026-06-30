@@ -9461,6 +9461,38 @@ def assert_storage_cleanup_alert_workflow_contract() -> None:
     if not any("run step must match storage_audit.cleanup_feasibility_alert.workflow contract" in error for error in missing_alert_errors):
         raise AssertionError(f"storage cleanup alert command drift was silent, got: {missing_alert_errors}")
 
+    missing_json_output = replace_once(workflow, ' --cleanup-json-output "$RUNNER_TEMP/cleanup-feasibility.json"', "")
+    missing_json_output_errors = verifier.verify_storage_cleanup_alert_workflow(
+        {workflow_path: missing_json_output},
+        runners_config,
+    )
+    if not any(
+        "run step must match storage_audit.cleanup_feasibility_alert.workflow contract" in error
+        for error in missing_json_output_errors
+    ):
+        raise AssertionError(f"storage cleanup alert JSON output drift was silent, got: {missing_json_output_errors}")
+
+    missing_upload_step = replace_once(
+        workflow,
+        """      - name: Upload cleanup feasibility JSON
+        id: upload-cleanup-feasibility-json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-storage-cleanup-feasibility
+          path: ${{ runner.temp }}/cleanup-feasibility.json
+          if-no-files-found: error
+          retention-days: 7
+""",
+        "",
+    )
+    missing_upload_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: missing_upload_step}, runners_config)
+    if not any(
+        "storage cleanup alert job must contain exactly checkout, run, and upload steps" in error
+        for error in missing_upload_errors
+    ):
+        raise AssertionError(f"storage cleanup alert upload step drift was silent, got: {missing_upload_errors}")
+
     delete_fragment = workflow + "\n# --method DELETE\n"
     delete_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: delete_fragment}, runners_config)
     if not any("must not contain forbidden workflow fragment" in error for error in delete_errors):

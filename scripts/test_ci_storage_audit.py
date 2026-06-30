@@ -2349,16 +2349,16 @@ class CiStorageAuditTests(unittest.TestCase):
             ],
         )
 
-    def test_cleanup_alert_summary_reports_counts_without_rows(self) -> None:
+    def test_cleanup_alert_summary_reports_counts_and_aggregates_without_raw_rows(self) -> None:
         policy = cleanup_alert_policy("alert-policy")
         snapshot = {
             "snapshot_utc": "2026-06-23T00:00:00+00:00",
             "repo": "owner/repo",
             "artifact_cleanup_feasibility": {
-                "candidate_count": 1,
-                "expected_reclaim_proxy_bytes": 2048,
+                "candidate_count": 2,
+                "expected_reclaim_proxy_bytes": 3072,
                 "unverified_candidate_count": 0,
-                "metadata_unavailable_count": 0,
+                "metadata_unavailable_count": 1,
                 "reclaim_basis": "listed_artifact_bytes_proxy",
                 "measured_billed_reclaim_bytes": None,
                 "billing": {
@@ -2369,6 +2369,26 @@ class CiStorageAuditTests(unittest.TestCase):
                     {
                         "name": "nextest-archive",
                         "artifact_id": 1,
+                        "class_id": "nextest_archive",
+                        "decision": "DELETE-CANDIDATE",
+                        "reason_code": "delete_candidate",
+                        "size_bytes": 1024,
+                    },
+                    {
+                        "name": "nextest-archive-hidden",
+                        "artifact_id": 2,
+                        "class_id": "nextest_archive",
+                        "decision": "DELETE-CANDIDATE",
+                        "reason_code": "delete_candidate",
+                        "size_bytes": 2048,
+                    },
+                    {
+                        "name": "metadata-gap-hidden",
+                        "artifact_id": 3,
+                        "class_id": "nextest_archive",
+                        "decision": "KEEP",
+                        "reason_code": "artifact_metadata_unavailable",
+                        "size_bytes": 4096,
                     },
                 ],
             },
@@ -2377,12 +2397,17 @@ class CiStorageAuditTests(unittest.TestCase):
         summary = ci_storage_audit.render_cleanup_alert_summary(snapshot, policy)
 
         self.assertIn("### Artifact cleanup feasibility alert", summary)
-        self.assertIn("- delete candidates: `1`", summary)
-        self.assertIn("- proxy reclaim: `2.0 KiB`", summary)
+        self.assertIn("- delete candidates: `2`", summary)
+        self.assertIn("- proxy reclaim: `3.0 KiB`", summary)
         self.assertIn("- measured billed reclaim: `unavailable`", summary)
         self.assertIn("- reclaim basis: `listed_artifact_bytes_proxy`", summary)
+        self.assertIn("Candidate classes:", summary)
+        self.assertIn("- `nextest_archive`: `2` rows, `3.0 KiB`", summary)
+        self.assertIn("Keep reason codes:", summary)
+        self.assertIn("- `artifact_metadata_unavailable`: `1` rows, `4.0 KiB`", summary)
         self.assertIn("delete candidates require operator review", summary)
         self.assertNotIn("nextest-archive", summary)
+        self.assertNotIn("metadata-gap-hidden", summary)
         self.assertNotIn("artifact_id", summary)
 
     def test_cleanup_alert_summary_reports_clear_state(self) -> None:
@@ -2401,6 +2426,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     "status": "unavailable",
                     "message": "billing impact unverifiable from API",
                 },
+                "rows": [],
             },
         }
 
@@ -2423,6 +2449,40 @@ class CiStorageAuditTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.ABSENT)
         self.assertEqual(raised.exception.field, "--cleanup-feasibility")
+
+    def test_validate_args_rejects_cleanup_json_output_without_cleanup_feasibility(self) -> None:
+        args = ci_storage_audit.parse_args(
+            [
+                "--repo",
+                "owner/repo",
+                "--cleanup-json-output",
+                "cleanup.json",
+            ]
+        )
+
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.validate_args(args)
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.ABSENT)
+        self.assertEqual(raised.exception.field, "--cleanup-feasibility")
+
+    def test_write_json_snapshot_writes_full_snapshot_contract(self) -> None:
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "artifact_cleanup_feasibility": {
+                "candidate_count": 1,
+                "rows": [{"artifact_id": 1, "decision": "DELETE-CANDIDATE"}],
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = pathlib.Path(tmp) / "cleanup-feasibility.json"
+            ci_storage_audit.write_json_snapshot(output_path, snapshot)
+
+            decoded = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(decoded, snapshot)
 
     def test_billing_probe_records_reachability_without_raw_payload(self) -> None:
         policy = ci_storage_audit.load_cleanup_policy_text(

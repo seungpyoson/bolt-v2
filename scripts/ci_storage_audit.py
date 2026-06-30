@@ -121,6 +121,12 @@ class CleanupAlertFinding(NamedTuple):
     reason: str
 
 
+class CleanupAlertAggregate(NamedTuple):
+    key: str
+    count: int
+    size_bytes: int
+
+
 class InputFailure(NamedTuple):
     field: str
     state: str
@@ -2208,6 +2214,12 @@ def append_step_summary(path: str, text: str) -> None:
         summary.write("\n")
 
 
+def write_json_snapshot(path: pathlib.Path, snapshot: dict[str, Any]) -> None:
+    with open(path, "w", encoding="utf-8") as output:
+        json.dump(snapshot, output, indent=2, sort_keys=True)
+        output.write("\n")
+
+
 def cleanup_alert_metric(cleanup: dict[str, Any], metric: str) -> int:
     return require_nonnegative_int(
         require_field(cleanup, metric, f"artifact_cleanup_feasibility.{metric}"),
@@ -2283,6 +2295,49 @@ def cleanup_alert_annotations(findings: Iterable[CleanupAlertFinding]) -> list[s
     return annotations
 
 
+def cleanup_alert_row_aggregates(
+    cleanup: dict[str, Any],
+    *,
+    decision: str,
+    field: str,
+) -> list[CleanupAlertAggregate]:
+    rows = object_list_field(cleanup, "rows", "artifact_cleanup_feasibility")
+    counts: dict[str, int] = collections.defaultdict(int)
+    sizes: dict[str, int] = collections.defaultdict(int)
+    for index, row in enumerate(rows):
+        row_label = f"artifact_cleanup_feasibility.rows[{index}]"
+        row_decision = require_text(
+            require_field(row, "decision", f"{row_label}.decision"),
+            f"{row_label}.decision",
+        )
+        if row_decision != decision:
+            continue
+        key = require_text(
+            require_field(row, field, f"{row_label}.{field}"),
+            f"{row_label}.{field}",
+        )
+        size_bytes = require_nonnegative_int(
+            require_field(row, "size_bytes", f"{row_label}.size_bytes"),
+            f"{row_label}.size_bytes",
+        )
+        counts[key] += 1
+        sizes[key] += size_bytes
+    return [
+        CleanupAlertAggregate(key=key, count=counts[key], size_bytes=sizes[key])
+        for key in sorted(counts, key=lambda item: (-counts[item], item))
+    ]
+
+
+def append_cleanup_alert_aggregates(lines: list[str], title: str, aggregates: list[CleanupAlertAggregate]) -> None:
+    if not aggregates:
+        return
+    lines.extend(["", f"{title}:"])
+    for aggregate in aggregates:
+        lines.append(
+            f"- `{aggregate.key}`: `{aggregate.count}` rows, `{human_bytes(aggregate.size_bytes)}`"
+        )
+
+
 def render_cleanup_alert_summary(snapshot: dict[str, Any], policy: CleanupAlertPolicy) -> str:
     cleanup = require_object(
         require_field(
@@ -2317,6 +2372,16 @@ def render_cleanup_alert_summary(snapshot: dict[str, Any], policy: CleanupAlertP
         f"- reclaim basis: `{require_text(cleanup.get('reclaim_basis'), 'artifact_cleanup_feasibility.reclaim_basis')}`",
         f"- billing: `{billing.get('status')}` ({billing.get('message')})",
     ]
+    append_cleanup_alert_aggregates(
+        lines,
+        "Candidate classes",
+        cleanup_alert_row_aggregates(cleanup, decision="DELETE-CANDIDATE", field="class_id"),
+    )
+    append_cleanup_alert_aggregates(
+        lines,
+        "Keep reason codes",
+        cleanup_alert_row_aggregates(cleanup, decision="KEEP", field="reason_code"),
+    )
     if not findings:
         lines.extend(["", "No configured cleanup alert thresholds were crossed."])
         return "\n".join(lines)
@@ -2607,6 +2672,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Evaluate configured cleanup-feasibility alert thresholds.",
     )
     parser.add_argument(
+        "--cleanup-json-output",
+        type=pathlib.Path,
+        help="Write the stable cleanup-feasibility JSON snapshot to this path.",
+    )
+    parser.add_argument(
         "--cache-key",
         action="append",
         default=[],
@@ -2659,6 +2729,14 @@ def validate_args(args: argparse.Namespace) -> None:
             kind=FailureKind.ABSENT,
             field="--cleanup-feasibility",
         )
+    if args.cleanup_json_output is not None and not args.cleanup_feasibility:
+        raise AuditError(
+            "--cleanup-json-output requires --cleanup-feasibility",
+            kind=FailureKind.ABSENT,
+            field="--cleanup-feasibility",
+        )
+    if args.cleanup_json_output is not None:
+        require_text(str(args.cleanup_json_output), "--cleanup-json-output")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -2733,6 +2811,8 @@ def run(args: argparse.Namespace) -> int:
         snapshot_utc=snapshot_utc,
         cleanup_policy=cleanup_policy,
     )
+    if args.cleanup_json_output is not None:
+        write_json_snapshot(args.cleanup_json_output, snapshot)
     if args.json:
         print(json.dumps(snapshot, indent=2, sort_keys=True))
     else:

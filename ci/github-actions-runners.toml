@@ -391,6 +391,11 @@ artifact_name_template_vars_config_ref = "backtester.issue_789.artifact_name_tem
 artifact_class = "transient"
 retention_days = 7
 
+[artifact_retention.uploads.".github/workflows/ci-storage-cleanup-alert.yml::cleanup-alert::upload-cleanup-feasibility-json"]
+artifact_name = "ci-storage-cleanup-feasibility"
+artifact_class = "transient"
+retention_days = 7
+
 # Every artifact reused from a prior run must have a binding here.
 [artifact_retention.lookback_bindings.build_deploy]
 upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
@@ -468,7 +473,14 @@ runner_var = "CI_RUNNER_GITHUB_HOSTED"
 schedule_cron = "47 9 * * 1"
 concurrency_group = "ci-storage-cleanup-alert"
 cancel_in_progress = false
-run_command = "python3 scripts/ci_storage_audit.py --repo \"$GITHUB_REPOSITORY\" --branch \"$GITHUB_REF_NAME\" --cleanup-feasibility --cleanup-alert --github-step-summary \"$GITHUB_STEP_SUMMARY\" --github-annotations"
+run_command = "python3 scripts/ci_storage_audit.py --repo \"$GITHUB_REPOSITORY\" --branch \"$GITHUB_REF_NAME\" --cleanup-feasibility --cleanup-alert --cleanup-json-output \"$RUNNER_TEMP/cleanup-feasibility.json\" --github-step-summary \"$GITHUB_STEP_SUMMARY\" --github-annotations"
+json_artifact_action = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+json_artifact_step_id = "upload-cleanup-feasibility-json"
+json_artifact_upload_if = "${{ always() }}"
+json_artifact_name = "ci-storage-cleanup-feasibility"
+json_artifact_path = "${{ runner.temp }}/cleanup-feasibility.json"
+json_artifact_if_no_files_found = "error"
+json_artifact_retention_days = 7
 triggers = ["workflow_dispatch", "schedule"]
 permissions = { contents = "read", actions = "read" }
 required_fragments = [
@@ -480,8 +492,16 @@ required_fragments = [
   "python3 scripts/ci_storage_audit.py",
   "--cleanup-feasibility",
   "--cleanup-alert",
+  "--cleanup-json-output \"$RUNNER_TEMP/cleanup-feasibility.json\"",
   "--github-step-summary \"$GITHUB_STEP_SUMMARY\"",
   "--github-annotations",
+  "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+  "id: upload-cleanup-feasibility-json",
+  "if: ${{ always() }}",
+  "name: ci-storage-cleanup-feasibility",
+  "path: ${{ runner.temp }}/cleanup-feasibility.json",
+  "if-no-files-found: error",
+  "retention-days: 7",
 ]
 forbidden_fragments = [
   "actions/artifacts",

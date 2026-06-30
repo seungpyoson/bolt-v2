@@ -5665,6 +5665,50 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             },
         ),
         (
+            "coverage-enforcer Enforce coverage map step must be canonical",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "      - name: Enforce coverage map\n",
+                    "      - name: Enforce coverage map\n"
+                    "        if: ${{ github.event_name == 'pull_request' }}\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer Enforce coverage map step must be canonical",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "      - name: Enforce coverage map\n",
+                    "      - name: Enforce coverage map\n"
+                    "        continue-on-error: true\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer Enforce coverage map step must be canonical",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "        run: |\n",
+                    "        run: >\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job must run scripts/coverage_enforcer.py only through the pinned Enforce coverage map step",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "      - name: Enforce coverage map\n",
+                    "      - name: Accidental pre-enforcer\n"
+                    "        run: python3 scripts/coverage_enforcer.py\n\n"
+                    "      - name: Enforce coverage map\n",
+                )
+            },
+        ),
+        (
             "coverage-enforcer must not be defined inside another workflow",
             {
                 workflow_name: BASE_COVERAGE_ENFORCER_WORKFLOW,

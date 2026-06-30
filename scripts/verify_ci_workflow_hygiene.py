@@ -1111,6 +1111,12 @@ EXPECTED_MERGE_READINESS_PROGRESS_IF = (
 
 EXPECTED_COVERAGE_ENFORCER_IF = ""
 
+EXPECTED_COVERAGE_ENFORCER_ENV = {
+    "GITHUB_TOKEN": "${{ github.token }}",
+    "GITHUB_EVENT_PATH": "${{ github.event_path }}",
+    "GITHUB_REPOSITORY": "${{ github.repository }}",
+}
+
 EXPECTED_COVERAGE_ENFORCER_RUN_BODY = (
     "if [ ! -f scripts/coverage_enforcer.py ]; then",
     '  echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py"',
@@ -13812,10 +13818,25 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     enforce_steps = [
         block for block in step_blocks(job) if step_name_matches(block, "Enforce coverage map")
     ]
+    run_steps = [block for block in step_blocks(job) if step_declares_run(block)]
     if len(enforce_steps) != 1:
         errors.append(f"{workflow_name} job must run scripts/coverage_enforcer.py")
-    elif tuple(block_run_body_lines(enforce_steps[0])) != EXPECTED_COVERAGE_ENFORCER_RUN_BODY:
-        errors.append(f"{workflow_name} job must guard first-run trusted-base bootstrap")
+    elif len(run_steps) != 1 or run_steps[0] != enforce_steps[0]:
+        errors.append(
+            f"{workflow_name} coverage-enforcer job must run scripts/coverage_enforcer.py "
+            "only through the pinned Enforce coverage map step"
+        )
+    else:
+        enforce_step = enforce_steps[0]
+        if not block_has_canonical_step_envelope(
+            enforce_step,
+            frozenset({"name", "env", "run"}),
+            {"name": "Enforce coverage map", "run": "|"},
+            {"env": EXPECTED_COVERAGE_ENFORCER_ENV},
+        ):
+            errors.append(f"{workflow_name} coverage-enforcer Enforce coverage map step must be canonical")
+        elif tuple(block_run_body_lines(enforce_step)) != EXPECTED_COVERAGE_ENFORCER_RUN_BODY:
+            errors.append(f"{workflow_name} job must guard first-run trusted-base bootstrap")
     if "python3 scripts/coverage_enforcer.py" not in job_text:
         errors.append(f"{workflow_name} job must run scripts/coverage_enforcer.py")
     for required in (

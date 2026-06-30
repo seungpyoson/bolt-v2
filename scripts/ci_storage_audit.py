@@ -2389,7 +2389,8 @@ def render_cleanup_alert_summary(snapshot: dict[str, Any], policy: CleanupAlertP
         [
             "",
             "Operator next steps:",
-            "- Download the cleanup JSON artifact from this workflow run and inspect row-level details before deleting anything.",
+            "- Open this workflow run in GitHub Actions, use the run page Artifacts section to download `ci-storage-cleanup-feasibility`, and inspect the JSON rows before deleting anything.",
+            "- Exact billed reclaim is unavailable from the GitHub API; use proxy reclaim only as listed-artifact-byte evidence.",
             "- This workflow is read-only and does not delete artifacts.",
         ]
     )

@@ -11276,10 +11276,13 @@ def one_indexed_sequence(values: tuple[int, ...]) -> bool:
     return values == tuple(range(1, len(values) + 1))
 
 
-def shard_partition_denominators(job_text: str) -> tuple[int, ...]:
+def shard_partition_argument_denominators(job_text: str) -> tuple[int, ...]:
     return tuple(
         int(denominator)
-        for denominator in re.findall(r"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)", job_text)
+        for denominator in re.findall(
+            r"(?m)^\s*just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
+            job_text,
+        )
     )
 
 
@@ -11441,9 +11444,9 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
                 errors.append("flaky-test-detection backtester full job shard matrix must be an inline integer list")
             elif not one_indexed_sequence(shards):
                 errors.append("flaky-test-detection backtester full job shard matrix must be one-indexed and contiguous")
-            denominators = shard_partition_denominators(job_text)
+            denominators = shard_partition_argument_denominators(job_text)
             if len(denominators) != 1:
-                errors.append("flaky-test-detection backtester full job must have one matrix.shard partition denominator")
+                errors.append("flaky-test-detection backtester full job must have one matrix.shard partition argument")
             elif shards is not None and denominators[0] != len(shards):
                 errors.append("flaky-test-detection backtester full job partition denominator must match shard matrix length")
     return errors

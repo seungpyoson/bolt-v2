@@ -1814,10 +1814,13 @@ def one_indexed_sequence(values: tuple[int, ...]) -> bool:
     return values == tuple(range(1, len(values) + 1))
 
 
-def shard_partition_denominators(job_lines: list[str]) -> tuple[int, ...]:
+def shard_partition_argument_denominators(job_lines: list[str]) -> tuple[int, ...]:
     return tuple(
         int(denominator)
-        for denominator in re.findall(r"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)", "\n".join(job_lines))
+        for denominator in re.findall(
+            r"(?m)^\s*just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
+            "\n".join(job_lines),
+        )
     )
 
 
@@ -5728,7 +5731,7 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
         raise AssertionError("flaky-test-detection.yml backtester job must keep five repeat runs")
     if not one_indexed_sequence(full_backtester_shards):
         raise AssertionError("flaky-test-detection.yml backtester shard matrix must stay one-indexed and contiguous")
-    if shard_partition_denominators(full_jobs["flaky-detection-rust-backtester"]) != (len(full_backtester_shards),):
+    if shard_partition_argument_denominators(full_jobs["flaky-detection-rust-backtester"]) != (len(full_backtester_shards),):
         raise AssertionError("flaky-test-detection.yml backtester shard partition denominator must match shard matrix length")
     if full_issue_runs != (1, 2, 3, 4, 5):
         raise AssertionError("flaky-test-detection.yml issue-789 job must keep five repeat runs")
@@ -5973,6 +5976,46 @@ jobs:
         raise AssertionError(
             "flaky detection verifier must reject full workflow shard/partition denominator drift, "
             f"got: {mismatched_reshard_errors}"
+        )
+    missing_partition_full_workflow = good_full_workflow.replace(
+        '--partition "count:${{ matrix.shard }}/4" ',
+        "",
+        1,
+    ).replace(
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip',
+        'echo "count:${{ matrix.shard }}/4"\n          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip',
+        1,
+    )
+    missing_partition_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: missing_partition_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("backtester full job must have one matrix.shard partition argument" in error for error in missing_partition_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject denominator text outside the partition argument, "
+            f"got: {missing_partition_errors}"
+        )
+    spoofed_partition_full_workflow = good_full_workflow.replace(
+        '--partition "count:${{ matrix.shard }}/4" ',
+        "",
+        1,
+    ).replace(
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip',
+        'echo \'--partition "count:${{ matrix.shard }}/4"\'\n          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip',
+        1,
+    )
+    spoofed_partition_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: spoofed_partition_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("backtester full job must have one matrix.shard partition argument" in error for error in spoofed_partition_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject partition text outside the just bte-test argument, "
+            f"got: {spoofed_partition_errors}"
         )
 
     oversized_smoke_workflow = good_smoke_workflow.replace(

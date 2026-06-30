@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import dataclasses
 import io
@@ -1790,6 +1791,23 @@ def without_once_after(text: str, anchor: str, old: str) -> str:
 
 def repo_workflow_text(path: str) -> str:
     return (REPO_ROOT / path).read_text().replace("\r\n", "\n")
+
+
+def inline_matrix_values(job_lines: list[str], matrix_key: str) -> tuple[int, ...]:
+    prefix = f"        {matrix_key}: "
+    values = [line.removeprefix(prefix) for line in job_lines if line.startswith(prefix)]
+    if len(values) != 1:
+        raise AssertionError(f"expected exactly one {matrix_key!r} matrix entry, found {len(values)}")
+    parsed = ast.literal_eval(values[0])
+    if not isinstance(parsed, list) or not all(isinstance(value, int) for value in parsed):
+        raise AssertionError(f"{matrix_key!r} matrix entry must be an inline integer list")
+    return tuple(parsed)
+
+
+def assert_no_inline_matrix_key(job_lines: list[str], matrix_key: str) -> None:
+    prefix = f"        {matrix_key}: "
+    if any(line.startswith(prefix) for line in job_lines):
+        raise AssertionError(f"unexpected {matrix_key!r} matrix entry")
 
 
 def strip_ci_provenance_config(config_text: str) -> str:
@@ -5654,6 +5672,7 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
 
 
 def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
+    verifier = load_verifier()
     full_workflow = repo_workflow_text(".github/workflows/flaky-test-detection.yml")
     smoke_workflow = repo_workflow_text(".github/workflows/flaky-test-smoke.yml")
     if "schedule:" in full_workflow:
@@ -5681,24 +5700,56 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
         "flaky-detection-rust-root:",
         "flaky-detection-rust-backtester:",
         "flaky-detection-rust-backtester-issue-789:",
-        "run_number: [1, 2, 3, 4, 5]",
-        "shard: [1, 2, 3, 4]",
     )
     for fragment in full_fragments:
         if fragment not in full_workflow:
             raise AssertionError(f"flaky-test-detection.yml missing {fragment!r}")
+    full_jobs = verifier.parse_jobs(full_workflow)
+    full_root_runs = inline_matrix_values(full_jobs["flaky-detection-rust-root"], "run_number")
+    full_backtester_runs = inline_matrix_values(full_jobs["flaky-detection-rust-backtester"], "run_number")
+    full_backtester_shards = inline_matrix_values(full_jobs["flaky-detection-rust-backtester"], "shard")
+    full_issue_runs = inline_matrix_values(full_jobs["flaky-detection-rust-backtester-issue-789"], "run_number")
+    assert_no_inline_matrix_key(full_jobs["flaky-detection-rust-root"], "shard")
+    assert_no_inline_matrix_key(full_jobs["flaky-detection-rust-backtester-issue-789"], "shard")
+    if full_root_runs != (1, 2, 3, 4, 5):
+        raise AssertionError("flaky-test-detection.yml root job must keep five repeat runs")
+    if full_backtester_runs != (1, 2, 3, 4, 5) or full_backtester_shards != (1, 2, 3, 4):
+        raise AssertionError("flaky-test-detection.yml backtester job must keep five runs across four shards")
+    if full_issue_runs != (1, 2, 3, 4, 5):
+        raise AssertionError("flaky-test-detection.yml issue-789 job must keep five repeat runs")
+    full_execution_count = (
+        len(full_root_runs)
+        + len(full_backtester_runs) * len(full_backtester_shards)
+        + len(full_issue_runs)
+    )
+    if full_execution_count != 30:
+        raise AssertionError(f"flaky-test-detection.yml must keep 30 matrix executions, got {full_execution_count}")
     smoke_fragments = (
         "schedule:",
         "cron: '0 */12 * * 1-5'",
         "flaky-smoke-rust-root:",
         "flaky-smoke-rust-backtester:",
         "flaky-smoke-rust-backtester-issue-789:",
-        "run_number: [1]",
-        "shard: [1]",
     )
     for fragment in smoke_fragments:
         if fragment not in smoke_workflow:
             raise AssertionError(f"flaky-test-smoke.yml missing {fragment!r}")
+    smoke_jobs = verifier.parse_jobs(smoke_workflow)
+    smoke_root_runs = inline_matrix_values(smoke_jobs["flaky-smoke-rust-root"], "run_number")
+    smoke_backtester_runs = inline_matrix_values(smoke_jobs["flaky-smoke-rust-backtester"], "run_number")
+    smoke_backtester_shards = inline_matrix_values(smoke_jobs["flaky-smoke-rust-backtester"], "shard")
+    smoke_issue_runs = inline_matrix_values(smoke_jobs["flaky-smoke-rust-backtester-issue-789"], "run_number")
+    assert_no_inline_matrix_key(smoke_jobs["flaky-smoke-rust-root"], "shard")
+    assert_no_inline_matrix_key(smoke_jobs["flaky-smoke-rust-backtester-issue-789"], "shard")
+    if smoke_root_runs != (1,) or smoke_backtester_runs != (1,) or smoke_backtester_shards != (1,) or smoke_issue_runs != (1,):
+        raise AssertionError("flaky-test-smoke.yml must keep one execution per smoke job")
+    smoke_execution_count = (
+        len(smoke_root_runs)
+        + len(smoke_backtester_runs) * len(smoke_backtester_shards)
+        + len(smoke_issue_runs)
+    )
+    if smoke_execution_count != 3:
+        raise AssertionError(f"flaky-test-smoke.yml must keep 3 matrix executions, got {smoke_execution_count}")
 
 
 def assert_flaky_detection_workflow_split_gaps_are_reported() -> None:

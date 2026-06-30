@@ -2295,8 +2295,8 @@ def assert_ci_policy_matrix() -> None:
     ):
         raise AssertionError(f"human-sender Mergify sync must fail closed: {human_sync_result}")
 
-    # A metadata edit (no base change) is not a full-CI action, so even the bound
-    # actor's temp PR falls through to the ordinary draft path -> iteration.
+    # Live Mergify proof PRs can arrive as draft metadata edits without a base
+    # change, so the bound actor's temp PR still has to publish required gates.
     mergify_edited_result = verifier.evaluate_ci_policy(
         policy,
         gate_names,
@@ -2312,13 +2312,13 @@ def assert_ci_policy_matrix() -> None:
         ref="refs/pull/965/merge",
     )
     if (
-        mergify_edited_result.ci_policy_path != "iteration"
-        or mergify_edited_result.gate_name != "gate-iteration"
-        or mergify_edited_result.backtester_gate_name != "backtester-gate-iteration"
-        or mergify_edited_result.reason != "draft_pr_edited"
+        mergify_edited_result.ci_policy_path != "full"
+        or mergify_edited_result.gate_name != "gate"
+        or mergify_edited_result.backtester_gate_name != "backtester-gate"
+        or mergify_edited_result.reason != "mergify_temp_pr"
     ):
         raise AssertionError(
-            f"Mergify temp PR metadata edits must defer to iteration: {mergify_edited_result}"
+            f"Mergify temp PR metadata edits must publish required gates: {mergify_edited_result}"
         )
 
     # GAP-1: a spoofed mergify head ref from a NON-actor sender must never earn the
@@ -2693,29 +2693,29 @@ def assert_ci_policy_resolvers_agree() -> None:
         raise AssertionError(
             f"ci_policy resolver drift for Mergify temp PR metadata edit: verifier={ver_tuple} provenance={prov_tuple}"
         )
-    # A metadata edit (no base change) is not a full-CI action, so even the bound
-    # actor's temp PR falls through to the ordinary draft path -> iteration.
+    # Live Mergify proof PRs can arrive as draft metadata edits without a base
+    # change; actor-bound proof edits must still publish required gates.
     if ver_tuple != (
-        "iteration",
+        "full",
+        True,
         False,
-        False,
-        "gate-iteration",
-        "backtester-gate-iteration",
-        "iteration",
-        "draft_pr_edited",
+        "gate",
+        "backtester-gate",
+        "full",
+        "mergify_temp_pr",
     ):
-        raise AssertionError(f"Mergify temp PR metadata edits must defer to iteration: {ver_tuple}")
+        raise AssertionError(f"Mergify temp PR metadata edits must publish required gates: {ver_tuple}")
     for string_base_changed, expected in [
         (
             "false",
             (
-                "iteration",
+                "full",
+                True,
                 False,
-                False,
-                "gate-iteration",
-                "backtester-gate-iteration",
-                "iteration",
-                "draft_pr_edited",
+                "gate",
+                "backtester-gate",
+                "full",
+                "mergify_temp_pr",
             ),
         ),
         (

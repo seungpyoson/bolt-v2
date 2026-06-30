@@ -52,7 +52,7 @@ For the #929 rollout, record the Mergify queue path:
 
 | Evidence | Expected value |
 | --- | --- |
-| Queue command | `@mergifyio queue` or the Mergify queue checkbox |
+| Queue command | `just merge-queue <pr...>` posts the configured queue command after a `queue_as_one_wave` preflight verdict |
 | Queue rule | Configured Mergify queue rule name |
 | Queue branch or PR | A Mergify temp branch/PR, usually `mergify/merge-queue/...` or `tmp-mergify/merge-queue/...` |
 | CI workflow | Runs full proof and publishes `gate` on the queue proof context |

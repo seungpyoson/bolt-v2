@@ -42,9 +42,11 @@ MANDATORY_TRACKED_INPUTS = (
     "src/",
     "tests/",
     "ci/nextest-fingerprint.toml",
+    "scripts/config_validators.py",
     "scripts/nextest_fingerprint.py",
     "scripts/root_bin_sidecars.py",
 )
+
 
 class FingerprintError(Exception):
     """Raised when fingerprint production must fail closed."""

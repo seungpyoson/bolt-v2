@@ -128,6 +128,7 @@ def positive_int(value: object, field: str) -> int:
         return int(value)
     raise MergeReadinessError(f"{field} must be a positive integer")
 
+
 def load_ci_provenance(path: pathlib.Path) -> dict[str, object]:
     data = load_toml(path)
     return require_table(data, "ci_provenance", "config")

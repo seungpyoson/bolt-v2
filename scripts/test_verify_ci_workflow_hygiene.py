@@ -324,6 +324,7 @@ jobs:
             scripts/test_nextest_fingerprint.py \
             scripts/root_bin_sidecars.py \
             scripts/test_root_bin_sidecars.py \
+            scripts/config_validators.py \
             scripts/ci_provenance.py \
             scripts/test_ci_provenance.py \
             scripts/verify_ci_workflow_hygiene.py \
@@ -8414,6 +8415,7 @@ ci-lint-workflow-inner: require-local-verification-gate
 def assert_nextest_fingerprint_reuse_governance_covers_sidecar_helper() -> None:
     verifier = load_verifier()
     required_paths = (
+        "scripts/config_validators.py",
         "scripts/root_bin_sidecars.py",
         "scripts/test_root_bin_sidecars.py",
     )
@@ -12928,9 +12930,9 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     narrowed_pathspec = replace_once_after(
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
-        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/config_validators.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
         """.github/workflows/ci.yml)
-          echo "decoy paths: .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py\"""",
+          echo "decoy paths: .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/config_validators.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py\"""",
     )
     assert_error(
         "detector must detect fingerprint-reuse governance changes",
@@ -12940,13 +12942,13 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
         """          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
-        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
+        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/config_validators.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
           changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
     )
     git_diff_decoy_pathspec = replace_once_after(
         git_diff_decoy_pathspec,
         "      - name: Detect fingerprint-reuse governance changes",
-        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/config_validators.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
         """.github/workflows/ci.yml)""",
     )
     assert_error("detector must detect fingerprint-reuse governance changes", git_diff_decoy_pathspec)
@@ -14428,6 +14430,7 @@ def main() -> int:
         ("scripts/test_nextest_fingerprint.py", "scripts/not_test_nextest_fingerprint.py"),
         ("scripts/root_bin_sidecars.py", "scripts/not_root_bin_sidecars.py"),
         ("scripts/test_root_bin_sidecars.py", "scripts/not_test_root_bin_sidecars.py"),
+        ("scripts/config_validators.py", "scripts/not_config_validators.py"),
     ):
         assert_error(
             "detector must detect fingerprint-reuse governance changes",

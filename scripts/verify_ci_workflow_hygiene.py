@@ -499,6 +499,7 @@ changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
   scripts/test_nextest_fingerprint.py \\
   scripts/root_bin_sidecars.py \\
   scripts/test_root_bin_sidecars.py \\
+  scripts/config_validators.py \\
   scripts/ci_provenance.py \\
   scripts/test_ci_provenance.py \\
   scripts/verify_ci_workflow_hygiene.py \\
@@ -559,6 +560,7 @@ FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
     "scripts/test_nextest_fingerprint.py",
     "scripts/root_bin_sidecars.py",
     "scripts/test_root_bin_sidecars.py",
+    "scripts/config_validators.py",
     "scripts/ci_provenance.py",
     "scripts/test_ci_provenance.py",
     "scripts/verify_ci_workflow_hygiene.py",

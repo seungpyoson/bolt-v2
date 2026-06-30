@@ -234,6 +234,20 @@ def assert_positive_int_rejects_bool_values() -> None:
         raise AssertionError("positive_int rejected decimal string value")
 
 
+def assert_require_positive_int_rejects_bool_values() -> None:
+    module = load_script()
+    for value in (True, False):
+        try:
+            module.require_positive_int({"x": value}, "x", "config")
+        except module.MergeReadinessError:
+            pass
+        else:
+            raise AssertionError(f"require_positive_int accepted bool value: {value!r}")
+
+    if module.require_positive_int({"x": 5}, "x", "config") != 5:
+        raise AssertionError("require_positive_int rejected int value")
+
+
 def assert_status_mapping() -> None:
     module = load_script()
     contexts = ("gate", "backtester-gate", "host-health", "actionlint")
@@ -628,6 +642,7 @@ def assert_cli_pr_status_uses_fallback_engine() -> None:
 
 def main() -> int:
     assert_positive_int_rejects_bool_values()
+    assert_require_positive_int_rejects_bool_values()
     assert_status_mapping()
     assert_non_blocking_required_check_conclusions_do_not_fail()
     assert_registry_context_set_is_source_of_truth()

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import enum
+import functools
 import json
 import os
 import pathlib
@@ -21,7 +22,12 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from verify_ci_workflow_hygiene import parse_mergify_yaml, verify_mergify_config
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import config_validators as _cv  # noqa: E402
+from verify_ci_workflow_hygiene import parse_mergify_yaml, verify_mergify_config  # noqa: E402
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -274,6 +280,11 @@ PREFLIGHT_MODE_FINDINGS = {
 
 class PreflightError(RuntimeError):
     """Raised when preflight input or repository state is invalid."""
+
+
+require_table = functools.partial(_cv.require_table, error_cls=PreflightError)
+require_string = functools.partial(_cv.require_string, error_cls=PreflightError)
+require_positive_int = functools.partial(_cv.require_positive_int, error_cls=PreflightError)
 
 
 class PreflightArgumentParser(argparse.ArgumentParser):
@@ -1856,27 +1867,6 @@ def load_toml(path: pathlib.Path) -> dict[str, object]:
     if not isinstance(data, dict):
         raise PreflightError("config root must be a TOML table")
     return data
-
-
-def require_table(parent: dict[str, object], key: str, prefix: str) -> dict[str, object]:
-    value = parent.get(key)
-    if not isinstance(value, dict):
-        raise PreflightError(f"{prefix}.{key} must be a table")
-    return value
-
-
-def require_string(parent: dict[str, object], key: str, prefix: str) -> str:
-    value = parent.get(key)
-    if not isinstance(value, str) or not value:
-        raise PreflightError(f"{prefix}.{key} must be a non-empty string")
-    return value
-
-
-def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
-    value = parent.get(key)
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise PreflightError(f"{prefix}.{key} must be a positive integer")
-    return value
 
 
 def require_string_map(parent: dict[str, object], key: str, prefix: str) -> dict[str, str]:

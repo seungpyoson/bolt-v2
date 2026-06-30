@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime
+import functools
 import hashlib
 import io
 import json
@@ -18,6 +19,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+
+
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import config_validators as _cv  # noqa: E402
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -123,6 +131,12 @@ class ProvenanceError(RuntimeError):
     """Raised when provenance evidence is absent, malformed, or unsafe."""
 
 
+require_table = functools.partial(_cv.require_table, error_cls=ProvenanceError)
+require_string = functools.partial(_cv.require_string, error_cls=ProvenanceError)
+require_positive_int = functools.partial(_cv.require_positive_int, error_cls=ProvenanceError)
+as_text = _cv.as_text
+
+
 @dataclasses.dataclass(frozen=True)
 class JobConfig:
     logical_name: str
@@ -223,20 +237,6 @@ class GateCarryForwardResolution:
     reason: str
 
 
-def require_table(parent: dict[str, object], key: str, prefix: str) -> dict[str, object]:
-    value = parent.get(key)
-    if not isinstance(value, dict):
-        raise ProvenanceError(f"{prefix}.{key} must be a table")
-    return value
-
-
-def require_string(parent: dict[str, object], key: str, prefix: str) -> str:
-    value = parent.get(key)
-    if not isinstance(value, str) or not value:
-        raise ProvenanceError(f"{prefix}.{key} must be a non-empty string")
-    return value
-
-
 def github_actions_output_safe_check_name(value: str) -> bool:
     return (
         value == value.strip()
@@ -274,13 +274,6 @@ def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
         else:
             seen[value] = key
     return errors
-
-
-def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
-    value = parent.get(key)
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ProvenanceError(f"{prefix}.{key} must be a positive integer")
-    return value
 
 
 def check_lookback_le_retention(retention_days: int, max_lookback_age_seconds: int) -> None:
@@ -1486,10 +1479,6 @@ def artifact_record_from_zip(payload: bytes) -> dict[str, object]:
     if not isinstance(record, dict):
         raise ProvenanceError("ci-provenance.json must contain a JSON object")
     return record
-
-
-def as_text(value: object) -> str:
-    return "" if value is None else str(value)
 
 
 def positive_int_value(value: object, field: str) -> int:

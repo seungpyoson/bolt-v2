@@ -13,12 +13,22 @@ import sys
 import tomllib
 
 
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import config_validators as _cv  # noqa: E402
+
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_RUNNER_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
 
 
 class MeterError(RuntimeError):
     """Raised when runner-minute input data is missing or malformed."""
+
+
+as_text = _cv.as_text
 
 
 @dataclasses.dataclass(frozen=True)
@@ -44,11 +54,6 @@ class RunnerConfig:
 class FingerprintEvidence:
     value: str | None
     ambiguous: bool
-
-
-def as_text(value: object) -> str:
-    return "" if value is None else str(value)
-
 
 def parse_time(value: object) -> dt.datetime | None:
     text = as_text(value)

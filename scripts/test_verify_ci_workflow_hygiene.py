@@ -333,6 +333,30 @@ jobs:
             echo "any_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Block self-authorizing governance edits
+        id: self_authorizing_governance
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_ref="${{ steps.pr_refs.outputs.base_ref }}"
+          head_ref="${{ steps.pr_refs.outputs.head_ref }}"
+          if [[ -z "$base_ref" || -z "$head_ref" ]]; then
+            echo "self-authorizing governance detector missing PR diff context"
+            exit 1
+          fi
+          changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
+            AGENTS.md \
+            .specify/memory/constitution.md \
+            .pr_agent.toml \
+            ci/ai-review.toml)"
+          if [[ -z "$changed" ]]; then
+            exit 0
+          fi
+          python3 scripts/verify_ci_workflow_hygiene.py self-authorizing-governance \
+            --base "$base_ref" \
+            --head "$head_ref"
+
       - name: Determine build requirement
         id: build_required
         shell: bash
@@ -1530,6 +1554,209 @@ def assert_workflows_error(
     errors = verifier.verify_workflows(workflows, action, nextest_config)
     if not any(fragment in error for error in errors):
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
+
+
+def write_repo_text(repo: pathlib.Path, relative: str, text: str) -> None:
+    path = repo / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def run_repo_git(repo: pathlib.Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return completed.stdout
+
+
+def commit_repo(repo: pathlib.Path, message: str) -> str:
+    run_repo_git(repo, "add", ".")
+    run_repo_git(
+        repo,
+        "-c",
+        "user.name=CI Test",
+        "-c",
+        "user.email=ci-test@example.invalid",
+        "commit",
+        "-m",
+        message,
+    )
+    return run_repo_git(repo, "rev-parse", "HEAD").strip()
+
+
+def init_self_authorizing_fixture_repo(tmp: pathlib.Path) -> pathlib.Path:
+    repo = tmp / "repo"
+    repo.mkdir()
+    run_repo_git(repo, "init", "--initial-branch", "main")
+    for relative in (
+        "AGENTS.md",
+        ".specify/memory/constitution.md",
+        ".pr_agent.toml",
+        "ci/ai-review.toml",
+    ):
+        write_repo_text(repo, relative, "SSM is the only secret source.\n")
+    write_repo_text(
+        repo,
+        ".github/workflows/ci.yml",
+        "name: CI\npermissions:\n  contents: read\n",
+    )
+    commit_repo(repo, "base")
+    return repo
+
+
+def self_authorizing_errors_for_changes(
+    tmp: pathlib.Path,
+    changes: dict[str, str],
+) -> list[str]:
+    verifier = load_verifier()
+    repo = init_self_authorizing_fixture_repo(tmp)
+    base = run_repo_git(repo, "rev-parse", "HEAD").strip()
+    for relative, text in changes.items():
+        write_repo_text(repo, relative, text)
+    head = commit_repo(repo, "head")
+    return verifier.self_authorizing_governance_diff_errors(repo, base, head)
+
+
+def assert_self_authorizing_governance_detector_contract() -> None:
+    positive_errors = self_authorizing_errors_for_changes(
+        pathlib.Path(tempfile.mkdtemp()),
+        {
+            "AGENTS.md": "SSM is primary. JULES_API_KEY is allowed for advisory repo maintenance.\n",
+            ".specify/memory/constitution.md": "JULES_API_KEY advisory carve-out is allowed.\n",
+            ".pr_agent.toml": 'rule_6 = "JULES_API_KEY advisory carve-out is allowed."\n',
+            "ci/ai-review.toml": 'rule_6 = "JULES_API_KEY advisory carve-out is allowed."\n',
+            ".github/workflows/weekly-cleanup.yml": """\
+name: Jules Weekly Cleanup
+permissions: {}
+jobs:
+  jules:
+    steps:
+      - env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: echo advisory
+""",
+        },
+    )
+    if not any("self-authorizing governance edit" in error for error in positive_errors):
+        raise AssertionError(f"#1060-style coupling must be blocked, got: {positive_errors}")
+    if not any("split this into two PRs" in error for error in positive_errors):
+        raise AssertionError(f"failure must explain split-PR resolution, got: {positive_errors}")
+
+    permission_errors = self_authorizing_errors_for_changes(
+        pathlib.Path(tempfile.mkdtemp()),
+        {
+            "AGENTS.md": "GitHub OIDC is allowed for a future governed automation lane.\n",
+            ".github/workflows/ci.yml": "name: CI\npermissions:\n  contents: read\n  id-token: write\n",
+        },
+    )
+    if not any("permissions grant id-token: write" in error for error in permission_errors):
+        raise AssertionError(f"governance plus new permissions grant must be blocked, got: {permission_errors}")
+
+    allowlist_errors = self_authorizing_errors_for_changes(
+        pathlib.Path(tempfile.mkdtemp()),
+        {
+            "AGENTS.md": "Boundary evidence exemptions are allowed after owner ratification.\n",
+            "ci/bolt-v3-boundary-exemptions.toml": """\
+[[exemptions]]
+key = "provider-runtime-metadata"
+reason = "owner-ratified"
+""",
+        },
+    )
+    if not any("allowlist/exemption entry" in error for error in allowlist_errors):
+        raise AssertionError(f"governance plus new allowlist entry must be blocked, got: {allowlist_errors}")
+
+    governance_only_errors = self_authorizing_errors_for_changes(
+        pathlib.Path(tempfile.mkdtemp()),
+        {
+            "AGENTS.md": "SSM is primary. JULES_API_KEY is allowed after owner ratification.\n",
+        },
+    )
+    if governance_only_errors:
+        raise AssertionError(f"governance-only edit must pass, got: {governance_only_errors}")
+
+    capability_only_errors = self_authorizing_errors_for_changes(
+        pathlib.Path(tempfile.mkdtemp()),
+        {
+            ".github/workflows/weekly-cleanup.yml": """\
+name: Jules Weekly Cleanup
+permissions: {}
+jobs:
+  jules:
+    steps:
+      - env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: echo advisory
+""",
+        },
+    )
+    if capability_only_errors:
+        raise AssertionError(f"capability-only edit must pass, got: {capability_only_errors}")
+
+    split_repo = init_self_authorizing_fixture_repo(pathlib.Path(tempfile.mkdtemp()))
+    write_repo_text(
+        split_repo,
+        "AGENTS.md",
+        "SSM is primary. JULES_API_KEY is allowed after owner ratification.\n",
+    )
+    base_after_governance = commit_repo(split_repo, "ratified governance")
+    write_repo_text(
+        split_repo,
+        ".github/workflows/weekly-cleanup.yml",
+        """\
+name: Jules Weekly Cleanup
+permissions: {}
+jobs:
+  jules:
+    steps:
+      - env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: echo advisory
+""",
+    )
+    capability_head = commit_repo(split_repo, "capability")
+    split_errors = load_verifier().self_authorizing_governance_diff_errors(
+        split_repo,
+        base_after_governance,
+        capability_head,
+    )
+    if split_errors:
+        raise AssertionError(f"split governance/capability PRs must pass, got: {split_errors}")
+
+    assert_error(
+        "detector must inspect self-authorizing governance rule-files",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Block self-authorizing governance edits",
+            "AGENTS.md",
+            "README.md",
+        ),
+    )
+    assert_error(
+        "detector self-authorizing governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Block self-authorizing governance edits",
+            "        shell: bash\n",
+            """        shell: bash
+        continue-on-error: true
+""",
+        ),
+    )
+    assert_error(
+        "detector must hard-block self-authorizing governance edits",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Block self-authorizing governance edits",
+            "python3 scripts/verify_ci_workflow_hygiene.py self-authorizing-governance",
+            'echo "::warning::self-authorizing governance edit detected"',
+        ),
+    )
 
 
 JULES_ADVISORY_GOOD_WORKFLOW = """\
@@ -15062,6 +15289,7 @@ def main() -> int:
     assert_runner_contract_requires_fingerprint_archive_tier_coupling()
     assert_jules_advisory_workflow_contracts()
     assert_jules_advisory_config_carries_repo_variable_values()
+    assert_self_authorizing_governance_detector_contract()
     assert_debug_workflow_rejects_non_manual_trigger()
     assert_debug_workflow_checks_each_ssh_runner_step()
     assert_bootstrap_uses_onepassword_key_generation()

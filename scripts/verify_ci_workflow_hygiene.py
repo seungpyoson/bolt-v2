@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Callable, Iterable, Mapping
 import functools
 import json
@@ -154,6 +155,24 @@ JULES_ADVISORY_ENDPOINT_VARIABLE = "JULES_SESSIONS_ENDPOINT"
 JULES_ADVISORY_TIMEOUT_VARIABLE = "JULES_SESSION_TIMEOUT_MINUTES"
 JULES_ADVISORY_SECRET = "JULES_API_KEY"
 JULES_AWS_COMMAND_RE = re.compile(r"(^|[\s;&|])aws([ \t\r\n;&|]|$)")
+SELF_AUTHORIZING_GOVERNANCE_PATHS = (
+    "AGENTS.md",
+    ".specify/memory/constitution.md",
+    ".pr_agent.toml",
+    "ci/ai-review.toml",
+)
+SELF_AUTHORIZING_GITHUB_AUTOMATION_PREFIXES = (
+    ".github/workflows/",
+    ".github/actions/",
+)
+SELF_AUTHORIZING_ALLOWLIST_ENTRY_PATHS = (
+    "ci/bolt-v3-boundary-exemptions.toml",
+    "ci/doc-decoupling-residuals.toml",
+    "specs/711-capital-admission-rename/misnomer-allowlist.txt",
+)
+SELF_AUTHORIZING_SECRET_REF_RE = re.compile(
+    r"\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)\b"
+)
 GITHUB_SECRET_REF_RE = re.compile(r"secrets\.([A-Z0-9_]+)")
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
 LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS = {"build", "clippy", "test"}
@@ -443,6 +462,15 @@ FINGERPRINT_REUSE_ALLOWED_STEP_SCALARS = {
     "shell": "bash",
     "run": "|",
 }
+SELF_AUTHORIZING_GOVERNANCE_STEP_ALLOWED_KEYS = frozenset(
+    ("name", "id", "if", "shell", "run")
+)
+SELF_AUTHORIZING_GOVERNANCE_STEP_SCALARS = {
+    "id": "self_authorizing_governance",
+    "if": "github.event_name == 'pull_request'",
+    "shell": "bash",
+    "run": "|",
+}
 NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_ALLOWED_KEYS = frozenset(
     ("name", "id", "shell", "env", "run")
 )
@@ -480,6 +508,24 @@ elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "
 else
   echo "value=true" >> "$GITHUB_OUTPUT"
 fi"""
+SELF_AUTHORIZING_GOVERNANCE_RUN = """set -euo pipefail
+base_ref="${{ steps.pr_refs.outputs.base_ref }}"
+head_ref="${{ steps.pr_refs.outputs.head_ref }}"
+if [[ -z "$base_ref" || -z "$head_ref" ]]; then
+  echo "self-authorizing governance detector missing PR diff context"
+  exit 1
+fi
+changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
+  AGENTS.md \\
+  .specify/memory/constitution.md \\
+  .pr_agent.toml \\
+  ci/ai-review.toml)"
+if [[ -z "$changed" ]]; then
+  exit 0
+fi
+python3 scripts/verify_ci_workflow_hygiene.py self-authorizing-governance \\
+  --base "$base_ref" \\
+  --head "$head_ref\""""
 NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN = """python3 scripts/ci_provenance.py resolve-fingerprint
 --current-run-id "${{ github.run_id }}"
 --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
@@ -9760,6 +9806,265 @@ def detector_maps_changed_to_any_changed(block_text: str) -> bool:
     )
 
 
+class SelfAuthorizingCapabilitySignal(NamedTuple):
+    kind: str
+    detail: str
+    path: str
+
+
+class SelfAuthorizingDiffError(Exception):
+    pass
+
+
+def repo_git_output(repo: pathlib.Path, args: list[str]) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.strip() or exc.stdout.strip() or f"exit {exc.returncode}"
+        raise SelfAuthorizingDiffError(f"git {' '.join(args)} failed: {detail}") from exc
+    return completed.stdout
+
+
+def repo_git_text_at_ref(repo: pathlib.Path, ref: str, relative_path: str) -> str:
+    completed = subprocess.run(
+        ["git", "show", f"{ref}:{relative_path}"],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout
+
+
+def self_authorizing_changed_paths(
+    repo: pathlib.Path,
+    base_ref: str,
+    head_ref: str,
+    pathspecs: tuple[str, ...],
+) -> list[str]:
+    output = repo_git_output(
+        repo,
+        ["diff", "--name-only", f"{base_ref}...{head_ref}", "--", *pathspecs],
+    )
+    return [line for line in output.splitlines() if line]
+
+
+def self_authorizing_added_lines(
+    repo: pathlib.Path,
+    base_ref: str,
+    head_ref: str,
+) -> list[tuple[str, str]]:
+    output = repo_git_output(
+        repo,
+        ["diff", "--unified=0", f"{base_ref}...{head_ref}", "--"],
+    )
+    current_path = ""
+    added: list[tuple[str, str]] = []
+    for line in output.splitlines():
+        if line.startswith("+++ b/"):
+            current_path = line.removeprefix("+++ b/")
+        elif line.startswith("+++ /dev/null"):
+            current_path = ""
+        elif current_path and line.startswith("+") and not line.startswith("+++"):
+            added.append((current_path, line[1:]))
+    return added
+
+
+def is_github_automation_path(relative_path: str) -> bool:
+    return relative_path.endswith((".yml", ".yaml")) and relative_path.startswith(
+        SELF_AUTHORIZING_GITHUB_AUTOMATION_PREFIXES
+    )
+
+
+def non_comment_line(text: str) -> bool:
+    stripped = text.strip()
+    return bool(stripped) and not stripped.startswith("#")
+
+
+def self_authorizing_secret_ref_signals(
+    added_lines: list[tuple[str, str]],
+) -> list[SelfAuthorizingCapabilitySignal]:
+    signals: list[SelfAuthorizingCapabilitySignal] = []
+    seen: set[tuple[str, str]] = set()
+    for relative_path, line in added_lines:
+        if not is_github_automation_path(relative_path) or not non_comment_line(line):
+            continue
+        for match in SELF_AUTHORIZING_SECRET_REF_RE.finditer(line):
+            key = (relative_path, match.group(1))
+            if key in seen:
+                continue
+            seen.add(key)
+            signals.append(
+                SelfAuthorizingCapabilitySignal(
+                    "secret reference",
+                    f"secrets.{match.group(1)}",
+                    relative_path,
+                )
+            )
+    return signals
+
+
+def yaml_permissions_grants(workflow_text: str) -> set[tuple[str, str]]:
+    grants: set[tuple[str, str]] = set()
+    lines = workflow_text.splitlines()
+    for index, line in enumerate(lines):
+        clean = strip_comment(line).rstrip()
+        match = re.match(r"^(\s*)permissions:\s*(.*?)\s*$", clean)
+        if match is None:
+            continue
+        parent_indent = len(match.group(1))
+        scalar = unquote_yaml_scalar(match.group(2)).strip()
+        if scalar:
+            if scalar not in {"{}", "none"}:
+                grants.add(("permissions", scalar))
+            continue
+        for child in lines[index + 1 :]:
+            child_clean = strip_comment(child).rstrip()
+            if not child_clean.strip():
+                continue
+            child_indent = len(child_clean) - len(child_clean.lstrip(" "))
+            if child_indent <= parent_indent:
+                break
+            child_match = re.match(
+                rf"^\s*({YAML_KEY_PATTERN})\s*:\s*({YAML_KEY_PATTERN})\s*$",
+                child_clean,
+            )
+            if child_match is None:
+                continue
+            key = unquote_yaml_scalar(child_match.group(1))
+            value = unquote_yaml_scalar(child_match.group(2))
+            if value != "none":
+                grants.add((key, value))
+    return grants
+
+
+def self_authorizing_permission_signals(
+    repo: pathlib.Path,
+    base_ref: str,
+    head_ref: str,
+    changed_paths: list[str],
+) -> list[SelfAuthorizingCapabilitySignal]:
+    signals: list[SelfAuthorizingCapabilitySignal] = []
+    for relative_path in changed_paths:
+        if not is_github_automation_path(relative_path):
+            continue
+        base_grants = yaml_permissions_grants(
+            repo_git_text_at_ref(repo, base_ref, relative_path)
+        )
+        head_grants = yaml_permissions_grants(
+            repo_git_text_at_ref(repo, head_ref, relative_path)
+        )
+        for key, value in sorted(head_grants - base_grants):
+            signals.append(
+                SelfAuthorizingCapabilitySignal(
+                    "permissions grant",
+                    f"{key}: {value}",
+                    relative_path,
+                )
+            )
+    return signals
+
+
+def self_authorizing_allowlist_signals(
+    added_lines: list[tuple[str, str]],
+) -> list[SelfAuthorizingCapabilitySignal]:
+    signals: list[SelfAuthorizingCapabilitySignal] = []
+    for relative_path, line in added_lines:
+        if relative_path not in SELF_AUTHORIZING_ALLOWLIST_ENTRY_PATHS:
+            continue
+        if not non_comment_line(line):
+            continue
+        signals.append(
+            SelfAuthorizingCapabilitySignal(
+                "allowlist/exemption entry",
+                line.strip(),
+                relative_path,
+            )
+        )
+    return signals
+
+
+def self_authorizing_capability_signals(
+    repo: pathlib.Path,
+    base_ref: str,
+    head_ref: str,
+) -> list[SelfAuthorizingCapabilitySignal]:
+    changed_paths = self_authorizing_changed_paths(repo, base_ref, head_ref, tuple())
+    added_lines = self_authorizing_added_lines(repo, base_ref, head_ref)
+    return [
+        *self_authorizing_secret_ref_signals(added_lines),
+        *self_authorizing_permission_signals(repo, base_ref, head_ref, changed_paths),
+        *self_authorizing_allowlist_signals(added_lines),
+    ]
+
+
+def self_authorizing_governance_diff_errors(
+    repo: pathlib.Path,
+    base_ref: str,
+    head_ref: str,
+) -> list[str]:
+    if not base_ref or not head_ref:
+        return ["self-authorizing governance detector missing PR diff context"]
+    try:
+        governance_changes = self_authorizing_changed_paths(
+            repo,
+            base_ref,
+            head_ref,
+            SELF_AUTHORIZING_GOVERNANCE_PATHS,
+        )
+    except SelfAuthorizingDiffError as exc:
+        return [f"self-authorizing governance detector could not inspect PR diff: {exc}"]
+    if not governance_changes:
+        return []
+    try:
+        signals = self_authorizing_capability_signals(repo, base_ref, head_ref)
+    except SelfAuthorizingDiffError as exc:
+        return [f"self-authorizing governance detector could not inspect capability diff: {exc}"]
+    if not signals:
+        return []
+    governance_summary = ", ".join(sorted(governance_changes))
+    signal_summary = "; ".join(
+        f"{signal.kind} {signal.detail} in {signal.path}" for signal in signals
+    )
+    return [
+        "self-authorizing governance edit blocked: "
+        f"this diff edits governance rule-files ({governance_summary}) and introduces "
+        f"capability signals ({signal_summary}) in the same PR. "
+        "Resolution: split this into two PRs: land the governance rule change by itself "
+        "first, then open a separate capability PR after that rule is on the base branch."
+    ]
+
+
+def detector_self_authorizing_governance_errors(job_lines: list[str]) -> list[str]:
+    errors: list[str] = []
+    step_block = unique_step_with_id(job_lines, "self_authorizing_governance")
+    step_text = uncommented_text(step_block or [])
+    if step_block is None or not block_has_canonical_step_envelope(
+        step_block,
+        SELF_AUTHORIZING_GOVERNANCE_STEP_ALLOWED_KEYS,
+        SELF_AUTHORIZING_GOVERNANCE_STEP_SCALARS,
+    ):
+        errors.append("detector self-authorizing governance step must match canonical envelope")
+    if step_block is None or not block_run_body_matches(
+        step_block,
+        SELF_AUTHORIZING_GOVERNANCE_RUN,
+    ):
+        errors.append("detector must hard-block self-authorizing governance edits")
+    pathspecs = git_diff_pathspecs(step_text) if step_text else None
+    if pathspecs != SELF_AUTHORIZING_GOVERNANCE_PATHS:
+        errors.append("detector must inspect self-authorizing governance rule-files")
+    return errors
+
+
 def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
     text = uncommented_text(job_lines)
@@ -10230,6 +10535,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "detector" in jobs and not detector_forces_build_on_merge_group(jobs["detector"]):
         errors.append("detector must force build_required=true for merge_group full CI")
     if "detector" in jobs:
+        errors.extend(detector_self_authorizing_governance_errors(jobs["detector"]))
         errors.extend(detector_fingerprint_reuse_errors(jobs["detector"]))
         errors.extend(detector_docs_only_archive_errors(jobs["detector"]))
 
@@ -14378,6 +14684,27 @@ def repo_workflow_texts() -> dict[str, str]:
     return {path.relative_to(REPO_ROOT).as_posix(): path.read_text() for path in sorted(paths)}
 
 
+def self_authorizing_governance_cli(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        description="Block PRs that edit governance and introduce newly permitted capability in one diff."
+    )
+    parser.add_argument("--repo", type=pathlib.Path, default=REPO_ROOT)
+    parser.add_argument("--base", required=True)
+    parser.add_argument("--head", required=True)
+    args = parser.parse_args(argv)
+    errors = self_authorizing_governance_diff_errors(
+        args.repo.resolve(),
+        args.base,
+        args.head,
+    )
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    print("OK: no self-authorizing governance edit coupling detected.")
+    return 0
+
+
 def main() -> int:
     workflow_texts = repo_workflow_texts()
     action_text = DEFAULT_SETUP_ACTION.read_text()
@@ -14451,8 +14778,17 @@ def main() -> int:
     return 0
 
 
+def cli(argv: list[str]) -> int:
+    if argv and argv[0] == "self-authorizing-governance":
+        return self_authorizing_governance_cli(argv[1:])
+    if argv:
+        print(f"ERROR: unknown verify_ci_workflow_hygiene mode: {argv[0]}", file=sys.stderr)
+        return 2
+    return main()
+
+
 if __name__ == "__main__":
     import lane_governor
 
     lane_governor.acquire()
-    sys.exit(main())
+    sys.exit(cli(sys.argv[1:]))

@@ -372,6 +372,30 @@ jobs:
             echo "any_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Block self-authorizing governance edits
+        id: self_authorizing_governance
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_ref="${{ steps.pr_refs.outputs.base_ref }}"
+          head_ref="${{ steps.pr_refs.outputs.head_ref }}"
+          if [[ -z "$base_ref" || -z "$head_ref" ]]; then
+            echo "self-authorizing governance detector missing PR diff context"
+            exit 1
+          fi
+          changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
+            AGENTS.md \
+            .specify/memory/constitution.md \
+            .pr_agent.toml \
+            ci/ai-review.toml)"
+          if [[ -z "$changed" ]]; then
+            exit 0
+          fi
+          python3 scripts/verify_ci_workflow_hygiene.py self-authorizing-governance \
+            --base "$base_ref" \
+            --head "$head_ref"
+
       - name: Determine build requirement
         id: build_required
         shell: bash

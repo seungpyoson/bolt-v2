@@ -13262,7 +13262,7 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
 
     deploy = require_config_table(ci_provenance, "deploy", "ci_provenance")
     require_config_string(deploy, "artifact_name", "ci_provenance.deploy")
-    require_config_string(deploy, "artifact_upload_if", "ci_provenance.deploy")
+    artifact_upload_if = require_config_string(deploy, "artifact_upload_if", "ci_provenance.deploy")
     deploy_retention_days = require_config_positive_int(
         deploy, "artifact_retention_days", "ci_provenance.deploy"
     )
@@ -13275,10 +13275,20 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
         raise ValueError(
             "ci_provenance.deploy.artifact_lookback_age_seconds must not exceed artifact retention"
         ) from exc
-    if deploy.get("require_source_event") != "push":
+    source_event = deploy.get("require_source_event")
+    source_branch = deploy.get("require_source_branch")
+    if source_event != "push":
         raise ValueError("ci_provenance.deploy.require_source_event must be push")
-    if deploy.get("require_source_branch") != "main":
+    if source_branch != "main":
         raise ValueError("ci_provenance.deploy.require_source_branch must be main")
+    expected_upload_if = (
+        f"${{{{ github.event_name == '{source_event}' && "
+        f"github.ref == 'refs/heads/{source_branch}' }}}}"
+    )
+    if artifact_upload_if != expected_upload_if:
+        raise ValueError(
+            "ci_provenance.deploy.artifact_upload_if must match push to main deploy source policy"
+        )
     if deploy.get("require_gate_check") is not True:
         raise ValueError("ci_provenance.deploy.require_gate_check must be true")
 

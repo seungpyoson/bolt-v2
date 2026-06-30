@@ -10974,6 +10974,11 @@ lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
             "artifact_lookback_age_seconds = 259201",
             1,
         ),
+        "ci_provenance.deploy.artifact_upload_if must match push to main deploy source policy": config_text.replace(
+            'artifact_upload_if = "${{ github.event_name == \'push\' && github.ref == \'refs/heads/main\' }}"',
+            'artifact_upload_if = "${{ always() }}"',
+            1,
+        ),
         "ci_provenance.api_limits.max_lookback_age_seconds must not exceed artifact retention": config_text.replace(
             "max_lookback_age_seconds = 2592000",
             "max_lookback_age_seconds = 2592001",

@@ -141,6 +141,7 @@ jobs:
           import json
           import os
           import subprocess
+          import sys
           import time
           import tomllib
           from pathlib import Path
@@ -256,7 +257,7 @@ jobs:
               text=True,
           )
           if retry.returncode != 0:
-              print("::warning::Claude retry state check failed; reviewing to avoid preserving a stale failure notice.")
+              print("::warning::Claude retry state check failed; reviewing to avoid preserving a stale failure notice.", file=sys.stderr)
               emit(True, "retry-check-unavailable")
               raise SystemExit(0)
           retry_lines = set(retry.stdout.splitlines())
@@ -372,3 +373,57 @@ jobs:
           --execution-file "${{ steps.claude.outputs.execution_file }}"
           --step-outcome "${{ steps.claude.outcome }}"
           --config-file ci/ai-review.toml
+
+      - name: Post Claude review infrastructure failure notice
+        if: >-
+          ${{
+            steps.pause.outputs.paused != 'true'
+            && (
+              steps.review-decision.outputs.should_review == 'true'
+              || steps.runtime-config.outcome == 'failure'
+            )
+            && always()
+            && (
+              steps.runtime-config.outcome == 'failure'
+              || steps.review-window.outcome == 'failure'
+              || steps.claude-deliverable.outcome == 'failure'
+            )
+            && steps.claude-deliverable.outputs.failure_notice_posted != 'true'
+          }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          notice_file="${RUNNER_TEMP}/claude-ai-review-notice.md"
+          marker=""
+          expected_bot_login=""
+          if ! config_exports="$(python3 scripts/ai_review_deliverables.py notice-env --provider claude --config-file ci/ai-review.toml)"; then
+            echo "::error::AI review notice marker or expected bot login is unavailable."
+            exit 1
+          fi
+          eval "$config_exports"
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            echo "::error::AI review notice marker or expected bot login is unavailable."
+            exit 1
+          fi
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          cat > "$notice_file" <<EOF
+          ${marker}
+
+          ## Claude review notice
+
+          The Claude review infrastructure failed or timed out before posting a usable failure notice. Check the action logs for this run.
+
+          - PR: #${PR_NUMBER}
+          - Action run: ${run_url}
+
+          This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
+          EOF
+          existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            | jq -r --arg login "$expected_bot_login" --arg marker "$marker" --arg run_url "$run_url" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | select(.body | contains($run_url)) | .id' \
+            | tail -n 1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          fi

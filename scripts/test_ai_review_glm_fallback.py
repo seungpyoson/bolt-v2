@@ -2358,6 +2358,36 @@ def test_notice_env_outputs_shell_safe_marker_and_bot_login() -> None:
     ]
 
 
+def test_notice_env_supports_claude_notice_marker() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_path = pathlib.Path(temp_dir) / "ai-review.toml"
+        marker = "<!-- ai-pr-reviewer-claude-notice -->"
+        expected_bot_login = "github-actions[bot]"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[github]",
+                    f"expected_bot_login = {json.dumps(expected_bot_login)}",
+                    "",
+                    "[claude]",
+                    f"notice_marker = {json.dumps(marker)}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout):
+            result = module.main(["notice-env", "--provider", "claude", "--config-file", str(config_path)])
+
+    assert result == 0
+    assert stdout.getvalue().splitlines() == [
+        f"marker={shlex.quote(marker)}",
+        f"expected_bot_login={shlex.quote(expected_bot_login)}",
+    ]
+
+
 def test_notice_env_fails_closed_without_notice_marker() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -2455,6 +2485,7 @@ def main() -> int:
     test_existing_pr_agent_review_comment_gets_model_freshness_warning()
     test_existing_pr_agent_pull_review_is_not_mutated_for_model_freshness_warning()
     test_notice_env_outputs_shell_safe_marker_and_bot_login()
+    test_notice_env_supports_claude_notice_marker()
     test_notice_env_fails_closed_without_notice_marker()
     test_pr_agent_prompt_pins_no_findings_contract()
     print("GLM fallback self-tests OK")

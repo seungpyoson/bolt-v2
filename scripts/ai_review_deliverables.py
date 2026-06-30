@@ -2025,7 +2025,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     model_freshness_notice.add_argument("--config-file", type=Path)
 
     notice_env = subparsers.add_parser("notice-env")
-    notice_env.add_argument("--provider", required=True, choices=("glm", "kimi"))
+    notice_env.add_argument("--provider", required=True, choices=("glm", "kimi", "claude"))
     notice_env.add_argument("--config-file", type=Path)
 
     retry_needed = subparsers.add_parser("retry-needed")

@@ -2389,7 +2389,7 @@ def render_cleanup_alert_summary(snapshot: dict[str, Any], policy: CleanupAlertP
         [
             "",
             "Operator next steps:",
-            "- Inspect the cleanup JSON output for row-level details before deleting anything.",
+            "- Download the cleanup JSON artifact from this workflow run and inspect row-level details before deleting anything.",
             "- This workflow is read-only and does not delete artifacts.",
         ]
     )
@@ -2762,6 +2762,12 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.cleanup_alert and not args.cleanup_feasibility:
         raise AuditError(
             "--cleanup-alert requires --cleanup-feasibility",
+            kind=FailureKind.ABSENT,
+            field="--cleanup-feasibility",
+        )
+    if args.cleanup_policy is not None and not args.cleanup_feasibility:
+        raise AuditError(
+            "--cleanup-policy requires --cleanup-feasibility",
             kind=FailureKind.ABSENT,
             field="--cleanup-feasibility",
         )

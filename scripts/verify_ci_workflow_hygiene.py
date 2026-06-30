@@ -13563,7 +13563,6 @@ INVALID_STORAGE_TRIPWIRE_KEY = "<invalid-storage-tripwire-key>"
 class StorageCleanupAlertWorkflowContract(NamedTuple):
     workflow_path: str
     job_id: str
-    job_if: str
     top_level_keys: tuple[str, ...]
     job_keys: tuple[str, ...]
     runner_var: str
@@ -13609,7 +13608,6 @@ def load_storage_cleanup_alert_workflow_contract(config_text: str) -> StorageCle
     return StorageCleanupAlertWorkflowContract(
         workflow_path=require_config_string(workflow, "path", prefix),
         job_id=require_config_string(workflow, "job_id", prefix),
-        job_if=require_config_string(workflow, "job_if", prefix),
         top_level_keys=tuple(require_config_string_list(workflow, "top_level_keys", prefix)),
         job_keys=tuple(require_config_string_list(workflow, "job_keys", prefix)),
         runner_var=require_config_string(workflow, "runner_var", prefix),
@@ -13684,8 +13682,6 @@ def verify_storage_cleanup_alert_workflow(workflows: dict[str, str], runners_con
     allowed_job_keys = set(workflow_contract.job_keys)
     if set(job_keys) != allowed_job_keys or len(job_keys) != len(set(job_keys)):
         errors.append(f"{workflow_name} storage cleanup alert job keys must match the workflow contract")
-    if job_if_value(job) != workflow_contract.job_if:
-        errors.append(f"{workflow_name} storage cleanup alert job if must match storage_audit.cleanup_feasibility_alert.workflow.job_if")
     actual_var = extract_job_runs_on_var(job)
     if actual_var != workflow_contract.runner_var:
         errors.append(f"{workflow_name} storage cleanup alert runs-on must match storage_audit.cleanup_feasibility_alert.workflow.runner_var")

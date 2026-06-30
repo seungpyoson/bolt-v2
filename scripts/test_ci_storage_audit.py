@@ -2494,6 +2494,8 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertIn("Keep reason codes:", summary)
         self.assertIn("- `artifact_metadata_unavailable`: `1` rows, `4.0 KiB`", summary)
         self.assertIn("delete candidates require operator review", summary)
+        self.assertIn("Download the cleanup JSON artifact from this workflow run", summary)
+        self.assertIn("This workflow is read-only and does not delete artifacts.", summary)
         self.assertNotIn("nextest-archive", summary)
         self.assertNotIn("metadata-gap-hidden", summary)
         self.assertNotIn("artifact_id", summary)
@@ -2545,6 +2547,22 @@ class CiStorageAuditTests(unittest.TestCase):
                 "owner/repo",
                 "--cleanup-json-output",
                 "cleanup.json",
+            ]
+        )
+
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.validate_args(args)
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.ABSENT)
+        self.assertEqual(raised.exception.field, "--cleanup-feasibility")
+
+    def test_validate_args_rejects_cleanup_policy_without_cleanup_feasibility(self) -> None:
+        args = ci_storage_audit.parse_args(
+            [
+                "--repo",
+                "owner/repo",
+                "--cleanup-policy",
+                "cleanup-policy.toml",
             ]
         )
 
@@ -2653,6 +2671,56 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertIn("::error::cleanup feasibility audit contract failed:", stdout.getvalue())
         self.assertNotIn("cache persistence", stdout.getvalue())
         self.assertIn("ERROR: absent --cleanup-feasibility", stderr.getvalue())
+
+    def test_main_labels_cache_run_failures_as_cache_persistence(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "exact-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 0,
+                    "actions_caches": [],
+                },
+                "actions/cache/usage": {
+                    "full_name": "owner/repo",
+                    "active_caches_size_in_bytes": 0,
+                    "active_caches_count": 0,
+                },
+            }
+        )
+        original_client = ci_storage_audit.GhClient
+        ci_storage_audit.GhClient = lambda repo: client
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                summary_path = pathlib.Path(tmp) / "summary.md"
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = ci_storage_audit.main(
+                        [
+                            "--repo",
+                            "owner/repo",
+                            "--cache-key",
+                            "probe=exact-key",
+                            "--cache-ref",
+                            "refs/heads/main",
+                            "--github-step-summary",
+                            str(summary_path),
+                            "--github-annotations",
+                        ]
+                    )
+
+                summary = summary_path.read_text(encoding="utf-8")
+        finally:
+            ci_storage_audit.GhClient = original_client
+
+        self.assertEqual(result, 2)
+        self.assertIn("### Cache persistence audit", summary)
+        self.assertIn("::error::cache persistence audit contract failed:", stdout.getvalue())
+        self.assertNotIn("cleanup feasibility", stdout.getvalue())
+        self.assertIn("ERROR: absent --restore-hit", stderr.getvalue())
 
     def test_billing_probe_records_reachability_without_raw_payload(self) -> None:
         policy = ci_storage_audit.load_cleanup_policy_text(

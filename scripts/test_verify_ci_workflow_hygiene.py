@@ -9472,6 +9472,16 @@ def assert_storage_cleanup_alert_workflow_contract() -> None:
     ):
         raise AssertionError(f"storage cleanup alert JSON output drift was silent, got: {missing_json_output_errors}")
 
+    injected_job_if = replace_once(
+        workflow,
+        "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+        "    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}\n"
+        "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+    )
+    injected_job_if_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: injected_job_if}, runners_config)
+    if not any("storage cleanup alert job keys must match the workflow contract" in error for error in injected_job_if_errors):
+        raise AssertionError(f"storage cleanup alert redundant job if drift was silent, got: {injected_job_if_errors}")
+
     missing_timeout = replace_once(workflow, "    timeout-minutes: 30\n", "")
     missing_timeout_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: missing_timeout}, runners_config)
     if not any(

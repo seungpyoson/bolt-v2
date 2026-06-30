@@ -329,7 +329,6 @@ STRATEGY_ROOT_POLICY_EXEMPT_PATHS = frozenset(
     }
 )
 
-
 def is_maker_strategy_source_path(path: str) -> bool:
     return path == MAKER_SOURCE_ROOT or path.startswith(f"{MAKER_SOURCE_ROOT}/")
 

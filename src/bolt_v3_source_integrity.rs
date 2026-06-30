@@ -233,14 +233,18 @@ mod tests {
     }
 
     #[test]
-    fn submit_admission_source_set_is_the_single_admission_module() {
+    fn submit_admission_source_set_includes_admission_and_live_node_roots() {
         // Pins the generated constant for the submit-admission registry key, so
         // a manifest change to `[submit_admission]` fails this test the same way
         // the strategy and outcome-group sets are pinned (rather than only
         // surfacing later as a `registry_entry` panic).
         assert_eq!(
             registry_relative_roots(SUBMIT_ADMISSION_KEY),
-            &["src/bolt_v3_submit_admission.rs"]
+            &[
+                "src/bolt_v3_submit_admission.rs",
+                "src/bolt_v3_live_node.rs",
+                "src/bolt_v3_live_node",
+            ]
         );
     }
 

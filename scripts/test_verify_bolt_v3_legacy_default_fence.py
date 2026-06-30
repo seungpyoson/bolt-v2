@@ -281,16 +281,17 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         body = (
             "[strategy]\nsrc/a.rs\n"
             "[submit_admission]\nsrc/b.rs\n"
-            "[outcome_group]\nsrc/c.rs\n"
-            "[maker]\nsrc/d.rs\n"
+            "src/c.rs\n"
+            "[outcome_group]\nsrc/d.rs\n"
+            "[maker]\nsrc/e.rs\n"
         )
         self.assertEqual(
             source_roots._parse_manifest_text(body),
             {
                 source_roots.STRATEGY_KEY: ("src/a.rs",),
-                source_roots.SUBMIT_ADMISSION_KEY: ("src/b.rs",),
-                source_roots.OUTCOME_GROUP_KEY: ("src/c.rs",),
-                source_roots.MAKER_KEY: ("src/d.rs",),
+                source_roots.SUBMIT_ADMISSION_KEY: ("src/b.rs", "src/c.rs"),
+                source_roots.OUTCOME_GROUP_KEY: ("src/d.rs",),
+                source_roots.MAKER_KEY: ("src/e.rs",),
             },
         )
         # Same bytes, bare-CR separators: Rust ``str::lines()`` sees one line, so
@@ -312,8 +313,9 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         body = (
             f"[strategy]{info_separator}\nsrc/a.rs\n"
             "[submit_admission]\nsrc/b.rs\n"
-            "[outcome_group]\nsrc/c.rs\n"
-            "[maker]\nsrc/d.rs\n"
+            "src/c.rs\n"
+            "[outcome_group]\nsrc/d.rs\n"
+            "[maker]\nsrc/e.rs\n"
         )
         with self.assertRaises(ValueError):
             source_roots._parse_manifest_text(body)
@@ -322,16 +324,17 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         spaced = (
             "[strategy] \t\nsrc/a.rs\n"
             "[submit_admission]\nsrc/b.rs\n"
-            "[outcome_group]\nsrc/c.rs\n"
-            "[maker]\nsrc/d.rs\n"
+            "src/c.rs\n"
+            "[outcome_group]\nsrc/d.rs\n"
+            "[maker]\nsrc/e.rs\n"
         )
         self.assertEqual(
             source_roots._parse_manifest_text(spaced),
             {
                 source_roots.STRATEGY_KEY: ("src/a.rs",),
-                source_roots.SUBMIT_ADMISSION_KEY: ("src/b.rs",),
-                source_roots.OUTCOME_GROUP_KEY: ("src/c.rs",),
-                source_roots.MAKER_KEY: ("src/d.rs",),
+                source_roots.SUBMIT_ADMISSION_KEY: ("src/b.rs", "src/c.rs"),
+                source_roots.OUTCOME_GROUP_KEY: ("src/d.rs",),
+                source_roots.MAKER_KEY: ("src/e.rs",),
             },
         )
 

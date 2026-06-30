@@ -33,9 +33,13 @@ src/bolt_v3_binary_outcome_edge.rs
 src/bolt_v3_executable_cost.rs
 src/bolt_v3_sizing.rs
 src/bolt_v3_taker_updown_signal.rs
-
 [submit_admission]
 src/bolt_v3_submit_admission.rs
+# The live-node coordinator and its submodules are gated with submit/admission
+# sources but must stay outside [strategy], because they own runtime wiring that
+# strategy-source policy intentionally forbids.
+src/bolt_v3_live_node.rs
+src/bolt_v3_live_node
 
 [outcome_group]
 src/bolt_v3_atomic_io.rs

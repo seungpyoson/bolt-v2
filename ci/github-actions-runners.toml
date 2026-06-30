@@ -468,8 +468,9 @@ path = ".github/workflows/ci-storage-cleanup-alert.yml"
 job_id = "cleanup-alert"
 job_if = "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
 top_level_keys = ["name", "on", "permissions", "concurrency", "jobs"]
-job_keys = ["name", "if", "runs-on", "steps"]
+job_keys = ["name", "if", "runs-on", "timeout-minutes", "steps"]
 runner_var = "CI_RUNNER_GITHUB_HOSTED"
+job_timeout_minutes = 30
 schedule_cron = "47 9 * * 1"
 concurrency_group = "ci-storage-cleanup-alert"
 cancel_in_progress = false
@@ -489,6 +490,7 @@ required_fragments = [
   "GH_TOKEN: ${{ github.token }}",
   "GITHUB_REPOSITORY: ${{ github.repository }}",
   "GITHUB_REF_NAME: ${{ github.ref_name }}",
+  "timeout-minutes: 30",
   "python3 scripts/ci_storage_audit.py",
   "--cleanup-feasibility",
   "--cleanup-alert",

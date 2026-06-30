@@ -13567,6 +13567,7 @@ class StorageCleanupAlertWorkflowContract(NamedTuple):
     top_level_keys: tuple[str, ...]
     job_keys: tuple[str, ...]
     runner_var: str
+    job_timeout_minutes: int
     schedule_cron: str
     concurrency_group: str
     cancel_in_progress: bool
@@ -13592,6 +13593,13 @@ def load_storage_cleanup_alert_workflow_contract(config_text: str) -> StorageCle
         "cleanup_feasibility_alert",
         "storage_audit",
     )
+    schema_version = require_config_positive_int(
+        alert_table,
+        "schema_version",
+        "storage_audit.cleanup_feasibility_alert",
+    )
+    if schema_version != 1:
+        raise ValueError("storage_audit.cleanup_feasibility_alert.schema_version must be 1")
     workflow = require_config_table(
         alert_table,
         "workflow",
@@ -13605,6 +13613,7 @@ def load_storage_cleanup_alert_workflow_contract(config_text: str) -> StorageCle
         top_level_keys=tuple(require_config_string_list(workflow, "top_level_keys", prefix)),
         job_keys=tuple(require_config_string_list(workflow, "job_keys", prefix)),
         runner_var=require_config_string(workflow, "runner_var", prefix),
+        job_timeout_minutes=require_config_positive_int(workflow, "job_timeout_minutes", prefix),
         schedule_cron=require_config_string(workflow, "schedule_cron", prefix),
         concurrency_group=require_config_string(workflow, "concurrency_group", prefix),
         cancel_in_progress=require_config_bool(workflow, "cancel_in_progress", prefix),
@@ -13680,6 +13689,11 @@ def verify_storage_cleanup_alert_workflow(workflows: dict[str, str], runners_con
     actual_var = extract_job_runs_on_var(job)
     if actual_var != workflow_contract.runner_var:
         errors.append(f"{workflow_name} storage cleanup alert runs-on must match storage_audit.cleanup_feasibility_alert.workflow.runner_var")
+    actual_timeout = storage_tripwire_job_scalar_value(job, "timeout-minutes")
+    if actual_timeout != str(workflow_contract.job_timeout_minutes):
+        errors.append(
+            f"{workflow_name} storage cleanup alert timeout-minutes must match storage_audit.cleanup_feasibility_alert.workflow.job_timeout_minutes"
+        )
 
     if any(storage_tripwire_key_at_indent(line, 4) == "permissions" for line in job):
         errors.append(f"{workflow_name} storage cleanup alert job must not define job-level permissions")
@@ -13776,6 +13790,16 @@ def storage_tripwire_job_top_level_keys(job_lines: list[str]) -> list[str]:
         if key is not None:
             keys.append(key)
     return keys
+
+
+def storage_tripwire_job_scalar_value(job_lines: list[str], key: str) -> str | None:
+    values: list[str] = []
+    for line in job_lines:
+        clean = strip_comment(line).rstrip()
+        match = re.fullmatch(rf"\s{{4}}{re.escape(key)}\s*:\s*(.+)", clean)
+        if match is not None:
+            values.append(yaml_scalar(match.group(1)))
+    return values[0] if len(values) == 1 else None
 
 
 def storage_tripwire_expected_checkout_action(required_fragments: tuple[str, ...]) -> str | None:

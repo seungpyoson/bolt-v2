@@ -2385,6 +2385,14 @@ def render_cleanup_alert_summary(snapshot: dict[str, Any], policy: CleanupAlertP
     if not findings:
         lines.extend(["", "No configured cleanup alert thresholds were crossed."])
         return "\n".join(lines)
+    lines.extend(
+        [
+            "",
+            "Operator next steps:",
+            "- Inspect the cleanup JSON output for row-level details before deleting anything.",
+            "- This workflow is read-only and does not delete artifacts.",
+        ]
+    )
     lines.extend(["", "Findings:"])
     for finding in findings:
         value_text = (
@@ -2504,10 +2512,10 @@ def cache_persistence_annotations(snapshot: dict[str, Any]) -> list[str]:
     return annotations
 
 
-def render_cache_persistence_failure_text(error: AuditError) -> str:
+def render_contract_failure_text(title: str, error: AuditError) -> str:
     return "\n".join(
         [
-            "### Cache persistence audit",
+            f"### {title}",
             "",
             f"- contract failure kind: `{error.kind.value}`",
             f"- contract failure field: `{error.field}`",
@@ -2517,6 +2525,34 @@ def render_cache_persistence_failure_text(error: AuditError) -> str:
             "```",
         ]
     )
+
+
+def render_cache_persistence_failure_text(error: AuditError) -> str:
+    return render_contract_failure_text("Cache persistence audit", error)
+
+
+def render_cleanup_feasibility_failure_text(error: AuditError) -> str:
+    return render_contract_failure_text("Cleanup feasibility audit", error)
+
+
+def cleanup_feasibility_invocation(args: argparse.Namespace) -> bool:
+    return bool(
+        getattr(args, "cleanup_feasibility", False)
+        or getattr(args, "cleanup_alert", False)
+        or getattr(args, "cleanup_json_output", None) is not None
+    )
+
+
+def audit_contract_failure_label(args: argparse.Namespace) -> str:
+    if cleanup_feasibility_invocation(args):
+        return "cleanup feasibility audit"
+    return "cache persistence audit"
+
+
+def render_audit_failure_text(args: argparse.Namespace, error: AuditError) -> str:
+    if cleanup_feasibility_invocation(args):
+        return render_cleanup_feasibility_failure_text(error)
+    return render_cache_persistence_failure_text(error)
 
 
 def build_snapshot(
@@ -2839,16 +2875,16 @@ def main(argv: list[str]) -> int:
         validate_args(args)
     except AuditError as exc:
         if getattr(args, "github_annotations", False):
-            print(f"::error::cache persistence audit contract failed: {exc}")
+            print(f"::error::{audit_contract_failure_label(args)} contract failed: {exc}")
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     try:
         return run(args)
     except AuditError as exc:
         if getattr(args, "github_step_summary", None) is not None:
-            append_step_summary(args.github_step_summary, render_cache_persistence_failure_text(exc))
+            append_step_summary(args.github_step_summary, render_audit_failure_text(args, exc))
         if getattr(args, "github_annotations", False):
-            print(f"::error::cache persistence audit contract failed: {exc}")
+            print(f"::error::{audit_contract_failure_label(args)} contract failed: {exc}")
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

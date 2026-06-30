@@ -9472,6 +9472,14 @@ def assert_storage_cleanup_alert_workflow_contract() -> None:
     ):
         raise AssertionError(f"storage cleanup alert JSON output drift was silent, got: {missing_json_output_errors}")
 
+    missing_timeout = replace_once(workflow, "    timeout-minutes: 30\n", "")
+    missing_timeout_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: missing_timeout}, runners_config)
+    if not any(
+        "storage cleanup alert timeout-minutes must match storage_audit.cleanup_feasibility_alert.workflow.job_timeout_minutes" in error
+        for error in missing_timeout_errors
+    ):
+        raise AssertionError(f"storage cleanup alert timeout drift was silent, got: {missing_timeout_errors}")
+
     missing_upload_step = replace_once(
         workflow,
         """      - name: Upload cleanup feasibility JSON
@@ -9492,6 +9500,15 @@ def assert_storage_cleanup_alert_workflow_contract() -> None:
         for error in missing_upload_errors
     ):
         raise AssertionError(f"storage cleanup alert upload step drift was silent, got: {missing_upload_errors}")
+
+    schema_drift_config = replace_once(
+        runners_config,
+        "[storage_audit.cleanup_feasibility_alert]\nschema_version = 1",
+        "[storage_audit.cleanup_feasibility_alert]\nschema_version = 2",
+    )
+    schema_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: workflow}, schema_drift_config)
+    if not any("cleanup_feasibility_alert.schema_version must be 1" in error for error in schema_errors):
+        raise AssertionError(f"storage cleanup alert schema drift was silent, got: {schema_errors}")
 
     delete_fragment = workflow + "\n# --method DELETE\n"
     delete_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: delete_fragment}, runners_config)

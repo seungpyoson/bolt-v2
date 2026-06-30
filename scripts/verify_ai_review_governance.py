@@ -774,6 +774,8 @@ def verify_notice_step_guard(
             return [f"{provider_label} notice step {step_name!r} must not use empty marker or bot login"]
     if '--arg run_url "$run_url"' in step or "contains($run_url)" in step:
         return [f"{provider_label} notice step {step_name!r} must update one rolling notice, not key by run URL"]
+    if "contains($marker)" in step or "startswith($marker)" not in step:
+        return [f"{provider_label} notice step {step_name!r} must match notice marker at the start of the comment"]
     return []
 
 
@@ -1788,7 +1790,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     claude_notice_keyed_by_run_url = verify_variant(
         claude_text=claude.replace(
-            '''| jq -r --arg login "$expected_bot_login" --arg marker "$marker" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | .id' \\\n''',
+            '''| jq -r --arg login "$expected_bot_login" --arg marker "$marker" '.[] | select(.user.login == $login) | select((.body // "") | startswith($marker)) | .id' \\\n''',
             '''| jq -r --arg login "$expected_bot_login" --arg marker "$marker" --arg run_url "$run_url" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | select(.body | contains($run_url)) | .id' \\\n''',
             1,
         ),
@@ -1797,6 +1799,19 @@ def run_self_tests(repo_root: Path) -> None:
         "Claude notice keyed by run URL",
         claude_notice_keyed_by_run_url,
         "Claude notice step",
+    )
+
+    claude_notice_unanchored_marker = verify_variant(
+        claude_text=claude.replace(
+            '''| jq -r --arg login "$expected_bot_login" --arg marker "$marker" '.[] | select(.user.login == $login) | select((.body // "") | startswith($marker)) | .id' \\\n''',
+            '''| jq -r --arg login "$expected_bot_login" --arg marker "$marker" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | .id' \\\n''',
+            1,
+        ),
+    )
+    assert_finding(
+        "Claude notice unanchored marker",
+        claude_notice_unanchored_marker,
+        "must match notice marker at the start",
     )
 
     claude_infra_runtime_config_arm_removed = verify_variant(

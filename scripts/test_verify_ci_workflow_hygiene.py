@@ -5621,7 +5621,20 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             "job must guard first-run trusted-base bootstrap",
             {
                 workflow_name: BASE_COVERAGE_ENFORCER_WORKFLOW.replace(
+                    "            echo \"coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
                     "            exit 1\n",
+                    "            echo \"coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
+                    "            exit 0\n",
+                )
+            },
+        ),
+        (
+            "job must guard first-run trusted-base bootstrap",
+            {
+                workflow_name: BASE_COVERAGE_ENFORCER_WORKFLOW.replace(
+                    "            echo \"coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py\"\n"
+                    "            exit 1\n",
+                    "            echo \"coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py\"\n"
                     "            exit 0\n",
                 )
             },

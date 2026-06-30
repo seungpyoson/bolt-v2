@@ -13799,14 +13799,17 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
             break
     if "          persist-credentials: false" not in job_text:
         errors.append(f"{workflow_name} checkout must not persist credentials")
-    for required in (
-        "if [ ! -f scripts/coverage_enforcer.py ]; then",
-        "coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py",
-        'if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then',
-        "coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py",
-        "exit 1",
+    for required_block in (
+        '          if [ ! -f scripts/coverage_enforcer.py ]; then\n'
+        '            echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py"\n'
+        "            exit 1\n"
+        "          fi",
+        '          if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then\n'
+        '            echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py"\n'
+        "            exit 1\n"
+        "          fi",
     ):
-        if required not in job_text:
+        if required_block not in job_text:
             errors.append(f"{workflow_name} job must guard first-run trusted-base bootstrap")
             break
     if "python3 scripts/coverage_enforcer.py" not in job_text:

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import dataclasses
 import io
@@ -1796,6 +1797,37 @@ def without_once_after(text: str, anchor: str, old: str) -> str:
 
 def repo_workflow_text(path: str) -> str:
     return (REPO_ROOT / path).read_text().replace("\r\n", "\n")
+
+
+def inline_matrix_values(job_lines: list[str], matrix_key: str) -> tuple[int, ...]:
+    prefix = f"        {matrix_key}: "
+    values = [line.removeprefix(prefix) for line in job_lines if line.startswith(prefix)]
+    if len(values) != 1:
+        raise AssertionError(f"expected exactly one {matrix_key!r} matrix entry, found {len(values)}")
+    parsed = ast.literal_eval(values[0])
+    if not isinstance(parsed, list) or not all(isinstance(value, int) for value in parsed):
+        raise AssertionError(f"{matrix_key!r} matrix entry must be an inline integer list")
+    return tuple(parsed)
+
+
+def assert_no_inline_matrix_key(job_lines: list[str], matrix_key: str) -> None:
+    prefix = f"        {matrix_key}: "
+    if any(line.startswith(prefix) for line in job_lines):
+        raise AssertionError(f"unexpected {matrix_key!r} matrix entry")
+
+
+def one_indexed_sequence(values: tuple[int, ...]) -> bool:
+    return values == tuple(range(1, len(values) + 1))
+
+
+def shard_partition_argument_denominators(job_lines: list[str]) -> tuple[int, ...]:
+    return tuple(
+        int(denominator)
+        for denominator in re.findall(
+            r"(?m)^\s*just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
+            "\n".join(job_lines),
+        )
+    )
 
 
 def strip_ci_provenance_config(config_text: str) -> str:
@@ -5814,12 +5846,13 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
 
 
 def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
+    verifier = load_verifier()
     full_workflow = repo_workflow_text(".github/workflows/flaky-test-detection.yml")
     smoke_workflow = repo_workflow_text(".github/workflows/flaky-test-smoke.yml")
-    if "workflow_dispatch:" in full_workflow:
-        raise AssertionError("flaky-test-detection.yml must remain schedule-only")
-    if "schedule:" in smoke_workflow:
-        raise AssertionError("flaky-test-smoke.yml must remain manual-only")
+    if "schedule:" in full_workflow:
+        raise AssertionError("flaky-test-detection.yml must remain manual-only")
+    if "workflow_dispatch:" in smoke_workflow:
+        raise AssertionError("flaky-test-smoke.yml must remain schedule-only")
     for workflow_path, workflow in (
         (".github/workflows/flaky-test-detection.yml", full_workflow),
         (".github/workflows/flaky-test-smoke.yml", smoke_workflow),
@@ -5836,17 +5869,61 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
         for fragment in forbidden_fragments:
             if fragment in workflow:
                 raise AssertionError(f"{workflow_path} must not contain {fragment!r}")
-    smoke_fragments = (
+    full_fragments = (
         "workflow_dispatch:",
+        "flaky-detection-rust-root:",
+        "flaky-detection-rust-backtester:",
+        "flaky-detection-rust-backtester-issue-789:",
+    )
+    for fragment in full_fragments:
+        if fragment not in full_workflow:
+            raise AssertionError(f"flaky-test-detection.yml missing {fragment!r}")
+    full_jobs = verifier.parse_jobs(full_workflow)
+    full_root_runs = inline_matrix_values(full_jobs["flaky-detection-rust-root"], "run_number")
+    full_backtester_runs = inline_matrix_values(full_jobs["flaky-detection-rust-backtester"], "run_number")
+    full_backtester_shards = inline_matrix_values(full_jobs["flaky-detection-rust-backtester"], "shard")
+    full_issue_runs = inline_matrix_values(full_jobs["flaky-detection-rust-backtester-issue-789"], "run_number")
+    assert_no_inline_matrix_key(full_jobs["flaky-detection-rust-root"], "shard")
+    assert_no_inline_matrix_key(full_jobs["flaky-detection-rust-backtester-issue-789"], "shard")
+    if full_root_runs != (1, 2, 3, 4, 5):
+        raise AssertionError("flaky-test-detection.yml root job must keep five repeat runs")
+    if full_backtester_runs != (1, 2, 3, 4, 5):
+        raise AssertionError("flaky-test-detection.yml backtester job must keep five repeat runs")
+    if not one_indexed_sequence(full_backtester_shards):
+        raise AssertionError("flaky-test-detection.yml backtester shard matrix must stay one-indexed and contiguous")
+    if shard_partition_argument_denominators(full_jobs["flaky-detection-rust-backtester"]) != (len(full_backtester_shards),):
+        raise AssertionError("flaky-test-detection.yml backtester shard partition denominator must match shard matrix length")
+    if full_issue_runs != (1, 2, 3, 4, 5):
+        raise AssertionError("flaky-test-detection.yml issue-789 job must keep five repeat runs")
+    smoke_fragments = (
+        "schedule:",
+        "cron: '0 */12 * * 1-5'",
         "flaky-smoke-rust-root:",
         "flaky-smoke-rust-backtester:",
         "flaky-smoke-rust-backtester-issue-789:",
-        "run_number: [1]",
-        "shard: [1]",
     )
     for fragment in smoke_fragments:
         if fragment not in smoke_workflow:
             raise AssertionError(f"flaky-test-smoke.yml missing {fragment!r}")
+    smoke_jobs = verifier.parse_jobs(smoke_workflow)
+    smoke_root_runs = inline_matrix_values(smoke_jobs["flaky-smoke-rust-root"], "run_number")
+    smoke_backtester_runs = inline_matrix_values(smoke_jobs["flaky-smoke-rust-backtester"], "run_number")
+    smoke_backtester_shards = inline_matrix_values(smoke_jobs["flaky-smoke-rust-backtester"], "shard")
+    smoke_issue_runs = inline_matrix_values(smoke_jobs["flaky-smoke-rust-backtester-issue-789"], "run_number")
+    assert_no_inline_matrix_key(smoke_jobs["flaky-smoke-rust-root"], "shard")
+    assert_no_inline_matrix_key(smoke_jobs["flaky-smoke-rust-backtester-issue-789"], "shard")
+    if smoke_root_runs != (1,) or smoke_backtester_runs != (1,) or smoke_backtester_shards != (1,) or smoke_issue_runs != (1,):
+        raise AssertionError("flaky-test-smoke.yml must keep one execution per smoke job")
+    smoke_partition_denominators = shard_partition_argument_denominators(smoke_jobs["flaky-smoke-rust-backtester"])
+    if len(smoke_partition_denominators) != 1 or smoke_partition_denominators[0] <= len(smoke_backtester_shards):
+        raise AssertionError("flaky-test-smoke.yml backtester job must run one partitioned shard subset")
+    smoke_execution_count = (
+        len(smoke_root_runs)
+        + len(smoke_backtester_runs) * len(smoke_backtester_shards)
+        + len(smoke_issue_runs)
+    )
+    if smoke_execution_count != 3:
+        raise AssertionError(f"flaky-test-smoke.yml must keep 3 matrix executions, got {smoke_execution_count}")
 
 
 def assert_flaky_detection_workflow_split_gaps_are_reported() -> None:
@@ -5856,8 +5933,7 @@ def assert_flaky_detection_workflow_split_gaps_are_reported() -> None:
     good_full_workflow = """name: Flaky Test Detection
 
 on:
-  schedule:
-    - cron: '0 */12 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   flaky-detection-rust-root:
@@ -5942,7 +6018,8 @@ jobs:
     good_smoke_workflow = """name: Flaky Test Smoke
 
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * 1-5'
 
 jobs:
   flaky-smoke-rust-root:
@@ -6033,6 +6110,504 @@ jobs:
     flaky_errors = [error for error in good_errors if "flaky-test-detection" in error]
     if flaky_errors:
         raise AssertionError(f"flaky detection workflow verifier must accept split workflows, got: {flaky_errors}")
+    expected_partitioned_bvs_policy_labels = frozenset({"backtester full job", "backtester smoke job"})
+    if verifier.PARTITIONED_BVS_BACKTESTER_POLICY_LABELS != expected_partitioned_bvs_policy_labels:
+        raise AssertionError(
+            "partitioned BVS step allowlist must stay scoped to the sharded backtester full/smoke jobs"
+        )
+
+    def flaky_detection_errors(
+        full_workflow: str = good_full_workflow,
+        smoke_workflow: str = good_smoke_workflow,
+    ) -> list[str]:
+        return [
+            error
+            for error in verifier.verify_flaky_test_detection_workflows(
+                {
+                    full_workflow_name: full_workflow,
+                    smoke_workflow_name: smoke_workflow,
+                }
+            )
+            if "flaky-test-detection" in error
+        ]
+
+    def has_bvs_step_allowlist_error(errors: list[str]) -> bool:
+        return any("backtester smoke job must keep BVS job steps unchanged" in error for error in errors)
+
+    resharded_full_workflow = good_full_workflow.replace(
+        "shard: [1, 2, 3, 4]",
+        "shard: [1, 2, 3, 4, 5]",
+    ).replace('partition "count:${{ matrix.shard }}/4"', 'partition "count:${{ matrix.shard }}/5"')
+    resharded_full_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: resharded_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    resharded_full_flaky_errors = [error for error in resharded_full_errors if "flaky-test-detection" in error]
+    if resharded_full_flaky_errors:
+        raise AssertionError(
+            f"flaky detection verifier must accept manual full workflow shard-count changes, got: {resharded_full_flaky_errors}"
+        )
+    rerun_full_workflow = good_full_workflow.replace(
+        "run_number: [1, 2, 3, 4, 5]",
+        "run_number: [1, 2, 3, 4, 5, 6]",
+    )
+    rerun_full_errors = flaky_detection_errors(full_workflow=rerun_full_workflow)
+    if rerun_full_errors:
+        raise AssertionError(
+            f"flaky detection verifier must accept manual full workflow run-count changes, got: {rerun_full_errors}"
+        )
+    noncontiguous_run_number_full_errors = flaky_detection_errors(
+        full_workflow=good_full_workflow.replace("run_number: [1, 2, 3, 4, 5]", "run_number: [1, 3, 4]")
+    )
+    if not any("full job run_number matrix must be one-indexed and contiguous" in error for error in noncontiguous_run_number_full_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject non-contiguous full workflow run numbers, "
+            f"got: {noncontiguous_run_number_full_errors}"
+        )
+    mismatched_reshard_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: resharded_full_workflow.replace(
+                'partition "count:${{ matrix.shard }}/5"',
+                'partition "count:${{ matrix.shard }}/4"',
+            ),
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("backtester full job partition denominator must match shard matrix length" in error for error in mismatched_reshard_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject full workflow shard/partition denominator drift, "
+            f"got: {mismatched_reshard_errors}"
+        )
+    missing_partition_full_workflow = good_full_workflow.replace(
+        '--partition "count:${{ matrix.shard }}/4" ',
+        "",
+        1,
+    ).replace(
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip',
+        'echo "count:${{ matrix.shard }}/4"\n          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip',
+        1,
+    )
+    missing_partition_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: missing_partition_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("backtester full job must have one matrix.shard partition argument" in error for error in missing_partition_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject denominator text outside the partition argument, "
+            f"got: {missing_partition_errors}"
+        )
+    spoofed_partition_full_workflow = good_full_workflow.replace(
+        '--partition "count:${{ matrix.shard }}/4" ',
+        "",
+        1,
+    ).replace(
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip',
+        'echo \'--partition "count:${{ matrix.shard }}/4"\'\n          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip',
+        1,
+    )
+    spoofed_partition_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: spoofed_partition_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("backtester full job must have one matrix.shard partition argument" in error for error in spoofed_partition_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject partition text outside the just bte-test argument, "
+            f"got: {spoofed_partition_errors}"
+        )
+    dead_partition_full_workflow = good_full_workflow.replace(
+        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        """          if false; then
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          fi
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl""",
+        1,
+    )
+    dead_partition_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: dead_partition_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("backtester full job must have exactly one just bte-test invocation" in error for error in dead_partition_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject dead-code partition lines plus live unpartitioned test commands, "
+            f"got: {dead_partition_errors}"
+        )
+    chained_partition_full_workflow = good_full_workflow.replace(
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl; just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl',
+        1,
+    )
+    chained_partition_full_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: chained_partition_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("backtester full job must have exactly one just bte-test invocation" in error for error in chained_partition_full_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject same-line full BVS extra test invocations, "
+            f"got: {chained_partition_full_errors}"
+        )
+    for operator in (";", "&&", "||", "|"):
+        chained_shell_full_workflow = good_full_workflow.replace(
+            'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+            'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl '
+            + operator
+            + " echo after",
+            1,
+        )
+        chained_shell_full_errors = flaky_detection_errors(full_workflow=chained_shell_full_workflow)
+        if not any("backtester full job must keep just bte-test in a simple Run tests block" in error for error in chained_shell_full_errors):
+            raise AssertionError(
+                f"flaky detection verifier must reject full BVS shell chaining with {operator!r}, "
+                f"got: {chained_shell_full_errors}"
+            )
+        no_space_chained_shell_full_workflow = good_full_workflow.replace(
+            'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+            'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl'
+            + operator
+            + "echo after",
+            1,
+        )
+        no_space_chained_shell_full_errors = flaky_detection_errors(full_workflow=no_space_chained_shell_full_workflow)
+        if not any(
+            "backtester full job must keep just bte-test in a simple Run tests block" in error
+            for error in no_space_chained_shell_full_errors
+        ):
+            raise AssertionError(
+                f"flaky detection verifier must reject full BVS shell chaining without spaces around {operator!r}, "
+                f"got: {no_space_chained_shell_full_errors}"
+            )
+    subshell_partition_full_workflow = good_full_workflow.replace(
+        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        """          ( just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl
+          )
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl""",
+        1,
+    )
+    subshell_partition_full_errors = flaky_detection_errors(full_workflow=subshell_partition_full_workflow)
+    if not any("backtester full job must have exactly one just bte-test invocation" in error for error in subshell_partition_full_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject subshell full BVS extra test invocations, "
+            f"got: {subshell_partition_full_errors}"
+        )
+    wrapped_subshell_full_workflow = good_full_workflow.replace(
+        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        """          (
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          )""",
+        1,
+    )
+    wrapped_subshell_full_errors = flaky_detection_errors(full_workflow=wrapped_subshell_full_workflow)
+    if not any("backtester full job must keep just bte-test in a simple Run tests block" in error for error in wrapped_subshell_full_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject multiline subshell-wrapped full BVS commands, "
+            f"got: {wrapped_subshell_full_errors}"
+        )
+    for wrapped_command, wrapper_name in (
+        (
+            """          echo "preflight"
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl""",
+            "extra shell statement",
+        ),
+        (
+            """          ignored=`
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          `""",
+            "backtick command-substitution",
+        ),
+        (
+            """          {
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          }""",
+            "brace-group",
+        ),
+        (
+            """          cat <(
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          )""",
+            "process-substitution",
+        ),
+        (
+            """          cat <<'EOF'
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          EOF""",
+            "heredoc",
+        ),
+        (
+            """          ignored='
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          '""",
+            "multiline quoted string",
+        ),
+        (
+            """          bvs_words=(
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          )""",
+            "array assignment",
+        ),
+        (
+            """          run_bte() {
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          }""",
+            "dead function definition",
+        ),
+        (
+            """          run_bte() {
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          }
+          run_bte""",
+            "called function definition",
+        ),
+        (
+            """          function run_bte {
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          }""",
+            "dead function keyword definition",
+        ),
+        (
+            """          function run_bte () {
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          }
+          run_bte
+          run_bte""",
+            "called function keyword definition",
+        ),
+    ):
+        wrapped_full_workflow = good_full_workflow.replace(
+            '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+            wrapped_command,
+            1,
+        )
+        wrapped_full_errors = flaky_detection_errors(full_workflow=wrapped_full_workflow)
+        if not any("backtester full job must keep just bte-test in a simple Run tests block" in error for error in wrapped_full_errors):
+            raise AssertionError(
+                f"flaky detection verifier must reject {wrapper_name} full BVS commands, "
+                f"got: {wrapped_full_errors}"
+            )
+    dead_only_partition_full_workflow = good_full_workflow.replace(
+        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        """          if false; then
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          fi""",
+        1,
+    )
+    dead_only_partition_full_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: dead_only_partition_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("backtester full job must keep just bte-test in a simple Run tests block" in error for error in dead_only_partition_full_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject dead-only full BVS test invocations, "
+            f"got: {dead_only_partition_full_errors}"
+        )
+    for guarded_command in (
+        """          if ! true; then
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          fi""",
+        """          while false; do
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          done""",
+        """          until true; do
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          done""",
+    ):
+        guarded_full_workflow = good_full_workflow.replace(
+            '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+            guarded_command,
+            1,
+        )
+        guarded_full_errors = flaky_detection_errors(full_workflow=guarded_full_workflow)
+        if not any("backtester full job must keep just bte-test in a simple Run tests block" in error for error in guarded_full_errors):
+            raise AssertionError(
+                "flaky detection verifier must reject guarded full BVS test invocations, "
+                f"got: {guarded_full_errors}"
+            )
+
+    missing_smoke_partition_workflow = good_smoke_workflow.replace(
+        '--partition "count:${{ matrix.shard }}/4" ',
+        "",
+        1,
+    )
+    missing_smoke_partition_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: good_full_workflow,
+            smoke_workflow_name: missing_smoke_partition_workflow,
+        }
+    )
+    if not any("backtester smoke job must have one matrix.shard partition argument" in error for error in missing_smoke_partition_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject scheduled smoke without a partitioned BVS shard, "
+            f"got: {missing_smoke_partition_errors}"
+        )
+    chained_partition_smoke_workflow = good_smoke_workflow.replace(
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl; just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl',
+        1,
+    )
+    chained_partition_smoke_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: good_full_workflow,
+            smoke_workflow_name: chained_partition_smoke_workflow,
+        }
+    )
+    if not any("backtester smoke job must have exactly one just bte-test invocation" in error for error in chained_partition_smoke_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject same-line scheduled smoke extra test invocations, "
+            f"got: {chained_partition_smoke_errors}"
+        )
+    command_substitution_smoke_workflow = good_smoke_workflow.replace(
+        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        """          ignored="$(just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl)"
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl""",
+        1,
+    )
+    command_substitution_smoke_errors = flaky_detection_errors(smoke_workflow=command_substitution_smoke_workflow)
+    if not any("backtester smoke job must have exactly one just bte-test invocation" in error for error in command_substitution_smoke_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject command-substitution scheduled smoke extra test invocations, "
+            f"got: {command_substitution_smoke_errors}"
+        )
+    multiline_command_substitution_smoke_workflow = good_smoke_workflow.replace(
+        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        """          ignored="$(
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          )" """,
+        1,
+    )
+    multiline_command_substitution_smoke_errors = flaky_detection_errors(
+        smoke_workflow=multiline_command_substitution_smoke_workflow
+    )
+    if not any(
+        "backtester smoke job must keep just bte-test in a simple Run tests block" in error
+        for error in multiline_command_substitution_smoke_errors
+    ):
+        raise AssertionError(
+            "flaky detection verifier must reject multiline command-substitution scheduled smoke BVS commands, "
+            f"got: {multiline_command_substitution_smoke_errors}"
+        )
+    dead_only_partition_smoke_workflow = good_smoke_workflow.replace(
+        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        """          if false; then
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          fi""",
+        1,
+    )
+    dead_only_partition_smoke_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: good_full_workflow,
+            smoke_workflow_name: dead_only_partition_smoke_workflow,
+        }
+    )
+    if not any("backtester smoke job must keep just bte-test in a simple Run tests block" in error for error in dead_only_partition_smoke_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject dead-only scheduled smoke test invocations, "
+            f"got: {dead_only_partition_smoke_errors}"
+        )
+    changed_stage_shell_smoke_workflow = good_smoke_workflow.replace(
+        '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+        """        run: |
+          if false; then
+          echo "skip an unrelated staging branch"
+          fi
+          cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml" """,
+        1,
+    )
+    changed_stage_shell_smoke_errors = flaky_detection_errors(smoke_workflow=changed_stage_shell_smoke_workflow)
+    if not has_bvs_step_allowlist_error(changed_stage_shell_smoke_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject changed sibling shell steps in the scheduled smoke BVS job, "
+            f"got: {changed_stage_shell_smoke_errors}"
+        )
+    cross_step_bte_smoke_workflow = good_smoke_workflow.replace(
+        '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+        """        run: |
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl
+          cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml" """,
+        1,
+    )
+    cross_step_bte_smoke_errors = flaky_detection_errors(smoke_workflow=cross_step_bte_smoke_workflow)
+    if not any("backtester smoke job must have exactly one just bte-test invocation" in error for error in cross_step_bte_smoke_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject scheduled smoke BVS commands outside the Run tests step, "
+            f"got: {cross_step_bte_smoke_errors}"
+        )
+    for extra_command, extra_command_name in (
+        (
+            'just  bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl',
+            "whitespace-obfuscated just bte-test",
+        ),
+        (
+            'cargo nextest run -p backtesting-vertical-slice',
+            "raw cargo nextest BVS",
+        ),
+    ):
+        cross_step_extra_work_smoke_workflow = good_smoke_workflow.replace(
+            '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+            f"""        run: |
+          {extra_command}
+          cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml" """,
+            1,
+        )
+        cross_step_extra_work_smoke_errors = flaky_detection_errors(smoke_workflow=cross_step_extra_work_smoke_workflow)
+        if not (
+            has_bvs_step_allowlist_error(cross_step_extra_work_smoke_errors)
+            or any(
+                "backtester smoke job must have exactly one just bte-test invocation" in error
+                for error in cross_step_extra_work_smoke_errors
+            )
+        ):
+            raise AssertionError(
+                f"flaky detection verifier must reject {extra_command_name} commands outside the Run tests step, "
+                f"got: {cross_step_extra_work_smoke_errors}"
+            )
+    for extra_step, extra_step_name in (
+        (
+            """      - run: cargo nextest run -p backtesting-vertical-slice
+""",
+            "nameless run step",
+        ),
+        (
+            """      - id: warm_bvs
+        run: cargo nextest run -p backtesting-vertical-slice
+""",
+            "id-led run step",
+        ),
+        (
+            """      - uses: ./run-bvs-tests
+""",
+            "unexpected uses step",
+        ),
+        (
+            """      - name: Run tests
+        run: cargo nextest run -p backtesting-vertical-slice
+""",
+            "duplicate Run tests step",
+        ),
+    ):
+        extra_step_smoke_workflow = good_smoke_workflow.replace(
+            '      - name: Stage JUnit report\n'
+            '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+            extra_step
+            + '      - name: Stage JUnit report\n'
+            + '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+            1,
+        )
+        extra_step_smoke_errors = flaky_detection_errors(smoke_workflow=extra_step_smoke_workflow)
+        if not has_bvs_step_allowlist_error(extra_step_smoke_errors):
+            raise AssertionError(
+                f"flaky detection verifier must reject {extra_step_name} in the scheduled smoke BVS job, "
+                f"got: {extra_step_smoke_errors}"
+            )
 
     oversized_smoke_workflow = good_smoke_workflow.replace(
         "run_number: [1]",
@@ -6078,8 +6653,17 @@ jobs:
     drift_cases = (
         (
             "workflow triggers must be ['workflow_dispatch']",
+            good_full_workflow.replace(
+                "on:\n  workflow_dispatch:\n",
+                "on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n",
+                1,
+            ),
+            good_smoke_workflow,
+        ),
+        (
+            "workflow triggers must be ['schedule']",
             good_full_workflow,
-            good_smoke_workflow.replace("on:\n  workflow_dispatch:\n", "on:\n  workflow_dispatch:\n  push:\n", 1),
+            good_smoke_workflow.replace("on:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n", "on:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n  push:\n", 1),
         ),
         (
             "root smoke job missing 'if: success() || failure()'",

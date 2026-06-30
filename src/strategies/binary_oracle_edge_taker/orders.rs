@@ -141,7 +141,7 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    pub(super) fn exit_order_execution_config_from_order(
+    fn exit_order_execution_config_from_order(
         &self,
         order: &BinaryOracleEdgeTakerOrderConfig,
         side_field: &'static str,
@@ -165,7 +165,7 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    pub(super) fn forced_exit_order_execution_config(&self) -> Result<ExitOrderExecutionConfig> {
+    fn forced_exit_order_execution_config(&self) -> Result<ExitOrderExecutionConfig> {
         self.exit_order_execution_config_from_order(
             &self.config.forced_exit_order,
             CONFIG_FIELD_FORCED_EXIT_ORDER_SIDE,

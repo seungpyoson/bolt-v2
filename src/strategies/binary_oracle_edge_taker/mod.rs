@@ -542,47 +542,6 @@ impl PricingState {
     }
 }
 
-impl ActiveMarketState {
-    /// Binds the live resolution strike (Chainlink `IndexPriceUpdate`) to the
-    /// market's interval-open boundary and sets it as the `price_to_beat`.
-    ///
-    /// Fail-closed: a strike whose `window_open_ms` does not equal this market's
-    /// `interval_start_ms`, or a non-positive/non-finite value, or an idle/
-    /// unbound state, is ignored and leaves `price_to_beat` unchanged. The entry
-    /// gate stays blocked while `price_to_beat` is `None`.
-    fn observe_resolution_strike(&mut self, strike: f64, window_open_ms: u64, observed_ts_ms: u64) {
-        if self.phase == SelectionPhase::Idle {
-            return;
-        }
-        let Some(interval_start_ms) = self.interval_start_ms else {
-            return;
-        };
-        if window_open_ms != interval_start_ms {
-            // Configured (non-Idle, interval-bound) market whose strike report
-            // disagrees with the selected interval-open. This is a fail-closed
-            // anomaly — the strike feed is reporting for the wrong window — and
-            // must be observable rather than a silent drop. Record it and warn;
-            // `price_to_beat` is left untouched so entry stays fail-closed.
-            self.resolution_strike_window_mismatch_count = self
-                .resolution_strike_window_mismatch_count
-                .saturating_add(1);
-            log::warn!(
-                "binary_oracle_edge_taker resolution-strike window mismatch (fail-closed): market_id={:?} window_open_ms={} interval_start_ms={} strike={} — strike rejected, price_to_beat unchanged",
-                self.market_id,
-                window_open_ms,
-                interval_start_ms,
-                strike,
-            );
-            return;
-        }
-        if !is_positive_finite(strike) {
-            return;
-        }
-        self.price_to_beat = Some(strike);
-        self.last_resolution_ts_ms = Some(observed_ts_ms);
-    }
-}
-
 pub struct BinaryOracleEdgeTaker {
     core: StrategyCore,
     config: BinaryOracleEdgeTakerConfig,

@@ -11276,6 +11276,14 @@ def one_indexed_sequence(values: tuple[int, ...]) -> bool:
     return values == tuple(range(1, len(values) + 1))
 
 
+def bte_test_invocation_lines(job_text: str) -> tuple[str, ...]:
+    return tuple(
+        line
+        for line in job_text.splitlines()
+        if re.search(r"(^|\s)just bte-test\b", line)
+    )
+
+
 def shard_partition_argument_denominators(job_text: str) -> tuple[int, ...]:
     return tuple(
         int(denominator)
@@ -11438,17 +11446,25 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             for fragment in fragments
             if fragment not in job_text
         )
+        if label in {"backtester full job", "backtester smoke job"}:
+            invocations = bte_test_invocation_lines(job_text)
+            if len(invocations) != 1:
+                errors.append(f"flaky-test-detection {label} must have exactly one just bte-test invocation")
+            denominators = shard_partition_argument_denominators(job_text)
+            if len(denominators) != 1:
+                errors.append(f"flaky-test-detection {label} must have one matrix.shard partition argument")
         if label == "backtester full job":
             shards = inline_integer_matrix_values(job_text, "shard")
             if shards is None:
                 errors.append("flaky-test-detection backtester full job shard matrix must be an inline integer list")
             elif not one_indexed_sequence(shards):
                 errors.append("flaky-test-detection backtester full job shard matrix must be one-indexed and contiguous")
-            denominators = shard_partition_argument_denominators(job_text)
-            if len(denominators) != 1:
-                errors.append("flaky-test-detection backtester full job must have one matrix.shard partition argument")
-            elif shards is not None and denominators[0] != len(shards):
+            if len(denominators) == 1 and shards is not None and denominators[0] != len(shards):
                 errors.append("flaky-test-detection backtester full job partition denominator must match shard matrix length")
+        if label == "backtester smoke job":
+            shards = inline_integer_matrix_values(job_text, "shard")
+            if len(denominators) == 1 and shards is not None and denominators[0] <= len(shards):
+                errors.append("flaky-test-detection backtester smoke job partition denominator must exceed scheduled shard count")
     return errors
 
 

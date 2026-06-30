@@ -5754,6 +5754,9 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     assert_no_inline_matrix_key(smoke_jobs["flaky-smoke-rust-backtester-issue-789"], "shard")
     if smoke_root_runs != (1,) or smoke_backtester_runs != (1,) or smoke_backtester_shards != (1,) or smoke_issue_runs != (1,):
         raise AssertionError("flaky-test-smoke.yml must keep one execution per smoke job")
+    smoke_partition_denominators = shard_partition_argument_denominators(smoke_jobs["flaky-smoke-rust-backtester"])
+    if len(smoke_partition_denominators) != 1 or smoke_partition_denominators[0] <= len(smoke_backtester_shards):
+        raise AssertionError("flaky-test-smoke.yml backtester job must run one partitioned shard subset")
     smoke_execution_count = (
         len(smoke_root_runs)
         + len(smoke_backtester_runs) * len(smoke_backtester_shards)
@@ -6016,6 +6019,42 @@ jobs:
         raise AssertionError(
             "flaky detection verifier must reject partition text outside the just bte-test argument, "
             f"got: {spoofed_partition_errors}"
+        )
+    dead_partition_full_workflow = good_full_workflow.replace(
+        '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+        """          if false; then
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          fi
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl""",
+        1,
+    )
+    dead_partition_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: dead_partition_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("backtester full job must have exactly one just bte-test invocation" in error for error in dead_partition_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject dead-code partition lines plus live unpartitioned test commands, "
+            f"got: {dead_partition_errors}"
+        )
+
+    missing_smoke_partition_workflow = good_smoke_workflow.replace(
+        '--partition "count:${{ matrix.shard }}/4" ',
+        "",
+        1,
+    )
+    missing_smoke_partition_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: good_full_workflow,
+            smoke_workflow_name: missing_smoke_partition_workflow,
+        }
+    )
+    if not any("backtester smoke job must have one matrix.shard partition argument" in error for error in missing_smoke_partition_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject scheduled smoke without a partitioned BVS shard, "
+            f"got: {missing_smoke_partition_errors}"
         )
 
     oversized_smoke_workflow = good_smoke_workflow.replace(

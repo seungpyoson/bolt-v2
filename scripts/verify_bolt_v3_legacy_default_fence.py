@@ -171,14 +171,16 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
 
 
 def is_allowed_default_reference(path: str, line: str) -> bool:
-    return path == "src/bolt_v3_validate.rs" and any(
-        marker in line
-        for marker in (
+    allowed_validate_defaults = {
+        "src/bolt_v3_validate/nt_blocks.rs": (
             "nautilus_live::config::LiveDataEngineConfig::default()",
             "nautilus_live::config::LiveExecEngineConfig::default()",
+        ),
+        "src/bolt_v3_validate/risk.rs": (
             "nautilus_live::config::LiveRiskEngineConfig::default()",
-        )
-    )
+        ),
+    }
+    return any(marker in line for marker in allowed_validate_defaults.get(path, ()))
 
 
 def collect_violations(paths: tuple[str, ...] = RUNTIME_SOURCE_PATHS) -> list[Violation]:

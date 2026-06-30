@@ -719,6 +719,38 @@ fn core_instrument_filters_module_does_not_import_strategy_policy_code() {
     }
 }
 
+fn validate_module_sources() -> String {
+    let mut source = String::from(include_str!("../src/bolt_v3_validate.rs"));
+    let module_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bolt_v3_validate");
+    let mut paths = std::fs::read_dir(&module_dir)
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to read validate submodule directory {}: {error}",
+                module_dir.display()
+            )
+        })
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to read validate submodule entry in {}: {error}",
+                        module_dir.display()
+                    )
+                })
+                .path()
+        })
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("rs"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        source.push('\n');
+        source.push_str(&text);
+    }
+    source
+}
+
 #[test]
 fn validate_module_must_not_own_updown_slug_token_policy() {
     // Bolt-v3 startup validation must stay structural and dispatch
@@ -729,7 +761,7 @@ fn validate_module_must_not_own_updown_slug_token_policy() {
     // updown family validator (`bolt_v3_market_families::updown::*`)
     // to check family-shaped target fields; the substrings forbidden
     // below pin policy *ownership*, not the dispatch call itself.
-    let src = include_str!("../src/bolt_v3_validate.rs");
+    let src = validate_module_sources();
     let forbidden = [
         // Deprecated code-owned table identifier and helper symbol names.
         "UPDOWN_CADENCE_SLUG_TOKEN_TABLE",
@@ -920,7 +952,7 @@ fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
     // archetype validator through the `bolt_v3_archetypes` namespace;
     // the substrings forbidden below pin policy *ownership*, not the
     // dispatch call itself.
-    let src = include_str!("../src/bolt_v3_validate.rs");
+    let src = validate_module_sources();
     let forbidden = [
         // Archetype identifier in snake_case (error messages, helper
         // names, module-leaf paths) and PascalCase (enum variant). The
@@ -976,7 +1008,7 @@ fn validate_module_must_not_own_provider_client_validation() {
     // substrings forbidden below pin policy *ownership* (function
     // definitions and provider-shaped block types referenced by
     // those validators), not the dispatch call itself.
-    let src = include_str!("../src/bolt_v3_validate.rs");
+    let src = validate_module_sources();
     let forbidden = [
         // Per-provider client-block validators that owned the policy
         // before this slice.

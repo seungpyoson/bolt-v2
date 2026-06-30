@@ -2555,6 +2555,10 @@ def render_audit_failure_text(args: argparse.Namespace, error: AuditError) -> st
     return render_cache_persistence_failure_text(error)
 
 
+def print_github_annotation(args: argparse.Namespace, annotation: str) -> None:
+    print(annotation, file=sys.stderr if args.json else sys.stdout)
+
+
 def build_snapshot(
     client: GhClient,
     *,
@@ -2836,7 +2840,7 @@ def run(args: argparse.Namespace) -> int:
             print(render_cache_key_probe_text(snapshot))
         if args.github_annotations:
             for annotation in cache_persistence_annotations(snapshot):
-                print(annotation)
+                print_github_annotation(args, annotation)
         return 0
     branch = args.branch or infer_default_branch()
     cleanup_policy = None
@@ -2869,7 +2873,7 @@ def run(args: argparse.Namespace) -> int:
             print(summary)
         if args.github_annotations:
             for annotation in cleanup_alert_annotations(findings):
-                print(annotation)
+                print_github_annotation(args, annotation)
         if cleanup_alert_has_errors(findings):
             return 1
     return 0

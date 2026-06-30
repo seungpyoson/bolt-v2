@@ -2636,6 +2636,88 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
         self.assertEqual(decoded["artifact_cleanup_feasibility"]["candidate_count"], 1)
 
+    def test_main_cleanup_alert_json_keeps_annotations_on_stderr(self) -> None:
+        client = FakeClient(cleanup_alert_candidate_responses())
+        original_client = ci_storage_audit.GhClient
+        ci_storage_audit.GhClient = lambda repo: client
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                policy_path = pathlib.Path(tmp) / "policy.toml"
+                policy_path.write_text(cleanup_candidate_alert_policy_text(), encoding="utf-8")
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = ci_storage_audit.main(
+                        [
+                            "--repo",
+                            "owner/repo",
+                            "--branch",
+                            "main",
+                            "--cleanup-feasibility",
+                            "--cleanup-alert",
+                            "--cleanup-policy",
+                            str(policy_path),
+                            "--json",
+                            "--github-annotations",
+                        ]
+                    )
+
+                decoded = json.loads(stdout.getvalue())
+        finally:
+            ci_storage_audit.GhClient = original_client
+
+        self.assertEqual(result, 1)
+        self.assertEqual(decoded["artifact_cleanup_feasibility"]["candidate_count"], 1)
+        self.assertIn("::error::cleanup feasibility candidate_count=1 crossed threshold=1", stderr.getvalue())
+        self.assertNotIn("::error::", stdout.getvalue())
+
+    def test_main_cache_json_keeps_annotations_on_stderr(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "exact-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 0,
+                    "actions_caches": [],
+                },
+                "actions/cache/usage": {
+                    "full_name": "owner/repo",
+                    "active_caches_size_in_bytes": 0,
+                    "active_caches_count": 0,
+                },
+            }
+        )
+        original_client = ci_storage_audit.GhClient
+        ci_storage_audit.GhClient = lambda repo: client
+        try:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = ci_storage_audit.main(
+                    [
+                        "--repo",
+                        "owner/repo",
+                        "--cache-key",
+                        "probe=exact-key",
+                        "--cache-ref",
+                        "refs/heads/main",
+                        "--json",
+                        "--github-annotations",
+                    ]
+                )
+
+            decoded = json.loads(stdout.getvalue())
+        finally:
+            ci_storage_audit.GhClient = original_client
+
+        self.assertEqual(result, 0)
+        self.assertEqual(decoded["cache_key_probes"][0]["present"], False)
+        self.assertIn("::warning::one or more root nextest cache keys are missing", stderr.getvalue())
+        self.assertNotIn("::warning::", stdout.getvalue())
+
     def test_cleanup_feasibility_failure_text_reports_contract_failure(self) -> None:
         error = ci_storage_audit.AuditError(
             "artifact metadata drifted",

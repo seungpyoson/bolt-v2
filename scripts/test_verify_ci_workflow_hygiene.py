@@ -9453,6 +9453,59 @@ def assert_storage_cleanup_alert_workflow_contract() -> None:
     if not any(f"{workflow_path} must exist" in error for error in missing_errors):
         raise AssertionError(f"storage cleanup alert workflow missing file drift was silent, got: {missing_errors}")
 
+    missing_permissions = replace_once(
+        workflow,
+        """permissions:
+  contents: read
+  actions: read
+
+""",
+        "",
+    )
+    missing_permissions_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: missing_permissions}, runners_config)
+    if not any("permissions must match storage_audit.cleanup_feasibility_alert.workflow.permissions" in error for error in missing_permissions_errors):
+        raise AssertionError(f"storage cleanup alert missing permissions drift was silent, got: {missing_permissions_errors}")
+
+    malformed_permissions = replace_once(
+        workflow,
+        """permissions:
+  contents: read
+  actions: read
+""",
+        "permissions: read\n",
+    )
+    malformed_permissions_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: malformed_permissions}, runners_config)
+    if not any(
+        "permissions must match storage_audit.cleanup_feasibility_alert.workflow.permissions" in error
+        for error in malformed_permissions_errors
+    ):
+        raise AssertionError(f"storage cleanup alert malformed permissions drift was silent, got: {malformed_permissions_errors}")
+
+    missing_concurrency = replace_once(
+        workflow,
+        """concurrency:
+  group: ci-storage-cleanup-alert
+  cancel-in-progress: false
+
+""",
+        "",
+    )
+    missing_concurrency_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: missing_concurrency}, runners_config)
+    if not any("concurrency must match storage_audit.cleanup_feasibility_alert.workflow" in error for error in missing_concurrency_errors):
+        raise AssertionError(f"storage cleanup alert missing concurrency drift was silent, got: {missing_concurrency_errors}")
+
+    malformed_concurrency = replace_once(
+        workflow,
+        """concurrency:
+  group: ci-storage-cleanup-alert
+  cancel-in-progress: false
+""",
+        "concurrency: ci-storage-cleanup-alert\n",
+    )
+    malformed_concurrency_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: malformed_concurrency}, runners_config)
+    if not any("concurrency must match storage_audit.cleanup_feasibility_alert.workflow" in error for error in malformed_concurrency_errors):
+        raise AssertionError(f"storage cleanup alert malformed concurrency drift was silent, got: {malformed_concurrency_errors}")
+
     missing_alert_command = replace_once(workflow, " --cleanup-alert", "")
     missing_alert_errors = verifier.verify_storage_cleanup_alert_workflow(
         {workflow_path: missing_alert_command},

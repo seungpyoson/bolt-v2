@@ -13652,7 +13652,8 @@ def verify_storage_cleanup_alert_workflow(workflows: dict[str, str], runners_con
     if schedule_crons != [workflow_contract.schedule_cron] or schedule_extras:
         errors.append(f"{workflow_name} schedule cron must match storage_audit.cleanup_feasibility_alert.workflow.schedule_cron")
 
-    actual_permissions = scalar_mapping(top_level_block(workflow_text, "permissions"))
+    permissions_block = top_level_block(workflow_text, "permissions")
+    actual_permissions = scalar_mapping(permissions_block)
     if actual_permissions != dict(workflow_contract.permissions):
         errors.append(f"{workflow_name} permissions must match storage_audit.cleanup_feasibility_alert.workflow.permissions")
 
@@ -13660,7 +13661,8 @@ def verify_storage_cleanup_alert_workflow(workflows: dict[str, str], runners_con
         "group": workflow_contract.concurrency_group,
         "cancel-in-progress": str(workflow_contract.cancel_in_progress).lower(),
     }
-    actual_concurrency = scalar_mapping(top_level_block(workflow_text, "concurrency"))
+    concurrency_block = top_level_block(workflow_text, "concurrency")
+    actual_concurrency = scalar_mapping(concurrency_block)
     if actual_concurrency != expected_concurrency:
         errors.append(f"{workflow_name} concurrency must match storage_audit.cleanup_feasibility_alert.workflow")
 

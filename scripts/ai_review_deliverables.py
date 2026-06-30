@@ -58,7 +58,6 @@ class FallbackConfig:
     provider: str = "GLM"
     deliverable_markers: tuple[str, ...] = ()
     deliverable_bot_logins: tuple[str, ...] = ()
-    deliverable_indicators: tuple[str, ...] = ()
     expected_bot_login: str = ""
     comment_marker: str = ""
     notice_marker: str = ""
@@ -391,33 +390,6 @@ def has_review_deliverable(
     return False
 
 
-def provider_has_failure_notice(
-    *,
-    github: Any,
-    expected_bot_login: str,
-    notice_marker: str,
-    deliverable_markers: tuple[str, ...] = (),
-) -> bool:
-    if not notice_marker:
-        return False
-    marker_comments: list[tuple[str, dict[str, object]]] = []
-    for comment in github.list_issue_comments():
-        if not actor_is_expected_bot(comment, expected_bot_login):
-            continue
-        body = comment.get("body")
-        if body_has_deliverable_marker(body, (notice_marker,)):
-            marker_comments.append(("notice", comment))
-        elif deliverable_markers and body_has_deliverable_marker(body, deliverable_markers):
-            marker_comments.append(("deliverable", comment))
-    if not marker_comments:
-        return False
-    latest_kind, _comment = max(
-        marker_comments,
-        key=lambda item: str(item[1].get("updated_at") or item[1].get("created_at") or ""),
-    )
-    return latest_kind == "notice"
-
-
 def latest_failure_notice_time(*, github: Any, expected_bot_login: str, notice_marker: str) -> datetime | None:
     if not notice_marker:
         return None
@@ -438,6 +410,7 @@ def latest_quality_review_deliverable_time(
     expected_bot_login: str,
     deliverable_markers: tuple[str, ...],
     output_contract: ReviewOutputContract,
+    require_source_line: bool = False,
 ) -> datetime | None:
     if not deliverable_markers:
         return None
@@ -447,6 +420,7 @@ def latest_quality_review_deliverable_time(
         if (
             actor_is_expected_bot(comment, expected_bot_login)
             and body_has_deliverable_marker(body, deliverable_markers)
+            and (not require_source_line or review_body_has_source_line(body))
             and review_body_is_quality_deliverable(body, output_contract)
         ):
             timestamp = payload_time(comment, "updated_at", "created_at")
@@ -457,6 +431,7 @@ def latest_quality_review_deliverable_time(
         if (
             actor_is_expected_bot(review, expected_bot_login)
             and body_has_deliverable_marker(body, deliverable_markers)
+            and (not require_source_line or review_body_has_source_line(body))
             and review_body_is_quality_deliverable(body, output_contract)
         ):
             timestamp = payload_time(review, "submitted_at")
@@ -469,17 +444,14 @@ def claude_body_is_review_deliverable(
     body: object,
     *,
     output_contract: ReviewOutputContract,
-    deliverable_indicators: tuple[str, ...],
+    deliverable_marker: str,
 ) -> bool:
-    if not isinstance(body, str):
+    if not isinstance(body, str) or not deliverable_marker:
         return False
     text = body.strip()
-    if not text:
+    if not body_has_deliverable_marker(text, (deliverable_marker,)):
         return False
-    lowered = text.lower()
-    if any(indicator.lower() in lowered for indicator in output_contract.non_deliverable_indicators):
-        return False
-    return any(indicator.lower() in lowered for indicator in deliverable_indicators)
+    return review_body_has_source_line(text) and review_body_is_quality_deliverable(text, output_contract)
 
 
 def actor_is_any_expected_bot(payload: dict[str, object], expected_logins: tuple[str, ...]) -> bool:
@@ -491,10 +463,10 @@ def latest_claude_visible_deliverable_time(
     github: Any,
     deliverable_bot_logins: tuple[str, ...],
     output_contract: ReviewOutputContract,
-    deliverable_indicators: tuple[str, ...],
+    deliverable_marker: str,
 ) -> datetime | None:
     expected_logins = tuple(login for login in deliverable_bot_logins if login)
-    if not expected_logins or not deliverable_indicators:
+    if not expected_logins or not deliverable_marker:
         return None
 
     times: list[datetime] = []
@@ -504,7 +476,7 @@ def latest_claude_visible_deliverable_time(
             and claude_body_is_review_deliverable(
                 comment.get("body"),
                 output_contract=output_contract,
-                deliverable_indicators=deliverable_indicators,
+                deliverable_marker=deliverable_marker,
             )
         ):
             timestamp = payload_time(comment, "updated_at", "created_at")
@@ -516,7 +488,7 @@ def latest_claude_visible_deliverable_time(
             and claude_body_is_review_deliverable(
                 review.get("body"),
                 output_contract=output_contract,
-                deliverable_indicators=deliverable_indicators,
+                deliverable_marker=deliverable_marker,
             )
         ):
             timestamp = payload_time(review, "submitted_at")
@@ -528,7 +500,7 @@ def latest_claude_visible_deliverable_time(
             and claude_body_is_review_deliverable(
                 comment.get("body"),
                 output_contract=output_contract,
-                deliverable_indicators=deliverable_indicators,
+                deliverable_marker=deliverable_marker,
             )
         ):
             timestamp = payload_time(comment, "updated_at", "created_at")
@@ -543,14 +515,14 @@ def has_claude_visible_deliverable(
     started_at: str,
     deliverable_bot_logins: tuple[str, ...],
     output_contract: ReviewOutputContract,
-    deliverable_indicators: tuple[str, ...],
+    deliverable_marker: str,
 ) -> bool:
     threshold = parse_iso_timestamp(started_at)
     timestamp = latest_claude_visible_deliverable_time(
         github=github,
         deliverable_bot_logins=deliverable_bot_logins,
         output_contract=output_contract,
-        deliverable_indicators=deliverable_indicators,
+        deliverable_marker=deliverable_marker,
     )
     return timestamp is not None and timestamp >= threshold
 
@@ -563,7 +535,8 @@ def provider_retry_needed(
     output_contract: ReviewOutputContract,
     deliverable_markers: tuple[str, ...] = (),
     deliverable_bot_logins: tuple[str, ...] = (),
-    deliverable_indicators: tuple[str, ...] = (),
+    claude_deliverable_marker: str = "",
+    require_source_line: bool = False,
 ) -> bool:
     notice_time = latest_failure_notice_time(
         github=github,
@@ -578,12 +551,13 @@ def provider_retry_needed(
             expected_bot_login=expected_bot_login,
             deliverable_markers=deliverable_markers,
             output_contract=output_contract,
+            require_source_line=require_source_line,
         ),
         latest_claude_visible_deliverable_time(
             github=github,
             deliverable_bot_logins=deliverable_bot_logins,
             output_contract=output_contract,
-            deliverable_indicators=deliverable_indicators,
+            deliverable_marker=claude_deliverable_marker,
         ),
     ]
     latest_deliverable = max((timestamp for timestamp in quality_times if timestamp is not None), default=None)
@@ -629,12 +603,11 @@ def review_body_has_no_findings_contract(lowered: str, output_contract: ReviewOu
 
 def pr_agent_body_has_substantive_review(lowered: str, output_contract: ReviewOutputContract) -> bool:
     finding_labels = tuple(label.lower() for label in output_contract.finding_required_labels)
-    primary_finding_label = finding_labels[:1]
-    has_finding_label = any(
+    has_finding_contract = bool(finding_labels) and all(
         review_body_has_line_starting_with(lowered, label)
-        for label in primary_finding_label
+        for label in finding_labels
     )
-    return has_finding_label or review_body_has_no_findings_contract(lowered, output_contract)
+    return has_finding_contract or review_body_has_no_findings_contract(lowered, output_contract)
 
 
 def comment_part_key(body: object) -> str:
@@ -1429,7 +1402,7 @@ def ensure_claude_deliverable_or_notice(
         started_at=config.started_at,
         deliverable_bot_logins=config.deliverable_bot_logins,
         output_contract=config.output_contract,
-        deliverable_indicators=config.deliverable_indicators,
+        deliverable_marker=config.comment_marker,
     ):
         return "existing-review-deliverable"
     detail = claude_execution_failure_detail(execution_file=execution_file, step_outcome=step_outcome)
@@ -1597,6 +1570,8 @@ def config_bool(table: dict[str, Any], key: str) -> bool:
 
 def config_str_tuple(table: dict[str, Any], key: str, *, allow_empty: bool = False) -> tuple[str, ...]:
     value = table.get(key)
+    if value is None and allow_empty:
+        return ()
     if (
         not isinstance(value, list)
         or (not value and not allow_empty)
@@ -1857,8 +1832,8 @@ def run_claude_deliverable_from_env(args: argparse.Namespace) -> int:
         run_url=run_url_for(repo, runtime_config),
         provider="Claude",
         deliverable_bot_logins=config_str_tuple(claude_config, "deliverable_bot_logins"),
-        deliverable_indicators=config_str_tuple(claude_config, "deliverable_indicators"),
         expected_bot_login=config_str(github_config, "expected_bot_login"),
+        comment_marker=config_str(claude_config, "deliverable_marker"),
         notice_marker=config_str(claude_config, "notice_marker"),
         source_label=source_label_from_template(claude_config, model=model),
     )
@@ -1901,7 +1876,8 @@ def run_retry_needed_from_env(args: argparse.Namespace) -> int:
     review_config = config_table(runtime_config, "review")
     github_config = config_table(runtime_config, "github")
     github = build_github_client(repo, pr_number, runtime_config)
-    claude_config = config_table(runtime_config, "claude") if args.provider.lower() == "claude" else {}
+    provider_key = args.provider.lower()
+    claude_config = config_table(runtime_config, "claude") if provider_key == "claude" else {}
     retry_needed = provider_retry_needed(
         github=github,
         expected_bot_login=config_str(github_config, "expected_bot_login"),
@@ -1909,7 +1885,8 @@ def run_retry_needed_from_env(args: argparse.Namespace) -> int:
         output_contract=review_output_contract(review_config),
         deliverable_markers=review_markers_for_provider(runtime_config, args.provider),
         deliverable_bot_logins=config_str_tuple(claude_config, "deliverable_bot_logins", allow_empty=True),
-        deliverable_indicators=config_str_tuple(claude_config, "deliverable_indicators", allow_empty=True),
+        claude_deliverable_marker=config_str(claude_config, "deliverable_marker") if provider_key == "claude" else "",
+        require_source_line=provider_key in ("glm", "kimi"),
     )
     print(f"retry_needed={'true' if retry_needed else 'false'}")
     print(f"reason={'previous-failure-notice' if retry_needed else 'no-failure-notice'}")

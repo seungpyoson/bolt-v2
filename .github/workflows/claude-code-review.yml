@@ -111,6 +111,8 @@ jobs:
           emit("github_api_url", github["api_url"])
           emit("claude_model", claude["model"])
           emit("claude_track_progress", claude["track_progress"])
+          emit("claude_deliverable_marker", claude["deliverable_marker"])
+          emit("claude_source_label", claude["source_label_template"].replace("{model}", claude["model"]))
           emit("claude_allowed_tools", claude["allowed_tools"])
           emit("claude_max_turns", workflow["max_turns"])
           emit("claude_primary_timeout_minutes", workflow["primary_timeout_minutes"])
@@ -309,6 +311,8 @@ jobs:
             PR NUMBER (pull_request and review events): ${{ github.event.pull_request.number }}
             PR NUMBER (issue_comment events): ${{ github.event.issue.number }}
             MODEL FRESHNESS WARNING: ${{ steps.model-freshness.outputs.claude_warning }}
+            DELIVERABLE MARKER: ${{ steps.runtime-config.outputs.claude_deliverable_marker }}
+            SOURCE LABEL: ${{ steps.runtime-config.outputs.claude_source_label }}
 
             You are a read-only PR reviewer for this repository. Review the pull request diff and post only GitHub PR feedback:
             - Use only the tools granted through the configured Claude arguments.
@@ -333,7 +337,9 @@ jobs:
             - **Scope Discipline**: flag out-of-scope changes, hidden adjacent issue work, and missing claimed scope. Do not treat a PR as closing broader work unless the diff satisfies it.
             - **Review Bar & Merge Mechanics**: do not downgrade real issues into notes. Flag unresolved review-thread, stale-review, required-reviewer, or merge-rule bypass risks if the diff touches those controls.
 
-            Prefer concise findings with file and line context. If there are no substantive findings, post a short summary of what you checked and any residual verification gaps.
+            Post one top-level PR comment as the visible deliverable for this run. The comment must begin with the exact DELIVERABLE MARKER line, include `**Source:** ${{ steps.runtime-config.outputs.claude_source_label }}`, and then follow one of these contracts:
+            - If there are findings, each finding must include lines starting exactly with `Severity:`, `Evidence:`, `Issue:`, and `Fix / verification:`.
+            - If there are no findings, include `No hard-evidence findings` and lines starting exactly with `Coverage reviewed:`, `Evidence basis:`, and `Risk areas considered:`.
           claude_args: |
             --max-turns ${{ steps.runtime-config.outputs.claude_max_turns }}
             --model ${{ steps.runtime-config.outputs.claude_model }}

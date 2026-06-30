@@ -200,17 +200,8 @@ setup_overhead_timeout_minutes = 5
 model = "claude-opus-4-8"
 track_progress = false
 notice_marker = "<!-- ai-pr-reviewer-claude-notice -->"
+deliverable_marker = "<!-- ai-pr-reviewer-claude -->"
 deliverable_bot_logins = ["claude[bot]"]
-deliverable_indicators = [
-  "reviewed",
-  "finding",
-  "findings",
-  "checked",
-  "no substantive",
-  "severity:",
-  "evidence:",
-  "issue:",
-]
 source_label_template = "Claude Code (`{model}`)"
 allowed_tools = [
   "mcp__github_inline_comment__create_inline_comment",

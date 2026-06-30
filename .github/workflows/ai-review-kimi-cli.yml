@@ -399,6 +399,7 @@ jobs:
               || steps.checkout-base.outcome == 'failure'
               || steps.runtime-config.outcome == 'failure'
               || steps.prepare-standards.outcome == 'failure'
+              || steps.review-window.outcome == 'failure'
               || steps.setup-node.outcome == 'failure'
               || steps.install-kimi.outcome == 'failure'
               || steps.kimi_fallback.outcome == 'failure'

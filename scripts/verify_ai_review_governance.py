@@ -75,6 +75,7 @@ GLM_DELIVERABLE_SNIPPETS = (
     "Post GLM fallback infrastructure failure notice",
     "&& always()",
     "steps.runtime-config.outcome == 'failure'",
+    "steps.review-window.outcome == 'failure'",
     "steps.glm_fallback.outputs.failure_notice_posted != 'true'",
     "steps.glm_stamp.outcome == 'failure' && steps.glm_fallback.outcome != 'success'",
     "review infrastructure failed or timed out before posting a usable failure notice",
@@ -144,6 +145,7 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "&& always()",
     "steps.install-kimi.outcome == 'failure'",
     "steps.runtime-config.outcome == 'failure'",
+    "steps.review-window.outcome == 'failure'",
     "steps.kimi_fallback.outputs.failure_notice_posted != 'true'",
     "review infrastructure failed or timed out before posting a usable failure notice",
     'marker="${{ steps.runtime-config.outputs.kimi_notice_marker }}"',
@@ -168,6 +170,8 @@ CLAUDE_WORKFLOW_SNIPPETS = (
     'emit("claude_model", claude["model"])',
     'emit("github_api_url", github["api_url"])',
     'emit("claude_track_progress", claude["track_progress"])',
+    'emit("claude_deliverable_marker", claude["deliverable_marker"])',
+    'emit("claude_source_label", claude["source_label_template"].replace("{model}", claude["model"]))',
     'emit("claude_allowed_tools", claude["allowed_tools"])',
     'emit("claude_max_turns", workflow["max_turns"])',
     'emit("claude_primary_timeout_minutes", workflow["primary_timeout_minutes"])',
@@ -190,6 +194,8 @@ CLAUDE_WORKFLOW_SNIPPETS = (
     "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
     "additional_permissions: |",
     "track_progress: ${{ steps.runtime-config.outputs.claude_track_progress }}",
+    "DELIVERABLE MARKER: ${{ steps.runtime-config.outputs.claude_deliverable_marker }}",
+    "SOURCE LABEL: ${{ steps.runtime-config.outputs.claude_source_label }}",
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.claude_primary_timeout_minutes) }}",
     "--max-turns ${{ steps.runtime-config.outputs.claude_max_turns }}",
     "--model ${{ steps.runtime-config.outputs.claude_model }}",
@@ -234,7 +240,6 @@ AI_REVIEW_DELIVERABLES_SNIPPETS = (
     "did not meet the hard-evidence output contract",
     "output omitted from PR notice",
     "validate_review_responses(responses, config.output_contract)",
-    "def provider_has_failure_notice(",
     "def provider_retry_needed(",
     "def latest_quality_review_deliverable_time(",
     "def latest_claude_visible_deliverable_time(",
@@ -242,7 +247,9 @@ AI_REVIEW_DELIVERABLES_SNIPPETS = (
     "def ensure_claude_deliverable_or_notice(",
     "def run_claude_deliverable_from_env(",
     "deliverable_bot_logins=config_str_tuple(",
-    "deliverable_indicators=config_str_tuple(",
+    'comment_marker=config_str(claude_config, "deliverable_marker")',
+    'claude_deliverable_marker=config_str(claude_config, "deliverable_marker")',
+    'require_source_line=provider_key in ("glm", "kimi")',
     "def run_retry_needed_from_env(",
     'print(f"retry_needed=',
     'choices=("glm", "kimi", "claude")',
@@ -918,12 +925,8 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("kimi.workflow.setup_overhead_timeout_minutes", kimi_workflow.get("setup_overhead_timeout_minutes"), 5),
         ("claude.track_progress", claude.get("track_progress"), False),
         ("claude.notice_marker", claude.get("notice_marker"), "<!-- ai-pr-reviewer-claude-notice -->"),
+        ("claude.deliverable_marker", claude.get("deliverable_marker"), "<!-- ai-pr-reviewer-claude -->"),
         ("claude.deliverable_bot_logins", claude.get("deliverable_bot_logins"), ["claude[bot]"]),
-        (
-            "claude.deliverable_indicators",
-            claude.get("deliverable_indicators"),
-            ["reviewed", "finding", "findings", "checked", "no substantive", "severity:", "evidence:", "issue:"],
-        ),
         ("claude.source_label_template", claude.get("source_label_template"), "Claude Code (`{model}`)"),
         (
             "claude.allowed_tools",
@@ -1357,17 +1360,13 @@ def run_self_tests(repo_root: Path) -> None:
         "ci/ai-review.toml claude.deliverable_bot_logins",
     )
 
-    claude_missing_deliverable_indicators = verify_variant(
-        ai_review_text=ai_review.replace(
-            'deliverable_indicators = [\n  "reviewed",\n  "finding",\n  "findings",\n  "checked",\n  "no substantive",\n  "severity:",\n  "evidence:",\n  "issue:",\n]\n',
-            "",
-            1,
-        ),
+    claude_missing_deliverable_marker = verify_variant(
+        ai_review_text=ai_review.replace('deliverable_marker = "<!-- ai-pr-reviewer-claude -->"\n', "", 1),
     )
     assert_finding(
-        "Claude missing deliverable indicators",
-        claude_missing_deliverable_indicators,
-        "ci/ai-review.toml claude.deliverable_indicators",
+        "Claude missing deliverable marker",
+        claude_missing_deliverable_marker,
+        "ci/ai-review.toml claude.deliverable_marker",
     )
 
     claude_hardcoded_model = verify_variant(

@@ -5950,6 +5950,11 @@ jobs:
     flaky_errors = [error for error in good_errors if "flaky-test-detection" in error]
     if flaky_errors:
         raise AssertionError(f"flaky detection workflow verifier must accept split workflows, got: {flaky_errors}")
+    expected_partitioned_bvs_policy_labels = frozenset({"backtester full job", "backtester smoke job"})
+    if verifier.PARTITIONED_BVS_BACKTESTER_POLICY_LABELS != expected_partitioned_bvs_policy_labels:
+        raise AssertionError(
+            "partitioned BVS step allowlist must stay scoped to the sharded backtester full/smoke jobs"
+        )
 
     def flaky_detection_errors(
         full_workflow: str = good_full_workflow,

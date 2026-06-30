@@ -11439,6 +11439,9 @@ BVS_BACKTESTER_ALLOWED_USES_STEPS = frozenset(
         ("Upload test results to Mergify", "mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3"),
     )
 )
+# This exact shell/action allowlist is scoped to the partitioned BVS backtester lane.
+# Root and issue-789 lanes are governed by their trigger, matrix, and required-fragment contracts.
+PARTITIONED_BVS_BACKTESTER_POLICY_LABELS = frozenset({"backtester full job", "backtester smoke job"})
 
 
 def bvs_backtester_job_steps_are_allowlisted(job_text: str) -> bool:
@@ -11646,7 +11649,7 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             for fragment in fragments
             if fragment not in job_text
         )
-        if label in {"backtester full job", "backtester smoke job"}:
+        if label in PARTITIONED_BVS_BACKTESTER_POLICY_LABELS:
             bte_run_block = named_step_run_block(job_text, "Run tests")
             if bte_run_block is None:
                 errors.append(f"flaky-test-detection {label} must have a Run tests run block")

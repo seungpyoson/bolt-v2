@@ -11276,12 +11276,17 @@ def one_indexed_sequence(values: tuple[int, ...]) -> bool:
     return values == tuple(range(1, len(values) + 1))
 
 
-def bte_test_invocation_lines(job_text: str) -> tuple[str, ...]:
-    return tuple(
-        line
-        for line in job_text.splitlines()
-        if re.search(r"(^|\s)just bte-test\b", line)
+def bte_test_invocation_count(job_text: str) -> int:
+    return len(
+        re.findall(
+            r"(?m)(?:^|[;&|]+\s*|\bthen\s+|\bdo\s+|\{\s*)\s*just\s+bte-test\b",
+            job_text,
+        )
     )
+
+
+def has_dead_bte_test_guard(job_text: str) -> bool:
+    return re.search(r"(?m)^\s*if\s+false\s*;?\s*then\b", job_text) is not None
 
 
 def shard_partition_argument_denominators(job_text: str) -> tuple[int, ...]:
@@ -11447,9 +11452,11 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             if fragment not in job_text
         )
         if label in {"backtester full job", "backtester smoke job"}:
-            invocations = bte_test_invocation_lines(job_text)
-            if len(invocations) != 1:
+            invocation_count = bte_test_invocation_count(job_text)
+            if invocation_count != 1:
                 errors.append(f"flaky-test-detection {label} must have exactly one just bte-test invocation")
+            if has_dead_bte_test_guard(job_text):
+                errors.append(f"flaky-test-detection {label} must not guard just bte-test behind if false")
             denominators = shard_partition_argument_denominators(job_text)
             if len(denominators) != 1:
                 errors.append(f"flaky-test-detection {label} must have one matrix.shard partition argument")

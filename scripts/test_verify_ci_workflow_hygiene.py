@@ -245,13 +245,17 @@ jobs:
           if [[ -z "$policy_config" ]]; then
             policy_config="ci/github-actions-runners.toml"
           fi
+          author_args=()
+          if python3 "$policy_script" ci-policy --help | grep -q -- "--pull-request-author-id"; then
+            author_args=(--pull-request-author-id "$PR_AUTHOR_ID")
+          fi
           python3 "$policy_script" ci-policy \
             --config "$policy_config" \
             --event-name "${{ github.event_name }}" \
             --event-action "${{ github.event.action || '' }}" \
             --pull-request-draft "${{ github.event.pull_request.draft || false }}" \
             --pull-request-head-ref "$PR_HEAD_REF" \
-            --pull-request-author-id "$PR_AUTHOR_ID" \
+            "${author_args[@]}" \
             --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}" \
             --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}" \
             --docs-only "${{ needs.detector.outputs.docs_only || 'false' }}" \

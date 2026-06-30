@@ -1893,8 +1893,14 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         errors.append("ci-policy must pass pull_request head ref")
     if "PR_AUTHOR_ID: ${{ github.event.pull_request.user.id || '' }}" not in text:
         errors.append("ci-policy must pass pull_request author id through an env var")
-    if '--pull-request-author-id "$PR_AUTHOR_ID"' not in text:
-        errors.append("ci-policy must pass pull_request author id")
+    for required in (
+        "author_args=()",
+        'python3 "$policy_script" ci-policy --help | grep -q -- "--pull-request-author-id"',
+        'author_args=(--pull-request-author-id "$PR_AUTHOR_ID")',
+        '"${author_args[@]}"',
+    ):
+        if required not in text:
+            errors.append(f"ci-policy must feature-detect pull_request author id support ({required})")
     if f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"' not in text:
         errors.append("ci-policy must pass pull_request base-change state")
     if '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"' not in text:
@@ -11869,7 +11875,10 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             "PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}",
             '--pull-request-head-ref "$PR_HEAD_REF"',
             "PR_AUTHOR_ID: ${{ github.event.pull_request.user.id || '' }}",
-            '--pull-request-author-id "$PR_AUTHOR_ID"',
+            "author_args=()",
+            'python3 "$policy_script" ci-policy --help | grep -q -- "--pull-request-author-id"',
+            'author_args=(--pull-request-author-id "$PR_AUTHOR_ID")',
+            '"${author_args[@]}"',
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
             '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"',
             "EVENT_SENDER_ID: ${{ github.event.sender.id }}",

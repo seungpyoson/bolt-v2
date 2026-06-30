@@ -38,6 +38,7 @@ tracked_inputs = [
     "justfile",
     "ci/nextest-fingerprint.toml",
     "ci/rust-verification.toml",
+    "scripts/config_validators.py",
     "scripts/nextest_fingerprint.py",
     "scripts/root_bin_sidecars.py",
     "scripts/rust_verification.py",
@@ -179,6 +180,7 @@ edition = "2021"
     write(repo / "tests" / "root.rs", "#[test]\nfn root_test() {}\n")
     write(repo / "benches" / "root.rs", "fn main() {}\n")
     write(repo / "examples" / "root.rs", "fn main() {}\n")
+    write(repo / "scripts" / "config_validators.py", "# tracked config helper placeholder\n")
     write(repo / "scripts" / "nextest_fingerprint.py", "# tracked producer placeholder\n")
     write(repo / "scripts" / "root_bin_sidecars.py", "# tracked sidecar helper placeholder\n")
     write(repo / "scripts" / "rust_verification.py", "# tracked verifier placeholder\n")
@@ -678,6 +680,10 @@ def assert_missing_or_malformed_config_fails_closed() -> None:
         "tracked inputs missing source root": (
             FINGERPRINT_CONFIG_TEXT.replace('    "src/",\n', ""),
             "nextest_archive.tracked_inputs must include src/",
+        ),
+        "tracked inputs missing config validators": (
+            FINGERPRINT_CONFIG_TEXT.replace('    "scripts/config_validators.py",\n', ""),
+            "nextest_archive.tracked_inputs must include scripts/config_validators.py",
         ),
         "malformed toml": ("[nextest_archive\n", "nextest fingerprint config invalid TOML"),
     }

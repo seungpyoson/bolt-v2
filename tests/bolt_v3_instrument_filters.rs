@@ -719,6 +719,104 @@ fn core_instrument_filters_module_does_not_import_strategy_policy_code() {
     }
 }
 
+fn validate_module_sources() -> String {
+    let mut source = String::from(include_str!("../src/bolt_v3_validate.rs"));
+    let module_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bolt_v3_validate");
+    for path in validate_module_source_paths(&module_dir) {
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        source.push('\n');
+        source.push_str(&text);
+    }
+    source
+}
+
+fn validate_module_source_paths(module_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    collect_validate_module_source_paths(module_dir, &mut paths);
+    paths.sort();
+    paths
+}
+
+fn collect_validate_module_source_paths(
+    module_dir: &std::path::Path,
+    paths: &mut Vec<std::path::PathBuf>,
+) {
+    let entries = std::fs::read_dir(module_dir).unwrap_or_else(|error| {
+        panic!(
+            "failed to read validate submodule directory {}: {error}",
+            module_dir.display()
+        )
+    });
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|error| {
+            panic!(
+                "failed to read validate submodule entry in {}: {error}",
+                module_dir.display()
+            )
+        });
+        let path = entry.path();
+        let file_type = entry.file_type().unwrap_or_else(|error| {
+            panic!(
+                "failed to read validate submodule entry type {}: {error}",
+                path.display()
+            )
+        });
+        if file_type.is_dir() {
+            collect_validate_module_source_paths(&path, paths);
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            paths.push(path);
+        }
+    }
+}
+
+#[test]
+fn validate_module_source_paths_include_nested_rust_files() {
+    struct TempSourceTree {
+        root: std::path::PathBuf,
+    }
+
+    impl Drop for TempSourceTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "bolt-v2-validate-module-sources-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock must be after Unix epoch")
+            .as_nanos()
+    ));
+    let _temp_source_tree = TempSourceTree { root: root.clone() };
+    let nested = root.join("chainlink_data_streams");
+    std::fs::create_dir_all(&nested)
+        .unwrap_or_else(|error| panic!("failed to create {}: {error}", nested.display()));
+    std::fs::write(root.join("direct.rs"), "direct")
+        .unwrap_or_else(|error| panic!("failed to write direct source fixture: {error}"));
+    std::fs::write(nested.join("nested.rs"), "nested")
+        .unwrap_or_else(|error| panic!("failed to write nested source fixture: {error}"));
+    std::fs::write(nested.join("ignored.txt"), "ignored")
+        .unwrap_or_else(|error| panic!("failed to write ignored source fixture: {error}"));
+
+    let relative_paths = validate_module_source_paths(&root)
+        .into_iter()
+        .map(|path| {
+            path.strip_prefix(&root)
+                .expect("collected path must be below fixture root")
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        relative_paths,
+        vec!["chainlink_data_streams/nested.rs", "direct.rs"]
+    );
+}
+
 #[test]
 fn validate_module_must_not_own_updown_slug_token_policy() {
     // Bolt-v3 startup validation must stay structural and dispatch
@@ -729,7 +827,7 @@ fn validate_module_must_not_own_updown_slug_token_policy() {
     // updown family validator (`bolt_v3_market_families::updown::*`)
     // to check family-shaped target fields; the substrings forbidden
     // below pin policy *ownership*, not the dispatch call itself.
-    let src = include_str!("../src/bolt_v3_validate.rs");
+    let src = validate_module_sources();
     let forbidden = [
         // Deprecated code-owned table identifier and helper symbol names.
         "UPDOWN_CADENCE_SLUG_TOKEN_TABLE",
@@ -744,7 +842,7 @@ fn validate_module_must_not_own_updown_slug_token_policy() {
     for symbol in forbidden {
         assert!(
             !src.contains(symbol),
-            "src/bolt_v3_validate.rs must not own updown slug-token policy; \
+            "src/bolt_v3_validate module tree must not own updown slug-token policy; \
              source unexpectedly references `{symbol}`. \
              Keep updown slug-token validation and error messaging in \
              src/bolt_v3_market_families/updown.rs; have \
@@ -920,7 +1018,7 @@ fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
     // archetype validator through the `bolt_v3_archetypes` namespace;
     // the substrings forbidden below pin policy *ownership*, not the
     // dispatch call itself.
-    let src = include_str!("../src/bolt_v3_validate.rs");
+    let src = validate_module_sources();
     let forbidden = [
         // Archetype identifier in snake_case (error messages, helper
         // names, module-leaf paths) and PascalCase (enum variant). The
@@ -948,7 +1046,7 @@ fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
     for symbol in forbidden {
         assert!(
             !src.contains(symbol),
-            "src/bolt_v3_validate.rs must not own binary_oracle_edge_taker policy; \
+            "src/bolt_v3_validate module tree must not own binary_oracle_edge_taker policy; \
              source unexpectedly references `{symbol}`. \
              Move the archetype's required reference-current-price role, its \
              entry/exit order-combination rules, and the matching error \
@@ -976,7 +1074,7 @@ fn validate_module_must_not_own_provider_client_validation() {
     // substrings forbidden below pin policy *ownership* (function
     // definitions and provider-shaped block types referenced by
     // those validators), not the dispatch call itself.
-    let src = include_str!("../src/bolt_v3_validate.rs");
+    let src = validate_module_sources();
     let forbidden = [
         // Per-provider client-block validators that owned the policy
         // before this slice.
@@ -1005,7 +1103,7 @@ fn validate_module_must_not_own_provider_client_validation() {
     for symbol in forbidden {
         assert!(
             !src.contains(symbol),
-            "src/bolt_v3_validate.rs must not own provider-specific client validation; \
+            "src/bolt_v3_validate module tree must not own provider-specific client validation; \
              source unexpectedly references `{symbol}`. \
              Move Polymarket / Binance client, data, execution, funder-address, \
              retry-bounds, secret-path, and EVM-syntax validators (and the \

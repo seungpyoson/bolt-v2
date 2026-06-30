@@ -226,7 +226,10 @@ CLAUDE_WORKFLOW_SNIPPETS = (
     "--execution-file \"${{ steps.claude.outputs.execution_file }}\"",
     "--step-outcome \"${{ steps.claude.outcome }}\"",
     "Post Claude review infrastructure failure notice",
+    "steps.runtime-config.outcome == 'failure'",
+    "steps.review-window.outcome == 'failure'",
     "steps.claude-deliverable.outcome == 'failure'",
+    "steps.claude-deliverable.outputs.failure_notice_posted != 'true'",
     "scripts/ai_review_deliverables.py notice-env --provider claude --config-file ci/ai-review.toml",
     "review infrastructure failed or timed out before posting a usable failure notice",
 )
@@ -784,6 +787,12 @@ def verify_infra_notice_runtime_config_failure_gate(
         return [
             f"{provider_label} infrastructure notice must run when runtime config fails before review-decision emits"
         ]
+    if step.count("steps.runtime-config.outcome == 'failure'") < 2:
+        return [f"{provider_label} infrastructure notice must cover runtime config failures"]
+    if "steps.review-window.outcome == 'failure'" not in step:
+        return [f"{provider_label} infrastructure notice must cover review-window failures"]
+    if "failure_notice_posted != 'true'" not in step:
+        return [f"{provider_label} infrastructure notice must not duplicate an already posted failure notice"]
     return []
 
 
@@ -1268,6 +1277,21 @@ def verify_texts(
             step_name="Post Kimi fallback infrastructure failure notice",
         )
     )
+    findings.extend(
+        verify_notice_step_guard(
+            claude_workflow,
+            provider_label="Claude",
+            step_name="Post Claude review infrastructure failure notice",
+            helper_snippet="scripts/ai_review_deliverables.py notice-env --provider claude --config-file ci/ai-review.toml",
+        )
+    )
+    findings.extend(
+        verify_infra_notice_runtime_config_failure_gate(
+            claude_workflow,
+            provider_label="Claude",
+            step_name="Post Claude review infrastructure failure notice",
+        )
+    )
     for snippet in KIMI_FORBIDDEN_INPUTS:
         if snippet in kimi_workflow:
             findings.append(f"Kimi workflow must use the official Kimi CLI path, not {snippet!r}")
@@ -1743,6 +1767,46 @@ def run_self_tests(repo_root: Path) -> None:
         "Kimi notice empty marker guard removed",
         kimi_notice_empty_marker_guard_removed,
         "Kimi notice step",
+    )
+
+    claude_notice_empty_marker_guard_removed = verify_variant(
+        claude_text=claude.replace('          eval "$config_exports"\n', "", 1),
+    )
+    assert_finding(
+        "Claude notice empty marker guard removed",
+        claude_notice_empty_marker_guard_removed,
+        "Claude notice step",
+    )
+
+    claude_infra_runtime_config_arm_removed = verify_variant(
+        claude_text=claude.replace("              steps.runtime-config.outcome == 'failure'\n", "", 1),
+    )
+    assert_finding(
+        "Claude infra runtime-config arm removed",
+        claude_infra_runtime_config_arm_removed,
+        "Claude infrastructure notice must cover runtime config failures",
+    )
+
+    claude_infra_review_window_arm_removed = verify_variant(
+        claude_text=claude.replace("              || steps.review-window.outcome == 'failure'\n", "", 1),
+    )
+    assert_finding(
+        "Claude infra review-window arm removed",
+        claude_infra_review_window_arm_removed,
+        "Claude infrastructure notice must cover review-window failures",
+    )
+
+    claude_infra_failure_notice_guard_removed = verify_variant(
+        claude_text=claude.replace(
+            "            && steps.claude-deliverable.outputs.failure_notice_posted != 'true'\n",
+            "",
+            1,
+        ),
+    )
+    assert_finding(
+        "Claude infra failure notice guard removed",
+        claude_infra_failure_notice_guard_removed,
+        "Claude infrastructure notice must not duplicate",
     )
 
     last_step_then_later_job = "\n".join(

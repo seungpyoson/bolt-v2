@@ -708,6 +708,9 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(rows_by_id[1]["decision"], "DELETE-CANDIDATE")
         self.assertEqual(rows_by_id[1]["reason"], "expired test archive outside protected refs")
         self.assertEqual(rows_by_id[1]["workflow_run"]["status"], "completed")
+        summary = ci_storage_audit.render_cleanup_alert_summary(snapshot, cleanup_alert_policy("alert-policy"))
+        self.assertIn("Candidate classes:", summary)
+        self.assertIn("- `nextest_archive`: `1` rows, `100 B`", summary)
         self.assertEqual(rows_by_id[2]["decision"], "KEEP")
         self.assertEqual(rows_by_id[2]["reason_code"], "not_expired")
         self.assertEqual(rows_by_id[2]["reason"], "artifact has not expired")
@@ -2369,7 +2372,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     {
                         "name": "nextest-archive",
                         "artifact_id": 1,
-                        "class_id": "nextest_archive",
+                        "class": "nextest_archive",
                         "decision": "DELETE-CANDIDATE",
                         "reason_code": "delete_candidate",
                         "size_bytes": 1024,
@@ -2377,7 +2380,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     {
                         "name": "nextest-archive-hidden",
                         "artifact_id": 2,
-                        "class_id": "nextest_archive",
+                        "class": "nextest_archive",
                         "decision": "DELETE-CANDIDATE",
                         "reason_code": "delete_candidate",
                         "size_bytes": 2048,
@@ -2385,7 +2388,7 @@ class CiStorageAuditTests(unittest.TestCase):
                     {
                         "name": "metadata-gap-hidden",
                         "artifact_id": 3,
-                        "class_id": "nextest_archive",
+                        "class": "nextest_archive",
                         "decision": "KEEP",
                         "reason_code": "artifact_metadata_unavailable",
                         "size_bytes": 4096,

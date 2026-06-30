@@ -2375,7 +2375,7 @@ def render_cleanup_alert_summary(snapshot: dict[str, Any], policy: CleanupAlertP
     append_cleanup_alert_aggregates(
         lines,
         "Candidate classes",
-        cleanup_alert_row_aggregates(cleanup, decision="DELETE-CANDIDATE", field="class_id"),
+        cleanup_alert_row_aggregates(cleanup, decision="DELETE-CANDIDATE", field="class"),
     )
     append_cleanup_alert_aggregates(
         lines,

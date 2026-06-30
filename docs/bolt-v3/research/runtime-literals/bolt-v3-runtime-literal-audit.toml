@@ -8541,7 +8541,7 @@ classification = "strategy_runtime_diagnostic"
 reason = "Diagnostic tag for an incomplete resolution-data (client_id/instrument_id) pair surfaced at config validation."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/runtime_state.rs"
 kind = "number"
 literal = '''1'''
 context = '''.saturating_add(1);'''

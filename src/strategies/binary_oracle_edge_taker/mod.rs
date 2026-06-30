@@ -2,22 +2,20 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
-    str::FromStr,
 };
+
+#[cfg(test)]
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
-use nautilus_core::{Params, UnixNanos};
-#[cfg(not(test))]
-use nautilus_model::enums::BookType;
+use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{CustomData, DataType, IndexPriceUpdate, QuoteTick, TradeTick},
     enums::PositionSide,
 };
 use nautilus_model::{
-    enums::{
-        OmsType as NtOmsType, OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType,
-    },
+    enums::{OrderSide, OrderType, TimeInForce},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
@@ -37,18 +35,15 @@ use crate::{
         evaluate_binary_outcome_edge,
     },
     bolt_v3_book_sizing::{
-        OutcomeBookState, OutcomeBookSubscriptions, OutcomePreparedBooks,
-        should_replace_book_subscriptions,
+        OutcomeBookState, OutcomeBookSubscriptions, should_replace_book_subscriptions,
     },
     bolt_v3_config::{ReferencePriceBlock, ReferencePriceDriftPolicy},
     bolt_v3_decision_evidence::{
-        BoltV3BinaryOutcomeEdgeBlockReason, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
-        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory, BoltV3ExitBlockedReason,
-        BoltV3ExitDecisionEvidence, BoltV3ExitDecisionOutcome, BoltV3ExitEvaluationEvidence,
-        BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker, BoltV3ExitTriggerSource,
-        BoltV3ExposureOccupancy, BoltV3ForcedFlatReason, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
-        BoltV3RvGateResult, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory, BoltV3ExitDecisionEvidence,
+        BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker,
+        BoltV3ExitTriggerSource, BoltV3ExposureOccupancy, BoltV3ForcedFlatReason,
+        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OutcomeSide,
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
         realized_vol_blocker_to_exit_evidence, realized_volatility_aggregation_evidence_label,
         realized_volatility_block_reason_evidence_label,
         realized_volatility_pricing_component_evidence_label,
@@ -57,10 +52,7 @@ use crate::{
         ExactSizeVwap, ExecutableBookQuote, ExecutableCostBreakdown, executable_cost_breakdown,
         price_exact_size_vwap,
     },
-    bolt_v3_market_families::{
-        self, FairProbabilityInputs, MarketSelectionOutcome, OutcomeSide,
-        SelectedMarketSourceIdentity,
-    },
+    bolt_v3_market_families::{self, FairProbabilityInputs, OutcomeSide},
     bolt_v3_numeric::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, SECONDS_PER_YEAR_F64,
         UNIT_F64, clamp_probability, is_non_negative_finite, is_positive_finite,
@@ -69,19 +61,12 @@ use crate::{
     bolt_v3_order_execution::{
         BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
     },
-    bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::is_observed_open_side,
-    bolt_v3_providers::{
-        STRIKE_FETCH_INSTRUMENT_ID_PARAM, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
-        normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
-        resolution_strike_fetch_request_data_type,
-    },
+    bolt_v3_providers::normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     bolt_v3_reference_price::{
         ReferencePriceSelection, ReferencePriceSelector, ReferencePriceSourceHealth,
-        ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceSubscriptionRequest,
-        ReferencePriceUpdate, ReferenceQuote, reference_price_source_is_runtime_available,
-        reference_price_source_is_unsupported,
-        reference_price_subscription_requests as build_reference_price_subscription_requests,
+        ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceUpdate, ReferenceQuote,
+        reference_price_source_is_runtime_available, reference_price_source_is_unsupported,
     },
     bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{
@@ -90,7 +75,7 @@ use crate::{
         build_submit_admission_request_from_order, limit_notional_exceeds_sized_notional,
     },
     bolt_v3_taker_pricing::{
-        FastSpotObservation, TakerPricingBlockReason, TakerPricingConfig, TakerPricingRequest,
+        FastSpotObservation, TakerPricingConfig, TakerPricingRequest,
         TakerPricingState as PricingState,
     },
     bolt_v3_taker_updown_signal::{
@@ -98,38 +83,45 @@ use crate::{
         compute_worst_case_ev_bps, outcome_side_evidence_label, time_uncertainty_probability,
         uncertainty_band_probability,
     },
-    bolt_v3_trade_flow::{SignedTradeFlow, SignedTradeFlowConfig},
-    strategies::registry::{
-        BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
-    },
+    bolt_v3_trade_flow::SignedTradeFlowConfig,
+    strategies::registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError},
 };
 
 #[cfg(test)]
-use nautilus_model::enums::{AggressorSide, BookAction};
+use nautilus_model::enums::{
+    AggressorSide, BookAction, OmsType as NtOmsType, TrailingOffsetType, TriggerType,
+};
 
 #[cfg(test)]
 use crate::{
+    bolt_v3_decision_evidence::{
+        BoltV3EntryPricingBlockReason, BoltV3ExitBlockedReason, BoltV3ExitDecisionOutcome,
+    },
+    bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity},
     bolt_v3_numeric::sanitize_probability,
     bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
     bolt_v3_taker_pricing::VenueTimingState,
     bolt_v3_taker_updown_signal::{price_agreement_corr, price_gap_probability},
+    strategies::registry::FeeProvider,
 };
 
 mod selection;
 
+#[cfg(test)]
+use self::selection::CandidateMarket;
 use self::selection::{
-    CandidateMarket, RuntimeSelectionSnapshot, SelectionPhase, SelectionState,
-    apply_selection_snapshot_to_active, idle_selection_snapshot, same_market_interval_rollover,
-    selected_market_on_execution_venue, selection_book_subscriptions,
-    selection_snapshot_from_instruments, strategy_input_market_selection_outcome,
+    RuntimeSelectionSnapshot, SelectionPhase, SelectionState, apply_selection_snapshot_to_active,
+    idle_selection_snapshot, same_market_interval_rollover, selected_market_on_execution_venue,
+    selection_book_subscriptions, selection_snapshot_from_instruments,
+    strategy_input_market_selection_outcome,
 };
 
 mod config;
 
 pub use self::config::BinaryOracleEdgeTakerBuilder;
-use self::config::{
-    BinaryOracleEdgeTakerConfig, BinaryOracleEdgeTakerFieldType, BinaryOracleEdgeTakerOrderConfig,
-};
+#[cfg(test)]
+use self::config::BinaryOracleEdgeTakerOrderConfig;
+use self::config::{BinaryOracleEdgeTakerConfig, BinaryOracleEdgeTakerFieldType};
 
 mod exposure;
 
@@ -145,167 +137,60 @@ use crate::bolt_v3_feed_health::{
     ForcedFlatInputs, ForcedFlatReason, evaluate_forced_flat_predicates,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ConfiguredNtOrderTemplate {
-    order_type: OrderType,
-    time_in_force: TimeInForce,
-    expire_time_unix_nanos: Option<u64>,
-    trigger_price: Option<f64>,
-    activation_price: Option<f64>,
-    trigger_type: Option<TriggerType>,
-    trigger_instrument_id: Option<InstrumentId>,
-    trailing_offset: Option<f64>,
-    trailing_offset_type: Option<TrailingOffsetType>,
-    is_post_only: bool,
-    is_reduce_only: bool,
-    is_quote_quantity: bool,
-}
+mod entry_decision;
 
-impl ConfiguredNtOrderTemplate {
-    fn nt_order_template(
-        &self,
-        prefix: &'static str,
-        price_precision: u8,
-    ) -> Result<NtOrderTemplate> {
-        Ok(NtOrderTemplate {
-            order_type: self.order_type,
-            time_in_force: self.time_in_force,
-            expire_time: expire_time_from_config(self.expire_time_unix_nanos),
-            trigger_price: trigger_price_from_config(prefix, self.trigger_price, price_precision)?,
-            activation_price: activation_price_from_config(
-                prefix,
-                self.activation_price,
-                price_precision,
-            )?,
-            trigger_type: self.trigger_type,
-            trigger_instrument_id: self.trigger_instrument_id,
-            trailing_offset: trailing_offset_from_config(prefix, self.trailing_offset)?,
-            trailing_offset_type: self.trailing_offset_type,
-            is_post_only: self.is_post_only,
-            is_reduce_only: self.is_reduce_only,
-            is_quote_quantity: self.is_quote_quantity,
-        })
-    }
-}
+use self::entry_decision::{
+    EntryBlockReason, EntryEvaluation, EntryEvaluationLogFields, EntryGateDecision,
+    EntryPricingBlockReason, EntryPricingInputs, EntrySkipDedupeKey, EntrySubmissionDecision,
+    ForcedFlatEvidenceInputs, RealizedVolatilityEvidenceFields, entry_block_reason_to_evidence,
+    entry_pricing_block_reason_from_taker, entry_pricing_block_reason_to_evidence,
+    entry_skip_reason_category_from_str, push_executable_edge_pricing_block,
+};
 
-impl From<&BinaryOracleEdgeTakerOrderConfig> for ConfiguredNtOrderTemplate {
-    fn from(order: &BinaryOracleEdgeTakerOrderConfig) -> Self {
-        Self {
-            order_type: order.order_type,
-            time_in_force: order.time_in_force,
-            expire_time_unix_nanos: order.expire_time_unix_nanos,
-            trigger_price: order.trigger_price,
-            activation_price: order.activation_price,
-            trigger_type: order.trigger_type,
-            trigger_instrument_id: order.trigger_instrument_id,
-            trailing_offset: order.trailing_offset,
-            trailing_offset_type: order.trailing_offset_type,
-            is_post_only: order.is_post_only,
-            is_reduce_only: order.is_reduce_only,
-            is_quote_quantity: order.is_quote_quantity,
-        }
-    }
-}
+mod exit_decision;
+
+use self::exit_decision::{
+    ExitDecision, ExitDecisionDedupeKey, ExitEvaluation, ExitEvaluationLogFields,
+    ExitEvaluationTriggerContext, ExitOutcomeKey, ExitSubmissionDecision, evaluate_exit_decision,
+    exit_decision_evidence_from_optional,
+};
+
+mod orders;
+
+#[cfg(test)]
+use self::orders::{EntryOrderPlanInputs, build_entry_order_plan};
+use self::orders::{
+    ExitOrderExecutionConfig, parse_configured_oms_type, parse_configured_order_side,
+    parse_configured_position_side,
+};
+
+mod runtime_state;
+
+use self::runtime_state::{
+    ActiveMarketState, MarketLifecycleLedger, OutcomeFeeState,
+    reference_current_price_boundary_changed, refresh_fee_readiness_for_active,
+};
+#[cfg(test)]
+use self::runtime_state::{EffectiveVenueState, ReferenceSnapshot, VenueHealth, VenueKind};
+
+mod subscriptions;
+
+#[cfg(test)]
+use self::subscriptions::{
+    BookSubscriptionEvent, LiveInputSubscriptionRetryEvent, ReferencePriceSubscribeEvent,
+    ResolutionStrikeSubscribeEvent,
+};
+#[cfg(test)]
+use self::subscriptions::{
+    REFERENCE_PRICE_SUBSCRIBE_ACTION, REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
+    ResolutionStrikeFetchTrigger,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct ExecutableEntryProbe {
     order_side: OrderSide,
     vwap: ExactSizeVwap,
     fee_bps: f64,
-}
-
-impl BinaryOracleEdgeTakerOrderConfig {
-    fn nt_order_template(
-        &self,
-        prefix: &'static str,
-        price_precision: u8,
-    ) -> Result<NtOrderTemplate> {
-        ConfiguredNtOrderTemplate::from(self).nt_order_template(prefix, price_precision)
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-enum VenueHealth {
-    Healthy,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VenueKind {
-    Orderbook,
-    Oracle,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-struct EffectiveVenueState {
-    venue_name: String,
-    base_weight: f64,
-    effective_weight: f64,
-    stale: bool,
-    health: VenueHealth,
-    observed_ts_ms: Option<u64>,
-    venue_kind: VenueKind,
-    observed_price: Option<f64>,
-    observed_bid: Option<f64>,
-    observed_ask: Option<f64>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-struct ReferenceSnapshot {
-    ts_ms: u64,
-    topic: String,
-    fair_value: Option<f64>,
-    confidence: f64,
-    venues: Vec<EffectiveVenueState>,
-}
-
-impl OutcomePreparedBooks {
-    fn from_market(market: &CandidateMarket) -> Self {
-        Self {
-            up: OutcomeBookState::from_instrument_id(InstrumentId::from(
-                market.up.instrument_id.as_str(),
-            )),
-            down: OutcomeBookState::from_instrument_id(InstrumentId::from(
-                market.down.instrument_id.as_str(),
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ActiveMarketState {
-    phase: SelectionPhase,
-    market_id: Option<String>,
-    source_identity: Option<SelectedMarketSourceIdentity>,
-    instrument_id: Option<InstrumentId>,
-    outcome_fees: OutcomeFeeState,
-    price_to_beat: Option<f64>,
-    market_selection_outcome: MarketSelectionOutcome,
-    interval_start_ms: Option<u64>,
-    interval_end_ms: Option<u64>,
-    selection_published_at_ms: Option<u64>,
-    seconds_to_expiry_at_selection: Option<u64>,
-    interval_open: Option<f64>,
-    reference_current_price: Option<f64>,
-    reference_current_price_source_id: Option<String>,
-    reference_current_price_failed_over: Option<bool>,
-    reference_current_price_ts_ms: Option<u64>,
-    last_reference_ts_ms: Option<u64>,
-    last_resolution_ts_ms: Option<u64>,
-    /// Observable count of resolution-strike updates rejected because their
-    /// `window_open_ms` did not match this market's interval-open while the
-    /// market was configured (non-Idle). A configured mismatch is a fail-closed
-    /// anomaly distinct from an Idle drop; this counter makes it observable.
-    resolution_strike_window_mismatch_count: u64,
-    warmup_count: u64,
-    warmup_target: u64,
-    books: OutcomePreparedBooks,
-    trade_flow: BTreeMap<InstrumentId, SignedTradeFlow>,
-    fast_venue_incoherent: bool,
-    forced_flat: bool,
 }
 
 /// Project the strategy's trade-flow TOML knobs into the buffer's runtime config
@@ -381,16 +266,6 @@ fn reference_price_source_health_from_config(
             )
         })
         .collect()
-}
-
-fn reference_current_price_boundary_changed(
-    previous: &ActiveMarketState,
-    current: &ActiveMarketState,
-) -> bool {
-    previous.market_id != current.market_id
-        || previous.instrument_id != current.instrument_id
-        || previous.interval_start_ms != current.interval_start_ms
-        || previous.interval_end_ms != current.interval_end_ms
 }
 
 fn reference_price_source_provider_identifier<'a>(
@@ -667,325 +542,6 @@ impl PricingState {
     }
 }
 
-impl OutcomeBookSubscriptions {
-    fn from_market(market: &CandidateMarket) -> Self {
-        Self {
-            up_instrument_id: Some(InstrumentId::from(market.up.instrument_id.as_str())),
-            down_instrument_id: Some(InstrumentId::from(market.down.instrument_id.as_str())),
-            tracked_position_instrument_id: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OutcomeFeeState {
-    up_instrument_id: Option<InstrumentId>,
-    down_instrument_id: Option<InstrumentId>,
-    up_ready: bool,
-    down_ready: bool,
-}
-
-impl OutcomeFeeState {
-    fn empty() -> Self {
-        Self {
-            up_instrument_id: None,
-            down_instrument_id: None,
-            up_ready: false,
-            down_ready: false,
-        }
-    }
-
-    fn from_market(market: &CandidateMarket) -> Self {
-        Self {
-            up_instrument_id: Some(InstrumentId::from(market.up.instrument_id.as_str())),
-            down_instrument_id: Some(InstrumentId::from(market.down.instrument_id.as_str())),
-            up_ready: false,
-            down_ready: false,
-        }
-    }
-
-    fn instrument_ids(&self) -> Vec<InstrumentId> {
-        [self.up_instrument_id, self.down_instrument_id]
-            .into_iter()
-            .flatten()
-            .collect()
-    }
-
-    fn market_ready(&self) -> bool {
-        self.up_ready && self.down_ready
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MarketLifecycleLedger {
-    cooldown_expires_at_ms: Option<u64>,
-    churn_count: u64,
-}
-
-impl MarketLifecycleLedger {
-    fn empty() -> Self {
-        Self {
-            cooldown_expires_at_ms: None,
-            churn_count: INITIAL_COUNTER_U64,
-        }
-    }
-
-    fn in_cooldown(&self, now_ms: u64) -> bool {
-        self.cooldown_expires_at_ms
-            .is_some_and(|expiry_ms| now_ms < expiry_ms)
-    }
-}
-
-impl ActiveMarketState {
-    fn idle() -> Self {
-        Self {
-            phase: SelectionPhase::Idle,
-            market_id: None,
-            source_identity: None,
-            instrument_id: None,
-            outcome_fees: OutcomeFeeState::empty(),
-            price_to_beat: None,
-            market_selection_outcome: MarketSelectionOutcome::Current,
-            interval_start_ms: None,
-            interval_end_ms: None,
-            selection_published_at_ms: None,
-            seconds_to_expiry_at_selection: None,
-            interval_open: None,
-            reference_current_price: None,
-            reference_current_price_source_id: None,
-            reference_current_price_failed_over: None,
-            reference_current_price_ts_ms: None,
-            last_reference_ts_ms: None,
-            last_resolution_ts_ms: None,
-            resolution_strike_window_mismatch_count: INITIAL_COUNTER_U64,
-            warmup_count: INITIAL_COUNTER_U64,
-            warmup_target: INITIAL_COUNTER_U64,
-            books: OutcomePreparedBooks::empty(),
-            trade_flow: BTreeMap::new(),
-            fast_venue_incoherent: false,
-            forced_flat: false,
-        }
-    }
-
-    fn from_snapshot(snapshot: &RuntimeSelectionSnapshot, warmup_target: u64) -> Self {
-        match &snapshot.decision.state {
-            SelectionState::Active { market } => {
-                Self::from_market(market, warmup_target, SelectionPhase::Active, false)
-            }
-            #[cfg(test)]
-            SelectionState::Freeze { market, .. } => {
-                Self::from_market(market, warmup_target, SelectionPhase::Freeze, true)
-            }
-            SelectionState::Idle { .. } => {
-                let mut idle = Self::idle();
-                idle.forced_flat = true;
-                idle
-            }
-        }
-    }
-
-    fn from_market(
-        market: &CandidateMarket,
-        warmup_target: u64,
-        phase: SelectionPhase,
-        forced_flat: bool,
-    ) -> Self {
-        Self {
-            phase,
-            market_id: Some(market.market_id.clone()),
-            source_identity: Some(market.source_identity.clone()),
-            instrument_id: Some(InstrumentId::from(market.instrument_id.as_str())),
-            outcome_fees: OutcomeFeeState::from_market(market),
-            price_to_beat: market.price_to_beat,
-            market_selection_outcome: market.selection_outcome,
-            interval_start_ms: Some(market.start_ts_ms),
-            interval_end_ms: Some(market.expiration_ts_ms),
-            selection_published_at_ms: None,
-            seconds_to_expiry_at_selection: Some(market.seconds_to_end),
-            interval_open: None,
-            reference_current_price: None,
-            reference_current_price_source_id: None,
-            reference_current_price_failed_over: None,
-            reference_current_price_ts_ms: None,
-            last_reference_ts_ms: None,
-            last_resolution_ts_ms: None,
-            resolution_strike_window_mismatch_count: INITIAL_COUNTER_U64,
-            warmup_count: INITIAL_COUNTER_U64,
-            warmup_target,
-            books: OutcomePreparedBooks::from_market(market),
-            trade_flow: BTreeMap::new(),
-            fast_venue_incoherent: false,
-            forced_flat,
-        }
-    }
-
-    fn same_boundary(&self, other: &Self) -> bool {
-        self.phase == other.phase
-            && self.market_id == other.market_id
-            && self.instrument_id == other.instrument_id
-            && self.market_selection_outcome == other.market_selection_outcome
-            && self.interval_start_ms == other.interval_start_ms
-            && self.interval_end_ms == other.interval_end_ms
-    }
-
-    fn warmup_complete(&self) -> bool {
-        self.warmup_target > INITIAL_COUNTER_U64 && self.warmup_count >= self.warmup_target
-    }
-
-    fn apply_selection_timing(&mut self, snapshot: &RuntimeSelectionSnapshot) {
-        match &snapshot.decision.state {
-            SelectionState::Active { market } => {
-                self.selection_published_at_ms = Some(snapshot.published_at_ms);
-                self.market_selection_outcome = market.selection_outcome;
-                self.interval_end_ms = Some(market.expiration_ts_ms);
-                self.seconds_to_expiry_at_selection = Some(market.seconds_to_end);
-            }
-            #[cfg(test)]
-            SelectionState::Freeze { market, .. } => {
-                self.selection_published_at_ms = Some(snapshot.published_at_ms);
-                self.market_selection_outcome = market.selection_outcome;
-                self.interval_end_ms = Some(market.expiration_ts_ms);
-                self.seconds_to_expiry_at_selection = Some(market.seconds_to_end);
-            }
-            SelectionState::Idle { .. } => {
-                self.selection_published_at_ms = None;
-                self.market_selection_outcome = MarketSelectionOutcome::Current;
-                self.interval_end_ms = None;
-                self.seconds_to_expiry_at_selection = None;
-            }
-        }
-    }
-
-    fn seconds_to_expiry_at(&self, now_ms: u64) -> Option<u64> {
-        let published_at_ms = self.selection_published_at_ms?;
-        let seconds_to_expiry_at_selection = self.seconds_to_expiry_at_selection?;
-        let elapsed_seconds = now_ms.saturating_sub(published_at_ms) / MILLIS_PER_SECOND_U64;
-        Some(seconds_to_expiry_at_selection.saturating_sub(elapsed_seconds))
-    }
-
-    fn observe_reference_price_quote(&mut self, quote: &ReferenceQuote, failed_over: bool) -> bool {
-        if self.phase == SelectionPhase::Idle {
-            return false;
-        }
-        let Some(interval_start_ms) = self.interval_start_ms else {
-            return false;
-        };
-        if quote.observed_ts_ms() < interval_start_ms {
-            return false;
-        }
-        let same_reference_source = self
-            .reference_current_price_source_id
-            .as_deref()
-            .is_some_and(|source_id| source_id == quote.source_id());
-        if same_reference_source
-            && self
-                .reference_current_price_ts_ms
-                .is_some_and(|last_ts_ms| quote.observed_ts_ms() <= last_ts_ms)
-        {
-            return false;
-        }
-
-        self.reference_current_price = Some(quote.price());
-        self.reference_current_price_source_id = Some(quote.source_id().to_string());
-        self.reference_current_price_failed_over = Some(failed_over);
-        self.reference_current_price_ts_ms = Some(quote.observed_ts_ms());
-        self.last_reference_ts_ms = Some(quote.observed_ts_ms());
-        if self.interval_open.is_none()
-            && let Some(anchor_price) = self
-                .price_to_beat
-                .filter(|value| is_positive_finite(*value))
-        {
-            self.interval_open = Some(anchor_price);
-        }
-        if self.price_to_beat.is_some_and(is_positive_finite) {
-            self.warmup_count = self.warmup_count.saturating_add(COUNTER_INCREMENT_U64);
-        }
-        true
-    }
-
-    fn clear_reference_price_quote(&mut self) {
-        self.reference_current_price = None;
-        self.reference_current_price_source_id = None;
-        self.reference_current_price_failed_over = None;
-        self.reference_current_price_ts_ms = None;
-    }
-
-    fn reset_reference_price_quote(&mut self) {
-        self.clear_reference_price_quote();
-        self.last_reference_ts_ms = None;
-    }
-
-    /// Binds the live resolution strike (Chainlink `IndexPriceUpdate`) to the
-    /// market's interval-open boundary and sets it as the `price_to_beat`.
-    ///
-    /// Fail-closed: a strike whose `window_open_ms` does not equal this market's
-    /// `interval_start_ms`, or a non-positive/non-finite value, or an idle/
-    /// unbound state, is ignored and leaves `price_to_beat` unchanged. The entry
-    /// gate stays blocked while `price_to_beat` is `None`.
-    fn observe_resolution_strike(&mut self, strike: f64, window_open_ms: u64, observed_ts_ms: u64) {
-        if self.phase == SelectionPhase::Idle {
-            return;
-        }
-        let Some(interval_start_ms) = self.interval_start_ms else {
-            return;
-        };
-        if window_open_ms != interval_start_ms {
-            // Configured (non-Idle, interval-bound) market whose strike report
-            // disagrees with the selected interval-open. This is a fail-closed
-            // anomaly — the strike feed is reporting for the wrong window — and
-            // must be observable rather than a silent drop. Record it and warn;
-            // `price_to_beat` is left untouched so entry stays fail-closed.
-            self.resolution_strike_window_mismatch_count = self
-                .resolution_strike_window_mismatch_count
-                .saturating_add(1);
-            log::warn!(
-                "binary_oracle_edge_taker resolution-strike window mismatch (fail-closed): market_id={:?} window_open_ms={} interval_start_ms={} strike={} — strike rejected, price_to_beat unchanged",
-                self.market_id,
-                window_open_ms,
-                interval_start_ms,
-                strike,
-            );
-            return;
-        }
-        if !is_positive_finite(strike) {
-            return;
-        }
-        self.price_to_beat = Some(strike);
-        self.last_resolution_ts_ms = Some(observed_ts_ms);
-    }
-
-    #[cfg(test)]
-    fn observe_reference_snapshot(&mut self, snapshot: &ReferenceSnapshot) {
-        if self.phase == SelectionPhase::Idle {
-            return;
-        }
-        let Some(interval_start_ms) = self.interval_start_ms else {
-            return;
-        };
-        let Some(anchor_price) = self
-            .price_to_beat
-            .filter(|value| is_positive_finite(*value))
-        else {
-            return;
-        };
-        if snapshot.ts_ms < interval_start_ms {
-            return;
-        }
-        if self
-            .last_reference_ts_ms
-            .is_some_and(|last_ts_ms| snapshot.ts_ms <= last_ts_ms)
-        {
-            return;
-        }
-
-        self.last_reference_ts_ms = Some(snapshot.ts_ms);
-        if self.interval_open.is_none() {
-            self.interval_open = Some(anchor_price);
-        }
-        self.warmup_count += 1;
-    }
-}
-
 pub struct BinaryOracleEdgeTaker {
     core: StrategyCore,
     config: BinaryOracleEdgeTakerConfig,
@@ -1250,47 +806,6 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn retry_missing_live_input_subscriptions_at(&mut self, now_ms: u64) {
-        self.refresh_realized_volatility_snapshot_at(now_ms);
-        let signal_missing = self.pricing.spot_price().is_none();
-        let reference_missing =
-            self.config.reference_current_price.is_some() && self.reference_price_quotes.is_empty();
-        let realized_volatility_missing = self
-            .pricing
-            .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id)
-            .is_none();
-
-        if !(signal_missing || reference_missing || realized_volatility_missing) {
-            return;
-        }
-
-        log::info!(
-            "binary_oracle_edge_taker retrying missing live input subscriptions: strategy_id={} signal_missing={} reference_missing={} realized_volatility_missing={}",
-            self.config.strategy_id,
-            signal_missing,
-            reference_missing,
-            realized_volatility_missing,
-        );
-        self.record_live_input_subscription_retry_event(LiveInputSubscriptionRetryEvent {
-            signal_missing,
-            reference_missing,
-            realized_volatility_missing,
-        });
-
-        if reference_missing {
-            self.unsubscribe_reference_prices();
-            self.subscribe_reference_prices();
-        }
-        if signal_missing {
-            self.unsubscribe_signal_quotes();
-            self.subscribe_signal_quotes();
-        }
-        if realized_volatility_missing {
-            self.unsubscribe_realized_volatility_sources();
-            self.subscribe_realized_volatility_sources();
-        }
-    }
-
     fn refresh_fee_readiness(&mut self) {
         refresh_fee_readiness_for_active(&mut self.active, self.context.fee_provider());
     }
@@ -1400,156 +915,6 @@ impl BinaryOracleEdgeTaker {
             self.selection_missing_since_ms = None;
         }
         self.apply_selection_snapshot(snapshot);
-    }
-
-    fn signal_instrument_id(&self) -> Option<InstrumentId> {
-        self.config
-            .signal_instrument_id
-            .as_deref()
-            .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
-    }
-
-    fn signal_client_id(&self) -> Option<ClientId> {
-        self.config.signal_venue.as_deref().map(ClientId::from)
-    }
-
-    fn resolution_instrument_id(&self) -> Option<InstrumentId> {
-        self.config
-            .resolution_instrument_id
-            .as_deref()
-            .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
-    }
-
-    fn resolution_client_id(&self) -> Option<ClientId> {
-        self.config
-            .resolution_client_id
-            .as_deref()
-            .map(ClientId::from)
-    }
-
-    /// True when the configured resolution instrument resolves THIS instance's
-    /// `underlying_asset`: its leading symbol segment (before the `-USD` quote)
-    /// must equal `underlying_asset` (e.g. `BTC-USD.CHAINLINK` for a `BTC`
-    /// instance). One strategy instance trades exactly one asset, so this is the
-    /// fail-closed binding that stops a wrong-asset feed (or a wrapped-asset
-    /// variant) from ever supplying the strike.
-    fn resolution_instrument_resolves_underlying_asset(&self, instrument_id: InstrumentId) -> bool {
-        instrument_id
-            .symbol
-            .as_str()
-            .split('-')
-            .next()
-            .is_some_and(|asset| asset.eq_ignore_ascii_case(self.config.underlying_asset.as_str()))
-    }
-
-    fn subscribe_signal_quotes(&mut self) {
-        if let Some(instrument_id) = self.signal_instrument_id() {
-            let client_id = self.signal_client_id();
-            #[cfg(not(test))]
-            self.subscribe_quotes(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-    }
-
-    fn subscribe_realized_volatility_sources(&mut self) {
-        let surface_id = self.config.realized_volatility_surface_id.clone();
-        let quote_requests = self
-            .context
-            .realized_volatility_quote_subscription_requests_for_surface(&surface_id);
-        let trade_requests = self
-            .context
-            .realized_volatility_trade_subscription_requests_for_surface(&surface_id);
-        let index_requests = self
-            .context
-            .realized_volatility_index_subscription_requests_for_surface(&surface_id);
-
-        // Defense-in-depth: make a zero-subscription configured surface observable. For a
-        // validated config this is typically unreachable because policy requires at least one
-        // enabled quorum source, but it still catches a validation regression or
-        // no-ready-source edge that would otherwise leave pricing silently
-        // `RealizedVolNotReady`. Pricing fails closed regardless; this warning is the only
-        // operator signal.
-        if quote_requests.is_empty() && trade_requests.is_empty() && index_requests.is_empty() {
-            log::warn!(
-                "binary_oracle_edge_taker configured RV surface `{}` has no enabled subscribable sources; pricing will stay RealizedVolNotReady (strategy_id={})",
-                surface_id,
-                self.config.strategy_id
-            );
-        }
-
-        for (instrument_id, client_id) in quote_requests {
-            #[cfg(not(test))]
-            self.subscribe_quotes(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-        for (instrument_id, client_id) in trade_requests {
-            #[cfg(not(test))]
-            self.subscribe_trades(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-        for (instrument_id, client_id) in index_requests {
-            #[cfg(not(test))]
-            self.subscribe_index_prices(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-    }
-
-    fn unsubscribe_signal_quotes(&mut self) {
-        if let Some(instrument_id) = self.signal_instrument_id() {
-            let client_id = self.signal_client_id();
-            #[cfg(not(test))]
-            self.unsubscribe_quotes(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-    }
-
-    fn subscribe_reference_prices(&mut self) {
-        for subscription in self.reference_price_subscription_requests() {
-            #[cfg(not(test))]
-            self.subscribe_data(
-                subscription.data_type.clone(),
-                Some(subscription.client_id),
-                Some(subscription.params.clone()),
-            );
-            self.record_reference_price_subscribe_event(ReferencePriceSubscribeEvent::subscribe(
-                &subscription,
-            ));
-        }
-    }
-
-    fn unsubscribe_reference_prices(&mut self) {
-        for subscription in self.reference_price_subscription_requests() {
-            #[cfg(not(test))]
-            self.unsubscribe_data(
-                subscription.data_type.clone(),
-                Some(subscription.client_id),
-                Some(subscription.params.clone()),
-            );
-            self.record_reference_price_subscribe_event(ReferencePriceSubscribeEvent::unsubscribe(
-                &subscription,
-            ));
-        }
-    }
-
-    fn reference_price_subscription_requests(&self) -> Vec<ReferencePriceSubscriptionRequest> {
-        let Some(reference_price) = &self.config.reference_current_price else {
-            return Vec::new();
-        };
-        match build_reference_price_subscription_requests(reference_price) {
-            Ok(subscriptions) => subscriptions,
-            Err(error) => {
-                log::error!(
-                    "binary_oracle_edge_taker invalid reference price subscription request: {error}; strategy_id={}",
-                    self.config.strategy_id,
-                );
-                Vec::new()
-            }
-        }
     }
 
     fn observe_reference_price_update(&mut self, update: &ReferencePriceUpdate) {
@@ -1927,166 +1292,6 @@ impl BinaryOracleEdgeTaker {
         if let Some(health) = self.reference_price_source_health.get_mut(source_id) {
             health.update(status, observed_ts_ms, received_ts_ms);
         }
-    }
-
-    fn unsubscribe_realized_volatility_sources(&mut self) {
-        let surface_id = self.config.realized_volatility_surface_id.clone();
-        for (instrument_id, client_id) in self
-            .context
-            .realized_volatility_quote_subscription_requests_for_surface(&surface_id)
-        {
-            #[cfg(not(test))]
-            self.unsubscribe_quotes(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-        for (instrument_id, client_id) in self
-            .context
-            .realized_volatility_trade_subscription_requests_for_surface(&surface_id)
-        {
-            #[cfg(not(test))]
-            self.unsubscribe_trades(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-        for (instrument_id, client_id) in self
-            .context
-            .realized_volatility_index_subscription_requests_for_surface(&surface_id)
-        {
-            #[cfg(not(test))]
-            self.unsubscribe_index_prices(instrument_id, client_id, None);
-            #[cfg(test)]
-            let _ = (instrument_id, client_id);
-        }
-    }
-
-    /// Fetches the live resolution strike for the current market interval.
-    ///
-    /// The first call keeps one durable index-price subscription open so NT
-    /// will route the provider's [`IndexPriceUpdate`] into `on_index_price`.
-    /// Later retry ticks use provider-owned custom fetch commands with unique
-    /// data types, avoiding NT's per-instrument index subscribe dedup.
-    fn subscribe_resolution_strike(&mut self) {
-        let (Some(resolution_instrument_id), Some(resolution_client_id), Some(interval_start_ms)) = (
-            self.resolution_instrument_id(),
-            self.resolution_client_id(),
-            self.active.interval_start_ms,
-        ) else {
-            return;
-        };
-        // Fail-closed asset binding: refuse to subscribe a resolution instrument
-        // that does not resolve this instance's underlying asset, so a
-        // misconfigured (wrong-asset or wrapped-variant) feed can never bind the
-        // strike. The entry gate stays blocked while price_to_beat is None.
-        if !self.resolution_instrument_resolves_underlying_asset(resolution_instrument_id) {
-            log::error!(
-                "binary_oracle_edge_taker resolution instrument {} does not resolve underlying asset {}; refusing live strike subscribe (fail-closed): strategy_id={}",
-                resolution_instrument_id,
-                self.config.underlying_asset,
-                self.config.strategy_id,
-            );
-            return;
-        }
-        let window_open_unix_seconds = interval_start_ms / MILLIS_PER_SECOND_U64;
-        let mut params = Params::new();
-        params.insert(
-            STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM.to_string(),
-            serde_json::json!(window_open_unix_seconds),
-        );
-        if self.resolution_strike_index_subscription.as_ref() != Some(&resolution_instrument_id) {
-            let previous_custom_subscription = self.resolution_strike_custom_subscription.take();
-            #[cfg(not(test))]
-            if let Some(data_type) = previous_custom_subscription {
-                self.unsubscribe_data(data_type, Some(resolution_client_id), None);
-            }
-            #[cfg(test)]
-            let _ = previous_custom_subscription;
-
-            let previous_index_subscription = self
-                .resolution_strike_index_subscription
-                .replace(resolution_instrument_id);
-            #[cfg(not(test))]
-            if let Some(instrument_id) = previous_index_subscription {
-                self.unsubscribe_index_prices(instrument_id, Some(resolution_client_id), None);
-            }
-            #[cfg(test)]
-            let _ = previous_index_subscription;
-
-            #[cfg(not(test))]
-            self.subscribe_index_prices(
-                resolution_instrument_id,
-                Some(resolution_client_id),
-                Some(params.clone()),
-            );
-            #[cfg(test)]
-            let _ = (resolution_client_id, params);
-            self.record_resolution_strike_subscribe_event(
-                ResolutionStrikeSubscribeEvent::durable_index(
-                    resolution_instrument_id,
-                    window_open_unix_seconds,
-                ),
-            );
-            return;
-        }
-
-        params.insert(
-            STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
-            serde_json::json!(resolution_instrument_id.to_string()),
-        );
-        self.resolution_strike_fetch_sequence = self
-            .resolution_strike_fetch_sequence
-            .wrapping_add(COUNTER_INCREMENT_U64);
-        let data_type = resolution_strike_fetch_request_data_type(
-            resolution_instrument_id,
-            self.resolution_strike_fetch_sequence,
-        );
-        let previous_custom_subscription = self
-            .resolution_strike_custom_subscription
-            .replace(data_type.clone());
-        #[cfg(not(test))]
-        {
-            if let Some(previous_data_type) = previous_custom_subscription {
-                self.unsubscribe_data(previous_data_type, Some(resolution_client_id), None);
-            }
-            self.subscribe_data(data_type.clone(), Some(resolution_client_id), Some(params));
-        }
-        #[cfg(test)]
-        let _ = (resolution_client_id, previous_custom_subscription, params);
-        self.record_resolution_strike_subscribe_event(
-            ResolutionStrikeSubscribeEvent::custom_fetch(
-                resolution_instrument_id,
-                window_open_unix_seconds,
-                self.resolution_strike_fetch_sequence,
-                data_type,
-            ),
-        );
-    }
-
-    fn unsubscribe_resolution_strike(&mut self) {
-        let Some(resolution_client_id) = self.resolution_client_id() else {
-            self.resolution_strike_index_subscription = None;
-            self.resolution_strike_custom_subscription = None;
-            return;
-        };
-        if let Some(data_type) = self.resolution_strike_custom_subscription.take() {
-            #[cfg(not(test))]
-            self.unsubscribe_data(data_type, Some(resolution_client_id), None);
-            #[cfg(test)]
-            let _ = data_type;
-        }
-        if let Some(instrument_id) = self.resolution_strike_index_subscription.take() {
-            #[cfg(not(test))]
-            self.unsubscribe_index_prices(instrument_id, Some(resolution_client_id), None);
-            #[cfg(test)]
-            let _ = instrument_id;
-        }
-    }
-
-    fn replace_book_subscriptions(&mut self, next: OutcomeBookSubscriptions) {
-        let current = self.book_subscriptions.clone();
-        unsubscribe_missing_books(self, &current, &next);
-        subscribe_new_books(self, &current, &next);
-        self.book_subscriptions = next;
     }
 
     fn current_market_id(&self) -> Option<&str> {
@@ -5026,126 +4231,6 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn build_configured_entry_order(
-        &mut self,
-        instrument_id: InstrumentId,
-        order_side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        client_order_id: ClientOrderId,
-    ) -> Result<nautilus_model::orders::OrderAny> {
-        anyhow::ensure!(
-            !self.config.entry_order.is_reduce_only,
-            "entry_is_reduce_only must be false because binary_oracle_edge_taker entry orders open the managed position"
-        );
-        let template = self
-            .config
-            .entry_order
-            .nt_order_template(ORDER_CONFIGURATION_PREFIX_ENTRY, price.precision)?;
-        let mut order_factory = self.core.order_factory();
-        build_nt_order(
-            &mut order_factory,
-            ORDER_CONFIGURATION_PREFIX_ENTRY,
-            &template,
-            NtOrderBuildInputs {
-                instrument_id,
-                order_side,
-                quantity,
-                price: Some(price),
-                client_order_id,
-            },
-        )
-    }
-
-    fn exit_order_execution_config_from_order(
-        &self,
-        order: &BinaryOracleEdgeTakerOrderConfig,
-        side_field: &'static str,
-        position_side_field: &'static str,
-    ) -> Result<ExitOrderExecutionConfig> {
-        Ok(ExitOrderExecutionConfig {
-            side: parse_configured_order_side(side_field, &order.side)?,
-            position_side: parse_configured_position_side(
-                position_side_field,
-                &order.position_side,
-            )?,
-            order_template: ConfiguredNtOrderTemplate::from(order),
-        })
-    }
-
-    fn normal_exit_order_execution_config(&self) -> Result<ExitOrderExecutionConfig> {
-        self.exit_order_execution_config_from_order(
-            &self.config.exit_order,
-            CONFIG_FIELD_EXIT_ORDER_SIDE,
-            CONFIG_FIELD_EXIT_ORDER_POSITION_SIDE,
-        )
-    }
-
-    fn forced_exit_order_execution_config(&self) -> Result<ExitOrderExecutionConfig> {
-        self.exit_order_execution_config_from_order(
-            &self.config.forced_exit_order,
-            CONFIG_FIELD_FORCED_EXIT_ORDER_SIDE,
-            CONFIG_FIELD_FORCED_EXIT_ORDER_POSITION_SIDE,
-        )
-    }
-
-    fn exit_order_execution_config(&self, forced_flat: bool) -> Result<ExitOrderExecutionConfig> {
-        if forced_flat {
-            self.forced_exit_order_execution_config()
-        } else {
-            self.normal_exit_order_execution_config()
-        }
-    }
-
-    #[cfg(test)]
-    fn build_configured_exit_order(
-        &mut self,
-        instrument_id: InstrumentId,
-        order_side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        client_order_id: ClientOrderId,
-    ) -> Result<nautilus_model::orders::OrderAny> {
-        self.build_exit_order_with_execution_config(
-            self.normal_exit_order_execution_config()?,
-            instrument_id,
-            order_side,
-            quantity,
-            price,
-            client_order_id,
-        )
-    }
-
-    fn build_exit_order_with_execution_config(
-        &mut self,
-        order_config: ExitOrderExecutionConfig,
-        instrument_id: InstrumentId,
-        order_side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        client_order_id: ClientOrderId,
-    ) -> Result<nautilus_model::orders::OrderAny> {
-        anyhow::ensure!(
-            !order_config.order_template.is_quote_quantity,
-            "exit_is_quote_quantity must be false because exits are sized from base position quantity"
-        );
-        let template =
-            order_config.nt_order_template(ORDER_CONFIGURATION_PREFIX_EXIT, price.precision)?;
-        let mut order_factory = self.core.order_factory();
-        build_nt_order(
-            &mut order_factory,
-            ORDER_CONFIGURATION_PREFIX_EXIT,
-            &template,
-            NtOrderBuildInputs {
-                instrument_id,
-                order_side,
-                quantity,
-                price: Some(price),
-                client_order_id,
-            },
-        )
-    }
-
     #[cfg(test)]
     fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
         self.try_submit_exit_order_for_trigger(
@@ -6485,280 +5570,6 @@ impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
     }
 }
 
-fn unsubscribe_missing_books(
-    strategy: &mut BinaryOracleEdgeTaker,
-    current: &OutcomeBookSubscriptions,
-    next: &OutcomeBookSubscriptions,
-) {
-    if let Some(instrument_id) = current.up_instrument_id
-        && next.up_instrument_id != Some(instrument_id)
-    {
-        #[cfg(not(test))]
-        strategy.unsubscribe_book_deltas(instrument_id, None, None);
-        #[cfg(not(test))]
-        strategy.unsubscribe_trades(instrument_id, None, None);
-        strategy.active.trade_flow.remove(&instrument_id);
-        strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
-    }
-    if let Some(instrument_id) = current.down_instrument_id
-        && next.down_instrument_id != Some(instrument_id)
-    {
-        #[cfg(not(test))]
-        strategy.unsubscribe_book_deltas(instrument_id, None, None);
-        #[cfg(not(test))]
-        strategy.unsubscribe_trades(instrument_id, None, None);
-        strategy.active.trade_flow.remove(&instrument_id);
-        strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
-    }
-    if let Some(instrument_id) = current.tracked_position_instrument_id
-        && next.tracked_position_instrument_id != Some(instrument_id)
-    {
-        #[cfg(not(test))]
-        strategy.unsubscribe_book_deltas(instrument_id, None, None);
-        #[cfg(not(test))]
-        strategy.unsubscribe_trades(instrument_id, None, None);
-        strategy.active.trade_flow.remove(&instrument_id);
-        strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
-    }
-}
-
-fn subscribe_new_books(
-    strategy: &mut BinaryOracleEdgeTaker,
-    current: &OutcomeBookSubscriptions,
-    next: &OutcomeBookSubscriptions,
-) {
-    if let Some(instrument_id) = next.up_instrument_id
-        && current.up_instrument_id != Some(instrument_id)
-    {
-        #[cfg(not(test))]
-        strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
-        #[cfg(not(test))]
-        strategy.subscribe_trades(instrument_id, None, None);
-        let trade_flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&strategy.config));
-        strategy.active.trade_flow.insert(instrument_id, trade_flow);
-        strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
-    }
-    if let Some(instrument_id) = next.down_instrument_id
-        && current.down_instrument_id != Some(instrument_id)
-    {
-        #[cfg(not(test))]
-        strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
-        #[cfg(not(test))]
-        strategy.subscribe_trades(instrument_id, None, None);
-        let trade_flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&strategy.config));
-        strategy.active.trade_flow.insert(instrument_id, trade_flow);
-        strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
-    }
-    if let Some(instrument_id) = next.tracked_position_instrument_id
-        && current.tracked_position_instrument_id != Some(instrument_id)
-    {
-        #[cfg(not(test))]
-        strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
-        #[cfg(not(test))]
-        strategy.subscribe_trades(instrument_id, None, None);
-        let trade_flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&strategy.config));
-        strategy.active.trade_flow.insert(instrument_id, trade_flow);
-        strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BookSubscriptionEvent {
-    action: &'static str,
-    instrument_id: InstrumentId,
-}
-
-const BOOK_SUBSCRIBE_ACTION: &str = stringify!(subscribe);
-const BOOK_UNSUBSCRIBE_ACTION: &str = stringify!(unsubscribe);
-
-impl BookSubscriptionEvent {
-    fn subscribe(instrument_id: InstrumentId) -> Self {
-        Self {
-            action: BOOK_SUBSCRIBE_ACTION,
-            instrument_id,
-        }
-    }
-
-    fn unsubscribe(instrument_id: InstrumentId) -> Self {
-        Self {
-            action: BOOK_UNSUBSCRIBE_ACTION,
-            instrument_id,
-        }
-    }
-}
-
-impl BinaryOracleEdgeTaker {
-    fn record_book_subscription_event(&mut self, event: BookSubscriptionEvent) {
-        #[cfg(test)]
-        self.book_subscription_events.push(event);
-        #[cfg(not(test))]
-        let _ = event;
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LiveInputSubscriptionRetryEvent {
-    signal_missing: bool,
-    reference_missing: bool,
-    realized_volatility_missing: bool,
-}
-
-impl BinaryOracleEdgeTaker {
-    fn record_live_input_subscription_retry_event(
-        &mut self,
-        event: LiveInputSubscriptionRetryEvent,
-    ) {
-        #[cfg(test)]
-        self.live_input_subscription_retry_events.push(event);
-        #[cfg(not(test))]
-        let _ = event;
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReferencePriceSubscribeEvent {
-    action: &'static str,
-    source_id: String,
-    provider: String,
-    client_id: ClientId,
-    data_type: DataType,
-    params: Params,
-}
-
-const REFERENCE_PRICE_SUBSCRIBE_ACTION: &str = stringify!(subscribe);
-const REFERENCE_PRICE_UNSUBSCRIBE_ACTION: &str = stringify!(unsubscribe);
-
-impl ReferencePriceSubscribeEvent {
-    fn subscribe(subscription: &ReferencePriceSubscriptionRequest) -> Self {
-        Self::from_subscription(REFERENCE_PRICE_SUBSCRIBE_ACTION, subscription)
-    }
-
-    fn unsubscribe(subscription: &ReferencePriceSubscriptionRequest) -> Self {
-        Self::from_subscription(REFERENCE_PRICE_UNSUBSCRIBE_ACTION, subscription)
-    }
-
-    fn from_subscription(
-        action: &'static str,
-        subscription: &ReferencePriceSubscriptionRequest,
-    ) -> Self {
-        Self {
-            action,
-            source_id: subscription.source_id.clone(),
-            provider: subscription.provider.clone(),
-            client_id: subscription.client_id,
-            data_type: subscription.data_type.clone(),
-            params: subscription.params.clone(),
-        }
-    }
-}
-
-impl BinaryOracleEdgeTaker {
-    fn record_reference_price_subscribe_event(&mut self, event: ReferencePriceSubscribeEvent) {
-        #[cfg(test)]
-        self.reference_price_subscribe_events.push(event);
-        #[cfg(not(test))]
-        let _ = event;
-    }
-}
-
-/// One recorded resolution-strike fetch trigger. Constructed unconditionally
-/// so the production ordering is the same code the test observes; only the
-/// storage is test-only (see
-/// [`BinaryOracleEdgeTaker::record_resolution_strike_subscribe_event`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ResolutionStrikeSubscribeEvent {
-    action: &'static str,
-    trigger: ResolutionStrikeFetchTrigger,
-    instrument_id: InstrumentId,
-    window_open_unix_seconds: u64,
-    request_sequence: Option<u64>,
-    custom_data_type: Option<DataType>,
-}
-
-const RESOLUTION_STRIKE_SUBSCRIBE_ACTION: &str = stringify!(subscribe);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResolutionStrikeFetchTrigger {
-    DurableIndex,
-    CustomFetch,
-}
-
-impl ResolutionStrikeSubscribeEvent {
-    fn durable_index(instrument_id: InstrumentId, window_open_unix_seconds: u64) -> Self {
-        Self {
-            action: RESOLUTION_STRIKE_SUBSCRIBE_ACTION,
-            trigger: ResolutionStrikeFetchTrigger::DurableIndex,
-            instrument_id,
-            window_open_unix_seconds,
-            request_sequence: None,
-            custom_data_type: None,
-        }
-    }
-
-    fn custom_fetch(
-        instrument_id: InstrumentId,
-        window_open_unix_seconds: u64,
-        request_sequence: u64,
-        custom_data_type: DataType,
-    ) -> Self {
-        Self {
-            action: RESOLUTION_STRIKE_SUBSCRIBE_ACTION,
-            trigger: ResolutionStrikeFetchTrigger::CustomFetch,
-            instrument_id,
-            window_open_unix_seconds,
-            request_sequence: Some(request_sequence),
-            custom_data_type: Some(custom_data_type),
-        }
-    }
-}
-
-impl BinaryOracleEdgeTaker {
-    fn record_resolution_strike_subscribe_event(&mut self, event: ResolutionStrikeSubscribeEvent) {
-        #[cfg(test)]
-        self.resolution_strike_subscribe_events.push(event);
-        #[cfg(not(test))]
-        let _ = event;
-    }
-
-    #[cfg(test)]
-    fn resolution_strike_subscribe_count(&self) -> u32 {
-        u32::try_from(
-            self.resolution_strike_subscribe_events
-                .iter()
-                .filter(|event| event.action == RESOLUTION_STRIKE_SUBSCRIBE_ACTION)
-                .count(),
-        )
-        .unwrap_or(u32::MAX)
-    }
-}
-
-const ORDER_SIDE_BUY_VALUE: &str = stringify!(buy);
-const ORDER_SIDE_SELL_VALUE: &str = stringify!(sell);
-const POSITION_SIDE_LONG_VALUE: &str = stringify!(long);
-const POSITION_SIDE_SHORT_VALUE: &str = stringify!(short);
-
-fn parse_configured_order_side(field: &str, value: &str) -> Result<OrderSide> {
-    match value {
-        ORDER_SIDE_BUY_VALUE => Ok(OrderSide::Buy),
-        ORDER_SIDE_SELL_VALUE => Ok(OrderSide::Sell),
-        _ => anyhow::bail!("{field} must be `buy` or `sell`, got `{value}`"),
-    }
-}
-
-fn parse_configured_position_side(field: &str, value: &str) -> Result<PositionSide> {
-    match value {
-        POSITION_SIDE_LONG_VALUE => Ok(PositionSide::Long),
-        POSITION_SIDE_SHORT_VALUE => Ok(PositionSide::Short),
-        _ => anyhow::bail!("{field} must be `long` or `short`, got `{value}`"),
-    }
-}
-
-fn parse_configured_oms_type(field: &str, value: &str) -> Result<NtOmsType> {
-    value
-        .parse::<NtOmsType>()
-        .with_context(|| format!("{field} must be a NautilusTrader OmsType, got `{value}`"))
-}
-
 fn expire_time_from_config(value: Option<u64>) -> Option<UnixNanos> {
     value.map(UnixNanos::from)
 }
@@ -6815,22 +5626,6 @@ fn trailing_offset_from_config(
                 .ok_or_else(|| anyhow::anyhow!("{prefix}_trailing_offset must be decimal"))
         })
         .transpose()
-}
-
-fn refresh_fee_readiness_for_active(
-    active: &mut ActiveMarketState,
-    fee_provider: &dyn FeeProvider,
-) {
-    active.outcome_fees.up_ready = active
-        .outcome_fees
-        .up_instrument_id
-        .and_then(|instrument_id| fee_provider.fee_bps(instrument_id))
-        .is_some();
-    active.outcome_fees.down_ready = active
-        .outcome_fees
-        .down_instrument_id
-        .and_then(|instrument_id| fee_provider.fee_bps(instrument_id))
-        .is_some();
 }
 
 const INITIAL_COUNTER_U64: u64 = 0;
@@ -6990,592 +5785,6 @@ fn best_healthy_oracle_price(snapshot: &ReferenceSnapshot) -> Option<f64> {
         .and_then(|venue| venue.observed_price)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum EntryBlockReason {
-    PhaseNotActive,
-    MetadataMismatch,
-    ActiveBookNotPriced,
-    BookCrossed,
-    IntervalOpenMissing,
-    WarmupIncomplete,
-    FeesNotReady,
-    RecoveryMode,
-    MarketCoolingDown,
-    SpotSpikeCooldown,
-    ForcedFlat(ForcedFlatReason),
-    OnePositionInvariant(ExposureOccupancy),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct EntryGateDecision {
-    blocked_by: Vec<EntryBlockReason>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct EntryPricingInputs {
-    spot_price: f64,
-    strike_price: f64,
-    seconds_to_expiry: u64,
-    realized_vol: f64,
-    theta_scaled_min_edge_bps: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum EntryPricingBlockReason {
-    SpotPriceMissing,
-    ReferenceCurrentPriceStale,
-    StrikePriceMissing,
-    SecondsToExpiryMissing,
-    RealizedVolNotReady,
-    ThetaScalerUnavailable,
-    UncertaintyBandUnavailable,
-    FairProbabilityUnavailable,
-    FeeUnavailable(OutcomeSide),
-    ExecutableEntryCostUnavailable(OutcomeSide),
-    ExecutableEdgeUnavailable(OutcomeSide, BinaryOutcomeEdgeBlockReason),
-    /// The sized re-evaluation oscillated: the final re-priced edge does not
-    /// support the resized notional, so the entry fails closed.
-    SizedNotionalUnsupported(OutcomeSide),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RealizedVolatilityEvidenceFields {
-    surface_id: String,
-    as_of_ms: Option<u64>,
-    annualized_decimal: String,
-    measured_annualized_decimal: String,
-    noise_robust_annualized_decimal: String,
-    continuous_annualized_decimal: String,
-    jump_annualized_decimal: String,
-    forecast_annualized_decimal: String,
-    pricing_component: String,
-    seconds_per_annum: String,
-    aggregation: String,
-    sources_used: Vec<String>,
-    source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
-    unknown_source_rejections: BTreeMap<String, u64>,
-    blockers: Vec<String>,
-    config_fingerprint: String,
-}
-
-fn entry_pricing_block_reason_from_taker(
-    reason: TakerPricingBlockReason,
-) -> EntryPricingBlockReason {
-    match reason {
-        TakerPricingBlockReason::SpotPriceMissing => EntryPricingBlockReason::SpotPriceMissing,
-        TakerPricingBlockReason::ReferenceCurrentPriceStale => {
-            EntryPricingBlockReason::ReferenceCurrentPriceStale
-        }
-        TakerPricingBlockReason::StrikePriceMissing => EntryPricingBlockReason::StrikePriceMissing,
-        TakerPricingBlockReason::SecondsToExpiryMissing => {
-            EntryPricingBlockReason::SecondsToExpiryMissing
-        }
-        TakerPricingBlockReason::RealizedVolNotReady => {
-            EntryPricingBlockReason::RealizedVolNotReady
-        }
-        TakerPricingBlockReason::ThetaScalerUnavailable => {
-            EntryPricingBlockReason::ThetaScalerUnavailable
-        }
-        TakerPricingBlockReason::FairProbabilityUnavailable => {
-            EntryPricingBlockReason::FairProbabilityUnavailable
-        }
-    }
-}
-
-fn push_executable_edge_pricing_block(
-    reasons: &mut Vec<EntryPricingBlockReason>,
-    side: OutcomeSide,
-    reason: Option<BinaryOutcomeEdgeBlockReason>,
-) {
-    match reason {
-        Some(BinaryOutcomeEdgeBlockReason::FeeUnavailable) => {
-            reasons.push(EntryPricingBlockReason::FeeUnavailable(side));
-        }
-        Some(
-            reason @ (BinaryOutcomeEdgeBlockReason::MissingOrderBook
-            | BinaryOutcomeEdgeBlockReason::InsufficientDepth
-            | BinaryOutcomeEdgeBlockReason::InvalidProbability
-            | BinaryOutcomeEdgeBlockReason::InvalidCost
-            | BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
-            | BinaryOutcomeEdgeBlockReason::EdgeBelowThreshold
-            | BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge),
-        ) => {
-            reasons.push(EntryPricingBlockReason::ExecutableEdgeUnavailable(
-                side, reason,
-            ));
-        }
-        None => {}
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct EntryEvaluation {
-    gate: EntryGateDecision,
-    pricing_blocked_by: Vec<EntryPricingBlockReason>,
-    fair_probability_up: Option<f64>,
-    uncertainty_band_probability: Option<f64>,
-    up_executable_edge: Option<BinaryOutcomeEdgeResult>,
-    down_executable_edge: Option<BinaryOutcomeEdgeResult>,
-    up_worst_case_ev_bps: Option<f64>,
-    down_worst_case_ev_bps: Option<f64>,
-    sized_executable_edge: Option<BinaryOutcomeEdgeResult>,
-    sized_worst_case_ev_bps: Option<f64>,
-    min_worst_case_ev_bps: Option<f64>,
-    expected_ev_per_notional: Option<f64>,
-    book_impact_cap_notional: Option<f64>,
-    sized_notional: Option<f64>,
-    selected_side: Option<OutcomeSide>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct EntrySubmissionDecision {
-    evaluation: EntryEvaluation,
-    instrument_id: Option<InstrumentId>,
-    order_side: Option<OrderSide>,
-    price: Option<f64>,
-    quantity_value: Option<f64>,
-    client_order_id: Option<ClientOrderId>,
-    blocked_reason: Option<&'static str>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct EntryEvaluationLogFields {
-    market_id: Option<String>,
-    phase: SelectionPhase,
-    gate_blocked_by: Vec<EntryBlockReason>,
-    pricing_blocked_by: Vec<EntryPricingBlockReason>,
-    spot_price: Option<f64>,
-    spot_venue_name: Option<String>,
-    reference_current_price: Option<f64>,
-    interval_open: Option<f64>,
-    seconds_to_expiry: Option<u64>,
-    realized_vol: Option<f64>,
-    realized_vol_source_venue: Option<String>,
-    realized_vol_source_ts_ms: Option<u64>,
-    pricing_kurtosis: f64,
-    theta_decay_factor: f64,
-    theta_scaled_min_edge_bps: Option<f64>,
-    fair_probability_up: Option<f64>,
-    fair_probability_down: Option<f64>,
-    uncertainty_band_probability: Option<f64>,
-    uncertainty_band_live: bool,
-    uncertainty_band_reason: &'static str,
-    lead_agreement_corr: Option<f64>,
-    fast_venue_age_ms: Option<u64>,
-    fast_venue_jitter_ms: Option<u64>,
-    up_fee_bps: Option<f64>,
-    down_fee_bps: Option<f64>,
-    up_entry_cost: Option<f64>,
-    down_entry_cost: Option<f64>,
-    up_entry_limit_price: Option<f64>,
-    down_entry_limit_price: Option<f64>,
-    up_gross_cost_cents: Option<f64>,
-    down_gross_cost_cents: Option<f64>,
-    up_fee_cost_cents: Option<f64>,
-    down_fee_cost_cents: Option<f64>,
-    up_slippage_buffer_cents: Option<f64>,
-    down_slippage_buffer_cents: Option<f64>,
-    up_total_adjusted_cost_cents: Option<f64>,
-    down_total_adjusted_cost_cents: Option<f64>,
-    up_edge_cents_per_share: Option<f64>,
-    down_edge_cents_per_share: Option<f64>,
-    up_worst_case_ev_bps: Option<f64>,
-    down_worst_case_ev_bps: Option<f64>,
-    sized_fee_bps: Option<f64>,
-    sized_entry_cost: Option<f64>,
-    sized_entry_limit_price: Option<f64>,
-    sized_gross_cost_cents: Option<f64>,
-    sized_fee_cost_cents: Option<f64>,
-    sized_slippage_buffer_cents: Option<f64>,
-    sized_total_adjusted_cost_cents: Option<f64>,
-    sized_edge_cents_per_share: Option<f64>,
-    sized_worst_case_ev_bps: Option<f64>,
-    expected_ev_per_notional: Option<f64>,
-    order_notional_target: f64,
-    maximum_position_notional: f64,
-    risk_lambda: f64,
-    sizing_ev_reference_bps: u64,
-    book_impact_cap_bps: u64,
-    book_impact_cap_notional: Option<f64>,
-    sized_notional: Option<f64>,
-    selected_side: Option<OutcomeSide>,
-    fast_venue_available: bool,
-    reference_current_price_available_without_fast_venue: bool,
-    lead_quality_policy_applied: bool,
-    lead_quality_reason: &'static str,
-    final_fee_amount_known: bool,
-    final_fee_amount_reason: &'static str,
-    submission_instrument_id: Option<InstrumentId>,
-    submission_order_side: Option<OrderSide>,
-    submission_price: Option<f64>,
-    submission_quantity_value: Option<f64>,
-    submission_client_order_id: Option<ClientOrderId>,
-    submission_blocked_reason: Option<&'static str>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ExitEvaluation {
-    position_outcome_side: Option<OutcomeSide>,
-    forced_flat_reasons: Vec<ForcedFlatReason>,
-    hold_ev_bps: Option<f64>,
-    exit_ev_bps: Option<f64>,
-    exit_decision: Option<ExitDecision>,
-    blocked_reason: Option<&'static str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ExitOrderExecutionConfig {
-    side: OrderSide,
-    position_side: PositionSide,
-    order_template: ConfiguredNtOrderTemplate,
-}
-
-impl ExitOrderExecutionConfig {
-    fn nt_order_template(
-        &self,
-        prefix: &'static str,
-        price_precision: u8,
-    ) -> Result<NtOrderTemplate> {
-        self.order_template
-            .nt_order_template(prefix, price_precision)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ExitSubmissionDecision {
-    evaluation: ExitEvaluation,
-    instrument_id: Option<InstrumentId>,
-    order_type: Option<OrderType>,
-    order_side: Option<OrderSide>,
-    position_side: Option<PositionSide>,
-    time_in_force: Option<TimeInForce>,
-    price: Option<f64>,
-    quantity: Option<Quantity>,
-    client_order_id: Option<ClientOrderId>,
-    is_post_only: Option<bool>,
-    is_reduce_only: Option<bool>,
-    is_quote_quantity: Option<bool>,
-    expire_time_unix_nanos: Option<u64>,
-    trigger_price: Option<f64>,
-    activation_price: Option<f64>,
-    trigger_type: Option<TriggerType>,
-    trigger_instrument_id: Option<InstrumentId>,
-    trailing_offset: Option<f64>,
-    trailing_offset_type: Option<TrailingOffsetType>,
-    blocked_reason: Option<&'static str>,
-    forced_flat_reasons: Vec<ForcedFlatReason>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ExitEvaluationTriggerContext {
-    source: BoltV3ExitTriggerSource,
-    ts_event_ms: u64,
-    ts_init_ms: Option<u64>,
-}
-
-impl ExitEvaluationTriggerContext {
-    const fn new(
-        source: BoltV3ExitTriggerSource,
-        ts_event_ms: u64,
-        ts_init_ms: Option<u64>,
-    ) -> Self {
-        Self {
-            source,
-            ts_event_ms,
-            ts_init_ms,
-        }
-    }
-
-    const fn unknown(now_ms: u64) -> Self {
-        Self::new(BoltV3ExitTriggerSource::Unknown, now_ms, None)
-    }
-}
-
-impl ExitSubmissionDecision {
-    fn execution_config(&self) -> Option<ExitOrderExecutionConfig> {
-        Some(ExitOrderExecutionConfig {
-            side: self.order_side?,
-            position_side: self.position_side?,
-            order_template: ConfiguredNtOrderTemplate {
-                order_type: self.order_type?,
-                time_in_force: self.time_in_force?,
-                expire_time_unix_nanos: self.expire_time_unix_nanos,
-                trigger_price: self.trigger_price,
-                activation_price: self.activation_price,
-                trigger_type: self.trigger_type,
-                trigger_instrument_id: self.trigger_instrument_id,
-                trailing_offset: self.trailing_offset,
-                trailing_offset_type: self.trailing_offset_type,
-                is_post_only: self.is_post_only?,
-                is_reduce_only: self.is_reduce_only?,
-                is_quote_quantity: self.is_quote_quantity?,
-            },
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ExitEvaluationLogFields {
-    market_id: Option<String>,
-    phase: SelectionPhase,
-    position_outcome_side: Option<OutcomeSide>,
-    position_id: Option<PositionId>,
-    position_instrument_id: Option<InstrumentId>,
-    position_quantity: Option<Quantity>,
-    position_avg_px_open: Option<f64>,
-    forced_flat_reasons: Vec<ForcedFlatReason>,
-    spot_price: Option<f64>,
-    spot_venue_name: Option<String>,
-    reference_current_price: Option<f64>,
-    interval_open: Option<f64>,
-    seconds_to_expiry: Option<u64>,
-    realized_vol: Option<f64>,
-    realized_vol_source_venue: Option<String>,
-    realized_vol_source_ts_ms: Option<u64>,
-    rv_surface_id: String,
-    rv_snapshot_as_of_ms: Option<u64>,
-    rv_snapshot_ready: bool,
-    rv_snapshot_blockers: Vec<BoltV3ExitRvSnapshotBlocker>,
-    rv_source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
-    rv_gate_result: BoltV3ExitRvGateResult,
-    rv_future_dating_delta_ms: Option<u64>,
-    exit_eval_now_ms: u64,
-    exit_trigger_source: BoltV3ExitTriggerSource,
-    trigger_ts_event_ms: u64,
-    trigger_ts_init_ms: Option<u64>,
-    pricing_kurtosis: f64,
-    exit_hysteresis_bps: i64,
-    fair_probability_up: Option<f64>,
-    fair_probability_down: Option<f64>,
-    uncertainty_band_probability: Option<f64>,
-    up_fee_bps: Option<f64>,
-    down_fee_bps: Option<f64>,
-    hold_ev_bps: Option<f64>,
-    exit_ev_bps: Option<f64>,
-    exit_decision: Option<ExitDecision>,
-    historical_entry_fee_rate_known: bool,
-    historical_entry_fee_rate_reason: &'static str,
-    final_fee_amount_known: bool,
-    final_fee_amount_reason: &'static str,
-    submission_instrument_id: Option<InstrumentId>,
-    submission_order_side: Option<OrderSide>,
-    submission_price: Option<f64>,
-    submission_quantity: Option<Quantity>,
-    submission_client_order_id: Option<ClientOrderId>,
-    submission_blocked_reason: Option<&'static str>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-struct EntryOrderPlanInputs {
-    client_order_id: ClientOrderId,
-    instrument_id: InstrumentId,
-    order_side: OrderSide,
-    quantity: Quantity,
-    price_precision: u8,
-    time_in_force: TimeInForce,
-    best_bid: f64,
-    best_ask: f64,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-struct EntryOrderPlan {
-    client_order_id: ClientOrderId,
-    instrument_id: InstrumentId,
-    order_side: OrderSide,
-    quantity: Quantity,
-    price: Price,
-    time_in_force: TimeInForce,
-}
-
-#[cfg(test)]
-fn build_entry_order_plan(inputs: &EntryOrderPlanInputs) -> Result<EntryOrderPlan> {
-    let raw_price = match inputs.order_side {
-        OrderSide::Buy => inputs.best_ask,
-        OrderSide::Sell => inputs.best_bid,
-        _ => anyhow::bail!(
-            "entry order side must be `buy` or `sell`, got `{:?}`",
-            inputs.order_side
-        ),
-    };
-    anyhow::ensure!(
-        raw_price.is_finite() && raw_price > 0.0,
-        "entry price must be positive"
-    );
-
-    Ok(EntryOrderPlan {
-        client_order_id: inputs.client_order_id,
-        instrument_id: inputs.instrument_id,
-        order_side: inputs.order_side,
-        quantity: inputs.quantity,
-        price: Price::new(raw_price, inputs.price_precision),
-        time_in_force: inputs.time_in_force,
-    })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExitDecision {
-    Hold,
-    Exit,
-    ExitFailClosed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct EntrySkipDedupeKey {
-    reason_category: BoltV3EntrySkipReasonCategory,
-    gate_blocked_by: Vec<BoltV3EntryBlockReason>,
-    pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
-    market_id: Option<String>,
-    interval_open: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ExitDecisionDedupeKey {
-    market_id: Option<String>,
-    position_id: Option<String>,
-    forced_flat_reasons: Vec<BoltV3ForcedFlatReason>,
-    exit_decision: BoltV3ExitDecisionOutcome,
-    blocked_reason: Option<BoltV3ExitBlockedReason>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ForcedFlatEvidenceInputs {
-    stale_reference_after_ms: Option<u64>,
-    last_reference_ts_ms: Option<u64>,
-    min_liquidity_required: Option<String>,
-    liquidity_available: Option<String>,
-    frozen: bool,
-    metadata_matches_selection: bool,
-    fast_venue_incoherent: bool,
-}
-
-impl BoltV3EntrySkipEvidence {
-    fn from_entry_skip(
-        strategy_id: String,
-        now_ms: u64,
-        reason_category: BoltV3EntrySkipReasonCategory,
-        unclassified_context: Option<String>,
-        fields: &EntryEvaluationLogFields,
-        forced_flat_inputs: ForcedFlatEvidenceInputs,
-    ) -> Self {
-        Self {
-            strategy_id,
-            now_ms,
-            reason_category,
-            unclassified_context,
-            gate_blocked_by: fields
-                .gate_blocked_by
-                .iter()
-                .map(entry_block_reason_to_evidence)
-                .collect(),
-            pricing_blocked_by: fields
-                .pricing_blocked_by
-                .iter()
-                .map(entry_pricing_block_reason_to_evidence)
-                .collect(),
-            market_id: fields.market_id.clone(),
-            phase: format!("{:?}", fields.phase),
-            seconds_to_market_end: fields.seconds_to_expiry,
-            spot_price: option_evidence_number(fields.spot_price),
-            reference_current_price: option_evidence_number(fields.reference_current_price),
-            realized_vol: option_evidence_number(fields.realized_vol),
-            realized_vol_source_venue: fields.realized_vol_source_venue.clone(),
-            realized_vol_source_ts_ms: fields.realized_vol_source_ts_ms,
-            fair_probability_up: option_evidence_number(fields.fair_probability_up),
-            fair_probability_down: option_evidence_number(fields.fair_probability_down),
-            selected_side: fields.selected_side.map(outcome_side_to_evidence),
-            sized_notional: option_evidence_number(fields.sized_notional),
-            sized_worst_case_ev_bps: option_evidence_number(fields.sized_worst_case_ev_bps),
-            sized_edge_cents_per_share: option_evidence_number(fields.sized_edge_cents_per_share),
-            theta_scaled_min_edge_bps: option_evidence_number(fields.theta_scaled_min_edge_bps),
-            up_fee_bps: option_evidence_number(fields.up_fee_bps),
-            down_fee_bps: option_evidence_number(fields.down_fee_bps),
-            submission_blocked_reason: fields
-                .submission_blocked_reason
-                .and_then(entry_skip_reason_category_from_str)
-                .or(Some(reason_category)),
-            stale_reference_after_ms: forced_flat_inputs.stale_reference_after_ms,
-            last_reference_ts_ms: forced_flat_inputs.last_reference_ts_ms,
-            min_liquidity_required: forced_flat_inputs.min_liquidity_required,
-            liquidity_available: forced_flat_inputs.liquidity_available,
-            frozen: forced_flat_inputs.frozen,
-            metadata_matches_selection: forced_flat_inputs.metadata_matches_selection,
-            fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
-        }
-    }
-}
-
-impl BoltV3ExitDecisionEvidence {
-    fn from_exit_decision(
-        strategy_id: String,
-        ts_ms: u64,
-        fields: &ExitEvaluationLogFields,
-        forced_flat_inputs: ForcedFlatEvidenceInputs,
-    ) -> Self {
-        let blocked_reason = fields
-            .submission_blocked_reason
-            .map(exit_block_reason_to_evidence);
-        let exit_decision = if blocked_reason.is_some() {
-            BoltV3ExitDecisionOutcome::Blocked
-        } else {
-            match fields.exit_decision {
-                Some(ExitDecision::Hold) => BoltV3ExitDecisionOutcome::Hold,
-                Some(ExitDecision::Exit) => BoltV3ExitDecisionOutcome::Exit,
-                Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionOutcome::ExitFailClosed,
-                None => BoltV3ExitDecisionOutcome::Blocked,
-            }
-        };
-        Self {
-            strategy_id,
-            market_id: fields.market_id.clone(),
-            position_id: fields
-                .position_id
-                .map(|position_id| position_id.to_string()),
-            position_instrument_id: fields
-                .position_instrument_id
-                .map(|instrument_id| instrument_id.to_string()),
-            position_outcome_side: fields.position_outcome_side.map(outcome_side_to_evidence),
-            forced_flat_reasons: fields
-                .forced_flat_reasons
-                .iter()
-                .map(forced_flat_reason_to_evidence)
-                .collect(),
-            hold_ev_bps: option_evidence_number(fields.hold_ev_bps),
-            exit_ev_bps: option_evidence_number(fields.exit_ev_bps),
-            realized_vol: option_evidence_number(fields.realized_vol),
-            realized_vol_source_venue: fields.realized_vol_source_venue.clone(),
-            realized_vol_source_ts_ms: fields.realized_vol_source_ts_ms,
-            exit_eval_now_ms: fields.exit_eval_now_ms,
-            exit_trigger_source: fields.exit_trigger_source,
-            trigger_ts_event_ms: fields.trigger_ts_event_ms,
-            trigger_ts_init_ms: fields.trigger_ts_init_ms,
-            rv_surface_id: fields.rv_surface_id.clone(),
-            rv_snapshot_as_of_ms: fields.rv_snapshot_as_of_ms,
-            rv_snapshot_ready: fields.rv_snapshot_ready,
-            rv_snapshot_blockers: fields.rv_snapshot_blockers.clone(),
-            rv_source_diagnostics: fields.rv_source_diagnostics.clone(),
-            rv_gate_result: fields.rv_gate_result,
-            rv_future_dating_delta_ms: fields.rv_future_dating_delta_ms,
-            exit_hysteresis_bps: fields.exit_hysteresis_bps.to_string(),
-            exit_decision,
-            blocked_reason,
-            client_order_id: fields
-                .submission_client_order_id
-                .map(|client_order_id| client_order_id.to_string()),
-            seconds_to_market_end: fields.seconds_to_expiry,
-            ts_ms,
-            stale_reference_after_ms: forced_flat_inputs.stale_reference_after_ms,
-            last_reference_ts_ms: forced_flat_inputs.last_reference_ts_ms,
-            min_liquidity_required: forced_flat_inputs.min_liquidity_required,
-            liquidity_available: forced_flat_inputs.liquidity_available,
-            frozen: forced_flat_inputs.frozen,
-            metadata_matches_selection: forced_flat_inputs.metadata_matches_selection,
-            fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
-        }
-    }
-}
-
 fn option_evidence_number(value: Option<f64>) -> Option<String> {
     value.filter(|value| value.is_finite()).map(evidence_number)
 }
@@ -7597,32 +5806,6 @@ fn forced_flat_reason_to_evidence(reason: &ForcedFlatReason) -> BoltV3ForcedFlat
     }
 }
 
-fn exit_block_reason_to_evidence(reason: &str) -> BoltV3ExitBlockedReason {
-    match reason {
-        EXIT_BLOCK_REASON_NO_OPEN_POSITION => BoltV3ExitBlockedReason::NoOpenPosition,
-        EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING => BoltV3ExitBlockedReason::ExitAlreadyPending,
-        EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING => {
-            BoltV3ExitBlockedReason::EntryOrderStillWorking
-        }
-        EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE => {
-            BoltV3ExitBlockedReason::ExitDecisionUnavailable
-        }
-        EXIT_BLOCK_REASON_EXIT_HOLD => BoltV3ExitBlockedReason::ExitHold,
-        EXIT_BLOCK_REASON_OPEN_POSITION_MISSING => BoltV3ExitBlockedReason::OpenPositionMissing,
-        EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID => {
-            BoltV3ExitBlockedReason::ExitOrderConfigInvalid
-        }
-        EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED => {
-            BoltV3ExitBlockedReason::ExitQuoteQuantityUnsupported
-        }
-        EXIT_BLOCK_REASON_EXIT_PRICE_MISSING => BoltV3ExitBlockedReason::ExitPriceMissing,
-        EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE => {
-            BoltV3ExitBlockedReason::ExitQuantityNotPositive
-        }
-        _ => unreachable!("unknown exit blocked reason `{reason}`"),
-    }
-}
-
 fn exposure_occupancy_to_evidence(occupancy: ExposureOccupancy) -> BoltV3ExposureOccupancy {
     match occupancy {
         ExposureOccupancy::PendingEntry => BoltV3ExposureOccupancy::PendingEntry,
@@ -7632,167 +5815,6 @@ fn exposure_occupancy_to_evidence(occupancy: ExposureOccupancy) -> BoltV3Exposur
         ExposureOccupancy::UnsupportedObserved => BoltV3ExposureOccupancy::UnsupportedObserved,
         ExposureOccupancy::BlindRecovery => BoltV3ExposureOccupancy::BlindRecovery,
     }
-}
-
-fn entry_block_reason_to_evidence(reason: &EntryBlockReason) -> BoltV3EntryBlockReason {
-    match reason {
-        EntryBlockReason::PhaseNotActive => BoltV3EntryBlockReason::PhaseNotActive,
-        EntryBlockReason::MetadataMismatch => BoltV3EntryBlockReason::MetadataMismatch,
-        EntryBlockReason::ActiveBookNotPriced => BoltV3EntryBlockReason::ActiveBookNotPriced,
-        EntryBlockReason::BookCrossed => BoltV3EntryBlockReason::BookCrossed,
-        EntryBlockReason::IntervalOpenMissing => BoltV3EntryBlockReason::IntervalOpenMissing,
-        EntryBlockReason::WarmupIncomplete => BoltV3EntryBlockReason::WarmupIncomplete,
-        EntryBlockReason::FeesNotReady => BoltV3EntryBlockReason::FeesNotReady,
-        EntryBlockReason::RecoveryMode => BoltV3EntryBlockReason::RecoveryMode,
-        EntryBlockReason::MarketCoolingDown => BoltV3EntryBlockReason::MarketCoolingDown,
-        EntryBlockReason::SpotSpikeCooldown => BoltV3EntryBlockReason::SpotSpikeCooldown,
-        EntryBlockReason::ForcedFlat(reason) => {
-            BoltV3EntryBlockReason::ForcedFlat(forced_flat_reason_to_evidence(reason))
-        }
-        EntryBlockReason::OnePositionInvariant(occupancy) => {
-            BoltV3EntryBlockReason::OnePositionInvariant(exposure_occupancy_to_evidence(*occupancy))
-        }
-    }
-}
-
-fn binary_edge_block_reason_to_evidence(
-    reason: BinaryOutcomeEdgeBlockReason,
-) -> BoltV3BinaryOutcomeEdgeBlockReason {
-    match reason {
-        BinaryOutcomeEdgeBlockReason::MissingOrderBook => {
-            BoltV3BinaryOutcomeEdgeBlockReason::MissingOrderBook
-        }
-        BinaryOutcomeEdgeBlockReason::InsufficientDepth => {
-            BoltV3BinaryOutcomeEdgeBlockReason::InsufficientDepth
-        }
-        BinaryOutcomeEdgeBlockReason::InvalidProbability => {
-            BoltV3BinaryOutcomeEdgeBlockReason::InvalidProbability
-        }
-        BinaryOutcomeEdgeBlockReason::InvalidCost => {
-            BoltV3BinaryOutcomeEdgeBlockReason::InvalidCost
-        }
-        BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape => {
-            BoltV3BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
-        }
-        BinaryOutcomeEdgeBlockReason::EdgeBelowThreshold => {
-            BoltV3BinaryOutcomeEdgeBlockReason::EdgeBelowThreshold
-        }
-        BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge => {
-            BoltV3BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
-        }
-        BinaryOutcomeEdgeBlockReason::FeeUnavailable => {
-            BoltV3BinaryOutcomeEdgeBlockReason::FeeUnavailable
-        }
-    }
-}
-
-fn entry_pricing_block_reason_to_evidence(
-    reason: &EntryPricingBlockReason,
-) -> BoltV3EntryPricingBlockReason {
-    match reason {
-        EntryPricingBlockReason::SpotPriceMissing => {
-            BoltV3EntryPricingBlockReason::SpotPriceMissing
-        }
-        EntryPricingBlockReason::ReferenceCurrentPriceStale => {
-            BoltV3EntryPricingBlockReason::ReferenceCurrentPriceStale
-        }
-        EntryPricingBlockReason::StrikePriceMissing => {
-            BoltV3EntryPricingBlockReason::StrikePriceMissing
-        }
-        EntryPricingBlockReason::SecondsToExpiryMissing => {
-            BoltV3EntryPricingBlockReason::SecondsToExpiryMissing
-        }
-        EntryPricingBlockReason::RealizedVolNotReady => {
-            BoltV3EntryPricingBlockReason::RealizedVolNotReady
-        }
-        EntryPricingBlockReason::ThetaScalerUnavailable => {
-            BoltV3EntryPricingBlockReason::ThetaScalerUnavailable
-        }
-        EntryPricingBlockReason::UncertaintyBandUnavailable => {
-            BoltV3EntryPricingBlockReason::UncertaintyBandUnavailable
-        }
-        EntryPricingBlockReason::FairProbabilityUnavailable => {
-            BoltV3EntryPricingBlockReason::FairProbabilityUnavailable
-        }
-        EntryPricingBlockReason::FeeUnavailable(side) => {
-            BoltV3EntryPricingBlockReason::FeeUnavailable(outcome_side_to_evidence(*side))
-        }
-        EntryPricingBlockReason::ExecutableEntryCostUnavailable(side) => {
-            BoltV3EntryPricingBlockReason::ExecutableEntryCostUnavailable(outcome_side_to_evidence(
-                *side,
-            ))
-        }
-        EntryPricingBlockReason::ExecutableEdgeUnavailable(side, reason) => {
-            BoltV3EntryPricingBlockReason::ExecutableEdgeUnavailable(
-                outcome_side_to_evidence(*side),
-                binary_edge_block_reason_to_evidence(*reason),
-            )
-        }
-        EntryPricingBlockReason::SizedNotionalUnsupported(side) => {
-            BoltV3EntryPricingBlockReason::SizedNotionalUnsupported(outcome_side_to_evidence(*side))
-        }
-    }
-}
-
-fn entry_skip_reason_category_from_str(reason: &str) -> Option<BoltV3EntrySkipReasonCategory> {
-    match reason {
-        ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED => {
-            Some(BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED => {
-            Some(BoltV3EntrySkipReasonCategory::EntryGateBlocked)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED => {
-            Some(BoltV3EntrySkipReasonCategory::EntryPricingBlocked)
-        }
-        ENTRY_BLOCK_REASON_NO_SIDE_SELECTED => Some(BoltV3EntrySkipReasonCategory::NoSideSelected),
-        ENTRY_BLOCK_REASON_SIZED_NOTIONAL_NOT_POSITIVE => {
-            Some(BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive)
-        }
-        ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING => {
-            Some(BoltV3EntrySkipReasonCategory::InstrumentIdMissing)
-        }
-        ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE => {
-            Some(BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING => {
-            Some(BoltV3EntrySkipReasonCategory::EntryPriceMissing)
-        }
-        ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED => {
-            Some(BoltV3EntrySkipReasonCategory::QuantityRoundingFailed)
-        }
-        ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL => {
-            Some(BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional)
-        }
-        ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE => {
-            Some(BoltV3EntrySkipReasonCategory::QuantityNotPositive)
-        }
-        ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID => {
-            Some(BoltV3EntrySkipReasonCategory::PositionContractInvalid)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED => {
-            Some(BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported)
-        }
-        ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE => {
-            Some(BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable)
-        }
-        ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION => {
-            Some(BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation)
-        }
-        _ => None,
-    }
-}
-
-/// Stable key for #885 exit-evaluation evidence flood-gating. Two exit evaluations
-/// with the same key produce the same RCA story, so only the first is recorded
-/// durably (subsequent identical ticks are suppressed). Deliberately excludes the
-/// client_order_id (re-minted per attempt) and timestamps so a per-tick flood
-/// collapses to one record. `Ord` lets it key a `BTreeMap` without a new import.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct ExitOutcomeKey {
-    exit_decision: BoltV3ExitDecisionOutcome,
-    submission_blocked_reason: Option<&'static str>,
-    rv_gate_result: BoltV3RvGateResult,
 }
 
 fn should_report_one_position_gate_violation(occupancy: ExposureOccupancy) -> bool {
@@ -7809,42 +5831,6 @@ fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
         || reason == EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
         || reason == EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
         || reason == EXIT_BLOCK_REASON_EXIT_HOLD)
-}
-
-/// Map the strategy-internal [`ExitDecision`] to the closed evidence enum. `None`
-/// (blocked before a decision was computed, e.g. exit already pending or entry order
-/// still working) maps to `Hold` — no exit action was taken — and the durable record's
-/// `submission_blocked_reason` field separately explains why.
-fn exit_decision_evidence_from_optional(
-    decision: Option<ExitDecision>,
-) -> BoltV3ExitDecisionOutcome {
-    match decision {
-        Some(ExitDecision::Hold) | None => BoltV3ExitDecisionOutcome::Hold,
-        Some(ExitDecision::Exit) => BoltV3ExitDecisionOutcome::Exit,
-        Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionOutcome::ExitFailClosed,
-    }
-}
-
-fn evaluate_exit_decision(
-    hold_ev_bps: Option<f64>,
-    exit_ev_bps: Option<f64>,
-    exit_hysteresis_bps: f64,
-) -> ExitDecision {
-    let Some(hold_ev_bps) = hold_ev_bps.filter(|value| value.is_finite()) else {
-        return ExitDecision::ExitFailClosed;
-    };
-    let Some(exit_ev_bps) = exit_ev_bps.filter(|value| value.is_finite()) else {
-        return ExitDecision::ExitFailClosed;
-    };
-    if !exit_hysteresis_bps.is_finite() {
-        return ExitDecision::ExitFailClosed;
-    }
-
-    if exit_ev_bps >= hold_ev_bps - exit_hysteresis_bps {
-        ExitDecision::Exit
-    } else {
-        ExitDecision::Hold
-    }
 }
 
 #[cfg(test)]

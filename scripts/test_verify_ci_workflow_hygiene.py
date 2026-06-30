@@ -11068,6 +11068,12 @@ lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
             'required_if_config_ref = "ci_provenance.deploy.artifact_upload_if"',
             1,
         ),
+        "deployable uploads must define required_if": config_text.replace(
+            'required_if_config_file = "ci/github-actions-runners.toml"\n'
+            'required_if_config_ref = "ci_provenance.deploy.artifact_upload_if"\n',
+            "",
+            1,
+        ),
         "artifact_retention.lookback_bindings.build_deploy.upload must reference a configured upload": config_text.replace(
             'upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"',
             'upload = ".github/workflows/ci.yml::build::missing-upload"',
@@ -11076,6 +11082,11 @@ lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
         "artifact_retention.lookback_bindings.build_deploy must match the upload retention source": config_text.replace(
             'retention_ref = "ci_provenance.deploy.artifact_retention_days"',
             'retention_ref = "ci_provenance.api_limits.max_lookback_age_seconds"',
+            1,
+        ),
+        "artifact_retention.lookback_bindings.build_deploy.lookback_ref must be ci_provenance.deploy.artifact_lookback_age_seconds": config_text.replace(
+            'lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"',
+            'lookback_ref = "ci_provenance.merge_readiness.poll_seconds"',
             1,
         ),
         binding_coverage_error: config_text.replace(

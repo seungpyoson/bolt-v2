@@ -350,8 +350,7 @@ max_lookback_age_seconds = 2592000
 retention_days = 30
 
 [artifact_retention.classes.deployable]
-max_retention_days_config_file = "ci/github-actions-runners.toml"
-max_retention_days_config_ref = "ci_provenance.deploy.artifact_retention_days"
+max_retention_days = 3
 
 [artifact_retention.classes.reuse-bound]
 max_retention_days = 30

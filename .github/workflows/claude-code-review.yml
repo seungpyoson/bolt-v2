@@ -97,6 +97,7 @@ jobs:
           from pathlib import Path
 
           config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
+          github = config["github"]
           claude = config["claude"]
           workflow = claude["workflow"]
 
@@ -107,6 +108,7 @@ jobs:
                   value = ",".join(value)
               print(f"{name}={value}")
 
+          emit("github_api_url", github["api_url"])
           emit("claude_model", claude["model"])
           emit("claude_track_progress", claude["track_progress"])
           emit("claude_allowed_tools", claude["allowed_tools"])
@@ -118,6 +120,7 @@ jobs:
         if: steps.pause.outputs.paused != 'true'
         id: review-decision
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           PR_ACTION: ${{ github.event.action }}
@@ -232,6 +235,29 @@ jobs:
               emit(True, "review-label")
               raise SystemExit(0)
 
+          retry = subprocess.run(
+              (
+                  "python3",
+                  "scripts/ai_review_deliverables.py",
+                  "retry-needed",
+                  "--provider",
+                  "claude",
+                  "--config-file",
+                  "ci/ai-review.toml",
+              ),
+              check=False,
+              capture_output=True,
+              text=True,
+          )
+          if retry.returncode != 0:
+              print("::warning::Claude retry state check failed; reviewing to avoid preserving a stale failure notice.")
+              emit(True, "retry-check-unavailable")
+              raise SystemExit(0)
+          retry_lines = set(retry.stdout.splitlines())
+          if "retry_needed=true" in retry_lines:
+              emit(True, "previous-failure-notice")
+              raise SystemExit(0)
+
           changed_files, file_source = pushed_files()
           review_paths = tuple(smart["review_paths"])
           for changed_file in changed_files:
@@ -253,12 +279,22 @@ jobs:
         run: |
           python3 scripts/verify_ai_review_model_freshness.py --live --advisory --provider claude
 
+      - name: Capture Claude review window
+        id: review-window
+        if: >-
+          ${{
+            steps.pause.outputs.paused != 'true'
+            && steps.review-decision.outputs.should_review == 'true'
+          }}
+        run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Run Claude Code review
         id: claude
         if: >-
           ${{
             steps.pause.outputs.paused != 'true'
             && steps.review-decision.outputs.should_review == 'true'
+            && steps.review-window.outcome == 'success'
           }}
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.claude_primary_timeout_minutes) }}
@@ -302,3 +338,24 @@ jobs:
             --max-turns ${{ steps.runtime-config.outputs.claude_max_turns }}
             --model ${{ steps.runtime-config.outputs.claude_model }}
             --allowedTools "${{ steps.runtime-config.outputs.claude_allowed_tools }}"
+
+      - name: Ensure Claude deliverable or post failure notice
+        id: claude-deliverable
+        if: >-
+          ${{
+            steps.pause.outputs.paused != 'true'
+            && always()
+            && steps.review-decision.outputs.should_review == 'true'
+            && steps.runtime-config.outcome == 'success'
+            && steps.review-window.outcome == 'success'
+          }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: >-
+          python3 scripts/ai_review_deliverables.py claude-deliverable
+          --started-at "${{ steps.review-window.outputs.started_at }}"
+          --execution-file "${{ steps.claude.outputs.execution_file }}"
+          --step-outcome "${{ steps.claude.outcome }}"
+          --config-file ci/ai-review.toml

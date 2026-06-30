@@ -152,6 +152,9 @@ deliverable_markers = [
   "<!-- ai-pr-reviewer-glm -->",
 ]
 
+[glm.smart_trigger]
+review_labels = ["ai-review", "ai-review-glm"]
+
 [glm.pr_agent]
 model = "openai/glm-5.2"
 fallback_models = ["openai/glm-5.2"]
@@ -183,6 +186,9 @@ notice_marker = "<!-- ai-pr-reviewer-kimi-notice -->"
 source_label_template = "Kimi Code CLI (`{model}`)"
 cli_package = "@moonshot-ai/kimi-code@0.19.0"
 
+[kimi.smart_trigger]
+review_labels = ["ai-review", "ai-review-kimi"]
+
 [kimi.workflow]
 node_version = "24"
 job_timeout_minutes = 45
@@ -193,6 +199,19 @@ setup_overhead_timeout_minutes = 5
 [claude]
 model = "claude-opus-4-8"
 track_progress = false
+notice_marker = "<!-- ai-pr-reviewer-claude-notice -->"
+deliverable_bot_logins = ["claude[bot]"]
+deliverable_indicators = [
+  "reviewed",
+  "finding",
+  "findings",
+  "checked",
+  "no substantive",
+  "severity:",
+  "evidence:",
+  "issue:",
+]
+source_label_template = "Claude Code (`{model}`)"
 allowed_tools = [
   "mcp__github_inline_comment__create_inline_comment",
   "Bash(gh pr comment:*)",

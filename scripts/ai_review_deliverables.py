@@ -57,6 +57,8 @@ class FallbackConfig:
     output_contract: ReviewOutputContract
     provider: str = "GLM"
     deliverable_markers: tuple[str, ...] = ()
+    deliverable_bot_logins: tuple[str, ...] = ()
+    deliverable_indicators: tuple[str, ...] = ()
     expected_bot_login: str = ""
     comment_marker: str = ""
     notice_marker: str = ""
@@ -325,6 +327,18 @@ def body_has_deliverable_marker(body: object, markers: tuple[str, ...]) -> bool:
     return isinstance(body, str) and any(body.lstrip().startswith(marker) for marker in markers)
 
 
+def payload_time(payload: dict[str, object], *fields: str) -> datetime | None:
+    for field in fields:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            return parse_iso_timestamp(value)
+        except ValueError:
+            continue
+    return None
+
+
 def comment_id(payload: dict[str, object]) -> int | None:
     value = payload.get("id")
     return value if isinstance(value, int) else None
@@ -375,6 +389,205 @@ def has_review_deliverable(
         if text_time_is_after_or_equal(review.get("submitted_at"), threshold):
             return True
     return False
+
+
+def provider_has_failure_notice(
+    *,
+    github: Any,
+    expected_bot_login: str,
+    notice_marker: str,
+    deliverable_markers: tuple[str, ...] = (),
+) -> bool:
+    if not notice_marker:
+        return False
+    marker_comments: list[tuple[str, dict[str, object]]] = []
+    for comment in github.list_issue_comments():
+        if not actor_is_expected_bot(comment, expected_bot_login):
+            continue
+        body = comment.get("body")
+        if body_has_deliverable_marker(body, (notice_marker,)):
+            marker_comments.append(("notice", comment))
+        elif deliverable_markers and body_has_deliverable_marker(body, deliverable_markers):
+            marker_comments.append(("deliverable", comment))
+    if not marker_comments:
+        return False
+    latest_kind, _comment = max(
+        marker_comments,
+        key=lambda item: str(item[1].get("updated_at") or item[1].get("created_at") or ""),
+    )
+    return latest_kind == "notice"
+
+
+def latest_failure_notice_time(*, github: Any, expected_bot_login: str, notice_marker: str) -> datetime | None:
+    if not notice_marker:
+        return None
+    times = [
+        timestamp
+        for comment in github.list_issue_comments()
+        if actor_is_expected_bot(comment, expected_bot_login)
+        and body_has_deliverable_marker(comment.get("body"), (notice_marker,))
+        for timestamp in [payload_time(comment, "updated_at", "created_at")]
+        if timestamp is not None
+    ]
+    return max(times, default=None)
+
+
+def latest_quality_review_deliverable_time(
+    *,
+    github: Any,
+    expected_bot_login: str,
+    deliverable_markers: tuple[str, ...],
+    output_contract: ReviewOutputContract,
+) -> datetime | None:
+    if not deliverable_markers:
+        return None
+    times: list[datetime] = []
+    for comment in github.list_issue_comments():
+        body = str(comment.get("body") or "")
+        if (
+            actor_is_expected_bot(comment, expected_bot_login)
+            and body_has_deliverable_marker(body, deliverable_markers)
+            and review_body_is_quality_deliverable(body, output_contract)
+        ):
+            timestamp = payload_time(comment, "updated_at", "created_at")
+            if timestamp is not None:
+                times.append(timestamp)
+    for review in github.list_reviews():
+        body = str(review.get("body") or "")
+        if (
+            actor_is_expected_bot(review, expected_bot_login)
+            and body_has_deliverable_marker(body, deliverable_markers)
+            and review_body_is_quality_deliverable(body, output_contract)
+        ):
+            timestamp = payload_time(review, "submitted_at")
+            if timestamp is not None:
+                times.append(timestamp)
+    return max(times, default=None)
+
+
+def claude_body_is_review_deliverable(
+    body: object,
+    *,
+    output_contract: ReviewOutputContract,
+    deliverable_indicators: tuple[str, ...],
+) -> bool:
+    if not isinstance(body, str):
+        return False
+    text = body.strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(indicator.lower() in lowered for indicator in output_contract.non_deliverable_indicators):
+        return False
+    return any(indicator.lower() in lowered for indicator in deliverable_indicators)
+
+
+def actor_is_any_expected_bot(payload: dict[str, object], expected_logins: tuple[str, ...]) -> bool:
+    return any(actor_is_expected_bot(payload, login) for login in expected_logins)
+
+
+def latest_claude_visible_deliverable_time(
+    *,
+    github: Any,
+    deliverable_bot_logins: tuple[str, ...],
+    output_contract: ReviewOutputContract,
+    deliverable_indicators: tuple[str, ...],
+) -> datetime | None:
+    expected_logins = tuple(login for login in deliverable_bot_logins if login)
+    if not expected_logins or not deliverable_indicators:
+        return None
+
+    times: list[datetime] = []
+    for comment in github.list_issue_comments():
+        if (
+            actor_is_any_expected_bot(comment, expected_logins)
+            and claude_body_is_review_deliverable(
+                comment.get("body"),
+                output_contract=output_contract,
+                deliverable_indicators=deliverable_indicators,
+            )
+        ):
+            timestamp = payload_time(comment, "updated_at", "created_at")
+            if timestamp is not None:
+                times.append(timestamp)
+    for review in github.list_reviews():
+        if (
+            actor_is_any_expected_bot(review, expected_logins)
+            and claude_body_is_review_deliverable(
+                review.get("body"),
+                output_contract=output_contract,
+                deliverable_indicators=deliverable_indicators,
+            )
+        ):
+            timestamp = payload_time(review, "submitted_at")
+            if timestamp is not None:
+                times.append(timestamp)
+    for comment in github.list_pull_review_comments():
+        if (
+            actor_is_any_expected_bot(comment, expected_logins)
+            and claude_body_is_review_deliverable(
+                comment.get("body"),
+                output_contract=output_contract,
+                deliverable_indicators=deliverable_indicators,
+            )
+        ):
+            timestamp = payload_time(comment, "updated_at", "created_at")
+            if timestamp is not None:
+                times.append(timestamp)
+    return max(times, default=None)
+
+
+def has_claude_visible_deliverable(
+    *,
+    github: Any,
+    started_at: str,
+    deliverable_bot_logins: tuple[str, ...],
+    output_contract: ReviewOutputContract,
+    deliverable_indicators: tuple[str, ...],
+) -> bool:
+    threshold = parse_iso_timestamp(started_at)
+    timestamp = latest_claude_visible_deliverable_time(
+        github=github,
+        deliverable_bot_logins=deliverable_bot_logins,
+        output_contract=output_contract,
+        deliverable_indicators=deliverable_indicators,
+    )
+    return timestamp is not None and timestamp >= threshold
+
+
+def provider_retry_needed(
+    *,
+    github: Any,
+    expected_bot_login: str,
+    notice_marker: str,
+    output_contract: ReviewOutputContract,
+    deliverable_markers: tuple[str, ...] = (),
+    deliverable_bot_logins: tuple[str, ...] = (),
+    deliverable_indicators: tuple[str, ...] = (),
+) -> bool:
+    notice_time = latest_failure_notice_time(
+        github=github,
+        expected_bot_login=expected_bot_login,
+        notice_marker=notice_marker,
+    )
+    if notice_time is None:
+        return False
+    quality_times = [
+        latest_quality_review_deliverable_time(
+            github=github,
+            expected_bot_login=expected_bot_login,
+            deliverable_markers=deliverable_markers,
+            output_contract=output_contract,
+        ),
+        latest_claude_visible_deliverable_time(
+            github=github,
+            deliverable_bot_logins=deliverable_bot_logins,
+            output_contract=output_contract,
+            deliverable_indicators=deliverable_indicators,
+        ),
+    ]
+    latest_deliverable = max((timestamp for timestamp in quality_times if timestamp is not None), default=None)
+    return latest_deliverable is None or notice_time >= latest_deliverable
 
 
 def review_body_has_source_line(body: str) -> bool:
@@ -793,13 +1006,16 @@ def split_response_for_sections(response: str, limit: int) -> list[str]:
     return balance_markdown_fence_parts(split_text_for_comment_sections(response, limit))
 
 
+def invalid_review_response_detail(index: int, response: str) -> str:
+    detail = f"review response {index} did not meet the hard-evidence output contract"
+    return f"{detail} (chars={len(response)}; output omitted from PR notice)"
+
+
 def validate_review_responses(responses: list[str], output_contract: ReviewOutputContract) -> None:
     for index, response in enumerate(responses, start=1):
         if review_body_is_quality_deliverable(response, output_contract):
             continue
-        raise RuntimeError(
-            f"review response {index} did not meet the hard-evidence output contract"
-        )
+        raise RuntimeError(invalid_review_response_detail(index, response))
 
 
 def write_github_output(name: str, value: str) -> None:
@@ -1149,6 +1365,83 @@ def render_failure_notice(*, provider: str, config: FallbackConfig, error: BaseE
     ).strip()
 
 
+def read_claude_execution_events(execution_file: Path) -> list[dict[str, object]]:
+    if not execution_file:
+        return []
+    try:
+        text = execution_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return []
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        events: list[dict[str, object]] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed_line = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed_line, dict):
+                events.append(parsed_line)
+        return events
+    if isinstance(parsed, dict):
+        return [parsed]
+    if isinstance(parsed, list):
+        return [event for event in parsed if isinstance(event, dict)]
+    return []
+
+
+def claude_execution_failure_detail(*, execution_file: Path, step_outcome: str) -> str:
+    if step_outcome and step_outcome != "success":
+        return f"Claude action step outcome={step_outcome}"
+    events = read_claude_execution_events(execution_file)
+    if not events:
+        return "Claude action completed without a parseable execution result"
+    result = next(
+        (event for event in reversed(events) if event.get("type") == "result"),
+        None,
+    )
+    if not result:
+        return "Claude action completed without a result event in the execution file"
+    if result.get("is_error") is True:
+        detail_parts = ["Claude execution result reported is_error=true"]
+        for key in ("subtype", "num_turns", "total_cost_usd", "permission_denials_count"):
+            if key in result:
+                detail_parts.append(f"{key}={result[key]}")
+        return "; ".join(detail_parts)
+    return "Claude action completed without a visible PR comment or inline comment after this run started"
+
+
+def ensure_claude_deliverable_or_notice(
+    *,
+    github: Any,
+    execution_file: Path,
+    step_outcome: str,
+    config: FallbackConfig,
+) -> str:
+    if has_claude_visible_deliverable(
+        github=github,
+        started_at=config.started_at,
+        deliverable_bot_logins=config.deliverable_bot_logins,
+        output_contract=config.output_contract,
+        deliverable_indicators=config.deliverable_indicators,
+    ):
+        return "existing-review-deliverable"
+    detail = claude_execution_failure_detail(execution_file=execution_file, step_outcome=step_outcome)
+    post_or_update_notice_comment(
+        github=github,
+        config=config,
+        body=render_failure_notice(provider=config.provider, config=config, error=RuntimeError(detail)),
+    )
+    write_github_output("failure_notice_posted", "true")
+    return "failure-notice-posted"
+
+
 def post_split_review(*, github: Any, reviewer: Any, config: FallbackConfig) -> str:
     review_files = [ReviewFile.from_api_payload(payload) for payload in github.list_pr_files()]
     chunks = pack_review_chunks(review_files, max_chars=config.max_chunk_chars)
@@ -1366,6 +1659,17 @@ def run_url_for(repo: str, config: dict[str, Any]) -> str:
     return server_url + f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
 
 
+def notice_marker_for_provider(runtime_config: dict[str, Any], provider: str) -> str:
+    provider_key = provider.lower()
+    if provider_key == "glm":
+        return config_str(config_table(runtime_config, "glm"), "notice_marker")
+    if provider_key == "kimi":
+        return config_str(config_table(runtime_config, "kimi"), "notice_marker")
+    if provider_key == "claude":
+        return config_str(config_table(runtime_config, "claude"), "notice_marker")
+    raise RuntimeError(f"unknown AI review provider {provider!r}")
+
+
 def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
     repo = env_required("GITHUB_REPOSITORY")
     pr_number = int(env_required("PR_NUMBER"))
@@ -1532,6 +1836,42 @@ def run_kimi_fallback_from_env(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_claude_deliverable_from_env(args: argparse.Namespace) -> int:
+    repo = env_required("GITHUB_REPOSITORY")
+    pr_number = int(env_required("PR_NUMBER"))
+    runtime_config = load_runtime_config(args)
+    github_config = config_table(runtime_config, "github")
+    review_config = config_table(runtime_config, "review")
+    claude_config = config_table(runtime_config, "claude")
+    github = build_github_client(repo, pr_number, runtime_config)
+    model = config_str(claude_config, "model")
+    config = FallbackConfig(
+        repo=repo,
+        pr_number=pr_number,
+        started_at=args.started_at,
+        instructions="",
+        max_chunk_chars=0,
+        max_comment_chars=config_int(review_config, "max_comment_chars"),
+        response_chars_per_chunk=config_int(review_config, "response_chars_per_chunk"),
+        output_contract=review_output_contract(review_config),
+        run_url=run_url_for(repo, runtime_config),
+        provider="Claude",
+        deliverable_bot_logins=config_str_tuple(claude_config, "deliverable_bot_logins"),
+        deliverable_indicators=config_str_tuple(claude_config, "deliverable_indicators"),
+        expected_bot_login=config_str(github_config, "expected_bot_login"),
+        notice_marker=config_str(claude_config, "notice_marker"),
+        source_label=source_label_from_template(claude_config, model=model),
+    )
+    result = ensure_claude_deliverable_or_notice(
+        github=github,
+        execution_file=Path(args.execution_file) if args.execution_file else Path(),
+        step_outcome=args.step_outcome,
+        config=config,
+    )
+    print(result)
+    return 0
+
+
 def post_notice_from_env(args: argparse.Namespace) -> int:
     repo = env_required("GITHUB_REPOSITORY")
     pr_number = int(env_required("PR_NUMBER"))
@@ -1549,7 +1889,31 @@ def review_markers_for_provider(runtime_config: dict[str, Any], provider: str) -
     if provider_key == "kimi":
         kimi_config = config_table(runtime_config, "kimi")
         return (config_str(kimi_config, "deliverable_marker"),)
+    if provider_key == "claude":
+        return ()
     raise RuntimeError(f"unknown AI review provider {provider!r}")
+
+
+def run_retry_needed_from_env(args: argparse.Namespace) -> int:
+    repo = env_required("GITHUB_REPOSITORY")
+    pr_number = int(env_required("PR_NUMBER"))
+    runtime_config = load_runtime_config(args)
+    review_config = config_table(runtime_config, "review")
+    github_config = config_table(runtime_config, "github")
+    github = build_github_client(repo, pr_number, runtime_config)
+    claude_config = config_table(runtime_config, "claude") if args.provider.lower() == "claude" else {}
+    retry_needed = provider_retry_needed(
+        github=github,
+        expected_bot_login=config_str(github_config, "expected_bot_login"),
+        notice_marker=notice_marker_for_provider(runtime_config, args.provider),
+        output_contract=review_output_contract(review_config),
+        deliverable_markers=review_markers_for_provider(runtime_config, args.provider),
+        deliverable_bot_logins=config_str_tuple(claude_config, "deliverable_bot_logins", allow_empty=True),
+        deliverable_indicators=config_str_tuple(claude_config, "deliverable_indicators", allow_empty=True),
+    )
+    print(f"retry_needed={'true' if retry_needed else 'false'}")
+    print(f"reason={'previous-failure-notice' if retry_needed else 'no-failure-notice'}")
+    return 0
 
 
 def post_model_freshness_notice_from_env(args: argparse.Namespace) -> int:
@@ -1616,6 +1980,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     kimi_review.add_argument("--instructions-file", required=True)
     kimi_review.add_argument("--config-file", type=Path)
 
+    claude_deliverable = subparsers.add_parser("claude-deliverable")
+    claude_deliverable.add_argument("--started-at", required=True)
+    claude_deliverable.add_argument("--execution-file", default="")
+    claude_deliverable.add_argument("--step-outcome", required=True)
+    claude_deliverable.add_argument("--config-file", type=Path)
+
     notice = subparsers.add_parser("notice")
     notice.add_argument("--provider", required=True)
     notice.add_argument("--message", required=True)
@@ -1631,6 +2001,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     notice_env.add_argument("--provider", required=True, choices=("glm", "kimi"))
     notice_env.add_argument("--config-file", type=Path)
 
+    retry_needed = subparsers.add_parser("retry-needed")
+    retry_needed.add_argument("--provider", required=True, choices=("glm", "kimi", "claude"))
+    retry_needed.add_argument("--config-file", type=Path)
+
     return parser.parse_args(argv)
 
 
@@ -1644,12 +2018,16 @@ def main(argv: list[str] | None = None) -> int:
         return run_kimi_fallback_from_env(args)
     if args.mode == "kimi-review":
         return run_kimi_review_from_env(args)
+    if args.mode == "claude-deliverable":
+        return run_claude_deliverable_from_env(args)
     if args.mode == "notice":
         return post_notice_from_env(args)
     if args.mode == "model-freshness-notice":
         return post_model_freshness_notice_from_env(args)
     if args.mode == "notice-env":
         return run_notice_env(args)
+    if args.mode == "retry-needed":
+        return run_retry_needed_from_env(args)
     raise RuntimeError(f"unknown mode {args.mode!r}")
 
 

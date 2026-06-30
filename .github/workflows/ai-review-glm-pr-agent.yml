@@ -25,19 +25,7 @@ jobs:
       ${{
         github.event.pull_request.draft == false
         && github.event.pull_request.head.repo.full_name == github.repository
-        && (
-          github.event.action == 'ready_for_review'
-          || github.event.action == 'opened'
-          || github.event.label.name == 'ai-review'
-          || github.event.label.name == 'ai-review-glm'
-          || (
-            github.event.action == 'synchronize'
-            && (
-              contains(github.event.pull_request.labels.*.name, 'ai-review')
-              || contains(github.event.pull_request.labels.*.name, 'ai-review-glm')
-            )
-          )
-        )
+        && contains(fromJSON('["opened","ready_for_review","labeled","synchronize"]'), github.event.action)
       }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     # Job-level timeouts cannot read the TOML loaded later in this job; keep
@@ -112,6 +100,7 @@ jobs:
           github = config["github"]
           review = config["review"]
           glm = config["glm"]
+          smart = glm["smart_trigger"]
           pr_agent = glm["pr_agent"]
           workflow = glm["workflow"]
 
@@ -136,6 +125,7 @@ jobs:
           emit("glm_api_timeout_seconds", glm["api_timeout_seconds"])
           emit("glm_review_max_chunk_chars", glm["review_max_chunk_chars"])
           emit("glm_notice_marker", notice_marker(glm))
+          emit("glm_review_labels", smart["review_labels"])
           emit("glm_pr_agent_model", pr_agent["model"])
           emit("glm_pr_agent_fallback_models", pr_agent["fallback_models"])
           emit("glm_pr_agent_custom_model_max_tokens", pr_agent["custom_model_max_tokens"])
@@ -148,8 +138,77 @@ jobs:
           emit("glm_fallback_timeout_minutes", workflow["fallback_timeout_minutes"])
           PY
 
+      - name: Decide whether GLM should review
+        id: review-decision
+        if: steps.pause.outputs.paused != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+          PR_ACTION: ${{ github.event.action }}
+          PR_LABEL_NAME: ${{ github.event.label.name }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          GLM_REVIEW_LABELS: ${{ steps.runtime-config.outputs.glm_review_labels }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          import subprocess
+
+          action = os.environ["PR_ACTION"]
+          label_name = os.environ["PR_LABEL_NAME"]
+          pr_labels = set(json.loads(os.environ["PR_LABELS"] or "[]"))
+          review_labels = set(json.loads(os.environ["GLM_REVIEW_LABELS"] or "[]"))
+
+          def emit(should_review, reason):
+              print(f"should_review={'true' if should_review else 'false'}")
+              print(f"reason={reason}")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+                  summary.write("### GLM review decision\n\n")
+                  summary.write(f"- Decision: {'review' if should_review else 'skip'}\n")
+                  summary.write(f"- Reason: `{reason}`\n")
+
+          if action in {"opened", "ready_for_review"}:
+              emit(True, action)
+              raise SystemExit(0)
+
+          if action == "labeled":
+              emit(label_name in review_labels, "review-label" if label_name in review_labels else "non-review-label")
+              raise SystemExit(0)
+
+          if action == "synchronize":
+              if pr_labels & review_labels:
+                  emit(True, "review-label")
+                  raise SystemExit(0)
+              retry = subprocess.run(
+                  (
+                      "python3",
+                      "scripts/ai_review_deliverables.py",
+                      "retry-needed",
+                      "--provider",
+                      "glm",
+                      "--config-file",
+                      "ci/ai-review.toml",
+                  ),
+                  check=False,
+                  capture_output=True,
+                  text=True,
+              )
+              if retry.returncode != 0:
+                  print("::warning::GLM retry state check failed; reviewing to avoid preserving a stale failure notice.")
+                  emit(True, "retry-check-unavailable")
+                  raise SystemExit(0)
+              retry_lines = set(retry.stdout.splitlines())
+              if "retry_needed=true" in retry_lines:
+                  emit(True, "previous-failure-notice")
+                  raise SystemExit(0)
+              emit(False, "no-review-label-or-failure-notice")
+              raise SystemExit(0)
+
+          emit(False, action)
+          PY
+
       - name: Notice when Z.ai secret is not configured
-        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'false'
+        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.glm-secret.outputs.configured == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -191,7 +250,7 @@ jobs:
 
       - name: Check AI review model freshness
         id: model-freshness
-        if: steps.glm-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true'
+        if: steps.glm-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true'
         continue-on-error: true
         run: >-
           python3 scripts/verify_ai_review_model_freshness.py
@@ -202,12 +261,12 @@ jobs:
 
       - name: Capture GLM review window
         id: review-window
-        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'true'
+        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.glm-secret.outputs.configured == 'true'
         run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Run PR-Agent review with GLM
         id: pr-agent
-        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'true'
+        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.glm-secret.outputs.configured == 'true'
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_primary_timeout_minutes) }}
         uses: the-pr-agent/pr-agent@49cb2d8ce4a6f01c238229b3770e328fe11479df # v0.34.2
@@ -227,7 +286,7 @@ jobs:
 
       - name: Stamp GLM PR-Agent review source
         id: glm_stamp
-        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'true'
+        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.glm-secret.outputs.configured == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
@@ -256,6 +315,7 @@ jobs:
           ${{
             steps.glm-secret.outputs.configured == 'true'
             && steps.pause.outputs.paused != 'true'
+            && steps.review-decision.outputs.should_review == 'true'
             && always()
             && steps.base-checkout.outcome == 'success'
             && steps.runtime-config.outcome == 'success'
@@ -284,6 +344,7 @@ jobs:
           ${{
             steps.glm-secret.outputs.configured == 'true'
             && steps.pause.outputs.paused != 'true'
+            && steps.review-decision.outputs.should_review == 'true'
             && always()
             && steps.model-freshness.outputs.glm_warning != ''
           }}
@@ -302,6 +363,7 @@ jobs:
           ${{
             steps.glm-secret.outputs.configured == 'true'
             && steps.pause.outputs.paused != 'true'
+            && steps.review-decision.outputs.should_review == 'true'
             && always()
             && (
               steps.base-checkout.outcome == 'failure'

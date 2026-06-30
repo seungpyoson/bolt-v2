@@ -1559,6 +1559,7 @@ def evaluate_ci_policy(
     mergify_temp_pr_head_ref_prefix: str = "",
     mergify_temp_pr_actor_id: int = -1,
     event_sender_id: int = -1,
+    pull_request_author_id: int = -1,
     ref: str,
 ) -> CiPolicyResult:
     override = policy.get("override")
@@ -1590,6 +1591,7 @@ def evaluate_ci_policy(
             workflow_dispatch_full_ci=workflow_dispatch_full_ci,
             docs_only=False,
             event_sender_id=event_sender_id,
+            pull_request_author_id=pull_request_author_id,
             ref=ref,
         )
     except ProvenanceError as exc:
@@ -1889,6 +1891,10 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         errors.append("ci-policy must pass pull_request head ref through an env var")
     if '--pull-request-head-ref "$PR_HEAD_REF"' not in text:
         errors.append("ci-policy must pass pull_request head ref")
+    if "PR_AUTHOR_ID: ${{ github.event.pull_request.user.id || '' }}" not in text:
+        errors.append("ci-policy must pass pull_request author id through an env var")
+    if '--pull-request-author-id "$PR_AUTHOR_ID"' not in text:
+        errors.append("ci-policy must pass pull_request author id")
     if f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"' not in text:
         errors.append("ci-policy must pass pull_request base-change state")
     if '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"' not in text:
@@ -11862,6 +11868,8 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             '--pull-request-draft "${{ github.event.pull_request.draft || false }}"',
             "PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}",
             '--pull-request-head-ref "$PR_HEAD_REF"',
+            "PR_AUTHOR_ID: ${{ github.event.pull_request.user.id || '' }}",
+            '--pull-request-author-id "$PR_AUTHOR_ID"',
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
             '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"',
             "EVENT_SENDER_ID: ${{ github.event.sender.id }}",

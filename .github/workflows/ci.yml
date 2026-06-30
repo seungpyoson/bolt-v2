@@ -226,6 +226,7 @@ jobs:
         shell: bash
         env:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id || '' }}
           EVENT_SENDER_ID: ${{ github.event.sender.id }}
         run: |
           policy_script="${{ steps.policy_base.outputs.script }}"
@@ -242,6 +243,7 @@ jobs:
             --event-action "${{ github.event.action || '' }}" \
             --pull-request-draft "${{ github.event.pull_request.draft || false }}" \
             --pull-request-head-ref "$PR_HEAD_REF" \
+            --pull-request-author-id "$PR_AUTHOR_ID" \
             --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}" \
             --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}" \
             --docs-only "${{ needs.detector.outputs.docs_only || 'false' }}" \

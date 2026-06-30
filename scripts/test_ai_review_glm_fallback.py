@@ -1200,11 +1200,12 @@ def test_claude_deliverable_after_notice_clears_retry_needed_cli() -> None:
         )
         previous_env = {
             name: os.environ.get(name)
-            for name in ("GITHUB_REPOSITORY", "PR_NUMBER", "GITHUB_TOKEN")
+            for name in ("GITHUB_REPOSITORY", "PR_NUMBER", "GITHUB_TOKEN", "GITHUB_API_URL")
         }
         os.environ["GITHUB_REPOSITORY"] = "seungpyoson/bolt-v2"
         os.environ["PR_NUMBER"] = "895"
         os.environ["GITHUB_TOKEN"] = "fake-token"
+        os.environ["GITHUB_API_URL"] = api_url
         stdout = io.StringIO()
         try:
             with contextlib.redirect_stdout(stdout):
@@ -1272,11 +1273,12 @@ def test_claude_failure_notice_allows_retry_needed_cli() -> None:
         )
         previous_env = {
             name: os.environ.get(name)
-            for name in ("GITHUB_REPOSITORY", "PR_NUMBER", "GITHUB_TOKEN")
+            for name in ("GITHUB_REPOSITORY", "PR_NUMBER", "GITHUB_TOKEN", "GITHUB_API_URL")
         }
         os.environ["GITHUB_REPOSITORY"] = "seungpyoson/bolt-v2"
         os.environ["PR_NUMBER"] = "895"
         os.environ["GITHUB_TOKEN"] = "fake-token"
+        os.environ["GITHUB_API_URL"] = api_url
         stdout = io.StringIO()
         try:
             with contextlib.redirect_stdout(stdout):
@@ -1333,11 +1335,12 @@ def retry_needed_cli(provider: str, config_text: str) -> tuple[int, list[str]]:
         config_path.write_text(config_text.replace("__API_URL__", api_url), encoding="utf-8")
         previous_env = {
             name: os.environ.get(name)
-            for name in ("GITHUB_REPOSITORY", "PR_NUMBER", "GITHUB_TOKEN")
+            for name in ("GITHUB_REPOSITORY", "PR_NUMBER", "GITHUB_TOKEN", "GITHUB_API_URL")
         }
         os.environ["GITHUB_REPOSITORY"] = "seungpyoson/bolt-v2"
         os.environ["PR_NUMBER"] = "895"
         os.environ["GITHUB_TOKEN"] = "fake-token"
+        os.environ["GITHUB_API_URL"] = api_url
         stdout = io.StringIO()
         try:
             with contextlib.redirect_stdout(stdout):

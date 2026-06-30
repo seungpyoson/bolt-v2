@@ -87,10 +87,9 @@ mod risk;
 mod strategy_envelope;
 mod vol_sources;
 
-use capital::{is_lowercase_sha256_hex, validate_capital_pools};
+use capital::validate_capital_pools;
 use chainlink_data_streams::{
-    uses_root_owned_chainlink_feed_catalog, validate_chainlink_feed_binding_coverage,
-    validate_root_owned_chainlink_feed_catalog,
+    validate_chainlink_feed_binding_coverage, validate_root_owned_chainlink_feed_catalog,
 };
 use clients::{validate_aws_block, validate_clients_block};
 use gate_providers::validate_gate_providers;

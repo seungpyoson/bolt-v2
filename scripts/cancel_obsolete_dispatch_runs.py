@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
+import functools
 import json
 import os
 import pathlib
@@ -23,6 +24,13 @@ from collections.abc import Iterable
 from typing import Any
 
 
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import config_validators as _cv  # noqa: E402
+
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
 GITHUB_API_HEADERS = {
@@ -33,6 +41,9 @@ GITHUB_API_HEADERS = {
 
 class DispatchCancelError(RuntimeError):
     """Raised when cancellation cannot be evaluated safely."""
+
+
+require_string = functools.partial(_cv.require_string, error_cls=DispatchCancelError)
 
 
 class GitHubApiError(DispatchCancelError):
@@ -121,13 +132,6 @@ def require_table(data: dict[str, object], key: str, section: str) -> dict[str, 
     value = data.get(key)
     if not isinstance(value, dict):
         raise DispatchCancelError(f"{section} must define [{key}]")
-    return value
-
-
-def require_string(data: dict[str, object], key: str, section: str) -> str:
-    value = data.get(key)
-    if not isinstance(value, str) or not value:
-        raise DispatchCancelError(f"{section}.{key} must be a non-empty string")
     return value
 
 

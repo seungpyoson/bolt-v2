@@ -6,12 +6,20 @@ from __future__ import annotations
 import argparse
 from collections.abc import Iterable
 from dataclasses import dataclass
+import functools
 import hashlib
 import os
 import pathlib
 import subprocess
 import sys
 import tomllib
+
+
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import config_validators as _cv  # noqa: E402
 
 
 FORBIDDEN_SAFE_EXCLUDES = (
@@ -40,6 +48,10 @@ MANDATORY_TRACKED_INPUTS = (
 
 class FingerprintError(Exception):
     """Raised when fingerprint production must fail closed."""
+
+
+require_table = functools.partial(_cv.require_table, error_cls=FingerprintError)
+require_string = functools.partial(_cv.require_string, error_cls=FingerprintError)
 
 
 @dataclass(frozen=True)
@@ -125,24 +137,10 @@ def load_toml(path: pathlib.Path, label: str) -> dict[str, object]:
         raise FingerprintError(f"{label} invalid TOML: {exc}") from exc
 
 
-def require_table(parent: dict[str, object], key: str, label: str) -> dict[str, object]:
-    value = parent.get(key)
-    if not isinstance(value, dict):
-        raise FingerprintError(f"{label}.{key} must be a table")
-    return value
-
-
 def require_positive_int(parent: dict[str, object], key: str, label: str) -> int:
     value = parent.get(key)
     if not isinstance(value, int) or value <= 0:
         raise FingerprintError(f"{label}.{key} must be a positive integer")
-    return value
-
-
-def require_string(parent: dict[str, object], key: str, label: str) -> str:
-    value = parent.get(key)
-    if not isinstance(value, str) or not value:
-        raise FingerprintError(f"{label}.{key} must be a non-empty string")
     return value
 
 

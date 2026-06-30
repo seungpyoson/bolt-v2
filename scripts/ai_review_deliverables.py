@@ -538,13 +538,37 @@ def provider_retry_needed(
     claude_deliverable_marker: str = "",
     require_source_line: bool = False,
 ) -> bool:
+    retry_needed, _reason = provider_retry_decision(
+        github=github,
+        expected_bot_login=expected_bot_login,
+        notice_marker=notice_marker,
+        output_contract=output_contract,
+        deliverable_markers=deliverable_markers,
+        deliverable_bot_logins=deliverable_bot_logins,
+        claude_deliverable_marker=claude_deliverable_marker,
+        require_source_line=require_source_line,
+    )
+    return retry_needed
+
+
+def provider_retry_decision(
+    *,
+    github: Any,
+    expected_bot_login: str,
+    notice_marker: str,
+    output_contract: ReviewOutputContract,
+    deliverable_markers: tuple[str, ...] = (),
+    deliverable_bot_logins: tuple[str, ...] = (),
+    claude_deliverable_marker: str = "",
+    require_source_line: bool = False,
+) -> tuple[bool, str]:
     notice_time = latest_failure_notice_time(
         github=github,
         expected_bot_login=expected_bot_login,
         notice_marker=notice_marker,
     )
     if notice_time is None:
-        return False
+        return False, "no-failure-notice"
     quality_times = [
         latest_quality_review_deliverable_time(
             github=github,
@@ -561,7 +585,9 @@ def provider_retry_needed(
         ),
     ]
     latest_deliverable = max((timestamp for timestamp in quality_times if timestamp is not None), default=None)
-    return latest_deliverable is None or notice_time >= latest_deliverable
+    if latest_deliverable is None or notice_time >= latest_deliverable:
+        return True, "previous-failure-notice"
+    return False, "deliverable-after-notice"
 
 
 def review_body_has_source_line(body: str) -> bool:
@@ -1878,7 +1904,7 @@ def run_retry_needed_from_env(args: argparse.Namespace) -> int:
     github = build_github_client(repo, pr_number, runtime_config)
     provider_key = args.provider.lower()
     claude_config = config_table(runtime_config, "claude") if provider_key == "claude" else {}
-    retry_needed = provider_retry_needed(
+    retry_needed, reason = provider_retry_decision(
         github=github,
         expected_bot_login=config_str(github_config, "expected_bot_login"),
         notice_marker=notice_marker_for_provider(runtime_config, args.provider),
@@ -1889,7 +1915,7 @@ def run_retry_needed_from_env(args: argparse.Namespace) -> int:
         require_source_line=provider_key in ("glm", "kimi"),
     )
     print(f"retry_needed={'true' if retry_needed else 'false'}")
-    print(f"reason={'previous-failure-notice' if retry_needed else 'no-failure-notice'}")
+    print(f"reason={reason}")
     return 0
 
 

@@ -172,6 +172,10 @@ CLAUDE_WORKFLOW_SNIPPETS = (
     'emit("claude_track_progress", claude["track_progress"])',
     'emit("claude_deliverable_marker", claude["deliverable_marker"])',
     'emit("claude_source_label", claude["source_label_template"].replace("{model}", claude["model"]))',
+    'contract = config["review"]["output_contract"]',
+    'emit("review_finding_required_labels", contract["finding_required_labels"])',
+    'emit("review_no_findings_indicator", contract["no_findings_indicator"])',
+    'emit("review_no_findings_required_labels", contract["no_findings_required_labels"])',
     'emit("claude_allowed_tools", claude["allowed_tools"])',
     'emit("claude_max_turns", workflow["max_turns"])',
     'emit("claude_primary_timeout_minutes", workflow["primary_timeout_minutes"])',
@@ -196,6 +200,9 @@ CLAUDE_WORKFLOW_SNIPPETS = (
     "track_progress: ${{ steps.runtime-config.outputs.claude_track_progress }}",
     "DELIVERABLE MARKER: ${{ steps.runtime-config.outputs.claude_deliverable_marker }}",
     "SOURCE LABEL: ${{ steps.runtime-config.outputs.claude_source_label }}",
+    "FINDING REQUIRED LABELS: ${{ steps.runtime-config.outputs.review_finding_required_labels }}",
+    "NO-FINDINGS INDICATOR: ${{ steps.runtime-config.outputs.review_no_findings_indicator }}",
+    "NO-FINDINGS REQUIRED LABELS: ${{ steps.runtime-config.outputs.review_no_findings_required_labels }}",
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.claude_primary_timeout_minutes) }}",
     "--max-turns ${{ steps.runtime-config.outputs.claude_max_turns }}",
     "--model ${{ steps.runtime-config.outputs.claude_model }}",
@@ -241,6 +248,7 @@ AI_REVIEW_DELIVERABLES_SNIPPETS = (
     "output omitted from PR notice",
     "validate_review_responses(responses, config.output_contract)",
     "def provider_retry_needed(",
+    "def provider_retry_decision(",
     "def latest_quality_review_deliverable_time(",
     "def latest_claude_visible_deliverable_time(",
     "def claude_body_is_review_deliverable(",
@@ -252,6 +260,7 @@ AI_REVIEW_DELIVERABLES_SNIPPETS = (
     'require_source_line=provider_key in ("glm", "kimi")',
     "def run_retry_needed_from_env(",
     'print(f"retry_needed=',
+    'print(f"reason={reason}")',
     'choices=("glm", "kimi", "claude")',
     "def list_pull_review_comments",
     "def update_pull_review_comment",
@@ -617,12 +626,27 @@ def exact_claude_model_id(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"claude-opus-\d+(?:[-.]\d+)*", value) is not None
 
 
-def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
+def configured_runtime_literals(ai_review_toml: str, *, include_output_contract: bool = False) -> tuple[str, ...]:
     try:
         parsed = tomllib.loads(ai_review_toml)
     except tomllib.TOMLDecodeError:
         return ()
     literals: list[str] = []
+    review = parsed.get("review")
+    if include_output_contract and isinstance(review, dict):
+        output_contract = review.get("output_contract")
+        if isinstance(output_contract, dict):
+            for key in (
+                "finding_required_labels",
+                "no_findings_indicator",
+                "no_findings_intro",
+                "no_findings_required_labels",
+            ):
+                value = output_contract.get(key)
+                if isinstance(value, str) and value:
+                    literals.append(value)
+                elif isinstance(value, list):
+                    literals.extend(item for item in value if isinstance(item, str) and item)
     github = parsed.get("github")
     if isinstance(github, dict):
         value = github.get("expected_bot_login")
@@ -1089,7 +1113,7 @@ def verify_texts(
         for literal in WORKFLOW_FORBIDDEN_RUNTIME_LITERALS:
             if literal in workflow:
                 findings.append(f"{workflow_name} must read AI review runtime value from ci/ai-review.toml, not {literal!r}")
-        for literal in configured_runtime_literals(ai_review_toml):
+        for literal in configured_runtime_literals(ai_review_toml, include_output_contract=True):
             if literal in workflow:
                 findings.append(f"{workflow_name} must read AI review runtime value from ci/ai-review.toml, not {literal!r}")
 

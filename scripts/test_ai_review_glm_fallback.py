@@ -1219,7 +1219,9 @@ def test_claude_deliverable_after_notice_clears_retry_needed_cli() -> None:
                     os.environ[name] = value
 
     assert result == 0
-    assert "retry_needed=false" in stdout.getvalue().splitlines()
+    output_lines = stdout.getvalue().splitlines()
+    assert "retry_needed=false" in output_lines
+    assert "reason=deliverable-after-notice" in output_lines
 
 
 def test_claude_failure_notice_allows_retry_needed_cli() -> None:
@@ -1289,7 +1291,9 @@ def test_claude_failure_notice_allows_retry_needed_cli() -> None:
                     os.environ[name] = value
 
     assert result == 0
-    assert "retry_needed=true" in stdout.getvalue().splitlines()
+    output_lines = stdout.getvalue().splitlines()
+    assert "retry_needed=true" in output_lines
+    assert "reason=previous-failure-notice" in output_lines
 
 
 def retry_needed_config_text(api_url: str, provider_lines: tuple[str, ...]) -> str:
@@ -1365,6 +1369,7 @@ def test_glm_retry_needed_cli_handles_absent_claude_keys() -> None:
 
     assert result == 0
     assert "retry_needed=false" in output
+    assert "reason=no-failure-notice" in output
 
 
 def test_kimi_retry_needed_cli_handles_absent_claude_keys() -> None:
@@ -1382,6 +1387,7 @@ def test_kimi_retry_needed_cli_handles_absent_claude_keys() -> None:
 
     assert result == 0
     assert "retry_needed=false" in output
+    assert "reason=no-failure-notice" in output
 
 
 def test_system_prompt_uses_line_start_finding_labels() -> None:

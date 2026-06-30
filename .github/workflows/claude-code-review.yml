@@ -100,6 +100,7 @@ jobs:
           github = config["github"]
           claude = config["claude"]
           workflow = claude["workflow"]
+          contract = config["review"]["output_contract"]
 
           def emit(name, value):
               if isinstance(value, bool):
@@ -113,6 +114,9 @@ jobs:
           emit("claude_track_progress", claude["track_progress"])
           emit("claude_deliverable_marker", claude["deliverable_marker"])
           emit("claude_source_label", claude["source_label_template"].replace("{model}", claude["model"]))
+          emit("review_finding_required_labels", contract["finding_required_labels"])
+          emit("review_no_findings_indicator", contract["no_findings_indicator"])
+          emit("review_no_findings_required_labels", contract["no_findings_required_labels"])
           emit("claude_allowed_tools", claude["allowed_tools"])
           emit("claude_max_turns", workflow["max_turns"])
           emit("claude_primary_timeout_minutes", workflow["primary_timeout_minutes"])
@@ -313,6 +317,9 @@ jobs:
             MODEL FRESHNESS WARNING: ${{ steps.model-freshness.outputs.claude_warning }}
             DELIVERABLE MARKER: ${{ steps.runtime-config.outputs.claude_deliverable_marker }}
             SOURCE LABEL: ${{ steps.runtime-config.outputs.claude_source_label }}
+            FINDING REQUIRED LABELS: ${{ steps.runtime-config.outputs.review_finding_required_labels }}
+            NO-FINDINGS INDICATOR: ${{ steps.runtime-config.outputs.review_no_findings_indicator }}
+            NO-FINDINGS REQUIRED LABELS: ${{ steps.runtime-config.outputs.review_no_findings_required_labels }}
 
             You are a read-only PR reviewer for this repository. Review the pull request diff and post only GitHub PR feedback:
             - Use only the tools granted through the configured Claude arguments.
@@ -338,8 +345,8 @@ jobs:
             - **Review Bar & Merge Mechanics**: do not downgrade real issues into notes. Flag unresolved review-thread, stale-review, required-reviewer, or merge-rule bypass risks if the diff touches those controls.
 
             Post one top-level PR comment as the visible deliverable for this run. The comment must begin with the exact DELIVERABLE MARKER line, include `**Source:** ${{ steps.runtime-config.outputs.claude_source_label }}`, and then follow one of these contracts:
-            - If there are findings, each finding must include lines starting exactly with `Severity:`, `Evidence:`, `Issue:`, and `Fix / verification:`.
-            - If there are no findings, include `No hard-evidence findings` and lines starting exactly with `Coverage reviewed:`, `Evidence basis:`, and `Risk areas considered:`.
+            - If there are findings, each finding must include one line starting with each configured label in FINDING REQUIRED LABELS.
+            - If there are no findings, include the exact NO-FINDINGS INDICATOR text and one line starting with each configured label in NO-FINDINGS REQUIRED LABELS.
           claude_args: |
             --max-turns ${{ steps.runtime-config.outputs.claude_max_turns }}
             --model ${{ steps.runtime-config.outputs.claude_model }}

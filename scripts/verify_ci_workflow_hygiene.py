@@ -11300,13 +11300,97 @@ def named_step_run_block(job_text: str, step_name: str) -> str | None:
     return None
 
 
+def named_step_run_texts(job_text: str) -> tuple[tuple[str, str], ...]:
+    lines = job_text.splitlines()
+    run_texts: list[tuple[str, str]] = []
+    index = 0
+    while index < len(lines):
+        name_match = re.match(r"^\s*-\s+name:\s*(?P<name>.+?)\s*$", lines[index])
+        if name_match is None:
+            index += 1
+            continue
+
+        step_name = name_match.group("name")
+        step_indent = len(lines[index]) - len(lines[index].lstrip())
+        step_end = len(lines)
+        for candidate_end in range(index + 1, len(lines)):
+            candidate_line = lines[candidate_end]
+            if not candidate_line.strip():
+                continue
+            candidate_indent = len(candidate_line) - len(candidate_line.lstrip())
+            if candidate_indent <= step_indent and candidate_line.lstrip().startswith("- "):
+                step_end = candidate_end
+                break
+
+        for run_line_number in range(index + 1, step_end):
+            run_line = lines[run_line_number]
+            run_text = run_line.strip()
+            if run_text == "run: |":
+                run_indent = len(run_line) - len(run_line.lstrip())
+                block_lines: list[str] = []
+                for body_line in lines[run_line_number + 1 : step_end]:
+                    if body_line.strip():
+                        body_indent = len(body_line) - len(body_line.lstrip())
+                        if body_indent <= run_indent:
+                            break
+                    block_lines.append(body_line)
+                run_texts.append((step_name, "\n".join(block_lines)))
+                break
+            if run_text.startswith("run: "):
+                run_texts.append((step_name, run_text.removeprefix("run: ").strip()))
+                break
+        index = step_end
+    return tuple(run_texts)
+
+
+def simple_shell_lines(run_text: str) -> tuple[str, ...]:
+    return tuple(line.strip() for line in run_text.splitlines() if line.strip())
+
+
 def bte_test_invocation_count(run_block: str) -> int:
-    return run_block.count("just bte-test")
+    return len(re.findall(r"\bjust\s+bte-test\b", run_block))
+
+
+BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS = {
+    "Resolve crate managed target dir": (
+        'dir="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo crates/backtesting-vertical-slice)"',
+        'echo "dir=$dir" >> "$GITHUB_OUTPUT"',
+    ),
+    "Compute BVS cache input hash": (
+        'echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"',
+    ),
+    "Configure nextest JUnit output": (
+        "printf '%s\\n' \\",
+        "'[profile.default.junit]' \\",
+        '\'path = "junit-unit-${{ matrix.run_number }}.xml"\' \\',
+        "'store-success-output = false' \\",
+        "'store-failure-output = true' \\",
+        '> "$RUNNER_TEMP/nextest-junit.toml"',
+    ),
+    "Stage JUnit report": (
+        'cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" '
+        '"junit-unit-${{ matrix.run_number }}.xml"',
+    ),
+}
+
+
+def bvs_backtester_job_shell_steps_are_allowlisted(job_text: str) -> bool:
+    seen_run_step_names: set[str] = set()
+    for step_name, run_text in named_step_run_texts(job_text):
+        if step_name == "Run tests":
+            continue
+        expected_lines = BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS.get(step_name)
+        if expected_lines is None or step_name in seen_run_step_names:
+            return False
+        if simple_shell_lines(run_text) != expected_lines:
+            return False
+        seen_run_step_names.add(step_name)
+    return "Stage JUnit report" in seen_run_step_names
 
 
 def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ...]:
     # Allowlist the whole BVS shell block instead of predicting shell wrapper syntax.
-    lines = tuple(line.strip() for line in run_block.splitlines() if line.strip())
+    lines = simple_shell_lines(run_block)
     expected_prefix = ("rc=0", "set +e")
     expected_suffix = (
         "rc=$?",
@@ -11493,6 +11577,8 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             invocation_count = bte_test_invocation_count(job_text)
             if invocation_count != 1:
                 errors.append(f"flaky-test-detection {label} must have exactly one just bte-test invocation")
+            if not bvs_backtester_job_shell_steps_are_allowlisted(job_text):
+                errors.append(f"flaky-test-detection {label} must keep BVS job shell steps unchanged")
             denominators = simple_bte_run_block_partition_denominators(bte_run_block)
             if len(denominators) != 1:
                 errors.append(f"flaky-test-detection {label} must keep just bte-test in a simple Run tests block")

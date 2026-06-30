@@ -6328,7 +6328,7 @@ jobs:
             "flaky detection verifier must reject dead-only scheduled smoke test invocations, "
             f"got: {dead_only_partition_smoke_errors}"
         )
-    unrelated_dead_guard_smoke_workflow = good_smoke_workflow.replace(
+    changed_stage_shell_smoke_workflow = good_smoke_workflow.replace(
         '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
         """        run: |
           if false; then
@@ -6337,11 +6337,11 @@ jobs:
           cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml" """,
         1,
     )
-    unrelated_dead_guard_smoke_errors = flaky_detection_errors(smoke_workflow=unrelated_dead_guard_smoke_workflow)
-    if unrelated_dead_guard_smoke_errors:
+    changed_stage_shell_smoke_errors = flaky_detection_errors(smoke_workflow=changed_stage_shell_smoke_workflow)
+    if not any("backtester smoke job must keep BVS job shell steps unchanged" in error for error in changed_stage_shell_smoke_errors):
         raise AssertionError(
-            "flaky detection verifier must not reject unrelated dead guards outside the BVS Run tests step, "
-            f"got: {unrelated_dead_guard_smoke_errors}"
+            "flaky detection verifier must reject changed sibling shell steps in the scheduled smoke BVS job, "
+            f"got: {changed_stage_shell_smoke_errors}"
         )
     cross_step_bte_smoke_workflow = good_smoke_workflow.replace(
         '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
@@ -6356,6 +6356,33 @@ jobs:
             "flaky detection verifier must reject scheduled smoke BVS commands outside the Run tests step, "
             f"got: {cross_step_bte_smoke_errors}"
         )
+    for extra_command, extra_command_name in (
+        (
+            'just  bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl',
+            "whitespace-obfuscated just bte-test",
+        ),
+        (
+            'cargo nextest run -p backtesting-vertical-slice',
+            "raw cargo nextest BVS",
+        ),
+    ):
+        cross_step_extra_work_smoke_workflow = good_smoke_workflow.replace(
+            '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+            f"""        run: |
+          {extra_command}
+          cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml" """,
+            1,
+        )
+        cross_step_extra_work_smoke_errors = flaky_detection_errors(smoke_workflow=cross_step_extra_work_smoke_workflow)
+        if not any(
+            "backtester smoke job must keep BVS job shell steps unchanged" in error
+            or "backtester smoke job must have exactly one just bte-test invocation" in error
+            for error in cross_step_extra_work_smoke_errors
+        ):
+            raise AssertionError(
+                f"flaky detection verifier must reject {extra_command_name} commands outside the Run tests step, "
+                f"got: {cross_step_extra_work_smoke_errors}"
+            )
 
     oversized_smoke_workflow = good_smoke_workflow.replace(
         "run_number: [1]",

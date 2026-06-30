@@ -1,4 +1,4 @@
-name: Flaky Test Detection Smoke
+name: Flaky Test Smoke
 
 on:
   workflow_dispatch:
@@ -12,8 +12,8 @@ env:
   RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
 
 jobs:
-  flaky-detection-rust-root-smoke:
-    name: Root Rust Tests - Manual Smoke (Run ${{ matrix.run_number }})
+  flaky-smoke-rust-root:
+    name: Root Rust Tests - Flaky Smoke (Run ${{ matrix.run_number }})
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     strategy:
       fail-fast: false
@@ -87,8 +87,8 @@ jobs:
           job_name: nextest archive
           report_path: "junit-*.xml"
 
-  flaky-detection-rust-backtester-smoke:
-    name: Backtester Rust Tests - Manual Smoke (Shard ${{ matrix.shard }}, Run ${{ matrix.run_number }})
+  flaky-smoke-rust-backtester:
+    name: Backtester Rust Tests - Flaky Smoke (Shard ${{ matrix.shard }}, Run ${{ matrix.run_number }})
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     strategy:
       fail-fast: false
@@ -172,8 +172,8 @@ jobs:
           job_name: bvs-test archive
           report_path: "junit-*.xml"
 
-  flaky-detection-rust-backtester-issue-789-smoke:
-    name: Backtester Issue 789 - Manual Smoke (Run ${{ matrix.run_number }})
+  flaky-smoke-rust-backtester-issue-789:
+    name: Backtester Issue 789 - Flaky Smoke (Run ${{ matrix.run_number }})
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     strategy:
       fail-fast: false

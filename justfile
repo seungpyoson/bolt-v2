@@ -314,6 +314,9 @@ ci-runner-minutes *args:
 ci-storage-audit *args: check-workspace
     python3 scripts/ci_storage_audit.py {{args}}
 
+ci-storage-tripwire *args: check-workspace
+    python3 scripts/ci_storage_tripwire.py {{args}}
+
 source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner
 
@@ -460,6 +463,8 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
 
     [ -f .github/workflows/ci.yml ] && workflow_files+=(.github/workflows/ci.yml)
     [ -f .github/workflows/advisory.yml ] && workflow_files+=(.github/workflows/advisory.yml)
+    [ -f .github/workflows/flaky-test-detection.yml ] && workflow_files+=(.github/workflows/flaky-test-detection.yml)
+    [ -f .github/workflows/flaky-test-smoke.yml ] && workflow_files+=(.github/workflows/flaky-test-smoke.yml)
     [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
     github_script_files=(.github/scripts/*.sh)
 
@@ -507,6 +512,9 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
     if ! python3 scripts/test_merge_readiness.py; then
         failed=1
     fi
+    if ! python3 scripts/test_merge_queue_preflight.py; then
+        failed=1
+    fi
     if ! python3 scripts/test_coverage_enforcer.py; then
         failed=1
     fi
@@ -517,6 +525,9 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
         failed=1
     fi
     if ! python3 scripts/test_ci_storage_audit.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_ci_storage_tripwire.py; then
         failed=1
     fi
     if ! python3 scripts/test_find_same_sha_main_evidence.py; then
@@ -620,10 +631,10 @@ clean-merged *args:
 clean-merged-doctor:
     python3 scripts/clean_merged_artifacts.py --doctor
 
-# clean-merged: one-time bulk reclaim of the worktree backlog.
+# clean-merged: post-merge-wave sync + one-time bulk reclaim of the worktree backlog.
 # Prints a dry-run first; pass --apply to actually archive+remove.
 clean-merged-backlog *args:
-    python3 scripts/clean_merged_artifacts.py --include-worktrees {{args}}
+    python3 scripts/clean_merged_artifacts.py --sync-main --reconcile --include-worktrees {{args}}
 
 # clean-merged: prune quarantine archives and backup refs older than DAYS (default 30).
 clean-merged-purge days='30':
@@ -638,8 +649,9 @@ setup:
     # Ensure managed hooks are executable (git warns + skips otherwise).
     chmod +x .githooks/post-merge .githooks/post-checkout .githooks/post-rewrite 2>/dev/null || true
 
-    echo "Enabling remote.origin.prune (auto-prune deleted upstreams on fetch)..."
-    git config remote.origin.prune true
+    clean_merged_remote="$(python3 scripts/clean_merged_artifacts.py --print-remote-name)"
+    echo "Enabling remote.${clean_merged_remote}.prune (auto-prune deleted upstreams on fetch)..."
+    git config "remote.${clean_merged_remote}.prune" true
 
     echo "Adding {{target}} target..."
     rustup target add {{target}}

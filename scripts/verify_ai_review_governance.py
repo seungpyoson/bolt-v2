@@ -135,6 +135,38 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
 )
 
+CLAUDE_WORKFLOW_SNIPPETS = (
+    "Claude Code Review",
+    "types: [opened, synchronize, labeled]",
+    "github.event.pull_request.draft == false",
+    "github.event.pull_request.head.repo.full_name == github.repository",
+    "github.event.comment.author_association",
+    "github.event.review.author_association",
+    "ci/ai-review.toml",
+    "Load AI review runtime config",
+    'emit("claude_model", claude["model"])',
+    'emit("claude_track_progress", claude["track_progress"])',
+    'emit("claude_allowed_tools", claude["allowed_tools"])',
+    'emit("claude_max_turns", workflow["max_turns"])',
+    'emit("claude_primary_timeout_minutes", workflow["primary_timeout_minutes"])',
+    "PR_LABEL_NAME: ${{ github.event.label.name }}",
+    'if action == "labeled":',
+    "review-label",
+    "fork-pr-manual-mention",
+    "scripts/verify_ai_review_model_freshness.py --live --advisory --provider claude",
+    "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2",
+    "anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1",
+    "contents: read",
+    "id-token: write",
+    "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    "additional_permissions: |",
+    "track_progress: ${{ steps.runtime-config.outputs.claude_track_progress }}",
+    "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.claude_primary_timeout_minutes) }}",
+    "--max-turns ${{ steps.runtime-config.outputs.claude_max_turns }}",
+    "--model ${{ steps.runtime-config.outputs.claude_model }}",
+    '--allowedTools "${{ steps.runtime-config.outputs.claude_allowed_tools }}"',
+)
+
 SMOKE_TRUSTED_CONFIG_SNIPPETS = (
     "ref: ${{ github.event.pull_request.base.sha }}",
     "path: .ai-review/smoke-base",
@@ -398,6 +430,72 @@ def workflow_step_block(workflow_text: str, step_name: str) -> str:
     return ""
 
 
+def workflow_literal_block_value(block: str, key: str) -> str | None:
+    lines = block.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != f"{key}: |":
+            continue
+        base_indent = len(line) - len(line.lstrip())
+        value_lines: list[str] = []
+        for next_line in lines[index + 1 :]:
+            stripped = next_line.strip()
+            next_indent = len(next_line) - len(next_line.lstrip())
+            if stripped and next_indent <= base_indent:
+                break
+            value_lines.append(next_line[base_indent + 2 :] if len(next_line) >= base_indent + 2 else "")
+        return "\n".join(value_lines)
+    return None
+
+
+def yaml_scalar_entries(block: str) -> tuple[tuple[str, str], ...]:
+    entries: list[tuple[str, str]] = []
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, separator, value = stripped.partition(":")
+        if separator:
+            entries.append((key.strip(), value.strip()))
+    return tuple(entries)
+
+
+def verify_literal_block_unique_entries(
+    step_block: str,
+    *,
+    block_key: str,
+    expected_entries: dict[str, str],
+    label: str,
+) -> list[str]:
+    block = workflow_literal_block_value(step_block, block_key)
+    expected_description = ", ".join(
+        f"exactly one {key}: {value} entry" for key, value in expected_entries.items()
+    )
+    if block is None:
+        return [f"{label} must set {block_key} to {expected_description}"]
+
+    values_by_key: dict[str, list[str]] = {}
+    for key, value in yaml_scalar_entries(block):
+        values_by_key.setdefault(key, []).append(value)
+
+    mismatched = {
+        key: values_by_key.get(key, [])
+        for key, expected_value in expected_entries.items()
+        if values_by_key.get(key, []) != [expected_value]
+    }
+    if mismatched:
+        return [f"{label} must set {block_key} to {expected_description}; got {mismatched!r}"]
+    return []
+
+
+def verify_claude_additional_permissions_cap(claude_run_step: str) -> list[str]:
+    return verify_literal_block_unique_entries(
+        claude_run_step,
+        block_key="additional_permissions",
+        expected_entries={"contents": "read"},
+        label="Claude workflow review step",
+    )
+
+
 def verify_model_freshness_step_contracts(glm_workflow: str, kimi_workflow: str) -> list[str]:
     findings: list[str] = []
     provider_steps = (
@@ -461,6 +559,10 @@ def exact_glm_model_id(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"glm-\d+(?:\.\d+)*", value) is not None
 
 
+def exact_claude_model_id(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"claude-opus-\d+(?:[-.]\d+)*", value) is not None
+
+
 def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
     try:
         parsed = tomllib.loads(ai_review_toml)
@@ -478,12 +580,13 @@ def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
             value = model_freshness.get(key)
             if isinstance(value, str) and value:
                 literals.append(value)
-    for table_name in ("glm", "kimi"):
+    for table_name in ("glm", "kimi", "claude"):
         table = parsed.get(table_name)
         if isinstance(table, dict):
             for key in (
                 "api_base",
                 "model",
+                "allowed_tools",
                 "deliverable_marker",
                 "deliverable_markers",
                 "comment_marker",
@@ -573,6 +676,15 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
     if not isinstance(kimi_workflow, dict):
         findings.append("ci/ai-review.toml missing [kimi.workflow]")
         kimi_workflow = {}
+    claude = table("claude")
+    claude_smart_trigger = claude.get("smart_trigger")
+    if not isinstance(claude_smart_trigger, dict):
+        findings.append("ci/ai-review.toml missing [claude.smart_trigger]")
+        claude_smart_trigger = {}
+    claude_workflow = claude.get("workflow")
+    if not isinstance(claude_workflow, dict):
+        findings.append("ci/ai-review.toml missing [claude.workflow]")
+        claude_workflow = {}
     smoke = table("smoke")
 
     expected_values = (
@@ -593,6 +705,11 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
             "model_freshness.glm_migration_docs_url",
             model_freshness.get("glm_migration_docs_url"),
             "https://docs.z.ai/guides/overview/migrate-to-glm-new",
+        ),
+        (
+            "model_freshness.claude_models_docs_url",
+            model_freshness.get("claude_models_docs_url"),
+            "https://docs.anthropic.com/en/docs/about-claude/models/overview",
         ),
         ("model_freshness.request_timeout_seconds", model_freshness.get("request_timeout_seconds"), 30),
         ("model_freshness.github_issues_per_page", model_freshness.get("github_issues_per_page"), 100),
@@ -701,6 +818,42 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("kimi.workflow.primary_timeout_minutes", kimi_workflow.get("primary_timeout_minutes"), 20),
         ("kimi.workflow.fallback_timeout_minutes", kimi_workflow.get("fallback_timeout_minutes"), 20),
         ("kimi.workflow.setup_overhead_timeout_minutes", kimi_workflow.get("setup_overhead_timeout_minutes"), 5),
+        ("claude.track_progress", claude.get("track_progress"), False),
+        (
+            "claude.allowed_tools",
+            claude.get("allowed_tools"),
+            [
+                "mcp__github_inline_comment__create_inline_comment",
+                "Bash(gh pr comment:*)",
+                "Bash(gh pr diff:*)",
+                "Bash(gh pr view:*)",
+            ],
+        ),
+        ("claude.smart_trigger.debounce_seconds", claude_smart_trigger.get("debounce_seconds"), 90),
+        (
+            "claude.smart_trigger.review_labels",
+            claude_smart_trigger.get("review_labels"),
+            ["ai-review", "ai-review-claude", "claude-review"],
+        ),
+        (
+            "claude.smart_trigger.review_paths",
+            claude_smart_trigger.get("review_paths"),
+            [
+                "AGENTS.md",
+                ".github/**",
+                "ci/**",
+                "config/**",
+                "crates/**",
+                "scripts/**",
+                "src/**",
+                "tests/**",
+                "Cargo.toml",
+                "Cargo.lock",
+            ],
+        ),
+        ("claude.workflow.job_timeout_minutes", claude_workflow.get("job_timeout_minutes"), 35),
+        ("claude.workflow.primary_timeout_minutes", claude_workflow.get("primary_timeout_minutes"), 20),
+        ("claude.workflow.max_turns", claude_workflow.get("max_turns"), 10),
         ("smoke.max_tokens", smoke.get("max_tokens"), 16),
         ("smoke.workflow.job_timeout_minutes", (smoke.get("workflow") if isinstance(smoke.get("workflow"), dict) else {}).get("job_timeout_minutes"), 10),
     )
@@ -717,13 +870,16 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         findings.append("ci/ai-review.toml glm.deliverable_markers must include PR-Agent and GLM fallback markers")
     glm_model = glm.get("model")
     kimi_model = kimi.get("model")
+    claude_model = claude.get("model")
     glm_pr_agent_model = glm_pr_agent.get("model")
     expected_glm_pr_agent_model = f"openai/{glm_model}" if isinstance(glm_model, str) else ""
     if not exact_glm_model_id(glm_model):
         findings.append("ci/ai-review.toml glm.model must be an exact GLM model id, not an alias")
     if not exact_kimi_model_id(kimi_model):
         findings.append("ci/ai-review.toml kimi.model must be an exact Kimi coding model id, not an alias")
-    if "latest" in str(glm_model).lower() or "latest" in str(kimi_model).lower():
+    if not exact_claude_model_id(claude_model):
+        findings.append("ci/ai-review.toml claude.model must be an exact Claude Opus model id, not an alias")
+    if "latest" in str(glm_model).lower() or "latest" in str(kimi_model).lower() or "latest" in str(claude_model).lower():
         findings.append("ci/ai-review.toml AI review models must not use latest aliases")
     if glm_pr_agent_model != expected_glm_pr_agent_model:
         findings.append("ci/ai-review.toml glm.pr_agent.model must wrap the same exact GLM model as glm.model")
@@ -756,7 +912,7 @@ def verify_review_job_timeout_budget(
     primary_timeout = workflow.get("primary_timeout_minutes")
     fallback_timeout = workflow.get("fallback_timeout_minutes")
     setup_overhead = workflow.get("setup_overhead_timeout_minutes")
-    provider_name = {"glm": "GLM", "kimi": "Kimi", "smoke": "Smoke"}.get(provider, provider)
+    provider_name = {"glm": "GLM", "kimi": "Kimi", "claude": "Claude", "smoke": "Smoke"}.get(provider, provider)
     expected_line = f"    timeout-minutes: {job_timeout}"
     if isinstance(job_timeout, int) and expected_line not in workflow_text:
         findings.append(
@@ -787,6 +943,7 @@ def verify_texts(
     ai_review_deliverables: str,
     glm_workflow: str,
     kimi_workflow: str,
+    claude_workflow: str,
     smoke_workflow: str,
 ) -> list[str]:
     findings: list[str] = []
@@ -797,6 +954,7 @@ def verify_texts(
     findings.extend(missing_snippets("scripts/ai_review_deliverables.py", ai_review_deliverables, AI_REVIEW_DELIVERABLES_SNIPPETS))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, glm_workflow, "glm", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, kimi_workflow, "kimi", setup_required=True))
+    findings.extend(verify_review_job_timeout_budget(ai_review_toml, claude_workflow, "claude", setup_required=False))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, smoke_workflow, "smoke", setup_required=False))
     findings.extend(verify_model_freshness_step_contracts(glm_workflow, kimi_workflow))
 
@@ -807,6 +965,7 @@ def verify_texts(
     for workflow_name, workflow in (
         ("GLM workflow", glm_workflow),
         ("Kimi workflow", kimi_workflow),
+        ("Claude workflow", claude_workflow),
         ("Smoke workflow", smoke_workflow),
     ):
         if "ai_review_deliverables.py notice --" in workflow:
@@ -826,7 +985,33 @@ def verify_texts(
     findings.extend(missing_snippets("GLM workflow", glm_workflow, GLM_DELIVERABLE_SNIPPETS))
     findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_BASE_GOVERNANCE_SNIPPETS))
     findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_DELIVERABLE_SNIPPETS))
+    findings.extend(missing_snippets("Claude workflow", claude_workflow, CLAUDE_WORKFLOW_SNIPPETS))
     findings.extend(missing_snippets("Smoke workflow", smoke_workflow, SMOKE_TRUSTED_CONFIG_SNIPPETS))
+    if 'track_progress: true' in claude_workflow:
+        findings.append("Claude workflow must not enable track_progress; it forces tag mode with edit/git tools")
+    if "anthropic_api_key:" in claude_workflow:
+        findings.append("Claude workflow must use claude_code_oauth_token only, not anthropic_api_key")
+    claude_freshness_step = workflow_step_block(claude_workflow, "Check AI review model freshness")
+    if not claude_freshness_step:
+        findings.append("Claude workflow missing Check AI review model freshness step")
+    else:
+        if "continue-on-error: true" not in claude_freshness_step:
+            findings.append("Claude workflow model freshness step must be advisory via continue-on-error")
+        if "--provider claude" not in claude_freshness_step:
+            findings.append("Claude workflow model freshness step must check only Claude freshness")
+    claude_run_step = workflow_step_block(claude_workflow, "Run Claude Code review")
+    if not claude_run_step:
+        findings.append("Claude workflow missing Run Claude Code review step")
+    else:
+        if "continue-on-error: true" not in claude_run_step:
+            findings.append("Claude workflow review step must be advisory via continue-on-error")
+        if "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" not in claude_run_step:
+            findings.append("Claude workflow review step must use CLAUDE_CODE_OAUTH_TOKEN")
+        findings.extend(verify_claude_additional_permissions_cap(claude_run_step))
+        if "anthropic_api_key:" in claude_run_step:
+            findings.append("Claude workflow review step must not set anthropic_api_key alongside OAuth")
+        if "--allowedTools" not in claude_run_step:
+            findings.append("Claude workflow review step must pass configured allowed tools")
     glm_stamp_step = workflow_step_block(glm_workflow, "Stamp GLM PR-Agent review source")
     if not glm_stamp_step:
         findings.append("GLM workflow missing Stamp GLM PR-Agent review source step")
@@ -893,6 +1078,7 @@ def verify_repo(repo_root: Path) -> list[str]:
         ai_review_deliverables=read_text(repo_root / "scripts/ai_review_deliverables.py"),
         glm_workflow=read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml"),
         kimi_workflow=read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml"),
+        claude_workflow=read_text(repo_root / ".github/workflows/claude-code-review.yml"),
         smoke_workflow=read_text(repo_root / ".github/workflows/ai-review-coding-plan-smoke.yml"),
     )
 
@@ -920,6 +1106,7 @@ def run_self_tests(repo_root: Path) -> None:
     glm_config = ai_review_config["glm"]
     current_glm_model = ai_review_config["glm"]["model"]
     current_kimi_model = ai_review_config["kimi"]["model"]
+    current_claude_model = ai_review_config["claude"]["model"]
     current_glm_pr_agent_model = ai_review_config["glm"]["pr_agent"]["model"]
     current_bot_login = github_config["expected_bot_login"]
     current_glm_comment_marker = glm_config["comment_marker"]
@@ -927,6 +1114,7 @@ def run_self_tests(repo_root: Path) -> None:
     deliverables = read_text(repo_root / "scripts/ai_review_deliverables.py")
     glm = read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml")
     kimi = read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml")
+    claude = read_text(repo_root / ".github/workflows/claude-code-review.yml")
     smoke = read_text(repo_root / ".github/workflows/ai-review-coding-plan-smoke.yml")
 
     def verify_variant(
@@ -936,6 +1124,7 @@ def run_self_tests(repo_root: Path) -> None:
         deliverables_text: str = deliverables,
         glm_text: str = glm,
         kimi_text: str = kimi,
+        claude_text: str = claude,
         smoke_text: str = smoke,
     ) -> list[str]:
         return verify_texts(
@@ -944,6 +1133,7 @@ def run_self_tests(repo_root: Path) -> None:
             ai_review_deliverables=deliverables_text,
             glm_workflow=glm_text,
             kimi_workflow=kimi_text,
+            claude_workflow=claude_text,
             smoke_workflow=smoke_text,
         )
 
@@ -993,6 +1183,109 @@ def run_self_tests(repo_root: Path) -> None:
     if model_freshness_step_receives_provider_secret(kimi_model_freshness_step):
         raise AssertionError("Kimi model freshness step must not receive provider API secrets")
 
+    claude_model_freshness_step = workflow_step_block(claude, "Check AI review model freshness")
+    if not claude_model_freshness_step:
+        raise AssertionError("missing Claude model freshness step")
+    if "continue-on-error: true" not in claude_model_freshness_step:
+        raise AssertionError("Claude model freshness step must be advisory via continue-on-error")
+    if "--provider claude" not in claude_model_freshness_step:
+        raise AssertionError("Claude model freshness step must check only Claude freshness")
+    claude_review_step = workflow_step_block(claude, "Run Claude Code review")
+    if not claude_review_step:
+        raise AssertionError("missing Claude review step")
+    if "continue-on-error: true" not in claude_review_step:
+        raise AssertionError("Claude review step must be advisory via continue-on-error")
+    if "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" not in claude_review_step:
+        raise AssertionError("Claude review step must use CLAUDE_CODE_OAUTH_TOKEN")
+    if verify_claude_additional_permissions_cap(claude_review_step):
+        raise AssertionError("Claude review step must cap Claude app token contents permission to read")
+    if "anthropic_api_key:" in claude_review_step:
+        raise AssertionError("Claude review step must not set anthropic_api_key")
+    if "track_progress: ${{ steps.runtime-config.outputs.claude_track_progress }}" not in claude_review_step:
+        raise AssertionError("Claude track_progress must come from ci/ai-review.toml")
+
+    claude_track_progress_true_config = verify_variant(
+        ai_review_text=ai_review.replace("track_progress = false", "track_progress = true", 1),
+    )
+    assert_finding(
+        "Claude track_progress true config",
+        claude_track_progress_true_config,
+        "ci/ai-review.toml claude.track_progress",
+    )
+
+    claude_hardcoded_model = verify_variant(
+        claude_text=claude + f"\n          CLAUDE_MODEL: {current_claude_model}\n",
+    )
+    assert_finding("Claude hardcoded model", claude_hardcoded_model, "must read AI review runtime value")
+
+    claude_track_progress_literal = verify_variant(
+        claude_text=claude.replace(
+            "          track_progress: ${{ steps.runtime-config.outputs.claude_track_progress }}",
+            "          track_progress: true",
+            1,
+        ),
+    )
+    assert_finding("Claude track_progress literal", claude_track_progress_literal, "must not enable track_progress")
+
+    claude_anthropic_api_key = verify_variant(
+        claude_text=claude.replace(
+            "          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+            "          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}",
+            1,
+        ),
+    )
+    assert_finding("Claude Anthropic API key conflict", claude_anthropic_api_key, "not anthropic_api_key")
+
+    claude_missing_additional_permissions = verify_variant(
+        claude_text=claude.replace(
+            "          additional_permissions: |\n            contents: read\n",
+            "",
+            1,
+        ),
+    )
+    assert_finding(
+        "Claude missing app token contents cap",
+        claude_missing_additional_permissions,
+        "exactly one contents: read",
+    )
+
+    claude_weakened_additional_permissions = verify_variant(
+        claude_text=claude.replace("            contents: read", "            contents: write", 1),
+    )
+    assert_finding(
+        "Claude weakened app token contents cap",
+        claude_weakened_additional_permissions,
+        "exactly one contents: read",
+    )
+
+    claude_duplicate_additional_permissions = verify_variant(
+        claude_text=claude.replace(
+            "          additional_permissions: |\n            contents: read\n",
+            "          additional_permissions: |\n            contents: read\n            contents: write\n",
+            1,
+        ),
+    )
+    assert_finding(
+        "Claude duplicate app token contents cap",
+        claude_duplicate_additional_permissions,
+        "exactly one contents: read",
+    )
+
+    claude_missing_labeled_trigger = verify_variant(
+        claude_text=claude.replace("types: [opened, synchronize, labeled]", "types: [opened, synchronize]", 1),
+    )
+    assert_finding("Claude missing labeled trigger", claude_missing_labeled_trigger, "Claude workflow missing expected snippet")
+
+    claude_missing_draft_guard = verify_variant(
+        claude_text=claude.replace("          && github.event.pull_request.draft == false\n", "", 1),
+    )
+    assert_finding("Claude missing draft guard", claude_missing_draft_guard, "Claude workflow missing expected snippet")
+
+    claude_short_job_timeout = verify_variant(
+        claude_text=claude.replace("timeout-minutes: 35", "timeout-minutes: 20", 1),
+    )
+    assert_finding("Claude short job timeout", claude_short_job_timeout, "Claude workflow job timeout must match")
+
     glm_blocking_freshness = verify_variant(
         glm_text=glm.replace(
             "        continue-on-error: true\n        run: >-\n          python3 scripts/verify_ai_review_model_freshness.py",
@@ -1009,7 +1302,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     glm_ungated_freshness = verify_variant(
         glm_text=glm.replace(
-            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.glm-secret.outputs.configured == 'true'\n",
+            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.glm-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true'\n",
             "      - name: Check AI review model freshness\n        id: model-freshness\n",
             1,
         ),
@@ -1062,7 +1355,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     kimi_ungated_freshness = verify_variant(
         kimi_text=kimi.replace(
-            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.kimi-secret.outputs.configured == 'true'\n",
+            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.kimi-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true'\n",
             "      - name: Check AI review model freshness\n        id: model-freshness\n",
             1,
         ),
@@ -1131,8 +1424,8 @@ def run_self_tests(repo_root: Path) -> None:
 
     stamp_continue_on_error = verify_variant(
         glm_text=glm.replace(
-            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.glm-secret.outputs.configured == 'true'\n        env:",
-            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.glm-secret.outputs.configured == 'true'\n        continue-on-error: true\n        env:",
+            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'true'\n        env:",
+            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'true'\n        continue-on-error: true\n        env:",
             1,
         ),
     )

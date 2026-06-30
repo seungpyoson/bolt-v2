@@ -141,6 +141,26 @@ def parse_log(path: pathlib.Path) -> dict[str, str]:
     return values
 
 
+def assert_minimal_toml_accepts_quoted_keys() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp) / "policy.toml"
+        path.write_text(
+            textwrap.dedent(
+                """\
+                [merge_queue_preflight.required_check_workflows]
+                "backtester-gate" = "Backtester CI"
+                "host-health" = "CI"
+                """
+            ),
+            encoding="utf-8",
+        )
+        parsed = owner.parse_minimal_toml(path)
+    workflows = parsed["merge_queue_preflight"]["required_check_workflows"]
+    if workflows != {"backtester-gate": "Backtester CI", "host-health": "CI"}:
+        raise AssertionError(workflows)
+
+
 def same_path(left: str, right: pathlib.Path) -> bool:
     return pathlib.Path(left).resolve() == right.resolve()
 
@@ -1361,6 +1381,7 @@ def main() -> int:
     assert_ci_provenance_gate_name_helpers_stay_in_parity()
     assert_rust_probe_guidance_distinguishes_feedback_from_proof()
     assert_fmt_avoids_managed_cache_lock()
+    assert_minimal_toml_accepts_quoted_keys()
     assert_system_python_contract()
     assert_oversized_policy_fails_closed()
     assert_validate_policy_rejects_unknown_cheap_lane_just_recipe()

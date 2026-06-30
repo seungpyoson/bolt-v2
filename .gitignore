@@ -11,6 +11,7 @@ __pycache__/
 .omx/
 .agent-doctor/
 .agents/
+.beads/
 .claude/agents/
 .claude/settings.json
 .claude/findings/

@@ -13,6 +13,7 @@ github_api_version = "2022-11-28"
 kimi_chat_docs_url = "https://platform.kimi.ai/docs/api/chat"
 glm_docs_index_url = "https://docs.z.ai/llms.txt"
 glm_migration_docs_url = "https://docs.z.ai/guides/overview/migrate-to-glm-new"
+claude_models_docs_url = "https://docs.anthropic.com/en/docs/about-claude/models/overview"
 request_timeout_seconds = 30
 github_issues_per_page = 100
 issue_marker = "<!-- ai-review-model-freshness-issue -->"
@@ -64,6 +65,9 @@ name = "ssm secret source"
 snippets = [
   "SSM is the single secret source for product/runtime credentials",
   "GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN`",
+  "`JULES_API_KEY` may live in GitHub Actions secrets only for repository code-maintenance advisory workflows",
+  "it is not a product/runtime/deploy/live/trading secret, not an alternate GitHub token",
+  "must not be exposed to AWS, market data, order execution, runtime, deploy, or live jobs",
   "Do not add environment variable fallbacks, alternate GitHub token names, or alternate secret backends",
 ]
 
@@ -185,6 +189,37 @@ job_timeout_minutes = 45
 primary_timeout_minutes = 20
 fallback_timeout_minutes = 20
 setup_overhead_timeout_minutes = 5
+
+[claude]
+model = "claude-opus-4-8"
+track_progress = false
+allowed_tools = [
+  "mcp__github_inline_comment__create_inline_comment",
+  "Bash(gh pr comment:*)",
+  "Bash(gh pr diff:*)",
+  "Bash(gh pr view:*)",
+]
+
+[claude.smart_trigger]
+debounce_seconds = 90
+review_labels = ["ai-review", "ai-review-claude", "claude-review"]
+review_paths = [
+  "AGENTS.md",
+  ".github/**",
+  "ci/**",
+  "config/**",
+  "crates/**",
+  "scripts/**",
+  "src/**",
+  "tests/**",
+  "Cargo.toml",
+  "Cargo.lock",
+]
+
+[claude.workflow]
+job_timeout_minutes = 35
+primary_timeout_minutes = 20
+max_turns = 10
 
 [smoke]
 max_tokens = 16

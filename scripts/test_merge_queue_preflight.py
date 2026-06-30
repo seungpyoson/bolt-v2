@@ -2190,16 +2190,16 @@ def assert_source_pr_iteration_checks_are_queue_admitted() -> None:
         )
         readiness = payload["readiness"][0]
         assert_equal(
-            [check["name"] for check in readiness["checks"]],
+            sorted(check["name"] for check in readiness["checks"]),
             ["actionlint", "host-health"],
             "source PR branch-required checks",
         )
         assert_equal(
-            [check["name"] for check in readiness["source_checks"]],
+            sorted(check["name"] for check in readiness["source_checks"]),
             [
-                "gate-iteration",
-                "backtester-gate-iteration",
                 "actionlint",
+                "backtester-gate-iteration",
+                "gate-iteration",
                 "host-health",
             ],
             "source PR all-check evidence",
@@ -2221,12 +2221,16 @@ def assert_aliased_source_check_pending_is_inconclusive_at_runtime() -> None:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
         head = fixture.make_pr(1, {"one.txt": "one\n"})
-        checks = passing_source_pr_checks(1)[1]
-        checks[0] = {
-            **checks[0],
-            "state": "PENDING",
-            "bucket": "pending",
-        }
+        checks = [
+            {
+                **check,
+                "state": "PENDING",
+                "bucket": "pending",
+            }
+            if check["name"] == "gate-iteration"
+            else check
+            for check in passing_source_pr_checks(1)[1]
+        ]
         bin_dir = write_fake_gh(
             root,
             views={1: approved_pr_view(head)},
@@ -2259,12 +2263,16 @@ def assert_aliased_source_check_failure_blocks_at_runtime() -> None:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
         head = fixture.make_pr(1, {"one.txt": "one\n"})
-        checks = passing_source_pr_checks(1)[1]
-        checks[0] = {
-            **checks[0],
-            "state": "FAILURE",
-            "bucket": "fail",
-        }
+        checks = [
+            {
+                **check,
+                "state": "FAILURE",
+                "bucket": "fail",
+            }
+            if check["name"] == "gate-iteration"
+            else check
+            for check in passing_source_pr_checks(1)[1]
+        ]
         bin_dir = write_fake_gh(
             root,
             views={1: approved_pr_view(head)},

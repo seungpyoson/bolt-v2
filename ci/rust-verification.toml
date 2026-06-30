@@ -56,7 +56,7 @@ verifier_seconds = 600
 
 [merge_queue_preflight.required_check_workflows]
 # Ordinary source PR branch protection must not require merge-proof-only gate
-# contexts; source PR admission validates their iteration aliases below.
+# contexts; source PR admission validates iteration contexts through aliases.
 "gate-iteration" = "CI"
 "backtester-gate-iteration" = "Backtester CI"
 "actionlint" = "actionlint"

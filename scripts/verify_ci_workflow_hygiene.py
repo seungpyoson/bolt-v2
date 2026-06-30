@@ -11308,6 +11308,17 @@ def has_bte_run_control_flow(run_block: str) -> bool:
     return re.search(r"(?m)(?:^|[;&|]\s*)\s*(?:if|while|until|for|case)\b", run_block) is not None
 
 
+def has_bte_run_shell_wrapping_or_chaining(run_block: str) -> bool:
+    if "$(" in run_block:
+        return True
+    if re.search(r"(?m)^\s*\(", run_block):
+        return True
+    return any(
+        re.search(r"\bjust\s+bte-test\b[^\n]*(?:;\s*|\s(?:&&|\|\||\|)\s)", line)
+        for line in run_block.splitlines()
+    )
+
+
 def shard_partition_argument_denominators(run_block: str) -> tuple[int, ...]:
     return tuple(
         int(denominator)
@@ -11475,10 +11486,10 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             if bte_run_block is None:
                 errors.append(f"flaky-test-detection {label} must have a Run tests run block")
                 bte_run_block = ""
-            invocation_count = bte_test_invocation_count(bte_run_block)
+            invocation_count = bte_test_invocation_count(job_text)
             if invocation_count != 1:
                 errors.append(f"flaky-test-detection {label} must have exactly one just bte-test invocation")
-            if has_bte_run_control_flow(bte_run_block):
+            if has_bte_run_control_flow(bte_run_block) or has_bte_run_shell_wrapping_or_chaining(bte_run_block):
                 errors.append(f"flaky-test-detection {label} must keep just bte-test in a simple Run tests block")
             denominators = shard_partition_argument_denominators(bte_run_block)
             if len(denominators) != 1:

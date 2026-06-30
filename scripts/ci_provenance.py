@@ -862,10 +862,14 @@ def parse_bool(value: str) -> bool:
 
 
 def parse_event_sender_id(raw: object) -> int:
-    # github.event.sender.id is always an integer, but the env-bound value can be empty
-    # (events without a sender) or malformed. Fail CLOSED to -1 (never the bound mergify
-    # actor) so a bad sender id demotes to the non-required gate instead of crashing the
-    # ci-policy job and blocking ALL CI.
+    return parse_github_actor_id(raw, name="EVENT_SENDER_ID")
+
+
+def parse_github_actor_id(raw: object, *, name: str) -> int:
+    # GitHub actor/user ids are integers, but workflow-bound values can be empty
+    # (events without that field) or malformed. Fail CLOSED to -1 (never the bound
+    # mergify actor) so a bad id demotes to the non-required gate instead of crashing
+    # the ci-policy job and blocking ALL CI.
     if isinstance(raw, int):
         return raw
     if not isinstance(raw, str):
@@ -881,7 +885,7 @@ def parse_event_sender_id(raw: object) -> int:
         # otherwise SILENTLY demote a real mergify temp PR and deadlock the queue. The
         # warning goes to stderr so it never pollutes the key=value stdout the gate parses.
         print(
-            f"warning: EVENT_SENDER_ID={raw!r} is not an integer; failing closed to -1 (gate demoted)",
+            f"warning: {name}={raw!r} is not an integer; failing closed to -1 (gate demoted)",
             file=sys.stderr,
         )
         return -1
@@ -1195,26 +1199,33 @@ MERGIFY_TEMP_PR_TRANSIENT_PREFIX = "tmp-"
 def mergify_temp_pr_matches(
     *,
     event_name: str,
+    event_action: str,
     pull_request_draft: bool,
     pull_request_head_ref: str,
     temp_pr_head_ref_prefix: str,
     event_sender_id: int,
+    pull_request_author_id: int = -1,
     temp_pr_actor_id: int,
 ) -> bool:
     # GAP-1 fix (#981): a head-ref prefix alone must NEVER grant the required gate —
     # any actor can open a draft PR whose head ref starts with the mergify prefix. The
-    # temp PR is recognized only when the event sender is the bound mergify actor, so a
-    # spoofed head ref (or an absent/mismatched sender id) fails closed and is treated
-    # as an ordinary PR -> gate-iteration (demote).
+    # temp PR is recognized only when the event sender is the bound mergify actor. The
+    # one exception is ready_for_review: a human can mark a Mergify-authored proof PR
+    # ready, so that metadata-only transition may bind through pull_request.user.id.
     transient_head_ref_prefix = f"{MERGIFY_TEMP_PR_TRANSIENT_PREFIX}{temp_pr_head_ref_prefix}"
+    actor_bound = event_sender_id == temp_pr_actor_id
+    ready_author_bound = (
+        event_action == "ready_for_review"
+        and not pull_request_draft
+        and pull_request_author_id == temp_pr_actor_id
+    )
     return (
         event_name == "pull_request"
-        and pull_request_draft
         and (
             pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
             or pull_request_head_ref.startswith(transient_head_ref_prefix)
         )
-        and event_sender_id == temp_pr_actor_id
+        and ((pull_request_draft and actor_bound) or ready_author_bound)
     )
 
 
@@ -1247,14 +1258,17 @@ def evaluate_ci_policy(
     workflow_dispatch_full_ci: str = "",
     docs_only: bool = False,
     event_sender_id: int = -1,
+    pull_request_author_id: int = -1,
     ref: str,
 ) -> CiPolicyResult:
     mergify_temp_pr = mergify_temp_pr_matches(
         event_name=event_name,
+        event_action=event_action,
         pull_request_draft=pull_request_draft,
         pull_request_head_ref=pull_request_head_ref,
         temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,
         event_sender_id=event_sender_id,
+        pull_request_author_id=pull_request_author_id,
         temp_pr_actor_id=config.mergify_temp_pr_actor_id,
     )
     if event_name == "merge_group":
@@ -2763,6 +2777,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--event-action", default="")
         parser.add_argument("--pull-request-draft", default="false")
         parser.add_argument("--pull-request-head-ref", default="")
+        parser.add_argument("--pull-request-author-id", default="")
         parser.add_argument("--pull-request-base-changed", default="false")
         parser.add_argument("--workflow-dispatch-full-ci", default="")
         parser.add_argument("--docs-only", default="false")
@@ -2843,6 +2858,9 @@ def main(argv: list[str] | None = None) -> int:
                 workflow_dispatch_full_ci=args.workflow_dispatch_full_ci,
                 docs_only=parse_bool(args.docs_only),
                 event_sender_id=parse_event_sender_id(os.environ.get("EVENT_SENDER_ID") or -1),
+                pull_request_author_id=parse_github_actor_id(
+                    args.pull_request_author_id, name="pull_request_author_id"
+                ),
                 ref=args.ref,
             )
             print(f"ci_policy_path={result.ci_policy_path}")

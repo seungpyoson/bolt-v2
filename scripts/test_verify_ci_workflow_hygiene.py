@@ -5966,6 +5966,9 @@ jobs:
             if "flaky-test-detection" in error
         ]
 
+    def has_bvs_step_allowlist_error(errors: list[str]) -> bool:
+        return any("backtester smoke job must keep BVS job steps unchanged" in error for error in errors)
+
     resharded_full_workflow = good_full_workflow.replace(
         "shard: [1, 2, 3, 4]",
         "shard: [1, 2, 3, 4, 5]",
@@ -5980,6 +5983,23 @@ jobs:
     if resharded_full_flaky_errors:
         raise AssertionError(
             f"flaky detection verifier must accept manual full workflow shard-count changes, got: {resharded_full_flaky_errors}"
+        )
+    rerun_full_workflow = good_full_workflow.replace(
+        "run_number: [1, 2, 3, 4, 5]",
+        "run_number: [1, 2, 3, 4, 5, 6]",
+    )
+    rerun_full_errors = flaky_detection_errors(full_workflow=rerun_full_workflow)
+    if rerun_full_errors:
+        raise AssertionError(
+            f"flaky detection verifier must accept manual full workflow run-count changes, got: {rerun_full_errors}"
+        )
+    noncontiguous_run_number_full_errors = flaky_detection_errors(
+        full_workflow=good_full_workflow.replace("run_number: [1, 2, 3, 4, 5]", "run_number: [1, 3, 4]")
+    )
+    if not any("full job run_number matrix must be one-indexed and contiguous" in error for error in noncontiguous_run_number_full_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject non-contiguous full workflow run numbers, "
+            f"got: {noncontiguous_run_number_full_errors}"
         )
     mismatched_reshard_errors = verifier.verify_flaky_test_detection_workflows(
         {
@@ -6338,7 +6358,7 @@ jobs:
         1,
     )
     changed_stage_shell_smoke_errors = flaky_detection_errors(smoke_workflow=changed_stage_shell_smoke_workflow)
-    if not any("backtester smoke job must keep BVS job shell steps unchanged" in error for error in changed_stage_shell_smoke_errors):
+    if not has_bvs_step_allowlist_error(changed_stage_shell_smoke_errors):
         raise AssertionError(
             "flaky detection verifier must reject changed sibling shell steps in the scheduled smoke BVS job, "
             f"got: {changed_stage_shell_smoke_errors}"
@@ -6374,14 +6394,54 @@ jobs:
             1,
         )
         cross_step_extra_work_smoke_errors = flaky_detection_errors(smoke_workflow=cross_step_extra_work_smoke_workflow)
-        if not any(
-            "backtester smoke job must keep BVS job shell steps unchanged" in error
-            or "backtester smoke job must have exactly one just bte-test invocation" in error
-            for error in cross_step_extra_work_smoke_errors
+        if not (
+            has_bvs_step_allowlist_error(cross_step_extra_work_smoke_errors)
+            or any(
+                "backtester smoke job must have exactly one just bte-test invocation" in error
+                for error in cross_step_extra_work_smoke_errors
+            )
         ):
             raise AssertionError(
                 f"flaky detection verifier must reject {extra_command_name} commands outside the Run tests step, "
                 f"got: {cross_step_extra_work_smoke_errors}"
+            )
+    for extra_step, extra_step_name in (
+        (
+            """      - run: cargo nextest run -p backtesting-vertical-slice
+""",
+            "nameless run step",
+        ),
+        (
+            """      - id: warm_bvs
+        run: cargo nextest run -p backtesting-vertical-slice
+""",
+            "id-led run step",
+        ),
+        (
+            """      - uses: ./run-bvs-tests
+""",
+            "unexpected uses step",
+        ),
+        (
+            """      - name: Run tests
+        run: cargo nextest run -p backtesting-vertical-slice
+""",
+            "duplicate Run tests step",
+        ),
+    ):
+        extra_step_smoke_workflow = good_smoke_workflow.replace(
+            '      - name: Stage JUnit report\n'
+            '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+            extra_step
+            + '      - name: Stage JUnit report\n'
+            + '        run: cp "crates/backtesting-vertical-slice/target/nextest/default/junit-unit-${{ matrix.run_number }}.xml" "junit-unit-${{ matrix.run_number }}.xml"',
+            1,
+        )
+        extra_step_smoke_errors = flaky_detection_errors(smoke_workflow=extra_step_smoke_workflow)
+        if not has_bvs_step_allowlist_error(extra_step_smoke_errors):
+            raise AssertionError(
+                f"flaky detection verifier must reject {extra_step_name} in the scheduled smoke BVS job, "
+                f"got: {extra_step_smoke_errors}"
             )
 
     oversized_smoke_workflow = good_smoke_workflow.replace(

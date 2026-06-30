@@ -11300,47 +11300,104 @@ def named_step_run_block(job_text: str, step_name: str) -> str | None:
     return None
 
 
-def named_step_run_texts(job_text: str) -> tuple[tuple[str, str], ...]:
+class WorkflowJobStep(NamedTuple):
+    name: str | None
+    run_text: str | None
+    uses: str | None
+
+
+def workflow_job_steps(job_text: str) -> tuple[WorkflowJobStep, ...]:
     lines = job_text.splitlines()
-    run_texts: list[tuple[str, str]] = []
-    index = 0
+    steps_index = next((index for index, line in enumerate(lines) if line.strip() == "steps:"), None)
+    if steps_index is None:
+        return ()
+
+    steps_indent = len(lines[steps_index]) - len(lines[steps_index].lstrip())
+    step_indent: int | None = None
+    steps: list[WorkflowJobStep] = []
+    index = steps_index + 1
     while index < len(lines):
-        name_match = re.match(r"^\s*-\s+name:\s*(?P<name>.+?)\s*$", lines[index])
-        if name_match is None:
+        line = lines[index]
+        if line.strip():
+            indent = len(line) - len(line.lstrip())
+            if indent <= steps_indent:
+                break
+            if line.lstrip().startswith("- "):
+                if step_indent is None:
+                    step_indent = indent
+                if indent == step_indent:
+                    step_end = len(lines)
+                    for candidate_end in range(index + 1, len(lines)):
+                        candidate_line = lines[candidate_end]
+                        if not candidate_line.strip():
+                            continue
+                        candidate_indent = len(candidate_line) - len(candidate_line.lstrip())
+                        if candidate_indent <= steps_indent:
+                            step_end = candidate_end
+                            break
+                        if candidate_indent == step_indent and candidate_line.lstrip().startswith("- "):
+                            step_end = candidate_end
+                            break
+                    steps.append(workflow_job_step(lines, index, step_end, step_indent))
+                    index = step_end
+                    continue
+        index += 1
+    return tuple(steps)
+
+
+def workflow_job_step(lines: list[str], step_start: int, step_end: int, step_indent: int) -> WorkflowJobStep:
+    name: str | None = None
+    run_text: str | None = None
+    uses: str | None = None
+
+    def capture_run_block(body_start: int, run_indent: int) -> tuple[str, int]:
+        block_lines: list[str] = []
+        body_index = body_start
+        while body_index < step_end:
+            body_line = lines[body_index]
+            if body_line.strip():
+                body_indent = len(body_line) - len(body_line.lstrip())
+                if body_indent <= run_indent:
+                    break
+            block_lines.append(body_line)
+            body_index += 1
+        return "\n".join(block_lines), body_index
+
+    first_content = lines[step_start].lstrip().removeprefix("- ").strip()
+    if first_content:
+        if first_content.startswith("name: "):
+            name = first_content.removeprefix("name: ").strip()
+        elif first_content.startswith("uses: "):
+            uses = first_content.removeprefix("uses: ").strip()
+        elif first_content == "run: |":
+            run_text, _body_end = capture_run_block(step_start + 1, step_indent)
+        elif first_content.startswith("run: "):
+            run_text = first_content.removeprefix("run: ").strip()
+
+    index = step_start + 1
+    while index < step_end:
+        line = lines[index]
+        if not line.strip():
+            index += 1
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent != step_indent + 2:
             index += 1
             continue
 
-        step_name = name_match.group("name")
-        step_indent = len(lines[index]) - len(lines[index].lstrip())
-        step_end = len(lines)
-        for candidate_end in range(index + 1, len(lines)):
-            candidate_line = lines[candidate_end]
-            if not candidate_line.strip():
-                continue
-            candidate_indent = len(candidate_line) - len(candidate_line.lstrip())
-            if candidate_indent <= step_indent and candidate_line.lstrip().startswith("- "):
-                step_end = candidate_end
-                break
+        content = line.strip()
+        if content.startswith("name: "):
+            name = content.removeprefix("name: ").strip()
+        elif content.startswith("uses: "):
+            uses = content.removeprefix("uses: ").strip()
+        elif content == "run: |":
+            run_text, index = capture_run_block(index + 1, indent)
+            continue
+        elif content.startswith("run: "):
+            run_text = content.removeprefix("run: ").strip()
+        index += 1
 
-        for run_line_number in range(index + 1, step_end):
-            run_line = lines[run_line_number]
-            run_text = run_line.strip()
-            if run_text == "run: |":
-                run_indent = len(run_line) - len(run_line.lstrip())
-                block_lines: list[str] = []
-                for body_line in lines[run_line_number + 1 : step_end]:
-                    if body_line.strip():
-                        body_indent = len(body_line) - len(body_line.lstrip())
-                        if body_indent <= run_indent:
-                            break
-                    block_lines.append(body_line)
-                run_texts.append((step_name, "\n".join(block_lines)))
-                break
-            if run_text.startswith("run: "):
-                run_texts.append((step_name, run_text.removeprefix("run: ").strip()))
-                break
-        index = step_end
-    return tuple(run_texts)
+    return WorkflowJobStep(name=name, run_text=run_text, uses=uses)
 
 
 def simple_shell_lines(run_text: str) -> tuple[str, ...]:
@@ -11372,20 +11429,43 @@ BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS = {
         '"junit-unit-${{ matrix.run_number }}.xml"',
     ),
 }
+BVS_BACKTESTER_ALLOWED_USES_STEPS = frozenset(
+    (
+        (None, "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"),
+        ("Setup environment", "./.github/actions/setup-environment"),
+        (None, "Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4"),
+        ("Restore test target cache", "actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"),
+        ("Install cargo-nextest", "taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538"),
+        ("Upload test results to Mergify", "mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3"),
+    )
+)
 
 
-def bvs_backtester_job_shell_steps_are_allowlisted(job_text: str) -> bool:
+def bvs_backtester_job_steps_are_allowlisted(job_text: str) -> bool:
     seen_run_step_names: set[str] = set()
-    for step_name, run_text in named_step_run_texts(job_text):
-        if step_name == "Run tests":
+    seen_uses_steps: set[tuple[str | None, str]] = set()
+    for step in workflow_job_steps(job_text):
+        if step.run_text is not None:
+            if step.name is None or step.name in seen_run_step_names:
+                return False
+            if step.name == "Run tests":
+                seen_run_step_names.add(step.name)
+                continue
+            expected_lines = BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS.get(step.name)
+            if expected_lines is None or simple_shell_lines(step.run_text) != expected_lines:
+                return False
+            seen_run_step_names.add(step.name)
             continue
-        expected_lines = BVS_BACKTESTER_ALLOWED_SIBLING_RUN_STEPS.get(step_name)
-        if expected_lines is None or step_name in seen_run_step_names:
-            return False
-        if simple_shell_lines(run_text) != expected_lines:
-            return False
-        seen_run_step_names.add(step_name)
-    return "Stage JUnit report" in seen_run_step_names
+
+        if step.uses is not None:
+            uses_step = (step.name, step.uses)
+            if uses_step not in BVS_BACKTESTER_ALLOWED_USES_STEPS or uses_step in seen_uses_steps:
+                return False
+            seen_uses_steps.add(uses_step)
+            continue
+
+        return False
+    return {"Run tests", "Stage JUnit report"} <= seen_run_step_names
 
 
 def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ...]:
@@ -11441,7 +11521,6 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                 "flaky-detection-rust-root",
                 "root full job",
                 (
-                    "run_number: [1, 2, 3, 4, 5]",
                     "set +e",
                     "rc=$?",
                     "set -e",
@@ -11454,7 +11533,6 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                 "flaky-detection-rust-backtester",
                 "backtester full job",
                 (
-                    "run_number: [1, 2, 3, 4, 5]",
                     "set +e",
                     "rc=$?",
                     "set -e",
@@ -11467,7 +11545,6 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                 "flaky-detection-rust-backtester-issue-789",
                 "issue-789 full job",
                 (
-                    "run_number: [1, 2, 3, 4, 5]",
                     "set +e",
                     "rc=$?",
                     "set -e",
@@ -11577,12 +11654,18 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             invocation_count = bte_test_invocation_count(job_text)
             if invocation_count != 1:
                 errors.append(f"flaky-test-detection {label} must have exactly one just bte-test invocation")
-            if not bvs_backtester_job_shell_steps_are_allowlisted(job_text):
-                errors.append(f"flaky-test-detection {label} must keep BVS job shell steps unchanged")
+            if not bvs_backtester_job_steps_are_allowlisted(job_text):
+                errors.append(f"flaky-test-detection {label} must keep BVS job steps unchanged")
             denominators = simple_bte_run_block_partition_denominators(bte_run_block)
             if len(denominators) != 1:
                 errors.append(f"flaky-test-detection {label} must keep just bte-test in a simple Run tests block")
                 errors.append(f"flaky-test-detection {label} must have one matrix.shard partition argument")
+        if label in {"root full job", "backtester full job", "issue-789 full job"}:
+            run_numbers = inline_integer_matrix_values(job_text, "run_number")
+            if run_numbers is None:
+                errors.append(f"flaky-test-detection {label} run_number matrix must be an inline integer list")
+            elif not one_indexed_sequence(run_numbers):
+                errors.append(f"flaky-test-detection {label} run_number matrix must be one-indexed and contiguous")
         if label == "backtester full job":
             shards = inline_integer_matrix_values(job_text, "shard")
             if shards is None:

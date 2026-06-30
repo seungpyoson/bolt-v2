@@ -2042,6 +2042,15 @@ def assert_mergify_temp_pr_ready_event_uses_author_binding() -> None:
         if spoof.get("reason") == "mergify_temp_pr" or spoof.get("gate_name") != "gate-iteration":
             raise AssertionError(f"non-Mergify-authored proof-shaped PR must demote: {spoof}")
 
+        half_spoof_args = list(base_args)
+        half_spoof_args[half_spoof_args.index("--pull-request-author-id") + 1] = "1376128"
+        code, stdout, stderr = run_cli_with_event_sender(half_spoof_args, "37929162")
+        if code != 0:
+            raise AssertionError(f"split-identity ready proof PR ci-policy failed: {stderr}")
+        half_spoof = output_dict(stdout)
+        if half_spoof.get("reason") == "mergify_temp_pr" or half_spoof.get("gate_name") != "gate-iteration":
+            raise AssertionError(f"Mergify sender with non-Mergify author must demote: {half_spoof}")
+
 
 def assert_mergify_temp_pr_synchronize_requires_sender_binding() -> None:
     # Author binding exists only to preserve the human ready_for_review transition on a

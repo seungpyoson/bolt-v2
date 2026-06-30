@@ -2216,6 +2216,30 @@ def assert_ci_policy_matrix() -> None:
     ):
         raise AssertionError(f"non-Mergify-authored ready spoof must fail closed: {ready_spoof_result}")
 
+    ready_split_identity_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="ready_for_review",
+        pull_request_draft=False,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=actor_id,
+        pull_request_author_id=1376128,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        ready_split_identity_result.reason == "mergify_temp_pr"
+        or ready_split_identity_result.gate_name != "gate-iteration"
+        or ready_split_identity_result.ci_policy_path != "iteration"
+    ):
+        raise AssertionError(
+            f"Mergify-sender ready event with non-Mergify author must fail closed: {ready_split_identity_result}"
+        )
+
     human_sync_result = verifier.evaluate_ci_policy(
         policy,
         gate_names,

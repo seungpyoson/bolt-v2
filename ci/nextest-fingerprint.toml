@@ -12,6 +12,7 @@ tracked_inputs = [
     "justfile",
     "ci/nextest-fingerprint.toml",
     "ci/rust-verification.toml",
+    "scripts/config_validators.py",
     "scripts/nextest_fingerprint.py",
     "scripts/root_bin_sidecars.py",
     "scripts/rust_verification.py",

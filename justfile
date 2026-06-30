@@ -497,6 +497,9 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
     if ! python3 scripts/test_cancel_obsolete_dispatch_runs.py; then
         failed=1
     fi
+    if ! python3 scripts/test_config_validators.py; then
+        failed=1
+    fi
     if ! python3 scripts/test_run_rust_probe.py; then
         failed=1
     fi

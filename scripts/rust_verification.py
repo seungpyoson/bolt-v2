@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import functools
 import json
 import os
 import pathlib
@@ -22,6 +23,8 @@ from typing import Any
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+
+import config_validators as _cv
 
 # Keep the former verifier-local helper families module-scoped so parity tests
 # prove the old helper surface now points at the shared path.
@@ -158,6 +161,9 @@ SHELL_REDIRECTION_OPERATORS = {">", ">>", "<", "<<", "<>", ">|", ">&", "<&", "&>
 
 class PolicyError(RuntimeError):
     pass
+
+
+require_positive_int = functools.partial(_cv.require_positive_int, error_cls=PolicyError)
 
 
 class ProcessVisibilityError(RuntimeError):
@@ -525,13 +531,6 @@ def validate_remote_verification_policy(data: dict[str, Any]) -> None:
         values[key] = value
     if values["checks_appear_timeout_seconds"] >= values["overall_timeout_seconds"]:
         raise PolicyError("remote_verification.checks_appear_timeout_seconds must be less than overall_timeout_seconds")
-
-
-def require_positive_int(table: dict[str, Any], key: str, prefix: str) -> int:
-    value = table.get(key)
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise PolicyError(f"{prefix}.{key} must be a positive integer")
-    return value
 
 
 def require_non_empty_string(table: dict[str, Any], key: str, prefix: str) -> str:

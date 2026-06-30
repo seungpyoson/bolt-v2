@@ -84,10 +84,9 @@ class StrategyPolicyFenceTests(unittest.TestCase):
                 VERIFIER.REPO_ROOT = original_root
 
     def test_live_node_root_is_gated_but_not_strategy_policy_source(self) -> None:
-        self.assertIn(
-            "src/bolt_v3_live_node", source_roots.SUBMIT_ADMISSION_SOURCE_ROOTS
-        )
-        self.assertNotIn("src/bolt_v3_live_node", source_roots.STRATEGY_SOURCE_ROOTS)
+        for relative in ("src/bolt_v3_live_node.rs", "src/bolt_v3_live_node"):
+            self.assertIn(relative, source_roots.SUBMIT_ADMISSION_SOURCE_ROOTS)
+            self.assertNotIn(relative, source_roots.STRATEGY_SOURCE_ROOTS)
 
         scanned = {
             path.relative_to(VERIFIER.REPO_ROOT).as_posix()
@@ -95,7 +94,8 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         }
         self.assertFalse(
             any(
-                relative == "src/bolt_v3_live_node"
+                relative == "src/bolt_v3_live_node.rs"
+                or relative == "src/bolt_v3_live_node"
                 or relative.startswith("src/bolt_v3_live_node/")
                 for relative in scanned
             )

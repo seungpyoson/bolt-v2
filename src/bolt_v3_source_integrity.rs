@@ -240,7 +240,11 @@ mod tests {
         // surfacing later as a `registry_entry` panic).
         assert_eq!(
             registry_relative_roots(SUBMIT_ADMISSION_KEY),
-            &["src/bolt_v3_submit_admission.rs", "src/bolt_v3_live_node"]
+            &[
+                "src/bolt_v3_submit_admission.rs",
+                "src/bolt_v3_live_node.rs",
+                "src/bolt_v3_live_node",
+            ]
         );
     }
 

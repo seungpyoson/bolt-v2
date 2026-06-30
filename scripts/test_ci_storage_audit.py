@@ -2754,6 +2754,26 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertNotIn("cache persistence", stdout.getvalue())
         self.assertIn("ERROR: absent --cleanup-feasibility", stderr.getvalue())
 
+    def test_main_json_routes_validation_failure_annotations_to_stderr(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = ci_storage_audit.main(
+                [
+                    "--repo",
+                    "owner/repo",
+                    "--cleanup-alert",
+                    "--json",
+                    "--github-annotations",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("::error::cleanup feasibility audit contract failed:", stderr.getvalue())
+        self.assertIn("ERROR: absent --cleanup-feasibility", stderr.getvalue())
+
     def test_main_labels_cache_run_failures_as_cache_persistence(self) -> None:
         client = FakeClient(
             {
@@ -2802,6 +2822,54 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertIn("### Cache persistence audit", summary)
         self.assertIn("::error::cache persistence audit contract failed:", stdout.getvalue())
         self.assertNotIn("cleanup feasibility", stdout.getvalue())
+        self.assertIn("ERROR: absent --restore-hit", stderr.getvalue())
+
+    def test_main_json_routes_run_failure_annotations_to_stderr(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "exact-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 0,
+                    "actions_caches": [],
+                },
+                "actions/cache/usage": {
+                    "full_name": "owner/repo",
+                    "active_caches_size_in_bytes": 0,
+                    "active_caches_count": 0,
+                },
+            }
+        )
+        original_client = ci_storage_audit.GhClient
+        ci_storage_audit.GhClient = lambda repo: client
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                summary_path = pathlib.Path(tmp) / "summary.md"
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = ci_storage_audit.main(
+                        [
+                            "--repo",
+                            "owner/repo",
+                            "--cache-key",
+                            "probe=exact-key",
+                            "--cache-ref",
+                            "refs/heads/main",
+                            "--json",
+                            "--github-step-summary",
+                            str(summary_path),
+                            "--github-annotations",
+                        ]
+                    )
+        finally:
+            ci_storage_audit.GhClient = original_client
+
+        self.assertEqual(result, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("::error::cache persistence audit contract failed:", stderr.getvalue())
         self.assertIn("ERROR: absent --restore-hit", stderr.getvalue())
 
     def test_billing_probe_records_reachability_without_raw_payload(self) -> None:

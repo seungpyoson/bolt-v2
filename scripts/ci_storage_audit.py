@@ -2885,7 +2885,7 @@ def main(argv: list[str]) -> int:
         validate_args(args)
     except AuditError as exc:
         if getattr(args, "github_annotations", False):
-            print(f"::error::{audit_contract_failure_label(args)} contract failed: {exc}")
+            print_github_annotation(args, f"::error::{audit_contract_failure_label(args)} contract failed: {exc}")
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     try:
@@ -2894,7 +2894,7 @@ def main(argv: list[str]) -> int:
         if getattr(args, "github_step_summary", None) is not None:
             append_step_summary(args.github_step_summary, render_audit_failure_text(args, exc))
         if getattr(args, "github_annotations", False):
-            print(f"::error::{audit_contract_failure_label(args)} contract failed: {exc}")
+            print_github_annotation(args, f"::error::{audit_contract_failure_label(args)} contract failed: {exc}")
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

@@ -1810,6 +1810,17 @@ def assert_no_inline_matrix_key(job_lines: list[str], matrix_key: str) -> None:
         raise AssertionError(f"unexpected {matrix_key!r} matrix entry")
 
 
+def one_indexed_sequence(values: tuple[int, ...]) -> bool:
+    return values == tuple(range(1, len(values) + 1))
+
+
+def shard_partition_denominators(job_lines: list[str]) -> tuple[int, ...]:
+    return tuple(
+        int(denominator)
+        for denominator in re.findall(r"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)", "\n".join(job_lines))
+    )
+
+
 def strip_ci_provenance_config(config_text: str) -> str:
     lines = config_text.splitlines()
     kept: list[str] = []
@@ -5713,17 +5724,14 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     assert_no_inline_matrix_key(full_jobs["flaky-detection-rust-backtester-issue-789"], "shard")
     if full_root_runs != (1, 2, 3, 4, 5):
         raise AssertionError("flaky-test-detection.yml root job must keep five repeat runs")
-    if full_backtester_runs != (1, 2, 3, 4, 5) or full_backtester_shards != (1, 2, 3, 4):
-        raise AssertionError("flaky-test-detection.yml backtester job must keep five runs across four shards")
+    if full_backtester_runs != (1, 2, 3, 4, 5):
+        raise AssertionError("flaky-test-detection.yml backtester job must keep five repeat runs")
+    if not one_indexed_sequence(full_backtester_shards):
+        raise AssertionError("flaky-test-detection.yml backtester shard matrix must stay one-indexed and contiguous")
+    if shard_partition_denominators(full_jobs["flaky-detection-rust-backtester"]) != (len(full_backtester_shards),):
+        raise AssertionError("flaky-test-detection.yml backtester shard partition denominator must match shard matrix length")
     if full_issue_runs != (1, 2, 3, 4, 5):
         raise AssertionError("flaky-test-detection.yml issue-789 job must keep five repeat runs")
-    full_execution_count = (
-        len(full_root_runs)
-        + len(full_backtester_runs) * len(full_backtester_shards)
-        + len(full_issue_runs)
-    )
-    if full_execution_count != 30:
-        raise AssertionError(f"flaky-test-detection.yml must keep 30 matrix executions, got {full_execution_count}")
     smoke_fragments = (
         "schedule:",
         "cron: '0 */12 * * 1-5'",
@@ -5936,6 +5944,36 @@ jobs:
     flaky_errors = [error for error in good_errors if "flaky-test-detection" in error]
     if flaky_errors:
         raise AssertionError(f"flaky detection workflow verifier must accept split workflows, got: {flaky_errors}")
+
+    resharded_full_workflow = good_full_workflow.replace(
+        "shard: [1, 2, 3, 4]",
+        "shard: [1, 2, 3, 4, 5]",
+    ).replace('partition "count:${{ matrix.shard }}/4"', 'partition "count:${{ matrix.shard }}/5"')
+    resharded_full_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: resharded_full_workflow,
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    resharded_full_flaky_errors = [error for error in resharded_full_errors if "flaky-test-detection" in error]
+    if resharded_full_flaky_errors:
+        raise AssertionError(
+            f"flaky detection verifier must accept manual full workflow shard-count changes, got: {resharded_full_flaky_errors}"
+        )
+    mismatched_reshard_errors = verifier.verify_flaky_test_detection_workflows(
+        {
+            full_workflow_name: resharded_full_workflow.replace(
+                'partition "count:${{ matrix.shard }}/5"',
+                'partition "count:${{ matrix.shard }}/4"',
+            ),
+            smoke_workflow_name: good_smoke_workflow,
+        }
+    )
+    if not any("backtester full job partition denominator must match shard matrix length" in error for error in mismatched_reshard_errors):
+        raise AssertionError(
+            "flaky detection verifier must reject full workflow shard/partition denominator drift, "
+            f"got: {mismatched_reshard_errors}"
+        )
 
     oversized_smoke_workflow = good_smoke_workflow.replace(
         "run_number: [1]",

@@ -11262,6 +11262,27 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
     return errors
 
 
+def inline_integer_matrix_values(job_text: str, matrix_key: str) -> tuple[int, ...] | None:
+    match = re.search(rf"(?m)^        {re.escape(matrix_key)}: \[([0-9, ]+)\]\s*$", job_text)
+    if match is None:
+        return None
+    parts = [part.strip() for part in match.group(1).split(",")]
+    if not parts or any(not re.fullmatch(r"[1-9][0-9]*", part) for part in parts):
+        return None
+    return tuple(int(part) for part in parts)
+
+
+def one_indexed_sequence(values: tuple[int, ...]) -> bool:
+    return values == tuple(range(1, len(values) + 1))
+
+
+def shard_partition_denominators(job_text: str) -> tuple[int, ...]:
+    return tuple(
+        int(denominator)
+        for denominator in re.findall(r"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)", job_text)
+    )
+
+
 FLAKY_TEST_DETECTION_SHARED_FORBIDDEN_FRAGMENTS = (
     ("must not use dynamic matrix expressions", "fromJSON("),
     ("must not inspect event names for smoke/full selection", "github.event_name"),
@@ -11300,7 +11321,6 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
                 "backtester full job",
                 (
                     "run_number: [1, 2, 3, 4, 5]",
-                    "shard: [1, 2, 3, 4]",
                     "set +e",
                     "rc=$?",
                     "set -e",
@@ -11415,6 +11435,17 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             for fragment in fragments
             if fragment not in job_text
         )
+        if label == "backtester full job":
+            shards = inline_integer_matrix_values(job_text, "shard")
+            if shards is None:
+                errors.append("flaky-test-detection backtester full job shard matrix must be an inline integer list")
+            elif not one_indexed_sequence(shards):
+                errors.append("flaky-test-detection backtester full job shard matrix must be one-indexed and contiguous")
+            denominators = shard_partition_denominators(job_text)
+            if len(denominators) != 1:
+                errors.append("flaky-test-detection backtester full job must have one matrix.shard partition denominator")
+            elif shards is not None and denominators[0] != len(shards):
+                errors.append("flaky-test-detection backtester full job partition denominator must match shard matrix length")
     return errors
 
 

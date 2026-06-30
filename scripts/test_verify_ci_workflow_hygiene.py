@@ -1742,6 +1742,33 @@ jobs:
     if not any("permissions grant id-token: write" in error for error in permission_errors):
         raise AssertionError(f"governance plus new permissions grant must be blocked, got: {permission_errors}")
 
+    flow_permission_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "GitHub OIDC is allowed for a future governed automation lane.\n",
+            ".github/workflows/ci.yml": "name: CI\npermissions: { id-token: write }\n",
+        },
+    )
+    if not any("permissions grant id-token: write" in error for error in flow_permission_errors):
+        raise AssertionError(f"flow-map permissions grant must be blocked, got: {flow_permission_errors}")
+
+    scalar_permission_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "Broad workflow token permissions are allowed after ratification.\n",
+            ".github/workflows/ci.yml": "name: CI\npermissions: write-all\n",
+        },
+    )
+    if not any("permissions grant permissions: write-all" in error for error in scalar_permission_errors):
+        raise AssertionError(f"scalar permissions grant must be blocked, got: {scalar_permission_errors}")
+
+    flow_none_permission_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "Workflow token permissions may be explicitly denied.\n",
+            ".github/workflows/ci.yml": "name: CI\npermissions: { id-token: none }\n",
+        },
+    )
+    if flow_none_permission_errors:
+        raise AssertionError(f"flow-map permissions denied with none must pass, got: {flow_none_permission_errors}")
+
     quoted_permission_errors = self_authorizing_errors_for_changes(
         {
             "AGENTS.md": "GitHub OIDC is allowed for a future governed automation lane.\n",
@@ -1816,6 +1843,61 @@ jobs:
             f"removed job-level permissions block must be blocked, got: {job_permissions_errors}"
         )
 
+    with tempfile.TemporaryDirectory() as tmp:
+        relocated_permissions_repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))
+        write_repo_text(
+            relocated_permissions_repo,
+            ".github/workflows/ci.yml",
+            """\
+name: CI
+permissions:
+  contents: read
+jobs:
+  first:
+    permissions: {}
+    steps:
+      - run: echo first
+  second:
+    steps:
+      - run: echo second
+""",
+        )
+        commit_repo(relocated_permissions_repo, "base scoped permissions")
+        relocated_permissions_base = run_repo_git(relocated_permissions_repo, "rev-parse", "HEAD").strip()
+        write_repo_text(
+            relocated_permissions_repo,
+            "AGENTS.md",
+            "Default workflow token permissions are allowed after ratification.\n",
+        )
+        write_repo_text(
+            relocated_permissions_repo,
+            ".github/workflows/ci.yml",
+            """\
+name: CI
+permissions:
+  contents: read
+jobs:
+  first:
+    steps:
+      - run: echo first
+  second:
+    permissions: {}
+    steps:
+      - run: echo second
+""",
+        )
+        relocated_permissions_head = commit_repo(relocated_permissions_repo, "relocate job permissions")
+        relocated_permissions_errors = load_verifier().self_authorizing_governance_diff_errors(
+            relocated_permissions_repo,
+            relocated_permissions_base,
+            relocated_permissions_head,
+        )
+    if not any("permissions grant inherited default" in error for error in relocated_permissions_errors):
+        raise AssertionError(
+            "removed job-level permissions block must be detected even when another block is added, "
+            f"got: {relocated_permissions_errors}"
+        )
+
     allowlist_errors = self_authorizing_errors_for_changes(
         {
             "AGENTS.md": "Boundary evidence exemptions are allowed after owner ratification.\n",
@@ -1853,6 +1935,24 @@ jobs:
     )
     if capability_only_errors:
         raise AssertionError(f"capability-only edit must pass, got: {capability_only_errors}")
+
+    inline_comment_secret_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "Governance text clarification without capability changes.\n",
+            ".github/workflows/comment-only.yml": """\
+name: Comment Only
+permissions: {}
+jobs:
+  test:
+    steps:
+      - run: echo ok # not using secrets[env.SECRET_NAME]
+""",
+        },
+    )
+    if inline_comment_secret_errors:
+        raise AssertionError(
+            f"inline comments mentioning secrets syntax must not be blocked, got: {inline_comment_secret_errors}"
+        )
 
     with tempfile.TemporaryDirectory() as tmp:
         split_repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))

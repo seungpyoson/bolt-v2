@@ -9937,7 +9937,8 @@ def self_authorizing_secret_ref_signals(
     for relative_path, line in added_lines:
         if not is_github_automation_path(relative_path) or not non_comment_line(line):
             continue
-        for match in SELF_AUTHORIZING_SECRET_REF_RE.finditer(line):
+        clean = strip_comment(line).rstrip()
+        for match in SELF_AUTHORIZING_SECRET_REF_RE.finditer(clean):
             detail = self_authorizing_secret_ref_detail(match)
             key = (relative_path, detail)
             if key in seen:
@@ -9981,30 +9982,48 @@ def self_authorizing_secret_inherit_signals(
     return signals
 
 
-def yaml_permissions_block_count(workflow_text: str) -> int:
-    count = 0
+def yaml_permissions_block_exists(
+    lines: list[str],
+    index: int,
+    parent_indent: int,
+    scalar: str,
+) -> bool:
+    if scalar:
+        return scalar not in {"null", "~"}
+    for child in lines[index + 1 :]:
+        child_clean = strip_comment(child).rstrip()
+        if not child_clean.strip():
+            continue
+        child_indent = len(child_clean) - len(child_clean.lstrip(" "))
+        if child_indent <= parent_indent:
+            break
+        return True
+    return False
+
+
+def yaml_permissions_block_scopes(workflow_text: str) -> set[str]:
+    scopes: set[str] = set()
+    stack: list[tuple[int, str]] = []
     lines = workflow_text.splitlines()
     for index, line in enumerate(lines):
         clean = strip_comment(line).rstrip()
         match = re.match(rf"^(\s*)({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
-        if match is None or unquote_yaml_scalar(match.group(2)) != "permissions":
+        if match is None:
             continue
+        indent = len(match.group(1))
+        key = unquote_yaml_scalar(match.group(2))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
         scalar = unquote_yaml_scalar(match.group(3)).strip()
-        if scalar:
-            if scalar not in {"null", "~"}:
-                count += 1
-            continue
-        parent_indent = len(match.group(1))
-        for child in lines[index + 1 :]:
-            child_clean = strip_comment(child).rstrip()
-            if not child_clean.strip():
-                continue
-            child_indent = len(child_clean) - len(child_clean.lstrip(" "))
-            if child_indent <= parent_indent:
-                break
-            count += 1
-            break
-    return count
+        if key == "permissions" and yaml_permissions_block_exists(
+            lines,
+            index,
+            indent,
+            scalar,
+        ):
+            scopes.add(".".join([*(ancestor for _indent, ancestor in stack), key]))
+        stack.append((indent, key))
+    return scopes
 
 
 def yaml_flow_mapping_grants(scalar: str) -> set[tuple[str, str]]:
@@ -10036,9 +10055,8 @@ def yaml_permissions_grants(workflow_text: str) -> set[tuple[str, str]]:
         parent_indent = len(match.group(1))
         scalar = unquote_yaml_scalar(match.group(3)).strip()
         if scalar:
-            flow_grants = yaml_flow_mapping_grants(scalar)
-            if flow_grants:
-                grants.update(flow_grants)
+            if scalar.startswith("{") and scalar.endswith("}"):
+                grants.update(yaml_flow_mapping_grants(scalar))
             elif scalar not in {"{}", "none", "null", "~"}:
                 grants.add(("permissions", scalar))
             continue
@@ -10076,7 +10094,7 @@ def self_authorizing_permission_signals(
         head_text = repo_git_text_at_ref(repo, head_ref, relative_path)
         if not head_text:
             continue
-        if yaml_permissions_block_count(head_text) < yaml_permissions_block_count(base_text):
+        if yaml_permissions_block_scopes(base_text) - yaml_permissions_block_scopes(head_text):
             signals.append(
                 SelfAuthorizingCapabilitySignal(
                     "permissions grant",

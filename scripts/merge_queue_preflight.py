@@ -598,8 +598,19 @@ def verifier_batch_ready_findings(
     return tuple(verifier_batch_ready_finding(batch, output_policy) for batch in batches)
 
 
-def mergify_config_snapshot_finding(*, repo: pathlib.Path, base_sha: str) -> dict[str, object]:
-    result = git(repo, "rev-parse", f"{base_sha}:{MERGIFY_CONFIG_PATH}", check=False)
+def mergify_config_snapshot_finding(
+    *,
+    repo: pathlib.Path,
+    base_sha: str,
+    input_timeout_seconds: int,
+) -> dict[str, object]:
+    result = git(
+        repo,
+        "rev-parse",
+        f"{base_sha}:{MERGIFY_CONFIG_PATH}",
+        check=False,
+        timeout_seconds=input_timeout_seconds,
+    )
     blob_sha = result.stdout.strip()
     status, reason_code, message = MERGIFY_CONFIG_SNAPSHOT_STATES[
         result.returncode == 0 and SHA_RE.fullmatch(blob_sha) is not None
@@ -625,8 +636,16 @@ def mergify_config_validation_finding(
     repo: pathlib.Path,
     base_sha: str,
     blob_sha: str,
+    input_timeout_seconds: int,
 ) -> dict[str, object]:
-    result = git(repo, "cat-file", "-p", blob_sha, check=False)
+    result = git(
+        repo,
+        "cat-file",
+        "-p",
+        blob_sha,
+        check=False,
+        timeout_seconds=input_timeout_seconds,
+    )
     errors = tuple(verify_mergify_config(result.stdout, config_name=MERGIFY_CONFIG_PATH))
     status, reason_code, message = MERGIFY_CONFIG_VALIDATION_STATES[
         result.returncode == 0 and not errors
@@ -649,8 +668,20 @@ def mergify_config_validation_finding(
     }
 
 
-def mergify_config_data(*, repo: pathlib.Path, blob_sha: str) -> Any:
-    result = git(repo, "cat-file", "-p", blob_sha, check=False)
+def mergify_config_data(
+    *,
+    repo: pathlib.Path,
+    blob_sha: str,
+    input_timeout_seconds: int,
+) -> Any:
+    result = git(
+        repo,
+        "cat-file",
+        "-p",
+        blob_sha,
+        check=False,
+        timeout_seconds=input_timeout_seconds,
+    )
     config, _ = parse_mergify_yaml(result.stdout, MERGIFY_CONFIG_PATH)
     return config
 
@@ -1234,18 +1265,28 @@ def mergify_config_findings(
     base_sha: str,
     readiness: Sequence[Mapping[str, object]],
     required_check_workflows: Mapping[str, str],
+    input_timeout_seconds: int,
 ) -> tuple[dict[str, object], ...]:
-    snapshot = mergify_config_snapshot_finding(repo=repo, base_sha=base_sha)
+    snapshot = mergify_config_snapshot_finding(
+        repo=repo,
+        base_sha=base_sha,
+        input_timeout_seconds=input_timeout_seconds,
+    )
     if snapshot["status"] != STATUS_READY:
         return (snapshot,)
     validation = mergify_config_validation_finding(
         repo=repo,
         base_sha=base_sha,
         blob_sha=str(snapshot["evidence"]["blob_sha"]),
+        input_timeout_seconds=input_timeout_seconds,
     )
     if validation["status"] != STATUS_READY:
         return (snapshot, validation)
-    config = mergify_config_data(repo=repo, blob_sha=str(snapshot["evidence"]["blob_sha"]))
+    config = mergify_config_data(
+        repo=repo,
+        blob_sha=str(snapshot["evidence"]["blob_sha"]),
+        input_timeout_seconds=input_timeout_seconds,
+    )
     return (
         snapshot,
         validation,
@@ -1460,12 +1501,17 @@ class CommandResult:
 @dataclasses.dataclass
 class PrivateFetchRefs:
     repo: pathlib.Path
+    input_timeout_seconds: int
     namespace: str
     refs: list[str] = dataclasses.field(default_factory=list)
 
     @classmethod
-    def create(cls, repo: pathlib.Path) -> "PrivateFetchRefs":
-        return cls(repo=repo, namespace=f"{PREFLIGHT_REF_PREFIX}/{uuid.uuid4().hex}")
+    def create(cls, repo: pathlib.Path, input_timeout_seconds: int) -> "PrivateFetchRefs":
+        return cls(
+            repo=repo,
+            input_timeout_seconds=input_timeout_seconds,
+            namespace=f"{PREFLIGHT_REF_PREFIX}/{uuid.uuid4().hex}",
+        )
 
     def fetch_sha(self, origin: str, source: str, name: str) -> str:
         ref = f"{self.namespace}/{name}"
@@ -1477,13 +1523,26 @@ class PrivateFetchRefs:
             "--no-tags",
             origin,
             f"{source}:{ref}",
+            timeout_seconds=self.input_timeout_seconds,
         )
         self.refs.append(ref)
-        return git(self.repo, "rev-parse", ref).stdout.strip()
+        return git(
+            self.repo,
+            "rev-parse",
+            ref,
+            timeout_seconds=self.input_timeout_seconds,
+        ).stdout.strip()
 
     def cleanup(self) -> None:
         for ref in reversed(self.refs):
-            git(self.repo, "update-ref", "-d", ref, check=False)
+            git(
+                self.repo,
+                "update-ref",
+                "-d",
+                ref,
+                check=False,
+                timeout_seconds=self.input_timeout_seconds,
+            )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1637,6 +1696,7 @@ class PreflightConfig:
     default_verifier_profile: str
     verifier_profiles: dict[str, tuple[str, ...]]
     required_check_workflows: dict[str, str]
+    input_timeout_seconds: int
     verifier_timeout_seconds: int
     output_policy: OutputPolicy
 
@@ -1697,15 +1757,18 @@ def run_command(
     cwd: pathlib.Path,
     check: bool = True,
     env: dict[str, str] | None = None,
+    input_text: str | None = None,
     timeout_seconds: int | None = None,
     process_group: bool = False,
 ) -> CommandResult:
     command_args = list(args)
+    stdin = subprocess.PIPE if input_text is not None else subprocess.DEVNULL
     try:
         process = subprocess.Popen(
             command_args,
             cwd=cwd,
             text=True,
+            stdin=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
@@ -1722,8 +1785,19 @@ def run_command(
         if check:
             raise PreflightError(result.stderr.strip())
         return result
+    except OSError as exc:
+        result = CommandResult(
+            args=tuple(args),
+            returncode=127,
+            stdout="",
+            stderr=f"executable could not start: {command_args[0]}: {exc}\n",
+            failure_type="unavailable",
+        )
+        if check:
+            raise PreflightError(result.stderr.strip())
+        return result
     try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        stdout, stderr = process.communicate(input=input_text, timeout=timeout_seconds)
         returncode = process.returncode
         failure_type = None
     except subprocess.TimeoutExpired:
@@ -1754,8 +1828,22 @@ def run_command(
     return result
 
 
-def git(repo: pathlib.Path, *args: str, check: bool = True) -> CommandResult:
-    return run_command(["git", *args], cwd=repo, check=check)
+def git(
+    repo: pathlib.Path,
+    *args: str,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+    input_text: str | None = None,
+    timeout_seconds: int | None = None,
+) -> CommandResult:
+    return run_command(
+        ["git", *args],
+        cwd=repo,
+        check=check,
+        env=env,
+        input_text=input_text,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def load_toml(path: pathlib.Path) -> dict[str, object]:
@@ -1822,6 +1910,11 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
         "verifier_seconds",
         "config.merge_queue_preflight.timeouts",
     )
+    input_timeout_seconds = require_positive_int(
+        timeout_settings,
+        "input_seconds",
+        "config.merge_queue_preflight.timeouts",
+    )
     required_check_workflows = require_string_map(
         settings,
         "required_check_workflows",
@@ -1864,6 +1957,7 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
         default_verifier_profile=default_profile,
         verifier_profiles=profiles,
         required_check_workflows=required_check_workflows,
+        input_timeout_seconds=input_timeout_seconds,
         verifier_timeout_seconds=verifier_timeout_seconds,
         output_policy=output_policy,
     )
@@ -1964,9 +2058,24 @@ def parse_conflict_files(output: str) -> tuple[str, ...]:
     return tuple(sorted(fallback))
 
 
-def merge_tree(repo: pathlib.Path, left: str, right: str) -> MergeResult:
-    result = git(repo, "merge-tree", "--write-tree", left, right, check=False)
+def merge_tree(
+    repo: pathlib.Path,
+    left: str,
+    right: str,
+    input_timeout_seconds: int,
+) -> MergeResult:
+    result = git(
+        repo,
+        "merge-tree",
+        "--write-tree",
+        left,
+        right,
+        check=False,
+        timeout_seconds=input_timeout_seconds,
+    )
     output = result.stdout + result.stderr
+    if result.failure_type == "timeout":
+        raise PreflightError(f"git merge-tree timed out after {input_timeout_seconds} seconds")
     if result.returncode == 0:
         tree = result.stdout.splitlines()[0].strip()
         if SHA_RE.fullmatch(tree) is None:
@@ -1980,7 +2089,13 @@ def merge_tree(repo: pathlib.Path, left: str, right: str) -> MergeResult:
     )
 
 
-def commit_tree(repo: pathlib.Path, tree: str, parents: Sequence[str], message: str) -> str:
+def commit_tree(
+    repo: pathlib.Path,
+    tree: str,
+    parents: Sequence[str],
+    message: str,
+    input_timeout_seconds: int,
+) -> str:
     args = ["commit-tree", tree]
     for parent in parents:
         args.extend(["-p", parent])
@@ -1989,15 +2104,13 @@ def commit_tree(repo: pathlib.Path, tree: str, parents: Sequence[str], message: 
     env.setdefault("GIT_AUTHOR_EMAIL", "merge-queue-preflight@example.invalid")
     env.setdefault("GIT_COMMITTER_NAME", "merge-queue-preflight")
     env.setdefault("GIT_COMMITTER_EMAIL", "merge-queue-preflight@example.invalid")
-    completed = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        input=message,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+    completed = git(
+        repo,
+        *args,
         check=False,
         env=env,
+        input_text=message,
+        timeout_seconds=input_timeout_seconds,
     )
     if completed.returncode != 0:
         raise PreflightError(f"git commit-tree failed: {completed.stderr}{completed.stdout}")
@@ -2012,12 +2125,19 @@ def synthesize_merge(
     left_commit: str,
     right_commit: str,
     prs: Sequence[int],
+    input_timeout_seconds: int,
 ) -> SyntheticCommit | MergeResult:
-    merged = merge_tree(repo, left_commit, right_commit)
+    merged = merge_tree(repo, left_commit, right_commit, input_timeout_seconds)
     if not merged.clean or merged.tree is None:
         return merged
     message = "merge queue preflight: " + ",".join(f"#{pr}" for pr in prs)
-    commit = commit_tree(repo, merged.tree, [left_commit, right_commit], message)
+    commit = commit_tree(
+        repo,
+        merged.tree,
+        [left_commit, right_commit],
+        message,
+        input_timeout_seconds,
+    )
     return SyntheticCommit(commit=commit, prs=tuple(prs))
 
 
@@ -2026,13 +2146,23 @@ def run_verifier_commands(
     commit: str,
     commands: Sequence[str],
     timeout_seconds: int,
+    input_timeout_seconds: int,
 ) -> tuple[VerifierResult, ...]:
     if not commands:
         return ()
     results: list[VerifierResult] = []
     with tempfile.TemporaryDirectory(prefix="merge-queue-preflight-") as tmp:
         worktree = pathlib.Path(tmp) / "worktree"
-        git(repo, "worktree", "add", "--quiet", "--detach", str(worktree), commit)
+        git(
+            repo,
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            str(worktree),
+            commit,
+            timeout_seconds=input_timeout_seconds,
+        )
         try:
             for command in commands:
                 parts = shlex.split(command)
@@ -2056,7 +2186,15 @@ def run_verifier_commands(
                 if verifier_result.returncode != 0:
                     break
         finally:
-            git(repo, "worktree", "remove", "--force", str(worktree), check=False)
+            git(
+                repo,
+                "worktree",
+                "remove",
+                "--force",
+                str(worktree),
+                check=False,
+                timeout_seconds=input_timeout_seconds,
+            )
     return tuple(results)
 
 
@@ -2096,17 +2234,19 @@ def gh_json(
     args: Sequence[str],
     *,
     allowed_returncodes: Sequence[int] = (0,),
+    timeout_seconds: int,
 ) -> object:
-    try:
-        completed = subprocess.run(
-            ["gh", *args],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise PreflightError("gh executable not found") from exc
+    completed = run_command(
+        ["gh", *args],
+        cwd=pathlib.Path.cwd(),
+        check=False,
+        timeout_seconds=timeout_seconds,
+        process_group=True,
+    )
+    if completed.failure_type == "unavailable":
+        raise PreflightError("gh executable not found")
+    if completed.failure_type == "timeout":
+        raise PreflightError(f"gh {' '.join(args)} timed out after {timeout_seconds} seconds")
     if completed.returncode not in allowed_returncodes:
         raise PreflightError(f"gh {' '.join(args)} failed: {completed.stderr}{completed.stdout}")
     try:
@@ -2161,6 +2301,7 @@ def pr_readiness(
     pr_number: int,
     *,
     use_gh: bool,
+    input_timeout_seconds: int,
     expected_base: str | None = None,
     fetched_head: str | None = None,
 ) -> dict[str, object]:
@@ -2173,7 +2314,8 @@ def pr_readiness(
             str(pr_number),
             "--json",
             "number,state,isDraft,mergeable,reviewDecision,headRefOid,baseRefName,labels,reviews,title,url",
-        ]
+        ],
+        timeout_seconds=input_timeout_seconds,
     )
     if not isinstance(payload, dict):
         raise PreflightError(f"gh pr view {pr_number} did not return an object")
@@ -2187,6 +2329,7 @@ def pr_readiness(
             "name,state,bucket,workflow",
         ],
         allowed_returncodes=GH_PR_CHECKS_JSON_RETURNCODES,
+        timeout_seconds=input_timeout_seconds,
     )
     if not isinstance(checks, list):
         raise PreflightError(f"gh pr checks {pr_number} did not return a list")
@@ -2210,9 +2353,13 @@ def readiness_for_wave(
     *,
     use_gh: bool,
     base: str,
+    input_timeout_seconds: int,
 ) -> tuple[list[dict[str, object]], list[str]]:
     if not use_gh:
-        return [pr_readiness(pr, use_gh=False) for pr in pr_numbers], []
+        return [
+            pr_readiness(pr, use_gh=False, input_timeout_seconds=input_timeout_seconds)
+            for pr in pr_numbers
+        ], []
     readiness: list[dict[str, object]] = []
     metadata_warnings: list[str] = []
     for pr in pr_numbers:
@@ -2221,6 +2368,7 @@ def readiness_for_wave(
                 pr_readiness(
                     pr,
                     use_gh=True,
+                    input_timeout_seconds=input_timeout_seconds,
                     expected_base=base,
                 )
             )
@@ -2470,12 +2618,13 @@ def preflight(
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
+    input_timeout_seconds: int,
     verifier_timeout_seconds: int,
     required_check_workflows: Mapping[str, str],
     output_policy: OutputPolicy,
     use_gh: bool,
 ) -> tuple[dict[str, object], int]:
-    fetch_refs = PrivateFetchRefs.create(repo)
+    fetch_refs = PrivateFetchRefs.create(repo, input_timeout_seconds)
     try:
         return preflight_with_fetch_refs(
             repo=repo,
@@ -2485,6 +2634,7 @@ def preflight(
             expected_head_inputs=expected_head_inputs,
             pr_numbers=pr_numbers,
             verifier_commands=verifier_commands,
+            input_timeout_seconds=input_timeout_seconds,
             verifier_timeout_seconds=verifier_timeout_seconds,
             required_check_workflows=required_check_workflows,
             output_policy=output_policy,
@@ -2504,6 +2654,7 @@ def preflight_with_fetch_refs(
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
+    input_timeout_seconds: int,
     verifier_timeout_seconds: int,
     required_check_workflows: Mapping[str, str],
     output_policy: OutputPolicy,
@@ -2529,6 +2680,7 @@ def preflight_with_fetch_refs(
         requested,
         use_gh=use_gh,
         base=base,
+        input_timeout_seconds=input_timeout_seconds,
     )
     initial_readiness_blocks = readiness_blocks(readiness)
     initial_blocked_numbers = {
@@ -2558,6 +2710,7 @@ def preflight_with_fetch_refs(
         base_sha=base_sha,
         readiness=readiness,
         required_check_workflows=required_check_workflows,
+        input_timeout_seconds=input_timeout_seconds,
     )
     batch_max_limits = mergify_batch_limits(mergify_findings)
     base_commits: dict[int, SyntheticCommit] = {}
@@ -2566,7 +2719,7 @@ def preflight_with_fetch_refs(
         if pr in blocked_numbers:
             continue
         head = heads[pr]
-        synthetic = synthesize_merge(repo, base_sha, head.sha, [pr])
+        synthetic = synthesize_merge(repo, base_sha, head.sha, [pr], input_timeout_seconds)
         if isinstance(synthetic, MergeResult):
             blocked_prs.append(
                 {
@@ -2583,6 +2736,7 @@ def preflight_with_fetch_refs(
             synthetic.commit,
             verifier_commands,
             verifier_timeout_seconds,
+            input_timeout_seconds,
         )
         failed = first_failed_verifier(verifier_results)
         if failed is not None:
@@ -2619,7 +2773,13 @@ def preflight_with_fetch_refs(
             current = base_commits[pr]
             current_verifiers = base_verifiers[pr]
             continue
-        synthetic = synthesize_merge(repo, current.commit, pr_head.sha, candidate_prs)
+        synthetic = synthesize_merge(
+            repo,
+            current.commit,
+            pr_head.sha,
+            candidate_prs,
+            input_timeout_seconds,
+        )
         if isinstance(synthetic, MergeResult):
             conflicts.append(
                 {
@@ -2646,6 +2806,7 @@ def preflight_with_fetch_refs(
             synthetic.commit,
             verifier_commands,
             verifier_timeout_seconds,
+            input_timeout_seconds,
         )
         failed = first_failed_verifier(candidate_verifiers)
         if failed is not None:
@@ -2874,6 +3035,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_head_inputs=args.expected_head_sha,
             pr_numbers=args.prs,
             verifier_commands=verifier_commands(config, args.verifier_profile, args.run_verifier),
+            input_timeout_seconds=config.input_timeout_seconds,
             verifier_timeout_seconds=config.verifier_timeout_seconds,
             required_check_workflows=config.required_check_workflows,
             output_policy=config.output_policy,

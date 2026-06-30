@@ -301,6 +301,9 @@ check-aarch64: check-workspace require-rust-verification-owner
 verify-remote: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" verify-remote --repo "{{repo_root}}"
 
+merge-queue *args: check-workspace
+    python3 scripts/merge_queue_operator.py {{args}}
+
 rust-probe *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" rust-probe --repo "{{repo_root}}" {{args}}
 
@@ -513,6 +516,9 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
         failed=1
     fi
     if ! python3 scripts/test_merge_queue_preflight.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_merge_queue_operator.py; then
         failed=1
     fi
     if ! python3 scripts/test_coverage_enforcer.py; then

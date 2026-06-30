@@ -510,6 +510,91 @@ def assert_contract_result_reduces_findings_by_table() -> None:
         raise AssertionError(split_result)
 
 
+def assert_preflight_input_timeout_is_config_driven() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_preflight_config(
+            pathlib.Path(tmp),
+            "none",
+            [],
+            input_timeout_seconds=17,
+        )
+        loaded = module.load_config(config)
+    assert_equal(loaded.input_timeout_seconds, 17, "input timeout config")
+
+
+def assert_git_and_gh_use_input_timeout() -> None:
+    module = load_preflight_module()
+    calls: list[dict[str, object]] = []
+    original_run_command = module.run_command
+
+    def fake_run_command(args: list[str], **kwargs: object) -> object:
+        calls.append({"args": tuple(args), **kwargs})
+        return module.CommandResult(tuple(args), 0, "{}", "")
+
+    module.run_command = fake_run_command
+    try:
+        module.git(REPO_ROOT, "status", timeout_seconds=17)
+        module.gh_json(["pr", "view", "1"], timeout_seconds=17)
+    finally:
+        module.run_command = original_run_command
+    assert_equal(calls[0]["args"], ("git", "status"), "git command args")
+    assert_equal(calls[0]["timeout_seconds"], 17, "git timeout")
+    assert_equal(calls[1]["args"], ("gh", "pr", "view", "1"), "gh command args")
+    assert_equal(calls[1]["timeout_seconds"], 17, "gh timeout")
+    assert_equal(calls[1]["process_group"], True, "gh process group")
+
+
+def assert_gh_timeout_is_preflight_error() -> None:
+    module = load_preflight_module()
+    original_run_command = module.run_command
+
+    def fake_run_command(args: list[str], **_kwargs: object) -> object:
+        return module.CommandResult(
+            tuple(args),
+            -9,
+            "",
+            "command timed out after 17 seconds\n",
+            failure_type="timeout",
+        )
+
+    module.run_command = fake_run_command
+    try:
+        try:
+            module.gh_json(["pr", "view", "1"], timeout_seconds=17)
+        except module.PreflightError as exc:
+            assert "timed out after 17 seconds" in str(exc), exc
+        else:
+            raise AssertionError("gh timeout did not raise PreflightError")
+    finally:
+        module.run_command = original_run_command
+
+
+def assert_merge_tree_timeout_is_preflight_error() -> None:
+    module = load_preflight_module()
+    original_git = module.git
+
+    def fake_git(_repo: pathlib.Path, *args: str, **_kwargs: object) -> object:
+        return module.CommandResult(
+            ("git", *args),
+            -9,
+            "",
+            "command timed out after 17 seconds\n",
+            failure_type="timeout",
+        )
+
+    module.git = fake_git
+    try:
+        try:
+            module.merge_tree(REPO_ROOT, "a" * 40, "b" * 40, 17)
+        except module.PreflightError as exc:
+            assert "git merge-tree timed out after 17 seconds" in str(exc), exc
+        else:
+            raise AssertionError("merge-tree timeout did not raise PreflightError")
+    finally:
+        module.git = original_git
+
+
 def assert_check_state_classification_is_table_driven() -> None:
     module = load_preflight_module()
     cases = {
@@ -732,6 +817,7 @@ def write_preflight_config(
     *,
     verifier_stream_max_lines: int = 40,
     verifier_stream_max_bytes: int = 4000,
+    input_timeout_seconds: int = 30,
     verifier_timeout_seconds: int = 60,
 ) -> pathlib.Path:
     rendered_commands = ", ".join(json.dumps(command) for command in commands)
@@ -747,6 +833,7 @@ def write_preflight_config(
         'base = "main"\n'
         f"default_verifier_profile = {json.dumps(profile)}\n\n"
         "[merge_queue_preflight.timeouts]\n"
+        f"input_seconds = {input_timeout_seconds}\n"
         f"verifier_seconds = {verifier_timeout_seconds}\n\n"
         "[merge_queue_preflight.required_check_workflows]\n"
         f"{rendered_workflows}\n\n"
@@ -2395,7 +2482,7 @@ def assert_non_missing_head_fetch_failure_is_inspection_error() -> None:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
         fixture.make_pr(1, {"one.txt": "one\n"})
-        fetch_refs = module.PrivateFetchRefs.create(fixture.repo)
+        fetch_refs = module.PrivateFetchRefs.create(fixture.repo, 30)
         try:
             heads, blocks = module.fetch_available_pr_heads(
                 fetch_refs=fetch_refs,
@@ -2561,6 +2648,10 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
 
 def main() -> int:
     assert_contract_result_reduces_findings_by_table()
+    assert_preflight_input_timeout_is_config_driven()
+    assert_git_and_gh_use_input_timeout()
+    assert_gh_timeout_is_preflight_error()
+    assert_merge_tree_timeout_is_preflight_error()
     assert_check_state_classification_is_table_driven()
     assert_input_failure_matrix_is_declarative()
     assert_mergify_config_field_handling_is_declarative()

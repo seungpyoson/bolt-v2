@@ -5585,6 +5585,17 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  contents: read\n", "  contents: write\n")},
         ),
         (
+            "permissions must match the exact read-only map",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "  pull-requests: read\n",
+                    "  pull-requests: read\n"
+                    "  statuses: write\n",
+                )
+            },
+        ),
+        (
             "must define coverage-enforcer job",
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  coverage-enforcer:\n", "  renamed:\n")},
         ),

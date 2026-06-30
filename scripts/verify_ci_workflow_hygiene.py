@@ -1111,6 +1111,12 @@ EXPECTED_MERGE_READINESS_PROGRESS_IF = (
 
 EXPECTED_COVERAGE_ENFORCER_IF = ""
 
+EXPECTED_COVERAGE_ENFORCER_PERMISSIONS = {
+    "checks": "read",
+    "contents": "read",
+    "pull-requests": "read",
+}
+
 EXPECTED_COVERAGE_ENFORCER_CHECKOUT_WITH = {
     "ref": "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
     "persist-credentials": "false",
@@ -2823,6 +2829,50 @@ def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, s
             item_indent = indent
         if indent != item_indent:
             continue
+        item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if item_match is None:
+            return None
+        key = unquote_yaml_scalar(item_match.group(1))
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(item_match.group(2))
+    return items
+
+
+def top_level_mapping_items(workflow_text: str, top_key: str) -> dict[str, str] | None:
+    lines = workflow_text.splitlines()
+    top_index: int | None = None
+    for index, line in enumerate(lines):
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent != 0:
+            continue
+        top_match = re.match(rf"^({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if top_match is None:
+            continue
+        if unquote_yaml_scalar(top_match.group(1)) != top_key:
+            continue
+        if top_index is not None or unquote_yaml_scalar(top_match.group(2)) != "":
+            return None
+        top_index = index
+    if top_index is None:
+        return None
+
+    item_indent: int | None = None
+    items: dict[str, str] = {}
+    for line in lines[top_index + 1 :]:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent == 0:
+            break
+        if item_indent is None:
+            item_indent = indent
+        if indent != item_indent:
+            return None
         item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
         if item_match is None:
             return None
@@ -13798,6 +13848,8 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
         errors.append(f"{workflow_name} merge_group trigger must use checks_requested")
 
     permissions = "\n".join(top_level_block(workflow_text, "permissions"))
+    if top_level_mapping_items(workflow_text, "permissions") != EXPECTED_COVERAGE_ENFORCER_PERMISSIONS:
+        errors.append(f"{workflow_name} permissions must match the exact read-only map")
     for required in (
         "  checks: read",
         "  contents: read",

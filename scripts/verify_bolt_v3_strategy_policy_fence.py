@@ -329,23 +329,8 @@ STRATEGY_ROOT_POLICY_EXEMPT_PATHS = frozenset(
     }
 )
 
-STRATEGY_POLICY_NON_STRATEGY_SOURCE_ROOTS = frozenset(
-    {
-        "src/bolt_v3_live_node",
-    }
-)
-
-
 def is_maker_strategy_source_path(path: str) -> bool:
     return path == MAKER_SOURCE_ROOT or path.startswith(f"{MAKER_SOURCE_ROOT}/")
-
-
-def is_strategy_policy_scanned_path(path) -> bool:
-    relative = path.relative_to(REPO_ROOT).as_posix()
-    return not any(
-        relative == root or relative.startswith(f"{root}/")
-        for root in STRATEGY_POLICY_NON_STRATEGY_SOURCE_ROOTS
-    )
 
 
 def line_number(text: str, pos: int) -> int:
@@ -373,7 +358,7 @@ def source_files_for_strategy_policy_fence() -> list:
     files = {
         path
         for path in source_set_files(STRATEGY_SOURCE_ROOTS)
-        if not is_test_source_file(path) and is_strategy_policy_scanned_path(path)
+        if not is_test_source_file(path)
     }
     files.update(production_rust_files_under("src/strategies"))
     return sorted(

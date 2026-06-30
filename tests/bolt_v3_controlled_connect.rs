@@ -583,7 +583,19 @@ fn live_node_module_runs_nt_through_bolt_v3_wrapper() {
     let source = concat!(
         include_str!("../src/bolt_v3_live_node.rs"),
         "\n",
+        include_str!("../src/bolt_v3_live_node/data_client_probe.rs"),
+        "\n",
+        include_str!("../src/bolt_v3_live_node/iv.rs"),
+        "\n",
         include_str!("../src/bolt_v3_live_node/live_node_config.rs"),
+        "\n",
+        include_str!("../src/bolt_v3_live_node/risk_admission_loss.rs"),
+        "\n",
+        include_str!("../src/bolt_v3_live_node/secrets_builders.rs"),
+        "\n",
+        include_str!("../src/bolt_v3_live_node/strategy_free_probe.rs"),
+        "\n",
+        include_str!("../src/bolt_v3_live_node/transport_scope.rs"),
     );
     let live_run_body = source
         .split("pub async fn run_bolt_v3_live_node")

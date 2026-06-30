@@ -1,7 +1,8 @@
 name: Flaky Test Smoke
 
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * 1-5'  # Every 12 hours, Monday-Friday
 
 permissions:
   contents: read

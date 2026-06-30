@@ -15,6 +15,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import ci_provenance  # noqa: E402
+import config_validators as _cv  # noqa: E402
 
 
 GATE_CHECK_NAME = "gate"
@@ -22,6 +23,9 @@ GATE_CHECK_NAME = "gate"
 
 class EvidenceError(RuntimeError):
     """Raised when exact same-SHA deploy evidence is missing or unsafe to reuse."""
+
+
+as_text = _cv.as_text
 
 
 @dataclasses.dataclass(frozen=True)
@@ -33,11 +37,6 @@ class SameShaMainEvidence:
     artifact_name: str
     artifact_size: str
     source_sha: str
-
-
-def as_text(value: object) -> str:
-    return "" if value is None else str(value)
-
 
 def validate_gate_success(jobs_payload: dict[str, object]) -> None:
     try:

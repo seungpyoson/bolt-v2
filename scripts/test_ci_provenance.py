@@ -28,7 +28,7 @@ RUN_ID = 24623219988
 CHECK_SUITE_ID = 65233803543
 NEXTEST_FINGERPRINT = f"nextest-archive-v2-Linux-X64-test-profile-shards-4-{'a' * 64}"
 NEXTEST_FINGERPRINT_ARTIFACT = f"nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-{'a' * 64}"
-CAPTURE_PROVENANCE_CONFIG_DIGEST = "028c908b23a2e3088a09ace96b904d31be59e85239edc2198755989a2262a580"
+CAPTURE_PROVENANCE_CONFIG_DIGEST = "61c1c59cc9a6feba42fc626ed6b71d1e0afa65786e4f6d4a1bd1acdcbe3d71c3"
 
 CONFIG_TOML = """
 schema_version = 1
@@ -95,6 +95,9 @@ conditional = "detector.build_required"
 
 [ci_provenance.deploy]
 artifact_name = "bolt-v2-binary"
+artifact_upload_if = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
+artifact_retention_days = 3
+artifact_lookback_age_seconds = 259200
 require_source_event = "push"
 require_source_branch = "main"
 require_gate_check = true
@@ -402,6 +405,9 @@ safe_paths = [
 require_gate_check = true
 require_source_branch = "main"
 require_source_event = "push"
+artifact_lookback_age_seconds = 259200
+artifact_retention_days = 3
+artifact_upload_if = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
 artifact_name = "bolt-v2-binary"
 
 [ci_provenance.full_ci.jobs.build]
@@ -776,6 +782,45 @@ def assert_positive_int_config_rejects_booleans() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         for expected, text in cases.items():
             config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
+
+
+def assert_deploy_artifact_window_uses_short_deploy_policy() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config_path = write_config(tmp_path, CONFIG_TOML)
+        config = module.load_config(config_path)
+        if config.deploy_artifact_retention_days != 3:
+            raise AssertionError(
+                "deploy binary retention must use the deploy-specific 3-day window, "
+                f"got {config.deploy_artifact_retention_days}"
+            )
+        if config.deploy_artifact_lookback_age_seconds != 259200:
+            raise AssertionError(
+                "deploy binary lookup must use the deploy-specific 3-day lookback, "
+                f"got {config.deploy_artifact_lookback_age_seconds}"
+            )
+
+        cases = {
+            "ci_provenance.deploy.artifact_retention_days must be a positive integer": CONFIG_TOML.replace(
+                "artifact_retention_days = 3",
+                "artifact_retention_days = true",
+                1,
+            ),
+            "ci_provenance.deploy.artifact_lookback_age_seconds must be a positive integer": CONFIG_TOML.replace(
+                "artifact_lookback_age_seconds = 259200",
+                "artifact_lookback_age_seconds = true",
+                1,
+            ),
+            "ci_provenance.deploy.artifact_lookback_age_seconds must not exceed artifact retention": CONFIG_TOML.replace(
+                "artifact_lookback_age_seconds = 259200",
+                "artifact_lookback_age_seconds = 259201",
+                1,
+            ),
+        }
+        for expected, text in cases.items():
+            config = write_config(tmp_path, text, expected.replace(" ", "_") + ".toml")
             assert_raises(expected, lambda config=config: module.load_config(config))
 
 
@@ -3031,6 +3076,23 @@ def assert_lookback_age_exhaustion_fails() -> None:
         assert_raises("lookback age limit exhausted", lambda: resolve_with_fake(module, config, fake))
 
 
+def assert_deploy_evidence_uses_deploy_artifact_lookback() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(
+            tmp_path,
+            CONFIG_TOML.replace("artifact_lookback_age_seconds = 259200", "artifact_lookback_age_seconds = 1"),
+        )
+        record = valid_record(module, config)
+        fake = FakeGitHub(
+            runs_pages=[[run_payload(created_at="2026-06-13T00:00:00Z")]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact(id=1)]}},
+            records_by_artifact_id={1: record},
+        )
+        assert_raises("lookback age limit exhausted", lambda: resolve_with_fake(module, config, fake))
+
+
 def assert_lookback_age_does_not_stop_same_page_scan() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -4422,6 +4484,7 @@ def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
     assert_positive_int_config_rejects_booleans()
+    assert_deploy_artifact_window_uses_short_deploy_policy()
     assert_emit_full_ci_records_nextest_fingerprint_argument()
     assert_emit_full_ci_hashes_explicit_tested_workflow()
     assert_emit_docs_ci_record_requires_skipped_heavy_jobs()
@@ -4487,6 +4550,7 @@ def main() -> int:
     assert_malformed_api_payload_rejected()
     assert_job_evidence_success_passes()
     assert_nextest_archive_job_failures_rejected()
+    assert_deploy_evidence_uses_deploy_artifact_lookback()
     assert_test_archive_and_build_rules()
     assert_gate_carry_forward_requires_same_base_pr_provenance()
     assert_gate_carry_forward_refuses_when_newest_same_sha_run_failed()

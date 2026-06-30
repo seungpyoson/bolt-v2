@@ -234,6 +234,7 @@ jobs:
         shell: bash
         env:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id || '' }}
           EVENT_SENDER_ID: ${{ github.event.sender.id }}
         run: |
           policy_script="${{ steps.policy_base.outputs.script }}"
@@ -244,12 +245,17 @@ jobs:
           if [[ -z "$policy_config" ]]; then
             policy_config="ci/github-actions-runners.toml"
           fi
+          author_args=()
+          if python3 "$policy_script" ci-policy --help | grep -q -- "--pull-request-author-id"; then
+            author_args=(--pull-request-author-id "$PR_AUTHOR_ID")
+          fi
           python3 "$policy_script" ci-policy \
             --config "$policy_config" \
             --event-name "${{ github.event_name }}" \
             --event-action "${{ github.event.action || '' }}" \
             --pull-request-draft "${{ github.event.pull_request.draft || false }}" \
             --pull-request-head-ref "$PR_HEAD_REF" \
+            "${author_args[@]}" \
             --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}" \
             --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}" \
             --docs-only "${{ needs.detector.outputs.docs_only || 'false' }}" \
@@ -2163,6 +2169,99 @@ def assert_ci_policy_matrix() -> None:
     ):
         raise AssertionError(f"Mergify temp PR synchronize must resolve to required full CI: {mergify_sync_result}")
 
+    mergify_ready_by_human = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="ready_for_review",
+        pull_request_draft=False,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=1376128,
+        pull_request_author_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        mergify_ready_by_human.ci_policy_path != "full"
+        or mergify_ready_by_human.gate_name != "gate"
+        or mergify_ready_by_human.backtester_gate_name != "backtester-gate"
+        or mergify_ready_by_human.reason != "mergify_temp_pr"
+    ):
+        raise AssertionError(
+            f"human-ready Mergify-authored temp PR must resolve to required full CI: {mergify_ready_by_human}"
+        )
+
+    ready_spoof_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="ready_for_review",
+        pull_request_draft=False,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=1376128,
+        pull_request_author_id=1376128,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        ready_spoof_result.reason == "mergify_temp_pr"
+        or ready_spoof_result.gate_name != "gate-iteration"
+        or ready_spoof_result.ci_policy_path != "iteration"
+    ):
+        raise AssertionError(f"non-Mergify-authored ready spoof must fail closed: {ready_spoof_result}")
+
+    ready_split_identity_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="ready_for_review",
+        pull_request_draft=False,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=actor_id,
+        pull_request_author_id=1376128,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        ready_split_identity_result.reason == "mergify_temp_pr"
+        or ready_split_identity_result.gate_name != "gate-iteration"
+        or ready_split_identity_result.ci_policy_path != "iteration"
+    ):
+        raise AssertionError(
+            f"Mergify-sender ready event with non-Mergify author must fail closed: {ready_split_identity_result}"
+        )
+
+    human_sync_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="synchronize",
+        pull_request_draft=False,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=1376128,
+        pull_request_author_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        human_sync_result.reason == "mergify_temp_pr"
+        or human_sync_result.gate_name != "gate-iteration"
+        or human_sync_result.ci_policy_path != "iteration"
+    ):
+        raise AssertionError(f"human-sender Mergify sync must fail closed: {human_sync_result}")
+
     # A metadata edit (no base change) is not a full-CI action, so even the bound
     # actor's temp PR falls through to the ordinary draft path -> iteration.
     mergify_edited_result = verifier.evaluate_ci_policy(
@@ -2453,6 +2552,66 @@ def assert_ci_policy_resolvers_agree() -> None:
     )
     if ver_tuple != prov_tuple:
         raise AssertionError(f"ci_policy resolver drift for Mergify temp PR: verifier={ver_tuple} provenance={prov_tuple}")
+
+    ver = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="ready_for_review",
+        pull_request_draft=False,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=1376128,
+        pull_request_author_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    prov = provenance.evaluate_ci_policy(
+        prov_config,
+        event_name="pull_request",
+        event_action="ready_for_review",
+        pull_request_draft=False,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        event_sender_id=1376128,
+        pull_request_author_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    ver_tuple = (
+        ver.ci_policy_path,
+        ver.full_ci_required,
+        ver.full_ci_deferred,
+        ver.gate_name,
+        ver.backtester_gate_name,
+        ver.expected_event_class,
+        ver.reason,
+    )
+    prov_tuple = (
+        prov.ci_policy_path,
+        prov.full_ci_required,
+        prov.full_ci_deferred,
+        prov.gate_name,
+        prov.backtester_gate_name,
+        prov.expected_event_class,
+        prov.reason,
+    )
+    if ver_tuple != prov_tuple:
+        raise AssertionError(
+            f"ci_policy resolver drift for human-ready Mergify temp PR: verifier={ver_tuple} provenance={prov_tuple}"
+        )
+    if ver_tuple != (
+        "full",
+        True,
+        False,
+        "gate",
+        "backtester-gate",
+        "full",
+        "mergify_temp_pr",
+    ):
+        raise AssertionError(f"human-ready Mergify temp PR must stay required full CI: {ver_tuple}")
 
     ver = verifier.evaluate_ci_policy(
         policy,
@@ -5018,6 +5177,7 @@ def assert_mergify_proof_prefix_alignment_detects_drift() -> None:
     def bare_only_matcher(
         *,
         event_name: str,
+        event_action: str,
         pull_request_draft: bool,
         pull_request_head_ref: str,
         temp_pr_head_ref_prefix: str,

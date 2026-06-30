@@ -153,6 +153,7 @@ jobs:
           import json
           import os
           import subprocess
+          import sys
 
           action = os.environ["PR_ACTION"]
           label_name = os.environ["PR_LABEL_NAME"]
@@ -194,7 +195,7 @@ jobs:
                   text=True,
               )
               if retry.returncode != 0:
-                  print("::warning::GLM retry state check failed; reviewing to avoid preserving a stale failure notice.")
+                  print("::warning::GLM retry state check failed; reviewing to avoid preserving a stale failure notice.", file=sys.stderr)
                   emit(True, "retry-check-unavailable")
                   raise SystemExit(0)
               retry_lines = set(retry.stdout.splitlines())

@@ -176,6 +176,8 @@ class ProvenanceConfig:
     conditional_job_outputs: dict[str, str]
     jobs: dict[str, JobConfig]
     deploy_artifact_name: str
+    deploy_artifact_retention_days: int
+    deploy_artifact_lookback_age_seconds: int
     deploy_source_event: str
     deploy_source_branch: str
     deploy_require_gate_check: bool
@@ -714,6 +716,21 @@ def load_config(
         api_limits, "max_lookback_age_seconds", "ci_provenance.api_limits"
     )
     check_lookback_le_retention(retention_days, max_lookback_age_seconds)
+    deploy_artifact_retention_days = require_positive_int(
+        deploy, "artifact_retention_days", "ci_provenance.deploy"
+    )
+    deploy_artifact_lookback_age_seconds = require_positive_int(
+        deploy, "artifact_lookback_age_seconds", "ci_provenance.deploy"
+    )
+    try:
+        check_lookback_le_retention(
+            deploy_artifact_retention_days,
+            deploy_artifact_lookback_age_seconds,
+        )
+    except ProvenanceError as exc:
+        raise ProvenanceError(
+            "ci_provenance.deploy.artifact_lookback_age_seconds must not exceed artifact retention"
+        ) from exc
 
     unexpected_policy_keys = sorted(set(policy_table) - set(POLICY_ROWS) - {"override"})
     if unexpected_policy_keys:
@@ -803,6 +820,8 @@ def load_config(
         conditional_job_outputs=dict(conditional_job_outputs),
         jobs=jobs,
         deploy_artifact_name=require_string(deploy, "artifact_name", "ci_provenance.deploy"),
+        deploy_artifact_retention_days=deploy_artifact_retention_days,
+        deploy_artifact_lookback_age_seconds=deploy_artifact_lookback_age_seconds,
         deploy_source_event=require_string(deploy, "require_source_event", "ci_provenance.deploy"),
         deploy_source_branch=require_string(deploy, "require_source_branch", "ci_provenance.deploy"),
         deploy_require_gate_check=deploy.get("require_gate_check") is True,
@@ -1913,7 +1932,7 @@ def resolve_exact_sha_evidence(
         raise ProvenanceError("requested_sha must be a 40-character lowercase hex SHA")
     if now is None:
         now = datetime.datetime.now(datetime.timezone.utc)
-    cutoff = now - datetime.timedelta(seconds=config.max_lookback_age_seconds)
+    cutoff = now - datetime.timedelta(seconds=config.deploy_artifact_lookback_age_seconds)
     candidates: list[dict[str, object]] = []
     last_page_len = 0
 

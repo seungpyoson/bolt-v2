@@ -5656,10 +5656,10 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
 def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     full_workflow = repo_workflow_text(".github/workflows/flaky-test-detection.yml")
     smoke_workflow = repo_workflow_text(".github/workflows/flaky-test-smoke.yml")
-    if "workflow_dispatch:" in full_workflow:
-        raise AssertionError("flaky-test-detection.yml must remain schedule-only")
-    if "schedule:" in smoke_workflow:
-        raise AssertionError("flaky-test-smoke.yml must remain manual-only")
+    if "schedule:" in full_workflow:
+        raise AssertionError("flaky-test-detection.yml must remain manual-only")
+    if "workflow_dispatch:" in smoke_workflow:
+        raise AssertionError("flaky-test-smoke.yml must remain schedule-only")
     for workflow_path, workflow in (
         (".github/workflows/flaky-test-detection.yml", full_workflow),
         (".github/workflows/flaky-test-smoke.yml", smoke_workflow),
@@ -5676,8 +5676,20 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
         for fragment in forbidden_fragments:
             if fragment in workflow:
                 raise AssertionError(f"{workflow_path} must not contain {fragment!r}")
-    smoke_fragments = (
+    full_fragments = (
         "workflow_dispatch:",
+        "flaky-detection-rust-root:",
+        "flaky-detection-rust-backtester:",
+        "flaky-detection-rust-backtester-issue-789:",
+        "run_number: [1, 2, 3, 4, 5]",
+        "shard: [1, 2, 3, 4]",
+    )
+    for fragment in full_fragments:
+        if fragment not in full_workflow:
+            raise AssertionError(f"flaky-test-detection.yml missing {fragment!r}")
+    smoke_fragments = (
+        "schedule:",
+        "cron: '0 */12 * * 1-5'",
         "flaky-smoke-rust-root:",
         "flaky-smoke-rust-backtester:",
         "flaky-smoke-rust-backtester-issue-789:",
@@ -5696,8 +5708,7 @@ def assert_flaky_detection_workflow_split_gaps_are_reported() -> None:
     good_full_workflow = """name: Flaky Test Detection
 
 on:
-  schedule:
-    - cron: '0 */12 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   flaky-detection-rust-root:
@@ -5782,7 +5793,8 @@ jobs:
     good_smoke_workflow = """name: Flaky Test Smoke
 
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * 1-5'
 
 jobs:
   flaky-smoke-rust-root:
@@ -5918,8 +5930,17 @@ jobs:
     drift_cases = (
         (
             "workflow triggers must be ['workflow_dispatch']",
+            good_full_workflow.replace(
+                "on:\n  workflow_dispatch:\n",
+                "on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n",
+                1,
+            ),
+            good_smoke_workflow,
+        ),
+        (
+            "workflow triggers must be ['schedule']",
             good_full_workflow,
-            good_smoke_workflow.replace("on:\n  workflow_dispatch:\n", "on:\n  workflow_dispatch:\n  push:\n", 1),
+            good_smoke_workflow.replace("on:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n", "on:\n  schedule:\n    - cron: '0 */12 * * 1-5'\n  push:\n", 1),
         ),
         (
             "root smoke job missing 'if: success() || failure()'",

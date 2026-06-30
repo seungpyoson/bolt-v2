@@ -11278,7 +11278,7 @@ FLAKY_TEST_DETECTION_SHARED_FORBIDDEN_FRAGMENTS = (
 
 FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
     ".github/workflows/flaky-test-detection.yml": {
-        "workflow_triggers": frozenset({"schedule"}),
+        "workflow_triggers": frozenset({"workflow_dispatch"}),
         "required_workflow_fragments": (),
         "forbidden_workflow_fragments": (),
         "jobs": (
@@ -11325,7 +11325,7 @@ FLAKY_TEST_DETECTION_WORKFLOW_CONTRACTS = {
         ),
     },
     ".github/workflows/flaky-test-smoke.yml": {
-        "workflow_triggers": frozenset({"workflow_dispatch"}),
+        "workflow_triggers": frozenset({"schedule"}),
         "required_workflow_fragments": (),
         "forbidden_workflow_fragments": (),
         "jobs": (

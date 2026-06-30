@@ -416,6 +416,8 @@ def latest_quality_review_deliverable_time(
         return None
     times: list[datetime] = []
     for comment in github.list_issue_comments():
+        if not isinstance(comment, dict):
+            continue
         body = str(comment.get("body") or "")
         if (
             actor_is_expected_bot(comment, expected_bot_login)
@@ -427,6 +429,8 @@ def latest_quality_review_deliverable_time(
             if timestamp is not None:
                 times.append(timestamp)
     for review in github.list_reviews():
+        if not isinstance(review, dict):
+            continue
         body = str(review.get("body") or "")
         if (
             actor_is_expected_bot(review, expected_bot_login)
@@ -1365,7 +1369,7 @@ def render_failure_notice(*, provider: str, config: FallbackConfig, error: BaseE
 
 
 def read_claude_execution_events(execution_file: Path) -> list[dict[str, object]]:
-    if not execution_file:
+    if not execution_file or not execution_file.is_file():
         return []
     try:
         text = execution_file.read_text(encoding="utf-8").strip()

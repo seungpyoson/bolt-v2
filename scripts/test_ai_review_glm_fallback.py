@@ -968,6 +968,20 @@ def test_claude_error_execution_file_posts_failure_notice_without_raw_output() -
     assert "do not quote raw debug output" not in github.posted[0]
 
 
+def test_claude_execution_events_skip_non_file_path_without_reading() -> None:
+    module = load_script()
+
+    class NonFilePath:
+        def is_file(self) -> bool:
+            return False
+
+        def read_text(self, *, encoding: str) -> str:
+            del encoding
+            raise AssertionError("non-file execution path should not be read")
+
+    assert module.read_claude_execution_events(NonFilePath()) == []
+
+
 def test_claude_app_bot_review_counts_as_visible_deliverable() -> None:
     module = load_script()
     github = FakeGitHub(
@@ -1113,6 +1127,32 @@ def test_source_less_quality_marker_comment_after_notice_still_requires_retry() 
         output_contract=fallback_config(module).output_contract,
         require_source_line=True,
     )
+
+
+def test_malformed_comment_payload_does_not_crash_retry_deliverable_detection() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            "malformed-comment",
+            {
+                "body": valid_glm_deliverable_body(),
+                "created_at": "2026-06-22T12:23:00Z",
+                "updated_at": "2026-06-22T12:23:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+        ],
+    )
+
+    timestamp = module.latest_quality_review_deliverable_time(
+        github=github,
+        expected_bot_login="github-actions[bot]",
+        deliverable_markers=("<!-- ai-pr-reviewer-glm -->",),
+        output_contract=fallback_config(module).output_contract,
+        require_source_line=True,
+    )
+
+    assert timestamp == module.parse_iso_timestamp("2026-06-22T12:23:00Z")
 
 
 def test_quality_marker_comment_with_source_after_notice_clears_retry() -> None:
@@ -2342,11 +2382,13 @@ def main() -> int:
     test_generated_low_quality_review_is_not_posted_as_deliverable()
     test_invalid_review_failure_notice_omits_raw_model_output_excerpt()
     test_claude_error_execution_file_posts_failure_notice_without_raw_output()
+    test_claude_execution_events_skip_non_file_path_without_reading()
     test_claude_app_bot_review_counts_as_visible_deliverable()
     test_claude_non_review_bot_comment_does_not_count_as_visible_deliverable()
     test_provider_failure_notice_allows_synchronize_retry_decision()
     test_low_quality_marker_comment_after_notice_still_requires_retry()
     test_source_less_quality_marker_comment_after_notice_still_requires_retry()
+    test_malformed_comment_payload_does_not_crash_retry_deliverable_detection()
     test_quality_marker_comment_with_source_after_notice_clears_retry()
     test_claude_deliverable_after_notice_clears_retry_needed_cli()
     test_claude_failure_notice_allows_retry_needed_cli()

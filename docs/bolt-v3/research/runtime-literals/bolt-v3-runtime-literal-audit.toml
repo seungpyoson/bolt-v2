@@ -917,7 +917,7 @@ classification = "diagnostic_template"
 reason = "Mirror of the internal BoltV3InstrumentFilterError::PeriodPairOverflow Display template on the public InstrumentFilterError enum, so operator triage output is preserved across the typed-error conversion. Not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/live_node_config.rs"
 kind = "number"
 literal = '''0'''
 context = '''(value != 0).then_some(value as f64)'''
@@ -925,7 +925,7 @@ classification = "toml_zero_as_none_encoding"
 reason = "Schema documents zero as the TOML encoding for NT None on selected optional second-based fields."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/live_node_config.rs"
 kind = "number"
 literal = '''0'''
 context = '''(value != 0).then_some(value)'''
@@ -941,7 +941,7 @@ classification = "diagnostic_separator"
 reason = "This joins configured client venues for a fail-closed setup diagnostic; the venue values themselves come from TOML config."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/transport_scope.rs"
 kind = "string"
 literal = '''", "'''
 context = '''missing_clients.join(", ")'''
@@ -949,7 +949,7 @@ classification = "diagnostic_separator"
 reason = "This separator joins configured client identifiers in a fail-closed setup diagnostic; the client values themselves come from TOML."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/transport_scope.rs"
 kind = "string"
 literal = '''"strategy references unconfigured client(s): {}"'''
 context = '''"strategy references unconfigured client(s): {}",'''
@@ -5533,7 +5533,7 @@ classification = "pricing_formula_constant"
 reason = "This is the named sigma-squared-over-two divisor in the updown family's fair-probability formula, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/secrets_builders.rs"
 kind = "number"
 literal = '''0'''
 context = '''let mut count = 0;'''
@@ -5541,7 +5541,7 @@ classification = "hyperliquid_live_submit_client_counter_initial_value"
 reason = "This initializes a structural count of configured provider live-submit clients; operator approval limits remain TOML/artifact-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/secrets_builders.rs"
 kind = "number"
 literal = '''1'''
 context = '''count += 1;'''
@@ -8613,7 +8613,7 @@ classification = "build_head_env_name"
 reason = "This is a compile-time Cargo environment variable emitted by build.rs to bind the binary to the built source head."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"source params"'''
 context = '''insert_toml_params(&mut params, source_params, "source params")?;'''
@@ -8621,7 +8621,7 @@ classification = "iv_nt_binding_diagnostic_label"
 reason = "The live IV NT binding adapter labels TOML param conversion errors; the source params themselves remain profile-owned TOML values."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"selector nt_params"'''
 context = '''insert_toml_params(&mut params, selector_nt_params, "selector nt_params")?;'''
@@ -8629,7 +8629,7 @@ classification = "iv_nt_binding_diagnostic_label"
 reason = "The live IV NT binding adapter labels selector NT-param conversion errors; the NT params themselves remain selector-owned TOML values."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"snapshot_interval_ms"'''
 context = '''.and_then(|params| params.get_u64("snapshot_interval_ms"));'''
@@ -8637,7 +8637,7 @@ classification = "iv_nt_command_param_key"
 reason = "This is the NT option-chain command parameter key read from profile-owned TOML params before constructing the NT subscribe command."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"atm_percent:"'''
 context = '''if let Some(pct) = strike_range_policy.strip_prefix("atm_percent:") {'''
@@ -8645,7 +8645,7 @@ classification = "iv_nt_strike_range_policy_token"
 reason = "This is a typed parser token for converting profile-owned strike_range_policy TOML into NT StrikeRange::AtmPercent; the percentage remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"atm_relative:"'''
 context = '''if let Some(relative) = strike_range_policy.strip_prefix("atm_relative:") {'''
@@ -8653,7 +8653,7 @@ classification = "iv_nt_strike_range_policy_token"
 reason = "This is a typed parser token for converting profile-owned strike_range_policy TOML into NT StrikeRange::AtmRelative; the strike counts remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"fixed:"'''
 context = '''if let Some(fixed) = strike_range_policy.strip_prefix("fixed:") {'''
@@ -10121,7 +10121,7 @@ classification = "iv_registration_diagnostic_literal"
 reason = "IV strategy registration uses tuple-field indices and diagnostic templates while wiring config-owned query handles; this is not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/iv.rs"
 kind = "string"
 literal = '''"underlying_selectors"'''
 context = '''"underlying_selectors".to_string(),'''
@@ -14618,7 +14618,7 @@ classification = "capital_pool_config_enum_value"
 reason = "Supported TOML product-kind discriminator that requires binary-product metadata when submit admission is enabled."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
 kind = "number"
 literal = '''0'''
 context = '''observed_at_ns: 0,'''
@@ -14634,7 +14634,7 @@ classification = "iv_helper_contract_literal"
 reason = "IV derivation validates the configured helper parameter signature against the pinned NT helper ABI; operator helper selection remains policy/config-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
 kind = "string"
 literal = '''"bolt_configured_binary_product"'''
 context = '''source: "bolt_configured_binary_product".to_string(),'''
@@ -14666,7 +14666,7 @@ classification = "live_node_fail_closed_diagnostic_template"
 reason = "The live-node IV client validator joins fail-closed config diagnostics; the referenced profile/source/client identifiers are TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/transport_scope.rs"
 kind = "string"
 literal = '''"multiple execution clients share venue `{}` in the live transport scope: {}; only one execution client may be active per venue"'''
 context = '''"multiple execution clients share venue `{}` in the live transport scope: {}; only one execution client may be active per venue",'''
@@ -14674,7 +14674,7 @@ classification = "live_node_fail_closed_diagnostic_template"
 reason = "Fail-closed live transport diagnostic for multiple strategy-referenced execution clients on one NT venue; venue and client identifiers are TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/transport_scope.rs"
 kind = "string"
 literal = '''", "'''
 context = '''client_keys.join(", ")'''
@@ -15986,7 +15986,7 @@ classification = "strategy_free_custom_data_diagnostic"
 reason = "Strategy-free reference health diagnostic for a custom-data subscription whose client id was not registered; the client id comes from validated TOML."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''0'''
 context = '''(0..max_targets)'''
@@ -15994,7 +15994,7 @@ classification = "strategy_free_probe_sampling_index"
 reason = "Deterministic metadata sampling index arithmetic; source-owned target counts and limits remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''0'''
 context = '''.unwrap_or(0);'''
@@ -16002,7 +16002,7 @@ classification = "strategy_free_probe_required_count_default"
 reason = "Diagnostic default for a probe with no installed fixed targets yet; subscription limits and required observations remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''0'''
 context = '''Some(0) => Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup('''
@@ -16010,7 +16010,7 @@ classification = "strategy_free_probe_fail_closed_boundary"
 reason = "Fail-closed validation boundary rejecting a zero metadata-response target cap; the cap itself is TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''0'''
 context = '''cursor: Cell::new(0),'''
@@ -16018,7 +16018,7 @@ classification = "strategy_free_probe_chunk_walk_index"
 reason = "Initial cursor for deterministic chunk-walk observation bookkeeping; target counts and subscriptions remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''1'''
 context = '''Some(min_observed) => min_observed.clamp(1, sampled_len.max(1)),'''
@@ -16026,7 +16026,7 @@ classification = "strategy_free_probe_minimum_observation_floor"
 reason = "Lower bound for a non-zero readiness observation requirement after TOML validation rejects zero metadata target caps."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''1'''
 context = '''let last_index = targets.len() - 1;'''
@@ -16034,7 +16034,7 @@ classification = "strategy_free_probe_sampling_index"
 reason = "Last-index arithmetic for deterministic metadata sampling; source-owned target counts and limits remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''1'''
 context = '''let last_sample = max_targets - 1;'''
@@ -16042,7 +16042,7 @@ classification = "strategy_free_probe_sampling_index"
 reason = "Last-sample arithmetic for deterministic metadata sampling; source-owned target counts and limits remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''1'''
 context = '''required_live_markets >= 1 && distinct_fired >= required_live_markets'''
@@ -16050,7 +16050,7 @@ classification = "strategy_free_probe_minimum_observation_floor"
 reason = "Readiness succeeds only after at least one configured or sampled market fires; required counts remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "number"
 literal = '''2'''
 context = '''return vec![targets[targets.len() / 2].clone()];'''
@@ -16058,7 +16058,7 @@ classification = "strategy_free_probe_sampling_index"
 reason = "Median index arithmetic for deterministic metadata sampling; source-owned target counts and limits remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"book"'''
 context = '''DataClientReadinessProbeMarketDataKind::Book => "book",'''
@@ -16074,7 +16074,7 @@ classification = "strategy_free_probe_market_data_label"
 reason = "Diagnostic label for an already selected book subscription branch; the selected client and probe kind remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "string"
 literal = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} configured readiness_probe.quote_targets"'''
 context = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} configured readiness_probe.quote_targets",'''
@@ -16082,7 +16082,7 @@ classification = "strategy_free_probe_fail_closed_diagnostic"
 reason = "Fail-closed diagnostic comparing two TOML-owned readiness probe fields; it does not provide a runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "string"
 literal = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} source-owned metadata_response target(s) sampled this run"'''
 context = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} source-owned metadata_response target(s) sampled this run",'''
@@ -16090,7 +16090,7 @@ classification = "strategy_free_probe_fail_closed_diagnostic"
 reason = "Fail-closed diagnostic comparing a TOML-owned minimum with source-owned metadata targets observed during the probe."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
 kind = "string"
 literal = '''"metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters or set clients.<id>.readiness_probe.allow_metadata_target_sampling=true before using this client for production readiness"'''
 context = '''"metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters or set clients.<id>.readiness_probe.allow_metadata_target_sampling=true before using this client for production readiness"'''
@@ -16098,7 +16098,7 @@ classification = "strategy_free_probe_fail_closed_diagnostic"
 reason = "Fail-closed diagnostic for metadata-response fanout beyond the TOML-owned cap; it instructs the operator to tighten TOML policy."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"metadata_response readiness probe produced no source-owned instrument targets"'''
 context = '''"metadata_response readiness probe produced no source-owned instrument targets"'''
@@ -16106,7 +16106,7 @@ classification = "strategy_free_probe_fail_closed_diagnostic"
 reason = "Fail-closed readiness probe diagnostic when the data client returns no owned targets; it does not configure behavior."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"quote"'''
 context = '''DataClientReadinessProbeMarketDataKind::Quote => "quote",'''
@@ -16122,7 +16122,7 @@ classification = "strategy_free_probe_market_data_label"
 reason = "Diagnostic label for an already selected quote subscription branch; the selected client and probe kind remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"trade"'''
 context = '''DataClientReadinessProbeMarketDataKind::Trade => "trade",'''
@@ -16186,7 +16186,7 @@ classification = "ops_probe_json_stdout_template"
 reason = "CLI output format template for printing the structured readiness probe report; report values come from runtime observation and TOML."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"instrument census"'''
 context = '''"instrument census",'''
@@ -16194,7 +16194,7 @@ classification = "ops_census_registration_diagnostic_label"
 reason = "Diagnostic label used when validating that the selected strategy-free data client is registered for the census command; it does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"data-client census observed zero cached instruments"'''
 context = '''reason: "data-client census observed zero cached instruments".to_string(),'''
@@ -16202,7 +16202,7 @@ classification = "ops_census_fail_closed_diagnostic"
 reason = "Fail-closed diagnostic emitted when the strategy-free data-client census reaches NT Running without any cached instruments; it does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''b"\0"'''
 context = '''hasher.update(b"\0");'''

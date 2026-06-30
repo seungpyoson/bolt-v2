@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import bolt_v3_source_roots as source_roots
+
 
 SCRIPT_PATH = Path(__file__).with_name("verify_bolt_v3_strategy_policy_fence.py")
 SPEC = importlib.util.spec_from_file_location("verify_bolt_v3_strategy_policy_fence", SCRIPT_PATH)
@@ -80,6 +82,42 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             finally:
                 VERIFIER.source_set_files = original_source_set_files
                 VERIFIER.REPO_ROOT = original_root
+
+    def test_live_node_root_is_gated_but_not_strategy_policy_source(self) -> None:
+        for relative in ("src/bolt_v3_live_node.rs", "src/bolt_v3_live_node"):
+            self.assertIn(relative, source_roots.SUBMIT_ADMISSION_SOURCE_ROOTS)
+            self.assertNotIn(relative, source_roots.STRATEGY_SOURCE_ROOTS)
+
+        scanned = {
+            path.relative_to(VERIFIER.REPO_ROOT).as_posix()
+            for path in VERIFIER.source_files_for_strategy_policy_fence()
+        }
+        self.assertFalse(
+            any(
+                relative == "src/bolt_v3_live_node.rs"
+                or relative == "src/bolt_v3_live_node"
+                or relative.startswith("src/bolt_v3_live_node/")
+                for relative in scanned
+            )
+        )
+        self.assertTrue(
+            any(relative.startswith("src/strategies/") for relative in scanned)
+        )
+
+    def test_strategy_policy_source_still_flags_runtime_selection_bus_path(self) -> None:
+        violations = self.collect_violations_for_temp_sources(
+            {
+                "src/strategies/binary_oracle_edge_taker/mod.rs": "fn strategy_violation() { subscribe_any(topic, handler, None); }\n",
+            }
+        )
+
+        self.assertTrue(
+            any(
+                violation.path == "src/strategies/binary_oracle_edge_taker/mod.rs"
+                and violation.label == "dead runtime-selection bus path"
+                for violation in violations
+            )
+        )
 
     def test_detects_removed_policy_hardcodes(self) -> None:
         labels = self.labels_for(

@@ -6128,6 +6128,11 @@ jobs:
         )
     for wrapped_command, wrapper_name in (
         (
+            """          echo "preflight"
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl""",
+            "extra shell statement",
+        ),
+        (
             """          ignored=`
           just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
           `""",
@@ -6158,6 +6163,12 @@ jobs:
             "multiline quoted string",
         ),
         (
+            """          bvs_words=(
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          )""",
+            "array assignment",
+        ),
+        (
             """          run_bte() {
           just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
           }""",
@@ -6169,6 +6180,20 @@ jobs:
           }
           run_bte""",
             "called function definition",
+        ),
+        (
+            """          function run_bte {
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          }""",
+            "dead function keyword definition",
+        ),
+        (
+            """          function run_bte () {
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          }
+          run_bte
+          run_bte""",
+            "called function keyword definition",
         ),
     ):
         wrapped_full_workflow = good_full_workflow.replace(

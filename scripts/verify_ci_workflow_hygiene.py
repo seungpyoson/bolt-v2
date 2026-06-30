@@ -11301,36 +11301,36 @@ def named_step_run_block(job_text: str, step_name: str) -> str | None:
 
 
 def bte_test_invocation_count(run_block: str) -> int:
-    return len(re.findall(r"\bjust\s+bte-test\b", run_block))
+    return run_block.count("just bte-test")
 
 
-def has_bte_run_control_flow(run_block: str) -> bool:
-    return re.search(r"(?m)(?:^|[;&|]\s*)\s*(?:if|while|until|for|case)\b", run_block) is not None
-
-
-def has_bte_run_shell_wrapping_or_chaining(run_block: str) -> bool:
-    if any(token in run_block for token in ("$(", "`", "<(", ">(", "<<")):
-        return True
-    if re.search(r"(?m)^\s*[\(\{]", run_block):
-        return True
-    if re.search(r"(?m)^\s*[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*\{", run_block):
-        return True
-    if re.search(r"(?m)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=)?['\"]\s*$", run_block):
-        return True
-    return any(
-        re.search(r"\bjust\s+bte-test\b[^\n]*(?:;|&&|\|\||\|)", line)
-        for line in run_block.splitlines()
+def simple_bte_run_block_partition_denominators(run_block: str) -> tuple[int, ...]:
+    # Allowlist the whole BVS shell block instead of predicting shell wrapper syntax.
+    lines = tuple(line.strip() for line in run_block.splitlines() if line.strip())
+    expected_prefix = ("rc=0", "set +e")
+    expected_suffix = (
+        "rc=$?",
+        "set -e",
+        "printf 'MERGIFY_TEST_EXIT_CODE=%s\\n' \"$rc\" >> \"$GITHUB_ENV\"",
     )
+    if len(lines) != len(expected_prefix) + 1 + len(expected_suffix):
+        return ()
+    if lines[: len(expected_prefix)] != expected_prefix or lines[-len(expected_suffix) :] != expected_suffix:
+        return ()
 
-
-def shard_partition_argument_denominators(run_block: str) -> tuple[int, ...]:
-    return tuple(
-        int(denominator)
-        for denominator in re.findall(
-            r"(?m)^\s*just bte-test\b[^\n]*\s--partition\s+\"count:\${{\s*matrix\.shard\s*}}/([1-9][0-9]*)\"\s+--(?:\s|$)",
-            run_block,
-        )
+    command_prefix = (
+        'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" '
+        '--partition "count:${{ matrix.shard }}/'
     )
+    command_suffix = '" -- --skip issue_789_first_real_free_data_taker_pl'
+    command = lines[len(expected_prefix)]
+    if not command.startswith(command_prefix) or not command.endswith(command_suffix):
+        return ()
+
+    denominator = command[len(command_prefix) : -len(command_suffix)]
+    if not denominator or denominator[0] == "0" or not denominator.isdecimal():
+        return ()
+    return (int(denominator),)
 
 
 FLAKY_TEST_DETECTION_SHARED_FORBIDDEN_FRAGMENTS = (
@@ -11493,10 +11493,9 @@ def flaky_test_detection_workflow_errors(text: str, contract: dict[str, object])
             invocation_count = bte_test_invocation_count(job_text)
             if invocation_count != 1:
                 errors.append(f"flaky-test-detection {label} must have exactly one just bte-test invocation")
-            if has_bte_run_control_flow(bte_run_block) or has_bte_run_shell_wrapping_or_chaining(bte_run_block):
-                errors.append(f"flaky-test-detection {label} must keep just bte-test in a simple Run tests block")
-            denominators = shard_partition_argument_denominators(bte_run_block)
+            denominators = simple_bte_run_block_partition_denominators(bte_run_block)
             if len(denominators) != 1:
+                errors.append(f"flaky-test-detection {label} must keep just bte-test in a simple Run tests block")
                 errors.append(f"flaky-test-detection {label} must have one matrix.shard partition argument")
         if label == "backtester full job":
             shards = inline_integer_matrix_values(job_text, "shard")

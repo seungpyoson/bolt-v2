@@ -521,6 +521,31 @@ def assert_preflight_input_timeout_is_config_driven() -> None:
     assert_equal(loaded.input_timeout_seconds, 17, "input timeout config")
 
 
+def assert_source_check_alias_targets_must_have_workflows() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_preflight_config(pathlib.Path(tmp), "none", [])
+        write(
+            config,
+            config.read_text(encoding="utf-8").replace(
+                '"gate" = "gate-iteration"',
+                '"gate" = "missing-source-check"',
+            ),
+        )
+        try:
+            module.load_config(config)
+        except module.PreflightError as exc:
+            expected = (
+                "config.merge_queue_preflight.source_check_aliases.gate target "
+                "'missing-source-check' must exist in "
+                "config.merge_queue_preflight.required_check_workflows"
+            )
+            if expected not in str(exc):
+                raise AssertionError(str(exc))
+        else:
+            raise AssertionError("missing source check workflow did not fail config load")
+
+
 def assert_git_and_gh_use_input_timeout() -> None:
     module = load_preflight_module()
     calls: list[dict[str, object]] = []
@@ -935,6 +960,13 @@ def passing_source_pr_checks(*prs: int) -> dict[int, list[dict[str, object]]]:
         ]
         for pr in prs
     }
+
+
+def passing_source_pr_branch_required_checks() -> list[dict[str, object]]:
+    return [
+        passing_source_pr_check("actionlint"),
+        passing_source_pr_check("host-health"),
+    ]
 
 
 def run_preflight_with_gh(
@@ -2144,10 +2176,7 @@ def assert_source_pr_iteration_checks_are_queue_admitted() -> None:
             views={1: approved_pr_view(head)},
             checks=passing_source_pr_checks(1),
             required_checks={
-                1: [
-                    passing_source_pr_check("actionlint"),
-                    passing_source_pr_check("host-health"),
-                ]
+                1: passing_source_pr_branch_required_checks(),
             },
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
@@ -2159,13 +2188,143 @@ def assert_source_pr_iteration_checks_are_queue_admitted() -> None:
             ("queue_as_one_wave", 0),
             "source PR iteration checks contract",
         )
+        readiness = payload["readiness"][0]
+        assert_equal(
+            [check["name"] for check in readiness["checks"]],
+            ["actionlint", "host-health"],
+            "source PR branch-required checks",
+        )
+        assert_equal(
+            [check["name"] for check in readiness["source_checks"]],
+            [
+                "gate-iteration",
+                "backtester-gate-iteration",
+                "actionlint",
+                "host-health",
+            ],
+            "source PR all-check evidence",
+        )
         missing_gate_findings = [
             finding
             for finding in payload["findings"]
             if finding["reason_code"] == "required_check_missing"
-            and finding["evidence"].get("check_name") in {"gate", "backtester-gate"}
+            and (
+                finding["evidence"].get("check_name") in {"gate", "backtester-gate"}
+                or finding["evidence"].get("merge_condition_check") in {"gate", "backtester-gate"}
+            )
         ]
         assert_equal(missing_gate_findings, [], "source PR must not require merge proof gates")
+
+
+def assert_aliased_source_check_pending_is_inconclusive_at_runtime() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        checks = passing_source_pr_checks(1)[1]
+        checks[0] = {
+            **checks[0],
+            "state": "PENDING",
+            "bucket": "pending",
+        }
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks={1: checks},
+            required_checks={1: passing_source_pr_branch_required_checks()},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 3, "aliased pending source check rc")
+        payload = parse_json(result.stdout)
+        pending_findings = [
+            finding
+            for finding in payload["findings"]
+            if finding["reason_code"] == "required_check_pending"
+        ]
+        if len(pending_findings) != 1:
+            raise AssertionError(payload["findings"])
+        evidence = pending_findings[0]["evidence"]
+        assert_equal(evidence["check_name"], "gate-iteration", "pending source check name")
+        assert_equal(evidence["merge_condition_check"], "gate", "pending merge condition")
+        assert_equal(payload["lane_statuses"]["readiness"], "inconclusive", "aliased pending readiness lane")
+        assert_equal(
+            (payload["verdict"], payload["contract_exit_code"]),
+            ("inconclusive", 3),
+            "aliased pending source check contract",
+        )
+
+
+def assert_aliased_source_check_failure_blocks_at_runtime() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        checks = passing_source_pr_checks(1)[1]
+        checks[0] = {
+            **checks[0],
+            "state": "FAILURE",
+            "bucket": "fail",
+        }
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks={1: checks},
+            required_checks={1: passing_source_pr_branch_required_checks()},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 2, "aliased failed source check rc")
+        payload = parse_json(result.stdout)
+        failed_findings = [
+            finding
+            for finding in payload["findings"]
+            if finding["reason_code"] == "required_check_failed"
+        ]
+        if len(failed_findings) != 1:
+            raise AssertionError(payload["findings"])
+        evidence = failed_findings[0]["evidence"]
+        assert_equal(evidence["check_name"], "gate-iteration", "failed source check name")
+        assert_equal(evidence["merge_condition_check"], "gate", "failed merge condition")
+        assert_equal(payload["lane_statuses"]["readiness"], "blocked", "aliased failed readiness lane")
+        assert_equal(
+            (payload["verdict"], payload["contract_exit_code"]),
+            ("blocked", 2),
+            "aliased failed source check contract",
+        )
+
+
+def assert_required_merge_proof_check_on_source_pr_is_inconclusive() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks=passing_source_pr_checks(1),
+            required_checks={
+                1: [
+                    {"name": "gate", "state": "PENDING", "bucket": "pending", "workflow": "CI"},
+                    {
+                        "name": "backtester-gate",
+                        "state": "PENDING",
+                        "bucket": "pending",
+                        "workflow": "Backtester CI",
+                    },
+                    *passing_source_pr_branch_required_checks(),
+                ]
+            },
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 3, "source PR required merge proof check rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        assert_equal(len(blocked), 1, "source PR required merge proof check blocked count")
+        assert_equal(blocked[0]["type"], "required_check_pending", "source PR required proof block")
+        assert_equal(
+            (payload["verdict"], payload["contract_exit_code"]),
+            ("inconclusive", 3),
+            "source PR required merge proof check contract",
+        )
 
 
 def assert_required_check_pending_is_inconclusive() -> None:
@@ -2256,6 +2415,7 @@ def assert_selected_mergify_check_missing_is_inconclusive_at_runtime() -> None:
         missing_contexts = {
             (
                 finding["evidence"]["check_name"],
+                finding["evidence"].get("merge_condition_check"),
                 finding["evidence"]["pr"],
                 finding["evidence"]["queue_rule"],
             )
@@ -2264,9 +2424,9 @@ def assert_selected_mergify_check_missing_is_inconclusive_at_runtime() -> None:
         assert_equal(
             missing_contexts,
             {
-                ("backtester-gate-iteration", 1, "default"),
-                ("actionlint", 1, "default"),
-                ("host-health", 1, "default"),
+                ("backtester-gate-iteration", "backtester-gate", 1, "default"),
+                ("actionlint", None, 1, "default"),
+                ("host-health", None, 1, "default"),
             },
             "missing selected Mergify check context",
         )
@@ -2693,6 +2853,7 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
 def main() -> int:
     assert_contract_result_reduces_findings_by_table()
     assert_preflight_input_timeout_is_config_driven()
+    assert_source_check_alias_targets_must_have_workflows()
     assert_git_and_gh_use_input_timeout()
     assert_gh_timeout_is_preflight_error()
     assert_merge_tree_timeout_is_preflight_error()
@@ -2731,6 +2892,9 @@ def main() -> int:
     assert_head_oid_mismatch_blocks_pr()
     assert_wrong_base_ref_is_inconclusive()
     assert_source_pr_iteration_checks_are_queue_admitted()
+    assert_aliased_source_check_pending_is_inconclusive_at_runtime()
+    assert_aliased_source_check_failure_blocks_at_runtime()
+    assert_required_merge_proof_check_on_source_pr_is_inconclusive()
     assert_required_check_pending_is_inconclusive()
     assert_required_check_neutral_is_inconclusive_at_runtime()
     assert_empty_required_checks_are_inconclusive_at_runtime()

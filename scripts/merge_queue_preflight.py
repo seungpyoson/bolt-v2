@@ -989,6 +989,23 @@ def wrong_workflow_mergify_required_check_finding(
     }
 
 
+def with_merge_condition_check(
+    finding: dict[str, object],
+    *,
+    merge_check: str,
+    source_check: str,
+) -> dict[str, object]:
+    if merge_check == source_check:
+        return finding
+    return {
+        **finding,
+        "evidence": {
+            **dict(finding["evidence"]),
+            "merge_condition_check": merge_check,
+        },
+    }
+
+
 def mergify_required_check_finding(
     *,
     merge_check: str,
@@ -1005,43 +1022,31 @@ def mergify_required_check_finding(
             required_check=source_check,
             actual_head=actual_head,
         )
-        if merge_check != source_check:
-            finding = {
-                **finding,
-                "evidence": {
-                    **dict(finding["evidence"]),
-                    "merge_condition_check": merge_check,
-                },
-            }
-        return finding
+        return with_merge_condition_check(
+            finding,
+            merge_check=merge_check,
+            source_check=source_check,
+        )
     if len(matches) > 1:
         finding = duplicate_mergify_required_check_finding(
             required_check=source_check,
             actual_head=actual_head,
         )
-        if merge_check != source_check:
-            finding = {
-                **finding,
-                "evidence": {
-                    **dict(finding["evidence"]),
-                    "merge_condition_check": merge_check,
-                },
-            }
-        return finding
+        return with_merge_condition_check(
+            finding,
+            merge_check=merge_check,
+            source_check=source_check,
+        )
     if expected_workflow is None:
         finding = duplicate_mergify_required_check_finding(
             required_check=source_check,
             actual_head=actual_head,
         )
-        if merge_check != source_check:
-            finding = {
-                **finding,
-                "evidence": {
-                    **dict(finding["evidence"]),
-                    "merge_condition_check": merge_check,
-                },
-            }
-        return finding
+        return with_merge_condition_check(
+            finding,
+            merge_check=merge_check,
+            source_check=source_check,
+        )
     actual_workflow = matches[0].get("workflow")
     if actual_workflow != expected_workflow:
         finding = wrong_workflow_mergify_required_check_finding(
@@ -1050,29 +1055,23 @@ def mergify_required_check_finding(
             actual_workflow=actual_workflow,
             actual_head=actual_head,
         )
-        if merge_check != source_check:
-            finding = {
-                **finding,
-                "evidence": {
-                    **dict(finding["evidence"]),
-                    "merge_condition_check": merge_check,
-                },
-            }
-        return finding
+        return with_merge_condition_check(
+            finding,
+            merge_check=merge_check,
+            source_check=source_check,
+        )
     finding = required_check_state_finding(
         check=matches[0],
         expected_head=actual_head,
         actual_head=actual_head,
     )
-    if finding is not None and merge_check != source_check:
-        return {
-            **finding,
-            "evidence": {
-                **dict(finding["evidence"]),
-                "merge_condition_check": merge_check,
-            },
-        }
-    return finding
+    if finding is None:
+        return None
+    return with_merge_condition_check(
+        finding,
+        merge_check=merge_check,
+        source_check=source_check,
+    )
 
 
 def mergify_required_check_context_finding(
@@ -1948,6 +1947,19 @@ def require_string_map(parent: dict[str, object], key: str, prefix: str) -> dict
     return result
 
 
+def validate_source_check_aliases(
+    source_check_aliases: Mapping[str, str],
+    required_check_workflows: Mapping[str, str],
+) -> None:
+    for merge_check, source_check in source_check_aliases.items():
+        if source_check not in required_check_workflows:
+            raise PreflightError(
+                "config.merge_queue_preflight.source_check_aliases."
+                f"{merge_check} target {source_check!r} must exist in "
+                "config.merge_queue_preflight.required_check_workflows"
+            )
+
+
 def load_config(path: pathlib.Path) -> PreflightConfig:
     root = load_toml(path)
     settings = require_table(root, "merge_queue_preflight", "config")
@@ -1980,6 +1992,7 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
         "source_check_aliases",
         "config.merge_queue_preflight",
     )
+    validate_source_check_aliases(source_check_aliases, required_check_workflows)
     output_settings = require_table(settings, "output", "config.merge_queue_preflight")
     output_policy = OutputPolicy(
         verifier_stream_max_lines=require_positive_int(

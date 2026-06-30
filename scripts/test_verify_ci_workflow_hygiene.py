@@ -1077,12 +1077,6 @@ permissions:
 jobs:
   coverage-enforcer:
     name: coverage-enforcer
-    if: >-
-      ${{ !(github.event_name == 'pull_request'
-            && github.event.action == 'edited'
-            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-            && !(github.event.changes.base.ref.from != '')) }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1101,12 +1095,12 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           if [ ! -f scripts/coverage_enforcer.py ]; then
-            echo "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py"
-            exit 0
+            echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py"
+            exit 1
           fi
           if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then
-            echo "coverage-enforcer bootstrap: trusted base tree lacks event-aware scripts/coverage_enforcer.py"
-            exit 0
+            echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py"
+            exit 1
           fi
           python3 scripts/coverage_enforcer.py
 """
@@ -5616,10 +5610,19 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
                     "          if [ ! -f scripts/coverage_enforcer.py ]; then\n"
-                    "            echo \"coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
-                    "            exit 0\n"
+                    "            echo \"coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
+                    "            exit 1\n"
                     "          fi\n",
                     "",
+                )
+            },
+        ),
+        (
+            "job must guard first-run trusted-base bootstrap",
+            {
+                workflow_name: BASE_COVERAGE_ENFORCER_WORKFLOW.replace(
+                    "            exit 1\n",
+                    "            exit 0\n",
                 )
             },
         ),
@@ -5635,58 +5638,13 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             },
         ),
         (
-            "coverage-enforcer job if-condition must run on ordinary PRs",
+            "coverage-enforcer job must not define a job-level if-condition",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "            && github.event.action == 'edited'\n",
-                    "",
-                )
-            },
-        ),
-        (
-            "coverage-enforcer job if-condition must run on ordinary PRs",
-            {
-                workflow_name: replace_once(
-                    BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
-                    "",
-                )
-            },
-        ),
-        (
-            "coverage-enforcer job if-condition must run on ordinary PRs",
-            {
-                workflow_name: replace_once(
-                    BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "      ${{ !(github.event_name == 'pull_request'\n"
-                    "            && github.event.action == 'edited'\n"
-                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
-                    "            && !(github.event.changes.base.ref.from != '')) }}\n",
-                    "      ${{ github.event_name == 'merge_group'\n"
-                    "          || (github.event_name == 'pull_request'\n"
-                    "              && github.event.pull_request.draft == false\n"
-                    "              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-                    "                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
-                    "              && !(github.event.action == 'edited'\n"
-                    "                   && !(github.event.changes.base.ref.from != ''))) }}\n",
-                )
-            },
-        ),
-        (
-            "coverage-enforcer job if-condition must run on ordinary PRs",
-            {
-                workflow_name: replace_once(
-                    BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "    if: >-\n"
-                    "      ${{ !(github.event_name == 'pull_request'\n"
-                    "            && github.event.action == 'edited'\n"
-                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
-                    "            && !(github.event.changes.base.ref.from != '')) }}\n",
-                    "",
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                    "    if: ${{ github.event_name == 'pull_request' }}\n"
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
                 )
             },
         ),

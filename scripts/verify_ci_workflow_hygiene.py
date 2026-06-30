@@ -1109,12 +1109,7 @@ EXPECTED_MERGE_READINESS_PROGRESS_IF = (
     "&& !(" + MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE + ") }}"
 )
 
-EXPECTED_COVERAGE_ENFORCER_IF = (
-    "${{ !(github.event_name == 'pull_request' "
-    "&& github.event.action == 'edited' "
-    "&& " + MERGIFY_PROOF_PR_HEAD_REF_PREDICATE + " "
-    "&& !(github.event.changes.base.ref.from != '')) }}"
-)
+EXPECTED_COVERAGE_ENFORCER_IF = ""
 
 
 MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
@@ -13778,9 +13773,8 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     job_if = job_if_value(job)
     if _normalize_concurrency_text(job_if) != EXPECTED_COVERAGE_ENFORCER_IF:
         errors.append(
-            f"{workflow_name} coverage-enforcer job if-condition must run on "
-            "ordinary PRs, draft Mergify proof PRs, and merge_group while skipping "
-            "only metadata-only proof PR edits"
+            f"{workflow_name} coverage-enforcer job must not define a job-level "
+            "if-condition; required checks must report success or failure, never skipped"
         )
     trusted_base_ref = (
         "          ref: ${{ github.event.pull_request.base.sha || "
@@ -13807,10 +13801,10 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
         errors.append(f"{workflow_name} checkout must not persist credentials")
     for required in (
         "if [ ! -f scripts/coverage_enforcer.py ]; then",
-        "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py",
+        "coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py",
         'if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then',
-        "coverage-enforcer bootstrap: trusted base tree lacks event-aware scripts/coverage_enforcer.py",
-        "exit 0",
+        "coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py",
+        "exit 1",
     ):
         if required not in job_text:
             errors.append(f"{workflow_name} job must guard first-run trusted-base bootstrap")

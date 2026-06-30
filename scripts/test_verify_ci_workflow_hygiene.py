@@ -353,7 +353,11 @@ jobs:
           if [[ -z "$changed" ]]; then
             exit 0
           fi
-          python3 scripts/verify_ci_workflow_hygiene.py self-authorizing-governance \
+          base_tree="$RUNNER_TEMP/self-authorizing-governance-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ | tar -x -C "$base_tree"
+          python3 "$base_tree/scripts/verify_ci_workflow_hygiene.py" self-authorizing-governance \
+            --repo "$GITHUB_WORKSPACE" \
             --base "$base_ref" \
             --head "$head_ref"
 
@@ -1610,21 +1614,20 @@ def init_self_authorizing_fixture_repo(tmp: pathlib.Path) -> pathlib.Path:
 
 
 def self_authorizing_errors_for_changes(
-    tmp: pathlib.Path,
     changes: dict[str, str],
 ) -> list[str]:
     verifier = load_verifier()
-    repo = init_self_authorizing_fixture_repo(tmp)
-    base = run_repo_git(repo, "rev-parse", "HEAD").strip()
-    for relative, text in changes.items():
-        write_repo_text(repo, relative, text)
-    head = commit_repo(repo, "head")
-    return verifier.self_authorizing_governance_diff_errors(repo, base, head)
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))
+        base = run_repo_git(repo, "rev-parse", "HEAD").strip()
+        for relative, text in changes.items():
+            write_repo_text(repo, relative, text)
+        head = commit_repo(repo, "head")
+        return verifier.self_authorizing_governance_diff_errors(repo, base, head)
 
 
 def assert_self_authorizing_governance_detector_contract() -> None:
     positive_errors = self_authorizing_errors_for_changes(
-        pathlib.Path(tempfile.mkdtemp()),
         {
             "AGENTS.md": "SSM is primary. JULES_API_KEY is allowed for advisory repo maintenance.\n",
             ".specify/memory/constitution.md": "JULES_API_KEY advisory carve-out is allowed.\n",
@@ -1647,8 +1650,44 @@ jobs:
     if not any("split this into two PRs" in error for error in positive_errors):
         raise AssertionError(f"failure must explain split-PR resolution, got: {positive_errors}")
 
+    bracket_secret_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "SSM is primary. JULES_API_KEY is allowed for advisory repo maintenance.\n",
+            ".github/workflows/weekly-cleanup.yml": """\
+name: Jules Weekly Cleanup
+permissions: {}
+jobs:
+  jules:
+    steps:
+      - env:
+          JULES_API_KEY: ${{ secrets['JULES_API_KEY'] }}
+          OTHER_TOKEN: ${{ secrets["OTHER_TOKEN"] }}
+        run: echo advisory
+""",
+        },
+    )
+    if not any("secret reference secrets.JULES_API_KEY" in error for error in bracket_secret_errors):
+        raise AssertionError(f"bracket-form secret reference must be blocked, got: {bracket_secret_errors}")
+    if not any("secret reference secrets.OTHER_TOKEN" in error for error in bracket_secret_errors):
+        raise AssertionError(f"double-quoted bracket secret reference must be blocked, got: {bracket_secret_errors}")
+
+    inherited_secret_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "Reusable workflows may inherit repository secrets after ratification.\n",
+            ".github/workflows/reuse.yml": """\
+name: Reuse
+permissions: {}
+jobs:
+  call:
+    uses: ./.github/workflows/target.yml
+    secrets: inherit
+""",
+        },
+    )
+    if not any("secret inheritance secrets: inherit" in error for error in inherited_secret_errors):
+        raise AssertionError(f"secrets: inherit must be blocked, got: {inherited_secret_errors}")
+
     permission_errors = self_authorizing_errors_for_changes(
-        pathlib.Path(tempfile.mkdtemp()),
         {
             "AGENTS.md": "GitHub OIDC is allowed for a future governed automation lane.\n",
             ".github/workflows/ci.yml": "name: CI\npermissions:\n  contents: read\n  id-token: write\n",
@@ -1657,8 +1696,25 @@ jobs:
     if not any("permissions grant id-token: write" in error for error in permission_errors):
         raise AssertionError(f"governance plus new permissions grant must be blocked, got: {permission_errors}")
 
+    quoted_permission_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "GitHub OIDC is allowed for a future governed automation lane.\n",
+            ".github/workflows/ci.yml": 'name: CI\n"permissions":\n  contents: read\n  id-token: write\n',
+        },
+    )
+    if not any("permissions grant id-token: write" in error for error in quoted_permission_errors):
+        raise AssertionError(f"quoted permissions key must be parsed, got: {quoted_permission_errors}")
+
+    inherited_permission_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "Default workflow token permissions are allowed after ratification.\n",
+            ".github/workflows/ci.yml": "name: CI\n",
+        },
+    )
+    if not any("permissions grant inherited default" in error for error in inherited_permission_errors):
+        raise AssertionError(f"removed restrictive permissions block must be blocked, got: {inherited_permission_errors}")
+
     allowlist_errors = self_authorizing_errors_for_changes(
-        pathlib.Path(tempfile.mkdtemp()),
         {
             "AGENTS.md": "Boundary evidence exemptions are allowed after owner ratification.\n",
             "ci/bolt-v3-boundary-exemptions.toml": """\
@@ -1672,7 +1728,6 @@ reason = "owner-ratified"
         raise AssertionError(f"governance plus new allowlist entry must be blocked, got: {allowlist_errors}")
 
     governance_only_errors = self_authorizing_errors_for_changes(
-        pathlib.Path(tempfile.mkdtemp()),
         {
             "AGENTS.md": "SSM is primary. JULES_API_KEY is allowed after owner ratification.\n",
         },
@@ -1681,7 +1736,6 @@ reason = "owner-ratified"
         raise AssertionError(f"governance-only edit must pass, got: {governance_only_errors}")
 
     capability_only_errors = self_authorizing_errors_for_changes(
-        pathlib.Path(tempfile.mkdtemp()),
         {
             ".github/workflows/weekly-cleanup.yml": """\
 name: Jules Weekly Cleanup
@@ -1698,17 +1752,18 @@ jobs:
     if capability_only_errors:
         raise AssertionError(f"capability-only edit must pass, got: {capability_only_errors}")
 
-    split_repo = init_self_authorizing_fixture_repo(pathlib.Path(tempfile.mkdtemp()))
-    write_repo_text(
-        split_repo,
-        "AGENTS.md",
-        "SSM is primary. JULES_API_KEY is allowed after owner ratification.\n",
-    )
-    base_after_governance = commit_repo(split_repo, "ratified governance")
-    write_repo_text(
-        split_repo,
-        ".github/workflows/weekly-cleanup.yml",
-        """\
+    with tempfile.TemporaryDirectory() as tmp:
+        split_repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))
+        write_repo_text(
+            split_repo,
+            "AGENTS.md",
+            "SSM is primary. JULES_API_KEY is allowed after owner ratification.\n",
+        )
+        base_after_governance = commit_repo(split_repo, "ratified governance")
+        write_repo_text(
+            split_repo,
+            ".github/workflows/weekly-cleanup.yml",
+            """\
 name: Jules Weekly Cleanup
 permissions: {}
 jobs:
@@ -1718,15 +1773,81 @@ jobs:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         run: echo advisory
 """,
-    )
-    capability_head = commit_repo(split_repo, "capability")
-    split_errors = load_verifier().self_authorizing_governance_diff_errors(
-        split_repo,
-        base_after_governance,
-        capability_head,
-    )
+        )
+        capability_head = commit_repo(split_repo, "capability")
+        split_errors = load_verifier().self_authorizing_governance_diff_errors(
+            split_repo,
+            base_after_governance,
+            capability_head,
+        )
     if split_errors:
         raise AssertionError(f"split governance/capability PRs must pass, got: {split_errors}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        prefixed_repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))
+        run_repo_git(prefixed_repo, "config", "diff.noprefix", "true")
+        run_repo_git(prefixed_repo, "config", "diff.mnemonicprefix", "true")
+        prefixed_base = run_repo_git(prefixed_repo, "rev-parse", "HEAD").strip()
+        write_repo_text(
+            prefixed_repo,
+            "AGENTS.md",
+            "SSM is primary. JULES_API_KEY is allowed for advisory repo maintenance.\n",
+        )
+        write_repo_text(
+            prefixed_repo,
+            ".github/workflows/weekly-cleanup.yml",
+            """\
+name: Jules Weekly Cleanup
+permissions: {}
+jobs:
+  jules:
+    steps:
+      - env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: echo advisory
+""",
+        )
+        prefixed_head = commit_repo(prefixed_repo, "head")
+        prefixed_errors = load_verifier().self_authorizing_governance_diff_errors(
+            prefixed_repo,
+            prefixed_base,
+            prefixed_head,
+        )
+    if not any("secret reference secrets.JULES_API_KEY" in error for error in prefixed_errors):
+        raise AssertionError(f"diff prefix config must not hide added secret lines, got: {prefixed_errors}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        moved_repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))
+        write_repo_text(
+            moved_repo,
+            "scratch/inactive.yml",
+            """\
+name: Later Active
+permissions: {}
+jobs:
+  jules:
+    steps:
+      - env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: echo advisory
+""",
+        )
+        commit_repo(moved_repo, "inactive")
+        moved_base = run_repo_git(moved_repo, "rev-parse", "HEAD").strip()
+        write_repo_text(
+            moved_repo,
+            "AGENTS.md",
+            "SSM is primary. JULES_API_KEY is allowed for advisory repo maintenance.\n",
+        )
+        run_repo_git(moved_repo, "mv", "scratch/inactive.yml", ".github/workflows/moved.yml")
+        moved_head = commit_repo(moved_repo, "move active")
+        moved_errors = load_verifier().self_authorizing_governance_diff_errors(
+            moved_repo,
+            moved_base,
+            moved_head,
+        )
+    if not any("secret reference secrets.JULES_API_KEY" in error for error in moved_errors):
+        raise AssertionError(f"moving secret-using workflow into active path must be blocked, got: {moved_errors}")
 
     assert_error(
         "detector must inspect self-authorizing governance rule-files",
@@ -1753,7 +1874,7 @@ jobs:
         replace_once_after(
             BASE_WORKFLOW,
             "      - name: Block self-authorizing governance edits",
-            "python3 scripts/verify_ci_workflow_hygiene.py self-authorizing-governance",
+            'python3 "$base_tree/scripts/verify_ci_workflow_hygiene.py" self-authorizing-governance',
             'echo "::warning::self-authorizing governance edit detected"',
         ),
     )

@@ -392,7 +392,11 @@ jobs:
           if [[ -z "$changed" ]]; then
             exit 0
           fi
-          python3 scripts/verify_ci_workflow_hygiene.py self-authorizing-governance \
+          base_tree="$RUNNER_TEMP/self-authorizing-governance-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ | tar -x -C "$base_tree"
+          python3 "$base_tree/scripts/verify_ci_workflow_hygiene.py" self-authorizing-governance \
+            --repo "$GITHUB_WORKSPACE" \
             --base "$base_ref" \
             --head "$head_ref"
 

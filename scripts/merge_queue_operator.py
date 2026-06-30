@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import json
 import os
 import pathlib
@@ -14,6 +15,13 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Callable, Sequence
+
+
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import config_validators as _cv  # noqa: E402
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -34,6 +42,11 @@ class CommandResult:
 
 class OperatorError(Exception):
     """Raised when merge queue operator inputs or commands fail."""
+
+
+require_table = functools.partial(_cv.require_table, error_cls=OperatorError)
+require_string = functools.partial(_cv.require_string, error_cls=OperatorError)
+require_positive_int = functools.partial(_cv.require_positive_int, error_cls=OperatorError)
 
 
 Runner = Callable[..., CommandResult]
@@ -85,27 +98,6 @@ def positive_pr_number(value: str) -> int:
     if pr <= 0:
         raise argparse.ArgumentTypeError(f"invalid PR number {value!r}")
     return pr
-
-
-def require_table(root: dict[str, object], key: str, label: str) -> dict[str, object]:
-    value = root.get(key)
-    if not isinstance(value, dict):
-        raise OperatorError(f"{label}.{key} must be a table")
-    return value
-
-
-def require_string(root: dict[str, object], key: str, label: str) -> str:
-    value = root.get(key)
-    if not isinstance(value, str) or not value:
-        raise OperatorError(f"{label}.{key} must be a non-empty string")
-    return value
-
-
-def require_positive_int(root: dict[str, object], key: str, label: str) -> int:
-    value = root.get(key)
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise OperatorError(f"{label}.{key} must be a positive integer")
-    return value
 
 
 @dataclasses.dataclass(frozen=True)

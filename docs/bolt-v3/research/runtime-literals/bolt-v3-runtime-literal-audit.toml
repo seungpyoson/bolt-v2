@@ -1997,7 +1997,7 @@ classification = "schema_version_gate"
 reason = "The schema version is a structural compatibility gate, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/rate_limit.rs"
 kind = "number"
 literal = '''3600'''
 context = '''const SECONDS_PER_HOUR: u64 = 3600;'''
@@ -2005,7 +2005,7 @@ classification = "time_unit_conversion"
 reason = "Seconds-per-hour named constant converting an HH:MM:SS rate-limit interval into whole seconds for the venue egress reconciliation; a fixed unit conversion, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/rate_limit.rs"
 kind = "number"
 literal = '''60'''
 context = '''const SECONDS_PER_MINUTE: u64 = 60;'''
@@ -2021,7 +2021,7 @@ classification = "schema_version_gate"
 reason = "The strategy schema version is a structural compatibility gate, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/risk.rs"
 kind = "number"
 literal = '''0'''
 context = '''.is_none_or(|value| value == 0)'''
@@ -2029,7 +2029,7 @@ classification = "config_validation_zero_rejection"
 reason = "Zero is the invalid lower-bound sentinel for the TOML-owned active position PnL entry cap; runtime capacity is still provided by config and must be positive."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/persistence.rs"
 kind = "number"
 literal = '''0'''
 context = '''.is_some_and(|min_free_bytes| min_free_bytes == 0)'''
@@ -2101,7 +2101,7 @@ classification = "gate_provider_schema_field"
 reason = "This is the Chainlink report decimal-scale schema key; decimal-scale values remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/gate_providers.rs"
 kind = "string"
 literal = '''"{binding_context} duplicates resolution_identity `{resolution_identity}` and value_kind `{value_kind}`"'''
 context = '''"{binding_context} duplicates resolution_identity `{resolution_identity}` and value_kind `{value_kind}`"'''
@@ -2109,7 +2109,7 @@ classification = "gate_provider_validation_diagnostic_template"
 reason = "This validation diagnostic rejects duplicate Chainlink feed bindings; it is not a runtime source value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/gate_providers.rs"
 kind = "number"
 literal = '''0'''
 context = '''.is_none_or(|value| value <= 0)'''
@@ -2117,7 +2117,7 @@ classification = "gate_provider_positive_integer_guard"
 reason = "This rejects zero or negative Chainlink report schema/scale values before provider config use."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/gate_providers.rs"
 kind = "number"
 literal = '''66'''
 context = '''value.len() == 66'''
@@ -2125,7 +2125,7 @@ classification = "chainlink_feed_id_shape_guard"
 reason = "This validates the configured Chainlink feed id shape; the feed id value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/gate_providers.rs"
 kind = "string"
 literal = '''"0x"'''
 context = '''&& value.starts_with("0x")'''
@@ -2133,7 +2133,7 @@ classification = "chainlink_feed_id_shape_guard"
 reason = "This validates the configured Chainlink feed id hex prefix; the feed id value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/gate_providers.rs"
 kind = "number"
 literal = '''2'''
 context = '''&& value[2..]'''
@@ -2141,7 +2141,7 @@ classification = "chainlink_feed_id_shape_guard"
 reason = "This skips the Chainlink feed id hex prefix while validating shape; it is not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/rate_limit.rs"
 kind = "number"
 literal = '''60'''
 context = '''if minutes >= 60 {'''
@@ -2149,7 +2149,7 @@ classification = "rate_limit_parser_clock_bound"
 reason = "The Bolt-v3 rate-limit parser enforces conventional HH:MM:SS minute bounds before NT config build validation."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/rate_limit.rs"
 kind = "number"
 literal = '''60'''
 context = '''if seconds >= 60 {'''
@@ -4085,7 +4085,7 @@ classification = "target_gate_single_provider_selection"
 reason = "This indexes the only allowed provider id after a len==1 guard when validating TOML-owned target gate mappings."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/chainlink_data_streams.rs"
 kind = "number"
 literal = '''1'''
 context = '''1 => {}'''
@@ -4093,7 +4093,7 @@ classification = "chainlink_feed_binding_cardinality"
 reason = "This is the exact one matching Chainlink feed binding required for each configured target gate mapping."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/chainlink_data_streams.rs"
 kind = "number"
 literal = '''0'''
 context = '''None => 0,'''
@@ -4101,7 +4101,7 @@ classification = "chainlink_feed_binding_cardinality"
 reason = "This is the zero matching feed-binding count for a TOML-owned Chainlink mapping when no binding key is present."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/persistence.rs"
 kind = "number"
 literal = '''0'''
 context = '''.is_some_and(|max_bytes| max_bytes == 0)'''
@@ -4157,7 +4157,7 @@ classification = "target_gate_schema_field"
 reason = "This names the target gate mapping provider-kind field; values remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/chainlink_data_streams.rs"
 kind = "string"
 literal = '''"gate_providers.{provider_id}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD}[{index}]"'''
 context = '''"gate_providers.{provider_id}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD}[{index}]"'''
@@ -4165,7 +4165,7 @@ classification = "chainlink_data_streams_validation_context_template"
 reason = "This diagnostic context points to the TOML-owned Chainlink feed binding row being validated."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/gate_providers.rs"
 kind = "string"
 literal = '''"{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD}"'''
 context = '''"{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD}"'''
@@ -4173,7 +4173,7 @@ classification = "chainlink_data_streams_validation_context_template"
 reason = "Diagnostic field path for the gate-provider rest_base_url https-scheme check (shared validate_https_rest_base_url helper); the URL value remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/gate_providers.rs"
 kind = "string"
 literal = '''"{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD}"'''
 context = '''"{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD}"'''
@@ -4189,7 +4189,7 @@ classification = "url_scheme_validation_literal"
 reason = "Defense-in-depth transport-scheme guard in the signed report-request URL builder; refuses to build a credentialed request over any non-https resolved URL. The scheme is a protocol constant, not a TOML value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/chainlink_data_streams.rs"
 kind = "string"
 literal = '''"{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]"'''
 context = '''"{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]"'''
@@ -5349,7 +5349,7 @@ classification = "diagnostic_separator"
 reason = "This separator formats validation diagnostics only and is not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/clients.rs"
 kind = "string"
 literal = '''"clients.{key}.readiness_probe.book_type is only valid when market_data_kind = \"book\""'''
 context = '''"clients.{key}.readiness_probe.book_type is only valid when market_data_kind = \"book\""'''
@@ -5357,7 +5357,7 @@ classification = "readiness_probe_validation_diagnostic"
 reason = "This is a TOML validation diagnostic for readiness_probe configuration, not a runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/clients.rs"
 kind = "string"
 literal = '''"clients.{key}.readiness_probe.max_metadata_quote_targets is only valid when quote_target_source = \"metadata_response\""'''
 context = '''"clients.{key}.readiness_probe.max_metadata_quote_targets is only valid when quote_target_source = \"metadata_response\""'''
@@ -5365,7 +5365,7 @@ classification = "readiness_probe_validation_diagnostic"
 reason = "This is a TOML validation diagnostic for readiness_probe configuration, not a runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/clients.rs"
 kind = "string"
 literal = '''"clients.{key}.readiness_probe.allow_metadata_target_sampling is only valid when quote_target_source = \"metadata_response\""'''
 context = '''"clients.{key}.readiness_probe.allow_metadata_target_sampling is only valid when quote_target_source = \"metadata_response\""'''
@@ -5373,7 +5373,7 @@ classification = "readiness_probe_validation_diagnostic"
 reason = "This is a TOML validation diagnostic for readiness_probe configuration, not a runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/clients.rs"
 kind = "string"
 literal = '''"clients.{key}.readiness_probe cannot combine quote_target_source = \"metadata_response\" with readiness_probe.quote_targets"'''
 context = '''"clients.{key}.readiness_probe cannot combine quote_target_source = \"metadata_response\" with readiness_probe.quote_targets"'''
@@ -5501,7 +5501,7 @@ classification = "polymarket_data_api_query_param_name"
 reason = "Fixed Data API query parameter name defined by the vendor, not an operator-configured value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/clients.rs"
 kind = "string"
 literal = '''"clients.{key}.readiness_probe.chunk_size is only valid when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""'''
 context = '''"clients.{key}.readiness_probe.chunk_size is only valid when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""'''
@@ -5509,7 +5509,7 @@ classification = "readiness_probe_validation_diagnostic"
 reason = "TOML validation diagnostic for readiness_probe.chunk_size configuration, not a runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/clients.rs"
 kind = "string"
 literal = '''"clients.{key}.readiness_probe.chunk_observation_window_seconds is only valid when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""'''
 context = '''"clients.{key}.readiness_probe.chunk_observation_window_seconds is only valid when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""'''
@@ -7157,7 +7157,7 @@ classification = "shared_atomic_io_temp_suffix"
 reason = "Internal same-directory temporary path separator inserted before the unique temporary suffix; durable paths remain TOML-owned by callers."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/kill_switch.rs"
 kind = "number"
 literal = '''0'''
 context = '''&& block.action_retry_timeout_ms > 0'''
@@ -7773,7 +7773,7 @@ classification = "chainlink_subscribe_param_key"
 reason = "Stable NT subscribe-command params key carrying the window-open Unix seconds; a fixed contract between the binary-oracle strategy and the strike DataClient."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/chainlink_data_streams.rs"
 kind = "string"
 literal = '''"{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]: chainlink_data_streams mapping resolution_identity `{resolution_identity}` value_kind `{value_kind}` cannot resolve provider_id from mapping provider_id, provider_preference, or a single allowed_provider_ids entry"'''
 context = '''"{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]: chainlink_data_streams mapping resolution_identity `{resolution_identity}` value_kind `{value_kind}` cannot resolve provider_id from mapping provider_id, provider_preference, or a single allowed_provider_ids entry"'''
@@ -7781,7 +7781,7 @@ classification = "resolution_oracle_validation_diagnostic"
 reason = "Config-load validation diagnostic for resolution-oracle feed-binding coverage; every interpolated value is read from the loaded bolt-v3 config, not an operator runtime input."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/chainlink_data_streams.rs"
 kind = "string"
 literal = '''"{}: chainlink_data_streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has no matching gate_providers.{}.chainlink_data_streams.feed_bindings entry"'''
 context = '''"{}: chainlink_data_streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has no matching gate_providers.{}.chainlink_data_streams.feed_bindings entry",'''
@@ -10907,7 +10907,7 @@ classification = "realized_volatility_config_fingerprint_enum_label"
 reason = "Stable sample-kind enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/vol_sources.rs"
 kind = "number"
 literal = '''0usize'''
 context = '''let mut enabled_quorum_sources = 0usize;'''
@@ -10915,7 +10915,7 @@ classification = "realized_volatility_validation_counter"
 reason = "Internal enabled-source quorum counter initialization/increment used while validating TOML-owned RV source bindings; not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/vol_sources.rs"
 kind = "string"
 literal = '''"{source_context}.source_id duplicate source_id `{}`"'''
 context = '''"{source_context}.source_id duplicate source_id `{}`",'''
@@ -10923,7 +10923,7 @@ classification = "realized_volatility_config_diagnostic_template"
 reason = "Fail-closed realized-volatility config validation diagnostic; the referenced values come from bolt-v3 TOML and validation state."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/vol_sources.rs"
 kind = "number"
 literal = '''1'''
 context = '''enabled_quorum_sources += 1;'''
@@ -10931,7 +10931,7 @@ classification = "realized_volatility_validation_counter"
 reason = "Internal enabled-source quorum counter initialization/increment used while validating TOML-owned RV source bindings; not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/vol_sources.rs"
 kind = "string"
 literal = '''"{context}.policy.min_ready_sources {} exceeds enabled quorum source count {}"'''
 context = '''"{context}.policy.min_ready_sources {} exceeds enabled quorum source count {}",'''
@@ -14586,7 +14586,7 @@ classification = "capital_admission_reservation_id_template"
 reason = "Internal composite-id formatting template for client order id plus sequence; it does not configure trading behavior."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/capital.rs"
 kind = "number"
 literal = '''0usize'''
 context = '''let mut enforced_pool_count = 0usize;'''
@@ -14594,7 +14594,7 @@ classification = "capital_pool_validation_counter_identity"
 reason = "Initial validation count of TOML capital pools that enabled submit-admission enforcement."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/capital.rs"
 kind = "number"
 literal = '''1'''
 context = '''enforced_pool_count += 1;'''
@@ -14602,7 +14602,7 @@ classification = "capital_pool_validation_counter_increment"
 reason = "Single-pool validation counter increment for TOML capital pools that enabled submit-admission enforcement."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/capital.rs"
 kind = "string"
 literal = '''"prediction_market_binary"'''
 context = '''if pool.product_kind != "prediction_market_binary" {'''
@@ -14610,7 +14610,7 @@ classification = "capital_pool_config_enum_value"
 reason = "Supported TOML product-kind discriminator for capital-pool validation; the pool assignment remains config-owned."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/capital.rs"
 kind = "string"
 literal = '''"prediction_market_binary"'''
 context = '''if pool.enforce_submit_admission && pool.product_kind == "prediction_market_binary" {'''
@@ -14650,7 +14650,7 @@ classification = "capital_admission_source_diagnostic"
 reason = "Fail-closed diagnostic when a TOML-configured venue spendability source has no runtime feed; it does not configure trading behavior."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/capital.rs"
 kind = "number"
 literal = '''64'''
 context = '''value.len() == 64'''
@@ -14682,7 +14682,7 @@ classification = "live_node_fail_closed_diagnostic_template"
 reason = "Diagnostic separator for listing TOML-owned execution client identifiers that share one NT venue in the live transport scope."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/vol_sources.rs"
 kind = "string"
 literal = '''"iv.profiles.{}.sources.{}"'''
 context = '''"iv.profiles.{}.sources.{}",'''
@@ -15946,7 +15946,7 @@ classification = "reference_current_price_health_contract"
 reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/reference_price.rs"
 kind = "number"
 literal = '''1'''
 context = '''valid_enabled_sources = valid_enabled_sources.saturating_sub(1);'''
@@ -15954,7 +15954,7 @@ classification = "reference_current_price_validation_diagnostic"
 reason = "Reference-current-price validation diagnostic; interpolated values come from configured TOML."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/reference_price.rs"
 kind = "string"
 literal = '''"{context}: reference_current_price.min_valid_sources {} exceeds enabled source count {}"'''
 context = '''"{context}: reference_current_price.min_valid_sources {} exceeds enabled source count {}",'''
@@ -15962,7 +15962,7 @@ classification = "reference_current_price_validation_diagnostic"
 reason = "Reference-current-price validation diagnostic; interpolated values come from configured TOML."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/reference_price.rs"
 kind = "string"
 literal = '''"{context}: reference_current_price.source.{source_id} uses the same physical reference feed as reference_current_price.source.{existing_source_id}: provider `{}`, client_id `{}`, identifier `{identifier}`"'''
 context = '''"{context}: reference_current_price.source.{source_id} uses the same physical reference feed as reference_current_price.source.{existing_source_id}: provider `{}`, client_id `{}`, identifier `{identifier}`",'''
@@ -16170,7 +16170,7 @@ classification = "rv_registration_validation_diagnostic_context"
 reason = "Diagnostic context naming the TOML-owned realized-volatility source client field that failed node transport membership."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
+path = "src/bolt_v3_validate/vol_sources.rs"
 kind = "string"
 literal = '''"realized_volatility_surfaces.{surface_id}.sources.{}"'''
 context = '''"realized_volatility_surfaces.{surface_id}.sources.{}",'''
@@ -18522,7 +18522,7 @@ classification = "strategy_runtime_schema_field"
 reason = "Maker per-market flat-config schema field label threaded (when present) into each markets array row; the operator-declared static_no_outcome value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = '''src/bolt_v3_validate.rs'''
+path = '''src/bolt_v3_validate/kill_switch.rs'''
 kind = '''string'''
 literal = '''"open"'''
 context = '''"open" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Open),'''
@@ -18530,7 +18530,7 @@ classification = '''kill_switch_cancel_surface_config_token'''
 reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
 
 [[allowed]]
-path = '''src/bolt_v3_validate.rs'''
+path = '''src/bolt_v3_validate/kill_switch.rs'''
 kind = '''string'''
 literal = '''"inflight"'''
 context = '''"inflight" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Inflight),'''
@@ -18538,7 +18538,7 @@ classification = '''kill_switch_cancel_surface_config_token'''
 reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
 
 [[allowed]]
-path = '''src/bolt_v3_validate.rs'''
+path = '''src/bolt_v3_validate/kill_switch.rs'''
 kind = '''string'''
 literal = '''"pending-cancel"'''
 context = '''"pending-cancel" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::PendingCancel),'''
@@ -18546,7 +18546,7 @@ classification = '''kill_switch_cancel_surface_config_token'''
 reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
 
 [[allowed]]
-path = '''src/bolt_v3_validate.rs'''
+path = '''src/bolt_v3_validate/kill_switch.rs'''
 kind = '''string'''
 literal = '''"emulated"'''
 context = '''"emulated" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Emulated),'''
@@ -18554,7 +18554,7 @@ classification = '''kill_switch_cancel_surface_config_token'''
 reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
 
 [[allowed]]
-path = '''src/bolt_v3_validate.rs'''
+path = '''src/bolt_v3_validate/kill_switch.rs'''
 kind = '''string'''
 literal = '''"algorithm-managed"'''
 context = '''"algorithm-managed" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::AlgorithmManaged),'''
@@ -18562,7 +18562,7 @@ classification = '''kill_switch_cancel_surface_config_token'''
 reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
 
 [[allowed]]
-path = '''src/bolt_v3_validate.rs'''
+path = '''src/bolt_v3_validate/kill_switch.rs'''
 kind = '''string'''
 literal = '''"contingent"'''
 context = '''"contingent" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Contingent),'''
@@ -18570,7 +18570,7 @@ classification = '''kill_switch_cancel_surface_config_token'''
 reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
 
 [[allowed]]
-path = '''src/bolt_v3_validate.rs'''
+path = '''src/bolt_v3_validate/kill_switch.rs'''
 kind = '''string'''
 literal = '''"accepted-but-not-terminal"'''
 context = '''"accepted-but-not-terminal" => {'''
@@ -18586,7 +18586,7 @@ classification = '''kill_switch_flatten_pairwise_scan_offset'''
 reason = '''Loop offset used to compare each NT position-proof candidate pair exactly once when detecting conflicting cache/report evidence; not an operator runtime value.'''
 
 [[allowed]]
-path = '''src/bolt_v3_validate.rs'''
+path = '''src/bolt_v3_validate/kill_switch.rs'''
 kind = '''string'''
 literal = '''"order_template"'''
 context = '''"order_template",'''

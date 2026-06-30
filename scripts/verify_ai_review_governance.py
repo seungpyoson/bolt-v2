@@ -27,6 +27,10 @@ GLM_DELIVERABLE_SNIPPETS = (
     "ref: ${{ github.event.pull_request.base.sha }}",
     'emit("expected_bot_login", github["expected_bot_login"])',
     'emit("glm_api_base", glm["api_base"])',
+    'smart_trigger_configured = "smart_trigger" in glm',
+    'smart = glm.get("smart_trigger") or {}',
+    'emit("glm_smart_trigger_configured", smart_trigger_configured)',
+    'emit("glm_review_labels", smart.get("review_labels", []))',
     'def notice_marker(table):',
     'marker = table.get("notice_marker")',
     'emit("glm_notice_marker", notice_marker(glm))',
@@ -37,6 +41,18 @@ GLM_DELIVERABLE_SNIPPETS = (
     "scripts/verify_ai_review_model_freshness.py",
     "Check AI review model freshness",
     "--advisory",
+    "Decide whether GLM should review",
+    "import sys",
+    "GLM_SMART_TRIGGER_CONFIGURED: ${{ steps.runtime-config.outputs.glm_smart_trigger_configured }}",
+    "GLM_REVIEW_LABELS: ${{ steps.runtime-config.outputs.glm_review_labels }}",
+    "legacy-smart-trigger-missing",
+    "scripts/ai_review_deliverables.py",
+    "retry-needed",
+    "--provider",
+    "glm",
+    "previous-failure-notice",
+    "retry-check-unavailable",
+    "file=sys.stderr",
     "OPENAI__API_BASE: ${{ steps.runtime-config.outputs.glm_api_base }}",
     "config.model: ${{ steps.runtime-config.outputs.glm_pr_agent_model }}",
     "config.fallback_models: ${{ steps.runtime-config.outputs.glm_pr_agent_fallback_models }}",
@@ -52,6 +68,7 @@ GLM_DELIVERABLE_SNIPPETS = (
     "id: glm_fallback",
     "steps.base-checkout.outcome == 'success'",
     "steps.runtime-config.outcome == 'success'",
+    "steps.review-decision.outputs.should_review == 'true'",
     "steps.review-window.outcome == 'success'",
     "continue-on-error: true",
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_fallback_timeout_minutes) }}",
@@ -64,6 +81,8 @@ GLM_DELIVERABLE_SNIPPETS = (
     "Post GLM fallback infrastructure failure notice",
     "&& always()",
     "steps.runtime-config.outcome == 'failure'",
+    "steps.review-decision.outcome == 'failure'",
+    "steps.review-window.outcome == 'failure'",
     "steps.glm_fallback.outputs.failure_notice_posted != 'true'",
     "steps.glm_stamp.outcome == 'failure' && steps.glm_fallback.outcome != 'success'",
     "review infrastructure failed or timed out before posting a usable failure notice",
@@ -87,6 +106,10 @@ KIMI_DELIVERABLE_SNIPPETS = (
     'emit("expected_bot_login", github["expected_bot_login"])',
     'emit("kimi_model_name", kimi["model"])',
     'emit("kimi_model_base_url", kimi["api_base"])',
+    'smart_trigger_configured = "smart_trigger" in kimi',
+    'smart = kimi.get("smart_trigger") or {}',
+    'emit("kimi_smart_trigger_configured", smart_trigger_configured)',
+    'emit("kimi_review_labels", smart.get("review_labels", []))',
     'emit("kimi_deliverable_marker", kimi["deliverable_marker"])',
     'def notice_marker(table):',
     'marker = table.get("notice_marker")',
@@ -96,6 +119,18 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "scripts/verify_ai_review_model_freshness.py",
     "Check AI review model freshness",
     "--advisory",
+    "Decide whether Kimi should review",
+    "import sys",
+    "KIMI_SMART_TRIGGER_CONFIGURED: ${{ steps.runtime-config.outputs.kimi_smart_trigger_configured }}",
+    "KIMI_REVIEW_LABELS: ${{ steps.runtime-config.outputs.kimi_review_labels }}",
+    "legacy-smart-trigger-missing",
+    ".ai-review/base/scripts/ai_review_deliverables.py",
+    "retry-needed",
+    "--provider",
+    "kimi",
+    "previous-failure-notice",
+    "retry-check-unavailable",
+    "file=sys.stderr",
     "id: kimi-review",
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.kimi_primary_timeout_minutes) }}",
     "uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0",
@@ -123,6 +158,8 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "&& always()",
     "steps.install-kimi.outcome == 'failure'",
     "steps.runtime-config.outcome == 'failure'",
+    "steps.review-decision.outcome == 'failure'",
+    "steps.review-window.outcome == 'failure'",
     "steps.kimi_fallback.outputs.failure_notice_posted != 'true'",
     "review infrastructure failed or timed out before posting a usable failure notice",
     'marker="${{ steps.runtime-config.outputs.kimi_notice_marker }}"',
@@ -143,17 +180,34 @@ CLAUDE_WORKFLOW_SNIPPETS = (
     "github.event.comment.author_association",
     "github.event.review.author_association",
     "ci/ai-review.toml",
+    "Claude intentionally uses head ci/ai-review.toml for the prompt and deliverable verifier",
     "Load AI review runtime config",
     'emit("claude_model", claude["model"])',
+    'emit("github_api_url", github["api_url"])',
     'emit("claude_track_progress", claude["track_progress"])',
+    'emit("claude_deliverable_marker", claude["deliverable_marker"])',
+    'emit("claude_source_label", claude["source_label_template"].replace("{model}", claude["model"]))',
+    'contract = config["review"]["output_contract"]',
+    'emit("review_finding_required_labels", contract["finding_required_labels"])',
+    'emit("review_no_findings_indicator", contract["no_findings_indicator"])',
+    'emit("review_no_findings_required_labels", contract["no_findings_required_labels"])',
     'emit("claude_allowed_tools", claude["allowed_tools"])',
     'emit("claude_max_turns", workflow["max_turns"])',
     'emit("claude_primary_timeout_minutes", workflow["primary_timeout_minutes"])',
+    "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
     "PR_LABEL_NAME: ${{ github.event.label.name }}",
+    "import sys",
     'if action == "labeled":',
     "review-label",
+    "retry-needed",
+    "--provider",
+    "claude",
+    "previous-failure-notice",
+    "retry-check-unavailable",
+    "file=sys.stderr",
     "fork-pr-manual-mention",
     "scripts/verify_ai_review_model_freshness.py --live --advisory --provider claude",
+    "Capture Claude review window",
     "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2",
     "anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1",
     "contents: read",
@@ -161,10 +215,27 @@ CLAUDE_WORKFLOW_SNIPPETS = (
     "claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
     "additional_permissions: |",
     "track_progress: ${{ steps.runtime-config.outputs.claude_track_progress }}",
+    "DELIVERABLE MARKER: ${{ steps.runtime-config.outputs.claude_deliverable_marker }}",
+    "SOURCE LABEL: ${{ steps.runtime-config.outputs.claude_source_label }}",
+    "FINDING REQUIRED LABELS: ${{ steps.runtime-config.outputs.review_finding_required_labels }}",
+    "NO-FINDINGS INDICATOR: ${{ steps.runtime-config.outputs.review_no_findings_indicator }}",
+    "NO-FINDINGS REQUIRED LABELS: ${{ steps.runtime-config.outputs.review_no_findings_required_labels }}",
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.claude_primary_timeout_minutes) }}",
     "--max-turns ${{ steps.runtime-config.outputs.claude_max_turns }}",
     "--model ${{ steps.runtime-config.outputs.claude_model }}",
     '--allowedTools "${{ steps.runtime-config.outputs.claude_allowed_tools }}"',
+    "Ensure Claude deliverable or post failure notice",
+    "scripts/ai_review_deliverables.py claude-deliverable",
+    "--execution-file \"${{ steps.claude.outputs.execution_file }}\"",
+    "--step-outcome \"${{ steps.claude.outcome }}\"",
+    "Post Claude review infrastructure failure notice",
+    "steps.runtime-config.outcome == 'failure'",
+    "steps.review-decision.outcome == 'failure'",
+    "steps.review-window.outcome == 'failure'",
+    "steps.claude-deliverable.outcome == 'failure'",
+    "steps.claude-deliverable.outputs.failure_notice_posted != 'true'",
+    "scripts/ai_review_deliverables.py notice-env --provider claude --config-file ci/ai-review.toml",
+    "review infrastructure failed or timed out before posting a usable failure notice",
 )
 
 SMOKE_TRUSTED_CONFIG_SNIPPETS = (
@@ -197,8 +268,25 @@ AI_REVIEW_DELIVERABLES_SNIPPETS = (
     "def source_label_from_template(",
     "source_label=source_label_from_template(",
     "def validate_review_responses(",
+    "def invalid_review_response_detail(",
     "did not meet the hard-evidence output contract",
+    "output omitted from PR notice",
     "validate_review_responses(responses, config.output_contract)",
+    "def provider_retry_needed(",
+    "def provider_retry_decision(",
+    "def latest_quality_review_deliverable_time(",
+    "def latest_claude_visible_deliverable_time(",
+    "def claude_body_is_review_deliverable(",
+    "def ensure_claude_deliverable_or_notice(",
+    "def run_claude_deliverable_from_env(",
+    "deliverable_bot_logins=config_str_tuple(",
+    'comment_marker=config_str(claude_config, "deliverable_marker")',
+    'claude_deliverable_marker=config_str(claude_config, "deliverable_marker")',
+    'require_source_line=provider_key in ("glm", "kimi")',
+    "def run_retry_needed_from_env(",
+    'print(f"retry_needed=',
+    'print(f"reason={reason}")',
+    'choices=("glm", "kimi", "claude")',
     "def list_pull_review_comments",
     "def update_pull_review_comment",
     "github.list_pull_review_comments()",
@@ -563,12 +651,27 @@ def exact_claude_model_id(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"claude-opus-\d+(?:[-.]\d+)*", value) is not None
 
 
-def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
+def configured_runtime_literals(ai_review_toml: str, *, include_output_contract: bool = False) -> tuple[str, ...]:
     try:
         parsed = tomllib.loads(ai_review_toml)
     except tomllib.TOMLDecodeError:
         return ()
     literals: list[str] = []
+    review = parsed.get("review")
+    if include_output_contract and isinstance(review, dict):
+        output_contract = review.get("output_contract")
+        if isinstance(output_contract, dict):
+            for key in (
+                "finding_required_labels",
+                "no_findings_indicator",
+                "no_findings_intro",
+                "no_findings_required_labels",
+            ):
+                value = output_contract.get(key)
+                if isinstance(value, str) and value:
+                    literals.append(value)
+                elif isinstance(value, list):
+                    literals.extend(item for item in value if isinstance(item, str) and item)
     github = parsed.get("github")
     if isinstance(github, dict):
         value = github.get("expected_bot_login")
@@ -589,6 +692,7 @@ def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
                 "allowed_tools",
                 "deliverable_marker",
                 "deliverable_markers",
+                "deliverable_bot_logins",
                 "comment_marker",
                 "notice_marker",
                 "source_label_template",
@@ -618,6 +722,38 @@ def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(literals))
 
 
+def verify_no_hardcoded_review_labels(ai_review_toml: str, workflow_text: str, provider: str) -> list[str]:
+    try:
+        parsed = tomllib.loads(ai_review_toml)
+    except tomllib.TOMLDecodeError:
+        return []
+    provider_config = parsed.get(provider)
+    if not isinstance(provider_config, dict):
+        return []
+    smart_trigger = provider_config.get("smart_trigger")
+    if not isinstance(smart_trigger, dict):
+        return []
+    labels = smart_trigger.get("review_labels")
+    if not isinstance(labels, list):
+        return []
+    literal_patterns: list[str] = []
+    for label in labels:
+        if not isinstance(label, str) or not label:
+            continue
+        literal_patterns.extend(
+            [
+                f"github.event.label.name == '{label}'",
+                f'github.event.label.name == "{label}"',
+                f"contains(github.event.pull_request.labels.*.name, '{label}')",
+                f'contains(github.event.pull_request.labels.*.name, "{label}")',
+            ]
+        )
+    for pattern in literal_patterns:
+        if pattern in workflow_text:
+            return [f"{provider.upper()} workflow must read review labels from ci/ai-review.toml, not hardcode {pattern!r}"]
+    return []
+
+
 def verify_notice_step_guard(
     workflow_text: str,
     *,
@@ -636,6 +772,37 @@ def verify_notice_step_guard(
     ):
         if snippet not in step:
             return [f"{provider_label} notice step {step_name!r} must not use empty marker or bot login"]
+    if '--arg run_url "$run_url"' in step or "contains($run_url)" in step:
+        return [f"{provider_label} notice step {step_name!r} must update one rolling notice, not key by run URL"]
+    if "contains($marker)" in step or "startswith($marker)" not in step:
+        return [f"{provider_label} notice step {step_name!r} must match notice marker at the start of the comment"]
+    return []
+
+
+def verify_infra_notice_runtime_config_failure_gate(
+    workflow_text: str,
+    *,
+    provider_label: str,
+    step_name: str,
+) -> list[str]:
+    step = workflow_step_block(workflow_text, step_name)
+    if not step:
+        return [f"{provider_label} workflow missing {step_name} step"]
+    if (
+        "steps.review-decision.outputs.should_review == 'true'\n"
+        "              || steps.runtime-config.outcome == 'failure'"
+    ) not in step:
+        return [
+            f"{provider_label} infrastructure notice must run when runtime config fails before review-decision emits"
+        ]
+    if step.count("steps.runtime-config.outcome == 'failure'") < 2:
+        return [f"{provider_label} infrastructure notice must cover runtime config failures"]
+    if step.count("steps.review-decision.outcome == 'failure'") < 2:
+        return [f"{provider_label} infrastructure notice must cover review-decision failures"]
+    if "steps.review-window.outcome == 'failure'" not in step:
+        return [f"{provider_label} infrastructure notice must cover review-window failures"]
+    if "failure_notice_posted != 'true'" not in step:
+        return [f"{provider_label} infrastructure notice must not duplicate an already posted failure notice"]
     return []
 
 
@@ -663,6 +830,10 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
     if not isinstance(pr_agent_output, dict):
         pr_agent_output = {}
     glm = table("glm")
+    glm_smart_trigger = glm.get("smart_trigger")
+    if not isinstance(glm_smart_trigger, dict):
+        findings.append("ci/ai-review.toml missing [glm.smart_trigger]")
+        glm_smart_trigger = {}
     glm_pr_agent = glm.get("pr_agent")
     if not isinstance(glm_pr_agent, dict):
         findings.append("ci/ai-review.toml missing [glm.pr_agent]")
@@ -672,6 +843,10 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         findings.append("ci/ai-review.toml missing [glm.workflow]")
         glm_workflow = {}
     kimi = table("kimi")
+    kimi_smart_trigger = kimi.get("smart_trigger")
+    if not isinstance(kimi_smart_trigger, dict):
+        findings.append("ci/ai-review.toml missing [kimi.smart_trigger]")
+        kimi_smart_trigger = {}
     kimi_workflow = kimi.get("workflow")
     if not isinstance(kimi_workflow, dict):
         findings.append("ci/ai-review.toml missing [kimi.workflow]")
@@ -734,6 +909,11 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("glm.comment_marker", glm.get("comment_marker"), "<!-- ai-pr-reviewer-glm -->"),
         ("glm.notice_marker", glm.get("notice_marker"), "<!-- ai-pr-reviewer-glm-notice -->"),
         ("glm.source_label_template", glm.get("source_label_template"), "GLM direct fallback (`{model}`)"),
+        (
+            "glm.smart_trigger.review_labels",
+            glm_smart_trigger.get("review_labels"),
+            ["ai-review", "ai-review-glm"],
+        ),
         (
             "glm.pr_agent.source_label_template",
             glm_pr_agent.get("source_label_template"),
@@ -813,12 +993,21 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("kimi.notice_marker", kimi.get("notice_marker"), "<!-- ai-pr-reviewer-kimi-notice -->"),
         ("kimi.source_label_template", kimi.get("source_label_template"), "Kimi Code CLI (`{model}`)"),
         ("kimi.cli_package", kimi.get("cli_package"), "@moonshot-ai/kimi-code@0.19.0"),
+        (
+            "kimi.smart_trigger.review_labels",
+            kimi_smart_trigger.get("review_labels"),
+            ["ai-review", "ai-review-kimi"],
+        ),
         ("kimi.workflow.node_version", kimi_workflow.get("node_version"), "24"),
         ("kimi.workflow.job_timeout_minutes", kimi_workflow.get("job_timeout_minutes"), 45),
         ("kimi.workflow.primary_timeout_minutes", kimi_workflow.get("primary_timeout_minutes"), 20),
         ("kimi.workflow.fallback_timeout_minutes", kimi_workflow.get("fallback_timeout_minutes"), 20),
         ("kimi.workflow.setup_overhead_timeout_minutes", kimi_workflow.get("setup_overhead_timeout_minutes"), 5),
         ("claude.track_progress", claude.get("track_progress"), False),
+        ("claude.notice_marker", claude.get("notice_marker"), "<!-- ai-pr-reviewer-claude-notice -->"),
+        ("claude.deliverable_marker", claude.get("deliverable_marker"), "<!-- ai-pr-reviewer-claude -->"),
+        ("claude.deliverable_bot_logins", claude.get("deliverable_bot_logins"), ["claude[bot]"]),
+        ("claude.source_label_template", claude.get("source_label_template"), "Claude Code (`{model}`)"),
         (
             "claude.allowed_tools",
             claude.get("allowed_tools"),
@@ -957,6 +1146,8 @@ def verify_texts(
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, claude_workflow, "claude", setup_required=False))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, smoke_workflow, "smoke", setup_required=False))
     findings.extend(verify_model_freshness_step_contracts(glm_workflow, kimi_workflow))
+    findings.extend(verify_no_hardcoded_review_labels(ai_review_toml, glm_workflow, "glm"))
+    findings.extend(verify_no_hardcoded_review_labels(ai_review_toml, kimi_workflow, "kimi"))
 
     if "pr_reviewer." in glm_workflow:
         findings.append(
@@ -978,7 +1169,7 @@ def verify_texts(
         for literal in WORKFLOW_FORBIDDEN_RUNTIME_LITERALS:
             if literal in workflow:
                 findings.append(f"{workflow_name} must read AI review runtime value from ci/ai-review.toml, not {literal!r}")
-        for literal in configured_runtime_literals(ai_review_toml):
+        for literal in configured_runtime_literals(ai_review_toml, include_output_contract=True):
             if literal in workflow:
                 findings.append(f"{workflow_name} must read AI review runtime value from ci/ai-review.toml, not {literal!r}")
 
@@ -1012,6 +1203,23 @@ def verify_texts(
             findings.append("Claude workflow review step must not set anthropic_api_key alongside OAuth")
         if "--allowedTools" not in claude_run_step:
             findings.append("Claude workflow review step must pass configured allowed tools")
+    claude_deliverable_step = workflow_step_block(claude_workflow, "Ensure Claude deliverable or post failure notice")
+    if not claude_deliverable_step:
+        findings.append("Claude workflow missing Ensure Claude deliverable or post failure notice step")
+    else:
+        if "continue-on-error: true" in claude_deliverable_step:
+            findings.append("Claude deliverable/no-deliverable notice step must fail closed")
+        for snippet in (
+            "always()",
+            "steps.runtime-config.outcome == 'success'",
+            "steps.review-window.outcome == 'success'",
+            "scripts/ai_review_deliverables.py claude-deliverable",
+            "--execution-file \"${{ steps.claude.outputs.execution_file }}\"",
+            "--step-outcome \"${{ steps.claude.outcome }}\"",
+        ):
+            if snippet not in claude_deliverable_step:
+                findings.append("Claude deliverable/no-deliverable notice step must inspect action output and post a notice")
+                break
     glm_stamp_step = workflow_step_block(glm_workflow, "Stamp GLM PR-Agent review source")
     if not glm_stamp_step:
         findings.append("GLM workflow missing Stamp GLM PR-Agent review source step")
@@ -1025,6 +1233,7 @@ def verify_texts(
             "always()",
             "steps.base-checkout.outcome == 'success'",
             "steps.runtime-config.outcome == 'success'",
+            "steps.review-decision.outputs.should_review == 'true'",
             "steps.review-window.outcome == 'success'",
         ):
             if snippet not in glm_fallback_step:
@@ -1049,6 +1258,13 @@ def verify_texts(
         )
     )
     findings.extend(
+        verify_infra_notice_runtime_config_failure_gate(
+            glm_workflow,
+            provider_label="GLM",
+            step_name="Post GLM fallback infrastructure failure notice",
+        )
+    )
+    findings.extend(
         verify_notice_step_guard(
             kimi_workflow,
             provider_label="Kimi",
@@ -1062,6 +1278,28 @@ def verify_texts(
             provider_label="Kimi",
             step_name="Post Kimi fallback infrastructure failure notice",
             helper_snippet=".ai-review/base/scripts/ai_review_deliverables.py notice-env --provider kimi --config-file .ai-review/base/ci/ai-review.toml",
+        )
+    )
+    findings.extend(
+        verify_infra_notice_runtime_config_failure_gate(
+            kimi_workflow,
+            provider_label="Kimi",
+            step_name="Post Kimi fallback infrastructure failure notice",
+        )
+    )
+    findings.extend(
+        verify_notice_step_guard(
+            claude_workflow,
+            provider_label="Claude",
+            step_name="Post Claude review infrastructure failure notice",
+            helper_snippet="scripts/ai_review_deliverables.py notice-env --provider claude --config-file ci/ai-review.toml",
+        )
+    )
+    findings.extend(
+        verify_infra_notice_runtime_config_failure_gate(
+            claude_workflow,
+            provider_label="Claude",
+            step_name="Post Claude review infrastructure failure notice",
         )
     )
     for snippet in KIMI_FORBIDDEN_INPUTS:
@@ -1108,6 +1346,8 @@ def run_self_tests(repo_root: Path) -> None:
     current_kimi_model = ai_review_config["kimi"]["model"]
     current_claude_model = ai_review_config["claude"]["model"]
     current_glm_pr_agent_model = ai_review_config["glm"]["pr_agent"]["model"]
+    current_glm_review_label = ai_review_config["glm"]["smart_trigger"]["review_labels"][-1]
+    current_kimi_review_label = ai_review_config["kimi"]["smart_trigger"]["review_labels"][-1]
     current_bot_login = github_config["expected_bot_login"]
     current_glm_comment_marker = glm_config["comment_marker"]
     current_glm_api_base = glm_config["api_base"]
@@ -1203,6 +1443,13 @@ def run_self_tests(repo_root: Path) -> None:
         raise AssertionError("Claude review step must not set anthropic_api_key")
     if "track_progress: ${{ steps.runtime-config.outputs.claude_track_progress }}" not in claude_review_step:
         raise AssertionError("Claude track_progress must come from ci/ai-review.toml")
+    claude_deliverable_step = workflow_step_block(claude, "Ensure Claude deliverable or post failure notice")
+    if not claude_deliverable_step:
+        raise AssertionError("missing Claude deliverable/no-deliverable notice step")
+    if "continue-on-error: true" in claude_deliverable_step:
+        raise AssertionError("Claude deliverable/no-deliverable notice step must fail closed")
+    if "scripts/ai_review_deliverables.py claude-deliverable" not in claude_deliverable_step:
+        raise AssertionError("Claude deliverable/no-deliverable notice step must call the helper")
 
     claude_track_progress_true_config = verify_variant(
         ai_review_text=ai_review.replace("track_progress = false", "track_progress = true", 1),
@@ -1211,6 +1458,24 @@ def run_self_tests(repo_root: Path) -> None:
         "Claude track_progress true config",
         claude_track_progress_true_config,
         "ci/ai-review.toml claude.track_progress",
+    )
+
+    claude_missing_deliverable_bot_login = verify_variant(
+        ai_review_text=ai_review.replace('deliverable_bot_logins = ["claude[bot]"]\n', "", 1),
+    )
+    assert_finding(
+        "Claude missing deliverable bot login",
+        claude_missing_deliverable_bot_login,
+        "ci/ai-review.toml claude.deliverable_bot_logins",
+    )
+
+    claude_missing_deliverable_marker = verify_variant(
+        ai_review_text=ai_review.replace('deliverable_marker = "<!-- ai-pr-reviewer-claude -->"\n', "", 1),
+    )
+    assert_finding(
+        "Claude missing deliverable marker",
+        claude_missing_deliverable_marker,
+        "ci/ai-review.toml claude.deliverable_marker",
     )
 
     claude_hardcoded_model = verify_variant(
@@ -1235,6 +1500,32 @@ def run_self_tests(repo_root: Path) -> None:
         ),
     )
     assert_finding("Claude Anthropic API key conflict", claude_anthropic_api_key, "not anthropic_api_key")
+
+    claude_missing_deliverable_step = verify_variant(
+        claude_text=claude.replace(
+            "      - name: Ensure Claude deliverable or post failure notice\n",
+            "      - name: Ensure Claude deliverable or post failure notice disabled\n",
+            1,
+        ),
+    )
+    assert_finding(
+        "Claude missing deliverable step",
+        claude_missing_deliverable_step,
+        "Claude workflow missing Ensure Claude deliverable or post failure notice step",
+    )
+
+    claude_deliverable_continue_on_error = verify_variant(
+        claude_text=claude.replace(
+            "      - name: Ensure Claude deliverable or post failure notice\n        id: claude-deliverable\n",
+            "      - name: Ensure Claude deliverable or post failure notice\n        id: claude-deliverable\n        continue-on-error: true\n",
+            1,
+        ),
+    )
+    assert_finding(
+        "Claude deliverable step continue-on-error",
+        claude_deliverable_continue_on_error,
+        "Claude deliverable/no-deliverable notice step must fail closed",
+    )
 
     claude_missing_additional_permissions = verify_variant(
         claude_text=claude.replace(
@@ -1302,7 +1593,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     glm_ungated_freshness = verify_variant(
         glm_text=glm.replace(
-            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.glm-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true'\n",
+            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.glm-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true'\n",
             "      - name: Check AI review model freshness\n        id: model-freshness\n",
             1,
         ),
@@ -1355,7 +1646,7 @@ def run_self_tests(repo_root: Path) -> None:
 
     kimi_ungated_freshness = verify_variant(
         kimi_text=kimi.replace(
-            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.kimi-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true'\n",
+            "      - name: Check AI review model freshness\n        id: model-freshness\n        if: steps.kimi-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true'\n",
             "      - name: Check AI review model freshness\n        id: model-freshness\n",
             1,
         ),
@@ -1422,10 +1713,16 @@ def run_self_tests(repo_root: Path) -> None:
     workflow_glm_marker_literal = verify_variant(glm_text=glm + f"\n          GLM_MARKER: {current_glm_comment_marker}\n")
     assert_finding("workflow GLM marker literal", workflow_glm_marker_literal, "must read AI review runtime value")
 
+    glm_review_label_literal = verify_variant(glm_text=glm + f"\n          if: github.event.label.name == '{current_glm_review_label}'\n")
+    assert_finding("workflow GLM review label literal", glm_review_label_literal, "must read review labels")
+
+    kimi_review_label_literal = verify_variant(kimi_text=kimi + f"\n          if: github.event.label.name == '{current_kimi_review_label}'\n")
+    assert_finding("workflow Kimi review label literal", kimi_review_label_literal, "must read review labels")
+
     stamp_continue_on_error = verify_variant(
         glm_text=glm.replace(
-            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'true'\n        env:",
-            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'true'\n        continue-on-error: true\n        env:",
+            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.glm-secret.outputs.configured == 'true'\n        env:",
+            "      - name: Stamp GLM PR-Agent review source\n        id: glm_stamp\n        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.glm-secret.outputs.configured == 'true'\n        continue-on-error: true\n        env:",
             1,
         ),
     )
@@ -1480,6 +1777,81 @@ def run_self_tests(repo_root: Path) -> None:
         "Kimi notice empty marker guard removed",
         kimi_notice_empty_marker_guard_removed,
         "Kimi notice step",
+    )
+
+    claude_notice_empty_marker_guard_removed = verify_variant(
+        claude_text=claude.replace('          eval "$config_exports"\n', "", 1),
+    )
+    assert_finding(
+        "Claude notice empty marker guard removed",
+        claude_notice_empty_marker_guard_removed,
+        "Claude notice step",
+    )
+
+    claude_notice_keyed_by_run_url = verify_variant(
+        claude_text=claude.replace(
+            '''| jq -r --arg login "$expected_bot_login" --arg marker "$marker" '.[] | select(.user.login == $login) | select((.body // "") | startswith($marker)) | .id' \\\n''',
+            '''| jq -r --arg login "$expected_bot_login" --arg marker "$marker" --arg run_url "$run_url" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | select(.body | contains($run_url)) | .id' \\\n''',
+            1,
+        ),
+    )
+    assert_finding(
+        "Claude notice keyed by run URL",
+        claude_notice_keyed_by_run_url,
+        "Claude notice step",
+    )
+
+    claude_notice_unanchored_marker = verify_variant(
+        claude_text=claude.replace(
+            '''| jq -r --arg login "$expected_bot_login" --arg marker "$marker" '.[] | select(.user.login == $login) | select((.body // "") | startswith($marker)) | .id' \\\n''',
+            '''| jq -r --arg login "$expected_bot_login" --arg marker "$marker" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | .id' \\\n''',
+            1,
+        ),
+    )
+    assert_finding(
+        "Claude notice unanchored marker",
+        claude_notice_unanchored_marker,
+        "must match notice marker at the start",
+    )
+
+    claude_infra_runtime_config_arm_removed = verify_variant(
+        claude_text=claude.replace("              steps.runtime-config.outcome == 'failure'\n", "", 1),
+    )
+    assert_finding(
+        "Claude infra runtime-config arm removed",
+        claude_infra_runtime_config_arm_removed,
+        "Claude infrastructure notice must cover runtime config failures",
+    )
+
+    claude_infra_review_window_arm_removed = verify_variant(
+        claude_text=claude.replace("              || steps.review-window.outcome == 'failure'\n", "", 1),
+    )
+    assert_finding(
+        "Claude infra review-window arm removed",
+        claude_infra_review_window_arm_removed,
+        "Claude infrastructure notice must cover review-window failures",
+    )
+
+    claude_infra_review_decision_arm_removed = verify_variant(
+        claude_text=claude.replace("              || steps.review-decision.outcome == 'failure'\n", "", 1),
+    )
+    assert_finding(
+        "Claude infra review-decision arm removed",
+        claude_infra_review_decision_arm_removed,
+        "Claude infrastructure notice must cover review-decision failures",
+    )
+
+    claude_infra_failure_notice_guard_removed = verify_variant(
+        claude_text=claude.replace(
+            "            && steps.claude-deliverable.outputs.failure_notice_posted != 'true'\n",
+            "",
+            1,
+        ),
+    )
+    assert_finding(
+        "Claude infra failure notice guard removed",
+        claude_infra_failure_notice_guard_removed,
+        "Claude infrastructure notice must not duplicate",
     )
 
     last_step_then_later_job = "\n".join(

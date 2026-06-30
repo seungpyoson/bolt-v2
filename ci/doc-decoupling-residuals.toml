@@ -13,6 +13,18 @@ snippets = [
 ]
 
 [[doc_decoupling_residuals.allowed_markdown_references]]
+path = "scripts/verify_ci_workflow_hygiene.py"
+kind = "workflow_snippet_false_positive"
+tracking_issue = "#1027"
+read_purpose = "none"
+snippets = [
+  '"AGENTS.md",',
+  '".specify/memory/constitution.md",',
+  'AGENTS.md \\',
+  '.specify/memory/constitution.md \\',
+]
+
+[[doc_decoupling_residuals.allowed_markdown_references]]
 path = "scripts/verify_bolt_v3_dependency_direction.py"
 kind = "docstring_pointer_false_positive"
 tracking_issue = "#1027"

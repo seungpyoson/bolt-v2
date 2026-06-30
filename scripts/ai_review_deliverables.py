@@ -478,8 +478,89 @@ def claude_body_is_review_deliverable(
     return review_body_has_source_line(text) and review_body_is_quality_deliverable(text, output_contract)
 
 
+def claude_body_needs_deliverable_marker(
+    body: object,
+    *,
+    output_contract: ReviewOutputContract,
+    deliverable_marker: str,
+) -> bool:
+    if not isinstance(body, str) or not deliverable_marker:
+        return False
+    text = body.strip()
+    if body_has_deliverable_marker(text, (deliverable_marker,)):
+        return False
+    return review_body_has_source_line(text) and review_body_is_quality_deliverable(text, output_contract)
+
+
+def with_deliverable_marker(body: str, marker: str) -> str:
+    return f"{marker}\n\n{body.lstrip()}"
+
+
 def actor_is_any_expected_bot(payload: dict[str, object], expected_logins: tuple[str, ...]) -> bool:
     return any(actor_is_expected_bot(payload, login) for login in expected_logins)
+
+
+def payload_int_id(payload: dict[str, object]) -> int | None:
+    value = payload.get("id")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def stamp_claude_visible_deliverables(
+    *,
+    github: Any,
+    started_at: str,
+    deliverable_bot_logins: tuple[str, ...],
+    output_contract: ReviewOutputContract,
+    deliverable_marker: str,
+) -> int:
+    expected_logins = tuple(login for login in deliverable_bot_logins if login)
+    if not expected_logins or not deliverable_marker:
+        return 0
+    threshold = parse_iso_timestamp(started_at)
+    stamped = 0
+    for comment in github.list_issue_comments():
+        if not isinstance(comment, dict):
+            continue
+        body = comment.get("body")
+        comment_id = payload_int_id(comment)
+        if (
+            comment_id is not None
+            and actor_is_any_expected_bot(comment, expected_logins)
+            and text_time_is_after_or_equal(
+                str(comment.get("updated_at") or comment.get("created_at") or ""),
+                threshold,
+            )
+            and claude_body_needs_deliverable_marker(
+                body,
+                output_contract=output_contract,
+                deliverable_marker=deliverable_marker,
+            )
+        ):
+            github.update_issue_comment(comment_id, with_deliverable_marker(str(body), deliverable_marker))
+            stamped += 1
+    for comment in github.list_pull_review_comments():
+        if not isinstance(comment, dict):
+            continue
+        body = comment.get("body")
+        comment_id = payload_int_id(comment)
+        if (
+            comment_id is not None
+            and actor_is_any_expected_bot(comment, expected_logins)
+            and text_time_is_after_or_equal(
+                str(comment.get("updated_at") or comment.get("created_at") or ""),
+                threshold,
+            )
+            and claude_body_needs_deliverable_marker(
+                body,
+                output_contract=output_contract,
+                deliverable_marker=deliverable_marker,
+            )
+        ):
+            github.update_pull_review_comment(comment_id, with_deliverable_marker(str(body), deliverable_marker))
+            stamped += 1
+    return stamped
 
 
 def latest_claude_visible_deliverable_time(
@@ -719,7 +800,7 @@ def post_or_update_notice_comment(*, github: Any, config: FallbackConfig, body: 
         comments=github.list_issue_comments(),
         marker=marker,
         expected_bot_login=config.expected_bot_login,
-        run_url=config.run_url,
+        run_url="",
         part_key=comment_part_key(body),
     )
     if existing is None:
@@ -1454,6 +1535,15 @@ def ensure_claude_deliverable_or_notice(
         output_contract=config.output_contract,
         deliverable_marker=config.comment_marker,
     ):
+        return "existing-review-deliverable"
+    stamped = stamp_claude_visible_deliverables(
+        github=github,
+        started_at=config.started_at,
+        deliverable_bot_logins=config.deliverable_bot_logins,
+        output_contract=config.output_contract,
+        deliverable_marker=config.comment_marker,
+    )
+    if stamped:
         return "existing-review-deliverable"
     detail = claude_execution_failure_detail(execution_file=execution_file, step_outcome=step_outcome)
     post_or_update_notice_comment(

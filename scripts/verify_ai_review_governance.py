@@ -180,6 +180,7 @@ CLAUDE_WORKFLOW_SNIPPETS = (
     "github.event.comment.author_association",
     "github.event.review.author_association",
     "ci/ai-review.toml",
+    "Claude intentionally uses head ci/ai-review.toml for the prompt and deliverable verifier",
     "Load AI review runtime config",
     'emit("claude_model", claude["model"])',
     'emit("github_api_url", github["api_url"])',
@@ -771,6 +772,8 @@ def verify_notice_step_guard(
     ):
         if snippet not in step:
             return [f"{provider_label} notice step {step_name!r} must not use empty marker or bot login"]
+    if '--arg run_url "$run_url"' in step or "contains($run_url)" in step:
+        return [f"{provider_label} notice step {step_name!r} must update one rolling notice, not key by run URL"]
     return []
 
 
@@ -1780,6 +1783,19 @@ def run_self_tests(repo_root: Path) -> None:
     assert_finding(
         "Claude notice empty marker guard removed",
         claude_notice_empty_marker_guard_removed,
+        "Claude notice step",
+    )
+
+    claude_notice_keyed_by_run_url = verify_variant(
+        claude_text=claude.replace(
+            '''| jq -r --arg login "$expected_bot_login" --arg marker "$marker" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | .id' \\\n''',
+            '''| jq -r --arg login "$expected_bot_login" --arg marker "$marker" --arg run_url "$run_url" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | select(.body | contains($run_url)) | .id' \\\n''',
+            1,
+        ),
+    )
+    assert_finding(
+        "Claude notice keyed by run URL",
+        claude_notice_keyed_by_run_url,
         "Claude notice step",
     )
 

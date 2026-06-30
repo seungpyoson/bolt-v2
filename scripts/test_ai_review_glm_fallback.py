@@ -1023,6 +1023,48 @@ def test_claude_app_bot_review_counts_as_visible_deliverable() -> None:
     assert github.posted == []
 
 
+def test_claude_markerless_valid_review_is_stamped_and_counts_as_deliverable() -> None:
+    module = load_script()
+    markerless_body = "\n".join(
+        [
+            "**Source:** Claude Code (`configured-claude-model`)",
+            "",
+            valid_no_findings_response(),
+        ]
+    )
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "id": 77,
+                "body": markerless_body,
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "claude[bot]"},
+            }
+        ],
+    )
+
+    result = module.ensure_claude_deliverable_or_notice(
+        github=github,
+        execution_file=pathlib.Path(),
+        step_outcome="success",
+        config=fallback_config(
+            module,
+            provider="Claude",
+            expected_bot_login="github-actions[bot]",
+            deliverable_bot_logins=("claude[bot]",),
+            comment_marker="<!-- ai-pr-reviewer-claude -->",
+            notice_marker="<!-- ai-pr-reviewer-claude-notice -->",
+            source_label="Claude Code (`configured-claude-model`)",
+        ),
+    )
+
+    assert result == "existing-review-deliverable"
+    assert github.posted == []
+    assert github.updated == [(77, "<!-- ai-pr-reviewer-claude -->\n\n" + markerless_body)]
+
+
 def test_claude_non_review_bot_comment_does_not_count_as_visible_deliverable() -> None:
     module = load_script()
     github = FakeGitHub(
@@ -1706,6 +1748,44 @@ def test_failure_notice_does_not_overwrite_existing_review_marker_comment() -> N
     assert len(github.posted) == 1, github.posted
     assert github.posted[0].startswith("<!-- ai-pr-reviewer-glm-notice -->")
     assert "GLM review did not produce a deliverable" in github.posted[0]
+
+
+def test_failure_notice_updates_existing_provider_notice_from_prior_run() -> None:
+    module = load_script()
+    old_run_url = "https://github.com/seungpyoson/bolt-v2/actions/runs/1"
+    new_run_url = "https://github.com/seungpyoson/bolt-v2/actions/runs/2"
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "id": 43,
+                "body": (
+                    "<!-- ai-pr-reviewer-glm-notice -->\n\n"
+                    "## GLM review did not produce a deliverable\n\n"
+                    f"- Action run: {old_run_url}\n"
+                ),
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+
+    module.post_or_update_notice_comment(
+        github=github,
+        config=fallback_config(module, run_url=new_run_url),
+        body=module.render_failure_notice(
+            provider="GLM",
+            config=fallback_config(module, run_url=new_run_url),
+            error=RuntimeError("provider rejected request"),
+        ),
+    )
+
+    assert github.posted == []
+    assert len(github.updated) == 1, github.updated
+    assert github.updated[0][0] == 43
+    assert old_run_url not in github.updated[0][1]
+    assert f"- Action run: {new_run_url}" in github.updated[0][1]
 
 
 def test_sets_failure_notice_output_after_posting_failure_notice() -> None:
@@ -2456,6 +2536,7 @@ def main() -> int:
     test_claude_error_execution_file_posts_failure_notice_without_raw_output()
     test_claude_execution_events_skip_non_file_path_without_reading()
     test_claude_app_bot_review_counts_as_visible_deliverable()
+    test_claude_markerless_valid_review_is_stamped_and_counts_as_deliverable()
     test_claude_non_review_bot_comment_does_not_count_as_visible_deliverable()
     test_provider_failure_notice_allows_synchronize_retry_decision()
     test_low_quality_marker_comment_after_notice_still_requires_retry()
@@ -2474,6 +2555,7 @@ def main() -> int:
     test_github_client_keeps_paginated_marker_comments_distinct()
     test_posts_failure_notice_when_glm_fallback_fails()
     test_failure_notice_does_not_overwrite_existing_review_marker_comment()
+    test_failure_notice_updates_existing_provider_notice_from_prior_run()
     test_sets_failure_notice_output_after_posting_failure_notice()
     test_kimi_fallback_uses_same_chunked_deliverable_contract()
     test_source_label_template_substitutes_configured_model()

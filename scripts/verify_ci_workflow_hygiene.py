@@ -191,6 +191,7 @@ class ArtifactRetentionUploadSite(NamedTuple):
     retention_days: int
     retention_config_file: str | None
     retention_config_ref: str | None
+    required_if: str | None
 
 
 class ArtifactRetentionLookbackBinding(NamedTuple):
@@ -2340,6 +2341,20 @@ def upload_artifact_retention_errors(
                 f"{label} does not match {artifact_retention_upload_name_expectation(site)}"
             )
             continue
+        if site.required_if is not None:
+            items = block_top_level_items(block)
+            if items is None:
+                errors.append(f"{label} must have parseable step keys for configured if")
+                continue
+            actual_if = items.get("if")
+            if actual_if is None:
+                errors.append(f"{label} must set if to configured if {site.required_if}")
+                continue
+            if actual_if != site.required_if:
+                errors.append(
+                    f"{label} if {actual_if} does not match configured if {site.required_if}"
+                )
+                continue
         class_policy = policy.classes[site.artifact_class]
         retention_values = block_input_values(block, "retention-days")
         if not retention_values:
@@ -12923,6 +12938,30 @@ def artifact_retention_config_ref_days_source(
     )
 
 
+def artifact_retention_optional_required_if(
+    data: dict[str, object],
+    config_path: pathlib.Path,
+    raw: dict[str, object],
+    prefix: str,
+) -> str | None:
+    keys = ("required_if_config_file", "required_if_config_ref")
+    present_keys = [key for key in keys if key in raw]
+    if not present_keys:
+        return None
+    if len(present_keys) != len(keys):
+        missing_keys = sorted(set(keys) - set(present_keys))
+        raise ValueError(f"{prefix} has partial required if source; missing {missing_keys!r}")
+    target_config, _file_ref, ref = resolve_artifact_retention_config_ref(
+        data,
+        config_path,
+        raw,
+        "required_if_config_file",
+        "required_if_config_ref",
+        prefix,
+    )
+    return resolve_config_string_ref(target_config, ref, f"{prefix}.required_if_config_ref")
+
+
 def artifact_retention_literal_class_ceiling_source(
     data: dict[str, object],
     config_path: pathlib.Path,
@@ -13056,6 +13095,8 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
                 "retention_days",
                 "retention_days_config_file",
                 "retention_days_config_ref",
+                "required_if_config_file",
+                "required_if_config_ref",
             },
             prefix,
         )
@@ -13080,12 +13121,14 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
         retention = retention_resolver(data, config_path, raw_upload, prefix)
         if not isinstance(retention, ArtifactRetentionResolvedInt):
             raise ValueError(f"{prefix} retention-days source resolved invalid type")
+        required_if = artifact_retention_optional_required_if(data, config_path, raw_upload, prefix)
         uploads[upload_key] = ArtifactRetentionUploadSite(
             artifact_name=artifact_name,
             artifact_class=artifact_class,
             retention_days=retention.value,
             retention_config_file=retention.config_file,
             retention_config_ref=retention.config_ref,
+            required_if=required_if,
         )
 
     used_classes = {site.artifact_class for site in uploads.values()}
@@ -13219,6 +13262,19 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
 
     deploy = require_config_table(ci_provenance, "deploy", "ci_provenance")
     require_config_string(deploy, "artifact_name", "ci_provenance.deploy")
+    require_config_string(deploy, "artifact_upload_if", "ci_provenance.deploy")
+    deploy_retention_days = require_config_positive_int(
+        deploy, "artifact_retention_days", "ci_provenance.deploy"
+    )
+    deploy_lookback_age_seconds = require_config_positive_int(
+        deploy, "artifact_lookback_age_seconds", "ci_provenance.deploy"
+    )
+    try:
+        check_lookback_le_retention(deploy_retention_days, deploy_lookback_age_seconds)
+    except ProvenanceError as exc:
+        raise ValueError(
+            "ci_provenance.deploy.artifact_lookback_age_seconds must not exceed artifact retention"
+        ) from exc
     if deploy.get("require_source_event") != "push":
         raise ValueError("ci_provenance.deploy.require_source_event must be push")
     if deploy.get("require_source_branch") != "main":

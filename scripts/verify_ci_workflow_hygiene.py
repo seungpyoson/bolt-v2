@@ -99,6 +99,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/coverage-enforcer.yml": "coverage_enforcer",
     "ci-storage-tripwire.yml": "ci_storage_tripwire",
     ".github/workflows/ci-storage-tripwire.yml": "ci_storage_tripwire",
+    "ci-storage-cleanup-alert.yml": "ci_storage_cleanup_alert",
+    ".github/workflows/ci-storage-cleanup-alert.yml": "ci_storage_cleanup_alert",
     "ci-runner-debug.yml": "ci_runner_debug",
     ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
     "rust-probe.yml": "rust_probe",
@@ -12396,6 +12398,13 @@ def require_config_string_map(parent: dict[str, object], key: str, prefix: str) 
     return dict(value)
 
 
+def require_config_bool(parent: dict[str, object], key: str, prefix: str) -> bool:
+    value = parent.get(key)
+    if not isinstance(value, bool):
+        raise ValueError(f"{prefix}.{key} must be a boolean")
+    return value
+
+
 def require_config_only_keys(parent: dict[str, object], allowed_keys: set[str], prefix: str) -> None:
     unexpected_keys = sorted(set(parent) - allowed_keys)
     if unexpected_keys:
@@ -13551,6 +13560,195 @@ def workflow_schedule_crons(workflow_text: str) -> tuple[list[str], list[str]]:
 INVALID_STORAGE_TRIPWIRE_KEY = "<invalid-storage-tripwire-key>"
 
 
+class StorageCleanupAlertWorkflowContract(NamedTuple):
+    workflow_path: str
+    job_id: str
+    top_level_keys: tuple[str, ...]
+    job_keys: tuple[str, ...]
+    runner_var: str
+    job_timeout_minutes: int
+    schedule_cron: str
+    concurrency_group: str
+    cancel_in_progress: bool
+    run_command: str
+    json_artifact_action: str
+    json_artifact_step_id: str
+    json_artifact_upload_if: str
+    json_artifact_name: str
+    json_artifact_path: str
+    json_artifact_if_no_files_found: str
+    json_artifact_retention_days: int
+    triggers: tuple[str, ...]
+    permissions: Mapping[str, str]
+    required_fragments: tuple[str, ...]
+    forbidden_fragments: tuple[str, ...]
+
+
+def load_storage_cleanup_alert_workflow_contract(config_text: str) -> StorageCleanupAlertWorkflowContract:
+    document = tomllib.loads(config_text)
+    storage_audit = require_config_table(document, "storage_audit", "ci/github-actions-runners.toml")
+    alert_table = require_config_table(
+        storage_audit,
+        "cleanup_feasibility_alert",
+        "storage_audit",
+    )
+    schema_version = require_config_positive_int(
+        alert_table,
+        "schema_version",
+        "storage_audit.cleanup_feasibility_alert",
+    )
+    if schema_version != 1:
+        raise ValueError("storage_audit.cleanup_feasibility_alert.schema_version must be 1")
+    workflow = require_config_table(
+        alert_table,
+        "workflow",
+        "storage_audit.cleanup_feasibility_alert",
+    )
+    prefix = "storage_audit.cleanup_feasibility_alert.workflow"
+    return StorageCleanupAlertWorkflowContract(
+        workflow_path=require_config_string(workflow, "path", prefix),
+        job_id=require_config_string(workflow, "job_id", prefix),
+        top_level_keys=tuple(require_config_string_list(workflow, "top_level_keys", prefix)),
+        job_keys=tuple(require_config_string_list(workflow, "job_keys", prefix)),
+        runner_var=require_config_string(workflow, "runner_var", prefix),
+        job_timeout_minutes=require_config_positive_int(workflow, "job_timeout_minutes", prefix),
+        schedule_cron=require_config_string(workflow, "schedule_cron", prefix),
+        concurrency_group=require_config_string(workflow, "concurrency_group", prefix),
+        cancel_in_progress=require_config_bool(workflow, "cancel_in_progress", prefix),
+        run_command=require_config_string(workflow, "run_command", prefix),
+        json_artifact_action=require_config_string(workflow, "json_artifact_action", prefix),
+        json_artifact_step_id=require_config_string(workflow, "json_artifact_step_id", prefix),
+        json_artifact_upload_if=require_config_string(workflow, "json_artifact_upload_if", prefix),
+        json_artifact_name=require_config_string(workflow, "json_artifact_name", prefix),
+        json_artifact_path=require_config_string(workflow, "json_artifact_path", prefix),
+        json_artifact_if_no_files_found=require_config_string(workflow, "json_artifact_if_no_files_found", prefix),
+        json_artifact_retention_days=require_config_positive_int(workflow, "json_artifact_retention_days", prefix),
+        triggers=tuple(require_config_string_list(workflow, "triggers", prefix)),
+        permissions=require_config_string_map(workflow, "permissions", prefix),
+        required_fragments=tuple(require_config_string_list(workflow, "required_fragments", prefix)),
+        forbidden_fragments=tuple(require_config_string_list(workflow, "forbidden_fragments", prefix)),
+    )
+
+
+def verify_storage_cleanup_alert_workflow(workflows: dict[str, str], runners_config_text: str) -> list[str]:
+    try:
+        workflow_contract = load_storage_cleanup_alert_workflow_contract(runners_config_text)
+    except (tomllib.TOMLDecodeError, ValueError) as exc:
+        return [f"storage cleanup alert workflow policy invalid: {exc}"]
+
+    workflow_name = workflow_contract.workflow_path
+    workflow_text = workflows.get(workflow_name)
+    if workflow_text is None:
+        return [f"{workflow_name} must exist"]
+
+    errors: list[str] = []
+    workflow_keys = workflow_top_level_keys(workflow_text)
+    allowed_workflow_keys = set(workflow_contract.top_level_keys)
+    if set(workflow_keys) != allowed_workflow_keys or len(workflow_keys) != len(set(workflow_keys)):
+        errors.append(f"{workflow_name} top-level keys must match storage_audit.cleanup_feasibility_alert.workflow")
+    if workflow_trigger_keys(workflow_text) != set(workflow_contract.triggers):
+        errors.append(f"{workflow_name} triggers must match storage_audit.cleanup_feasibility_alert.workflow.triggers")
+    schedule_crons, schedule_extras = workflow_schedule_crons(workflow_text)
+    if schedule_crons != [workflow_contract.schedule_cron] or schedule_extras:
+        errors.append(f"{workflow_name} schedule cron must match storage_audit.cleanup_feasibility_alert.workflow.schedule_cron")
+
+    permissions_block = top_level_block(workflow_text, "permissions")
+    actual_permissions = scalar_mapping(permissions_block)
+    if actual_permissions != dict(workflow_contract.permissions):
+        errors.append(f"{workflow_name} permissions must match storage_audit.cleanup_feasibility_alert.workflow.permissions")
+
+    expected_concurrency = {
+        "group": workflow_contract.concurrency_group,
+        "cancel-in-progress": str(workflow_contract.cancel_in_progress).lower(),
+    }
+    concurrency_block = top_level_block(workflow_text, "concurrency")
+    actual_concurrency = scalar_mapping(concurrency_block)
+    if actual_concurrency != expected_concurrency:
+        errors.append(f"{workflow_name} concurrency must match storage_audit.cleanup_feasibility_alert.workflow")
+
+    for forbidden in workflow_contract.forbidden_fragments:
+        if forbidden in workflow_text:
+            errors.append(
+                f"{workflow_name} must not contain forbidden workflow fragment from storage_audit.cleanup_feasibility_alert.workflow.forbidden_fragments"
+            )
+
+    jobs = parse_jobs(workflow_text)
+    if set(jobs) != {workflow_contract.job_id}:
+        errors.append(f"{workflow_name} must define only the configured storage cleanup alert job")
+    job = jobs.get(workflow_contract.job_id)
+    if job is None:
+        errors.append(f"{workflow_name} must define configured storage cleanup alert job")
+        return errors
+    job_text = "\n".join(job)
+    job_keys = storage_tripwire_job_top_level_keys(job)
+    allowed_job_keys = set(workflow_contract.job_keys)
+    if set(job_keys) != allowed_job_keys or len(job_keys) != len(set(job_keys)):
+        errors.append(f"{workflow_name} storage cleanup alert job keys must match the workflow contract")
+    actual_var = extract_job_runs_on_var(job)
+    if actual_var != workflow_contract.runner_var:
+        errors.append(f"{workflow_name} storage cleanup alert runs-on must match storage_audit.cleanup_feasibility_alert.workflow.runner_var")
+    actual_timeout = storage_tripwire_job_scalar_value(job, "timeout-minutes")
+    if actual_timeout != str(workflow_contract.job_timeout_minutes):
+        errors.append(
+            f"{workflow_name} storage cleanup alert timeout-minutes must match storage_audit.cleanup_feasibility_alert.workflow.job_timeout_minutes"
+        )
+
+    if any(storage_tripwire_key_at_indent(line, 4) == "permissions" for line in job):
+        errors.append(f"{workflow_name} storage cleanup alert job must not define job-level permissions")
+    if any(storage_tripwire_key_at_any_indent(line) == "continue-on-error" for line in job):
+        errors.append(f"{workflow_name} storage cleanup alert job must not use continue-on-error")
+
+    steps = step_blocks(job)
+    if len(steps) != 3:
+        errors.append(f"{workflow_name} storage cleanup alert job must contain exactly checkout, run, and upload steps")
+    else:
+        checkout_action = storage_tripwire_expected_checkout_action(workflow_contract.required_fragments)
+        persist_credentials = storage_tripwire_expected_persist_credentials(workflow_contract.required_fragments)
+        expected_env = storage_tripwire_expected_env(workflow_contract.required_fragments)
+        checkout_items = block_top_level_items(steps[0])
+        if (
+            checkout_action is None
+            or persist_credentials is None
+            or checkout_items is None
+            or set(checkout_items) != {"uses", "with"}
+            or checkout_items.get("uses") != checkout_action
+            or block_nested_mapping_items(steps[0], "with") != {"persist-credentials": persist_credentials}
+        ):
+            errors.append(f"{workflow_name} checkout step must match storage_audit.cleanup_feasibility_alert.workflow.required_fragments")
+        run_items = block_top_level_items(steps[1])
+        if (
+            not expected_env
+            or run_items is None
+            or set(run_items) != {"name", "env", "run"}
+            or not run_items.get("name")
+            or block_nested_mapping_items(steps[1], "env") != expected_env
+            or step_run_command(steps[1]) != workflow_contract.run_command
+        ):
+            errors.append(f"{workflow_name} run step must match storage_audit.cleanup_feasibility_alert.workflow contract")
+        upload_items = block_top_level_items(steps[2])
+        expected_upload_with = {
+            "name": workflow_contract.json_artifact_name,
+            "path": workflow_contract.json_artifact_path,
+            "if-no-files-found": workflow_contract.json_artifact_if_no_files_found,
+            "retention-days": str(workflow_contract.json_artifact_retention_days),
+        }
+        if (
+            upload_items is None
+            or set(upload_items) != {"name", "id", "if", "uses", "with"}
+            or upload_items.get("name") != "Upload cleanup feasibility JSON"
+            or upload_items.get("id") != workflow_contract.json_artifact_step_id
+            or upload_items.get("if") != workflow_contract.json_artifact_upload_if
+            or upload_items.get("uses") != workflow_contract.json_artifact_action
+            or block_nested_mapping_items(steps[2], "with") != expected_upload_with
+        ):
+            errors.append(f"{workflow_name} upload step must match storage_audit.cleanup_feasibility_alert.workflow contract")
+
+    for required in workflow_contract.required_fragments:
+        if required not in job_text:
+            errors.append(f"{workflow_name} job must contain storage_audit.cleanup_feasibility_alert.workflow.required_fragments")
+    return errors
+
+
 def storage_tripwire_key_at_indent(line: str, indent: int) -> str | None:
     clean = strip_comment(line).rstrip()
     if not clean:
@@ -13590,6 +13788,16 @@ def storage_tripwire_job_top_level_keys(job_lines: list[str]) -> list[str]:
         if key is not None:
             keys.append(key)
     return keys
+
+
+def storage_tripwire_job_scalar_value(job_lines: list[str], key: str) -> str | None:
+    values: list[str] = []
+    for line in job_lines:
+        clean = strip_comment(line).rstrip()
+        match = re.fullmatch(rf"\s{{4}}{re.escape(key)}\s*:\s*(.+)", clean)
+        if match is not None:
+            values.append(yaml_scalar(match.group(1)))
+    return values[0] if len(values) == 1 else None
 
 
 def storage_tripwire_expected_checkout_action(required_fragments: tuple[str, ...]) -> str | None:
@@ -13947,6 +14155,8 @@ def main() -> int:
     # Mirror verify_github_actions_runner_contract's gating: the runners config drives
     # this check, so a partial repo (or test harness) without it is tolerated, not failed.
     if DEFAULT_RUNNERS_CONFIG.exists():
+        runners_config_text = DEFAULT_RUNNERS_CONFIG.read_text(encoding="utf-8")
+        errors.extend(verify_storage_cleanup_alert_workflow(workflow_texts, runners_config_text))
         errors.extend(mergify_proof_prefix_alignment_errors(load_config(DEFAULT_RUNNERS_CONFIG)))
     if errors:
         for error in errors:

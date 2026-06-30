@@ -9440,6 +9440,145 @@ def write_storage_tripwire_policy_fixture(root: pathlib.Path) -> pathlib.Path:
     return policy_path
 
 
+def assert_storage_cleanup_alert_workflow_contract() -> None:
+    verifier = load_verifier()
+    workflow_path = ".github/workflows/ci-storage-cleanup-alert.yml"
+    workflow = repo_workflow_text(workflow_path)
+    runners_config = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: workflow}, runners_config)
+    if errors:
+        raise AssertionError(f"storage cleanup alert workflow contract should pass, got: {errors}")
+
+    missing_errors = verifier.verify_storage_cleanup_alert_workflow({}, runners_config)
+    if not any(f"{workflow_path} must exist" in error for error in missing_errors):
+        raise AssertionError(f"storage cleanup alert workflow missing file drift was silent, got: {missing_errors}")
+
+    missing_permissions = replace_once(
+        workflow,
+        """permissions:
+  contents: read
+  actions: read
+
+""",
+        "",
+    )
+    missing_permissions_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: missing_permissions}, runners_config)
+    if not any("permissions must match storage_audit.cleanup_feasibility_alert.workflow.permissions" in error for error in missing_permissions_errors):
+        raise AssertionError(f"storage cleanup alert missing permissions drift was silent, got: {missing_permissions_errors}")
+
+    malformed_permissions = replace_once(
+        workflow,
+        """permissions:
+  contents: read
+  actions: read
+""",
+        "permissions: read\n",
+    )
+    malformed_permissions_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: malformed_permissions}, runners_config)
+    if not any(
+        "permissions must match storage_audit.cleanup_feasibility_alert.workflow.permissions" in error
+        for error in malformed_permissions_errors
+    ):
+        raise AssertionError(f"storage cleanup alert malformed permissions drift was silent, got: {malformed_permissions_errors}")
+
+    missing_concurrency = replace_once(
+        workflow,
+        """concurrency:
+  group: ci-storage-cleanup-alert
+  cancel-in-progress: false
+
+""",
+        "",
+    )
+    missing_concurrency_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: missing_concurrency}, runners_config)
+    if not any("concurrency must match storage_audit.cleanup_feasibility_alert.workflow" in error for error in missing_concurrency_errors):
+        raise AssertionError(f"storage cleanup alert missing concurrency drift was silent, got: {missing_concurrency_errors}")
+
+    malformed_concurrency = replace_once(
+        workflow,
+        """concurrency:
+  group: ci-storage-cleanup-alert
+  cancel-in-progress: false
+""",
+        "concurrency: ci-storage-cleanup-alert\n",
+    )
+    malformed_concurrency_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: malformed_concurrency}, runners_config)
+    if not any("concurrency must match storage_audit.cleanup_feasibility_alert.workflow" in error for error in malformed_concurrency_errors):
+        raise AssertionError(f"storage cleanup alert malformed concurrency drift was silent, got: {malformed_concurrency_errors}")
+
+    missing_alert_command = replace_once(workflow, " --cleanup-alert", "")
+    missing_alert_errors = verifier.verify_storage_cleanup_alert_workflow(
+        {workflow_path: missing_alert_command},
+        runners_config,
+    )
+    if not any("run step must match storage_audit.cleanup_feasibility_alert.workflow contract" in error for error in missing_alert_errors):
+        raise AssertionError(f"storage cleanup alert command drift was silent, got: {missing_alert_errors}")
+
+    missing_json_output = replace_once(workflow, ' --cleanup-json-output "$RUNNER_TEMP/cleanup-feasibility.json"', "")
+    missing_json_output_errors = verifier.verify_storage_cleanup_alert_workflow(
+        {workflow_path: missing_json_output},
+        runners_config,
+    )
+    if not any(
+        "run step must match storage_audit.cleanup_feasibility_alert.workflow contract" in error
+        for error in missing_json_output_errors
+    ):
+        raise AssertionError(f"storage cleanup alert JSON output drift was silent, got: {missing_json_output_errors}")
+
+    injected_job_if = replace_once(
+        workflow,
+        "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+        "    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}\n"
+        "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+    )
+    injected_job_if_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: injected_job_if}, runners_config)
+    if not any("storage cleanup alert job keys must match the workflow contract" in error for error in injected_job_if_errors):
+        raise AssertionError(f"storage cleanup alert redundant job if drift was silent, got: {injected_job_if_errors}")
+
+    missing_timeout = replace_once(workflow, "    timeout-minutes: 30\n", "")
+    missing_timeout_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: missing_timeout}, runners_config)
+    if not any(
+        "storage cleanup alert timeout-minutes must match storage_audit.cleanup_feasibility_alert.workflow.job_timeout_minutes" in error
+        for error in missing_timeout_errors
+    ):
+        raise AssertionError(f"storage cleanup alert timeout drift was silent, got: {missing_timeout_errors}")
+
+    missing_upload_step = replace_once(
+        workflow,
+        """      - name: Upload cleanup feasibility JSON
+        id: upload-cleanup-feasibility-json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-storage-cleanup-feasibility
+          path: ${{ runner.temp }}/cleanup-feasibility.json
+          if-no-files-found: error
+          retention-days: 7
+""",
+        "",
+    )
+    missing_upload_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: missing_upload_step}, runners_config)
+    if not any(
+        "storage cleanup alert job must contain exactly checkout, run, and upload steps" in error
+        for error in missing_upload_errors
+    ):
+        raise AssertionError(f"storage cleanup alert upload step drift was silent, got: {missing_upload_errors}")
+
+    schema_drift_config = replace_once(
+        runners_config,
+        "[storage_audit.cleanup_feasibility_alert]\nschema_version = 1",
+        "[storage_audit.cleanup_feasibility_alert]\nschema_version = 2",
+    )
+    schema_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: workflow}, schema_drift_config)
+    if not any("cleanup_feasibility_alert.schema_version must be 1" in error for error in schema_errors):
+        raise AssertionError(f"storage cleanup alert schema drift was silent, got: {schema_errors}")
+
+    delete_fragment = workflow + "\n# --method DELETE\n"
+    delete_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: delete_fragment}, runners_config)
+    if not any("must not contain forbidden workflow fragment" in error for error in delete_errors):
+        raise AssertionError(f"storage cleanup alert destructive fragment drift was silent, got: {delete_errors}")
+
+
 def run_verifier_main_with_no_mistakes(
     no_mistakes_text: str,
     *,
@@ -14192,6 +14331,7 @@ def main() -> int:
     assert_actionlint_rejects_stale_config_variables()
     assert_actionlint_requires_pr_event_types()
     assert_actionlint_runs_ci_storage_audit_tests()
+    assert_storage_cleanup_alert_workflow_contract()
     assert_ci_docs_pass_stub_is_absent()
     assert_source_fence_static_ignores_comments()
     assert_local_verification_gate_recipes_are_enforced()

@@ -88,6 +88,73 @@ def cleanup_candidate_policy(label: str) -> ci_storage_audit.ArtifactCleanupPoli
     )
 
 
+def cleanup_alert_policy(label: str) -> ci_storage_audit.CleanupAlertPolicy:
+    return ci_storage_audit.load_cleanup_alert_policy_text(
+        """
+        [storage_audit.cleanup_feasibility_alert]
+        schema_version = 1
+        title = "Artifact cleanup feasibility alert"
+        clear_title = "Artifact cleanup feasibility clear"
+        candidate_count_error_threshold = 1
+        candidate_count_error_reason = "delete candidates require operator review"
+        expected_reclaim_proxy_bytes_error_threshold = 1
+        expected_reclaim_proxy_bytes_error_reason = "proxy reclaim requires operator review"
+        unverified_candidate_count_warning_threshold = 1
+        unverified_candidate_count_warning_reason = "unverified rows require metadata review"
+        metadata_unavailable_count_warning_threshold = 1
+        metadata_unavailable_count_warning_reason = "metadata-unavailable rows require review"
+        """,
+        label=label,
+    )
+
+
+def cleanup_candidate_alert_policy_text() -> str:
+    return """
+    [storage_audit.cleanup_feasibility]
+    schema_version = 1
+    default_class = "ambiguous"
+    default_decision = "KEEP"
+    default_keep_reason = "ambiguous artifact is not a cleanup candidate"
+    protected_ref_keep_reason = "protected deploy ref is excluded from cleanup"
+    artifact_metadata_unavailable_keep_reason = "artifact metadata is unavailable"
+    active_run_keep_reason = "workflow run is still active"
+    status_unavailable_keep_reason = "workflow run status is unavailable"
+    expiration_unknown_keep_reason = "artifact expiration status is unavailable"
+    not_expired_keep_reason = "artifact has not expired"
+    billing_impact_unverifiable = "billing impact unverifiable from API"
+    wait_and_remeasure = "wait and remeasure natural expiry before deletion"
+    protected_refs = ["main"]
+    protected_ref_prefixes = []
+    protected_ref_globs = []
+    branch_ref_events = ["push"]
+    active_run_statuses = ["queued"]
+    terminal_run_statuses = ["completed"]
+    workflow_run_fetch_limit = 1
+    billing_probe_paths = []
+
+    [[storage_audit.cleanup_feasibility.classes]]
+    id = "nextest_archive"
+    name_equals = ["nextest-archive"]
+    name_prefixes = []
+    expired_decision = "DELETE-CANDIDATE"
+    candidate_reason = "expired test archive outside protected refs"
+    keep_reason = "test archive is retained until it expires"
+
+    [storage_audit.cleanup_feasibility_alert]
+    schema_version = 1
+    title = "Artifact cleanup feasibility alert"
+    clear_title = "Artifact cleanup feasibility clear"
+    candidate_count_error_threshold = 1
+    candidate_count_error_reason = "delete candidates require operator review"
+    expected_reclaim_proxy_bytes_error_threshold = 1
+    expected_reclaim_proxy_bytes_error_reason = "proxy reclaim requires operator review"
+    unverified_candidate_count_warning_threshold = 1
+    unverified_candidate_count_warning_reason = "unverified rows require metadata review"
+    metadata_unavailable_count_warning_threshold = 1
+    metadata_unavailable_count_warning_reason = "metadata-unavailable rows require review"
+    """
+
+
 def cleanup_artifacts_with_entry(entry: dict[str, Any]) -> dict[str, Any]:
     return {
         "total_bytes": entry["size_bytes"],
@@ -95,6 +162,44 @@ def cleanup_artifacts_with_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "non_expired_bytes": 0,
         "unknown_expiration_bytes": 0,
         "entries": [entry],
+    }
+
+
+def cleanup_alert_candidate_responses() -> dict[str, Any]:
+    return {
+        "actions/caches": {"total_count": 0, "actions_caches": []},
+        "actions/artifacts": {
+            "total_count": 1,
+            "artifacts": [
+                {
+                    "id": 1,
+                    "name": "nextest-archive",
+                    "size_in_bytes": 100,
+                    "created_at": "2026-06-01T00:00:00Z",
+                    "expires_at": "2026-06-15T00:00:00Z",
+                    "expired": True,
+                    "workflow_run": {
+                        "id": 501,
+                        "head_branch": "feature/done",
+                        "head_sha": "a" * 40,
+                    },
+                },
+            ],
+        },
+        "actions/permissions/artifact-and-log-retention": {"days": 30},
+        "rules/branches/main": [],
+        "branches/main/protection/required_status_checks": {
+            "contexts": [],
+            "checks": [],
+        },
+        "actions/runs/501": {
+            "id": 501,
+            "status": "completed",
+            "conclusion": "success",
+            "event": "push",
+            "head_branch": "feature/done",
+            "head_sha": "a" * 40,
+        },
     }
 
 
@@ -688,6 +793,9 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(rows_by_id[1]["decision"], "DELETE-CANDIDATE")
         self.assertEqual(rows_by_id[1]["reason"], "expired test archive outside protected refs")
         self.assertEqual(rows_by_id[1]["workflow_run"]["status"], "completed")
+        summary = ci_storage_audit.render_cleanup_alert_summary(snapshot, cleanup_alert_policy("alert-policy"))
+        self.assertIn("Candidate classes:", summary)
+        self.assertIn("- `nextest_archive`: `1` rows, `100 B`", summary)
         self.assertEqual(rows_by_id[2]["decision"], "KEEP")
         self.assertEqual(rows_by_id[2]["reason_code"], "not_expired")
         self.assertEqual(rows_by_id[2]["reason"], "artifact has not expired")
@@ -2246,6 +2354,526 @@ class CiStorageAuditTests(unittest.TestCase):
                 "code": "artifact_ref_empty",
             },
         )
+
+    def test_cleanup_alert_policy_rejects_missing_thresholds(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.load_cleanup_alert_policy_text(
+                """
+                [storage_audit.cleanup_feasibility_alert]
+                schema_version = 1
+                title = "Artifact cleanup feasibility alert"
+                clear_title = "Artifact cleanup feasibility clear"
+                """,
+                label="alert-policy",
+            )
+
+        self.assertIn(
+            "storage_audit.cleanup_feasibility_alert.candidate_count_error_threshold",
+            str(raised.exception),
+        )
+
+    def test_cleanup_alert_findings_fail_on_delete_candidates_and_warn_on_metadata_gaps(self) -> None:
+        policy = cleanup_alert_policy("alert-policy")
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "artifact_cleanup_feasibility": {
+                "candidate_count": 2,
+                "expected_reclaim_proxy_bytes": 4096,
+                "unverified_candidate_count": 1,
+                "metadata_unavailable_count": 3,
+                "reclaim_basis": "listed_artifact_bytes_proxy",
+                "measured_billed_reclaim_bytes": None,
+                "billing": {
+                    "status": "unavailable",
+                    "message": "billing impact unverifiable from API",
+                },
+            },
+        }
+
+        findings = ci_storage_audit.cleanup_alert_findings(snapshot, policy)
+
+        self.assertEqual(
+            findings,
+            [
+                ci_storage_audit.CleanupAlertFinding(
+                    level="error",
+                    metric="candidate_count",
+                    value=2,
+                    threshold=1,
+                    reason="delete candidates require operator review",
+                ),
+                ci_storage_audit.CleanupAlertFinding(
+                    level="error",
+                    metric="expected_reclaim_proxy_bytes",
+                    value=4096,
+                    threshold=1,
+                    reason="proxy reclaim requires operator review",
+                ),
+                ci_storage_audit.CleanupAlertFinding(
+                    level="warning",
+                    metric="unverified_candidate_count",
+                    value=1,
+                    threshold=1,
+                    reason="unverified rows require metadata review",
+                ),
+                ci_storage_audit.CleanupAlertFinding(
+                    level="warning",
+                    metric="metadata_unavailable_count",
+                    value=3,
+                    threshold=1,
+                    reason="metadata-unavailable rows require review",
+                ),
+            ],
+        )
+        self.assertTrue(ci_storage_audit.cleanup_alert_has_errors(findings))
+        self.assertEqual(
+            ci_storage_audit.cleanup_alert_annotations(findings),
+            [
+                "::error::cleanup feasibility candidate_count=2 crossed threshold=1: delete candidates require operator review",
+                "::error::cleanup feasibility expected_reclaim_proxy_bytes=4096 crossed threshold=1: proxy reclaim requires operator review",
+                "::warning::cleanup feasibility unverified_candidate_count=1 crossed threshold=1: unverified rows require metadata review",
+                "::warning::cleanup feasibility metadata_unavailable_count=3 crossed threshold=1: metadata-unavailable rows require review",
+            ],
+        )
+
+    def test_cleanup_alert_summary_reports_counts_and_aggregates_without_raw_rows(self) -> None:
+        policy = cleanup_alert_policy("alert-policy")
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "artifact_cleanup_feasibility": {
+                "candidate_count": 2,
+                "expected_reclaim_proxy_bytes": 3072,
+                "unverified_candidate_count": 0,
+                "metadata_unavailable_count": 1,
+                "reclaim_basis": "listed_artifact_bytes_proxy",
+                "measured_billed_reclaim_bytes": None,
+                "billing": {
+                    "status": "unavailable",
+                    "message": "billing impact unverifiable from API",
+                },
+                "rows": [
+                    {
+                        "name": "nextest-archive",
+                        "artifact_id": 1,
+                        "class": "nextest_archive",
+                        "decision": "DELETE-CANDIDATE",
+                        "reason_code": "delete_candidate",
+                        "size_bytes": 1024,
+                    },
+                    {
+                        "name": "nextest-archive-hidden",
+                        "artifact_id": 2,
+                        "class": "nextest_archive",
+                        "decision": "DELETE-CANDIDATE",
+                        "reason_code": "delete_candidate",
+                        "size_bytes": 2048,
+                    },
+                    {
+                        "name": "metadata-gap-hidden",
+                        "artifact_id": 3,
+                        "class": "nextest_archive",
+                        "decision": "KEEP",
+                        "reason_code": "artifact_metadata_unavailable",
+                        "size_bytes": 4096,
+                    },
+                ],
+            },
+        }
+
+        summary = ci_storage_audit.render_cleanup_alert_summary(snapshot, policy)
+
+        self.assertIn("### Artifact cleanup feasibility alert", summary)
+        self.assertIn("- delete candidates: `2`", summary)
+        self.assertIn("- proxy reclaim: `3.0 KiB`", summary)
+        self.assertIn("- measured billed reclaim: `unavailable`", summary)
+        self.assertIn("- reclaim basis: `listed_artifact_bytes_proxy`", summary)
+        self.assertIn("Candidate classes:", summary)
+        self.assertIn("- `nextest_archive`: `2` rows, `3.0 KiB`", summary)
+        self.assertIn("Keep reason codes:", summary)
+        self.assertIn("- `artifact_metadata_unavailable`: `1` rows, `4.0 KiB`", summary)
+        self.assertIn("delete candidates require operator review", summary)
+        self.assertIn("Artifacts section to download `ci-storage-cleanup-feasibility`", summary)
+        self.assertIn("Exact billed reclaim is unavailable from the GitHub API", summary)
+        self.assertIn("This workflow is read-only and does not delete artifacts.", summary)
+        self.assertNotIn("nextest-archive", summary)
+        self.assertNotIn("metadata-gap-hidden", summary)
+        self.assertNotIn("artifact_id", summary)
+
+    def test_cleanup_alert_summary_reports_clear_state(self) -> None:
+        policy = cleanup_alert_policy("alert-policy")
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "artifact_cleanup_feasibility": {
+                "candidate_count": 0,
+                "expected_reclaim_proxy_bytes": 0,
+                "unverified_candidate_count": 0,
+                "metadata_unavailable_count": 0,
+                "reclaim_basis": "listed_artifact_bytes_proxy",
+                "measured_billed_reclaim_bytes": None,
+                "billing": {
+                    "status": "unavailable",
+                    "message": "billing impact unverifiable from API",
+                },
+                "rows": [],
+            },
+        }
+
+        summary = ci_storage_audit.render_cleanup_alert_summary(snapshot, policy)
+
+        self.assertIn("### Artifact cleanup feasibility clear", summary)
+        self.assertIn("No configured cleanup alert thresholds were crossed.", summary)
+
+    def test_validate_args_rejects_cleanup_alert_without_cleanup_feasibility(self) -> None:
+        args = ci_storage_audit.parse_args(
+            [
+                "--repo",
+                "owner/repo",
+                "--cleanup-alert",
+            ]
+        )
+
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.validate_args(args)
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.ABSENT)
+        self.assertEqual(raised.exception.field, "--cleanup-feasibility")
+
+    def test_validate_args_rejects_cleanup_json_output_without_cleanup_feasibility(self) -> None:
+        args = ci_storage_audit.parse_args(
+            [
+                "--repo",
+                "owner/repo",
+                "--cleanup-json-output",
+                "cleanup.json",
+            ]
+        )
+
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.validate_args(args)
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.ABSENT)
+        self.assertEqual(raised.exception.field, "--cleanup-feasibility")
+
+    def test_validate_args_rejects_cleanup_policy_without_cleanup_feasibility(self) -> None:
+        args = ci_storage_audit.parse_args(
+            [
+                "--repo",
+                "owner/repo",
+                "--cleanup-policy",
+                "cleanup-policy.toml",
+            ]
+        )
+
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.validate_args(args)
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.ABSENT)
+        self.assertEqual(raised.exception.field, "--cleanup-feasibility")
+
+    def test_write_json_snapshot_writes_full_snapshot_contract(self) -> None:
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "artifact_cleanup_feasibility": {
+                "candidate_count": 1,
+                "rows": [{"artifact_id": 1, "decision": "DELETE-CANDIDATE"}],
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = pathlib.Path(tmp) / "cleanup-feasibility.json"
+            ci_storage_audit.write_json_snapshot(output_path, snapshot)
+
+            decoded = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(decoded, snapshot)
+
+    def test_main_cleanup_alert_threshold_writes_outputs_and_returns_one(self) -> None:
+        client = FakeClient(cleanup_alert_candidate_responses())
+        original_client = ci_storage_audit.GhClient
+        ci_storage_audit.GhClient = lambda repo: client
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = pathlib.Path(tmp)
+                policy_path = tmp_path / "policy.toml"
+                summary_path = tmp_path / "summary.md"
+                json_path = tmp_path / "cleanup.json"
+                policy_path.write_text(cleanup_candidate_alert_policy_text(), encoding="utf-8")
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = ci_storage_audit.main(
+                        [
+                            "--repo",
+                            "owner/repo",
+                            "--branch",
+                            "main",
+                            "--cleanup-feasibility",
+                            "--cleanup-alert",
+                            "--cleanup-policy",
+                            str(policy_path),
+                            "--cleanup-json-output",
+                            str(json_path),
+                            "--github-step-summary",
+                            str(summary_path),
+                            "--github-annotations",
+                        ]
+                    )
+
+                summary = summary_path.read_text(encoding="utf-8")
+                decoded = json.loads(json_path.read_text(encoding="utf-8"))
+        finally:
+            ci_storage_audit.GhClient = original_client
+
+        self.assertEqual(result, 1)
+        self.assertIn("Candidate classes:", summary)
+        self.assertIn("- `nextest_archive`: `1` rows, `100 B`", summary)
+        self.assertIn("Operator next steps:", summary)
+        self.assertIn("Artifacts section to download `ci-storage-cleanup-feasibility`", summary)
+        self.assertIn("Exact billed reclaim is unavailable from the GitHub API", summary)
+        self.assertIn("::error::cleanup feasibility candidate_count=1 crossed threshold=1", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(decoded["artifact_cleanup_feasibility"]["candidate_count"], 1)
+
+    def test_main_cleanup_alert_json_keeps_annotations_on_stderr(self) -> None:
+        client = FakeClient(cleanup_alert_candidate_responses())
+        original_client = ci_storage_audit.GhClient
+        ci_storage_audit.GhClient = lambda repo: client
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                policy_path = pathlib.Path(tmp) / "policy.toml"
+                policy_path.write_text(cleanup_candidate_alert_policy_text(), encoding="utf-8")
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = ci_storage_audit.main(
+                        [
+                            "--repo",
+                            "owner/repo",
+                            "--branch",
+                            "main",
+                            "--cleanup-feasibility",
+                            "--cleanup-alert",
+                            "--cleanup-policy",
+                            str(policy_path),
+                            "--json",
+                            "--github-annotations",
+                        ]
+                    )
+
+                decoded = json.loads(stdout.getvalue())
+        finally:
+            ci_storage_audit.GhClient = original_client
+
+        self.assertEqual(result, 1)
+        self.assertEqual(decoded["artifact_cleanup_feasibility"]["candidate_count"], 1)
+        self.assertIn("::error::cleanup feasibility candidate_count=1 crossed threshold=1", stderr.getvalue())
+        self.assertNotIn("::error::", stdout.getvalue())
+
+    def test_main_cache_json_keeps_annotations_on_stderr(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "exact-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 0,
+                    "actions_caches": [],
+                },
+                "actions/cache/usage": {
+                    "full_name": "owner/repo",
+                    "active_caches_size_in_bytes": 0,
+                    "active_caches_count": 0,
+                },
+            }
+        )
+        original_client = ci_storage_audit.GhClient
+        ci_storage_audit.GhClient = lambda repo: client
+        try:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = ci_storage_audit.main(
+                    [
+                        "--repo",
+                        "owner/repo",
+                        "--cache-key",
+                        "probe=exact-key",
+                        "--cache-ref",
+                        "refs/heads/main",
+                        "--json",
+                        "--github-annotations",
+                    ]
+                )
+
+            decoded = json.loads(stdout.getvalue())
+        finally:
+            ci_storage_audit.GhClient = original_client
+
+        self.assertEqual(result, 0)
+        self.assertEqual(decoded["cache_key_probes"][0]["present"], False)
+        self.assertIn("::warning::one or more root nextest cache keys are missing", stderr.getvalue())
+        self.assertNotIn("::warning::", stdout.getvalue())
+
+    def test_cleanup_feasibility_failure_text_reports_contract_failure(self) -> None:
+        error = ci_storage_audit.AuditError(
+            "artifact metadata drifted",
+            kind=ci_storage_audit.FailureKind.INVALID,
+            field="artifact_cleanup_feasibility.rows[0].class",
+        )
+
+        rendered = ci_storage_audit.render_cleanup_feasibility_failure_text(error)
+
+        self.assertIn("### Cleanup feasibility audit", rendered)
+        self.assertIn("- contract failure kind: `invalid`", rendered)
+        self.assertIn("- contract failure field: `artifact_cleanup_feasibility.rows[0].class`", rendered)
+        self.assertIn(
+            "ERROR: invalid artifact_cleanup_feasibility.rows[0].class: artifact metadata drifted",
+            rendered,
+        )
+
+    def test_main_labels_cleanup_alert_validation_failures_as_cleanup_feasibility(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = ci_storage_audit.main(
+                [
+                    "--repo",
+                    "owner/repo",
+                    "--cleanup-alert",
+                    "--github-annotations",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertIn("::error::cleanup feasibility audit contract failed:", stdout.getvalue())
+        self.assertNotIn("cache persistence", stdout.getvalue())
+        self.assertIn("ERROR: absent --cleanup-feasibility", stderr.getvalue())
+
+    def test_main_json_routes_validation_failure_annotations_to_stderr(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = ci_storage_audit.main(
+                [
+                    "--repo",
+                    "owner/repo",
+                    "--cleanup-alert",
+                    "--json",
+                    "--github-annotations",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("::error::cleanup feasibility audit contract failed:", stderr.getvalue())
+        self.assertIn("ERROR: absent --cleanup-feasibility", stderr.getvalue())
+
+    def test_main_labels_cache_run_failures_as_cache_persistence(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "exact-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 0,
+                    "actions_caches": [],
+                },
+                "actions/cache/usage": {
+                    "full_name": "owner/repo",
+                    "active_caches_size_in_bytes": 0,
+                    "active_caches_count": 0,
+                },
+            }
+        )
+        original_client = ci_storage_audit.GhClient
+        ci_storage_audit.GhClient = lambda repo: client
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                summary_path = pathlib.Path(tmp) / "summary.md"
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = ci_storage_audit.main(
+                        [
+                            "--repo",
+                            "owner/repo",
+                            "--cache-key",
+                            "probe=exact-key",
+                            "--cache-ref",
+                            "refs/heads/main",
+                            "--github-step-summary",
+                            str(summary_path),
+                            "--github-annotations",
+                        ]
+                    )
+
+                summary = summary_path.read_text(encoding="utf-8")
+        finally:
+            ci_storage_audit.GhClient = original_client
+
+        self.assertEqual(result, 2)
+        self.assertIn("### Cache persistence audit", summary)
+        self.assertIn("::error::cache persistence audit contract failed:", stdout.getvalue())
+        self.assertNotIn("cleanup feasibility", stdout.getvalue())
+        self.assertIn("ERROR: absent --restore-hit", stderr.getvalue())
+
+    def test_main_json_routes_run_failure_annotations_to_stderr(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "exact-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 0,
+                    "actions_caches": [],
+                },
+                "actions/cache/usage": {
+                    "full_name": "owner/repo",
+                    "active_caches_size_in_bytes": 0,
+                    "active_caches_count": 0,
+                },
+            }
+        )
+        original_client = ci_storage_audit.GhClient
+        ci_storage_audit.GhClient = lambda repo: client
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                summary_path = pathlib.Path(tmp) / "summary.md"
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = ci_storage_audit.main(
+                        [
+                            "--repo",
+                            "owner/repo",
+                            "--cache-key",
+                            "probe=exact-key",
+                            "--cache-ref",
+                            "refs/heads/main",
+                            "--json",
+                            "--github-step-summary",
+                            str(summary_path),
+                            "--github-annotations",
+                        ]
+                    )
+        finally:
+            ci_storage_audit.GhClient = original_client
+
+        self.assertEqual(result, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("::error::cache persistence audit contract failed:", stderr.getvalue())
+        self.assertIn("ERROR: absent --restore-hit", stderr.getvalue())
 
     def test_billing_probe_records_reachability_without_raw_payload(self) -> None:
         policy = ci_storage_audit.load_cleanup_policy_text(

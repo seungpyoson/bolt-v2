@@ -1111,6 +1111,15 @@ EXPECTED_MERGE_READINESS_PROGRESS_IF = (
 
 EXPECTED_COVERAGE_ENFORCER_IF = ""
 
+EXPECTED_COVERAGE_ENFORCER_CHECKOUT_WITH = {
+    "ref": "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
+    "persist-credentials": "false",
+}
+
+EXPECTED_COVERAGE_ENFORCER_SETUP_PYTHON_WITH = {
+    "python-version": "3.12",
+}
+
 EXPECTED_COVERAGE_ENFORCER_ENV = {
     "GITHUB_TOKEN": "${{ github.token }}",
     "GITHUB_EVENT_PATH": "${{ github.event_path }}",
@@ -2846,6 +2855,14 @@ def block_has_canonical_step_envelope(
         if actual_items != expected_items:
             return False
     return True
+
+
+def block_has_raw_top_level_scalar(block: list[str], name: str, value: str) -> bool:
+    property_indent = block_step_property_indent(block)
+    if property_indent is None:
+        return False
+    expected = f"{' ' * property_indent}{name}: {value}"
+    return any(strip_comment(line).rstrip() == expected for line in block)
 
 
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
@@ -13815,11 +13832,28 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
             break
     if "          persist-credentials: false" not in job_text:
         errors.append(f"{workflow_name} checkout must not persist credentials")
+    steps = step_blocks(job)
     enforce_steps = [
-        block for block in step_blocks(job) if step_name_matches(block, "Enforce coverage map")
+        block for block in steps if step_name_matches(block, "Enforce coverage map")
     ]
-    run_steps = [block for block in step_blocks(job) if step_declares_run(block)]
-    if len(enforce_steps) != 1:
+    run_steps = [block for block in steps if step_declares_run(block)]
+    if len(steps) != 3 or not (
+        block_has_canonical_step_envelope(
+            steps[0],
+            frozenset({"uses", "with"}),
+            {"uses": "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"},
+            {"with": EXPECTED_COVERAGE_ENFORCER_CHECKOUT_WITH},
+        )
+        and block_has_canonical_step_envelope(
+            steps[1],
+            frozenset({"uses", "with"}),
+            {"uses": "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"},
+            {"with": EXPECTED_COVERAGE_ENFORCER_SETUP_PYTHON_WITH},
+        )
+        and step_name_matches(steps[2], "Enforce coverage map")
+    ):
+        errors.append(f"{workflow_name} coverage-enforcer job steps must match the pinned trusted-base topology")
+    elif len(enforce_steps) != 1:
         errors.append(f"{workflow_name} job must run scripts/coverage_enforcer.py")
     elif len(run_steps) != 1 or run_steps[0] != enforce_steps[0]:
         errors.append(
@@ -13834,6 +13868,8 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
             {"name": "Enforce coverage map", "run": "|"},
             {"env": EXPECTED_COVERAGE_ENFORCER_ENV},
         ):
+            errors.append(f"{workflow_name} coverage-enforcer Enforce coverage map step must be canonical")
+        elif not block_has_raw_top_level_scalar(enforce_step, "run", "|"):
             errors.append(f"{workflow_name} coverage-enforcer Enforce coverage map step must be canonical")
         elif tuple(block_run_body_lines(enforce_step)) != EXPECTED_COVERAGE_ENFORCER_RUN_BODY:
             errors.append(f"{workflow_name} job must guard first-run trusted-base bootstrap")

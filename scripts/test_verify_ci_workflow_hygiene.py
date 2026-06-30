@@ -5697,13 +5697,47 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             },
         ),
         (
-            "coverage-enforcer job must run scripts/coverage_enforcer.py only through the pinned Enforce coverage map step",
+            "coverage-enforcer Enforce coverage map step must be canonical",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "        run: |\n",
+                    "        run: \"|\"\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job steps must match the pinned trusted-base topology",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
                     "      - name: Enforce coverage map\n",
                     "      - name: Accidental pre-enforcer\n"
                     "        run: python3 scripts/coverage_enforcer.py\n\n"
+                    "      - name: Enforce coverage map\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job steps must match the pinned trusted-base topology",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "      - name: Enforce coverage map\n",
+                    "      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4\n\n"
+                    "      - name: Enforce coverage map\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job steps must match the pinned trusted-base topology",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "      - name: Enforce coverage map\n",
+                    "      - name: Quoted run pre-enforcer\n"
+                    "        'run': |\n"
+                    "          python3 scripts/coverage_enforcer.py\n\n"
                     "      - name: Enforce coverage map\n",
                 )
             },

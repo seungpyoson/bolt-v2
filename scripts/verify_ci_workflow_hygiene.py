@@ -10044,40 +10044,103 @@ def yaml_flow_mapping_grants(scalar: str) -> set[tuple[str, str]]:
     return grants
 
 
-def yaml_permissions_grants(workflow_text: str) -> set[tuple[str, str]]:
+def yaml_permissions_block_grants(
+    lines: list[str],
+    index: int,
+    parent_indent: int,
+    scalar: str,
+) -> set[tuple[str, str]]:
+    if scalar:
+        if scalar.startswith("{") and scalar.endswith("}"):
+            return yaml_flow_mapping_grants(scalar)
+        if scalar not in {"{}", "none", "null", "~"}:
+            return {("permissions", scalar)}
+        return set()
     grants: set[tuple[str, str]] = set()
+    for child in lines[index + 1 :]:
+        child_clean = strip_comment(child).rstrip()
+        if not child_clean.strip():
+            continue
+        child_indent = len(child_clean) - len(child_clean.lstrip(" "))
+        if child_indent <= parent_indent:
+            break
+        child_match = re.match(
+            rf"^\s*({YAML_KEY_PATTERN})\s*:\s*({YAML_KEY_PATTERN})\s*$",
+            child_clean,
+        )
+        if child_match is None:
+            continue
+        key = unquote_yaml_scalar(child_match.group(1))
+        value = unquote_yaml_scalar(child_match.group(2))
+        if value != "none":
+            grants.add((key, value))
+    return grants
+
+
+def yaml_permissions_scoped_grants(workflow_text: str) -> set[tuple[str, str, str]]:
+    scoped_grants: set[tuple[str, str, str]] = set()
+    stack: list[tuple[int, str]] = []
     lines = workflow_text.splitlines()
     for index, line in enumerate(lines):
         clean = strip_comment(line).rstrip()
         match = re.match(rf"^(\s*)({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
-        if match is None or unquote_yaml_scalar(match.group(2)) != "permissions":
+        if match is None:
             continue
-        parent_indent = len(match.group(1))
+        indent = len(match.group(1))
+        key = unquote_yaml_scalar(match.group(2))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
         scalar = unquote_yaml_scalar(match.group(3)).strip()
-        if scalar:
-            if scalar.startswith("{") and scalar.endswith("}"):
-                grants.update(yaml_flow_mapping_grants(scalar))
-            elif scalar not in {"{}", "none", "null", "~"}:
-                grants.add(("permissions", scalar))
-            continue
-        for child in lines[index + 1 :]:
-            child_clean = strip_comment(child).rstrip()
-            if not child_clean.strip():
-                continue
-            child_indent = len(child_clean) - len(child_clean.lstrip(" "))
-            if child_indent <= parent_indent:
-                break
-            child_match = re.match(
-                rf"^\s*({YAML_KEY_PATTERN})\s*:\s*({YAML_KEY_PATTERN})\s*$",
-                child_clean,
+        if key == "permissions":
+            scope = ".".join([*(ancestor for _indent, ancestor in stack), key])
+            for grant_key, grant_value in yaml_permissions_block_grants(
+                lines,
+                index,
+                indent,
+                scalar,
+            ):
+                scoped_grants.add((scope, grant_key, grant_value))
+        stack.append((indent, key))
+    return scoped_grants
+
+
+def yaml_permissions_grants(workflow_text: str) -> set[tuple[str, str]]:
+    return {
+        (key, value)
+        for _scope, key, value in yaml_permissions_scoped_grants(workflow_text)
+    }
+
+
+def self_authorizing_permission_grant_signals(
+    base_text: str,
+    head_text: str,
+    relative_path: str,
+) -> list[SelfAuthorizingCapabilitySignal]:
+    signals: list[SelfAuthorizingCapabilitySignal] = []
+    base_grants = yaml_permissions_grants(base_text)
+    head_grants = yaml_permissions_grants(head_text)
+    global_added = head_grants - base_grants
+    for key, value in sorted(global_added):
+        signals.append(
+            SelfAuthorizingCapabilitySignal(
+                "permissions grant",
+                f"{key}: {value}",
+                relative_path,
             )
-            if child_match is None:
-                continue
-            key = unquote_yaml_scalar(child_match.group(1))
-            value = unquote_yaml_scalar(child_match.group(2))
-            if value != "none":
-                grants.add((key, value))
-    return grants
+        )
+    base_scoped_grants = yaml_permissions_scoped_grants(base_text)
+    head_scoped_grants = yaml_permissions_scoped_grants(head_text)
+    for scope, key, value in sorted(head_scoped_grants - base_scoped_grants):
+        if (key, value) in global_added:
+            continue
+        signals.append(
+            SelfAuthorizingCapabilitySignal(
+                "permissions grant",
+                f"{scope} {key}: {value}",
+                relative_path,
+            )
+        )
+    return signals
 
 
 def self_authorizing_permission_signals(
@@ -10102,16 +10165,13 @@ def self_authorizing_permission_signals(
                     relative_path,
                 )
             )
-        base_grants = yaml_permissions_grants(base_text)
-        head_grants = yaml_permissions_grants(head_text)
-        for key, value in sorted(head_grants - base_grants):
-            signals.append(
-                SelfAuthorizingCapabilitySignal(
-                    "permissions grant",
-                    f"{key}: {value}",
-                    relative_path,
-                )
+        signals.extend(
+            self_authorizing_permission_grant_signals(
+                base_text,
+                head_text,
+                relative_path,
             )
+        )
     return signals
 
 

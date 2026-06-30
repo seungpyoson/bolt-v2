@@ -1760,6 +1760,15 @@ jobs:
     if not any("permissions grant permissions: write-all" in error for error in scalar_permission_errors):
         raise AssertionError(f"scalar permissions grant must be blocked, got: {scalar_permission_errors}")
 
+    scalar_read_permission_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "Broad workflow token permissions are allowed after ratification.\n",
+            ".github/workflows/ci.yml": "name: CI\npermissions: read-all\n",
+        },
+    )
+    if not any("permissions grant permissions: read-all" in error for error in scalar_read_permission_errors):
+        raise AssertionError(f"scalar read-all permissions grant must be blocked, got: {scalar_read_permission_errors}")
+
     flow_none_permission_errors = self_authorizing_errors_for_changes(
         {
             "AGENTS.md": "Workflow token permissions may be explicitly denied.\n",
@@ -1898,6 +1907,61 @@ jobs:
             f"got: {relocated_permissions_errors}"
         )
 
+    with tempfile.TemporaryDirectory() as tmp:
+        grant_swap_repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))
+        write_repo_text(
+            grant_swap_repo,
+            ".github/workflows/ci.yml",
+            """\
+name: CI
+jobs:
+  first:
+    permissions:
+      contents: read
+    steps:
+      - run: echo first
+  second:
+    permissions:
+      id-token: write
+    steps:
+      - run: echo second
+""",
+        )
+        commit_repo(grant_swap_repo, "base split grants")
+        grant_swap_base = run_repo_git(grant_swap_repo, "rev-parse", "HEAD").strip()
+        write_repo_text(
+            grant_swap_repo,
+            "AGENTS.md",
+            "GitHub OIDC is allowed for a future governed automation lane.\n",
+        )
+        write_repo_text(
+            grant_swap_repo,
+            ".github/workflows/ci.yml",
+            """\
+name: CI
+jobs:
+  first:
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - run: echo first
+  second:
+    permissions:
+      contents: read
+    steps:
+      - run: echo second
+""",
+        )
+        grant_swap_head = commit_repo(grant_swap_repo, "swap scoped grant")
+        grant_swap_errors = load_verifier().self_authorizing_governance_diff_errors(
+            grant_swap_repo,
+            grant_swap_base,
+            grant_swap_head,
+        )
+    if not any("permissions grant jobs.first.permissions id-token: write" in error for error in grant_swap_errors):
+        raise AssertionError(f"per-job permission broadening must be blocked, got: {grant_swap_errors}")
+
     allowlist_errors = self_authorizing_errors_for_changes(
         {
             "AGENTS.md": "Boundary evidence exemptions are allowed after owner ratification.\n",
@@ -1953,6 +2017,24 @@ jobs:
         raise AssertionError(
             f"inline comments mentioning secrets syntax must not be blocked, got: {inline_comment_secret_errors}"
         )
+
+    secret_before_comment_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "Governed automation may use a dynamic repository secret.\n",
+            ".github/workflows/secret-before-comment.yml": """\
+name: Secret Before Comment
+permissions: {}
+jobs:
+  test:
+    steps:
+      - env:
+          TOKEN: ${{ secrets[env.SECRET_NAME] }} # real secret before a comment
+        run: echo ok
+""",
+        },
+    )
+    if not any("secret reference secrets[env.SECRET_NAME]" in error for error in secret_before_comment_errors):
+        raise AssertionError(f"real secret before trailing comment must still block, got: {secret_before_comment_errors}")
 
     with tempfile.TemporaryDirectory() as tmp:
         split_repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))

@@ -339,6 +339,7 @@ jobs:
             ci/github-actions-runners.toml \
             .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
+            scripts/config_validators.py \
             scripts/rust_verification.py)"
           if [[ -n "$changed" ]]; then
             echo "any_changed=true" >> "$GITHUB_OUTPUT"
@@ -362,6 +363,7 @@ jobs:
             scripts/test_nextest_fingerprint.py \
             scripts/root_bin_sidecars.py \
             scripts/test_root_bin_sidecars.py \
+            scripts/config_validators.py \
             scripts/ci_provenance.py \
             scripts/test_ci_provenance.py \
             scripts/verify_ci_workflow_hygiene.py \

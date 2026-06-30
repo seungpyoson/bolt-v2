@@ -13,6 +13,13 @@ struct ResolutionFeedMappingReference {
     context: String,
 }
 
+/// Validates that a Chainlink Data Streams `rest_base_url` parses as a URL and
+/// uses the `https` scheme. The signed Data Streams credentials travel in the
+/// request `Authorization` header, so any non-https (or unparseable) endpoint
+/// fails closed at config load - credentials must never traverse plaintext.
+/// Shared by the live-strike client validator and the resolution-oracle
+/// gate-provider validator so both config blocks that name the same endpoint are
+/// held to one transport standard.
 pub(crate) fn validate_https_rest_base_url(
     field_path: &str,
     rest_base_url: &str,

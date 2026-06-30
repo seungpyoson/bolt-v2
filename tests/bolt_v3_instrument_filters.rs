@@ -842,7 +842,7 @@ fn validate_module_must_not_own_updown_slug_token_policy() {
     for symbol in forbidden {
         assert!(
             !src.contains(symbol),
-            "src/bolt_v3_validate.rs must not own updown slug-token policy; \
+            "src/bolt_v3_validate module tree must not own updown slug-token policy; \
              source unexpectedly references `{symbol}`. \
              Keep updown slug-token validation and error messaging in \
              src/bolt_v3_market_families/updown.rs; have \
@@ -1046,7 +1046,7 @@ fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
     for symbol in forbidden {
         assert!(
             !src.contains(symbol),
-            "src/bolt_v3_validate.rs must not own binary_oracle_edge_taker policy; \
+            "src/bolt_v3_validate module tree must not own binary_oracle_edge_taker policy; \
              source unexpectedly references `{symbol}`. \
              Move the archetype's required reference-current-price role, its \
              entry/exit order-combination rules, and the matching error \
@@ -1103,7 +1103,7 @@ fn validate_module_must_not_own_provider_client_validation() {
     for symbol in forbidden {
         assert!(
             !src.contains(symbol),
-            "src/bolt_v3_validate.rs must not own provider-specific client validation; \
+            "src/bolt_v3_validate module tree must not own provider-specific client validation; \
              source unexpectedly references `{symbol}`. \
              Move Polymarket / Binance client, data, execution, funder-address, \
              retry-bounds, secret-path, and EVM-syntax validators (and the \

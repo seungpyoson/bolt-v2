@@ -65,7 +65,6 @@ use crate::bolt_v3_loss_halt_actions::LossGovernorTradingStateAction;
 use crate::bolt_v3_numeric::{
     HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite, is_sha256_hex_digest,
 };
-use crate::bolt_v3_order_execution::BoltV3OrderExecutionMode;
 use crate::bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config};
 use crate::bolt_v3_providers::{
     ReferencePriceIdentifierKind, reference_price_provider_identifier_is_configured,

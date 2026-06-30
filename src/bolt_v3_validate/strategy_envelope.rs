@@ -1,4 +1,13 @@
-use super::*;
+use std::collections::BTreeSet;
+
+use crate::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy};
+use crate::bolt_v3_order_execution::BoltV3OrderExecutionMode;
+
+use super::{
+    TARGET_ALLOWED_PROVIDER_IDS_FIELD, TARGET_GATE_SUBSCRIPTIONS_FIELD,
+    TARGET_MARKET_MAPPINGS_FIELD, TARGET_PROVIDER_ID_FIELD, TARGET_PROVIDER_PREFERENCE_FIELD,
+    string_array_values, string_field,
+};
 
 pub(super) fn validate_complete_set_activation_is_shadow_only(
     context: &str,

@@ -6084,6 +6084,22 @@ jobs:
                 f"flaky detection verifier must reject full BVS shell chaining with {operator!r}, "
                 f"got: {chained_shell_full_errors}"
             )
+        no_space_chained_shell_full_workflow = good_full_workflow.replace(
+            'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+            'just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl'
+            + operator
+            + "echo after",
+            1,
+        )
+        no_space_chained_shell_full_errors = flaky_detection_errors(full_workflow=no_space_chained_shell_full_workflow)
+        if not any(
+            "backtester full job must keep just bte-test in a simple Run tests block" in error
+            for error in no_space_chained_shell_full_errors
+        ):
+            raise AssertionError(
+                f"flaky detection verifier must reject full BVS shell chaining without spaces around {operator!r}, "
+                f"got: {no_space_chained_shell_full_errors}"
+            )
     subshell_partition_full_workflow = good_full_workflow.replace(
         '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
         """          ( just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" -- --skip issue_789_first_real_free_data_taker_pl
@@ -6110,6 +6126,37 @@ jobs:
             "flaky detection verifier must reject multiline subshell-wrapped full BVS commands, "
             f"got: {wrapped_subshell_full_errors}"
         )
+    for wrapped_command, wrapper_name in (
+        (
+            """          ignored=`
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          `""",
+            "backtick command-substitution",
+        ),
+        (
+            """          {
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          }""",
+            "brace-group",
+        ),
+        (
+            """          cat <(
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          )""",
+            "process-substitution",
+        ),
+    ):
+        wrapped_full_workflow = good_full_workflow.replace(
+            '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
+            wrapped_command,
+            1,
+        )
+        wrapped_full_errors = flaky_detection_errors(full_workflow=wrapped_full_workflow)
+        if not any("backtester full job must keep just bte-test in a simple Run tests block" in error for error in wrapped_full_errors):
+            raise AssertionError(
+                f"flaky detection verifier must reject {wrapper_name} full BVS commands, "
+                f"got: {wrapped_full_errors}"
+            )
     dead_only_partition_full_workflow = good_full_workflow.replace(
         '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',
         """          if false; then

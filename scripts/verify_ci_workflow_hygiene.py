@@ -11309,12 +11309,12 @@ def has_bte_run_control_flow(run_block: str) -> bool:
 
 
 def has_bte_run_shell_wrapping_or_chaining(run_block: str) -> bool:
-    if "$(" in run_block:
+    if any(token in run_block for token in ("$(", "`", "<(", ">(")):
         return True
-    if re.search(r"(?m)^\s*\(", run_block):
+    if re.search(r"(?m)^\s*[\(\{]", run_block):
         return True
     return any(
-        re.search(r"\bjust\s+bte-test\b[^\n]*(?:;\s*|\s(?:&&|\|\||\|)\s)", line)
+        re.search(r"\bjust\s+bte-test\b[^\n]*(?:;|&&|\|\||\|)", line)
         for line in run_block.splitlines()
     )
 

@@ -2,7 +2,7 @@
 # Single source of truth for all clean-merged runtime values (NO HARDCODES).
 # Read by scripts/clean_merged_artifacts.py from the MAIN worktree path
 # (not the current worktree, which may be on a branch predating this config).
-# Missing required keys fail loud; missing optional keys use documented defaults.
+# Missing required keys fail loud.
 
 schema_version = 1
 
@@ -11,11 +11,12 @@ schema_version = 1
 # except 0/false/no/off, case-insensitive) — bash hooks and Python agree.
 # Env: CLEAN_MERGED_DISABLED=1
 enabled = true
-# Trunk branch. Falls back to "master" dynamically if "main" is absent.
-# (When fallback engages, Lane R's baseRefName filter accepts either name.)
+# Trunk branch. Resolved exactly; there is no implicit main/master substitution.
 trunk_branch = "main"
 # Remote name to consider as origin for upstream/prune purposes.
 remote_name = "origin"
+# Owner login for same-repository merged PR authority checks.
+origin_owner = "seungpyoson"
 
 [clean-merged.lane_r]
 # Hard timeout for the gh subprocess call (seconds). Enforced in Python via
@@ -24,6 +25,9 @@ gh_timeout_s = 5
 # In-process cache TTL for gh query results (seconds). Per-branch cache stored
 # at <git-common-dir>/clean-merged-gh-cache.json; written atomically.
 cache_ttl_s = 300
+# Maximum merged PRs returned by each gh branch query. Exact headRefOid matching
+# prevents false positives; this controls cost/coverage.
+gh_limit = 100
 
 [clean-merged.lane_w]
 # Quarantine directory. Resolved relative to git-common-dir; NEVER inside a
@@ -41,6 +45,10 @@ remove_nested_repos = false
 # unless overridden. These files are invisible to --porcelain and silently
 # destroyed by `git worktree remove`.
 discard_hidden_index_bits = false
+# Hard timeout for creating the quarantine tar archive (seconds).
+archive_timeout_s = 120
+# Hard timeout for verifying the quarantine tar archive (seconds).
+archive_verify_timeout_s = 30
 
 [clean-merged.logging]
 # Audit log format. jsonl ensures escaped fields survive shell-sensitive
@@ -51,8 +59,16 @@ audit_format = "jsonl"
 audit_path = "<git-common-dir>/clean-merged.log"
 # Rotate the audit log above this size (bytes).
 max_log_bytes = 1048576
+# Days to retain rotated audit and Lane R log segments.
+rotated_log_retention_days = 30
+# Maximum characters kept in sanitized subprocess diagnostics.
+report_error_max_chars = 200
 # Heartbeat file written on every Lane H run; doctor checks freshness.
 heartbeat_path = "<git-common-dir>/clean-merged.heartbeat"
+# Doctor stale threshold for the Lane H heartbeat (days).
+heartbeat_stale_days = 7
+# Lane R hook-spawn stdout/stderr log path.
+lane_r_log_path = "<git-common-dir>/clean-merged.lane-r.log"
 
 [clean-merged.backups]
 # Days before a backup ref under refs/clean-merged/ is prunable.

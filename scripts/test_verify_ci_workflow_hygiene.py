@@ -1525,6 +1525,198 @@ def assert_workflows_error(
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
 
 
+JULES_ADVISORY_GOOD_WORKFLOW = """\
+name: Jules Weekly Cleanup
+
+on:
+  schedule:
+    - cron: "17 8 * * 1"
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  jules-weekly-cleanup:
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - name: Start Jules advisory session
+        id: invoke-jules
+        continue-on-error: true
+        timeout-minutes: ${{ fromJSON(vars.JULES_SESSION_TIMEOUT_MINUTES) }}
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          JULES_SESSIONS_ENDPOINT: ${{ vars.JULES_SESSIONS_ENDPOINT }}
+          JULES_STARTING_BRANCH: ${{ github.event.repository.default_branch }}
+          JULES_PROMPT: |
+            You are Jules running code-maintenance automation for this repository.
+            - You are advisory only and not a required gate.
+            - Create a draft pull request only when you have a small verified cleanup change.
+            - Label any pull request with agent:jules.
+            - No AWS access.
+            - No trading, runtime, deploy, live, market data, or order execution access.
+        run: |
+          jq -n \\
+            --arg repo_full_name "$GITHUB_REPOSITORY" \\
+            --arg branch "$JULES_STARTING_BRANCH" \\
+            --arg prompt "$JULES_PROMPT" \\
+            '{
+              prompt: $prompt,
+              sourceContext: {
+                source: "sources/github/\\($repo_full_name)",
+                githubRepoContext: {
+                  startingBranch: $branch
+                }
+              },
+              automationMode: "AUTO_CREATE_PR",
+              requirePlanApproval: true
+            }' > "$RUNNER_TEMP/jules_payload.json"
+
+          curl --silent --show-error --fail-with-body \\
+            --request POST \\
+            --header "Content-Type: application/json" \\
+            --header "x-goog-api-key: ${JULES_API_KEY}" \\
+            --data @"$RUNNER_TEMP/jules_payload.json" \\
+            --output "$RUNNER_TEMP/jules_response.json" \\
+            "$JULES_SESSIONS_ENDPOINT"
+
+          jq -e '.name and .id' "$RUNNER_TEMP/jules_response.json" >/dev/null
+
+      - name: Jules advisory success notice
+        if: ${{ steps.invoke-jules.outcome == 'success' }}
+        run: |
+          echo "::notice::Jules advisory session started and returned a session id. Jules remains non-blocking and emits no merge signal."
+
+      - name: Jules advisory unavailable warning
+        if: ${{ steps.invoke-jules.outcome != 'success' }}
+        run: |
+          echo "::warning::Jules advisory session did not start. Unavailable Jules results remain advisory only and emit no merge signal."
+"""
+
+
+def assert_jules_advisory_workflow_contracts() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/weekly-cleanup.yml"
+    clean_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: JULES_ADVISORY_GOOD_WORKFLOW}
+    )
+    if clean_errors:
+        raise AssertionError(f"known-good Jules workflow must be clean, got: {clean_errors}")
+
+    cases = (
+        (
+            "Jules advisory workflows must require plan approval",
+            replace_once(JULES_ADVISORY_GOOD_WORKFLOW, "requirePlanApproval: true", "requirePlanApproval: false"),
+        ),
+        (
+            "Jules advisory workflows must use configured session timeout variable",
+            replace_once(
+                JULES_ADVISORY_GOOD_WORKFLOW,
+                "timeout-minutes: ${{ fromJSON(vars.JULES_SESSION_TIMEOUT_MINUTES) }}",
+                "timeout-minutes: 10",
+            ),
+        ),
+        (
+            "Jules advisory workflows must use configured sessions endpoint variable",
+            replace_once(
+                JULES_ADVISORY_GOOD_WORKFLOW,
+                '"$JULES_SESSIONS_ENDPOINT"',
+                '"https://jules.googleapis.com/v1alpha/sessions"',
+            ),
+        ),
+        (
+            "Jules advisory workflows must emit verified session notice only on invoke success",
+            replace_once(
+                JULES_ADVISORY_GOOD_WORKFLOW,
+                "if: ${{ steps.invoke-jules.outcome == 'success' }}",
+                "if: ${{ always() }}",
+            ),
+        ),
+        (
+            "Jules advisory workflows must warn when invocation is unavailable",
+            replace_once(
+                JULES_ADVISORY_GOOD_WORKFLOW,
+                "if: ${{ steps.invoke-jules.outcome != 'success' }}",
+                "if: ${{ steps.invoke-jules.outcome == 'success' }}",
+            ),
+        ),
+        (
+            "Jules advisory workflows must not use AWS commands",
+            replace_once(
+                JULES_ADVISORY_GOOD_WORKFLOW,
+                "          jq -e '.name and .id' \"$RUNNER_TEMP/jules_response.json\" >/dev/null",
+                "          jq -e '.name and .id' \"$RUNNER_TEMP/jules_response.json\" >/dev/null\n          aws sts get-caller-identity",
+            ),
+        ),
+    )
+    for fragment, workflow in cases:
+        errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected Jules contract error containing {fragment!r}, got: {errors}")
+
+    secret_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/workflows/ci.yml": """\
+jobs:
+  test:
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: echo no
+"""
+        }
+    )
+    if not any("JULES_API_KEY may only be used by Jules advisory workflows" in error for error in secret_errors):
+        raise AssertionError(f"Jules secret boundary drift was silent: {secret_errors}")
+
+    real_jules_workflows = {
+        path: repo_workflow_text(path)
+        for path in (
+            ".github/workflows/weekly-cleanup.yml",
+            ".github/workflows/performance-improver.yml",
+            ".github/workflows/tech-debt-review.yml",
+        )
+    }
+    real_errors = verifier.verify_repo_automation_texts(real_jules_workflows)
+    if real_errors:
+        raise AssertionError(f"real Jules workflows must satisfy advisory contract, got: {real_errors}")
+
+
+def assert_jules_advisory_config_carries_repo_variable_values() -> None:
+    verifier = load_verifier()
+    config = verifier.load_github_actions_runners_config()
+    jules_config = config["jules_advisory"]
+    actual_values = jules_config.get("repository_variables")
+    expected_keys = {
+        jules_config["sessions_endpoint_variable"],
+        jules_config["session_timeout_minutes_variable"],
+    }
+    if not isinstance(actual_values, dict) or set(actual_values) != expected_keys:
+        raise AssertionError(
+            "Jules advisory config must carry provisionable repository variable values, "
+            f"got: {actual_values!r}"
+        )
+    for key, value in actual_values.items():
+        if not isinstance(value, str) or not value:
+            raise AssertionError(f"Jules advisory repository variable {key} must have a non-empty value")
+
+    config_text = ci_provenance_config_fixture()
+    cases = (
+        (
+            "jules_advisory.sessions_endpoint must be a non-empty string",
+            re.sub(r'^sessions_endpoint = ".+"\n', "", config_text, count=1, flags=re.MULTILINE),
+        ),
+        (
+            "jules_advisory.session_timeout_minutes must be a positive integer",
+            re.sub(r"^session_timeout_minutes = [0-9]+\n", "", config_text, count=1, flags=re.MULTILINE),
+        ),
+    )
+    for fragment, broken_config in cases:
+        error = runner_config_load_error(broken_config, verifier)
+        if fragment not in error:
+            raise AssertionError(f"expected Jules config error containing {fragment!r}, got: {error!r}")
+
+
 def artifact_retention_policy_errors(
     workflows: dict[str, str] | None = None,
     composite_actions: dict[str, str] | None = None,
@@ -5364,9 +5556,8 @@ def assert_runner_contract_rejects_unmapped_workflow_jobs() -> None:
 
 def assert_runner_contract_accepts_flaky_detection_workflow_mapping() -> None:
     verifier = load_verifier()
-    workflow_name = ".github/workflows/flaky-test-detection.yml"
-    smoke_workflow_name = ".github/workflows/flaky-test-detection-smoke.yml"
-    workflow = """name: Flaky Test Detection
+    detection_workflow_name = ".github/workflows/flaky-test-detection.yml"
+    detection_workflow = """name: Flaky Test Detection
 
 on:
   schedule:
@@ -5388,30 +5579,31 @@ jobs:
     steps:
       - run: echo issue-789
 """
-    smoke_workflow = """name: Flaky Test Detection Smoke
+    smoke_workflow_name = ".github/workflows/flaky-test-smoke.yml"
+    smoke_workflow = """name: Flaky Test Smoke
 
 on:
   workflow_dispatch:
 
 jobs:
-  flaky-detection-rust-root-smoke:
+  flaky-smoke-rust-root:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
-      - run: echo root
+      - run: echo root-smoke
 
-  flaky-detection-rust-backtester-smoke:
+  flaky-smoke-rust-backtester:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
-      - run: echo backtester
+      - run: echo backtester-smoke
 
-  flaky-detection-rust-backtester-issue-789-smoke:
+  flaky-smoke-rust-backtester-issue-789:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
-      - run: echo issue-789
+      - run: echo issue-789-smoke
 """
     errors = verifier.verify_github_actions_runner_contract(
         {
-            workflow_name: workflow,
+            detection_workflow_name: detection_workflow,
             smoke_workflow_name: smoke_workflow,
         }
     )
@@ -5422,7 +5614,7 @@ jobs:
 def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
     workflows = (
         (".github/workflows/flaky-test-detection.yml", 2),
-        (".github/workflows/flaky-test-detection-smoke.yml", 2),
+        (".github/workflows/flaky-test-smoke.yml", 2),
     )
     pinned_v14_action = "uses: mergifyio/gha-mergify-ci@d01f69e6275942be9a9066fd22cda1c49b0c85e3 # v14"
     expected_job_names = (
@@ -5463,14 +5655,14 @@ def assert_flaky_detection_workflow_uses_supported_mergify_contract() -> None:
 
 def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
     full_workflow = repo_workflow_text(".github/workflows/flaky-test-detection.yml")
-    smoke_workflow = repo_workflow_text(".github/workflows/flaky-test-detection-smoke.yml")
+    smoke_workflow = repo_workflow_text(".github/workflows/flaky-test-smoke.yml")
     if "workflow_dispatch:" in full_workflow:
         raise AssertionError("flaky-test-detection.yml must remain schedule-only")
     if "schedule:" in smoke_workflow:
-        raise AssertionError("flaky-test-detection-smoke.yml must remain manual-only")
+        raise AssertionError("flaky-test-smoke.yml must remain manual-only")
     for workflow_path, workflow in (
         (".github/workflows/flaky-test-detection.yml", full_workflow),
-        (".github/workflows/flaky-test-detection-smoke.yml", smoke_workflow),
+        (".github/workflows/flaky-test-smoke.yml", smoke_workflow),
     ):
         forbidden_fragments = (
             "mode:",
@@ -5486,21 +5678,21 @@ def assert_flaky_detection_workflows_are_split_without_mode_gates() -> None:
                 raise AssertionError(f"{workflow_path} must not contain {fragment!r}")
     smoke_fragments = (
         "workflow_dispatch:",
-        "flaky-detection-rust-root-smoke:",
-        "flaky-detection-rust-backtester-smoke:",
-        "flaky-detection-rust-backtester-issue-789-smoke:",
+        "flaky-smoke-rust-root:",
+        "flaky-smoke-rust-backtester:",
+        "flaky-smoke-rust-backtester-issue-789:",
         "run_number: [1]",
         "shard: [1]",
     )
     for fragment in smoke_fragments:
         if fragment not in smoke_workflow:
-            raise AssertionError(f"flaky-test-detection-smoke.yml missing {fragment!r}")
+            raise AssertionError(f"flaky-test-smoke.yml missing {fragment!r}")
 
 
 def assert_flaky_detection_workflow_split_gaps_are_reported() -> None:
     verifier = load_verifier()
     full_workflow_name = ".github/workflows/flaky-test-detection.yml"
-    smoke_workflow_name = ".github/workflows/flaky-test-detection-smoke.yml"
+    smoke_workflow_name = ".github/workflows/flaky-test-smoke.yml"
     good_full_workflow = """name: Flaky Test Detection
 
 on:
@@ -5587,13 +5779,13 @@ jobs:
           job_name: bvs-test issue-789
           report_path: "junit-*.xml"
 """
-    good_smoke_workflow = """name: Flaky Test Detection Smoke
+    good_smoke_workflow = """name: Flaky Test Smoke
 
 on:
   workflow_dispatch:
 
 jobs:
-  flaky-detection-rust-root-smoke:
+  flaky-smoke-rust-root:
     strategy:
       matrix:
         run_number: [1]
@@ -5619,7 +5811,7 @@ jobs:
           job_name: nextest archive
           report_path: "junit-*.xml"
 
-  flaky-detection-rust-backtester-smoke:
+  flaky-smoke-rust-backtester:
     strategy:
       matrix:
         run_number: [1]
@@ -5646,7 +5838,7 @@ jobs:
           job_name: bvs-test archive
           report_path: "junit-*.xml"
 
-  flaky-detection-rust-backtester-issue-789-smoke:
+  flaky-smoke-rust-backtester-issue-789:
     strategy:
       matrix:
         run_number: [1]
@@ -5701,7 +5893,7 @@ jobs:
             f"flaky detection verifier must reject multi-shard smoke BVS jobs, got: {oversized_smoke_errors}"
         )
 
-    missing_smoke_workflow = good_smoke_workflow.replace("  flaky-detection-rust-backtester-smoke:\n", "  removed-backtester-smoke:\n")
+    missing_smoke_workflow = good_smoke_workflow.replace("  flaky-smoke-rust-backtester:\n", "  removed-backtester-smoke:\n")
     missing_smoke_errors = verifier.verify_flaky_test_detection_workflows(
         {
             full_workflow_name: good_full_workflow,
@@ -6286,12 +6478,237 @@ def assert_actionlint_requires_pr_event_types() -> None:
         ("ready_for_review", "types: [opened, synchronize, reopened, edited]"),
         ("edited", "types: [opened, synchronize, reopened, ready_for_review]"),
     ):
-        bad = replace_once(workflow, f"types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
+        bad = replace_once(workflow, "types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
         bad_errors = verifier.verify_repo_automation_texts({workflow_name: bad})
         if not any(f"pull_request types must include {missing_type}" in error for error in bad_errors):
             raise AssertionError(
                 f"actionlint workflow must require {missing_type} in pull_request types, got: {bad_errors}"
             )
+
+
+def assert_actionlint_runs_ci_storage_audit_tests() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/actionlint.yml"
+    workflow = repo_workflow_text(workflow_name)
+    errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
+    if any("must run python3 scripts/test_ci_storage_audit.py" in error for error in errors):
+        raise AssertionError(f"actionlint workflow must run storage audit tests, got: {errors}")
+
+    missing = replace_once(workflow, "          python3 scripts/test_ci_storage_audit.py\n", "")
+    missing_errors = verifier.verify_repo_automation_texts({workflow_name: missing})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in missing_errors
+    ):
+        raise AssertionError(f"actionlint storage audit test wiring drift was silent, got: {missing_errors}")
+
+    name_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "      - name: python3 scripts/test_ci_storage_audit.py\n",
+    )
+    name_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: name_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in name_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit step-name decoy was silent, got: {name_decoy_errors}")
+
+    echo_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          echo 'python3 scripts/test_ci_storage_audit.py'\n",
+    )
+    echo_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: echo_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in echo_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit echo decoy was silent, got: {echo_decoy_errors}")
+
+    comment_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          # python3 scripts/test_ci_storage_audit.py\n",
+    )
+    comment_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: comment_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in comment_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit comment decoy was silent, got: {comment_decoy_errors}")
+
+    duplicated = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          python3 scripts/test_ci_storage_audit.py\n",
+    )
+    duplicated_errors = verifier.verify_repo_automation_texts({workflow_name: duplicated})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py exactly once" in error
+        for error in duplicated_errors
+    ):
+        raise AssertionError(f"actionlint storage audit duplicate command was silent, got: {duplicated_errors}")
+
+    skipped_job = replace_once(
+        workflow,
+        "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    steps:\n",
+        "    if: false\n    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    steps:\n",
+    )
+    skipped_job_errors = verifier.verify_repo_automation_texts({workflow_name: skipped_job})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in skipped_job_errors
+    ):
+        raise AssertionError(f"actionlint storage audit skipped-job decoy was silent, got: {skipped_job_errors}")
+
+    skipped_step = replace_once(
+        workflow,
+        "      - name: Verify AI review governance and storage audit safety tests\n        run: |\n",
+        "      - name: Verify AI review governance and storage audit safety tests\n"
+        "        if: false\n"
+        "        run: |\n",
+    )
+    skipped_step_errors = verifier.verify_repo_automation_texts({workflow_name: skipped_step})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in skipped_step_errors
+    ):
+        raise AssertionError(f"actionlint storage audit skipped-step decoy was silent, got: {skipped_step_errors}")
+
+    folded_scalar_decoy = replace_once(workflow, "        run: |\n", "        run: >\n")
+    folded_scalar_errors = verifier.verify_repo_automation_texts({workflow_name: folded_scalar_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in folded_scalar_errors
+    ):
+        raise AssertionError(f"actionlint storage audit folded-scalar decoy was silent, got: {folded_scalar_errors}")
+
+    heredoc_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          cat <<'EOF'\n"
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          EOF\n",
+    )
+    heredoc_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: heredoc_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in heredoc_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit heredoc decoy was silent, got: {heredoc_decoy_errors}")
+
+    false_branch = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          if false; then\n"
+        "            python3 scripts/test_ci_storage_audit.py\n"
+        "          fi\n",
+    )
+    false_branch_errors = verifier.verify_repo_automation_texts({workflow_name: false_branch})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in false_branch_errors
+    ):
+        raise AssertionError(f"actionlint storage audit false-branch decoy was silent, got: {false_branch_errors}")
+
+    function_body_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          run_storage_audit() {\n"
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          }\n",
+    )
+    function_body_errors = verifier.verify_repo_automation_texts({workflow_name: function_body_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in function_body_errors
+    ):
+        raise AssertionError(f"actionlint storage audit function-body decoy was silent, got: {function_body_errors}")
+
+    split_brace_function_body_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          run_storage_audit()\n"
+        "          {\n"
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          }\n",
+    )
+    split_brace_function_body_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: split_brace_function_body_decoy}
+    )
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in split_brace_function_body_errors
+    ):
+        raise AssertionError(
+            "actionlint storage audit split-brace function-body decoy was silent, "
+            f"got: {split_brace_function_body_errors}"
+        )
+
+    subshell_function_body_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          run_storage_audit() (\n"
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          )\n",
+    )
+    subshell_function_body_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: subshell_function_body_decoy}
+    )
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in subshell_function_body_errors
+    ):
+        raise AssertionError(
+            "actionlint storage audit subshell function-body decoy was silent, "
+            f"got: {subshell_function_body_errors}"
+        )
+
+    multiline_quote_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          echo \"\n"
+        "          python3 scripts/test_ci_storage_audit.py\n"
+        "          \"\n",
+    )
+    multiline_quote_errors = verifier.verify_repo_automation_texts({workflow_name: multiline_quote_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in multiline_quote_errors
+    ):
+        raise AssertionError(f"actionlint storage audit multiline-quote decoy was silent, got: {multiline_quote_errors}")
+
+    env_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          echo \"not storage audit\"\n"
+        "        env:\n"
+        "          STORAGE_AUDIT_TEST: |\n"
+        "            python3 scripts/test_ci_storage_audit.py\n",
+    )
+    env_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: env_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in env_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit env decoy was silent, got: {env_decoy_errors}")
+
+    with_decoy = replace_once(
+        workflow,
+        "          python3 scripts/test_ci_storage_audit.py\n",
+        "          echo \"not storage audit\"\n"
+        "        with:\n"
+        "          storage_audit_command: |\n"
+        "            python3 scripts/test_ci_storage_audit.py\n",
+    )
+    with_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: with_decoy})
+    if not any(
+        "actionlint workflow must run python3 scripts/test_ci_storage_audit.py" in error
+        for error in with_decoy_errors
+    ):
+        raise AssertionError(f"actionlint storage audit with decoy was silent, got: {with_decoy_errors}")
 
 
 def assert_ci_docs_pass_stub_is_absent() -> None:
@@ -6314,6 +6731,8 @@ source-fence-static-inner: require-local-verification-gate
     python3 scripts/test_lane_governor.py
     python3 scripts/test_verify_lane_governance.py
     python3 scripts/verify_lane_governance.py
+    python3 scripts/test_verify_fail_closed_contracts.py
+    python3 scripts/verify_fail_closed_contracts.py
 
 source-fence: source-fence-static
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
@@ -6369,6 +6788,30 @@ source-fence: source-fence-static
     if not any("must run python3 scripts/verify_lane_governance.py" in error for error in missing_errors):
         raise AssertionError(f"source-fence-static must require lane governance meta-check, got: {missing_errors}")
 
+    missing_fail_closed_verifier = justfile_text.replace(
+        "    python3 scripts/verify_fail_closed_contracts.py\n",
+        "",
+    )
+    missing_fail_closed_errors = verifier.verify_source_fence_static_recipe(missing_fail_closed_verifier)
+    if not any("must run python3 scripts/verify_fail_closed_contracts.py" in error for error in missing_fail_closed_errors):
+        raise AssertionError(f"source-fence-static must require fail-closed verifier, got: {missing_fail_closed_errors}")
+
+    missing_fail_closed_pair = justfile_text.replace(
+        "    python3 scripts/test_verify_fail_closed_contracts.py\n"
+        "    python3 scripts/verify_fail_closed_contracts.py\n",
+        "",
+    )
+    missing_fail_closed_pair_errors = verifier.verify_source_fence_static_recipe(missing_fail_closed_pair)
+    for command in (
+        "python3 scripts/test_verify_fail_closed_contracts.py",
+        "python3 scripts/verify_fail_closed_contracts.py",
+    ):
+        if not any(f"must run {command}" in error for error in missing_fail_closed_pair_errors):
+            raise AssertionError(
+                f"source-fence-static must require fail-closed command {command}, "
+                f"got: {missing_fail_closed_pair_errors}"
+            )
+
     commented_lane_test = justfile_text.replace(
         "    python3 scripts/test_lane_governor.py",
         "    # python3 scripts/test_lane_governor.py",
@@ -6393,6 +6836,7 @@ ci-lint-workflow:
 ci-lint-workflow-inner: require-local-verification-gate
     python3 scripts/test_verify_ci_workflow_hygiene.py
     python3 scripts/test_ci_storage_audit.py
+    python3 scripts/test_ci_storage_tripwire.py
     python3 scripts/test_root_bin_sidecars.py
     python3 scripts/test_ci_input_sets.py
     python3 scripts/test_rust_test_targets.py
@@ -6409,6 +6853,16 @@ ci-lint-workflow-inner: require-local-verification-gate
     ):
         raise AssertionError(
             f"ci storage audit test wiring drift was silent, got: {missing_storage_audit_test_errors}"
+        )
+
+    missing_storage_tripwire_test = justfile_text.replace("    python3 scripts/test_ci_storage_tripwire.py\n", "")
+    missing_storage_tripwire_test_errors = verifier.verify_local_verification_gate_recipes(missing_storage_tripwire_test)
+    if not any(
+        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_tripwire.py" in error
+        for error in missing_storage_tripwire_test_errors
+    ):
+        raise AssertionError(
+            f"ci storage tripwire test wiring drift was silent, got: {missing_storage_tripwire_test_errors}"
         )
 
     duplicate_storage_audit_test = justfile_text.replace(
@@ -8968,8 +9422,8 @@ def write_base_workflows(workflow_dir: pathlib.Path) -> None:
     (workflow_dir / "merge-readiness-finalizer.yml").write_text(BASE_MERGE_READINESS_FINALIZER_WORKFLOW)
     (workflow_dir / "coverage-enforcer.yml").write_text(BASE_COVERAGE_ENFORCER_WORKFLOW)
     (workflow_dir / "flaky-test-detection.yml").write_text(repo_workflow_text(".github/workflows/flaky-test-detection.yml"))
-    (workflow_dir / "flaky-test-detection-smoke.yml").write_text(
-        repo_workflow_text(".github/workflows/flaky-test-detection-smoke.yml")
+    (workflow_dir / "flaky-test-smoke.yml").write_text(
+        repo_workflow_text(".github/workflows/flaky-test-smoke.yml")
     )
 
 
@@ -8977,6 +9431,13 @@ def write_repo_workflows(workflow_dir: pathlib.Path) -> None:
     workflow_dir.mkdir(parents=True)
     for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.y*ml")):
         (workflow_dir / path.name).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def write_storage_tripwire_policy_fixture(root: pathlib.Path) -> pathlib.Path:
+    policy_path = root / "ci" / "storage-tripwire.toml"
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text((REPO_ROOT / "ci" / "storage-tripwire.toml").read_text(encoding="utf-8"), encoding="utf-8")
+    return policy_path
 
 
 def run_verifier_main_with_no_mistakes(
@@ -9012,13 +9473,19 @@ def run_verifier_main_with_no_mistakes(
             (tmp_path / ".mergify.yml").write_text((REPO_ROOT / ".mergify.yml").read_text())
         write_rust_verification_policy_fixtures(tmp_path)
         write_runner_config_fixture(tmp_path)
+        storage_policy_path = write_storage_tripwire_policy_fixture(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
+        original_discover_policy = temp_verifier.ci_storage_tripwire.discover_policy_path
+        temp_verifier.ci_storage_tripwire.discover_policy_path = lambda _root: storage_policy_path
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            result = temp_verifier.main()
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = temp_verifier.main()
+        finally:
+            temp_verifier.ci_storage_tripwire.discover_policy_path = original_discover_policy
         return result, stdout.getvalue() + stderr.getvalue()
 
 
@@ -9054,13 +9521,19 @@ def run_verifier_main_with_extra_action(
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
         write_rust_verification_policy_fixtures(tmp_path)
         write_runner_config_fixture(tmp_path)
+        storage_policy_path = write_storage_tripwire_policy_fixture(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_action_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
+        original_discover_policy = temp_verifier.ci_storage_tripwire.discover_policy_path
+        temp_verifier.ci_storage_tripwire.discover_policy_path = lambda _root: storage_policy_path
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            result = temp_verifier.main()
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = temp_verifier.main()
+        finally:
+            temp_verifier.ci_storage_tripwire.discover_policy_path = original_discover_policy
         return result, stdout.getvalue() + stderr.getvalue()
 
 
@@ -9090,13 +9563,19 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
         write_rust_verification_policy_fixtures(tmp_path)
         write_runner_config_fixture(tmp_path)
+        storage_policy_path = write_storage_tripwire_policy_fixture(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_workflow_entrypoint")
         temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
+        original_discover_policy = temp_verifier.ci_storage_tripwire.discover_policy_path
+        temp_verifier.ci_storage_tripwire.discover_policy_path = lambda _root: storage_policy_path
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            result = temp_verifier.main()
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = temp_verifier.main()
+        finally:
+            temp_verifier.ci_storage_tripwire.discover_policy_path = original_discover_policy
         return result, stdout.getvalue() + stderr.getvalue()
 
 
@@ -10915,9 +11394,9 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         stale_fingerprint_with_decoy,
         "  nextest-fingerprint-reuse:",
         "      - name: Resolve nextest fingerprint reuse",
-        f"""      - name: Decoy resolver command
+        """      - name: Decoy resolver command
         run: |
-          echo 'python3 scripts/ci_provenance.py resolve-fingerprint --current-run-id "${{{{ github.run_id }}}}" --current-fingerprint "${{{{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}}}" | tee -a "$GITHUB_OUTPUT"'
+          echo 'python3 scripts/ci_provenance.py resolve-fingerprint --current-run-id "${{ github.run_id }}" --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}" | tee -a "$GITHUB_OUTPUT"'
 
       - name: Resolve nextest fingerprint reuse""",
     )
@@ -13698,6 +14177,8 @@ def main() -> int:
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
     assert_runner_contract_requires_meter_api_limits()
     assert_runner_contract_requires_fingerprint_archive_tier_coupling()
+    assert_jules_advisory_workflow_contracts()
+    assert_jules_advisory_config_carries_repo_variable_values()
     assert_debug_workflow_rejects_non_manual_trigger()
     assert_debug_workflow_checks_each_ssh_runner_step()
     assert_bootstrap_uses_onepassword_key_generation()
@@ -13710,6 +14191,7 @@ def main() -> int:
     assert_backtester_ci_defers_managed_heavy_on_draft_prs()
     assert_actionlint_rejects_stale_config_variables()
     assert_actionlint_requires_pr_event_types()
+    assert_actionlint_runs_ci_storage_audit_tests()
     assert_ci_docs_pass_stub_is_absent()
     assert_source_fence_static_ignores_comments()
     assert_local_verification_gate_recipes_are_enforced()
@@ -13757,6 +14239,10 @@ def main() -> int:
     real_workflows = verifier.repo_workflow_texts()
     runner_errors = verifier.verify_github_actions_runner_contract(real_workflows)
     assert not runner_errors, runner_errors
+    storage_policy_path = verifier.ci_storage_tripwire.discover_policy_path(REPO_ROOT)
+    storage_policy = storage_policy_path.read_text(encoding="utf-8")
+    storage_errors = verifier.verify_storage_tripwire_workflow(real_workflows, storage_policy)
+    assert not storage_errors, storage_errors
     actionlint_errors = verifier.verify_actionlint_runner_contract(real_workflows)
     assert not actionlint_errors, actionlint_errors
     dispatch_cancel_errors = verifier.verify_dispatch_ci_cancel_workflow(real_workflows)
@@ -13767,7 +14253,6 @@ def main() -> int:
     assert not progress_errors, progress_errors
     finalizer_errors = verifier.verify_merge_readiness_finalizer_workflow(real_workflows)
     assert not finalizer_errors, finalizer_errors
-
     print("OK: CI workflow hygiene verifier self-tests passed.")
     return 0
 

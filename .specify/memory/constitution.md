@@ -1,16 +1,16 @@
 <!--
 Sync Impact Report
-Version change: 1.1.0 -> 2.0.0
-Modified principles: IV. Test-First Safety Gates -> IV. Evidence-Driven Verification Gates;
-V. Evidence Before Claims clarified
-Added sections: v2.0.0 migration note
+Version change: 2.0.0 -> 2.0.1
+Modified principles: III. Single Path And Config-Controlled Runtime clarified for Jules advisory token;
+Additional Constraints secret source clarified for Jules advisory token
+Added sections: v2.0.1 migration note
 Removed sections: none
 Templates reviewed: .specify/templates/plan-template.md - no update needed;
 .specify/templates/spec-template.md - no update needed;
-.specify/templates/tasks-template.md - updated;
-.specify/templates/constitution-template.md - updated;
+.specify/templates/tasks-template.md - no update needed;
+.specify/templates/constitution-template.md - no update needed;
 .specify/templates/commands - absent in this repo
-Runtime guidance updated: AGENTS.md is repo governance; CLAUDE.md and GEMINI.md now point to AGENTS.md
+Runtime guidance updated: AGENTS.md documents the repository-only JULES_API_KEY advisory carve-out
 Follow-up items: none
 -->
 
@@ -32,7 +32,7 @@ Adding a venue, market family, or strategy MUST NOT require changing core build,
 
 ### III. Single Path And Config-Controlled Runtime
 
-There is one config format, one secret source, one production build path, and one live submit admission path. Every runtime value comes from TOML configuration. Credentials resolve only from AWS SSM through the Rust AWS SDK. Environment variable fallbacks, Python runtime layers, hardcoded IDs, hardcoded quantities, hardcoded timeouts, and alternate submit paths are forbidden.
+There is one config format, one secret source, one production build path, and one live submit admission path. Every runtime value comes from TOML configuration. Product/runtime credentials resolve only from AWS SSM through the Rust AWS SDK. Environment variable fallbacks, Python runtime layers, hardcoded IDs, hardcoded quantities, hardcoded timeouts, and alternate submit paths are forbidden. `JULES_API_KEY` is allowed only as a GitHub Actions secret for repository code-maintenance advisory workflows; it is not a product/runtime/deploy/live/trading secret, not an alternate GitHub token, and must not be exposed to AWS, market data, order execution, runtime, deploy, or live jobs.
 
 Changing a wallet, credential set, venue, target market, strategy, notional cap, timing bound, or approval token must require editing one coherent TOML section, not scattered code or multiple config locations.
 
@@ -73,7 +73,7 @@ External data providers are allowed when they avoid rebuilding commodity data in
 ## Additional Constraints
 
 - Language/runtime: pure Rust binary using NautilusTrader Rust APIs directly.
-- Secret source: AWS SSM through Rust AWS SDK only.
+- Secret source: AWS SSM through Rust AWS SDK only for product/runtime credentials. `JULES_API_KEY` is allowed only as a GitHub Actions secret for repository code-maintenance advisory workflows and must not reach AWS, market data, order execution, runtime, deploy, or live jobs.
 - Runtime config: TOML only.
 - Research/backtest config: TOML or NT-native run config only, with direct field mapping and lineage.
 - Current repo source of truth: `main` after merge.
@@ -98,6 +98,11 @@ this artifact requires redesign, not waiver-by-documentation. Amendments require
 an explicit user-approved diff, a migration note for affected specs/plans, and a
 version bump.
 
+Migration note for v2.0.1: Jules advisory workflow planning may use `JULES_API_KEY`
+only as a GitHub Actions code-maintenance automation token. This amendment does
+not change the product/runtime secret source, live proof boundary, or submit
+admission path.
+
 Migration note for v2.0.0: affected planning artifacts must replace blanket TDD
 language with evidence-driven verification. Active work under
 `specs/026-nt-backed-iv-engine/` is updated by this amendment. Historical specs
@@ -115,4 +120,4 @@ and `specs/023-nt-research-analytics-platform/tasks.md`. Runtime code is not
 changed by this amendment; implementation remains gated by feature-branch
 SpecKit checks and exact-head verification.
 
-**Version**: 2.0.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-06-15
+**Version**: 2.0.1 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-06-29

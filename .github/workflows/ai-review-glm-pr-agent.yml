@@ -3,7 +3,11 @@ name: AI Review - GLM PR-Agent
 on:
   pull_request:
     branches: [main]
-    types: [ready_for_review, labeled]
+    types: [opened, synchronize, ready_for_review, labeled]
+    paths-ignore:
+      - "docs/*.md"
+      - "docs/**/*.md"
+      - "README*"
 
 concurrency:
   group: ai-review-glm-pr-agent-pr-${{ github.event.pull_request.number }}
@@ -23,8 +27,16 @@ jobs:
         && github.event.pull_request.head.repo.full_name == github.repository
         && (
           github.event.action == 'ready_for_review'
+          || github.event.action == 'opened'
           || github.event.label.name == 'ai-review'
           || github.event.label.name == 'ai-review-glm'
+          || (
+            github.event.action == 'synchronize'
+            && (
+              contains(github.event.pull_request.labels.*.name, 'ai-review')
+              || contains(github.event.pull_request.labels.*.name, 'ai-review-glm')
+            )
+          )
         )
       }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
@@ -35,8 +47,34 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
+      - name: Check AI review pause switches
+        id: pause
+        env:
+          AI_REVIEW_PAUSED: ${{ vars.AI_REVIEW_PAUSED }}
+          AI_REVIEW_GLM_PAUSED: ${{ vars.AI_REVIEW_GLM_PAUSED }}
+        run: |
+          paused=false
+          reason=""
+          if [ "$AI_REVIEW_PAUSED" = "true" ]; then
+            paused=true
+            reason="AI_REVIEW_PAUSED=true"
+          elif [ "$AI_REVIEW_GLM_PAUSED" = "true" ]; then
+            paused=true
+            reason="AI_REVIEW_GLM_PAUSED=true"
+          fi
+          echo "paused=${paused}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+          if [ "$paused" = "true" ]; then
+            {
+              echo "### GLM review paused"
+              echo
+              echo "GLM review was skipped because \`${reason}\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Detect GLM secret
         id: glm-secret
+        if: steps.pause.outputs.paused != 'true'
         env:
           GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
         run: |
@@ -48,6 +86,7 @@ jobs:
 
       - name: Checkout base AI review helpers
         id: base-checkout
+        if: steps.pause.outputs.paused != 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
@@ -62,6 +101,7 @@ jobs:
 
       - name: Load AI review runtime config
         id: runtime-config
+        if: steps.pause.outputs.paused != 'true'
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
@@ -109,7 +149,7 @@ jobs:
           PY
 
       - name: Notice when Z.ai secret is not configured
-        if: steps.glm-secret.outputs.configured == 'false'
+        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -151,7 +191,7 @@ jobs:
 
       - name: Check AI review model freshness
         id: model-freshness
-        if: steps.glm-secret.outputs.configured == 'true'
+        if: steps.glm-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true'
         continue-on-error: true
         run: >-
           python3 scripts/verify_ai_review_model_freshness.py
@@ -162,12 +202,12 @@ jobs:
 
       - name: Capture GLM review window
         id: review-window
-        if: steps.glm-secret.outputs.configured == 'true'
+        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'true'
         run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Run PR-Agent review with GLM
         id: pr-agent
-        if: steps.glm-secret.outputs.configured == 'true'
+        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'true'
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_primary_timeout_minutes) }}
         uses: the-pr-agent/pr-agent@49cb2d8ce4a6f01c238229b3770e328fe11479df # v0.34.2
@@ -187,7 +227,7 @@ jobs:
 
       - name: Stamp GLM PR-Agent review source
         id: glm_stamp
-        if: steps.glm-secret.outputs.configured == 'true'
+        if: steps.pause.outputs.paused != 'true' && steps.glm-secret.outputs.configured == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
@@ -215,6 +255,7 @@ jobs:
         if: >-
           ${{
             steps.glm-secret.outputs.configured == 'true'
+            && steps.pause.outputs.paused != 'true'
             && always()
             && steps.base-checkout.outcome == 'success'
             && steps.runtime-config.outcome == 'success'
@@ -242,6 +283,7 @@ jobs:
         if: >-
           ${{
             steps.glm-secret.outputs.configured == 'true'
+            && steps.pause.outputs.paused != 'true'
             && always()
             && steps.model-freshness.outputs.glm_warning != ''
           }}
@@ -259,6 +301,7 @@ jobs:
         if: >-
           ${{
             steps.glm-secret.outputs.configured == 'true'
+            && steps.pause.outputs.paused != 'true'
             && always()
             && (
               steps.base-checkout.outcome == 'failure'

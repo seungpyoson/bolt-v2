@@ -213,9 +213,13 @@ class ArtifactRetentionResolvedInt(NamedTuple):
     config_ref: str | None
 
 
+RUNNERS_CONFIG_REF = "ci/github-actions-runners.toml"
 DEPLOYABLE_ARTIFACT_CLASS = "deployable"
-BUILD_DEPLOY_LOOKBACK_BINDING = "build_deploy"
-BUILD_DEPLOY_LOOKBACK_REF = "ci_provenance.deploy.artifact_lookback_age_seconds"
+DEPLOY_ARTIFACT_UPLOAD_KEY = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
+DEPLOY_ARTIFACT_NAME_REF = "ci_provenance.deploy.artifact_name"
+DEPLOY_ARTIFACT_RETENTION_REF = "ci_provenance.deploy.artifact_retention_days"
+DEPLOY_ARTIFACT_REQUIRED_IF_REF = "ci_provenance.deploy.artifact_upload_if"
+DEPLOY_ARTIFACT_LOOKBACK_REF = "ci_provenance.deploy.artifact_lookback_age_seconds"
 
 
 ArtifactRetentionSourceResolver = Callable[
@@ -13129,6 +13133,21 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
         required_if = artifact_retention_optional_required_if(data, config_path, raw_upload, prefix)
         if artifact_class == DEPLOYABLE_ARTIFACT_CLASS and required_if is None:
             raise ValueError(f"{prefix} deployable uploads must define required_if")
+        if upload_key == DEPLOY_ARTIFACT_UPLOAD_KEY:
+            if artifact_class != DEPLOYABLE_ARTIFACT_CLASS:
+                raise ValueError(f"{prefix}.artifact_class must be {DEPLOYABLE_ARTIFACT_CLASS}")
+            if (
+                raw_upload.get("artifact_name_config_file") != RUNNERS_CONFIG_REF
+                or raw_upload.get("artifact_name_config_ref") != DEPLOY_ARTIFACT_NAME_REF
+            ):
+                raise ValueError(f"{prefix}.artifact_name_config_ref must be {DEPLOY_ARTIFACT_NAME_REF}")
+            if retention.config_file != RUNNERS_CONFIG_REF or retention.config_ref != DEPLOY_ARTIFACT_RETENTION_REF:
+                raise ValueError(f"{prefix}.retention_days_config_ref must be {DEPLOY_ARTIFACT_RETENTION_REF}")
+            if (
+                raw_upload.get("required_if_config_file") != RUNNERS_CONFIG_REF
+                or raw_upload.get("required_if_config_ref") != DEPLOY_ARTIFACT_REQUIRED_IF_REF
+            ):
+                raise ValueError(f"{prefix}.required_if_config_ref must be {DEPLOY_ARTIFACT_REQUIRED_IF_REF}")
         uploads[upload_key] = ArtifactRetentionUploadSite(
             artifact_name=artifact_name,
             artifact_class=artifact_class,
@@ -13161,8 +13180,8 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
         site = uploads[upload]
         if site.retention_config_file != config_file or site.retention_config_ref != retention_ref:
             raise ValueError(f"{prefix} must match the upload retention source")
-        if binding_name == BUILD_DEPLOY_LOOKBACK_BINDING and lookback_ref != BUILD_DEPLOY_LOOKBACK_REF:
-            raise ValueError(f"{prefix}.lookback_ref must be {BUILD_DEPLOY_LOOKBACK_REF}")
+        if upload == DEPLOY_ARTIFACT_UPLOAD_KEY and lookback_ref != DEPLOY_ARTIFACT_LOOKBACK_REF:
+            raise ValueError(f"{prefix}.lookback_ref must be {DEPLOY_ARTIFACT_LOOKBACK_REF}")
         binding_config = resolve_repo_toml_config_file(config_path, config_file, f"{prefix}.config_file")
         retention_days = resolve_config_positive_int_ref(binding_config, retention_ref, f"{prefix}.retention_ref")
         max_lookback_age_seconds = resolve_config_positive_int_ref(binding_config, lookback_ref, f"{prefix}.lookback_ref")

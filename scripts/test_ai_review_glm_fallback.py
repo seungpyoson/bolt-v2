@@ -794,6 +794,14 @@ def test_low_quality_marker_comment_does_not_suppress_fallback() -> None:
     assert "fallback ran after weak marker." in github.posted[0]
 
 
+def test_finding_about_review_notice_counts_as_quality_deliverable() -> None:
+    module = load_script()
+    config = fallback_config(module)
+    response = valid_finding_response("The Claude review notice path can skip an infrastructure failure.")
+
+    assert module.review_body_is_quality_deliverable(response, config.output_contract)
+
+
 def test_same_round_marker_comment_is_updated_instead_of_posting_new_comment() -> None:
     module = load_script()
     github = FakeGitHub(
@@ -2440,6 +2448,7 @@ def main() -> int:
     test_incremental_pr_agent_deliverable_suppresses_fallback()
     test_prior_glm_fallback_marker_suppresses_later_fallback()
     test_low_quality_marker_comment_does_not_suppress_fallback()
+    test_finding_about_review_notice_counts_as_quality_deliverable()
     test_same_round_marker_comment_is_updated_instead_of_posting_new_comment()
     test_previous_round_marker_comment_does_not_get_overwritten()
     test_generated_low_quality_review_is_not_posted_as_deliverable()

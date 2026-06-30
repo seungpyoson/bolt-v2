@@ -406,12 +406,14 @@ jobs:
             && (
               steps.review-decision.outputs.should_review == 'true'
               || steps.runtime-config.outcome == 'failure'
+              || steps.review-decision.outcome == 'failure'
             )
             && always()
             && (
               steps.checkout-head.outcome == 'failure'
               || steps.checkout-base.outcome == 'failure'
               || steps.runtime-config.outcome == 'failure'
+              || steps.review-decision.outcome == 'failure'
               || steps.prepare-standards.outcome == 'failure'
               || steps.review-window.outcome == 'failure'
               || steps.setup-node.outcome == 'failure'

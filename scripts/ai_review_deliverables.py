@@ -623,8 +623,6 @@ def review_body_is_quality_deliverable(body: str, output_contract: ReviewOutputC
     if not text:
         return False
     lowered = text.lower()
-    if any(indicator.lower() in lowered for indicator in output_contract.non_deliverable_indicators):
-        return False
     finding_labels = tuple(label.lower() for label in output_contract.finding_required_labels)
     if finding_labels and all(review_body_has_line_starting_with(lowered, label) for label in finding_labels):
         return True
@@ -635,6 +633,8 @@ def review_body_is_quality_deliverable(body: str, output_contract: ReviewOutputC
         if any(noise.lower() in lowered for noise in output_contract.pr_agent_disabled_noise):
             return False
         return pr_agent_body_has_substantive_review(lowered, output_contract)
+    if any(indicator.lower() in lowered for indicator in output_contract.non_deliverable_indicators):
+        return False
     return False
 
 

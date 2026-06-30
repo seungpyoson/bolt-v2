@@ -81,6 +81,7 @@ GLM_DELIVERABLE_SNIPPETS = (
     "Post GLM fallback infrastructure failure notice",
     "&& always()",
     "steps.runtime-config.outcome == 'failure'",
+    "steps.review-decision.outcome == 'failure'",
     "steps.review-window.outcome == 'failure'",
     "steps.glm_fallback.outputs.failure_notice_posted != 'true'",
     "steps.glm_stamp.outcome == 'failure' && steps.glm_fallback.outcome != 'success'",
@@ -157,6 +158,7 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "&& always()",
     "steps.install-kimi.outcome == 'failure'",
     "steps.runtime-config.outcome == 'failure'",
+    "steps.review-decision.outcome == 'failure'",
     "steps.review-window.outcome == 'failure'",
     "steps.kimi_fallback.outputs.failure_notice_posted != 'true'",
     "review infrastructure failed or timed out before posting a usable failure notice",
@@ -227,6 +229,7 @@ CLAUDE_WORKFLOW_SNIPPETS = (
     "--step-outcome \"${{ steps.claude.outcome }}\"",
     "Post Claude review infrastructure failure notice",
     "steps.runtime-config.outcome == 'failure'",
+    "steps.review-decision.outcome == 'failure'",
     "steps.review-window.outcome == 'failure'",
     "steps.claude-deliverable.outcome == 'failure'",
     "steps.claude-deliverable.outputs.failure_notice_posted != 'true'",
@@ -789,6 +792,8 @@ def verify_infra_notice_runtime_config_failure_gate(
         ]
     if step.count("steps.runtime-config.outcome == 'failure'") < 2:
         return [f"{provider_label} infrastructure notice must cover runtime config failures"]
+    if step.count("steps.review-decision.outcome == 'failure'") < 2:
+        return [f"{provider_label} infrastructure notice must cover review-decision failures"]
     if "steps.review-window.outcome == 'failure'" not in step:
         return [f"{provider_label} infrastructure notice must cover review-window failures"]
     if "failure_notice_posted != 'true'" not in step:
@@ -1794,6 +1799,15 @@ def run_self_tests(repo_root: Path) -> None:
         "Claude infra review-window arm removed",
         claude_infra_review_window_arm_removed,
         "Claude infrastructure notice must cover review-window failures",
+    )
+
+    claude_infra_review_decision_arm_removed = verify_variant(
+        claude_text=claude.replace("              || steps.review-decision.outcome == 'failure'\n", "", 1),
+    )
+    assert_finding(
+        "Claude infra review-decision arm removed",
+        claude_infra_review_decision_arm_removed,
+        "Claude infrastructure notice must cover review-decision failures",
     )
 
     claude_infra_failure_notice_guard_removed = verify_variant(

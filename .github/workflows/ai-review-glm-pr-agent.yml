@@ -377,11 +377,13 @@ jobs:
             && (
               steps.review-decision.outputs.should_review == 'true'
               || steps.runtime-config.outcome == 'failure'
+              || steps.review-decision.outcome == 'failure'
             )
             && always()
             && (
               steps.base-checkout.outcome == 'failure'
               || steps.runtime-config.outcome == 'failure'
+              || steps.review-decision.outcome == 'failure'
               || steps.review-window.outcome == 'failure'
               || steps.glm_fallback.outcome == 'failure'
               || (steps.glm_stamp.outcome == 'failure' && steps.glm_fallback.outcome != 'success')

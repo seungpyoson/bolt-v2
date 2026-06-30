@@ -381,10 +381,12 @@ jobs:
             && (
               steps.review-decision.outputs.should_review == 'true'
               || steps.runtime-config.outcome == 'failure'
+              || steps.review-decision.outcome == 'failure'
             )
             && always()
             && (
               steps.runtime-config.outcome == 'failure'
+              || steps.review-decision.outcome == 'failure'
               || steps.review-window.outcome == 'failure'
               || steps.claude-deliverable.outcome == 'failure'
             )

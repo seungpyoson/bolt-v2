@@ -94,10 +94,7 @@ pub(super) fn validate_target_gate_provider_references(
                     &format!("{subscription_context}.{TARGET_PROVIDER_PREFERENCE_FIELD}"),
                     &provider_id,
                 );
-                if !allowed_provider_ids.is_empty()
-                    && !allowed_provider_ids
-                        .iter()
-                        .any(|allowed| allowed == &provider_id)
+                if !allowed_provider_ids.is_empty() && !allowed_provider_ids.contains(&provider_id)
                 {
                     errors.push(format!(
                         "{subscription_context}.{TARGET_PROVIDER_PREFERENCE_FIELD} provider_id `{provider_id}` must also be listed in {TARGET_ALLOWED_PROVIDER_IDS_FIELD}"
@@ -126,10 +123,7 @@ pub(super) fn validate_target_gate_provider_references(
                     &format!("{mapping_context}.{TARGET_PROVIDER_ID_FIELD}"),
                     &provider_id,
                 );
-                if !allowed_provider_ids.is_empty()
-                    && !allowed_provider_ids
-                        .iter()
-                        .any(|allowed| allowed == &provider_id)
+                if !allowed_provider_ids.is_empty() && !allowed_provider_ids.contains(&provider_id)
                 {
                     errors.push(format!(
                         "{mapping_context}.{TARGET_PROVIDER_ID_FIELD} `{provider_id}` must also be listed in {TARGET_ALLOWED_PROVIDER_IDS_FIELD}"

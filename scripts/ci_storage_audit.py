@@ -1244,6 +1244,12 @@ def cleanup_ref_has_known_namespace(ref: str | None) -> bool:
     return ref is not None and ref.startswith(("refs/heads/", "refs/tags/"))
 
 
+def canonical_branch_ref_name(ref: str | None) -> str | None:
+    if ref is None or not ref.startswith("refs/heads/"):
+        return None
+    return ref.removeprefix("refs/heads/")
+
+
 def branch_ref_event_allows_head_branch(
     event: Any,
     head_branch: str,
@@ -1260,12 +1266,18 @@ def classify_workflow_ref(
     branch_ref_events: dict[str, tuple[str, ...]] | None = None,
 ) -> ClassifiedText:
     branch_ref_events = branch_ref_events or {}
+    event = workflow_run.get("event")
     ref = classify_cleanup_ref(workflow_run.get("ref"), FIELD_ARTIFACT_REF, allow_canonical_refs=True)
-    if ref.failure is not None or cleanup_ref_has_known_namespace(ref.value):
+    if ref.failure is not None:
+        return ref
+    ref_branch = canonical_branch_ref_name(ref.value)
+    if ref_branch is not None and isinstance(event, str) and event in branch_ref_events:
+        if not branch_ref_event_allows_head_branch(event, ref_branch, branch_ref_events):
+            return ClassifiedText(value=None, failure=input_failure(FIELD_ARTIFACT_REF, STATE_INVALID))
+    if cleanup_ref_has_known_namespace(ref.value):
         return ref
     head_branch = classify_cleanup_ref(workflow_run.get("head_branch"), FIELD_ARTIFACT_REF, allow_canonical_refs=False)
     if head_branch.failure is not None or head_branch.value is not None:
-        event = workflow_run.get("event")
         if (
             head_branch.value is not None
             and branch_ref_event_allows_head_branch(event, head_branch.value, branch_ref_events)

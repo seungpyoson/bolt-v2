@@ -546,6 +546,37 @@ def assert_source_check_alias_targets_must_have_workflows() -> None:
             raise AssertionError("missing source check workflow did not fail config load")
 
 
+def assert_source_check_evidence_fallback_is_precise() -> None:
+    module = load_preflight_module()
+    metadata = {"headRefOid": "1" * 40}
+    check = passing_source_pr_check("gate-iteration")
+    legacy_fallback = module.mergify_required_check_finding(
+        merge_check="gate",
+        source_check="gate-iteration",
+        readiness={"metadata": metadata, "checks": [check]},
+        expected_workflow="CI",
+    )
+    assert_equal(legacy_fallback, None, "missing source_checks falls back to checks")
+
+    for label, source_checks in (("empty", []), ("none", None)):
+        finding = module.mergify_required_check_finding(
+            merge_check="gate",
+            source_check="gate-iteration",
+            readiness={
+                "metadata": metadata,
+                "checks": [check],
+                "source_checks": source_checks,
+            },
+            expected_workflow="CI",
+        )
+        if finding is None:
+            raise AssertionError(f"{label} source_checks must fail closed")
+        evidence = finding["evidence"]
+        assert_equal(finding["reason_code"], "required_check_missing", f"{label} source_checks reason")
+        assert_equal(evidence["check_name"], "gate-iteration", f"{label} source check name")
+        assert_equal(evidence["merge_condition_check"], "gate", f"{label} merge condition")
+
+
 def assert_git_and_gh_use_input_timeout() -> None:
     module = load_preflight_module()
     calls: list[dict[str, object]] = []
@@ -2862,6 +2893,7 @@ def main() -> int:
     assert_contract_result_reduces_findings_by_table()
     assert_preflight_input_timeout_is_config_driven()
     assert_source_check_alias_targets_must_have_workflows()
+    assert_source_check_evidence_fallback_is_precise()
     assert_git_and_gh_use_input_timeout()
     assert_gh_timeout_is_preflight_error()
     assert_merge_tree_timeout_is_preflight_error()

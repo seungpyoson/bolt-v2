@@ -1011,10 +1011,22 @@ def with_merge_condition_check(
     return {
         **finding,
         "evidence": {
-            **dict(finding["evidence"]),
+            **dict(finding.get("evidence", {})),
             "merge_condition_check": merge_check,
         },
     }
+
+
+def source_check_evidence(readiness: Mapping[str, object]) -> tuple[object, ...]:
+    if "source_checks" in readiness:
+        raw_checks = readiness["source_checks"]
+    else:
+        raw_checks = readiness.get("checks", ())
+    if raw_checks is None:
+        return ()
+    if isinstance(raw_checks, (str, bytes)) or not isinstance(raw_checks, Sequence):
+        return ()
+    return tuple(raw_checks)
 
 
 def mergify_required_check_finding(
@@ -1024,7 +1036,7 @@ def mergify_required_check_finding(
     readiness: Mapping[str, object],
     expected_workflow: str | None,
 ) -> dict[str, object] | None:
-    checks = tuple(readiness.get("source_checks", readiness.get("checks", ())))
+    checks = source_check_evidence(readiness)
     metadata = dict(readiness.get("metadata", {}))
     actual_head = str(metadata.get("headRefOid", ""))
     matches = tuple(check for check in checks if check_name_matches(check, source_check))

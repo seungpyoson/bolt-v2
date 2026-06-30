@@ -2865,6 +2865,25 @@ def block_has_raw_top_level_scalar(block: list[str], name: str, value: str) -> b
     return any(strip_comment(line).rstrip() == expected for line in block)
 
 
+def job_top_level_items(job_lines: list[str]) -> dict[str, str] | None:
+    items: dict[str, str] = {}
+    for line in job_lines:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent != 4:
+            continue
+        item_match = re.match(rf"^\s{{4}}({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if item_match is None:
+            return None
+        key = unquote_yaml_scalar(item_match.group(1))
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(item_match.group(2))
+    return items
+
+
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
     return any(pattern.match(strip_comment(line)) for line in lines)
 
@@ -13803,8 +13822,21 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
         errors.append(f"{workflow_name} must define coverage-enforcer job")
         return errors
     job_text = "\n".join(job)
+    job_items = job_top_level_items(job)
+    expected_job_keys = {"name", "runs-on", "steps"}
+    if job_items is None or set(job_items) != expected_job_keys:
+        errors.append(f"{workflow_name} coverage-enforcer job must use only the pinned job-level keys")
+    if job_items is not None and "if" in job_items:
+        errors.append(
+            f"{workflow_name} coverage-enforcer job must not define a job-level "
+            "if-condition; required checks must report success or failure, never skipped"
+        )
+    if job_items is not None and "continue-on-error" in job_items:
+        errors.append(f"{workflow_name} coverage-enforcer job must not define job-level continue-on-error")
+    if job_items is not None and "permissions" in job_items:
+        errors.append(f"{workflow_name} coverage-enforcer job must not define job-level permissions")
     job_if = job_if_value(job)
-    if _normalize_concurrency_text(job_if) != EXPECTED_COVERAGE_ENFORCER_IF:
+    if "if" not in (job_items or {}) and _normalize_concurrency_text(job_if) != EXPECTED_COVERAGE_ENFORCER_IF:
         errors.append(
             f"{workflow_name} coverage-enforcer job must not define a job-level "
             "if-condition; required checks must report success or failure, never skipped"

@@ -5775,6 +5775,42 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
                 )
             },
         ),
+        (
+            "coverage-enforcer job must not define a job-level if-condition",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+                    "    'if': ${{ github.event_name == 'pull_request' }}\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job must not define job-level continue-on-error",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+                    "    continue-on-error: true\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job must not define job-level permissions",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+                    "    permissions:\n"
+                    "      contents: write\n"
+                    "      checks: write\n"
+                    "      pull-requests: write\n",
+                )
+            },
+        ),
     ]
     for fragment, workflows in cases:
         errors = verifier.verify_coverage_enforcer_workflow(workflows)

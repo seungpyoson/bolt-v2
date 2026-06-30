@@ -1111,6 +1111,18 @@ EXPECTED_MERGE_READINESS_PROGRESS_IF = (
 
 EXPECTED_COVERAGE_ENFORCER_IF = ""
 
+EXPECTED_COVERAGE_ENFORCER_RUN_BODY = (
+    "if [ ! -f scripts/coverage_enforcer.py ]; then",
+    '  echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py"',
+    "  exit 1",
+    "fi",
+    'if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then',
+    '  echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py"',
+    "  exit 1",
+    "fi",
+    "python3 scripts/coverage_enforcer.py",
+)
+
 
 MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # .github/workflows/ci.yml — merge_group arm format('mq-{0}', github.ref)
@@ -2837,8 +2849,6 @@ def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
 def job_if_value(job_lines: list[str]) -> str:
     for index, line in enumerate(job_lines):
         clean = strip_comment(line).rstrip()
-        if clean.strip() == "steps:":
-            return ""
         match = re.match(r"^    if:\s*(?P<value>.*?)\s*$", clean)
         if match is not None:
             value = match.group("value")
@@ -13799,19 +13809,13 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
             break
     if "          persist-credentials: false" not in job_text:
         errors.append(f"{workflow_name} checkout must not persist credentials")
-    for required_block in (
-        '          if [ ! -f scripts/coverage_enforcer.py ]; then\n'
-        '            echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py"\n'
-        "            exit 1\n"
-        "          fi",
-        '          if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then\n'
-        '            echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py"\n'
-        "            exit 1\n"
-        "          fi",
-    ):
-        if required_block not in job_text:
-            errors.append(f"{workflow_name} job must guard first-run trusted-base bootstrap")
-            break
+    enforce_steps = [
+        block for block in step_blocks(job) if step_name_matches(block, "Enforce coverage map")
+    ]
+    if len(enforce_steps) != 1:
+        errors.append(f"{workflow_name} job must run scripts/coverage_enforcer.py")
+    elif tuple(block_run_body_lines(enforce_steps[0])) != EXPECTED_COVERAGE_ENFORCER_RUN_BODY:
+        errors.append(f"{workflow_name} job must guard first-run trusted-base bootstrap")
     if "python3 scripts/coverage_enforcer.py" not in job_text:
         errors.append(f"{workflow_name} job must run scripts/coverage_enforcer.py")
     for required in (

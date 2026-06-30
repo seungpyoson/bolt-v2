@@ -5640,6 +5640,31 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             },
         ),
         (
+            "job must guard first-run trusted-base bootstrap",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n",
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n"
+                    "            echo \"coverage-enforcer bootstrap fail-open: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
+                    "            exit 0\n"
+                    "          fi\n"
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n",
+                )
+            },
+        ),
+        (
+            "job must guard first-run trusted-base bootstrap",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n",
+                    "          python3 scripts/coverage_enforcer.py\n"
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n",
+                )
+            },
+        ),
+        (
             "coverage-enforcer must not be defined inside another workflow",
             {
                 workflow_name: BASE_COVERAGE_ENFORCER_WORKFLOW,
@@ -5658,6 +5683,17 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
                     "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
                     "    if: ${{ github.event_name == 'pull_request' }}\n"
                     "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job must not define a job-level if-condition",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "          python3 scripts/coverage_enforcer.py\n",
+                    "          python3 scripts/coverage_enforcer.py\n"
+                    "    if: ${{ github.event_name == 'pull_request' }}\n",
                 )
             },
         ),

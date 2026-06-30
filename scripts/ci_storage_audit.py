@@ -91,7 +91,7 @@ class ArtifactCleanupPolicy(NamedTuple):
     protected_refs: tuple[str, ...]
     protected_ref_prefixes: tuple[str, ...]
     protected_ref_globs: tuple[str, ...]
-    branch_ref_events: tuple[str, ...]
+    branch_ref_events: dict[str, tuple[str, ...]]
     active_run_statuses: tuple[str, ...]
     terminal_run_statuses: tuple[str, ...]
     workflow_run_fetch_limit: int
@@ -184,6 +184,7 @@ class FieldSpec(NamedTuple):
     output: str
     parser: Callable[[Any, str], Any]
     default: Any = _MISSING
+    merge: Callable[[Any, Any], Any] | None = None
 
 
 class PaginatedPayloadSpec(NamedTuple):
@@ -373,6 +374,7 @@ def merge_paginated_object_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
     spec = paginated_payload_spec_for_pages(pages)
     merged: dict[str, Any] = {spec.list_field: []}
     scalar_names = {field.source for field in spec.scalar_fields}
+    scalar_mergers = {field.output: field.merge for field in spec.scalar_fields}
     for page in pages:
         parsed_scalars = parse_contract_object(page, spec.label, spec.scalar_fields)
         page_items = list_field(page, spec.list_field, spec.label)
@@ -386,11 +388,17 @@ def merge_paginated_object_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
             )
         for key, value in parsed_scalars.items():
             if key in merged and merged[key] != value:
-                raise AuditError(
-                    f"{spec.label}.{key} differs across paginated pages",
-                    kind=FailureKind.AMBIGUOUS,
-                    field=f"{spec.label}.{key}",
-                )
+                merger = scalar_mergers.get(key)
+                if merger is None:
+                    raise AuditError(
+                        f"{spec.label}.{key} differs across paginated pages",
+                        kind=FailureKind.AMBIGUOUS,
+                        field=f"{spec.label}.{key}",
+                    )
+                # GitHub total_count can change while --paginate is reading live pages.
+                # Each page value was validated above; keep the conservative bound.
+                merged[key] = merger(merged[key], value)
+                continue
             merged[key] = value
         merged[spec.list_field].extend(page_items)
     return merged
@@ -680,6 +688,26 @@ def require_policy_string_list(payload: dict[str, Any], key: str, label: str) ->
     return result
 
 
+def require_policy_string_list_table(payload: dict[str, Any], key: str, label: str) -> dict[str, tuple[str, ...]]:
+    value = payload.get(key)
+    if not isinstance(value, dict) or not value:
+        raise AuditError(f"{label}.{key} must be a non-empty string-list table")
+    result: dict[str, tuple[str, ...]] = {}
+    for item_key, item_value in value.items():
+        event = require_text(item_key, f"{label}.{key} key")
+        if event in result:
+            raise AuditError(f"{label}.{key} must not contain duplicate event keys")
+        if not isinstance(item_value, list) or not item_value:
+            raise AuditError(f"{label}.{key}.{event} must be a non-empty string list")
+        globs: list[str] = []
+        for index, item in enumerate(item_value):
+            globs.append(require_text(item, f"{label}.{key}.{event}[{index}]"))
+        if len(set(globs)) != len(globs):
+            raise AuditError(f"{label}.{key}.{event} must not contain duplicates")
+        result[event] = tuple(globs)
+    return result
+
+
 def require_policy_positive_int(payload: dict[str, Any], key: str, label: str) -> int:
     value = payload.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -876,7 +904,7 @@ def load_cleanup_policy_text(raw: str, *, label: str) -> ArtifactCleanupPolicy:
             "protected_ref_globs",
             "storage_audit.cleanup_feasibility",
         ),
-        branch_ref_events=optional_policy_string_list(
+        branch_ref_events=require_policy_string_list_table(
             table,
             "branch_ref_events",
             "storage_audit.cleanup_feasibility",
@@ -1028,12 +1056,12 @@ PAGINATED_PAYLOAD_SPECS = {
     "actions/caches": PaginatedPayloadSpec(
         label="actions/caches",
         list_field="actions_caches",
-        scalar_fields=(FieldSpec("total_count", "total_count", require_nonnegative_int),),
+        scalar_fields=(FieldSpec("total_count", "total_count", require_nonnegative_int, merge=max),),
     ),
     "actions/artifacts": PaginatedPayloadSpec(
         label="actions/artifacts",
         list_field="artifacts",
-        scalar_fields=(FieldSpec("total_count", "total_count", require_nonnegative_int),),
+        scalar_fields=(FieldSpec("total_count", "total_count", require_nonnegative_int, merge=max),),
     ),
 }
 
@@ -1216,18 +1244,35 @@ def cleanup_ref_has_known_namespace(ref: str | None) -> bool:
     return ref is not None and ref.startswith(("refs/heads/", "refs/tags/"))
 
 
+def branch_ref_event_allows_head_branch(
+    event: Any,
+    head_branch: str,
+    branch_ref_events: dict[str, tuple[str, ...]],
+) -> bool:
+    if not isinstance(event, str):
+        return False
+    return any(fnmatch.fnmatchcase(head_branch, pattern) for pattern in branch_ref_events.get(event, ()))
+
+
 def classify_workflow_ref(
     workflow_run: dict[str, Any],
     *,
-    branch_ref_events: tuple[str, ...] = (),
+    branch_ref_events: dict[str, tuple[str, ...]] | None = None,
 ) -> ClassifiedText:
+    branch_ref_events = branch_ref_events or {}
     ref = classify_cleanup_ref(workflow_run.get("ref"), FIELD_ARTIFACT_REF, allow_canonical_refs=True)
     if ref.failure is not None or cleanup_ref_has_known_namespace(ref.value):
         return ref
     head_branch = classify_cleanup_ref(workflow_run.get("head_branch"), FIELD_ARTIFACT_REF, allow_canonical_refs=False)
     if head_branch.failure is not None or head_branch.value is not None:
-        if head_branch.value is not None and workflow_run.get("event") in branch_ref_events:
+        event = workflow_run.get("event")
+        if (
+            head_branch.value is not None
+            and branch_ref_event_allows_head_branch(event, head_branch.value, branch_ref_events)
+        ):
             return ClassifiedText(value=f"refs/heads/{head_branch.value}", failure=None)
+        if head_branch.value is not None and isinstance(event, str) and event in branch_ref_events:
+            return ClassifiedText(value=None, failure=input_failure(FIELD_ARTIFACT_REF, STATE_INVALID))
         return head_branch
     if ref.value is not None:
         return ref

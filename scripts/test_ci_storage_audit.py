@@ -70,7 +70,7 @@ def cleanup_candidate_policy(label: str) -> ci_storage_audit.ArtifactCleanupPoli
         protected_refs = ["main"]
         protected_ref_prefixes = []
         protected_ref_globs = []
-        branch_ref_events = ["push"]
+        branch_ref_events = { push = ["*"] }
         active_run_statuses = ["queued"]
         terminal_run_statuses = ["completed"]
         workflow_run_fetch_limit = 1
@@ -126,7 +126,7 @@ def cleanup_candidate_alert_policy_text() -> str:
     protected_refs = ["main"]
     protected_ref_prefixes = []
     protected_ref_globs = []
-    branch_ref_events = ["push"]
+    branch_ref_events = { push = ["*"] }
     active_run_statuses = ["queued"]
     terminal_run_statuses = ["completed"]
     workflow_run_fetch_limit = 1
@@ -628,7 +628,7 @@ class CiStorageAuditTests(unittest.TestCase):
             protected_refs = ["main"]
             protected_ref_prefixes = ["refs/tags/"]
             protected_ref_globs = []
-            branch_ref_events = ["push"]
+            branch_ref_events = { push = ["*"] }
             active_run_statuses = ["queued", "in_progress"]
             terminal_run_statuses = ["completed"]
             workflow_run_fetch_limit = 10
@@ -946,6 +946,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 protected_refs = []
                 protected_ref_prefixes = []
                 protected_ref_globs = []
+                branch_ref_events = { push = ["*"] }
                 active_run_statuses = ["queued"]
                 terminal_run_statuses = ["completed"]
                 workflow_run_fetch_limit = 1
@@ -986,7 +987,10 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v2.0-cleanup"))
         self.assertFalse(ci_storage_audit.ref_is_protected(policy, "v2.0/feature"))
         self.assertIn("pull_request", policy.branch_ref_events)
+        self.assertIn("workflow_dispatch", policy.branch_ref_events)
         self.assertNotIn("push", policy.branch_ref_events)
+        self.assertEqual(policy.branch_ref_events["workflow_dispatch"], ("codex/*",))
+        self.assertEqual(policy.workflow_run_fetch_limit, 900)
         self.assertEqual(
             ci_storage_audit.classify_workflow_ref(
                 {"head_branch": "feature/pr-artifact", "event": "pull_request"},
@@ -996,17 +1000,142 @@ class CiStorageAuditTests(unittest.TestCase):
         )
         self.assertEqual(
             ci_storage_audit.classify_workflow_ref(
-                {"head_branch": "feature/manual-artifact", "event": "workflow_dispatch"},
+                {"head_branch": "codex/manual-artifact", "event": "workflow_dispatch"},
                 branch_ref_events=policy.branch_ref_events,
             ).value,
-            "feature/manual-artifact",
+            "refs/heads/codex/manual-artifact",
         )
+        manual_tag_ref = ci_storage_audit.classify_workflow_ref(
+            {"head_branch": "v0.1.3", "event": "workflow_dispatch"},
+            branch_ref_events=policy.branch_ref_events,
+        )
+        self.assertIsNone(manual_tag_ref.value)
+        self.assertIsNotNone(manual_tag_ref.failure)
         self.assertEqual(
             ci_storage_audit.classify_workflow_ref(
                 {"head_branch": "v0.1.3", "event": "push"},
                 branch_ref_events=policy.branch_ref_events,
             ).value,
             "v0.1.3",
+        )
+
+    def test_real_cleanup_policy_classifies_workflow_dispatch_branch_archive(self) -> None:
+        policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
+        policy = ci_storage_audit.load_cleanup_policy_path(policy_path)
+        entry = ci_storage_audit.artifact_entry_from_raw(
+            {
+                "id": 1,
+                "name": "nextest-archive",
+                "size_in_bytes": 100,
+                "created_at": "2026-06-01T00:00:00Z",
+                "expires_at": "2026-06-15T00:00:00Z",
+                "expired": True,
+                "workflow_run": {
+                    "id": 501,
+                    "head_branch": "codex/cleanup-feasibility",
+                    "head_sha": "a" * 40,
+                },
+            }
+        )
+        client = FakeClient(
+            {
+                "actions/runs/501": {
+                    "id": 501,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "event": "workflow_dispatch",
+                    "head_branch": "codex/cleanup-feasibility",
+                    "head_sha": "a" * 40,
+                },
+                ("GLOBAL", "users/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                    "users/owner/settings/billing/actions",
+                    "billing endpoint denied",
+                ),
+                ("GLOBAL", "orgs/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                    "orgs/owner/settings/billing/actions",
+                    "billing endpoint denied",
+                ),
+            }
+        )
+
+        cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+            client,
+            repo="owner/repo",
+            artifacts=cleanup_artifacts_with_entry(entry),
+            policy=policy,
+        )
+
+        self.assertEqual(cleanup["candidate_count"], 1)
+        self.assertEqual(cleanup["candidate_bytes"], 100)
+        self.assertEqual(cleanup["metadata_unavailable_count"], 0)
+        self.assertEqual(cleanup["workflow_run_metadata"]["fetches"], 1)
+        self.assertFalse(cleanup["workflow_run_metadata"]["fetch_limit_reached"])
+        row = cleanup["rows"][0]
+        self.assertEqual(row["decision"], "DELETE-CANDIDATE")
+        self.assertEqual(row["class"], "nextest_archive")
+        self.assertEqual(row["workflow_run"]["ref"], "refs/heads/codex/cleanup-feasibility")
+        self.assertEqual(row["workflow_run"]["status"], "completed")
+        self.assertEqual(row["workflow_run"]["status_source"], "run_api")
+
+    def test_real_cleanup_policy_keeps_workflow_dispatch_tag_shaped_ref_ambiguous(self) -> None:
+        policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
+        policy = ci_storage_audit.load_cleanup_policy_path(policy_path)
+        entry = ci_storage_audit.artifact_entry_from_raw(
+            {
+                "id": 1,
+                "name": "nextest-archive",
+                "size_in_bytes": 100,
+                "created_at": "2026-06-01T00:00:00Z",
+                "expires_at": "2026-06-15T00:00:00Z",
+                "expired": True,
+                "workflow_run": {
+                    "id": 501,
+                    "head_branch": "v0.1.3",
+                    "head_sha": "a" * 40,
+                },
+            }
+        )
+        client = FakeClient(
+            {
+                "actions/runs/501": {
+                    "id": 501,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "event": "workflow_dispatch",
+                    "head_branch": "v0.1.3",
+                    "head_sha": "a" * 40,
+                },
+                ("GLOBAL", "users/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                    "users/owner/settings/billing/actions",
+                    "billing endpoint denied",
+                ),
+                ("GLOBAL", "orgs/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                    "orgs/owner/settings/billing/actions",
+                    "billing endpoint denied",
+                ),
+            }
+        )
+
+        cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+            client,
+            repo="owner/repo",
+            artifacts=cleanup_artifacts_with_entry(entry),
+            policy=policy,
+        )
+
+        self.assertEqual(cleanup["candidate_count"], 0)
+        self.assertEqual(cleanup["metadata_unavailable_count"], 1)
+        row = cleanup["rows"][0]
+        self.assertEqual(row["decision"], "KEEP")
+        self.assertEqual(row["reason_code"], "artifact_metadata_unavailable")
+        self.assertEqual(row["workflow_run"]["ref"], None)
+        self.assertEqual(
+            row["metadata_failure"],
+            {
+                "field": "workflow_run.ref",
+                "state": "invalid",
+                "code": "artifact_ref_invalid",
+            },
         )
 
     def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_has_unsupported_shape(self) -> None:
@@ -1610,6 +1739,7 @@ class CiStorageAuditTests(unittest.TestCase):
             protected_refs = ["main"]
             protected_ref_prefixes = ["refs/tags/"]
             protected_ref_globs = ["refs/heads/main", "refs/tags/*"]
+            branch_ref_events = { push = ["*"] }
             active_run_statuses = ["queued", "in_progress"]
             terminal_run_statuses = ["completed"]
             workflow_run_fetch_limit = 1
@@ -1879,6 +2009,7 @@ class CiStorageAuditTests(unittest.TestCase):
             protected_refs = ["main"]
             protected_ref_prefixes = []
             protected_ref_globs = []
+            branch_ref_events = { push = ["*"] }
             active_run_statuses = ["queued"]
             terminal_run_statuses = ["completed"]
             workflow_run_fetch_limit = 1
@@ -1953,6 +2084,7 @@ class CiStorageAuditTests(unittest.TestCase):
             protected_refs = ["main"]
             protected_ref_prefixes = []
             protected_ref_globs = []
+            branch_ref_events = { push = ["*"] }
             active_run_statuses = ["queued"]
             terminal_run_statuses = ["completed"]
             workflow_run_fetch_limit = 1
@@ -2026,6 +2158,7 @@ class CiStorageAuditTests(unittest.TestCase):
             protected_refs = ["main"]
             protected_ref_prefixes = []
             protected_ref_globs = []
+            branch_ref_events = { push = ["*"] }
             active_run_statuses = ["queued"]
             terminal_run_statuses = ["completed"]
             workflow_run_fetch_limit = 1
@@ -2111,6 +2244,7 @@ class CiStorageAuditTests(unittest.TestCase):
             protected_refs = ["main"]
             protected_ref_prefixes = []
             protected_ref_globs = []
+            branch_ref_events = { push = ["*"] }
             active_run_statuses = ["queued"]
             terminal_run_statuses = ["completed"]
             workflow_run_fetch_limit = 1
@@ -2196,6 +2330,7 @@ class CiStorageAuditTests(unittest.TestCase):
             protected_refs = ["main"]
             protected_ref_prefixes = []
             protected_ref_globs = []
+            branch_ref_events = { push = ["*"] }
             active_run_statuses = ["queued"]
             terminal_run_statuses = ["completed"]
             workflow_run_fetch_limit = 1
@@ -2289,6 +2424,7 @@ class CiStorageAuditTests(unittest.TestCase):
             protected_refs = ["main"]
             protected_ref_prefixes = []
             protected_ref_globs = []
+            branch_ref_events = { push = ["*"] }
             active_run_statuses = ["queued"]
             terminal_run_statuses = ["completed"]
             workflow_run_fetch_limit = 1
@@ -2894,6 +3030,7 @@ class CiStorageAuditTests(unittest.TestCase):
             protected_refs = ["main"]
             protected_ref_prefixes = []
             protected_ref_globs = []
+            branch_ref_events = { push = ["*"] }
             active_run_statuses = ["queued"]
             terminal_run_statuses = ["completed"]
             workflow_run_fetch_limit = 1
@@ -2950,6 +3087,7 @@ class CiStorageAuditTests(unittest.TestCase):
             protected_refs = ["main"]
             protected_ref_prefixes = []
             protected_ref_globs = []
+            branch_ref_events = { push = ["*"] }
             active_run_statuses = ["queued"]
             terminal_run_statuses = ["completed"]
             workflow_run_fetch_limit = 1
@@ -3014,6 +3152,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 protected_refs = []
                 protected_ref_prefixes = []
                 protected_ref_globs = []
+                branch_ref_events = { push = ["*"] }
                 active_run_statuses = ["queued"]
                 terminal_run_statuses = ["completed"]
                 workflow_run_fetch_limit = 1
@@ -3049,6 +3188,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 protected_refs = ["main "]
                 protected_ref_prefixes = []
                 protected_ref_globs = []
+                branch_ref_events = { push = ["*"] }
                 active_run_statuses = ["queued"]
                 terminal_run_statuses = ["completed"]
                 workflow_run_fetch_limit = 1
@@ -3093,6 +3233,7 @@ class CiStorageAuditTests(unittest.TestCase):
                         protected_refs = []
                         protected_ref_prefixes = []
                         protected_ref_globs = []
+                        branch_ref_events = {{ push = ["*"] }}
                         active_run_statuses = ["queued"]
                         terminal_run_statuses = ["completed"]
                         workflow_run_fetch_limit = 1
@@ -3139,6 +3280,7 @@ class CiStorageAuditTests(unittest.TestCase):
                         protected_refs = []
                         protected_ref_prefixes = []
                         protected_ref_globs = []
+                        branch_ref_events = {{ push = ["*"] }}
                         active_run_statuses = ["queued"]
                         terminal_run_statuses = ["completed"]
                         workflow_run_fetch_limit = 1
@@ -3175,6 +3317,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 protected_refs = []
                 protected_ref_prefixes = []
                 protected_ref_globs = []
+                branch_ref_events = { push = ["*"] }
                 active_run_statuses = ["queued"]
                 terminal_run_statuses = ["completed"]
                 workflow_run_fetch_limit = 1
@@ -3210,6 +3353,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 protected_refs = []
                 protected_ref_prefixes = []
                 protected_ref_globs = []
+                branch_ref_events = { push = ["*"] }
                 active_run_statuses = ["queued"]
                 terminal_run_statuses = ["completed"]
                 workflow_run_fetch_limit = 1
@@ -3245,6 +3389,7 @@ class CiStorageAuditTests(unittest.TestCase):
                 protected_refs = []
                 protected_ref_prefixes = []
                 protected_ref_globs = []
+                branch_ref_events = { push = ["*"] }
                 active_run_statuses = ["queued"]
                 terminal_run_statuses = ["completed"]
                 workflow_run_fetch_limit = 1
@@ -3310,23 +3455,28 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.EMPTY)
         self.assertEqual(raised.exception.field, "paginated")
 
-    def test_merge_paginated_payload_rejects_scalar_drift(self) -> None:
+    def test_merge_paginated_payload_tolerates_live_total_count_churn(self) -> None:
         payload = [
             {
-                "total_count": 1,
+                "total_count": 2,
                 "artifacts": [{"name": "first", "size_in_bytes": 1}],
             },
             {
-                "total_count": 2,
+                "total_count": 3,
                 "artifacts": [{"name": "second", "size_in_bytes": 2}],
             },
         ]
 
-        with self.assertRaises(ci_storage_audit.AuditError) as raised:
-            ci_storage_audit.merge_paginated_payload(payload)
-
-        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.AMBIGUOUS)
-        self.assertEqual(raised.exception.field, "actions/artifacts.total_count")
+        self.assertEqual(
+            ci_storage_audit.merge_paginated_payload(payload),
+            {
+                "total_count": 3,
+                "artifacts": [
+                    {"name": "first", "size_in_bytes": 1},
+                    {"name": "second", "size_in_bytes": 2},
+                ],
+            },
+        )
 
     def test_fetch_cache_rejects_invalid_total_count_on_any_paginated_page(self) -> None:
         client = FakeClient(

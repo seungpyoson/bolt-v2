@@ -1,0 +1,6 @@
+Codex Cloud auto-review smoke marker.
+
+This throwaway fixture exists only to verify that opening a ready pull request
+from the seungpyoson GitHub account produces a Codex review artifact.
+
+Do not merge this file into main.

@@ -99,6 +99,28 @@ class ArtifactCleanupPolicy(NamedTuple):
     classes: tuple[ArtifactClassRule, ...]
 
 
+class CleanupAlertPolicy(NamedTuple):
+    schema_version: int
+    title: str
+    clear_title: str
+    candidate_count_error_threshold: int
+    candidate_count_error_reason: str
+    expected_reclaim_proxy_bytes_error_threshold: int
+    expected_reclaim_proxy_bytes_error_reason: str
+    unverified_candidate_count_warning_threshold: int
+    unverified_candidate_count_warning_reason: str
+    metadata_unavailable_count_warning_threshold: int
+    metadata_unavailable_count_warning_reason: str
+
+
+class CleanupAlertFinding(NamedTuple):
+    level: str
+    metric: str
+    value: int
+    threshold: int
+    reason: str
+
+
 class InputFailure(NamedTuple):
     field: str
     state: str
@@ -878,6 +900,73 @@ def load_cleanup_policy_path(path: pathlib.Path) -> ArtifactCleanupPolicy:
         return load_cleanup_policy_text(path.read_text(), label=str(path))
     except OSError as exc:
         raise AuditError(f"{path}: could not read cleanup policy: {exc}") from exc
+
+
+def load_cleanup_alert_policy_text(raw: str, *, label: str) -> CleanupAlertPolicy:
+    try:
+        document = tomllib.loads(raw)
+    except tomllib.TOMLDecodeError as exc:
+        raise AuditError(f"{label}: invalid TOML: {exc}") from exc
+    if not isinstance(document, dict):
+        raise AuditError(f"{label}: TOML root must be a table")
+    storage_audit = require_policy_table(document, "storage_audit", label)
+    table = require_policy_table(storage_audit, "cleanup_feasibility_alert", "storage_audit")
+    schema_version = table.get("schema_version")
+    if isinstance(schema_version, bool) or schema_version != 1:
+        raise AuditError("storage_audit.cleanup_feasibility_alert.schema_version must be 1")
+    label_name = "storage_audit.cleanup_feasibility_alert"
+    return CleanupAlertPolicy(
+        schema_version=1,
+        title=require_policy_string(table, "title", label_name),
+        clear_title=require_policy_string(table, "clear_title", label_name),
+        candidate_count_error_threshold=require_policy_positive_int(
+            table,
+            "candidate_count_error_threshold",
+            label_name,
+        ),
+        candidate_count_error_reason=require_policy_string(
+            table,
+            "candidate_count_error_reason",
+            label_name,
+        ),
+        expected_reclaim_proxy_bytes_error_threshold=require_policy_positive_int(
+            table,
+            "expected_reclaim_proxy_bytes_error_threshold",
+            label_name,
+        ),
+        expected_reclaim_proxy_bytes_error_reason=require_policy_string(
+            table,
+            "expected_reclaim_proxy_bytes_error_reason",
+            label_name,
+        ),
+        unverified_candidate_count_warning_threshold=require_policy_positive_int(
+            table,
+            "unverified_candidate_count_warning_threshold",
+            label_name,
+        ),
+        unverified_candidate_count_warning_reason=require_policy_string(
+            table,
+            "unverified_candidate_count_warning_reason",
+            label_name,
+        ),
+        metadata_unavailable_count_warning_threshold=require_policy_positive_int(
+            table,
+            "metadata_unavailable_count_warning_threshold",
+            label_name,
+        ),
+        metadata_unavailable_count_warning_reason=require_policy_string(
+            table,
+            "metadata_unavailable_count_warning_reason",
+            label_name,
+        ),
+    )
+
+
+def load_cleanup_alert_policy_path(path: pathlib.Path) -> CleanupAlertPolicy:
+    try:
+        return load_cleanup_alert_policy_text(path.read_text(), label=str(path))
+    except OSError as exc:
+        raise AuditError(f"{path}: could not read cleanup alert policy: {exc}") from exc
 
 
 def has_cleanup_policy_table(path: pathlib.Path) -> bool:
@@ -2119,6 +2208,137 @@ def append_step_summary(path: str, text: str) -> None:
         summary.write("\n")
 
 
+def cleanup_alert_metric(cleanup: dict[str, Any], metric: str) -> int:
+    return require_nonnegative_int(
+        require_field(cleanup, metric, f"artifact_cleanup_feasibility.{metric}"),
+        f"artifact_cleanup_feasibility.{metric}",
+    )
+
+
+def cleanup_alert_findings(
+    snapshot: dict[str, Any],
+    policy: CleanupAlertPolicy,
+) -> list[CleanupAlertFinding]:
+    cleanup = require_object(
+        require_field(
+            snapshot,
+            "artifact_cleanup_feasibility",
+            "artifact_cleanup_feasibility",
+        ),
+        "artifact_cleanup_feasibility",
+    )
+    checks = (
+        (
+            "error",
+            "candidate_count",
+            policy.candidate_count_error_threshold,
+            policy.candidate_count_error_reason,
+        ),
+        (
+            "error",
+            "expected_reclaim_proxy_bytes",
+            policy.expected_reclaim_proxy_bytes_error_threshold,
+            policy.expected_reclaim_proxy_bytes_error_reason,
+        ),
+        (
+            "warning",
+            "unverified_candidate_count",
+            policy.unverified_candidate_count_warning_threshold,
+            policy.unverified_candidate_count_warning_reason,
+        ),
+        (
+            "warning",
+            "metadata_unavailable_count",
+            policy.metadata_unavailable_count_warning_threshold,
+            policy.metadata_unavailable_count_warning_reason,
+        ),
+    )
+    findings: list[CleanupAlertFinding] = []
+    for level, metric, threshold, reason in checks:
+        value = cleanup_alert_metric(cleanup, metric)
+        if value >= threshold:
+            findings.append(
+                CleanupAlertFinding(
+                    level=level,
+                    metric=metric,
+                    value=value,
+                    threshold=threshold,
+                    reason=reason,
+                )
+            )
+    return findings
+
+
+def cleanup_alert_has_errors(findings: Iterable[CleanupAlertFinding]) -> bool:
+    return any(finding.level == "error" for finding in findings)
+
+
+def cleanup_alert_annotations(findings: Iterable[CleanupAlertFinding]) -> list[str]:
+    annotations: list[str] = []
+    for finding in findings:
+        annotations.append(
+            f"::{finding.level}::cleanup feasibility {finding.metric}={finding.value} "
+            f"crossed threshold={finding.threshold}: {finding.reason}"
+        )
+    return annotations
+
+
+def render_cleanup_alert_summary(snapshot: dict[str, Any], policy: CleanupAlertPolicy) -> str:
+    cleanup = require_object(
+        require_field(
+            snapshot,
+            "artifact_cleanup_feasibility",
+            "artifact_cleanup_feasibility",
+        ),
+        "artifact_cleanup_feasibility",
+    )
+    findings = cleanup_alert_findings(snapshot, policy)
+    billing = cleanup.get("billing") if isinstance(cleanup.get("billing"), dict) else {}
+    measured_billed = cleanup.get("measured_billed_reclaim_bytes")
+    measured_billed_text = (
+        human_bytes(measured_billed)
+        if isinstance(measured_billed, int) and not isinstance(measured_billed, bool)
+        else "unavailable"
+    )
+    title = policy.title if findings else policy.clear_title
+    lines = [
+        f"### {title}",
+        "",
+        f"- repo: `{require_text(snapshot.get('repo'), 'repo')}`",
+        f"- snapshot: `{require_text(snapshot.get('snapshot_utc'), 'snapshot_utc')}`",
+        f"- delete candidates: `{cleanup_alert_metric(cleanup, 'candidate_count')}`",
+        (
+            "- proxy reclaim: "
+            f"`{human_bytes(cleanup_alert_metric(cleanup, 'expected_reclaim_proxy_bytes'))}`"
+        ),
+        f"- unverified candidate rows: `{cleanup_alert_metric(cleanup, 'unverified_candidate_count')}`",
+        f"- metadata-unavailable rows: `{cleanup_alert_metric(cleanup, 'metadata_unavailable_count')}`",
+        f"- measured billed reclaim: `{measured_billed_text}`",
+        f"- reclaim basis: `{require_text(cleanup.get('reclaim_basis'), 'artifact_cleanup_feasibility.reclaim_basis')}`",
+        f"- billing: `{billing.get('status')}` ({billing.get('message')})",
+    ]
+    if not findings:
+        lines.extend(["", "No configured cleanup alert thresholds were crossed."])
+        return "\n".join(lines)
+    lines.extend(["", "Findings:"])
+    for finding in findings:
+        value_text = (
+            human_bytes(finding.value)
+            if finding.metric.endswith("_bytes")
+            else str(finding.value)
+        )
+        threshold_text = (
+            human_bytes(finding.threshold)
+            if finding.metric.endswith("_bytes")
+            else str(finding.threshold)
+        )
+        lines.append(
+            f"- {finding.level.upper()} `{finding.metric}` value `{value_text}` "
+            f"crossed threshold `{threshold_text}`: {finding.reason}"
+        )
+    return "\n".join(lines)
+
+
 def render_cache_key_probe_text(snapshot: dict[str, Any]) -> str:
     parsed = cache_key_probe_snapshot_from_raw(snapshot)
     probes = parsed["cache_key_probes"]
@@ -2382,6 +2602,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="TOML policy path for --cleanup-feasibility. Defaults to tracked TOML discovery.",
     )
     parser.add_argument(
+        "--cleanup-alert",
+        action="store_true",
+        help="Evaluate configured cleanup-feasibility alert thresholds.",
+    )
+    parser.add_argument(
         "--cache-key",
         action="append",
         default=[],
@@ -2428,6 +2653,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def validate_args(args: argparse.Namespace) -> None:
     if args.github_step_summary is not None:
         require_text(args.github_step_summary, "--github-step-summary")
+    if args.cleanup_alert and not args.cleanup_feasibility:
+        raise AuditError(
+            "--cleanup-alert requires --cleanup-feasibility",
+            kind=FailureKind.ABSENT,
+            field="--cleanup-feasibility",
+        )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -2489,9 +2720,12 @@ def run(args: argparse.Namespace) -> int:
         return 0
     branch = args.branch or infer_default_branch()
     cleanup_policy = None
+    cleanup_alert_policy = None
     if args.cleanup_feasibility:
         cleanup_policy_path = args.cleanup_policy or discover_cleanup_policy_path()
         cleanup_policy = load_cleanup_policy_path(cleanup_policy_path)
+        if args.cleanup_alert:
+            cleanup_alert_policy = load_cleanup_alert_policy_path(cleanup_policy_path)
     snapshot = build_snapshot(
         client,
         repo=repo,
@@ -2503,6 +2737,19 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps(snapshot, indent=2, sort_keys=True))
     else:
         print(render_text(snapshot))
+    if cleanup_alert_policy is not None:
+        summary = render_cleanup_alert_summary(snapshot, cleanup_alert_policy)
+        findings = cleanup_alert_findings(snapshot, cleanup_alert_policy)
+        if args.github_step_summary is not None:
+            append_step_summary(args.github_step_summary, summary)
+        elif not args.json:
+            print()
+            print(summary)
+        if args.github_annotations:
+            for annotation in cleanup_alert_annotations(findings):
+                print(annotation)
+        if cleanup_alert_has_errors(findings):
+            return 1
     return 0
 
 

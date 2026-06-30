@@ -9440,6 +9440,33 @@ def write_storage_tripwire_policy_fixture(root: pathlib.Path) -> pathlib.Path:
     return policy_path
 
 
+def assert_storage_cleanup_alert_workflow_contract() -> None:
+    verifier = load_verifier()
+    workflow_path = ".github/workflows/ci-storage-cleanup-alert.yml"
+    workflow = repo_workflow_text(workflow_path)
+    runners_config = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: workflow}, runners_config)
+    if errors:
+        raise AssertionError(f"storage cleanup alert workflow contract should pass, got: {errors}")
+
+    missing_errors = verifier.verify_storage_cleanup_alert_workflow({}, runners_config)
+    if not any(f"{workflow_path} must exist" in error for error in missing_errors):
+        raise AssertionError(f"storage cleanup alert workflow missing file drift was silent, got: {missing_errors}")
+
+    missing_alert_command = replace_once(workflow, " --cleanup-alert", "")
+    missing_alert_errors = verifier.verify_storage_cleanup_alert_workflow(
+        {workflow_path: missing_alert_command},
+        runners_config,
+    )
+    if not any("run step must match storage_audit.cleanup_feasibility_alert.workflow contract" in error for error in missing_alert_errors):
+        raise AssertionError(f"storage cleanup alert command drift was silent, got: {missing_alert_errors}")
+
+    delete_fragment = workflow + "\n# --method DELETE\n"
+    delete_errors = verifier.verify_storage_cleanup_alert_workflow({workflow_path: delete_fragment}, runners_config)
+    if not any("must not contain forbidden workflow fragment" in error for error in delete_errors):
+        raise AssertionError(f"storage cleanup alert destructive fragment drift was silent, got: {delete_errors}")
+
+
 def run_verifier_main_with_no_mistakes(
     no_mistakes_text: str,
     *,
@@ -14192,6 +14219,7 @@ def main() -> int:
     assert_actionlint_rejects_stale_config_variables()
     assert_actionlint_requires_pr_event_types()
     assert_actionlint_runs_ci_storage_audit_tests()
+    assert_storage_cleanup_alert_workflow_contract()
     assert_ci_docs_pass_stub_is_absent()
     assert_source_fence_static_ignores_comments()
     assert_local_verification_gate_recipes_are_enforced()

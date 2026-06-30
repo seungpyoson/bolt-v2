@@ -88,6 +88,26 @@ def cleanup_candidate_policy(label: str) -> ci_storage_audit.ArtifactCleanupPoli
     )
 
 
+def cleanup_alert_policy(label: str) -> ci_storage_audit.CleanupAlertPolicy:
+    return ci_storage_audit.load_cleanup_alert_policy_text(
+        """
+        [storage_audit.cleanup_feasibility_alert]
+        schema_version = 1
+        title = "Artifact cleanup feasibility alert"
+        clear_title = "Artifact cleanup feasibility clear"
+        candidate_count_error_threshold = 1
+        candidate_count_error_reason = "delete candidates require operator review"
+        expected_reclaim_proxy_bytes_error_threshold = 1
+        expected_reclaim_proxy_bytes_error_reason = "proxy reclaim requires operator review"
+        unverified_candidate_count_warning_threshold = 1
+        unverified_candidate_count_warning_reason = "unverified rows require metadata review"
+        metadata_unavailable_count_warning_threshold = 1
+        metadata_unavailable_count_warning_reason = "metadata-unavailable rows require review"
+        """,
+        label=label,
+    )
+
+
 def cleanup_artifacts_with_entry(entry: dict[str, Any]) -> dict[str, Any]:
     return {
         "total_bytes": entry["size_bytes"],
@@ -2246,6 +2266,163 @@ class CiStorageAuditTests(unittest.TestCase):
                 "code": "artifact_ref_empty",
             },
         )
+
+    def test_cleanup_alert_policy_rejects_missing_thresholds(self) -> None:
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.load_cleanup_alert_policy_text(
+                """
+                [storage_audit.cleanup_feasibility_alert]
+                schema_version = 1
+                title = "Artifact cleanup feasibility alert"
+                clear_title = "Artifact cleanup feasibility clear"
+                """,
+                label="alert-policy",
+            )
+
+        self.assertIn(
+            "storage_audit.cleanup_feasibility_alert.candidate_count_error_threshold",
+            str(raised.exception),
+        )
+
+    def test_cleanup_alert_findings_fail_on_delete_candidates_and_warn_on_metadata_gaps(self) -> None:
+        policy = cleanup_alert_policy("alert-policy")
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "artifact_cleanup_feasibility": {
+                "candidate_count": 2,
+                "expected_reclaim_proxy_bytes": 4096,
+                "unverified_candidate_count": 1,
+                "metadata_unavailable_count": 3,
+                "reclaim_basis": "listed_artifact_bytes_proxy",
+                "measured_billed_reclaim_bytes": None,
+                "billing": {
+                    "status": "unavailable",
+                    "message": "billing impact unverifiable from API",
+                },
+            },
+        }
+
+        findings = ci_storage_audit.cleanup_alert_findings(snapshot, policy)
+
+        self.assertEqual(
+            findings,
+            [
+                ci_storage_audit.CleanupAlertFinding(
+                    level="error",
+                    metric="candidate_count",
+                    value=2,
+                    threshold=1,
+                    reason="delete candidates require operator review",
+                ),
+                ci_storage_audit.CleanupAlertFinding(
+                    level="error",
+                    metric="expected_reclaim_proxy_bytes",
+                    value=4096,
+                    threshold=1,
+                    reason="proxy reclaim requires operator review",
+                ),
+                ci_storage_audit.CleanupAlertFinding(
+                    level="warning",
+                    metric="unverified_candidate_count",
+                    value=1,
+                    threshold=1,
+                    reason="unverified rows require metadata review",
+                ),
+                ci_storage_audit.CleanupAlertFinding(
+                    level="warning",
+                    metric="metadata_unavailable_count",
+                    value=3,
+                    threshold=1,
+                    reason="metadata-unavailable rows require review",
+                ),
+            ],
+        )
+        self.assertTrue(ci_storage_audit.cleanup_alert_has_errors(findings))
+        self.assertEqual(
+            ci_storage_audit.cleanup_alert_annotations(findings),
+            [
+                "::error::cleanup feasibility candidate_count=2 crossed threshold=1: delete candidates require operator review",
+                "::error::cleanup feasibility expected_reclaim_proxy_bytes=4096 crossed threshold=1: proxy reclaim requires operator review",
+                "::warning::cleanup feasibility unverified_candidate_count=1 crossed threshold=1: unverified rows require metadata review",
+                "::warning::cleanup feasibility metadata_unavailable_count=3 crossed threshold=1: metadata-unavailable rows require review",
+            ],
+        )
+
+    def test_cleanup_alert_summary_reports_counts_without_rows(self) -> None:
+        policy = cleanup_alert_policy("alert-policy")
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "artifact_cleanup_feasibility": {
+                "candidate_count": 1,
+                "expected_reclaim_proxy_bytes": 2048,
+                "unverified_candidate_count": 0,
+                "metadata_unavailable_count": 0,
+                "reclaim_basis": "listed_artifact_bytes_proxy",
+                "measured_billed_reclaim_bytes": None,
+                "billing": {
+                    "status": "unavailable",
+                    "message": "billing impact unverifiable from API",
+                },
+                "rows": [
+                    {
+                        "name": "nextest-archive",
+                        "artifact_id": 1,
+                    },
+                ],
+            },
+        }
+
+        summary = ci_storage_audit.render_cleanup_alert_summary(snapshot, policy)
+
+        self.assertIn("### Artifact cleanup feasibility alert", summary)
+        self.assertIn("- delete candidates: `1`", summary)
+        self.assertIn("- proxy reclaim: `2.0 KiB`", summary)
+        self.assertIn("- measured billed reclaim: `unavailable`", summary)
+        self.assertIn("- reclaim basis: `listed_artifact_bytes_proxy`", summary)
+        self.assertIn("delete candidates require operator review", summary)
+        self.assertNotIn("nextest-archive", summary)
+        self.assertNotIn("artifact_id", summary)
+
+    def test_cleanup_alert_summary_reports_clear_state(self) -> None:
+        policy = cleanup_alert_policy("alert-policy")
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "artifact_cleanup_feasibility": {
+                "candidate_count": 0,
+                "expected_reclaim_proxy_bytes": 0,
+                "unverified_candidate_count": 0,
+                "metadata_unavailable_count": 0,
+                "reclaim_basis": "listed_artifact_bytes_proxy",
+                "measured_billed_reclaim_bytes": None,
+                "billing": {
+                    "status": "unavailable",
+                    "message": "billing impact unverifiable from API",
+                },
+            },
+        }
+
+        summary = ci_storage_audit.render_cleanup_alert_summary(snapshot, policy)
+
+        self.assertIn("### Artifact cleanup feasibility clear", summary)
+        self.assertIn("No configured cleanup alert thresholds were crossed.", summary)
+
+    def test_validate_args_rejects_cleanup_alert_without_cleanup_feasibility(self) -> None:
+        args = ci_storage_audit.parse_args(
+            [
+                "--repo",
+                "owner/repo",
+                "--cleanup-alert",
+            ]
+        )
+
+        with self.assertRaises(ci_storage_audit.AuditError) as raised:
+            ci_storage_audit.validate_args(args)
+
+        self.assertEqual(raised.exception.kind, ci_storage_audit.FailureKind.ABSENT)
+        self.assertEqual(raised.exception.field, "--cleanup-feasibility")
 
     def test_billing_probe_records_reachability_without_raw_payload(self) -> None:
         policy = ci_storage_audit.load_cleanup_policy_text(

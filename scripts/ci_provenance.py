@@ -1199,6 +1199,7 @@ MERGIFY_TEMP_PR_TRANSIENT_PREFIX = "tmp-"
 def mergify_temp_pr_matches(
     *,
     event_name: str,
+    event_action: str,
     pull_request_draft: bool,
     pull_request_head_ref: str,
     temp_pr_head_ref_prefix: str,
@@ -1208,22 +1209,23 @@ def mergify_temp_pr_matches(
 ) -> bool:
     # GAP-1 fix (#981): a head-ref prefix alone must NEVER grant the required gate —
     # any actor can open a draft PR whose head ref starts with the mergify prefix. The
-    # temp PR is recognized only when the event sender or PR author is the bound
-    # mergify actor, so a spoofed head ref (or absent/mismatched ids) fails closed and
-    # is treated as an ordinary PR -> gate-iteration (demote). Human ready/edit events
-    # on a Mergify-authored proof PR are valid; the author id keeps those events bound
-    # after the proof PR stops being a draft.
+    # temp PR is recognized only when the event sender is the bound mergify actor. The
+    # one exception is ready_for_review: a human can mark a Mergify-authored proof PR
+    # ready, so that metadata-only transition may bind through pull_request.user.id.
     transient_head_ref_prefix = f"{MERGIFY_TEMP_PR_TRANSIENT_PREFIX}{temp_pr_head_ref_prefix}"
     actor_bound = event_sender_id == temp_pr_actor_id
-    author_bound = pull_request_author_id == temp_pr_actor_id
+    ready_author_bound = (
+        event_action == "ready_for_review"
+        and not pull_request_draft
+        and pull_request_author_id == temp_pr_actor_id
+    )
     return (
         event_name == "pull_request"
-        and (pull_request_draft or author_bound)
         and (
             pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
             or pull_request_head_ref.startswith(transient_head_ref_prefix)
         )
-        and (actor_bound or author_bound)
+        and ((pull_request_draft and actor_bound) or ready_author_bound)
     )
 
 
@@ -1261,6 +1263,7 @@ def evaluate_ci_policy(
 ) -> CiPolicyResult:
     mergify_temp_pr = mergify_temp_pr_matches(
         event_name=event_name,
+        event_action=event_action,
         pull_request_draft=pull_request_draft,
         pull_request_head_ref=pull_request_head_ref,
         temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,

@@ -2043,6 +2043,44 @@ def assert_mergify_temp_pr_ready_event_uses_author_binding() -> None:
             raise AssertionError(f"non-Mergify-authored proof-shaped PR must demote: {spoof}")
 
 
+def assert_mergify_temp_pr_synchronize_requires_sender_binding() -> None:
+    # Author binding exists only to preserve the human ready_for_review transition on a
+    # Mergify-authored proof PR. Byte-changing events still need the sender to be
+    # Mergify; otherwise a human-triggered update could earn the required queue gate.
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        args = [
+            "ci-policy",
+            "--config",
+            str(config),
+            "--event-name",
+            "pull_request",
+            "--event-action",
+            "synchronize",
+            "--pull-request-draft",
+            "false",
+            "--pull-request-head-ref",
+            "mergify/merge-queue/016a10652b",
+            "--pull-request-author-id",
+            "37929162",
+            "--pull-request-base-changed",
+            "false",
+            "--workflow-dispatch-full-ci",
+            "",
+            "--docs-only",
+            "false",
+            "--ref",
+            "refs/pull/1104/merge",
+        ]
+
+        code, stdout, stderr = run_cli_with_event_sender(args, "1376128")
+        if code != 0:
+            raise AssertionError(f"human-sync Mergify proof PR ci-policy failed: {stderr}")
+        result = output_dict(stdout)
+        if result.get("reason") == "mergify_temp_pr" or result.get("gate_name") != "gate-iteration":
+            raise AssertionError(f"human-sync Mergify proof PR must demote without sender binding: {result}")
+
+
 def assert_parse_event_sender_id_fails_closed() -> None:
     module = load_script()
     cases = {
@@ -4401,6 +4439,7 @@ def main() -> int:
     assert_required_gate_proof_event_classes_match_resolver()
     assert_mergify_temp_pr_requires_actor_binding()
     assert_mergify_temp_pr_ready_event_uses_author_binding()
+    assert_mergify_temp_pr_synchronize_requires_sender_binding()
     assert_parse_event_sender_id_fails_closed()
     assert_ci_policy_non_numeric_sender_id_does_not_crash()
     assert_mergify_actor_binding_demotes_every_full_action()

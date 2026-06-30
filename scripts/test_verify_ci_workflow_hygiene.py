@@ -2216,6 +2216,28 @@ def assert_ci_policy_matrix() -> None:
     ):
         raise AssertionError(f"non-Mergify-authored ready spoof must fail closed: {ready_spoof_result}")
 
+    human_sync_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="synchronize",
+        pull_request_draft=False,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        mergify_temp_pr_actor_id=actor_id,
+        event_sender_id=1376128,
+        pull_request_author_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        human_sync_result.reason == "mergify_temp_pr"
+        or human_sync_result.gate_name != "gate-iteration"
+        or human_sync_result.ci_policy_path != "iteration"
+    ):
+        raise AssertionError(f"human-sender Mergify sync must fail closed: {human_sync_result}")
+
     # A metadata edit (no base change) is not a full-CI action, so even the bound
     # actor's temp PR falls through to the ordinary draft path -> iteration.
     mergify_edited_result = verifier.evaluate_ci_policy(
@@ -5131,6 +5153,7 @@ def assert_mergify_proof_prefix_alignment_detects_drift() -> None:
     def bare_only_matcher(
         *,
         event_name: str,
+        event_action: str,
         pull_request_draft: bool,
         pull_request_head_ref: str,
         temp_pr_head_ref_prefix: str,

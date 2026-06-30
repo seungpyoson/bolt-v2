@@ -1348,6 +1348,7 @@ def mergify_proof_prefix_alignment_errors(config: ProvenanceConfig) -> list[str]
         workflow_isolates = any(head_ref.startswith(workflow_prefix) for workflow_prefix in workflow_prefixes)
         resolver_promotes = mergify_temp_pr_matches(
             event_name="pull_request",
+            event_action="opened",
             pull_request_draft=True,
             pull_request_head_ref=head_ref,
             temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,
@@ -1375,6 +1376,7 @@ def mergify_proof_prefix_alignment_errors(config: ProvenanceConfig) -> list[str]
     )
     unrelated_resolver_promotes = mergify_temp_pr_matches(
         event_name="pull_request",
+        event_action="opened",
         pull_request_draft=True,
         pull_request_head_ref=unrelated_ref,
         temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,

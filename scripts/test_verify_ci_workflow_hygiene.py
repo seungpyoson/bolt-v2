@@ -11,6 +11,7 @@ import importlib.util
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -355,7 +356,7 @@ jobs:
           fi
           base_tree="$RUNNER_TEMP/self-authorizing-governance-base-tree"
           mkdir -p "$base_tree"
-          git archive "$base_ref" scripts/ | tar -x -C "$base_tree"
+          git archive "$base_ref" scripts/ ci/rust-verification.toml | tar -x -C "$base_tree"
           python3 "$base_tree/scripts/verify_ci_workflow_hygiene.py" self-authorizing-governance \
             --repo "$GITHUB_WORKSPACE" \
             --base "$base_ref" \
@@ -1626,6 +1627,14 @@ def self_authorizing_errors_for_changes(
         return verifier.self_authorizing_governance_diff_errors(repo, base, head)
 
 
+def copy_self_authorizing_base_tree(destination: pathlib.Path) -> pathlib.Path:
+    base_tree = destination / "base-tree"
+    shutil.copytree(REPO_ROOT / "scripts", base_tree / "scripts")
+    (base_tree / "ci").mkdir()
+    shutil.copy2(REPO_ROOT / "ci" / "rust-verification.toml", base_tree / "ci" / "rust-verification.toml")
+    return base_tree
+
+
 def assert_self_authorizing_governance_detector_contract() -> None:
     positive_errors = self_authorizing_errors_for_changes(
         {
@@ -1671,6 +1680,27 @@ jobs:
     if not any("secret reference secrets.OTHER_TOKEN" in error for error in bracket_secret_errors):
         raise AssertionError(f"double-quoted bracket secret reference must be blocked, got: {bracket_secret_errors}")
 
+    expression_secret_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "Dynamic secret selectors are allowed for governed automation.\n",
+            ".github/workflows/dynamic-secret.yml": """\
+name: Dynamic Secret
+permissions: {}
+jobs:
+  jules:
+    steps:
+      - env:
+          TOKEN: ${{ secrets[env.SECRET_NAME] }}
+          OTHER_TOKEN: ${{ secrets . OTHER_TOKEN }}
+        run: echo advisory
+""",
+        },
+    )
+    if not any("secret reference secrets[env.SECRET_NAME]" in error for error in expression_secret_errors):
+        raise AssertionError(f"dynamic secret index must be blocked, got: {expression_secret_errors}")
+    if not any("secret reference secrets.OTHER_TOKEN" in error for error in expression_secret_errors):
+        raise AssertionError(f"whitespace property secret reference must be blocked, got: {expression_secret_errors}")
+
     inherited_secret_errors = self_authorizing_errors_for_changes(
         {
             "AGENTS.md": "Reusable workflows may inherit repository secrets after ratification.\n",
@@ -1686,6 +1716,22 @@ jobs:
     )
     if not any("secret inheritance secrets: inherit" in error for error in inherited_secret_errors):
         raise AssertionError(f"secrets: inherit must be blocked, got: {inherited_secret_errors}")
+
+    quoted_inherited_secret_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "Reusable workflows may inherit repository secrets after ratification.\n",
+            ".github/workflows/reuse.yml": """\
+name: Reuse
+permissions: {}
+jobs:
+  call:
+    uses: ./.github/workflows/target.yml
+    secrets: "inherit"
+""",
+        },
+    )
+    if not any("secret inheritance secrets: inherit" in error for error in quoted_inherited_secret_errors):
+        raise AssertionError(f"quoted secrets: inherit must be blocked, got: {quoted_inherited_secret_errors}")
 
     permission_errors = self_authorizing_errors_for_changes(
         {
@@ -1713,6 +1759,62 @@ jobs:
     )
     if not any("permissions grant inherited default" in error for error in inherited_permission_errors):
         raise AssertionError(f"removed restrictive permissions block must be blocked, got: {inherited_permission_errors}")
+
+    null_permission_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "Default workflow token permissions are allowed after ratification.\n",
+            ".github/workflows/ci.yml": "name: CI\npermissions:\n",
+        },
+    )
+    if not any("permissions grant inherited default" in error for error in null_permission_errors):
+        raise AssertionError(f"null permissions block must be treated as inherited default, got: {null_permission_errors}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        job_permissions_repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))
+        write_repo_text(
+            job_permissions_repo,
+            ".github/workflows/ci.yml",
+            """\
+name: CI
+permissions:
+  contents: read
+jobs:
+  test:
+    permissions: {}
+    steps:
+      - run: echo test
+""",
+        )
+        commit_repo(job_permissions_repo, "base job permissions")
+        job_permissions_base = run_repo_git(job_permissions_repo, "rev-parse", "HEAD").strip()
+        write_repo_text(
+            job_permissions_repo,
+            "AGENTS.md",
+            "Default workflow token permissions are allowed after ratification.\n",
+        )
+        write_repo_text(
+            job_permissions_repo,
+            ".github/workflows/ci.yml",
+            """\
+name: CI
+permissions:
+  contents: read
+jobs:
+  test:
+    steps:
+      - run: echo test
+""",
+        )
+        job_permissions_head = commit_repo(job_permissions_repo, "remove job permissions")
+        job_permissions_errors = load_verifier().self_authorizing_governance_diff_errors(
+            job_permissions_repo,
+            job_permissions_base,
+            job_permissions_head,
+        )
+    if not any("permissions grant inherited default" in error for error in job_permissions_errors):
+        raise AssertionError(
+            f"removed job-level permissions block must be blocked, got: {job_permissions_errors}"
+        )
 
     allowlist_errors = self_authorizing_errors_for_changes(
         {
@@ -1817,6 +1919,61 @@ jobs:
         raise AssertionError(f"diff prefix config must not hide added secret lines, got: {prefixed_errors}")
 
     with tempfile.TemporaryDirectory() as tmp:
+        attributes_repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))
+        attributes_base = run_repo_git(attributes_repo, "rev-parse", "HEAD").strip()
+        write_repo_text(
+            attributes_repo,
+            ".gitattributes",
+            "*.yml -diff\n",
+        )
+        write_repo_text(
+            attributes_repo,
+            "AGENTS.md",
+            "SSM is primary. NEW_SECRET is allowed for advisory repo maintenance.\n",
+        )
+        write_repo_text(
+            attributes_repo,
+            ".github/workflows/ci.yml",
+            """\
+name: CI
+permissions:
+  contents: read
+jobs:
+  jules:
+    steps:
+      - env:
+          NEW_SECRET: ${{ secrets.NEW_SECRET }}
+        run: echo advisory
+""",
+        )
+        attributes_head = commit_repo(attributes_repo, "head")
+        attributes_errors = load_verifier().self_authorizing_governance_diff_errors(
+            attributes_repo,
+            attributes_base,
+            attributes_head,
+        )
+    if not any("secret reference secrets.NEW_SECRET" in error for error in attributes_errors):
+        raise AssertionError(f".gitattributes diff suppression must not hide added secret lines, got: {attributes_errors}")
+
+    unicode_workflow_errors = self_authorizing_errors_for_changes(
+        {
+            "AGENTS.md": "SSM is primary. NEW_SECRET is allowed for advisory repo maintenance.\n",
+            ".github/workflows/검증.yml": """\
+name: Unicode Path
+permissions: {}
+jobs:
+  jules:
+    steps:
+      - env:
+          NEW_SECRET: ${{ secrets.NEW_SECRET }}
+        run: echo advisory
+""",
+        },
+    )
+    if not any("secret reference secrets.NEW_SECRET" in error for error in unicode_workflow_errors):
+        raise AssertionError(f"quoted git paths must not hide workflow secret lines, got: {unicode_workflow_errors}")
+
+    with tempfile.TemporaryDirectory() as tmp:
         moved_repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))
         write_repo_text(
             moved_repo,
@@ -1848,6 +2005,45 @@ jobs:
         )
     if not any("secret reference secrets.JULES_API_KEY" in error for error in moved_errors):
         raise AssertionError(f"moving secret-using workflow into active path must be blocked, got: {moved_errors}")
+
+    if 'git archive "$base_ref" scripts/ ci/rust-verification.toml | tar -x -C "$base_tree"' not in BASE_WORKFLOW:
+        raise AssertionError("self-authorizing base-tree bootstrap must archive lane policy with scripts")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cli_fixture = pathlib.Path(tmp) / "fixture"
+        cli_fixture.mkdir()
+        cli_repo = init_self_authorizing_fixture_repo(cli_fixture)
+        cli_base = run_repo_git(cli_repo, "rev-parse", "HEAD").strip()
+        write_repo_text(
+            cli_repo,
+            "AGENTS.md",
+            "SSM is primary. JULES_API_KEY is allowed after owner ratification.\n",
+        )
+        cli_head = commit_repo(cli_repo, "governance only")
+        base_tree = copy_self_authorizing_base_tree(pathlib.Path(tmp))
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "scripts/verify_ci_workflow_hygiene.py",
+                "self-authorizing-governance",
+                "--repo",
+                str(cli_repo),
+                "--base",
+                cli_base,
+                "--head",
+                cli_head,
+            ],
+            cwd=base_tree,
+            env={**os.environ, "GITHUB_ACTIONS": "true"},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    if completed.returncode != 0:
+        raise AssertionError(
+            "base-tree self-authorizing CLI must run for governance-only PRs, "
+            f"got {completed.returncode}: stdout={completed.stdout!r} stderr={completed.stderr!r}"
+        )
 
     assert_error(
         "detector must inspect self-authorizing governance rule-files",

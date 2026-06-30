@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Iterable, Mapping
+import difflib
 import functools
 import json
 import pathlib
@@ -171,9 +172,10 @@ SELF_AUTHORIZING_ALLOWLIST_ENTRY_PATHS = (
     "specs/711-capital-admission-rename/misnomer-allowlist.txt",
 )
 SELF_AUTHORIZING_SECRET_REF_RE = re.compile(
-    r"""\bsecrets(?:\.([A-Za-z_][A-Za-z0-9_]*)\b"""
+    r"""\bsecrets\s*(?:\.\s*([A-Za-z_][A-Za-z0-9_]*)\b"""
     r"""|\[\s*'([A-Za-z_][A-Za-z0-9_]*)'\s*\]"""
-    r"""|\[\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*\])"""
+    r"""|\[\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*\]"""
+    r"""|\[\s*([^\]\s][^\]]*?)\s*\])"""
 )
 GITHUB_SECRET_REF_RE = re.compile(r"secrets\.([A-Z0-9_]+)")
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
@@ -182,7 +184,7 @@ LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS = set(CARGO_DISK_PREFLIGHT_SUBCOMMANDS) 
 YAML_ANCHOR_PATTERN = r"&[A-Za-z0-9_.-]+"
 YAML_KEY_PATTERN = r"""(?:[A-Za-z0-9_.-]+|'[^']*(?:''[^']*)*'|"(?:[^"\\]|\\.)*")"""
 SELF_AUTHORIZING_SECRETS_INHERIT_RE = re.compile(
-    rf"^\s*({YAML_KEY_PATTERN})\s*:\s*inherit\s*$"
+    rf"^\s*({YAML_KEY_PATTERN})\s*:\s*({YAML_KEY_PATTERN})\s*$"
 )
 YAML_STEP_ITEM_RE = re.compile(rf"^-\s+(?:{YAML_ANCHOR_PATTERN}(?:\s+|$))?")
 YAML_RUN_LINE_RE = re.compile(rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*(.*?)\s*$")
@@ -530,7 +532,7 @@ if [[ -z "$changed" ]]; then
 fi
 base_tree="$RUNNER_TEMP/self-authorizing-governance-base-tree"
 mkdir -p "$base_tree"
-git archive "$base_ref" scripts/ | tar -x -C "$base_tree"
+git archive "$base_ref" scripts/ ci/rust-verification.toml | tar -x -C "$base_tree"
 python3 "$base_tree/scripts/verify_ci_workflow_hygiene.py" self-authorizing-governance \\
   --repo "$GITHUB_WORKSPACE" \\
   --base "$base_ref" \\
@@ -9825,18 +9827,19 @@ class SelfAuthorizingDiffError(Exception):
     pass
 
 
-def repo_git_output(repo: pathlib.Path, args: list[str]) -> str:
+def repo_git_bytes(repo: pathlib.Path, args: list[str]) -> bytes:
     try:
         completed = subprocess.run(
             ["git", *args],
             cwd=repo,
             check=True,
-            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
     except subprocess.CalledProcessError as exc:
-        detail = exc.stderr.strip() or exc.stdout.strip() or f"exit {exc.returncode}"
+        stderr = exc.stderr.decode("utf-8", errors="replace").strip()
+        stdout = exc.stdout.decode("utf-8", errors="replace").strip()
+        detail = stderr or stdout or f"exit {exc.returncode}"
         raise SelfAuthorizingDiffError(f"git {' '.join(args)} failed: {detail}") from exc
     return completed.stdout
 
@@ -9845,7 +9848,8 @@ def repo_git_text_at_ref(repo: pathlib.Path, ref: str, relative_path: str) -> st
     completed = subprocess.run(
         ["git", "show", f"{ref}:{relative_path}"],
         cwd=repo,
-        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -9860,11 +9864,24 @@ def self_authorizing_changed_paths(
     head_ref: str,
     pathspecs: tuple[str, ...],
 ) -> list[str]:
-    output = repo_git_output(
+    output = repo_git_bytes(
         repo,
-        ["diff", "--name-only", f"{base_ref}...{head_ref}", "--", *pathspecs],
+        [
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--name-only",
+            "-z",
+            f"{base_ref}...{head_ref}",
+            "--",
+            *pathspecs,
+        ],
     )
-    return [line for line in output.splitlines() if line]
+    return [
+        path.decode("utf-8", errors="surrogateescape")
+        for path in output.split(b"\0")
+        if path
+    ]
 
 
 def self_authorizing_added_lines(
@@ -9872,28 +9889,22 @@ def self_authorizing_added_lines(
     base_ref: str,
     head_ref: str,
 ) -> list[tuple[str, str]]:
-    output = repo_git_output(
-        repo,
-        [
-            "-c",
-            "diff.noprefix=false",
-            "-c",
-            "diff.mnemonicprefix=false",
-            "diff",
-            "--unified=0",
-            f"{base_ref}...{head_ref}",
-            "--",
-        ],
-    )
-    current_path = ""
     added: list[tuple[str, str]] = []
-    for line in output.splitlines():
-        if line.startswith("+++ b/"):
-            current_path = line.removeprefix("+++ b/")
-        elif line.startswith("+++ /dev/null"):
-            current_path = ""
-        elif current_path and line.startswith("+") and not line.startswith("+++"):
-            added.append((current_path, line[1:]))
+    for relative_path in self_authorizing_changed_paths(repo, base_ref, head_ref, tuple()):
+        head_text = repo_git_text_at_ref(repo, head_ref, relative_path)
+        if not head_text:
+            continue
+        base_lines = repo_git_text_at_ref(repo, base_ref, relative_path).splitlines()
+        head_lines = head_text.splitlines()
+        matcher = difflib.SequenceMatcher(
+            None,
+            base_lines,
+            head_lines,
+            autojunk=False,
+        )
+        for tag, _base_start, _base_end, head_start, head_end in matcher.get_opcodes():
+            if tag in {"insert", "replace"}:
+                added.extend((relative_path, line) for line in head_lines[head_start:head_end])
     return added
 
 
@@ -9908,10 +9919,13 @@ def non_comment_line(text: str) -> bool:
     return bool(stripped) and not stripped.startswith("#")
 
 
-def self_authorizing_secret_ref_name(match: re.Match[str]) -> str:
-    for group in match.groups():
-        if group:
-            return group
+def self_authorizing_secret_ref_detail(match: re.Match[str]) -> str:
+    dot_name, single_quoted_name, double_quoted_name, dynamic_index = match.groups()
+    for secret_name in (dot_name, single_quoted_name, double_quoted_name):
+        if secret_name:
+            return f"secrets.{secret_name}"
+    if dynamic_index:
+        return f"secrets[{dynamic_index.strip()}]"
     raise AssertionError("secret reference regex matched without a secret name")
 
 
@@ -9924,15 +9938,15 @@ def self_authorizing_secret_ref_signals(
         if not is_github_automation_path(relative_path) or not non_comment_line(line):
             continue
         for match in SELF_AUTHORIZING_SECRET_REF_RE.finditer(line):
-            secret_name = self_authorizing_secret_ref_name(match)
-            key = (relative_path, secret_name)
+            detail = self_authorizing_secret_ref_detail(match)
+            key = (relative_path, detail)
             if key in seen:
                 continue
             seen.add(key)
             signals.append(
                 SelfAuthorizingCapabilitySignal(
                     "secret reference",
-                    f"secrets.{secret_name}",
+                    detail,
                     relative_path,
                 )
             )
@@ -9948,7 +9962,11 @@ def self_authorizing_secret_inherit_signals(
         if not is_github_automation_path(relative_path) or not non_comment_line(line):
             continue
         match = SELF_AUTHORIZING_SECRETS_INHERIT_RE.match(strip_comment(line).rstrip())
-        if match is None or unquote_yaml_scalar(match.group(1)) != "secrets":
+        if (
+            match is None
+            or unquote_yaml_scalar(match.group(1)) != "secrets"
+            or unquote_yaml_scalar(match.group(2)).strip() != "inherit"
+        ):
             continue
         if relative_path in seen:
             continue
@@ -9963,13 +9981,48 @@ def self_authorizing_secret_inherit_signals(
     return signals
 
 
-def yaml_permissions_has_block(workflow_text: str) -> bool:
-    for line in workflow_text.splitlines():
+def yaml_permissions_block_count(workflow_text: str) -> int:
+    count = 0
+    lines = workflow_text.splitlines()
+    for index, line in enumerate(lines):
         clean = strip_comment(line).rstrip()
-        match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*.*$", clean)
-        if match is not None and unquote_yaml_scalar(match.group(1)) == "permissions":
-            return True
-    return False
+        match = re.match(rf"^(\s*)({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if match is None or unquote_yaml_scalar(match.group(2)) != "permissions":
+            continue
+        scalar = unquote_yaml_scalar(match.group(3)).strip()
+        if scalar:
+            if scalar not in {"null", "~"}:
+                count += 1
+            continue
+        parent_indent = len(match.group(1))
+        for child in lines[index + 1 :]:
+            child_clean = strip_comment(child).rstrip()
+            if not child_clean.strip():
+                continue
+            child_indent = len(child_clean) - len(child_clean.lstrip(" "))
+            if child_indent <= parent_indent:
+                break
+            count += 1
+            break
+    return count
+
+
+def yaml_flow_mapping_grants(scalar: str) -> set[tuple[str, str]]:
+    if not scalar.startswith("{") or not scalar.endswith("}"):
+        return set()
+    grants: set[tuple[str, str]] = set()
+    inner = scalar.removeprefix("{").removesuffix("}").strip()
+    if not inner:
+        return grants
+    for item in inner.split(","):
+        if ":" not in item:
+            continue
+        key, value = item.split(":", 1)
+        key = unquote_yaml_scalar(key.strip())
+        value = unquote_yaml_scalar(value.strip())
+        if key and value and value != "none":
+            grants.add((key, value))
+    return grants
 
 
 def yaml_permissions_grants(workflow_text: str) -> set[tuple[str, str]]:
@@ -9983,7 +10036,10 @@ def yaml_permissions_grants(workflow_text: str) -> set[tuple[str, str]]:
         parent_indent = len(match.group(1))
         scalar = unquote_yaml_scalar(match.group(3)).strip()
         if scalar:
-            if scalar not in {"{}", "none"}:
+            flow_grants = yaml_flow_mapping_grants(scalar)
+            if flow_grants:
+                grants.update(flow_grants)
+            elif scalar not in {"{}", "none", "null", "~"}:
                 grants.add(("permissions", scalar))
             continue
         for child in lines[index + 1 :]:
@@ -10020,7 +10076,7 @@ def self_authorizing_permission_signals(
         head_text = repo_git_text_at_ref(repo, head_ref, relative_path)
         if not head_text:
             continue
-        if yaml_permissions_has_block(base_text) and not yaml_permissions_has_block(head_text):
+        if yaml_permissions_block_count(head_text) < yaml_permissions_block_count(base_text):
             signals.append(
                 SelfAuthorizingCapabilitySignal(
                     "permissions grant",

@@ -28,6 +28,8 @@
 
 use crate::support;
 
+use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 use bolt_v2::{
@@ -52,6 +54,53 @@ fn live_node_test_guard() -> MutexGuard<'static, ()> {
     LIVE_NODE_TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn live_node_no_trade_source_include_paths() -> BTreeSet<String> {
+    const INCLUDE_PREFIX: &str = "include_str!(\"../";
+
+    support::repo_text("tests/bolt_v3_controlled_connect.rs")
+        .lines()
+        .filter_map(|line| {
+            let start = line.find(INCLUDE_PREFIX)?;
+            let rest = &line[start + INCLUDE_PREFIX.len()..];
+            let relative = rest.split('"').next()?;
+            relative
+                .starts_with("src/bolt_v3_live_node")
+                .then(|| relative.to_string())
+        })
+        .collect()
+}
+
+fn collect_live_node_production_sources(root: &Path, paths: &mut BTreeSet<String>) {
+    for entry in std::fs::read_dir(root).expect("live-node source directory should be readable") {
+        let entry = entry.expect("live-node source entry should be readable");
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .expect("live-node source entry type should be readable");
+
+        if file_type.is_dir() {
+            if entry.file_name() != "tests" {
+                collect_live_node_production_sources(&path, paths);
+            }
+        } else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+        {
+            let relative = path
+                .strip_prefix(repo_path(""))
+                .expect("live-node source should be under repo root")
+                .to_str()
+                .expect("live-node source path should be UTF-8")
+                .to_string();
+            paths.insert(relative);
+        }
+    }
+}
+
+fn live_node_production_source_paths() -> BTreeSet<String> {
+    let mut paths = BTreeSet::from(["src/bolt_v3_live_node.rs".to_string()]);
+    collect_live_node_production_sources(&repo_path("src/bolt_v3_live_node"), &mut paths);
+    paths
 }
 
 fn fixture_loaded_with_timeouts(
@@ -560,6 +609,15 @@ fn controlled_disconnect_is_callable_after_connect_timeout_partial_state() {
     runtime
         .block_on(disconnect_bolt_v3_clients(&mut node, &loaded))
         .expect("controlled-disconnect must remain callable after a connect-timeout");
+}
+
+#[test]
+fn live_node_no_trade_source_scan_covers_all_production_modules() {
+    assert_eq!(
+        live_node_no_trade_source_include_paths(),
+        live_node_production_source_paths(),
+        "controlled-connect no-trade source fence must scan every production live-node file"
+    );
 }
 
 #[test]

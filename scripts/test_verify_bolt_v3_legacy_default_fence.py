@@ -456,8 +456,15 @@ class LegacyDefaultFenceTests(unittest.TestCase):
     def test_allows_nt_runtime_support_default_reference(self) -> None:
         self.assertEqual(
             fence.find_violations_in_text(
-                "src/bolt_v3_validate.rs",
+                "src/bolt_v3_validate/nt_blocks.rs",
                 "let nt_data_default = nautilus_live::config::LiveDataEngineConfig::default();",
+            ),
+            [],
+        )
+        self.assertEqual(
+            fence.find_violations_in_text(
+                "src/bolt_v3_validate/risk.rs",
+                "let nt_risk_default = nautilus_live::config::LiveRiskEngineConfig::default();",
             ),
             [],
         )

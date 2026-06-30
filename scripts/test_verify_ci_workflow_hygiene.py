@@ -6145,6 +6145,31 @@ jobs:
           )""",
             "process-substitution",
         ),
+        (
+            """          cat <<'EOF'
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          EOF""",
+            "heredoc",
+        ),
+        (
+            """          ignored='
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          '""",
+            "multiline quoted string",
+        ),
+        (
+            """          run_bte() {
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          }""",
+            "dead function definition",
+        ),
+        (
+            """          run_bte() {
+          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl
+          }
+          run_bte""",
+            "called function definition",
+        ),
     ):
         wrapped_full_workflow = good_full_workflow.replace(
             '          just bte-test --config-file "$RUNNER_TEMP/nextest-junit.toml" --partition "count:${{ matrix.shard }}/4" -- --skip issue_789_first_real_free_data_taker_pl',

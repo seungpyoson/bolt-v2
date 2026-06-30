@@ -5546,6 +5546,19 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
     )
     if clean_errors:
         raise AssertionError(f"expected clean coverage-enforcer workflow, got: {clean_errors}")
+    quoted_permissions = (
+        BASE_COVERAGE_ENFORCER_WORKFLOW.replace("  checks: read\n", "  'checks': 'read'\n", 1)
+        .replace("  contents: read\n", '  "contents": "read"\n', 1)
+        .replace("  pull-requests: read\n", "  'pull-requests': 'read'\n", 1)
+    )
+    quoted_permissions_errors = verifier.verify_coverage_enforcer_workflow(
+        {workflow_name: quoted_permissions}
+    )
+    if quoted_permissions_errors:
+        raise AssertionError(
+            "expected quoted exact coverage-enforcer permissions to pass, "
+            f"got: {quoted_permissions_errors}"
+        )
 
     cases = [
         (
@@ -5569,19 +5582,19 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "    types: [checks_requested]\n", "    types: [requested]\n")},
         ),
         (
-            "permissions must include checks: read",
+            "permissions must match the exact read-only map",
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  checks: read\n", "")},
         ),
         (
-            "permissions must not include checks: write",
+            "permissions must match the exact read-only map",
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  checks: read\n", "  checks: write\n")},
         ),
         (
-            "permissions must include pull-requests: read",
+            "permissions must match the exact read-only map",
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  pull-requests: read\n", "")},
         ),
         (
-            "permissions must not include contents: write",
+            "permissions must match the exact read-only map",
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  contents: read\n", "  contents: write\n")},
         ),
         (

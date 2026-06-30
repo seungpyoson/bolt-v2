@@ -13847,26 +13847,8 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     if "types: [checks_requested]" not in merge_group_trigger:
         errors.append(f"{workflow_name} merge_group trigger must use checks_requested")
 
-    permissions = "\n".join(top_level_block(workflow_text, "permissions"))
     if top_level_mapping_items(workflow_text, "permissions") != EXPECTED_COVERAGE_ENFORCER_PERMISSIONS:
         errors.append(f"{workflow_name} permissions must match the exact read-only map")
-    for required in (
-        "  checks: read",
-        "  contents: read",
-        "  pull-requests: read",
-    ):
-        if required not in permissions:
-            errors.append(f"{workflow_name} permissions must include {required.strip()}")
-    for forbidden in (
-        "  checks: write",
-        "  contents: write",
-        "  pull-requests: write",
-        "  actions:",
-        "  id-token:",
-        "  issues:",
-    ):
-        if forbidden in permissions:
-            errors.append(f"{workflow_name} permissions must not include {forbidden.strip()}")
 
     jobs = parse_jobs(workflow_text)
     job = jobs.get("coverage-enforcer")

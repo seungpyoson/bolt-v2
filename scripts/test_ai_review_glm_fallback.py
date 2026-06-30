@@ -1185,6 +1185,39 @@ def test_quality_marker_comment_with_source_after_notice_clears_retry() -> None:
     )
 
 
+def test_freshness_prefixed_quality_comment_after_notice_clears_retry() -> None:
+    module = load_script()
+    freshness_warning = module.render_model_freshness_warning_block(
+        "Configured model may be stale; review output is still usable."
+    )
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "body": "<!-- ai-pr-reviewer-glm-notice -->\n\n## GLM review did not produce a deliverable",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+            {
+                "body": f"{freshness_warning}\n\n{valid_glm_deliverable_body()}",
+                "created_at": "2026-06-22T12:23:00Z",
+                "updated_at": "2026-06-22T12:23:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+        ],
+    )
+
+    assert not module.provider_retry_needed(
+        github=github,
+        expected_bot_login="github-actions[bot]",
+        notice_marker="<!-- ai-pr-reviewer-glm-notice -->",
+        deliverable_markers=("<!-- ai-pr-reviewer-glm -->",),
+        output_contract=fallback_config(module).output_contract,
+        require_source_line=True,
+    )
+
+
 def test_claude_deliverable_after_notice_clears_retry_needed_cli() -> None:
     module = load_script()
     comments = [
@@ -2390,6 +2423,7 @@ def main() -> int:
     test_source_less_quality_marker_comment_after_notice_still_requires_retry()
     test_malformed_comment_payload_does_not_crash_retry_deliverable_detection()
     test_quality_marker_comment_with_source_after_notice_clears_retry()
+    test_freshness_prefixed_quality_comment_after_notice_clears_retry()
     test_claude_deliverable_after_notice_clears_retry_needed_cli()
     test_claude_failure_notice_allows_retry_needed_cli()
     test_glm_retry_needed_cli_handles_absent_claude_keys()

@@ -322,8 +322,28 @@ def text_time_is_after_or_equal(value: object, threshold: datetime) -> bool:
         return False
 
 
+def body_without_leading_model_freshness_warning(body: str) -> str:
+    text = body.lstrip()
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "> [!WARNING]":
+        return text
+    index = 1
+    while index < len(lines) and lines[index].startswith(">"):
+        index += 1
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    return "\n".join(lines[index:]).lstrip()
+
+
 def body_has_deliverable_marker(body: object, markers: tuple[str, ...]) -> bool:
-    return isinstance(body, str) and any(body.lstrip().startswith(marker) for marker in markers)
+    if not isinstance(body, str):
+        return False
+    text = body.lstrip()
+    return any(
+        candidate.startswith(marker)
+        for candidate in (text, body_without_leading_model_freshness_warning(text))
+        for marker in markers
+    )
 
 
 def payload_time(payload: dict[str, object], *fields: str) -> datetime | None:

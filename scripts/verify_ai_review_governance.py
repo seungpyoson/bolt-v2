@@ -754,6 +754,25 @@ def verify_notice_step_guard(
     return []
 
 
+def verify_infra_notice_runtime_config_failure_gate(
+    workflow_text: str,
+    *,
+    provider_label: str,
+    step_name: str,
+) -> list[str]:
+    step = workflow_step_block(workflow_text, step_name)
+    if not step:
+        return [f"{provider_label} workflow missing {step_name} step"]
+    if (
+        "steps.review-decision.outputs.should_review == 'true'\n"
+        "              || steps.runtime-config.outcome == 'failure'"
+    ) not in step:
+        return [
+            f"{provider_label} infrastructure notice must run when runtime config fails before review-decision emits"
+        ]
+    return []
+
+
 def verify_ai_review_config(ai_review_toml: str) -> list[str]:
     findings: list[str] = []
     try:
@@ -1206,6 +1225,13 @@ def verify_texts(
         )
     )
     findings.extend(
+        verify_infra_notice_runtime_config_failure_gate(
+            glm_workflow,
+            provider_label="GLM",
+            step_name="Post GLM fallback infrastructure failure notice",
+        )
+    )
+    findings.extend(
         verify_notice_step_guard(
             kimi_workflow,
             provider_label="Kimi",
@@ -1219,6 +1245,13 @@ def verify_texts(
             provider_label="Kimi",
             step_name="Post Kimi fallback infrastructure failure notice",
             helper_snippet=".ai-review/base/scripts/ai_review_deliverables.py notice-env --provider kimi --config-file .ai-review/base/ci/ai-review.toml",
+        )
+    )
+    findings.extend(
+        verify_infra_notice_runtime_config_failure_gate(
+            kimi_workflow,
+            provider_label="Kimi",
+            step_name="Post Kimi fallback infrastructure failure notice",
         )
     )
     for snippet in KIMI_FORBIDDEN_INPUTS:

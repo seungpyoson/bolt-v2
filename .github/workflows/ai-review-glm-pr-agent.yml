@@ -364,7 +364,10 @@ jobs:
           ${{
             steps.glm-secret.outputs.configured == 'true'
             && steps.pause.outputs.paused != 'true'
-            && steps.review-decision.outputs.should_review == 'true'
+            && (
+              steps.review-decision.outputs.should_review == 'true'
+              || steps.runtime-config.outcome == 'failure'
+            )
             && always()
             && (
               steps.base-checkout.outcome == 'failure'

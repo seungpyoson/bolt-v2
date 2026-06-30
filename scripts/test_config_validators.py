@@ -45,7 +45,7 @@ def assert_require_string_validates_required_strings() -> None:
 
 
 def assert_require_positive_int_rejects_bool_and_non_positive_values() -> None:
-    for value in (True, 0, -1):
+    for value in (True, False, 0, -1):
         expect_error(
             CustomConfigError,
             "config.limit must be a positive integer",

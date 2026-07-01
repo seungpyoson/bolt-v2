@@ -45,8 +45,8 @@ use crate::{
         BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OutcomeSide,
         BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
         number_evidence as evidence_number, option_number_evidence as option_evidence_number,
-        probability_evidence, realized_vol_blocker_to_exit_evidence,
-        realized_volatility_aggregation_evidence_label,
+        option_probability_evidence as option_evidence_probability, probability_evidence,
+        realized_vol_blocker_to_exit_evidence, realized_volatility_aggregation_evidence_label,
         realized_volatility_block_reason_evidence_label,
         realized_volatility_pricing_component_evidence_label,
     },
@@ -3990,11 +3990,7 @@ impl BinaryOracleEdgeTaker {
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
             fast_venue_incoherent: self.pricing.fast_venue_incoherent,
-            lead_agreement_corr: option_evidence_number(
-                self.pricing
-                    .last_lead_agreement_corr
-                    .map(Probability::value),
-            ),
+            lead_agreement_corr: option_evidence_probability(self.pricing.last_lead_agreement_corr),
             fee_rate_basis_points: String::new(),
             selected_side: decision
                 .evaluation
@@ -4217,11 +4213,7 @@ impl BinaryOracleEdgeTaker {
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
             fast_venue_incoherent: self.pricing.fast_venue_incoherent,
-            lead_agreement_corr: option_evidence_number(
-                self.pricing
-                    .last_lead_agreement_corr
-                    .map(Probability::value),
-            ),
+            lead_agreement_corr: option_evidence_probability(self.pricing.last_lead_agreement_corr),
             fee_rate_basis_points: evidence_number(fee_rate_basis_points),
             selected_side: Some(outcome_side_evidence_label(selected_side).to_string()),
             submission_instrument_id: instrument_id.to_string(),
@@ -5714,8 +5706,7 @@ struct LeadVenueSignal {
 #[cfg(test)]
 impl LeadVenueSignal {
     fn is_eligible(&self, min_agreement_corr: f64, max_jitter_ms: u64) -> bool {
-        self.agreement_corr.value().is_finite()
-            && self.agreement_corr.value() >= min_agreement_corr
+        self.agreement_corr.value() >= min_agreement_corr
             && self.jitter_ms <= max_jitter_ms
             && self.effective_weight.is_finite()
             && self.effective_weight > 0.0

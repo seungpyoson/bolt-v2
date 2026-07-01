@@ -537,6 +537,10 @@ pub(crate) fn probability_evidence(probability: Probability) -> String {
     number_evidence(probability.value())
 }
 
+pub(crate) fn option_probability_evidence(probability: Option<Probability>) -> Option<String> {
+    probability.map(probability_evidence)
+}
+
 pub(crate) fn option_number_evidence(value: Option<f64>) -> Option<String> {
     value.filter(|value| value.is_finite()).map(number_evidence)
 }

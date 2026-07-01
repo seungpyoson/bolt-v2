@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime
+import functools
 import json
 import os
 import pathlib
@@ -16,6 +17,13 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
+
+
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import config_validators as _cv  # noqa: E402
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -51,6 +59,12 @@ class MergeReadinessError(RuntimeError):
 
 class GitHubPermissionError(MergeReadinessError):
     """Raised when the token cannot access a required GitHub API operation."""
+
+
+require_table = functools.partial(_cv.require_table, error_cls=MergeReadinessError)
+require_string = functools.partial(_cv.require_string, error_cls=MergeReadinessError)
+require_positive_int = functools.partial(_cv.require_positive_int, error_cls=MergeReadinessError)
+as_text = _cv.as_text
 
 
 @dataclasses.dataclass(frozen=True)
@@ -100,31 +114,10 @@ def load_toml(path: pathlib.Path) -> dict[str, object]:
     return data
 
 
-def require_table(parent: dict[str, object], key: str, prefix: str) -> dict[str, object]:
-    value = parent.get(key)
-    if not isinstance(value, dict):
-        raise MergeReadinessError(f"{prefix}.{key} must be a table")
-    return value
-
-
-def require_string(parent: dict[str, object], key: str, prefix: str) -> str:
-    value = parent.get(key)
-    if not isinstance(value, str) or not value:
-        raise MergeReadinessError(f"{prefix}.{key} must be a non-empty string")
-    return value
-
-
 def require_bool(parent: dict[str, object], key: str, prefix: str) -> bool:
     value = parent.get(key)
     if type(value) is not bool:
         raise MergeReadinessError(f"{prefix}.{key} must be boolean")
-    return value
-
-
-def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
-    value = parent.get(key)
-    if type(value) is not int or value <= 0:
-        raise MergeReadinessError(f"{prefix}.{key} must be a positive integer")
     return value
 
 
@@ -134,10 +127,6 @@ def positive_int(value: object, field: str) -> int:
     if isinstance(value, str) and value.isdecimal() and int(value) > 0:
         return int(value)
     raise MergeReadinessError(f"{field} must be a positive integer")
-
-
-def as_text(value: object) -> str:
-    return "" if value is None else str(value)
 
 
 def load_ci_provenance(path: pathlib.Path) -> dict[str, object]:

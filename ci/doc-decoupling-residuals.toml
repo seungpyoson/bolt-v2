@@ -45,3 +45,16 @@ snippets = [
   'RUNTIME_CONTRACTS_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"',
   'STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"',
 ]
+
+[[doc_decoupling_residuals.allowed_markdown_references]]
+path = "scripts/verify_ci_workflow_hygiene.py"
+kind = "deliberate_guard"
+owner_issue = "#711"
+tracking_issue = "#1027"
+read_purpose = "rename_guard"
+snippets = [
+  '"AGENTS.md",',
+  '".specify/memory/constitution.md",',
+  'AGENTS.md \\',
+  '.specify/memory/constitution.md \\',
+]

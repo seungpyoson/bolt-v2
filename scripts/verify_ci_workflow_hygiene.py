@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Callable, Iterable, Mapping
+import difflib
 import functools
 import json
 import pathlib
@@ -154,12 +156,36 @@ JULES_ADVISORY_ENDPOINT_VARIABLE = "JULES_SESSIONS_ENDPOINT"
 JULES_ADVISORY_TIMEOUT_VARIABLE = "JULES_SESSION_TIMEOUT_MINUTES"
 JULES_ADVISORY_SECRET = "JULES_API_KEY"
 JULES_AWS_COMMAND_RE = re.compile(r"(^|[\s;&|])aws([ \t\r\n;&|]|$)")
+SELF_AUTHORIZING_GOVERNANCE_PATHS = (
+    "AGENTS.md",
+    ".specify/memory/constitution.md",
+    ".pr_agent.toml",
+    "ci/ai-review.toml",
+)
+SELF_AUTHORIZING_GITHUB_AUTOMATION_PREFIXES = (
+    ".github/workflows/",
+    ".github/actions/",
+)
+SELF_AUTHORIZING_ALLOWLIST_ENTRY_PATHS = (
+    "ci/bolt-v3-boundary-exemptions.toml",
+    "ci/doc-decoupling-residuals.toml",
+    "specs/711-capital-admission-rename/misnomer-allowlist.txt",
+)
+SELF_AUTHORIZING_SECRET_REF_RE = re.compile(
+    r"""\bsecrets\s*(?:\.\s*([A-Za-z_][A-Za-z0-9_]*)\b"""
+    r"""|\[\s*'([A-Za-z_][A-Za-z0-9_]*)'\s*\]"""
+    r"""|\[\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*\]"""
+    r"""|\[\s*([^\]\s][^\]]*?)\s*\])"""
+)
 GITHUB_SECRET_REF_RE = re.compile(r"secrets\.([A-Z0-9_]+)")
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
 LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS = {"build", "clippy", "test"}
 LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS = set(CARGO_DISK_PREFLIGHT_SUBCOMMANDS) | set(CARGO_ALIAS_SUBCOMMANDS)
 YAML_ANCHOR_PATTERN = r"&[A-Za-z0-9_.-]+"
 YAML_KEY_PATTERN = r"""(?:[A-Za-z0-9_.-]+|'[^']*(?:''[^']*)*'|"(?:[^"\\]|\\.)*")"""
+SELF_AUTHORIZING_SECRETS_INHERIT_RE = re.compile(
+    rf"^\s*({YAML_KEY_PATTERN})\s*:\s*({YAML_KEY_PATTERN})\s*$"
+)
 YAML_STEP_ITEM_RE = re.compile(rf"^-\s+(?:{YAML_ANCHOR_PATTERN}(?:\s+|$))?")
 YAML_RUN_LINE_RE = re.compile(rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*(.*?)\s*$")
 YAML_FOLDED_RUN_LINE_RE = re.compile(
@@ -443,6 +469,15 @@ FINGERPRINT_REUSE_ALLOWED_STEP_SCALARS = {
     "shell": "bash",
     "run": "|",
 }
+SELF_AUTHORIZING_GOVERNANCE_STEP_ALLOWED_KEYS = frozenset(
+    ("name", "id", "if", "shell", "run")
+)
+SELF_AUTHORIZING_GOVERNANCE_STEP_SCALARS = {
+    "id": "self_authorizing_governance",
+    "if": "github.event_name == 'pull_request'",
+    "shell": "bash",
+    "run": "|",
+}
 NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_ALLOWED_KEYS = frozenset(
     ("name", "id", "shell", "env", "run")
 )
@@ -464,6 +499,7 @@ changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
   scripts/test_nextest_fingerprint.py \\
   scripts/root_bin_sidecars.py \\
   scripts/test_root_bin_sidecars.py \\
+  scripts/config_validators.py \\
   scripts/ci_provenance.py \\
   scripts/test_ci_provenance.py \\
   scripts/verify_ci_workflow_hygiene.py \\
@@ -480,6 +516,41 @@ elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "
 else
   echo "value=true" >> "$GITHUB_OUTPUT"
 fi"""
+SELF_AUTHORIZING_GOVERNANCE_RUN = """set -euo pipefail
+base_ref="${{ steps.pr_refs.outputs.base_ref }}"
+head_ref="${{ steps.pr_refs.outputs.head_ref }}"
+if [[ -z "$base_ref" || -z "$head_ref" ]]; then
+  echo "self-authorizing governance detector missing PR diff context"
+  exit 1
+fi
+changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
+  AGENTS.md \\
+  .specify/memory/constitution.md \\
+  .pr_agent.toml \\
+  ci/ai-review.toml)"
+if [[ -z "$changed" ]]; then
+  exit 0
+fi
+base_tree="$RUNNER_TEMP/self-authorizing-governance-base-tree"
+mkdir -p "$base_tree"
+git archive "$base_ref" \\
+  .github/ \\
+  .config/ \\
+  ci/ \\
+  crates/backtesting-vertical-slice/ci/ \\
+  scripts/ \\
+  tests/ \\
+  AGENTS.md \\
+  Cargo.toml \\
+  justfile \\
+  .mergify.yml \\
+  .no-mistakes.yaml \\
+  .pr_agent.toml \\
+  | tar -x -C "$base_tree"
+python3 "$base_tree/scripts/verify_ci_workflow_hygiene.py" self-authorizing-governance \\
+  --repo "$GITHUB_WORKSPACE" \\
+  --base "$base_ref" \\
+  --head "$head_ref\""""
 NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN = """python3 scripts/ci_provenance.py resolve-fingerprint
 --current-run-id "${{ github.run_id }}"
 --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
@@ -502,6 +573,7 @@ FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
     "scripts/test_nextest_fingerprint.py",
     "scripts/root_bin_sidecars.py",
     "scripts/test_root_bin_sidecars.py",
+    "scripts/config_validators.py",
     "scripts/ci_provenance.py",
     "scripts/test_ci_provenance.py",
     "scripts/verify_ci_workflow_hygiene.py",
@@ -1109,11 +1181,39 @@ EXPECTED_MERGE_READINESS_PROGRESS_IF = (
     "&& !(" + MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE + ") }}"
 )
 
-EXPECTED_COVERAGE_ENFORCER_IF = (
-    "${{ !(github.event_name == 'pull_request' "
-    "&& github.event.action == 'edited' "
-    "&& " + MERGIFY_PROOF_PR_HEAD_REF_PREDICATE + " "
-    "&& !(github.event.changes.base.ref.from != '')) }}"
+EXPECTED_COVERAGE_ENFORCER_IF = ""
+
+EXPECTED_COVERAGE_ENFORCER_PERMISSIONS = {
+    "checks": "read",
+    "contents": "read",
+    "pull-requests": "read",
+}
+
+EXPECTED_COVERAGE_ENFORCER_CHECKOUT_WITH = {
+    "ref": "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
+    "persist-credentials": "false",
+}
+
+EXPECTED_COVERAGE_ENFORCER_SETUP_PYTHON_WITH = {
+    "python-version": "3.12",
+}
+
+EXPECTED_COVERAGE_ENFORCER_ENV = {
+    "GITHUB_TOKEN": "${{ github.token }}",
+    "GITHUB_EVENT_PATH": "${{ github.event_path }}",
+    "GITHUB_REPOSITORY": "${{ github.repository }}",
+}
+
+EXPECTED_COVERAGE_ENFORCER_RUN_BODY = (
+    "if [ ! -f scripts/coverage_enforcer.py ]; then",
+    '  echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py"',
+    "  exit 1",
+    "fi",
+    'if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then',
+    '  echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py"',
+    "  exit 1",
+    "fi",
+    "python3 scripts/coverage_enforcer.py",
 )
 
 
@@ -1536,18 +1636,12 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
     return errors
 
 
-MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
-
-
-def bool_like(value: bool | str) -> bool:
-    if isinstance(value, bool):
-        return value
-    return value.strip().lower() == "true"
+MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review", "edited"})
 
 
 def mergify_temp_pr_requires_full_ci(*, action: str, pull_request_base_changed: bool | str) -> bool:
-    base_changed = bool_like(pull_request_base_changed)
-    return action in MERGIFY_TEMP_PR_FULL_ACTIONS or (action == "edited" and base_changed)
+    _ = pull_request_base_changed
+    return action in MERGIFY_TEMP_PR_FULL_ACTIONS
 
 
 def evaluate_ci_policy(
@@ -2811,6 +2905,50 @@ def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, s
     return items
 
 
+def top_level_mapping_items(workflow_text: str, top_key: str) -> dict[str, str] | None:
+    lines = workflow_text.splitlines()
+    top_index: int | None = None
+    for index, line in enumerate(lines):
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent != 0:
+            continue
+        top_match = re.match(rf"^({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if top_match is None:
+            continue
+        if unquote_yaml_scalar(top_match.group(1)) != top_key:
+            continue
+        if top_index is not None or unquote_yaml_scalar(top_match.group(2)) != "":
+            return None
+        top_index = index
+    if top_index is None:
+        return None
+
+    item_indent: int | None = None
+    items: dict[str, str] = {}
+    for line in lines[top_index + 1 :]:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent == 0:
+            break
+        if item_indent is None:
+            item_indent = indent
+        if indent != item_indent:
+            return None
+        item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if item_match is None:
+            return None
+        key = unquote_yaml_scalar(item_match.group(1))
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(item_match.group(2))
+    return items
+
+
 def block_has_canonical_step_envelope(
     block: list[str],
     allowed_keys: frozenset[str],
@@ -2835,6 +2973,33 @@ def block_has_canonical_step_envelope(
     return True
 
 
+def block_has_raw_top_level_scalar(block: list[str], name: str, value: str) -> bool:
+    property_indent = block_step_property_indent(block)
+    if property_indent is None:
+        return False
+    expected = f"{' ' * property_indent}{name}: {value}"
+    return any(strip_comment(line).rstrip() == expected for line in block)
+
+
+def job_top_level_items(job_lines: list[str]) -> dict[str, str] | None:
+    items: dict[str, str] = {}
+    for line in job_lines:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent != 4:
+            continue
+        item_match = re.match(rf"^\s{{4}}({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if item_match is None:
+            return None
+        key = unquote_yaml_scalar(item_match.group(1))
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(item_match.group(2))
+    return items
+
+
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
     return any(pattern.match(strip_comment(line)) for line in lines)
 
@@ -2842,8 +3007,6 @@ def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
 def job_if_value(job_lines: list[str]) -> str:
     for index, line in enumerate(job_lines):
         clean = strip_comment(line).rstrip()
-        if clean.strip() == "steps:":
-            return ""
         match = re.match(r"^    if:\s*(?P<value>.*?)\s*$", clean)
         if match is not None:
             value = match.group("value")
@@ -9760,6 +9923,499 @@ def detector_maps_changed_to_any_changed(block_text: str) -> bool:
     )
 
 
+class SelfAuthorizingCapabilitySignal(NamedTuple):
+    kind: str
+    detail: str
+    path: str
+
+
+class SelfAuthorizingDiffError(Exception):
+    pass
+
+
+def repo_git_bytes(repo: pathlib.Path, args: list[str]) -> bytes:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="replace").strip()
+        stdout = exc.stdout.decode("utf-8", errors="replace").strip()
+        detail = stderr or stdout or f"exit {exc.returncode}"
+        raise SelfAuthorizingDiffError(f"git {' '.join(args)} failed: {detail}") from exc
+    return completed.stdout
+
+
+def repo_git_text_at_ref(repo: pathlib.Path, ref: str, relative_path: str) -> str:
+    completed = subprocess.run(
+        ["git", "show", f"{ref}:{relative_path}"],
+        cwd=repo,
+        encoding="utf-8",
+        errors="surrogateescape",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout
+
+
+def self_authorizing_changed_paths(
+    repo: pathlib.Path,
+    base_ref: str,
+    head_ref: str,
+    pathspecs: tuple[str, ...],
+) -> list[str]:
+    output = repo_git_bytes(
+        repo,
+        [
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--name-only",
+            "-z",
+            f"{base_ref}...{head_ref}",
+            "--",
+            *pathspecs,
+        ],
+    )
+    return [
+        path.decode("utf-8", errors="surrogateescape")
+        for path in output.split(b"\0")
+        if path
+    ]
+
+
+def self_authorizing_added_lines(
+    repo: pathlib.Path,
+    base_ref: str,
+    head_ref: str,
+) -> list[tuple[str, str]]:
+    added: list[tuple[str, str]] = []
+    for relative_path in self_authorizing_changed_paths(repo, base_ref, head_ref, tuple()):
+        head_text = repo_git_text_at_ref(repo, head_ref, relative_path)
+        if not head_text:
+            continue
+        base_lines = repo_git_text_at_ref(repo, base_ref, relative_path).splitlines()
+        head_lines = head_text.splitlines()
+        matcher = difflib.SequenceMatcher(
+            None,
+            base_lines,
+            head_lines,
+            autojunk=False,
+        )
+        for tag, _base_start, _base_end, head_start, head_end in matcher.get_opcodes():
+            if tag in {"insert", "replace"}:
+                added.extend((relative_path, line) for line in head_lines[head_start:head_end])
+    return added
+
+
+def is_github_automation_path(relative_path: str) -> bool:
+    return relative_path.endswith((".yml", ".yaml")) and relative_path.startswith(
+        SELF_AUTHORIZING_GITHUB_AUTOMATION_PREFIXES
+    )
+
+
+def non_comment_line(text: str) -> bool:
+    stripped = text.strip()
+    return bool(stripped) and not stripped.startswith("#")
+
+
+def self_authorizing_secret_ref_detail(match: re.Match[str]) -> str:
+    dot_name, single_quoted_name, double_quoted_name, dynamic_index = match.groups()
+    for secret_name in (dot_name, single_quoted_name, double_quoted_name):
+        if secret_name:
+            return f"secrets.{secret_name}"
+    if dynamic_index:
+        return f"secrets[{dynamic_index.strip()}]"
+    raise AssertionError("secret reference regex matched without a secret name")
+
+
+def self_authorizing_secret_ref_signals(
+    added_lines: list[tuple[str, str]],
+) -> list[SelfAuthorizingCapabilitySignal]:
+    signals: list[SelfAuthorizingCapabilitySignal] = []
+    seen: set[tuple[str, str]] = set()
+    for relative_path, line in added_lines:
+        if not is_github_automation_path(relative_path) or not non_comment_line(line):
+            continue
+        clean = strip_comment(line).rstrip()
+        for match in SELF_AUTHORIZING_SECRET_REF_RE.finditer(clean):
+            detail = self_authorizing_secret_ref_detail(match)
+            key = (relative_path, detail)
+            if key in seen:
+                continue
+            seen.add(key)
+            signals.append(
+                SelfAuthorizingCapabilitySignal(
+                    "secret reference",
+                    detail,
+                    relative_path,
+                )
+            )
+    return signals
+
+
+def self_authorizing_secret_inherit_signals(
+    added_lines: list[tuple[str, str]],
+) -> list[SelfAuthorizingCapabilitySignal]:
+    signals: list[SelfAuthorizingCapabilitySignal] = []
+    seen: set[str] = set()
+    for relative_path, line in added_lines:
+        if not is_github_automation_path(relative_path) or not non_comment_line(line):
+            continue
+        match = SELF_AUTHORIZING_SECRETS_INHERIT_RE.match(strip_comment(line).rstrip())
+        if (
+            match is None
+            or unquote_yaml_scalar(match.group(1)) != "secrets"
+            or unquote_yaml_scalar(match.group(2)).strip() != "inherit"
+        ):
+            continue
+        if relative_path in seen:
+            continue
+        seen.add(relative_path)
+        signals.append(
+            SelfAuthorizingCapabilitySignal(
+                "secret inheritance",
+                "secrets: inherit",
+                relative_path,
+            )
+        )
+    return signals
+
+
+def yaml_permissions_block_exists(
+    lines: list[str],
+    index: int,
+    parent_indent: int,
+    scalar: str,
+) -> bool:
+    if scalar:
+        return scalar not in {"null", "~"}
+    for child in lines[index + 1 :]:
+        child_clean = strip_comment(child).rstrip()
+        if not child_clean.strip():
+            continue
+        child_indent = len(child_clean) - len(child_clean.lstrip(" "))
+        if child_indent <= parent_indent:
+            break
+        return True
+    return False
+
+
+def yaml_permissions_block_scopes(workflow_text: str) -> set[str]:
+    scopes: set[str] = set()
+    stack: list[tuple[int, str]] = []
+    lines = workflow_text.splitlines()
+    for index, line in enumerate(lines):
+        clean = strip_comment(line).rstrip()
+        match = re.match(rf"^(\s*)({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if match is None:
+            continue
+        indent = len(match.group(1))
+        key = unquote_yaml_scalar(match.group(2))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        scalar = unquote_yaml_scalar(match.group(3)).strip()
+        if key == "permissions" and yaml_permissions_block_exists(
+            lines,
+            index,
+            indent,
+            scalar,
+        ):
+            scopes.add(".".join([*(ancestor for _indent, ancestor in stack), key]))
+        stack.append((indent, key))
+    return scopes
+
+
+def yaml_flow_mapping_grants(scalar: str) -> set[tuple[str, str]]:
+    if not scalar.startswith("{") or not scalar.endswith("}"):
+        return set()
+    grants: set[tuple[str, str]] = set()
+    inner = scalar.removeprefix("{").removesuffix("}").strip()
+    if not inner:
+        return grants
+    for item in inner.split(","):
+        if ":" not in item:
+            continue
+        key, value = item.split(":", 1)
+        key = unquote_yaml_scalar(key.strip())
+        value = unquote_yaml_scalar(value.strip())
+        if key and value and value != "none":
+            grants.add((key, value))
+    return grants
+
+
+def yaml_permissions_block_grants(
+    lines: list[str],
+    index: int,
+    parent_indent: int,
+    scalar: str,
+) -> set[tuple[str, str]]:
+    if scalar:
+        if scalar.startswith("{") and scalar.endswith("}"):
+            return yaml_flow_mapping_grants(scalar)
+        if scalar not in {"{}", "none", "null", "~"}:
+            return {("permissions", scalar)}
+        return set()
+    grants: set[tuple[str, str]] = set()
+    for child in lines[index + 1 :]:
+        child_clean = strip_comment(child).rstrip()
+        if not child_clean.strip():
+            continue
+        child_indent = len(child_clean) - len(child_clean.lstrip(" "))
+        if child_indent <= parent_indent:
+            break
+        child_match = re.match(
+            rf"^\s*({YAML_KEY_PATTERN})\s*:\s*({YAML_KEY_PATTERN})\s*$",
+            child_clean,
+        )
+        if child_match is None:
+            continue
+        key = unquote_yaml_scalar(child_match.group(1))
+        value = unquote_yaml_scalar(child_match.group(2))
+        if value != "none":
+            grants.add((key, value))
+    return grants
+
+
+def yaml_permissions_scoped_grants(workflow_text: str) -> set[tuple[str, str, str]]:
+    scoped_grants: set[tuple[str, str, str]] = set()
+    stack: list[tuple[int, str]] = []
+    lines = workflow_text.splitlines()
+    for index, line in enumerate(lines):
+        clean = strip_comment(line).rstrip()
+        match = re.match(rf"^(\s*)({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if match is None:
+            continue
+        indent = len(match.group(1))
+        key = unquote_yaml_scalar(match.group(2))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        scalar = unquote_yaml_scalar(match.group(3)).strip()
+        if key == "permissions":
+            scope = ".".join([*(ancestor for _indent, ancestor in stack), key])
+            for grant_key, grant_value in yaml_permissions_block_grants(
+                lines,
+                index,
+                indent,
+                scalar,
+            ):
+                scoped_grants.add((scope, grant_key, grant_value))
+        stack.append((indent, key))
+    return scoped_grants
+
+
+def yaml_permissions_grants(workflow_text: str) -> set[tuple[str, str]]:
+    return {
+        (key, value)
+        for _scope, key, value in yaml_permissions_scoped_grants(workflow_text)
+    }
+
+
+def self_authorizing_permission_grant_signals(
+    base_text: str,
+    head_text: str,
+    relative_path: str,
+) -> list[SelfAuthorizingCapabilitySignal]:
+    signals: list[SelfAuthorizingCapabilitySignal] = []
+    base_grants = yaml_permissions_grants(base_text)
+    head_grants = yaml_permissions_grants(head_text)
+    global_added = head_grants - base_grants
+    for key, value in sorted(global_added):
+        signals.append(
+            SelfAuthorizingCapabilitySignal(
+                "permissions grant",
+                f"{key}: {value}",
+                relative_path,
+            )
+        )
+    base_scoped_grants = yaml_permissions_scoped_grants(base_text)
+    head_scoped_grants = yaml_permissions_scoped_grants(head_text)
+    for scope, key, value in sorted(head_scoped_grants - base_scoped_grants):
+        if (key, value) in global_added:
+            continue
+        signals.append(
+            SelfAuthorizingCapabilitySignal(
+                "permissions grant",
+                f"{scope} {key}: {value}",
+                relative_path,
+            )
+        )
+    return signals
+
+
+def self_authorizing_permission_signals(
+    repo: pathlib.Path,
+    base_ref: str,
+    head_ref: str,
+    changed_paths: list[str],
+) -> list[SelfAuthorizingCapabilitySignal]:
+    signals: list[SelfAuthorizingCapabilitySignal] = []
+    for relative_path in changed_paths:
+        if not is_github_automation_path(relative_path):
+            continue
+        base_text = repo_git_text_at_ref(repo, base_ref, relative_path)
+        head_text = repo_git_text_at_ref(repo, head_ref, relative_path)
+        if not head_text:
+            continue
+        if yaml_permissions_block_scopes(base_text) - yaml_permissions_block_scopes(head_text):
+            signals.append(
+                SelfAuthorizingCapabilitySignal(
+                    "permissions grant",
+                    "inherited default",
+                    relative_path,
+                )
+            )
+        signals.extend(
+            self_authorizing_permission_grant_signals(
+                base_text,
+                head_text,
+                relative_path,
+            )
+        )
+    return signals
+
+
+def self_authorizing_allowlist_signals(
+    added_lines: list[tuple[str, str]],
+) -> list[SelfAuthorizingCapabilitySignal]:
+    signals: list[SelfAuthorizingCapabilitySignal] = []
+    for relative_path, line in added_lines:
+        if relative_path not in SELF_AUTHORIZING_ALLOWLIST_ENTRY_PATHS:
+            continue
+        if not non_comment_line(line):
+            continue
+        signals.append(
+            SelfAuthorizingCapabilitySignal(
+                "allowlist/exemption entry",
+                line.strip(),
+                relative_path,
+            )
+        )
+    return signals
+
+
+def self_authorizing_new_active_secret_signals(
+    repo: pathlib.Path,
+    base_ref: str,
+    head_ref: str,
+    changed_paths: list[str],
+) -> list[SelfAuthorizingCapabilitySignal]:
+    signals: list[SelfAuthorizingCapabilitySignal] = []
+    for relative_path in changed_paths:
+        if not is_github_automation_path(relative_path):
+            continue
+        if repo_git_text_at_ref(repo, base_ref, relative_path):
+            continue
+        head_text = repo_git_text_at_ref(repo, head_ref, relative_path)
+        if not head_text:
+            continue
+        head_lines = [(relative_path, line) for line in head_text.splitlines()]
+        signals.extend(self_authorizing_secret_ref_signals(head_lines))
+        signals.extend(self_authorizing_secret_inherit_signals(head_lines))
+    return signals
+
+
+def dedupe_self_authorizing_signals(
+    signals: list[SelfAuthorizingCapabilitySignal],
+) -> list[SelfAuthorizingCapabilitySignal]:
+    unique: list[SelfAuthorizingCapabilitySignal] = []
+    seen: set[tuple[str, str, str]] = set()
+    for signal in signals:
+        key = (signal.kind, signal.detail, signal.path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(signal)
+    return unique
+
+
+def self_authorizing_capability_signals(
+    repo: pathlib.Path,
+    base_ref: str,
+    head_ref: str,
+) -> list[SelfAuthorizingCapabilitySignal]:
+    changed_paths = self_authorizing_changed_paths(repo, base_ref, head_ref, tuple())
+    added_lines = self_authorizing_added_lines(repo, base_ref, head_ref)
+    return dedupe_self_authorizing_signals(
+        [
+            *self_authorizing_secret_ref_signals(added_lines),
+            *self_authorizing_secret_inherit_signals(added_lines),
+            *self_authorizing_new_active_secret_signals(
+                repo,
+                base_ref,
+                head_ref,
+                changed_paths,
+            ),
+            *self_authorizing_permission_signals(repo, base_ref, head_ref, changed_paths),
+            *self_authorizing_allowlist_signals(added_lines),
+        ]
+    )
+
+
+def self_authorizing_governance_diff_errors(
+    repo: pathlib.Path,
+    base_ref: str,
+    head_ref: str,
+) -> list[str]:
+    if not base_ref or not head_ref:
+        return ["self-authorizing governance detector missing PR diff context"]
+    try:
+        governance_changes = self_authorizing_changed_paths(
+            repo,
+            base_ref,
+            head_ref,
+            SELF_AUTHORIZING_GOVERNANCE_PATHS,
+        )
+    except SelfAuthorizingDiffError as exc:
+        return [f"self-authorizing governance detector could not inspect PR diff: {exc}"]
+    if not governance_changes:
+        return []
+    try:
+        signals = self_authorizing_capability_signals(repo, base_ref, head_ref)
+    except SelfAuthorizingDiffError as exc:
+        return [f"self-authorizing governance detector could not inspect capability diff: {exc}"]
+    if not signals:
+        return []
+    governance_summary = ", ".join(sorted(governance_changes))
+    signal_summary = "; ".join(
+        f"{signal.kind} {signal.detail} in {signal.path}" for signal in signals
+    )
+    return [
+        "self-authorizing governance edit blocked: "
+        f"this diff edits governance rule-files ({governance_summary}) and introduces "
+        f"capability signals ({signal_summary}) in the same PR. "
+        "Resolution: split this into two PRs: land the governance rule change by itself "
+        "first, then open a separate capability PR after that rule is on the base branch."
+    ]
+
+
+def detector_self_authorizing_governance_errors(job_lines: list[str]) -> list[str]:
+    errors: list[str] = []
+    step_block = unique_step_with_id(job_lines, "self_authorizing_governance")
+    step_text = uncommented_text(step_block or [])
+    if step_block is None or not block_has_canonical_step_envelope(
+        step_block,
+        SELF_AUTHORIZING_GOVERNANCE_STEP_ALLOWED_KEYS,
+        SELF_AUTHORIZING_GOVERNANCE_STEP_SCALARS,
+    ):
+        errors.append("detector self-authorizing governance step must match canonical envelope")
+    if step_block is None or not block_run_body_matches(
+        step_block,
+        SELF_AUTHORIZING_GOVERNANCE_RUN,
+    ):
+        errors.append("detector must hard-block self-authorizing governance edits")
+    pathspecs = git_diff_pathspecs(step_text) if step_text else None
+    if pathspecs != SELF_AUTHORIZING_GOVERNANCE_PATHS:
+        errors.append("detector must inspect self-authorizing governance rule-files")
+    return errors
+
+
 def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
     text = uncommented_text(job_lines)
@@ -10230,6 +10886,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "detector" in jobs and not detector_forces_build_on_merge_group(jobs["detector"]):
         errors.append("detector must force build_required=true for merge_group full CI")
     if "detector" in jobs:
+        errors.extend(detector_self_authorizing_governance_errors(jobs["detector"]))
         errors.extend(detector_fingerprint_reuse_errors(jobs["detector"]))
         errors.extend(detector_docs_only_archive_errors(jobs["detector"]))
 
@@ -13750,24 +14407,8 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     if "types: [checks_requested]" not in merge_group_trigger:
         errors.append(f"{workflow_name} merge_group trigger must use checks_requested")
 
-    permissions = "\n".join(top_level_block(workflow_text, "permissions"))
-    for required in (
-        "  checks: read",
-        "  contents: read",
-        "  pull-requests: read",
-    ):
-        if required not in permissions:
-            errors.append(f"{workflow_name} permissions must include {required.strip()}")
-    for forbidden in (
-        "  checks: write",
-        "  contents: write",
-        "  pull-requests: write",
-        "  actions:",
-        "  id-token:",
-        "  issues:",
-    ):
-        if forbidden in permissions:
-            errors.append(f"{workflow_name} permissions must not include {forbidden.strip()}")
+    if top_level_mapping_items(workflow_text, "permissions") != EXPECTED_COVERAGE_ENFORCER_PERMISSIONS:
+        errors.append(f"{workflow_name} permissions must match the exact read-only map")
 
     jobs = parse_jobs(workflow_text)
     job = jobs.get("coverage-enforcer")
@@ -13775,12 +14416,24 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
         errors.append(f"{workflow_name} must define coverage-enforcer job")
         return errors
     job_text = "\n".join(job)
-    job_if = job_if_value(job)
-    if _normalize_concurrency_text(job_if) != EXPECTED_COVERAGE_ENFORCER_IF:
+    job_items = job_top_level_items(job)
+    expected_job_keys = {"name", "runs-on", "steps"}
+    if job_items is None or set(job_items) != expected_job_keys:
+        errors.append(f"{workflow_name} coverage-enforcer job must use only the pinned job-level keys")
+    if job_items is not None and "if" in job_items:
         errors.append(
-            f"{workflow_name} coverage-enforcer job if-condition must run on "
-            "ordinary PRs, draft Mergify proof PRs, and merge_group while skipping "
-            "only metadata-only proof PR edits"
+            f"{workflow_name} coverage-enforcer job must not define a job-level "
+            "if-condition; required checks must report success or failure, never skipped"
+        )
+    if job_items is not None and "continue-on-error" in job_items:
+        errors.append(f"{workflow_name} coverage-enforcer job must not define job-level continue-on-error")
+    if job_items is not None and "permissions" in job_items:
+        errors.append(f"{workflow_name} coverage-enforcer job must not define job-level permissions")
+    job_if = job_if_value(job)
+    if "if" not in (job_items or {}) and _normalize_concurrency_text(job_if) != EXPECTED_COVERAGE_ENFORCER_IF:
+        errors.append(
+            f"{workflow_name} coverage-enforcer job must not define a job-level "
+            "if-condition; required checks must report success or failure, never skipped"
         )
     trusted_base_ref = (
         "          ref: ${{ github.event.pull_request.base.sha || "
@@ -13805,16 +14458,47 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
             break
     if "          persist-credentials: false" not in job_text:
         errors.append(f"{workflow_name} checkout must not persist credentials")
-    for required in (
-        "if [ ! -f scripts/coverage_enforcer.py ]; then",
-        "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py",
-        'if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then',
-        "coverage-enforcer bootstrap: trusted base tree lacks event-aware scripts/coverage_enforcer.py",
-        "exit 0",
+    steps = step_blocks(job)
+    enforce_steps = [
+        block for block in steps if step_name_matches(block, "Enforce coverage map")
+    ]
+    run_steps = [block for block in steps if step_declares_run(block)]
+    if len(steps) != 3 or not (
+        block_has_canonical_step_envelope(
+            steps[0],
+            frozenset({"uses", "with"}),
+            {"uses": "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"},
+            {"with": EXPECTED_COVERAGE_ENFORCER_CHECKOUT_WITH},
+        )
+        and block_has_canonical_step_envelope(
+            steps[1],
+            frozenset({"uses", "with"}),
+            {"uses": "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"},
+            {"with": EXPECTED_COVERAGE_ENFORCER_SETUP_PYTHON_WITH},
+        )
+        and step_name_matches(steps[2], "Enforce coverage map")
     ):
-        if required not in job_text:
+        errors.append(f"{workflow_name} coverage-enforcer job steps must match the pinned trusted-base topology")
+    elif len(enforce_steps) != 1:
+        errors.append(f"{workflow_name} job must run scripts/coverage_enforcer.py")
+    elif len(run_steps) != 1 or run_steps[0] != enforce_steps[0]:
+        errors.append(
+            f"{workflow_name} coverage-enforcer job must run scripts/coverage_enforcer.py "
+            "only through the pinned Enforce coverage map step"
+        )
+    else:
+        enforce_step = enforce_steps[0]
+        if not block_has_canonical_step_envelope(
+            enforce_step,
+            frozenset({"name", "env", "run"}),
+            {"name": "Enforce coverage map", "run": "|"},
+            {"env": EXPECTED_COVERAGE_ENFORCER_ENV},
+        ):
+            errors.append(f"{workflow_name} coverage-enforcer Enforce coverage map step must be canonical")
+        elif not block_has_raw_top_level_scalar(enforce_step, "run", "|"):
+            errors.append(f"{workflow_name} coverage-enforcer Enforce coverage map step must be canonical")
+        elif tuple(block_run_body_lines(enforce_step)) != EXPECTED_COVERAGE_ENFORCER_RUN_BODY:
             errors.append(f"{workflow_name} job must guard first-run trusted-base bootstrap")
-            break
     if "python3 scripts/coverage_enforcer.py" not in job_text:
         errors.append(f"{workflow_name} job must run scripts/coverage_enforcer.py")
     for required in (
@@ -14378,6 +15062,27 @@ def repo_workflow_texts() -> dict[str, str]:
     return {path.relative_to(REPO_ROOT).as_posix(): path.read_text() for path in sorted(paths)}
 
 
+def self_authorizing_governance_cli(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        description="Block PRs that edit governance and introduce newly permitted capability in one diff."
+    )
+    parser.add_argument("--repo", type=pathlib.Path, default=REPO_ROOT)
+    parser.add_argument("--base", required=True)
+    parser.add_argument("--head", required=True)
+    args = parser.parse_args(argv)
+    errors = self_authorizing_governance_diff_errors(
+        args.repo.resolve(),
+        args.base,
+        args.head,
+    )
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    print("OK: no self-authorizing governance edit coupling detected.")
+    return 0
+
+
 def main() -> int:
     workflow_texts = repo_workflow_texts()
     action_text = DEFAULT_SETUP_ACTION.read_text()
@@ -14451,8 +15156,17 @@ def main() -> int:
     return 0
 
 
+def cli(argv: list[str]) -> int:
+    if argv and argv[0] == "self-authorizing-governance":
+        return self_authorizing_governance_cli(argv[1:])
+    if argv:
+        print(f"ERROR: unknown verify_ci_workflow_hygiene mode: {argv[0]}", file=sys.stderr)
+        return 2
+    return main()
+
+
 if __name__ == "__main__":
     import lane_governor
 
     lane_governor.acquire()
-    sys.exit(main())
+    sys.exit(cli(sys.argv[1:]))

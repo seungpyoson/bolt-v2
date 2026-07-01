@@ -45,6 +45,19 @@ owner_issue = "#559"
 tracking_issue = "#1027"
 read_purpose = "doc_sync_exception"
 snippets = ['SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/schema.md"']
+
+[[doc_decoupling_residuals.allowed_markdown_references]]
+path = "scripts/verify_ci_workflow_hygiene.py"
+kind = "deliberate_guard"
+owner_issue = "#711"
+tracking_issue = "#1027"
+read_purpose = "rename_guard"
+snippets = [
+  '"AGENTS.md",',
+  '".specify/memory/constitution.md",',
+  'AGENTS.md \\',
+  '.specify/memory/constitution.md \\',
+]
 """
 
 
@@ -93,6 +106,22 @@ def write_fixture(
     )
     (scripts / "verify_bolt_v3_schema_current.py").write_text(
         schema_script,
+        encoding="utf-8",
+    )
+    (scripts / "verify_ci_workflow_hygiene.py").write_text(
+        textwrap.dedent(
+            """
+            SELF_AUTHORIZING_GOVERNANCE_PATHS = (
+                "AGENTS.md",
+                ".specify/memory/constitution.md",
+            )
+            SELF_AUTHORIZING_GOVERNANCE_RUN = '''changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
+              AGENTS.md \\
+              .specify/memory/constitution.md \\
+              .pr_agent.toml \\
+              ci/ai-review.toml)"'''
+            """
+        ).lstrip(),
         encoding="utf-8",
     )
     if extra_script:

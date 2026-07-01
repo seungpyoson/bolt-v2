@@ -344,19 +344,19 @@ workflow_runs_per_page = 100
 run_jobs_per_page = 100
 run_artifacts_per_page = 100
 max_lookback_pages = 10
-max_lookback_age_seconds = 2592000
+max_lookback_age_seconds = 1209600
 
 [ci_provenance.artifacts]
-retention_days = 30
+retention_days = 14
 
 [artifact_retention.classes.deployable]
 max_retention_days = 3
 
 [artifact_retention.classes.reuse-bound]
-max_retention_days = 30
+max_retention_days = 14
 
 [artifact_retention.classes.capture-provenance]
-max_retention_days = 30
+max_retention_days = 14
 
 [artifact_retention.classes.transient]
 max_retention_days = 7

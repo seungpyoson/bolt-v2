@@ -71,10 +71,10 @@ workflow_runs_per_page = 100
 run_jobs_per_page = 100
 run_artifacts_per_page = 100
 max_lookback_pages = 10
-max_lookback_age_seconds = 2592000
+max_lookback_age_seconds = 1209600
 
 [ci_provenance.artifacts]
-retention_days = 30
+retention_days = 14
 
 [ci_provenance.policy]
 draft_pr_synchronize = "defer"

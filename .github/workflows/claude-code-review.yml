@@ -91,14 +91,18 @@ jobs:
       - name: Load AI review runtime config
         if: steps.pause.outputs.paused != 'true'
         id: runtime-config
+        # Claude intentionally uses head ci/ai-review.toml for the prompt and deliverable verifier
+        # so exact-head CI proves the TOML-sourced contract under review.
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import tomllib
           from pathlib import Path
 
           config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
+          github = config["github"]
           claude = config["claude"]
           workflow = claude["workflow"]
+          contract = config["review"]["output_contract"]
 
           def emit(name, value):
               if isinstance(value, bool):
@@ -107,8 +111,14 @@ jobs:
                   value = ",".join(value)
               print(f"{name}={value}")
 
+          emit("github_api_url", github["api_url"])
           emit("claude_model", claude["model"])
           emit("claude_track_progress", claude["track_progress"])
+          emit("claude_deliverable_marker", claude["deliverable_marker"])
+          emit("claude_source_label", claude["source_label_template"].replace("{model}", claude["model"]))
+          emit("review_finding_required_labels", contract["finding_required_labels"])
+          emit("review_no_findings_indicator", contract["no_findings_indicator"])
+          emit("review_no_findings_required_labels", contract["no_findings_required_labels"])
           emit("claude_allowed_tools", claude["allowed_tools"])
           emit("claude_max_turns", workflow["max_turns"])
           emit("claude_primary_timeout_minutes", workflow["primary_timeout_minutes"])
@@ -118,6 +128,7 @@ jobs:
         if: steps.pause.outputs.paused != 'true'
         id: review-decision
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           PR_ACTION: ${{ github.event.action }}
@@ -132,6 +143,7 @@ jobs:
           import json
           import os
           import subprocess
+          import sys
           import time
           import tomllib
           from pathlib import Path
@@ -232,6 +244,29 @@ jobs:
               emit(True, "review-label")
               raise SystemExit(0)
 
+          retry = subprocess.run(
+              (
+                  "python3",
+                  "scripts/ai_review_deliverables.py",
+                  "retry-needed",
+                  "--provider",
+                  "claude",
+                  "--config-file",
+                  "ci/ai-review.toml",
+              ),
+              check=False,
+              capture_output=True,
+              text=True,
+          )
+          if retry.returncode != 0:
+              print("::warning::Claude retry state check failed; reviewing to avoid preserving a stale failure notice.", file=sys.stderr)
+              emit(True, "retry-check-unavailable")
+              raise SystemExit(0)
+          retry_lines = set(retry.stdout.splitlines())
+          if "retry_needed=true" in retry_lines:
+              emit(True, "previous-failure-notice")
+              raise SystemExit(0)
+
           changed_files, file_source = pushed_files()
           review_paths = tuple(smart["review_paths"])
           for changed_file in changed_files:
@@ -253,12 +288,22 @@ jobs:
         run: |
           python3 scripts/verify_ai_review_model_freshness.py --live --advisory --provider claude
 
+      - name: Capture Claude review window
+        id: review-window
+        if: >-
+          ${{
+            steps.pause.outputs.paused != 'true'
+            && steps.review-decision.outputs.should_review == 'true'
+          }}
+        run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Run Claude Code review
         id: claude
         if: >-
           ${{
             steps.pause.outputs.paused != 'true'
             && steps.review-decision.outputs.should_review == 'true'
+            && steps.review-window.outcome == 'success'
           }}
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.claude_primary_timeout_minutes) }}
@@ -273,6 +318,11 @@ jobs:
             PR NUMBER (pull_request and review events): ${{ github.event.pull_request.number }}
             PR NUMBER (issue_comment events): ${{ github.event.issue.number }}
             MODEL FRESHNESS WARNING: ${{ steps.model-freshness.outputs.claude_warning }}
+            DELIVERABLE MARKER: ${{ steps.runtime-config.outputs.claude_deliverable_marker }}
+            SOURCE LABEL: ${{ steps.runtime-config.outputs.claude_source_label }}
+            FINDING REQUIRED LABELS: ${{ steps.runtime-config.outputs.review_finding_required_labels }}
+            NO-FINDINGS INDICATOR: ${{ steps.runtime-config.outputs.review_no_findings_indicator }}
+            NO-FINDINGS REQUIRED LABELS: ${{ steps.runtime-config.outputs.review_no_findings_required_labels }}
 
             You are a read-only PR reviewer for this repository. Review the pull request diff and post only GitHub PR feedback:
             - Use only the tools granted through the configured Claude arguments.
@@ -297,8 +347,87 @@ jobs:
             - **Scope Discipline**: flag out-of-scope changes, hidden adjacent issue work, and missing claimed scope. Do not treat a PR as closing broader work unless the diff satisfies it.
             - **Review Bar & Merge Mechanics**: do not downgrade real issues into notes. Flag unresolved review-thread, stale-review, required-reviewer, or merge-rule bypass risks if the diff touches those controls.
 
-            Prefer concise findings with file and line context. If there are no substantive findings, post a short summary of what you checked and any residual verification gaps.
+            Post one top-level PR comment as the visible deliverable for this run. The comment must begin with the exact DELIVERABLE MARKER line, include `**Source:** ${{ steps.runtime-config.outputs.claude_source_label }}`, and then follow one of these contracts:
+            - If there are findings, each finding must include one line starting with each configured label in FINDING REQUIRED LABELS.
+            - If there are no findings, include the exact NO-FINDINGS INDICATOR text and one line starting with each configured label in NO-FINDINGS REQUIRED LABELS.
           claude_args: |
             --max-turns ${{ steps.runtime-config.outputs.claude_max_turns }}
             --model ${{ steps.runtime-config.outputs.claude_model }}
             --allowedTools "${{ steps.runtime-config.outputs.claude_allowed_tools }}"
+
+      - name: Ensure Claude deliverable or post failure notice
+        id: claude-deliverable
+        if: >-
+          ${{
+            steps.pause.outputs.paused != 'true'
+            && always()
+            && steps.review-decision.outputs.should_review == 'true'
+            && steps.runtime-config.outcome == 'success'
+            && steps.review-window.outcome == 'success'
+          }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: >-
+          python3 scripts/ai_review_deliverables.py claude-deliverable
+          --started-at "${{ steps.review-window.outputs.started_at }}"
+          --execution-file "${{ steps.claude.outputs.execution_file }}"
+          --step-outcome "${{ steps.claude.outcome }}"
+          --config-file ci/ai-review.toml
+
+      - name: Post Claude review infrastructure failure notice
+        if: >-
+          ${{
+            steps.pause.outputs.paused != 'true'
+            && (
+              steps.review-decision.outputs.should_review == 'true'
+              || steps.runtime-config.outcome == 'failure'
+              || steps.review-decision.outcome == 'failure'
+            )
+            && always()
+            && (
+              steps.runtime-config.outcome == 'failure'
+              || steps.review-decision.outcome == 'failure'
+              || steps.review-window.outcome == 'failure'
+              || steps.claude-deliverable.outcome == 'failure'
+            )
+            && steps.claude-deliverable.outputs.failure_notice_posted != 'true'
+          }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          notice_file="${RUNNER_TEMP}/claude-ai-review-notice.md"
+          marker=""
+          expected_bot_login=""
+          if ! config_exports="$(python3 scripts/ai_review_deliverables.py notice-env --provider claude --config-file ci/ai-review.toml)"; then
+            echo "::error::AI review notice marker or expected bot login is unavailable."
+            exit 1
+          fi
+          eval "$config_exports"
+          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
+            echo "::error::AI review notice marker or expected bot login is unavailable."
+            exit 1
+          fi
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          cat > "$notice_file" <<EOF
+          ${marker}
+
+          ## Claude review notice
+
+          The Claude review infrastructure failed or timed out before posting a usable failure notice. Check the action logs for this run.
+
+          - PR: #${PR_NUMBER}
+          - Action run: ${run_url}
+
+          This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
+          EOF
+          existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            | jq -r --arg login "$expected_bot_login" --arg marker "$marker" '.[] | select(.user.login == $login) | select((.body // "") | startswith($marker)) | .id' \
+            | tail -n 1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          fi

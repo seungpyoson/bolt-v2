@@ -3331,6 +3331,58 @@ def assert_jobs_page_total_count_boundary_is_accepted() -> None:
             raise AssertionError(f"expected run {RUN_ID}, got {resolved.run}")
 
 
+def assert_incomplete_exact_sha_runs_require_explicit_job_validated_opt_in() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = valid_record(module, config)
+        queued_run = run_payload(status="queued", conclusion=None)
+        fake = FakeGitHub(
+            runs_pages=[[queued_run]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact(id=1)]}},
+            records_by_artifact_id={1: record},
+            jobs_by_run_id={RUN_ID: {"jobs": required_job_payloads()}},
+        )
+        assert_raises("no candidate provenance evidence", lambda: resolve_with_fake(module, config, fake))
+        resolved = module.resolve_exact_sha_evidence(
+            repo="seungpyoson/bolt-v2",
+            token="token",
+            requested_sha=SHA,
+            config=module.load_config(config),
+            config_path=config,
+            api_json=fake.json,
+            api_bytes=fake.bytes,
+            now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            allow_incomplete_run_with_successful_jobs=True,
+        )
+        if resolved.run.get("id") != RUN_ID:
+            raise AssertionError(f"expected queued run {RUN_ID}, got {resolved.run}")
+
+        failed_job_fake = FakeGitHub(
+            runs_pages=[[queued_run]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact(id=1)]}},
+            records_by_artifact_id={1: record},
+            jobs_by_run_id={
+                RUN_ID: {"jobs": with_required_job_conclusion(required_job_payloads(), "source-fence", "failure")}
+            },
+        )
+        assert_raises(
+            "required job source-fence was 'completed'/'failure'",
+            lambda: module.resolve_exact_sha_evidence(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                config=module.load_config(config),
+                config_path=config,
+                api_json=failed_job_fake.json,
+                api_bytes=failed_job_fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+                allow_incomplete_run_with_successful_jobs=True,
+            ),
+        )
+
+
 def assert_complete_first_page_rejects_incomplete_or_malformed_counts() -> None:
     module = load_script()
     full_page = [object() for _ in range(100)]
@@ -4652,6 +4704,7 @@ def main() -> int:
     assert_artifact_page_total_count_boundary_is_accepted()
     assert_jobs_page_saturation_fails_closed()
     assert_jobs_page_total_count_boundary_is_accepted()
+    assert_incomplete_exact_sha_runs_require_explicit_job_validated_opt_in()
     assert_complete_first_page_rejects_incomplete_or_malformed_counts()
     assert_latest_successful_attempt_selected()
     assert_record_attempt_mismatch_rejected()

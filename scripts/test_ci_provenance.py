@@ -2091,7 +2091,7 @@ def assert_mergify_temp_pr_synchronize_requires_sender_binding() -> None:
 
 
 def assert_mergify_temp_pr_edited_event_keeps_required_gate() -> None:
-    # Live Mergify queue proof PRs can arrive as draft pull_request/edited events
+    # Live Mergify queue proof PRs can arrive as pull_request/edited events
     # without a base change. When the sender and author are the bound Mergify actor,
     # that still represents the queue proof PR and must publish the required gates.
     with tempfile.TemporaryDirectory() as tmp:
@@ -2135,6 +2135,18 @@ def assert_mergify_temp_pr_edited_event_keeps_required_gate() -> None:
         actual = {key: result.get(key) for key in expected}
         if actual != expected:
             raise AssertionError(f"Mergify edited proof PR must publish required gates: {actual}")
+
+        non_draft_args = list(args)
+        non_draft_args[non_draft_args.index("--pull-request-draft") + 1] = "false"
+        code, stdout, stderr = run_cli_with_event_sender(non_draft_args, "37929162")
+        if code != 0:
+            raise AssertionError(f"non-draft Mergify edited proof PR ci-policy failed: {stderr}")
+        non_draft_result = output_dict(stdout)
+        non_draft_actual = {key: non_draft_result.get(key) for key in expected}
+        if non_draft_actual != expected:
+            raise AssertionError(
+                f"non-draft Mergify edited proof PR must publish required gates: {non_draft_actual}"
+            )
 
 
 def assert_parse_event_sender_id_fails_closed() -> None:

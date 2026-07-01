@@ -1212,13 +1212,18 @@ def mergify_temp_pr_matches(
         and not pull_request_draft
         and pull_request_author_id == temp_pr_actor_id
     )
+    actor_owned_ready_pr = (
+        not pull_request_draft
+        and actor_bound
+        and pull_request_author_id == temp_pr_actor_id
+    )
     return (
         event_name == "pull_request"
         and (
             pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
             or pull_request_head_ref.startswith(transient_head_ref_prefix)
         )
-        and ((pull_request_draft and actor_bound) or ready_author_bound)
+        and ((pull_request_draft and actor_bound) or ready_author_bound or actor_owned_ready_pr)
     )
 
 

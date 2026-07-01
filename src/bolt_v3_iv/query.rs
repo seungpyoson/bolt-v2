@@ -391,15 +391,11 @@ impl IvQueryStateHandle {
     }
 
     fn read_state(&self) -> RwLockReadGuard<'_, IvQueryState> {
-        self.inner
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.inner.read().expect("IV query state lock poisoned")
     }
 
     fn write_state(&self) -> RwLockWriteGuard<'_, IvQueryState> {
-        self.inner
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.inner.write().expect("IV query state lock poisoned")
     }
 
     pub fn snapshot(&self) -> IvQueryState {
@@ -3293,7 +3289,8 @@ mod tests {
     }
 
     #[test]
-    fn query_state_handle_recovers_from_poisoned_lock() {
+    #[should_panic(expected = "IV query state lock poisoned")]
+    fn query_state_handle_read_panics_on_poisoned_lock() {
         let handle = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
         let inner = handle.inner.clone();
         let poison_result = catch_unwind(AssertUnwindSafe(|| {
@@ -3301,11 +3298,24 @@ mod tests {
             panic!("poison query state lock");
         }));
         assert!(poison_result.is_err());
+        assert!(inner.read().is_err());
 
-        let recovered = catch_unwind(AssertUnwindSafe(|| handle.snapshot()));
+        handle.snapshot();
+    }
 
-        assert!(recovered.is_ok());
-        assert_eq!(recovered.unwrap().store.raw_events().len(), 0);
+    #[test]
+    #[should_panic(expected = "IV query state lock poisoned")]
+    fn query_state_handle_write_panics_on_poisoned_lock() {
+        let handle = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+        let inner = handle.inner.clone();
+        let poison_result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = inner.write().unwrap();
+            panic!("poison query state lock");
+        }));
+        assert!(poison_result.is_err());
+        assert!(inner.write().is_err());
+
+        handle.replace_source_health(Vec::new());
     }
 
     #[test]

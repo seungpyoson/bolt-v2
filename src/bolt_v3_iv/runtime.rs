@@ -164,13 +164,13 @@ impl IvRuntimeEngine {
     fn read_inner(&self) -> RwLockReadGuard<'_, IvRuntimeEngineState> {
         self.inner
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expect("IV runtime engine state lock poisoned")
     }
 
     fn write_inner(&self) -> RwLockWriteGuard<'_, IvRuntimeEngineState> {
         self.inner
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expect("IV runtime engine state lock poisoned")
     }
 
     pub fn apply_iv_root_reload(
@@ -1289,7 +1289,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_engine_recovers_from_poisoned_lock() {
+    #[should_panic(expected = "IV runtime engine state lock poisoned")]
+    fn runtime_engine_read_panics_on_poisoned_lock() {
         let engine = IvRuntimeEngine::from_iv_root(&IvRootConfig {
             schema_version: SUPPORTED_IV_SCHEMA_VERSION,
             profiles: Vec::new(),
@@ -1301,11 +1302,30 @@ mod tests {
             panic!("poison runtime engine lock");
         }));
         assert!(poison_result.is_err());
+        assert!(inner.read().is_err());
 
-        let recovered = catch_unwind(AssertUnwindSafe(|| {
-            engine.state_for_profile("missing_profile")
+        engine.state_for_profile("missing_profile");
+    }
+
+    #[test]
+    #[should_panic(expected = "IV runtime engine state lock poisoned")]
+    fn runtime_engine_write_panics_on_poisoned_lock() {
+        let mut engine = IvRuntimeEngine::from_iv_root(&IvRootConfig {
+            schema_version: SUPPORTED_IV_SCHEMA_VERSION,
+            profiles: Vec::new(),
+        })
+        .unwrap();
+        let inner = engine.inner.clone();
+        let poison_result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = inner.write().unwrap();
+            panic!("poison runtime engine lock");
         }));
+        assert!(poison_result.is_err());
+        assert!(inner.read().is_err());
 
-        assert!(recovered.unwrap().is_none());
+        let _ = engine.apply_iv_root_reload(&IvRootConfig {
+            schema_version: SUPPORTED_IV_SCHEMA_VERSION,
+            profiles: Vec::new(),
+        });
     }
 }

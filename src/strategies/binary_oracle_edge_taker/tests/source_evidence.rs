@@ -830,7 +830,7 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
     );
     strategy.pricing.last_fast_venue_age_ms = Some(17);
     strategy.pricing.last_fast_venue_jitter_ms = Some(3);
-    strategy.pricing.last_lead_agreement_corr = Some(0.99);
+    strategy.pricing.last_lead_agreement_corr = Some(probability(0.99));
     register_test_strategy_with_active_instruments(&mut strategy);
 
     let error = strategy

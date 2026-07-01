@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_capital_reservation::ReservationRejectionReason;
 use crate::bolt_v3_config::LoadedBoltV3Config;
+use crate::bolt_v3_numeric::Probability;
 use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 use crate::bolt_v3_realized_volatility::{
     RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
@@ -528,8 +529,16 @@ fn realized_volatility_reject_reason_evidence_label(
     }
 }
 
-fn number_evidence(value: f64) -> String {
+pub(crate) fn number_evidence(value: f64) -> String {
     value.to_string()
+}
+
+pub(crate) fn probability_evidence(probability: Probability) -> String {
+    number_evidence(probability.value())
+}
+
+pub(crate) fn option_number_evidence(value: Option<f64>) -> Option<String> {
+    value.filter(|value| value.is_finite()).map(number_evidence)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

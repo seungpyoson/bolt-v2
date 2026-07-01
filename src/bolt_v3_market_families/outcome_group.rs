@@ -19,6 +19,7 @@ use crate::{
         MarketSelectionCandidateWindow, MarketSelectionTarget, SelectedBinaryOptionMarket,
         SelectedMarketRequirement, TargetRuntimeFields,
     },
+    bolt_v3_numeric::Probability,
 };
 
 pub const KEY: &str = "outcome_group";
@@ -174,6 +175,6 @@ pub fn selected_market_requirement(
     })
 }
 
-pub fn fair_probability_up(_inputs: &FairProbabilityInputs) -> Option<f64> {
+pub fn fair_probability_up(_inputs: &FairProbabilityInputs) -> Option<Probability> {
     None
 }

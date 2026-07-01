@@ -76,6 +76,10 @@ verify-bolt-v3-schema-current: check-workspace
     python3 scripts/test_verify_bolt_v3_schema_current.py
     python3 scripts/verify_bolt_v3_schema_current.py
 
+verify-probability-typed-pilot: check-workspace
+    python3 scripts/test_verify_probability_typed_pilot.py
+    python3 scripts/verify_probability_typed_pilot.py
+
 verify-bolt-v3-core-boundary: check-workspace
     python3 scripts/test_verify_bolt_v3_core_boundary.py
     python3 scripts/verify_bolt_v3_core_boundary.py

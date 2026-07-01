@@ -1019,6 +1019,13 @@ class CiStorageAuditTests(unittest.TestCase):
             "v0.1.3",
         )
 
+    def test_branch_ref_events_require_event_only_for_constrained_globs(self) -> None:
+        policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
+        policy = ci_storage_audit.load_cleanup_policy_path(policy_path)
+
+        self.assertTrue(ci_storage_audit.branch_ref_events_require_event(policy.branch_ref_events))
+        self.assertFalse(ci_storage_audit.branch_ref_events_require_event({"push": ("*",)}))
+
     def test_real_cleanup_policy_classifies_workflow_dispatch_branch_archive(self) -> None:
         policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
         policy = ci_storage_audit.load_cleanup_policy_path(policy_path)
@@ -1204,64 +1211,72 @@ class CiStorageAuditTests(unittest.TestCase):
     def test_real_cleanup_policy_keeps_canonical_branch_ref_when_event_metadata_is_missing(self) -> None:
         policy_path = SCRIPT.parent.parent / "ci" / "github-actions-runners.toml"
         policy = ci_storage_audit.load_cleanup_policy_path(policy_path)
-        entry = ci_storage_audit.artifact_entry_from_raw(
-            {
-                "id": 1,
-                "name": "nextest-archive",
-                "size_in_bytes": 100,
-                "created_at": "2026-06-01T00:00:00Z",
-                "expires_at": "2026-06-15T00:00:00Z",
-                "expired": True,
-                "workflow_run": {
-                    "id": 501,
-                    "head_branch": "feature/manual",
-                    "head_sha": "a" * 40,
-                },
-            }
+        event_cases = (
+            ("missing", {}),
+            ("null", {"event": None}),
+            ("empty", {"event": ""}),
         )
-        client = FakeClient(
-            {
-                "actions/runs/501": {
-                    "id": 501,
-                    "status": "completed",
-                    "conclusion": "success",
-                    "ref": "refs/heads/feature/manual",
-                    "head_branch": "feature/manual",
-                    "head_sha": "a" * 40,
-                },
-                ("GLOBAL", "users/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
-                    "users/owner/settings/billing/actions",
-                    "billing endpoint denied",
-                ),
-                ("GLOBAL", "orgs/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
-                    "orgs/owner/settings/billing/actions",
-                    "billing endpoint denied",
-                ),
-            }
-        )
+        for label, event_payload in event_cases:
+            with self.subTest(label=label):
+                entry = ci_storage_audit.artifact_entry_from_raw(
+                    {
+                        "id": 1,
+                        "name": "nextest-archive",
+                        "size_in_bytes": 100,
+                        "created_at": "2026-06-01T00:00:00Z",
+                        "expires_at": "2026-06-15T00:00:00Z",
+                        "expired": True,
+                        "workflow_run": {
+                            "id": 501,
+                            "head_branch": "feature/manual",
+                            "head_sha": "a" * 40,
+                        },
+                    }
+                )
+                client = FakeClient(
+                    {
+                        "actions/runs/501": {
+                            "id": 501,
+                            "status": "completed",
+                            "conclusion": "success",
+                            "ref": "refs/heads/feature/manual",
+                            "head_branch": "feature/manual",
+                            "head_sha": "a" * 40,
+                            **event_payload,
+                        },
+                        ("GLOBAL", "users/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                            "users/owner/settings/billing/actions",
+                            "billing endpoint denied",
+                        ),
+                        ("GLOBAL", "orgs/owner/settings/billing/actions"): ci_storage_audit.GhApiError(
+                            "orgs/owner/settings/billing/actions",
+                            "billing endpoint denied",
+                        ),
+                    }
+                )
 
-        cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
-            client,
-            repo="owner/repo",
-            artifacts=cleanup_artifacts_with_entry(entry),
-            policy=policy,
-        )
+                cleanup = ci_storage_audit.build_artifact_cleanup_feasibility(
+                    client,
+                    repo="owner/repo",
+                    artifacts=cleanup_artifacts_with_entry(entry),
+                    policy=policy,
+                )
 
-        self.assertEqual(cleanup["candidate_count"], 0)
-        self.assertEqual(cleanup["metadata_unavailable_count"], 1)
-        row = cleanup["rows"][0]
-        self.assertEqual(row["decision"], "KEEP")
-        self.assertEqual(row["reason_code"], "artifact_metadata_unavailable")
-        self.assertEqual(row["workflow_run"]["ref"], None)
-        self.assertEqual(row["workflow_run"]["event"], None)
-        self.assertEqual(
-            row["metadata_failure"],
-            {
-                "field": "workflow_run.ref",
-                "state": "invalid",
-                "code": "artifact_ref_invalid",
-            },
-        )
+                self.assertEqual(cleanup["candidate_count"], 0)
+                self.assertEqual(cleanup["metadata_unavailable_count"], 1)
+                row = cleanup["rows"][0]
+                self.assertEqual(row["decision"], "KEEP")
+                self.assertEqual(row["reason_code"], "artifact_metadata_unavailable")
+                self.assertEqual(row["workflow_run"]["ref"], None)
+                self.assertEqual(row["workflow_run"]["event"], None)
+                self.assertEqual(
+                    row["metadata_failure"],
+                    {
+                        "field": "workflow_run.ref",
+                        "state": "invalid",
+                        "code": "artifact_ref_invalid",
+                    },
+                )
 
     def test_cleanup_feasibility_keeps_candidate_when_ref_metadata_has_unsupported_shape(self) -> None:
         policy = cleanup_candidate_policy("unsupported-ref-policy")

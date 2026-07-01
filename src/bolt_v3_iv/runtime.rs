@@ -1321,7 +1321,7 @@ mod tests {
             panic!("poison runtime engine lock");
         }));
         assert!(poison_result.is_err());
-        assert!(inner.read().is_err());
+        assert!(inner.write().is_err());
 
         let _ = engine.apply_iv_root_reload(&IvRootConfig {
             schema_version: SUPPORTED_IV_SCHEMA_VERSION,

@@ -219,6 +219,7 @@ mod tests {
     use crate::{
         bolt_v3_executable_cost::{self, ExactSizeVwap, ExecutableCostBreakdown},
         bolt_v3_market_families::OutcomeSide,
+        bolt_v3_numeric::Probability,
     };
 
     const EPSILON: f64 = 1e-9;

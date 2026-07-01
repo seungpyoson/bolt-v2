@@ -397,7 +397,7 @@ fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
     let fair_probability = strategy
         .current_fair_probability_up_at(4_000)
         .expect("warmed pricing state should produce fair probability");
-    assert!(fair_probability > 0.5);
+    assert!(fair_probability.value() > 0.5);
 
     let decision = strategy.entry_evaluation_at(4_000);
     assert!(decision.pricing_blocked_by.is_empty());
@@ -732,7 +732,7 @@ fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
     assert!(
         decision
             .fair_probability_up
-            .is_some_and(|value| value > 0.5),
+            .is_some_and(|value| value.value() > 0.5),
         "live pricing should infer an up edge from spot above strike"
     );
     assert!(decision.up_worst_case_ev_bps.is_some());

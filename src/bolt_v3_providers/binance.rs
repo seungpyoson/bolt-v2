@@ -24,6 +24,8 @@
 //! core and is called from this module the same way the archetype
 //! binding calls `parse_decimal_string`.
 
+pub mod live_probe;
+
 use std::{any::Any, sync::Arc};
 
 use nautilus_binance::{

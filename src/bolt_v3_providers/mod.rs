@@ -27,6 +27,12 @@ pub mod polyresearch;
 pub mod reference_boundary_capture;
 pub mod reference_live_probe;
 
+pub use binance::live_probe::{
+    SpotLiveProbeClientDescription, classify_spot_live_probe_failure,
+    configured_spot_live_probe_client, live_node_exited_before_price_reason, no_live_price_reason,
+    sanitize_spot_live_probe_error,
+};
+
 // Neutral resolution-oracle seam. Core config resolution
 // (`crate::bolt_v3_config`), core validation (`crate::bolt_v3_validate`), the
 // binary-oracle archetype, and the binary-oracle strategy reach the live

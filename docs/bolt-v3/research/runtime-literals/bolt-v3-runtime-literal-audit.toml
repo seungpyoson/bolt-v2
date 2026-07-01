@@ -19545,3 +19545,83 @@ literal = "0"
 context = '''|| envelope.ranges.max_quantity_policy_versions == 0'''
 classification = "policy_epoch_envelope_zero_bound_reject"
 reason = "A safety-policy envelope with zero quantity-policy versions cannot approve any prepared quantity-policy bundle; the bound is envelope-owned, while zero is the structural empty-bound rejection sentinel."
+
+[[allowed]]
+path = "src/bin/binance_spot_live_probe.rs"
+kind = "string"
+literal = '''"connect_status=started strategy_free_live_node"'''
+context = '''"connect_status=started strategy_free_live_node"'''
+classification = "binance_spot_live_probe_output_contract"
+reason = "Fixed diagnostic output label for the operator-only Binance spot live probe; it reports probe progress and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bin/binance_spot_live_probe.rs"
+kind = "string"
+literal = '''"subscribe_status=submitted client={} instrument={} kind=quote"'''
+context = '''"subscribe_status=submitted client={} instrument={} kind=quote",'''
+classification = "binance_spot_live_probe_output_contract"
+reason = "Fixed diagnostic output template for the operator-only Binance spot live probe subscribe step; client and instrument remain CLI-owned runtime inputs."
+
+[[allowed]]
+path = "src/bin/binance_spot_live_probe.rs"
+kind = "string"
+literal = '''"live_update=PASS observed=true within_secs={} price={} bid={} ask={} ts_event_ns={} ts_init_ns={}"'''
+context = '''"live_update=PASS observed=true within_secs={} price={} bid={} ask={} ts_event_ns={} ts_init_ns={}",'''
+classification = "binance_spot_live_probe_output_contract"
+reason = "Fixed diagnostic output template for a successful observed quote; timeout, prices, and timestamps are observed values, not code-owned runtime constants."
+
+[[allowed]]
+path = "src/bin/binance_spot_live_probe.rs"
+kind = "string"
+literal = '''"live_update=FAIL observed=false within_secs={timeout_secs} instrument={instrument}"'''
+context = '''"live_update=FAIL observed=false within_secs={timeout_secs} instrument={instrument}"'''
+classification = "binance_spot_live_probe_output_contract"
+reason = "Fixed diagnostic output template for a missing quote; timeout and instrument remain CLI-owned runtime inputs."
+
+[[allowed]]
+path = "src/bin/binance_spot_live_probe.rs"
+kind = "string"
+literal = '''"venue={} client={} instrument={} product_type={} environment={} market_data_mode={}"'''
+context = '''"venue={} client={} instrument={} product_type={} environment={} market_data_mode={}",'''
+classification = "binance_spot_live_probe_output_contract"
+reason = "Fixed diagnostic output template for the configured Binance spot client description; all values are loaded from TOML or CLI runtime inputs."
+
+[[allowed]]
+path = "src/bin/binance_spot_live_probe.rs"
+kind = "string"
+literal = '''"endpoints=http:{} ws:{} source_ip={} aws_region={}"'''
+context = '''"endpoints=http:{} ws:{} source_ip={} aws_region={}",'''
+classification = "binance_spot_live_probe_output_contract"
+reason = "Fixed diagnostic output template for endpoint and source-IP evidence; endpoint and region values are loaded from TOML, and source IP is observed at runtime."
+
+[[allowed]]
+path = "src/bin/binance_spot_live_probe.rs"
+kind = "string"
+literal = '''"source-IP lookup via {} returned HTTP {}"'''
+context = '''"source-IP lookup via {} returned HTTP {}",'''
+classification = "binance_spot_live_probe_diagnostic_error"
+reason = "Fixed diagnostic error template for the source-IP evidence lookup; URL and HTTP status remain runtime inputs/observations."
+
+[[allowed]]
+path = "src/bin/binance_spot_live_probe.rs"
+kind = "string"
+literal = '''"strategy-free stop timeout sum overflowed config-owned Nautilus timeout fields"'''
+context = '''.context("strategy-free stop timeout sum overflowed config-owned Nautilus timeout fields")'''
+classification = "binance_spot_live_probe_diagnostic_error"
+reason = "Fixed diagnostic error for arithmetic overflow while deriving the stop timeout from existing TOML-owned Nautilus timeout fields."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance/live_probe.rs"
+kind = "string"
+literal = '''"-2015"'''
+context = '''const BINANCE_INVALID_API_KEY_CODE: &str = "-2015";'''
+classification = "binance_spot_live_probe_error_classifier"
+reason = "Binance's documented invalid API-key/IP/permission code used only to classify the diagnostic probe failure into the required operator allowlist message."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance/live_probe.rs"
+kind = "string"
+literal = '''"[redacted-secret]"'''
+context = '''const SECRET_REDACTION_PLACEHOLDER: &str = "[redacted-secret]";'''
+classification = "binance_spot_live_probe_secret_redaction_placeholder"
+reason = "Fixed marker replacing resolved secret material in diagnostic probe errors before output; it prevents credential display and does not configure runtime behavior."

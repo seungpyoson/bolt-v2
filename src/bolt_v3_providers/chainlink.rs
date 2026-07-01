@@ -962,6 +962,6 @@ price_precision = 2
         let boundary = recent_already_open_boundary_unix_seconds_for_now(1_700_000_650, 300)
             .expect("boundary should be selected");
 
-        assert_eq!(boundary, 1_700_000_200);
+        assert_eq!(boundary, 1_700_000_100);
     }
 }

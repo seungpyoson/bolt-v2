@@ -598,7 +598,6 @@ impl fmt::Display for ChainlinkReportFetchError {
 
 impl std::error::Error for ChainlinkReportFetchError {}
 
-#[derive(Debug)]
 struct ChainlinkReportFetchDecode {
     http_status: u16,
     decoded: DecodedPriceToBeatReport,

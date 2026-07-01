@@ -2090,6 +2090,53 @@ def assert_mergify_temp_pr_synchronize_requires_sender_binding() -> None:
             raise AssertionError(f"human-sync Mergify proof PR must demote without sender binding: {result}")
 
 
+def assert_mergify_temp_pr_edited_event_keeps_required_gate() -> None:
+    # Live Mergify queue proof PRs can arrive as draft pull_request/edited events
+    # without a base change. When the sender and author are the bound Mergify actor,
+    # that still represents the queue proof PR and must publish the required gates.
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        args = [
+            "ci-policy",
+            "--config",
+            str(config),
+            "--event-name",
+            "pull_request",
+            "--event-action",
+            "edited",
+            "--pull-request-draft",
+            "true",
+            "--pull-request-head-ref",
+            "mergify/merge-queue/46623f919f",
+            "--pull-request-author-id",
+            "37929162",
+            "--pull-request-base-changed",
+            "false",
+            "--workflow-dispatch-full-ci",
+            "",
+            "--docs-only",
+            "false",
+            "--ref",
+            "refs/pull/1134/merge",
+        ]
+
+        code, stdout, stderr = run_cli_with_event_sender(args, "37929162")
+        if code != 0:
+            raise AssertionError(f"Mergify edited proof PR ci-policy failed: {stderr}")
+        result = output_dict(stdout)
+        expected = {
+            "ci_policy_path": "full",
+            "full_ci_required": "true",
+            "gate_name": "gate",
+            "backtester_gate_name": "backtester-gate",
+            "expected_event_class": "full",
+            "reason": "mergify_temp_pr",
+        }
+        actual = {key: result.get(key) for key in expected}
+        if actual != expected:
+            raise AssertionError(f"Mergify edited proof PR must publish required gates: {actual}")
+
+
 def assert_parse_event_sender_id_fails_closed() -> None:
     module = load_script()
     cases = {
@@ -4449,6 +4496,7 @@ def main() -> int:
     assert_mergify_temp_pr_requires_actor_binding()
     assert_mergify_temp_pr_ready_event_uses_author_binding()
     assert_mergify_temp_pr_synchronize_requires_sender_binding()
+    assert_mergify_temp_pr_edited_event_keeps_required_gate()
     assert_parse_event_sender_id_fails_closed()
     assert_ci_policy_non_numeric_sender_id_does_not_crash()
     assert_mergify_actor_binding_demotes_every_full_action()

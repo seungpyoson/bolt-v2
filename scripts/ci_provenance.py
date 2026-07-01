@@ -1222,13 +1222,7 @@ def mergify_temp_pr_matches(
     )
 
 
-MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
-
-
-def bool_like(value: bool | str) -> bool:
-    if isinstance(value, bool):
-        return value
-    return value.strip().lower() == "true"
+MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review", "edited"})
 
 
 def mergify_temp_pr_requires_full_ci(
@@ -1236,8 +1230,11 @@ def mergify_temp_pr_requires_full_ci(
     event_action: str,
     pull_request_base_changed: bool | str,
 ) -> bool:
-    base_changed = bool_like(pull_request_base_changed)
-    return event_action in MERGIFY_TEMP_PR_FULL_ACTIONS or (event_action == "edited" and base_changed)
+    # `pull_request_base_changed` remains part of the caller contract, but live
+    # Mergify proof PRs can arrive as draft metadata edits without base changes.
+    # Actor binding is the safety boundary for these proof events.
+    _ = pull_request_base_changed
+    return event_action in MERGIFY_TEMP_PR_FULL_ACTIONS
 
 
 def evaluate_ci_policy(

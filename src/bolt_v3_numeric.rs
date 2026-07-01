@@ -227,12 +227,12 @@ mod tests {
 
     #[test]
     fn probability_arithmetic_helpers_keep_values_in_bounds() {
-        let probability = Probability::new(0.70).expect("valid probability");
-        let band = Probability::new(0.40).expect("valid probability");
+        let probability = Probability::new(0.75).expect("valid probability");
+        let band = Probability::new(HALF_F64).expect("valid probability");
 
-        assert_eq!(probability.complement().value(), 0.30);
+        assert_eq!(probability.complement().value(), 0.25);
         assert_eq!(probability.widened(band).value(), UNIT_F64);
-        assert_eq!(probability.narrowed(band).value(), 0.30);
+        assert_eq!(probability.narrowed(band).value(), 0.25);
     }
 
     #[test]

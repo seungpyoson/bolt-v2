@@ -43,6 +43,30 @@ def valid_finding_response(issue: str = "example issue") -> str:
     )
 
 
+def valid_claude_deliverable_body() -> str:
+    return "\n".join(
+        [
+            "<!-- ai-pr-reviewer-claude -->",
+            "",
+            "**Source:** Claude Code (`configured-claude-model`)",
+            "",
+            valid_no_findings_response(),
+        ]
+    )
+
+
+def valid_glm_deliverable_body() -> str:
+    return "\n".join(
+        [
+            "<!-- ai-pr-reviewer-glm -->",
+            "",
+            "**Source:** GLM direct fallback (`configured-glm-model`)",
+            "",
+            valid_no_findings_response(),
+        ]
+    )
+
+
 def valid_bulleted_finding_response(issue: str = "example issue") -> str:
     return "\n".join(
         [
@@ -194,6 +218,12 @@ class CommentApiHandler(BaseHTTPRequestHandler):
         self.requests.append(("GET", self.path, None))
         if self.path.startswith("/repos/seungpyoson/bolt-v2/issues/895/comments"):
             self._write_json(200, self.comments)
+            return
+        if self.path.startswith("/repos/seungpyoson/bolt-v2/pulls/895/reviews"):
+            self._write_json(200, [])
+            return
+        if self.path.startswith("/repos/seungpyoson/bolt-v2/pulls/895/comments"):
+            self._write_json(200, [])
             return
         self._write_json(404, {"message": "not found"})
 
@@ -361,8 +391,7 @@ def test_skips_fallback_when_pr_agent_deliverable_exists_after_start() -> None:
                 "body": (
                     "## PR Reviewer Guide\n\n"
                     "**Source:** GLM PR-Agent (`configured-pr-agent-model`)\n\n"
-                    "Severity: low\n\n"
-                    "existing PR-Agent result"
+                    + valid_finding_response("existing PR-Agent result.")
                 ),
                 "created_at": "2026-06-22T12:22:00Z",
                 "updated_at": "2026-06-22T12:22:00Z",
@@ -390,7 +419,7 @@ def test_skips_fallback_when_pr_agent_deliverable_exists_after_start() -> None:
     assert github.posted == []
 
 
-def test_pr_agent_severity_review_without_fallback_labels_suppresses_fallback() -> None:
+def test_pr_agent_severity_only_review_does_not_suppress_fallback() -> None:
     module = load_script()
     github = FakeGitHub(
         files=[file_payload("src/lib.rs", "+change")],
@@ -415,7 +444,7 @@ def test_pr_agent_severity_review_without_fallback_labels_suppresses_fallback() 
             }
         ],
     )
-    glm = FakeGLM()
+    glm = FakeGLM(response=valid_finding_response("fallback ran after incomplete PR-Agent finding."))
 
     result = module.run_fallback_review(
         github=github,
@@ -423,9 +452,10 @@ def test_pr_agent_severity_review_without_fallback_labels_suppresses_fallback() 
         config=fallback_config(module),
     )
 
-    assert result == "existing-review-deliverable"
-    assert glm.prompts == []
-    assert github.posted == []
+    assert result == "fallback-posted"
+    assert len(glm.prompts) == 1
+    assert len(github.posted) == 1
+    assert "fallback ran after incomplete PR-Agent finding." in github.posted[0]
 
 
 def test_default_pr_agent_sections_without_evidence_do_not_suppress_fallback() -> None:
@@ -482,7 +512,7 @@ def test_embedded_pr_agent_evidence_label_does_not_suppress_fallback() -> None:
     assert "fallback ran after embedded PR-Agent evidence label." in github.posted[0]
 
 
-def test_default_pr_agent_sections_with_evidence_suppress_fallback() -> None:
+def test_default_pr_agent_sections_with_severity_only_do_not_suppress_fallback() -> None:
     module = load_script()
     github = FakeGitHub(
         files=[file_payload("src/lib.rs", "+change")],
@@ -495,7 +525,7 @@ def test_default_pr_agent_sections_with_evidence_suppress_fallback() -> None:
             }
         ],
     )
-    glm = FakeGLM()
+    glm = FakeGLM(response=valid_finding_response("fallback ran after severity-only PR-Agent signal."))
 
     result = module.run_fallback_review(
         github=github,
@@ -503,9 +533,10 @@ def test_default_pr_agent_sections_with_evidence_suppress_fallback() -> None:
         config=fallback_config(module),
     )
 
-    assert result == "existing-review-deliverable"
-    assert glm.prompts == []
-    assert github.posted == []
+    assert result == "fallback-posted"
+    assert len(glm.prompts) == 1
+    assert len(github.posted) == 1
+    assert "fallback ran after severity-only PR-Agent signal." in github.posted[0]
 
 
 def test_unstamped_pr_agent_deliverable_does_not_suppress_fallback() -> None:
@@ -677,8 +708,7 @@ def test_incremental_pr_agent_deliverable_suppresses_fallback() -> None:
                 "body": (
                     "## Incremental PR Reviewer Guide\n\n"
                     "**Source:** GLM PR-Agent (`configured-pr-agent-model`)\n\n"
-                    "Severity: low\n\n"
-                    "existing incremental PR-Agent result"
+                    + valid_finding_response("existing incremental PR-Agent result.")
                 ),
                 "created_at": "2026-06-22T12:22:00Z",
                 "updated_at": "2026-06-22T12:22:00Z",
@@ -762,6 +792,14 @@ def test_low_quality_marker_comment_does_not_suppress_fallback() -> None:
     assert len(glm.prompts) == 1
     assert len(github.posted) == 1
     assert "fallback ran after weak marker." in github.posted[0]
+
+
+def test_finding_about_review_notice_counts_as_quality_deliverable() -> None:
+    module = load_script()
+    config = fallback_config(module)
+    response = valid_finding_response("The Claude review notice path can skip an infrastructure failure.")
+
+    assert module.review_body_is_quality_deliverable(response, config.output_contract)
 
 
 def test_same_round_marker_comment_is_updated_instead_of_posting_new_comment() -> None:
@@ -852,6 +890,630 @@ def test_generated_low_quality_review_is_not_posted_as_deliverable() -> None:
     assert len(github.posted) == 1
     assert "review did not produce a deliverable" in github.posted[0]
     assert "did not meet the hard-evidence output contract" in github.posted[0]
+
+
+def test_invalid_review_failure_notice_omits_raw_model_output_excerpt() -> None:
+    module = load_script()
+    secret = "fake-kimi-secret-invalid-output"
+    os.environ["KIMI_API_KEY"] = secret
+    try:
+        github = FakeGitHub(files=[file_payload("src/lib.rs", "+change")])
+        kimi = FakeProvider(response=f"Looks generally fine. Provider echoed {secret}.")
+
+        try:
+            module.run_fallback_review(
+                github=github,
+                reviewer=kimi,
+                config=fallback_config(
+                    module,
+                    provider="Kimi",
+                    deliverable_markers=("<!-- ai-pr-reviewer-kimi -->",),
+                    comment_marker="<!-- ai-pr-reviewer-kimi -->",
+                ),
+            )
+        except module.ReviewFailed:
+            pass
+        else:
+            raise AssertionError("expected ReviewFailed")
+
+        assert len(github.posted) == 1, github.posted
+        assert "review response 1 did not meet the hard-evidence output contract" in github.posted[0]
+        assert "Invalid output excerpt:" not in github.posted[0]
+        assert "Looks generally fine" not in github.posted[0]
+        assert secret not in github.posted[0]
+        assert "Provider echoed" not in github.posted[0]
+    finally:
+        os.environ.pop("KIMI_API_KEY", None)
+
+
+def test_claude_error_execution_file_posts_failure_notice_without_raw_output() -> None:
+    module = load_script()
+    github = FakeGitHub(files=[])
+    with tempfile.TemporaryDirectory() as temp_dir:
+        execution_file = pathlib.Path(temp_dir) / "claude-execution-output.json"
+        execution_file.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "system", "subtype": "init", "model": "configured-claude-model"}),
+                    json.dumps(
+                        {
+                            "type": "result",
+                            "subtype": "success",
+                            "is_error": True,
+                            "duration_ms": 2011,
+                            "num_turns": 1,
+                            "total_cost_usd": 0,
+                            "permission_denials_count": 0,
+                            "debug": "do not quote raw debug output",
+                        }
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = module.ensure_claude_deliverable_or_notice(
+            github=github,
+            execution_file=execution_file,
+            step_outcome="success",
+            config=fallback_config(
+                module,
+                provider="Claude",
+                expected_bot_login="claude[bot]",
+                comment_marker="",
+                notice_marker="<!-- ai-pr-reviewer-claude-notice -->",
+                source_label="Claude Code (`configured-claude-model`)",
+            ),
+        )
+
+    assert result == "failure-notice-posted"
+    assert len(github.posted) == 1, github.posted
+    assert github.posted[0].startswith("<!-- ai-pr-reviewer-claude-notice -->")
+    assert "Claude review did not produce a deliverable" in github.posted[0]
+    assert "is_error=true" in github.posted[0]
+    assert "num_turns=1" in github.posted[0]
+    assert "total_cost_usd=0" in github.posted[0]
+    assert "do not quote raw debug output" not in github.posted[0]
+
+
+def test_claude_execution_events_skip_non_file_path_without_reading() -> None:
+    module = load_script()
+
+    class NonFilePath:
+        def is_file(self) -> bool:
+            return False
+
+        def read_text(self, *, encoding: str) -> str:
+            del encoding
+            raise AssertionError("non-file execution path should not be read")
+
+    assert module.read_claude_execution_events(NonFilePath()) == []
+
+
+def test_claude_app_bot_review_counts_as_visible_deliverable() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "body": valid_claude_deliverable_body(),
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "claude[bot]"},
+            }
+        ],
+    )
+
+    result = module.ensure_claude_deliverable_or_notice(
+        github=github,
+        execution_file=pathlib.Path(),
+        step_outcome="success",
+        config=fallback_config(
+            module,
+            provider="Claude",
+            expected_bot_login="github-actions[bot]",
+            deliverable_bot_logins=("claude[bot]",),
+            comment_marker="<!-- ai-pr-reviewer-claude -->",
+            notice_marker="<!-- ai-pr-reviewer-claude-notice -->",
+            source_label="Claude Code (`configured-claude-model`)",
+        ),
+    )
+
+    assert result == "existing-review-deliverable"
+    assert github.posted == []
+
+
+def test_claude_markerless_valid_review_is_stamped_and_counts_as_deliverable() -> None:
+    module = load_script()
+    markerless_body = "\n".join(
+        [
+            "**Source:** Claude Code (`configured-claude-model`)",
+            "",
+            valid_no_findings_response(),
+        ]
+    )
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "id": 77,
+                "body": markerless_body,
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "claude[bot]"},
+            }
+        ],
+    )
+
+    result = module.ensure_claude_deliverable_or_notice(
+        github=github,
+        execution_file=pathlib.Path(),
+        step_outcome="success",
+        config=fallback_config(
+            module,
+            provider="Claude",
+            expected_bot_login="github-actions[bot]",
+            deliverable_bot_logins=("claude[bot]",),
+            comment_marker="<!-- ai-pr-reviewer-claude -->",
+            notice_marker="<!-- ai-pr-reviewer-claude-notice -->",
+            source_label="Claude Code (`configured-claude-model`)",
+        ),
+    )
+
+    assert result == "existing-review-deliverable"
+    assert github.posted == []
+    assert github.updated == [(77, "<!-- ai-pr-reviewer-claude -->\n\n" + markerless_body)]
+
+
+def test_claude_non_review_bot_comment_does_not_count_as_visible_deliverable() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "body": "I checked the workflow and encountered an issue: network timeout.",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "claude[bot]"},
+            }
+        ],
+    )
+
+    result = module.ensure_claude_deliverable_or_notice(
+        github=github,
+        execution_file=pathlib.Path(),
+        step_outcome="success",
+        config=fallback_config(
+            module,
+            provider="Claude",
+            expected_bot_login="github-actions[bot]",
+            deliverable_bot_logins=("claude[bot]",),
+            comment_marker="<!-- ai-pr-reviewer-claude -->",
+            notice_marker="<!-- ai-pr-reviewer-claude-notice -->",
+            source_label="Claude Code (`configured-claude-model`)",
+        ),
+    )
+
+    assert result == "failure-notice-posted"
+    assert len(github.posted) == 1, github.posted
+
+
+def test_provider_failure_notice_allows_synchronize_retry_decision() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "body": "<!-- ai-pr-reviewer-kimi-notice -->\n\n## Kimi review did not produce a deliverable",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+
+    assert module.provider_retry_needed(
+        github=github,
+        expected_bot_login="github-actions[bot]",
+        notice_marker="<!-- ai-pr-reviewer-kimi-notice -->",
+        output_contract=fallback_config(module).output_contract,
+    )
+
+
+def test_low_quality_marker_comment_after_notice_still_requires_retry() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "body": "<!-- ai-pr-reviewer-glm-notice -->\n\n## GLM review did not produce a deliverable",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+            {
+                "body": "<!-- ai-pr-reviewer-glm -->\n\n" + default_pr_agent_review_body(),
+                "created_at": "2026-06-22T12:21:00Z",
+                "updated_at": "2026-06-22T12:23:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+        ],
+    )
+
+    assert module.provider_retry_needed(
+        github=github,
+        expected_bot_login="github-actions[bot]",
+        notice_marker="<!-- ai-pr-reviewer-glm-notice -->",
+        deliverable_markers=("<!-- ai-pr-reviewer-glm -->", "## PR Reviewer Guide"),
+        output_contract=fallback_config(module).output_contract,
+    )
+
+
+def test_source_less_quality_marker_comment_after_notice_still_requires_retry() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "body": "<!-- ai-pr-reviewer-glm-notice -->\n\n## GLM review did not produce a deliverable",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+            {
+                "body": "<!-- ai-pr-reviewer-glm -->\n\n" + valid_no_findings_response(),
+                "created_at": "2026-06-22T12:23:00Z",
+                "updated_at": "2026-06-22T12:23:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+        ],
+    )
+
+    assert module.provider_retry_needed(
+        github=github,
+        expected_bot_login="github-actions[bot]",
+        notice_marker="<!-- ai-pr-reviewer-glm-notice -->",
+        deliverable_markers=("<!-- ai-pr-reviewer-glm -->",),
+        output_contract=fallback_config(module).output_contract,
+        require_source_line=True,
+    )
+
+
+def test_malformed_comment_payload_does_not_crash_retry_deliverable_detection() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            "malformed-comment",
+            {
+                "body": valid_glm_deliverable_body(),
+                "created_at": "2026-06-22T12:23:00Z",
+                "updated_at": "2026-06-22T12:23:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+        ],
+    )
+
+    timestamp = module.latest_quality_review_deliverable_time(
+        github=github,
+        expected_bot_login="github-actions[bot]",
+        deliverable_markers=("<!-- ai-pr-reviewer-glm -->",),
+        output_contract=fallback_config(module).output_contract,
+        require_source_line=True,
+    )
+
+    assert timestamp == module.parse_iso_timestamp("2026-06-22T12:23:00Z")
+
+
+def test_quality_marker_comment_with_source_after_notice_clears_retry() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "body": "<!-- ai-pr-reviewer-glm-notice -->\n\n## GLM review did not produce a deliverable",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+            {
+                "body": valid_glm_deliverable_body(),
+                "created_at": "2026-06-22T12:23:00Z",
+                "updated_at": "2026-06-22T12:23:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+        ],
+    )
+
+    assert not module.provider_retry_needed(
+        github=github,
+        expected_bot_login="github-actions[bot]",
+        notice_marker="<!-- ai-pr-reviewer-glm-notice -->",
+        deliverable_markers=("<!-- ai-pr-reviewer-glm -->",),
+        output_contract=fallback_config(module).output_contract,
+        require_source_line=True,
+    )
+
+
+def test_freshness_prefixed_quality_comment_after_notice_clears_retry() -> None:
+    module = load_script()
+    freshness_warning = module.render_model_freshness_warning_block(
+        "Configured model may be stale; review output is still usable."
+    )
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "body": "<!-- ai-pr-reviewer-glm-notice -->\n\n## GLM review did not produce a deliverable",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+            {
+                "body": f"{freshness_warning}\n\n{valid_glm_deliverable_body()}",
+                "created_at": "2026-06-22T12:23:00Z",
+                "updated_at": "2026-06-22T12:23:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+        ],
+    )
+
+    assert not module.provider_retry_needed(
+        github=github,
+        expected_bot_login="github-actions[bot]",
+        notice_marker="<!-- ai-pr-reviewer-glm-notice -->",
+        deliverable_markers=("<!-- ai-pr-reviewer-glm -->",),
+        output_contract=fallback_config(module).output_contract,
+        require_source_line=True,
+    )
+
+
+def test_claude_deliverable_after_notice_clears_retry_needed_cli() -> None:
+    module = load_script()
+    comments = [
+        {
+            "id": 101,
+            "body": "<!-- ai-pr-reviewer-claude-notice -->\n\n## Claude review did not produce a deliverable",
+            "created_at": "2026-06-22T12:22:00Z",
+            "updated_at": "2026-06-22T12:22:00Z",
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+        },
+        {
+            "id": 102,
+            "body": valid_claude_deliverable_body(),
+            "created_at": "2026-06-22T12:23:00Z",
+            "updated_at": "2026-06-22T12:23:00Z",
+            "user": {"type": "Bot", "login": "claude[bot]"},
+        },
+    ]
+    server, _thread, _requests = start_comment_api_server(comments)
+    api_url = f"http://127.0.0.1:{server.server_port}"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_path = pathlib.Path(temp_dir) / "ai-review.toml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[github]",
+                    f"api_url = {json.dumps(api_url)}",
+                    'server_url = "https://github.com"',
+                    'expected_bot_login = "github-actions[bot]"',
+                    "",
+                    "[review.output_contract]",
+                    'finding_required_labels = ["Severity:", "Evidence:", "Issue:", "Fix / verification:"]',
+                    'finding_guidance = ["severity", "evidence", "issue", "fix"]',
+                    'no_findings_indicator = "No hard-evidence findings"',
+                    'no_findings_intro = "No hard-evidence findings in this chunk."',
+                    'no_findings_required_labels = ["Coverage reviewed:", "Evidence basis:", "Risk areas considered:"]',
+                    'no_findings_guidance = ["coverage", "basis", "risks"]',
+                    'non_deliverable_indicators = ["review did not produce a deliverable", "review notice"]',
+                    "",
+                    "[review.pr_agent_output]",
+                    'deliverable_headings = ["## PR Reviewer Guide", "## Incremental PR Reviewer Guide"]',
+                    "disabled_noise = []",
+                    "",
+                    "[claude]",
+                    'notice_marker = "<!-- ai-pr-reviewer-claude-notice -->"',
+                    'deliverable_marker = "<!-- ai-pr-reviewer-claude -->"',
+                    'deliverable_bot_logins = ["claude[bot]"]',
+                    'source_label_template = "Claude Code (`{model}`)"',
+                ]
+            ),
+            encoding="utf-8",
+        )
+        previous_env = {
+            name: os.environ.get(name)
+            for name in ("GITHUB_REPOSITORY", "PR_NUMBER", "GITHUB_TOKEN", "GITHUB_API_URL")
+        }
+        os.environ["GITHUB_REPOSITORY"] = "seungpyoson/bolt-v2"
+        os.environ["PR_NUMBER"] = "895"
+        os.environ["GITHUB_TOKEN"] = "fake-token"
+        os.environ["GITHUB_API_URL"] = api_url
+        stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout):
+                result = module.main(["retry-needed", "--provider", "claude", "--config-file", str(config_path)])
+        finally:
+            server.shutdown()
+            server.server_close()
+            for name, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    assert result == 0
+    output_lines = stdout.getvalue().splitlines()
+    assert "retry_needed=false" in output_lines
+    assert "reason=deliverable-after-notice" in output_lines
+
+
+def test_claude_failure_notice_allows_retry_needed_cli() -> None:
+    module = load_script()
+    comments = [
+        {
+            "id": 101,
+            "body": "<!-- ai-pr-reviewer-claude-notice -->\n\n## Claude review did not produce a deliverable",
+            "created_at": "2026-06-22T12:22:00Z",
+            "updated_at": "2026-06-22T12:22:00Z",
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+        }
+    ]
+    server, _thread, _requests = start_comment_api_server(comments)
+    api_url = f"http://127.0.0.1:{server.server_port}"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_path = pathlib.Path(temp_dir) / "ai-review.toml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[github]",
+                    f"api_url = {json.dumps(api_url)}",
+                    'server_url = "https://github.com"',
+                    'expected_bot_login = "github-actions[bot]"',
+                    "",
+                    "[review.output_contract]",
+                    'finding_required_labels = ["Severity:", "Evidence:", "Issue:", "Fix / verification:"]',
+                    'finding_guidance = ["severity", "evidence", "issue", "fix"]',
+                    'no_findings_indicator = "No hard-evidence findings"',
+                    'no_findings_intro = "No hard-evidence findings in this chunk."',
+                    'no_findings_required_labels = ["Coverage reviewed:", "Evidence basis:", "Risk areas considered:"]',
+                    'no_findings_guidance = ["coverage", "basis", "risks"]',
+                    'non_deliverable_indicators = ["review did not produce a deliverable", "review notice"]',
+                    "",
+                    "[review.pr_agent_output]",
+                    'deliverable_headings = ["## PR Reviewer Guide", "## Incremental PR Reviewer Guide"]',
+                    "disabled_noise = []",
+                    "",
+                    "[claude]",
+                    'notice_marker = "<!-- ai-pr-reviewer-claude-notice -->"',
+                    'deliverable_marker = "<!-- ai-pr-reviewer-claude -->"',
+                    'deliverable_bot_logins = ["claude[bot]"]',
+                    'source_label_template = "Claude Code (`{model}`)"',
+                ]
+            ),
+            encoding="utf-8",
+        )
+        previous_env = {
+            name: os.environ.get(name)
+            for name in ("GITHUB_REPOSITORY", "PR_NUMBER", "GITHUB_TOKEN", "GITHUB_API_URL")
+        }
+        os.environ["GITHUB_REPOSITORY"] = "seungpyoson/bolt-v2"
+        os.environ["PR_NUMBER"] = "895"
+        os.environ["GITHUB_TOKEN"] = "fake-token"
+        os.environ["GITHUB_API_URL"] = api_url
+        stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout):
+                result = module.main(["retry-needed", "--provider", "claude", "--config-file", str(config_path)])
+        finally:
+            server.shutdown()
+            server.server_close()
+            for name, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    assert result == 0
+    output_lines = stdout.getvalue().splitlines()
+    assert "retry_needed=true" in output_lines
+    assert "reason=previous-failure-notice" in output_lines
+
+
+def retry_needed_config_text(api_url: str, provider_lines: tuple[str, ...]) -> str:
+    return "\n".join(
+        [
+            "[github]",
+            f"api_url = {json.dumps(api_url)}",
+            'server_url = "https://github.com"',
+            'expected_bot_login = "github-actions[bot]"',
+            "",
+            "[review.output_contract]",
+            'finding_required_labels = ["Severity:", "Evidence:", "Issue:", "Fix / verification:"]',
+            'finding_guidance = ["severity", "evidence", "issue", "fix"]',
+            'no_findings_indicator = "No hard-evidence findings"',
+            'no_findings_intro = "No hard-evidence findings in this chunk."',
+            'no_findings_required_labels = ["Coverage reviewed:", "Evidence basis:", "Risk areas considered:"]',
+            'no_findings_guidance = ["coverage", "basis", "risks"]',
+            'non_deliverable_indicators = ["review did not produce a deliverable", "review notice"]',
+            "",
+            "[review.pr_agent_output]",
+            'deliverable_headings = ["## PR Reviewer Guide", "## Incremental PR Reviewer Guide"]',
+            "disabled_noise = []",
+            "",
+            *provider_lines,
+        ]
+    )
+
+
+def retry_needed_cli(provider: str, config_text: str) -> tuple[int, list[str]]:
+    module = load_script()
+    comments: list[dict[str, object]] = []
+    server, _thread, _requests = start_comment_api_server(comments)
+    api_url = f"http://127.0.0.1:{server.server_port}"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_path = pathlib.Path(temp_dir) / "ai-review.toml"
+        config_path.write_text(config_text.replace("__API_URL__", api_url), encoding="utf-8")
+        previous_env = {
+            name: os.environ.get(name)
+            for name in ("GITHUB_REPOSITORY", "PR_NUMBER", "GITHUB_TOKEN", "GITHUB_API_URL")
+        }
+        os.environ["GITHUB_REPOSITORY"] = "seungpyoson/bolt-v2"
+        os.environ["PR_NUMBER"] = "895"
+        os.environ["GITHUB_TOKEN"] = "fake-token"
+        os.environ["GITHUB_API_URL"] = api_url
+        stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout):
+                result = module.main(["retry-needed", "--provider", provider, "--config-file", str(config_path)])
+        finally:
+            server.shutdown()
+            server.server_close()
+            for name, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    return result, stdout.getvalue().splitlines()
+
+
+def test_glm_retry_needed_cli_handles_absent_claude_keys() -> None:
+    result, output = retry_needed_cli(
+        "glm",
+        retry_needed_config_text(
+            "__API_URL__",
+            (
+                "[glm]",
+                'notice_marker = "<!-- ai-pr-reviewer-glm-notice -->"',
+                'deliverable_markers = ["## PR Reviewer Guide", "<!-- ai-pr-reviewer-glm -->"]',
+            ),
+        ),
+    )
+
+    assert result == 0
+    assert "retry_needed=false" in output
+    assert "reason=no-failure-notice" in output
+
+
+def test_kimi_retry_needed_cli_handles_absent_claude_keys() -> None:
+    result, output = retry_needed_cli(
+        "kimi",
+        retry_needed_config_text(
+            "__API_URL__",
+            (
+                "[kimi]",
+                'notice_marker = "<!-- ai-pr-reviewer-kimi-notice -->"',
+                'deliverable_marker = "<!-- ai-pr-reviewer-kimi -->"',
+            ),
+        ),
+    )
+
+    assert result == 0
+    assert "retry_needed=false" in output
+    assert "reason=no-failure-notice" in output
 
 
 def test_system_prompt_uses_line_start_finding_labels() -> None:
@@ -1086,6 +1748,44 @@ def test_failure_notice_does_not_overwrite_existing_review_marker_comment() -> N
     assert len(github.posted) == 1, github.posted
     assert github.posted[0].startswith("<!-- ai-pr-reviewer-glm-notice -->")
     assert "GLM review did not produce a deliverable" in github.posted[0]
+
+
+def test_failure_notice_updates_existing_provider_notice_from_prior_run() -> None:
+    module = load_script()
+    old_run_url = "https://github.com/seungpyoson/bolt-v2/actions/runs/1"
+    new_run_url = "https://github.com/seungpyoson/bolt-v2/actions/runs/2"
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "id": 43,
+                "body": (
+                    "<!-- ai-pr-reviewer-glm-notice -->\n\n"
+                    "## GLM review did not produce a deliverable\n\n"
+                    f"- Action run: {old_run_url}\n"
+                ),
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+
+    module.post_or_update_notice_comment(
+        github=github,
+        config=fallback_config(module, run_url=new_run_url),
+        body=module.render_failure_notice(
+            provider="GLM",
+            config=fallback_config(module, run_url=new_run_url),
+            error=RuntimeError("provider rejected request"),
+        ),
+    )
+
+    assert github.posted == []
+    assert len(github.updated) == 1, github.updated
+    assert github.updated[0][0] == 43
+    assert old_run_url not in github.updated[0][1]
+    assert f"- Action run: {new_run_url}" in github.updated[0][1]
 
 
 def test_sets_failure_notice_output_after_posting_failure_notice() -> None:
@@ -1746,6 +2446,36 @@ def test_notice_env_outputs_shell_safe_marker_and_bot_login() -> None:
     ]
 
 
+def test_notice_env_supports_claude_notice_marker() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_path = pathlib.Path(temp_dir) / "ai-review.toml"
+        marker = "<!-- ai-pr-reviewer-claude-notice -->"
+        expected_bot_login = "github-actions[bot]"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[github]",
+                    f"expected_bot_login = {json.dumps(expected_bot_login)}",
+                    "",
+                    "[claude]",
+                    f"notice_marker = {json.dumps(marker)}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout):
+            result = module.main(["notice-env", "--provider", "claude", "--config-file", str(config_path)])
+
+    assert result == 0
+    assert stdout.getvalue().splitlines() == [
+        f"marker={shlex.quote(marker)}",
+        f"expected_bot_login={shlex.quote(expected_bot_login)}",
+    ]
+
+
 def test_notice_env_fails_closed_without_notice_marker() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -1786,10 +2516,10 @@ def main() -> int:
     test_splits_one_oversized_file_patch_into_multiple_review_chunks()
     test_truncated_file_fragment_keeps_markdown_fence_closed()
     test_skips_fallback_when_pr_agent_deliverable_exists_after_start()
-    test_pr_agent_severity_review_without_fallback_labels_suppresses_fallback()
+    test_pr_agent_severity_only_review_does_not_suppress_fallback()
     test_default_pr_agent_sections_without_evidence_do_not_suppress_fallback()
     test_embedded_pr_agent_evidence_label_does_not_suppress_fallback()
-    test_default_pr_agent_sections_with_evidence_suppress_fallback()
+    test_default_pr_agent_sections_with_severity_only_do_not_suppress_fallback()
     test_unstamped_pr_agent_deliverable_does_not_suppress_fallback()
     test_plain_pr_agent_phrase_does_not_suppress_fallback()
     test_human_pr_agent_marker_comment_does_not_suppress_fallback()
@@ -1798,9 +2528,26 @@ def main() -> int:
     test_incremental_pr_agent_deliverable_suppresses_fallback()
     test_prior_glm_fallback_marker_suppresses_later_fallback()
     test_low_quality_marker_comment_does_not_suppress_fallback()
+    test_finding_about_review_notice_counts_as_quality_deliverable()
     test_same_round_marker_comment_is_updated_instead_of_posting_new_comment()
     test_previous_round_marker_comment_does_not_get_overwritten()
     test_generated_low_quality_review_is_not_posted_as_deliverable()
+    test_invalid_review_failure_notice_omits_raw_model_output_excerpt()
+    test_claude_error_execution_file_posts_failure_notice_without_raw_output()
+    test_claude_execution_events_skip_non_file_path_without_reading()
+    test_claude_app_bot_review_counts_as_visible_deliverable()
+    test_claude_markerless_valid_review_is_stamped_and_counts_as_deliverable()
+    test_claude_non_review_bot_comment_does_not_count_as_visible_deliverable()
+    test_provider_failure_notice_allows_synchronize_retry_decision()
+    test_low_quality_marker_comment_after_notice_still_requires_retry()
+    test_source_less_quality_marker_comment_after_notice_still_requires_retry()
+    test_malformed_comment_payload_does_not_crash_retry_deliverable_detection()
+    test_quality_marker_comment_with_source_after_notice_clears_retry()
+    test_freshness_prefixed_quality_comment_after_notice_clears_retry()
+    test_claude_deliverable_after_notice_clears_retry_needed_cli()
+    test_claude_failure_notice_allows_retry_needed_cli()
+    test_glm_retry_needed_cli_handles_absent_claude_keys()
+    test_kimi_retry_needed_cli_handles_absent_claude_keys()
     test_system_prompt_uses_line_start_finding_labels()
     test_bulleted_finding_response_is_not_prompt_compliant()
     test_prompt_compliant_finding_review_is_posted_as_deliverable()
@@ -1808,6 +2555,7 @@ def main() -> int:
     test_github_client_keeps_paginated_marker_comments_distinct()
     test_posts_failure_notice_when_glm_fallback_fails()
     test_failure_notice_does_not_overwrite_existing_review_marker_comment()
+    test_failure_notice_updates_existing_provider_notice_from_prior_run()
     test_sets_failure_notice_output_after_posting_failure_notice()
     test_kimi_fallback_uses_same_chunked_deliverable_contract()
     test_source_label_template_substitutes_configured_model()
@@ -1828,6 +2576,7 @@ def main() -> int:
     test_existing_pr_agent_review_comment_gets_model_freshness_warning()
     test_existing_pr_agent_pull_review_is_not_mutated_for_model_freshness_warning()
     test_notice_env_outputs_shell_safe_marker_and_bot_login()
+    test_notice_env_supports_claude_notice_marker()
     test_notice_env_fails_closed_without_notice_marker()
     test_pr_agent_prompt_pins_no_findings_contract()
     print("GLM fallback self-tests OK")

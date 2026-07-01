@@ -1111,11 +1111,39 @@ EXPECTED_MERGE_READINESS_PROGRESS_IF = (
     "&& !(" + MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE + ") }}"
 )
 
-EXPECTED_COVERAGE_ENFORCER_IF = (
-    "${{ !(github.event_name == 'pull_request' "
-    "&& github.event.action == 'edited' "
-    "&& " + MERGIFY_PROOF_PR_HEAD_REF_PREDICATE + " "
-    "&& !(github.event.changes.base.ref.from != '')) }}"
+EXPECTED_COVERAGE_ENFORCER_IF = ""
+
+EXPECTED_COVERAGE_ENFORCER_PERMISSIONS = {
+    "checks": "read",
+    "contents": "read",
+    "pull-requests": "read",
+}
+
+EXPECTED_COVERAGE_ENFORCER_CHECKOUT_WITH = {
+    "ref": "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
+    "persist-credentials": "false",
+}
+
+EXPECTED_COVERAGE_ENFORCER_SETUP_PYTHON_WITH = {
+    "python-version": "3.12",
+}
+
+EXPECTED_COVERAGE_ENFORCER_ENV = {
+    "GITHUB_TOKEN": "${{ github.token }}",
+    "GITHUB_EVENT_PATH": "${{ github.event_path }}",
+    "GITHUB_REPOSITORY": "${{ github.repository }}",
+}
+
+EXPECTED_COVERAGE_ENFORCER_RUN_BODY = (
+    "if [ ! -f scripts/coverage_enforcer.py ]; then",
+    '  echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py"',
+    "  exit 1",
+    "fi",
+    'if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then',
+    '  echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py"',
+    "  exit 1",
+    "fi",
+    "python3 scripts/coverage_enforcer.py",
 )
 
 
@@ -2807,6 +2835,50 @@ def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, s
     return items
 
 
+def top_level_mapping_items(workflow_text: str, top_key: str) -> dict[str, str] | None:
+    lines = workflow_text.splitlines()
+    top_index: int | None = None
+    for index, line in enumerate(lines):
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent != 0:
+            continue
+        top_match = re.match(rf"^({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if top_match is None:
+            continue
+        if unquote_yaml_scalar(top_match.group(1)) != top_key:
+            continue
+        if top_index is not None or unquote_yaml_scalar(top_match.group(2)) != "":
+            return None
+        top_index = index
+    if top_index is None:
+        return None
+
+    item_indent: int | None = None
+    items: dict[str, str] = {}
+    for line in lines[top_index + 1 :]:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent == 0:
+            break
+        if item_indent is None:
+            item_indent = indent
+        if indent != item_indent:
+            return None
+        item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if item_match is None:
+            return None
+        key = unquote_yaml_scalar(item_match.group(1))
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(item_match.group(2))
+    return items
+
+
 def block_has_canonical_step_envelope(
     block: list[str],
     allowed_keys: frozenset[str],
@@ -2831,6 +2903,33 @@ def block_has_canonical_step_envelope(
     return True
 
 
+def block_has_raw_top_level_scalar(block: list[str], name: str, value: str) -> bool:
+    property_indent = block_step_property_indent(block)
+    if property_indent is None:
+        return False
+    expected = f"{' ' * property_indent}{name}: {value}"
+    return any(strip_comment(line).rstrip() == expected for line in block)
+
+
+def job_top_level_items(job_lines: list[str]) -> dict[str, str] | None:
+    items: dict[str, str] = {}
+    for line in job_lines:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent != 4:
+            continue
+        item_match = re.match(rf"^\s{{4}}({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if item_match is None:
+            return None
+        key = unquote_yaml_scalar(item_match.group(1))
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(item_match.group(2))
+    return items
+
+
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
     return any(pattern.match(strip_comment(line)) for line in lines)
 
@@ -2838,8 +2937,6 @@ def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
 def job_if_value(job_lines: list[str]) -> str:
     for index, line in enumerate(job_lines):
         clean = strip_comment(line).rstrip()
-        if clean.strip() == "steps:":
-            return ""
         match = re.match(r"^    if:\s*(?P<value>.*?)\s*$", clean)
         if match is not None:
             value = match.group("value")
@@ -13746,24 +13843,8 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     if "types: [checks_requested]" not in merge_group_trigger:
         errors.append(f"{workflow_name} merge_group trigger must use checks_requested")
 
-    permissions = "\n".join(top_level_block(workflow_text, "permissions"))
-    for required in (
-        "  checks: read",
-        "  contents: read",
-        "  pull-requests: read",
-    ):
-        if required not in permissions:
-            errors.append(f"{workflow_name} permissions must include {required.strip()}")
-    for forbidden in (
-        "  checks: write",
-        "  contents: write",
-        "  pull-requests: write",
-        "  actions:",
-        "  id-token:",
-        "  issues:",
-    ):
-        if forbidden in permissions:
-            errors.append(f"{workflow_name} permissions must not include {forbidden.strip()}")
+    if top_level_mapping_items(workflow_text, "permissions") != EXPECTED_COVERAGE_ENFORCER_PERMISSIONS:
+        errors.append(f"{workflow_name} permissions must match the exact read-only map")
 
     jobs = parse_jobs(workflow_text)
     job = jobs.get("coverage-enforcer")
@@ -13771,12 +13852,24 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
         errors.append(f"{workflow_name} must define coverage-enforcer job")
         return errors
     job_text = "\n".join(job)
-    job_if = job_if_value(job)
-    if _normalize_concurrency_text(job_if) != EXPECTED_COVERAGE_ENFORCER_IF:
+    job_items = job_top_level_items(job)
+    expected_job_keys = {"name", "runs-on", "steps"}
+    if job_items is None or set(job_items) != expected_job_keys:
+        errors.append(f"{workflow_name} coverage-enforcer job must use only the pinned job-level keys")
+    if job_items is not None and "if" in job_items:
         errors.append(
-            f"{workflow_name} coverage-enforcer job if-condition must run on "
-            "ordinary PRs, draft Mergify proof PRs, and merge_group while skipping "
-            "only metadata-only proof PR edits"
+            f"{workflow_name} coverage-enforcer job must not define a job-level "
+            "if-condition; required checks must report success or failure, never skipped"
+        )
+    if job_items is not None and "continue-on-error" in job_items:
+        errors.append(f"{workflow_name} coverage-enforcer job must not define job-level continue-on-error")
+    if job_items is not None and "permissions" in job_items:
+        errors.append(f"{workflow_name} coverage-enforcer job must not define job-level permissions")
+    job_if = job_if_value(job)
+    if "if" not in (job_items or {}) and _normalize_concurrency_text(job_if) != EXPECTED_COVERAGE_ENFORCER_IF:
+        errors.append(
+            f"{workflow_name} coverage-enforcer job must not define a job-level "
+            "if-condition; required checks must report success or failure, never skipped"
         )
     trusted_base_ref = (
         "          ref: ${{ github.event.pull_request.base.sha || "
@@ -13801,16 +13894,47 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
             break
     if "          persist-credentials: false" not in job_text:
         errors.append(f"{workflow_name} checkout must not persist credentials")
-    for required in (
-        "if [ ! -f scripts/coverage_enforcer.py ]; then",
-        "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py",
-        'if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then',
-        "coverage-enforcer bootstrap: trusted base tree lacks event-aware scripts/coverage_enforcer.py",
-        "exit 0",
+    steps = step_blocks(job)
+    enforce_steps = [
+        block for block in steps if step_name_matches(block, "Enforce coverage map")
+    ]
+    run_steps = [block for block in steps if step_declares_run(block)]
+    if len(steps) != 3 or not (
+        block_has_canonical_step_envelope(
+            steps[0],
+            frozenset({"uses", "with"}),
+            {"uses": "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"},
+            {"with": EXPECTED_COVERAGE_ENFORCER_CHECKOUT_WITH},
+        )
+        and block_has_canonical_step_envelope(
+            steps[1],
+            frozenset({"uses", "with"}),
+            {"uses": "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"},
+            {"with": EXPECTED_COVERAGE_ENFORCER_SETUP_PYTHON_WITH},
+        )
+        and step_name_matches(steps[2], "Enforce coverage map")
     ):
-        if required not in job_text:
+        errors.append(f"{workflow_name} coverage-enforcer job steps must match the pinned trusted-base topology")
+    elif len(enforce_steps) != 1:
+        errors.append(f"{workflow_name} job must run scripts/coverage_enforcer.py")
+    elif len(run_steps) != 1 or run_steps[0] != enforce_steps[0]:
+        errors.append(
+            f"{workflow_name} coverage-enforcer job must run scripts/coverage_enforcer.py "
+            "only through the pinned Enforce coverage map step"
+        )
+    else:
+        enforce_step = enforce_steps[0]
+        if not block_has_canonical_step_envelope(
+            enforce_step,
+            frozenset({"name", "env", "run"}),
+            {"name": "Enforce coverage map", "run": "|"},
+            {"env": EXPECTED_COVERAGE_ENFORCER_ENV},
+        ):
+            errors.append(f"{workflow_name} coverage-enforcer Enforce coverage map step must be canonical")
+        elif not block_has_raw_top_level_scalar(enforce_step, "run", "|"):
+            errors.append(f"{workflow_name} coverage-enforcer Enforce coverage map step must be canonical")
+        elif tuple(block_run_body_lines(enforce_step)) != EXPECTED_COVERAGE_ENFORCER_RUN_BODY:
             errors.append(f"{workflow_name} job must guard first-run trusted-base bootstrap")
-            break
     if "python3 scripts/coverage_enforcer.py" not in job_text:
         errors.append(f"{workflow_name} job must run scripts/coverage_enforcer.py")
     for required in (

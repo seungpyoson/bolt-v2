@@ -277,8 +277,6 @@ conditional_job_outputs = {}
 check_name = "capture"
 [ci_provenance.deploy]
 artifact_name = "chainlink-reference-fixture-capture"
-artifact_retention_days = 30
-artifact_lookback_age_seconds = 2592000
 require_source_event = "workflow_dispatch"
 require_source_branch = "main"
 require_gate_check = false

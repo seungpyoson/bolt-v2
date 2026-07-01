@@ -486,7 +486,9 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
 
     remote_context = remote_fixture_context(root, findings)
     config_path = root / CAPTURE_PROVENANCE_CONFIG
-    config = ci_provenance.load_config(config_path, require_workflows=False)
+    config = ci_provenance.load_config(
+        config_path, require_workflows=False, require_deploy_window=False
+    )
     for sidecar in sidecars:
         rel = sidecar.relative_to(root).as_posix()
         data = tomllib.loads(sidecar.read_text(encoding="utf-8"))

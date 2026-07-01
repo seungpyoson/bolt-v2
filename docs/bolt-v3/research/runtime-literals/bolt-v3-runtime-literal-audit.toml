@@ -19545,3 +19545,123 @@ literal = "0"
 context = '''|| envelope.ranges.max_quantity_policy_versions == 0'''
 classification = "policy_epoch_envelope_zero_bound_reject"
 reason = "A safety-policy envelope with zero quantity-policy versions cannot approve any prepared quantity-policy bundle; the bound is envelope-owned, while zero is the structural empty-bound rejection sentinel."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"auth"'''
+context = '''ChainlinkReportFetchErrorKind::Auth => "auth",'''
+classification = "chainlink_strike_live_probe_failure_reason_label"
+reason = "Operator-facing diagnostic label for credential, request-URL, or signing-time failures before the strike live probe can fetch a report; it classifies probe output only and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"HTTP"'''
+context = '''ChainlinkReportFetchErrorKind::Http => "HTTP",'''
+classification = "chainlink_strike_live_probe_failure_reason_label"
+reason = "Operator-facing diagnostic label for report-fetch transport/status failures in the strike live probe; it classifies probe output only and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"decode"'''
+context = '''ChainlinkReportFetchErrorKind::Decode => "decode",'''
+classification = "chainlink_strike_live_probe_failure_reason_label"
+reason = "Operator-facing diagnostic label for JSON/report decode or invalid benchmark-price failures in the strike live probe; it classifies probe output only and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"config: no Chainlink strike feed binding for instrument_id={instrument_id}"'''
+context = '''"config: no Chainlink strike feed binding for instrument_id={instrument_id}"'''
+classification = "chainlink_strike_live_probe_config_diagnostic"
+reason = "Fail-closed operator diagnostic emitted when the selected strike probe instrument has no configured feed binding; the binding source remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"cadence_secs"'''
+context = '''const STRIKE_LIVE_PROBE_TARGET_CADENCE_SECS_FIELD: &str = "cadence_secs";'''
+classification = "chainlink_strike_live_probe_config_field_name"
+reason = "Existing strategy target field read to derive the already-open probe boundary without adding a new config key or hardcoded cadence value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"unavailable"'''
+context = '''const STRIKE_LIVE_PROBE_UNAVAILABLE_FIELD: &str = "unavailable";'''
+classification = "chainlink_strike_live_probe_output_marker"
+reason = "Plain-text marker for operator probe fields that cannot exist when auth, HTTP, or decode fails before a decoded report is available; it is diagnostic output only."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"REQUESTED window_open_unix_seconds={} feed_id={} instrument_id={}"'''
+context = '''"REQUESTED window_open_unix_seconds={} feed_id={} instrument_id={}",'''
+classification = "chainlink_strike_live_probe_output_contract"
+reason = "Required plain-text operator output line for the requested strike boundary and configured feed/instrument used by the diagnostic probe."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"HTTP status={}"'''
+context = '''"HTTP status={}",'''
+classification = "chainlink_strike_live_probe_output_contract"
+reason = "Required plain-text operator output line for the one Chainlink Data Streams REST report fetch status."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"DECODED validFrom_ms={} benchmark_price={}"'''
+context = '''"DECODED validFrom_ms={} benchmark_price={}",'''
+classification = "chainlink_strike_live_probe_output_contract"
+reason = "Required plain-text operator output line exposing raw decoded validFrom and benchmark price before the exact-boundary production check can reject."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"OFFSET = {}"'''
+context = '''"OFFSET = {}",'''
+classification = "chainlink_strike_live_probe_output_contract"
+reason = "Required plain-text operator output line for decoded.validFrom_ms minus requested window-open milliseconds."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"VERDICT: PASS"'''
+context = '''ChainlinkStrikeLiveProbeVerdict::Pass => println!("VERDICT: PASS"),'''
+classification = "chainlink_strike_live_probe_output_contract"
+reason = "Required scriptable success marker when the live report decodes and the production strike binding check accepts it."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"VERDICT: FAIL reason={} offset={}"'''
+context = '''"VERDICT: FAIL reason={} offset={}",'''
+classification = "chainlink_strike_live_probe_output_contract"
+reason = "Required scriptable failure marker with concrete reason and offset for auth, HTTP, decode, or validFrom-mismatch failures."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"strike-live-probe instrument_id `{requested_instrument_id}` has no feed binding"'''
+context = '''"strike-live-probe instrument_id `{requested_instrument_id}` has no feed binding"'''
+classification = "chainlink_strike_live_probe_config_diagnostic"
+reason = "Fail-closed operator diagnostic for an explicit probe instrument that is absent from the selected Chainlink strike feed bindings; the binding source remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"strike-live-probe found multiple target.cadence_secs values for client_key={client_key} instrument_id={instrument_id}: {cadences:?}"'''
+context = '''"strike-live-probe found multiple target.cadence_secs values for client_key={client_key} instrument_id={instrument_id}: {cadences:?}"'''
+classification = "chainlink_strike_live_probe_config_diagnostic"
+reason = "Fail-closed operator diagnostic for ambiguous configured cadence derivation; cadence values remain strategy-config-owned and no default is introduced."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"system clock is before Unix epoch"'''
+context = '''"system clock is before Unix epoch",'''
+classification = "chainlink_strike_live_probe_clock_diagnostic"
+reason = "Fail-closed operator diagnostic for impossible host-clock state before selecting an already-open Unix boundary; it does not configure runtime timing."

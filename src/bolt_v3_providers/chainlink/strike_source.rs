@@ -22,6 +22,7 @@ use std::{
     any::Any,
     cell::RefCell,
     collections::{HashMap, HashSet},
+    fmt,
     rc::Rc,
     str::FromStr,
     sync::{Arc, Mutex},
@@ -58,6 +59,7 @@ use super::{
     chainlink_data_streams_credentials, chainlink_data_streams_report_request_url,
     decode_price_to_beat_report,
 };
+use crate::bolt_v3_numeric::ZERO_F64;
 
 /// NT subscribe-command `params` key carrying the window-open Unix timestamp
 /// (seconds) for the point-in-time strike lookup.
@@ -548,6 +550,84 @@ struct StrikeFetchRequest {
     report_boundary: ChainlinkReportBoundary,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChainlinkReportFetchErrorKind {
+    Auth,
+    Http,
+    Decode,
+}
+
+#[derive(Debug)]
+struct ChainlinkReportFetchError {
+    kind: ChainlinkReportFetchErrorKind,
+    http_status: Option<u16>,
+    message: String,
+}
+
+impl ChainlinkReportFetchError {
+    fn auth(message: impl Into<String>) -> Self {
+        Self {
+            kind: ChainlinkReportFetchErrorKind::Auth,
+            http_status: None,
+            message: message.into(),
+        }
+    }
+
+    fn http(http_status: Option<u16>, message: impl Into<String>) -> Self {
+        Self {
+            kind: ChainlinkReportFetchErrorKind::Http,
+            http_status,
+            message: message.into(),
+        }
+    }
+
+    fn decode(http_status: u16, message: impl Into<String>) -> Self {
+        Self {
+            kind: ChainlinkReportFetchErrorKind::Decode,
+            http_status: Some(http_status),
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for ChainlinkReportFetchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ChainlinkReportFetchError {}
+
+#[derive(Debug)]
+struct ChainlinkReportFetchDecode {
+    http_status: u16,
+    decoded: DecodedPriceToBeatReport,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainlinkStrikeLiveProbeResult {
+    pub requested_window_open_unix_seconds: u64,
+    pub feed_id: String,
+    pub instrument_id: InstrumentId,
+    pub http_status: Option<u16>,
+    pub decoded_valid_from_timestamp_ms: Option<u64>,
+    pub decoded_benchmark_price: Option<f64>,
+    pub offset_ms: Option<i128>,
+    pub verdict: ChainlinkStrikeLiveProbeVerdict,
+}
+
+impl ChainlinkStrikeLiveProbeResult {
+    pub fn is_pass(&self) -> bool {
+        matches!(self.verdict, ChainlinkStrikeLiveProbeVerdict::Pass)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChainlinkStrikeLiveProbeVerdict {
+    Pass,
+    Fail { reason: String },
+}
+
 fn requested_report_boundary(
     params: Option<&Params>,
     instrument_id: InstrumentId,
@@ -589,16 +669,36 @@ fn requested_report_boundary(
 async fn fetch_chainlink_report_index_price(
     request: &StrikeFetchRequest,
 ) -> anyhow::Result<IndexPriceUpdate> {
+    let fetched = fetch_chainlink_price_to_beat_report(request)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let ts_init = UnixNanos::from(current_unix_timestamp_ms()? * 1_000_000);
+    build_fetched_chainlink_report_index_price(request, &fetched.decoded, ts_init)
+}
+
+async fn fetch_chainlink_price_to_beat_report(
+    request: &StrikeFetchRequest,
+) -> Result<ChainlinkReportFetchDecode, ChainlinkReportFetchError> {
     let credentials = chainlink_data_streams_credentials(&request.api_key, &request.api_secret)
-        .map_err(|error| anyhow::anyhow!("Chainlink strike credentials invalid: {error}"))?;
+        .map_err(|error| {
+            ChainlinkReportFetchError::auth(format!(
+                "Chainlink strike credentials invalid: {error}"
+            ))
+        })?;
     let (url, path_with_query) = chainlink_data_streams_report_request_url(
         &request.rest_base_url,
         &request.report_endpoint_path,
         &request.feed_id,
         request.report_boundary.unix_seconds,
     )
-    .map_err(|error| anyhow::anyhow!("Chainlink strike request URL invalid: {error}"))?;
-    let authorization_timestamp_ms = current_unix_timestamp_ms()?;
+    .map_err(|error| {
+        ChainlinkReportFetchError::auth(format!("Chainlink strike request URL invalid: {error}"))
+    })?;
+    let authorization_timestamp_ms = current_unix_timestamp_ms().map_err(|error| {
+        ChainlinkReportFetchError::auth(format!(
+            "Chainlink strike authorization timestamp invalid: {error}"
+        ))
+    })?;
     let headers = chainlink_data_streams_auth_headers(
         &credentials,
         &path_with_query,
@@ -613,7 +713,12 @@ async fn fetch_chainlink_report_index_price(
         Some(request.http_timeout_secs),
         None,
     )
-    .map_err(|error| anyhow::anyhow!("Chainlink strike HTTP client could not be built: {error}"))?;
+    .map_err(|error| {
+        ChainlinkReportFetchError::http(
+            None,
+            format!("Chainlink strike HTTP client could not be built: {error}"),
+        )
+    })?;
     let response = client
         .get(
             url,
@@ -623,46 +728,198 @@ async fn fetch_chainlink_report_index_price(
             None,
         )
         .await
-        .map_err(|error| anyhow::anyhow!("Chainlink strike report fetch failed: {error}"))?;
+        .map_err(|error| {
+            ChainlinkReportFetchError::http(
+                None,
+                format!("Chainlink strike report fetch failed: {error}"),
+            )
+        })?;
+    let http_status = response.status.as_u16();
     if !response.status.is_success() {
-        anyhow::bail!(
-            "Chainlink strike report fetch failed with HTTP status {}",
-            response.status.as_u16()
-        );
+        return Err(ChainlinkReportFetchError::http(
+            Some(http_status),
+            format!(
+                "Chainlink strike report fetch failed with HTTP status {}",
+                response.status.as_u16()
+            ),
+        ));
     }
 
     let api_response: ChainlinkDataStreamsReportApiResponse =
         serde_json::from_slice(&response.body).map_err(|_| {
-            anyhow::anyhow!("Chainlink strike report response is not a valid report JSON payload")
+            ChainlinkReportFetchError::decode(
+                http_status,
+                "Chainlink strike report response is not a valid report JSON payload",
+            )
         })?;
-    let report_bytes = serde_json::to_vec_pretty(&api_response.report)
-        .map_err(|_| anyhow::anyhow!("Chainlink strike report source could not serialize"))?;
+    let report_bytes = serde_json::to_vec_pretty(&api_response.report).map_err(|_| {
+        ChainlinkReportFetchError::decode(
+            http_status,
+            "Chainlink strike report source could not serialize",
+        )
+    })?;
 
     let binding = PriceToBeatReportBinding {
         feed_id: request.feed_id.clone(),
         schema_version: request.report_schema_version,
         decimal_scale: request.report_decimal_scale,
     };
-    let decoded = decode_price_to_beat_report(&report_bytes, &binding)
-        .map_err(|error| anyhow::anyhow!("Chainlink strike report decode failed: {error}"))?;
+    let decoded = decode_price_to_beat_report(&report_bytes, &binding).map_err(|error| {
+        ChainlinkReportFetchError::decode(
+            http_status,
+            format!("Chainlink strike report decode failed: {error}"),
+        )
+    })?;
 
-    let ts_init = UnixNanos::from(current_unix_timestamp_ms()? * 1_000_000);
+    Ok(ChainlinkReportFetchDecode {
+        http_status,
+        decoded,
+    })
+}
+
+fn build_fetched_chainlink_report_index_price(
+    request: &StrikeFetchRequest,
+    decoded: &DecodedPriceToBeatReport,
+    ts_init: UnixNanos,
+) -> anyhow::Result<IndexPriceUpdate> {
     match request.report_boundary.kind {
         ChainlinkReportBoundaryKind::WindowOpenStrike => build_strike_index_price(
             request.instrument_id,
-            &decoded,
+            decoded,
             request.price_precision,
             request.report_boundary.unix_seconds,
             ts_init,
         ),
         ChainlinkReportBoundaryKind::WindowCloseSettlement => build_settlement_close_index_price(
             request.instrument_id,
-            &decoded,
+            decoded,
             request.price_precision,
             request.report_boundary.unix_seconds,
             ts_init,
         ),
     }
+}
+
+pub async fn run_strike_live_probe(
+    config: &ChainlinkStrikeSourceConfig,
+    instrument_id: InstrumentId,
+    window_open_unix_seconds: u64,
+) -> ChainlinkStrikeLiveProbeResult {
+    let Some(binding) = config
+        .feed_bindings
+        .iter()
+        .find(|binding| binding.instrument_id == instrument_id)
+    else {
+        return ChainlinkStrikeLiveProbeResult {
+            requested_window_open_unix_seconds: window_open_unix_seconds,
+            feed_id: String::new(),
+            instrument_id,
+            http_status: None,
+            decoded_valid_from_timestamp_ms: None,
+            decoded_benchmark_price: None,
+            offset_ms: None,
+            verdict: ChainlinkStrikeLiveProbeVerdict::Fail {
+                reason: format!(
+                    "config: no Chainlink strike feed binding for instrument_id={instrument_id}"
+                ),
+            },
+        };
+    };
+    let request = StrikeFetchRequest {
+        rest_base_url: config.rest_base_url.clone(),
+        report_endpoint_path: config.report_endpoint_path.clone(),
+        http_timeout_secs: config.http_timeout_secs,
+        api_key: config.api_key.clone(),
+        api_secret: config.api_secret.clone(),
+        feed_id: binding.feed_id.clone(),
+        instrument_id: binding.instrument_id,
+        report_schema_version: binding.report_schema_version,
+        report_decimal_scale: binding.report_decimal_scale,
+        price_precision: binding.price_precision,
+        report_boundary: ChainlinkReportBoundary::new(
+            ChainlinkReportBoundaryKind::WindowOpenStrike,
+            window_open_unix_seconds,
+        ),
+    };
+    match fetch_chainlink_price_to_beat_report(&request).await {
+        Ok(fetched) => {
+            probe_result_from_decoded_report(&request, fetched.http_status, &fetched.decoded)
+        }
+        Err(error) => probe_result_from_fetch_error(&request, error),
+    }
+}
+
+fn probe_result_from_fetch_error(
+    request: &StrikeFetchRequest,
+    error: ChainlinkReportFetchError,
+) -> ChainlinkStrikeLiveProbeResult {
+    let mut reason = probe_fetch_error_kind_label(error.kind).to_string();
+    reason.push(':');
+    reason.push(' ');
+    reason.push_str(error.message.as_str());
+    ChainlinkStrikeLiveProbeResult {
+        requested_window_open_unix_seconds: request.report_boundary.unix_seconds,
+        feed_id: request.feed_id.clone(),
+        instrument_id: request.instrument_id,
+        http_status: error.http_status,
+        decoded_valid_from_timestamp_ms: None,
+        decoded_benchmark_price: None,
+        offset_ms: None,
+        verdict: ChainlinkStrikeLiveProbeVerdict::Fail { reason },
+    }
+}
+
+fn probe_fetch_error_kind_label(kind: ChainlinkReportFetchErrorKind) -> &'static str {
+    match kind {
+        ChainlinkReportFetchErrorKind::Auth => "auth",
+        ChainlinkReportFetchErrorKind::Http => "HTTP",
+        ChainlinkReportFetchErrorKind::Decode => "decode",
+    }
+}
+
+fn probe_result_from_decoded_report(
+    request: &StrikeFetchRequest,
+    http_status: u16,
+    decoded: &DecodedPriceToBeatReport,
+) -> ChainlinkStrikeLiveProbeResult {
+    let offset_ms = report_valid_from_offset_ms(
+        decoded.valid_from_timestamp_ms,
+        request.report_boundary.unix_seconds,
+    );
+    let verdict =
+        match build_fetched_chainlink_report_index_price(request, decoded, UnixNanos::from(0)) {
+            Ok(_) if decoded.benchmark_price.is_finite() && decoded.benchmark_price > ZERO_F64 => {
+                ChainlinkStrikeLiveProbeVerdict::Pass
+            }
+            Ok(_) => ChainlinkStrikeLiveProbeVerdict::Fail {
+                reason: "decode: benchmark price is not finite and positive".to_string(),
+            },
+            Err(error) if offset_ms != Some(0) => ChainlinkStrikeLiveProbeVerdict::Fail {
+                reason: format!("validFrom-mismatch: {error}"),
+            },
+            Err(error) => ChainlinkStrikeLiveProbeVerdict::Fail {
+                reason: format!("decode: {error}"),
+            },
+        };
+    ChainlinkStrikeLiveProbeResult {
+        requested_window_open_unix_seconds: request.report_boundary.unix_seconds,
+        feed_id: request.feed_id.clone(),
+        instrument_id: request.instrument_id,
+        http_status: Some(http_status),
+        decoded_valid_from_timestamp_ms: Some(decoded.valid_from_timestamp_ms),
+        decoded_benchmark_price: Some(decoded.benchmark_price),
+        offset_ms,
+        verdict,
+    }
+}
+
+fn report_valid_from_offset_ms(
+    valid_from_timestamp_ms: u64,
+    window_open_unix_seconds: u64,
+) -> Option<i128> {
+    let boundary_ms =
+        window_open_unix_seconds.checked_mul(CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)?;
+    Some(i128::from(valid_from_timestamp_ms) - i128::from(boundary_ms))
 }
 
 /// Maps a decoded strike report to the NT [`IndexPriceUpdate`] on the
@@ -981,6 +1238,26 @@ mod tests {
             .expect("test observation timestamp should fit u32")
     }
 
+    fn test_strike_request(window_open_unix_seconds: u64) -> StrikeFetchRequest {
+        StrikeFetchRequest {
+            rest_base_url: "https://api.testnet-dataengine.chain.link".to_string(),
+            report_endpoint_path: "/api/v1/reports".to_string(),
+            http_timeout_secs: 10,
+            api_key: Zeroizing::new("test-api-key".to_string()),
+            api_secret: Zeroizing::new("test-api-secret".to_string()),
+            feed_id: TEST_FEED_ID.to_string(),
+            instrument_id: InstrumentId::from_str(TEST_INSTRUMENT_ID)
+                .expect("test resolution instrument id should parse"),
+            report_schema_version: 3,
+            report_decimal_scale: TEST_DECIMAL_SCALE,
+            price_precision: TEST_PRICE_PRECISION,
+            report_boundary: ChainlinkReportBoundary::new(
+                ChainlinkReportBoundaryKind::WindowOpenStrike,
+                window_open_unix_seconds,
+            ),
+        }
+    }
+
     #[test]
     fn decoded_report_maps_to_index_price_on_resolution_instrument_at_window_open() {
         let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
@@ -1141,6 +1418,94 @@ mod tests {
             UnixNanos::from(TEST_TS_INIT_NANOS),
         )
         .expect_err("a report whose validFrom is not the window-open boundary must fail closed");
+    }
+
+    #[test]
+    fn strike_live_probe_passes_when_decoded_report_binds_window_open() {
+        let request = test_strike_request(TEST_WINDOW_OPEN_UNIX_SECONDS);
+        let decoded = DecodedPriceToBeatReport {
+            feed_id: TEST_FEED_ID.to_string(),
+            valid_from_timestamp_ms: TEST_WINDOW_OPEN_UNIX_SECONDS
+                * CHAINLINK_REPORT_MILLISECONDS_PER_SECOND,
+            observations_timestamp_ms: (TEST_WINDOW_OPEN_UNIX_SECONDS + 1)
+                * CHAINLINK_REPORT_MILLISECONDS_PER_SECOND,
+            benchmark_price: TEST_BENCHMARK_PRICE,
+            bid_price: TEST_BENCHMARK_PRICE,
+            ask_price: TEST_BENCHMARK_PRICE,
+        };
+
+        let result = probe_result_from_decoded_report(&request, 200, &decoded);
+
+        assert!(result.is_pass(), "expected PASS, got {result:?}");
+        assert_eq!(result.http_status, Some(200));
+        assert_eq!(
+            result.decoded_valid_from_timestamp_ms,
+            Some(TEST_WINDOW_OPEN_UNIX_SECONDS * CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)
+        );
+        assert_eq!(result.decoded_benchmark_price, Some(TEST_BENCHMARK_PRICE));
+        assert_eq!(result.offset_ms, Some(0));
+    }
+
+    #[test]
+    fn strike_live_probe_reports_raw_valid_from_offset_on_window_open_mismatch() {
+        let request = test_strike_request(TEST_WINDOW_OPEN_UNIX_SECONDS);
+        let decoded_valid_from =
+            (TEST_WINDOW_OPEN_UNIX_SECONDS - 60) * CHAINLINK_REPORT_MILLISECONDS_PER_SECOND;
+        let decoded = DecodedPriceToBeatReport {
+            feed_id: TEST_FEED_ID.to_string(),
+            valid_from_timestamp_ms: decoded_valid_from,
+            observations_timestamp_ms: decoded_valid_from
+                + CHAINLINK_REPORT_MILLISECONDS_PER_SECOND,
+            benchmark_price: TEST_BENCHMARK_PRICE,
+            bid_price: TEST_BENCHMARK_PRICE,
+            ask_price: TEST_BENCHMARK_PRICE,
+        };
+
+        let result = probe_result_from_decoded_report(&request, 200, &decoded);
+
+        assert_eq!(result.http_status, Some(200));
+        assert_eq!(
+            result.decoded_valid_from_timestamp_ms,
+            Some(decoded_valid_from),
+            "raw decoded validFrom must remain visible even when production binding rejects"
+        );
+        assert_eq!(result.decoded_benchmark_price, Some(TEST_BENCHMARK_PRICE));
+        assert_eq!(result.offset_ms, Some(-60_000));
+        match result.verdict {
+            ChainlinkStrikeLiveProbeVerdict::Fail { reason } => {
+                assert!(
+                    reason.starts_with("validFrom-mismatch:"),
+                    "expected validFrom mismatch reason, got {reason}"
+                );
+            }
+            ChainlinkStrikeLiveProbeVerdict::Pass => panic!("mismatched validFrom must fail"),
+        }
+    }
+
+    #[test]
+    fn strike_live_probe_retains_http_status_on_fetch_failure_without_decoded_fields() {
+        let request = test_strike_request(TEST_WINDOW_OPEN_UNIX_SECONDS);
+        let result = probe_result_from_fetch_error(
+            &request,
+            ChainlinkReportFetchError::http(
+                Some(404),
+                "Chainlink strike report fetch failed with HTTP status 404",
+            ),
+        );
+
+        assert_eq!(result.http_status, Some(404));
+        assert_eq!(result.decoded_valid_from_timestamp_ms, None);
+        assert_eq!(result.decoded_benchmark_price, None);
+        assert_eq!(result.offset_ms, None);
+        match result.verdict {
+            ChainlinkStrikeLiveProbeVerdict::Fail { reason } => {
+                assert!(
+                    reason.starts_with("HTTP:"),
+                    "expected HTTP failure reason, got {reason}"
+                );
+            }
+            ChainlinkStrikeLiveProbeVerdict::Pass => panic!("HTTP failure must fail"),
+        }
     }
 
     #[test]

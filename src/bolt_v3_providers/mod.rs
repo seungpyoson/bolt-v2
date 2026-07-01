@@ -35,6 +35,7 @@ pub mod reference_live_probe;
 // module path, provider type, or provider-key literal.
 pub use chainlink::KEY as RESOLUTION_ORACLE_VENUE_KEY;
 pub use chainlink::PROVIDER_KIND as RESOLUTION_ORACLE_PROVIDER_KIND;
+pub use chainlink::run_strike_live_probe_command as run_resolution_strike_live_probe_command;
 pub(crate) use chainlink::{
     STRIKE_FETCH_INSTRUMENT_ID_PARAM, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
     strike_fetch_request_data_type as resolution_strike_fetch_request_data_type,

@@ -43,6 +43,7 @@ use bolt_v2::{
             capture_reference_boundary_fixture,
         },
         reference_live_probe::run_reference_live_probe,
+        run_resolution_strike_live_probe_command,
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
     bolt_v3_reference_price_health::{
@@ -163,6 +164,16 @@ enum OpsCommand {
     ReferenceLiveProbe {
         #[arg(short, long)]
         config: PathBuf,
+    },
+    StrikeLiveProbe {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        client_key: String,
+        #[arg(long)]
+        instrument_id: Option<String>,
+        #[arg(long)]
+        window_open_unix_seconds: Option<u64>,
     },
     ReferenceCurrentPriceHealth {
         #[arg(short, long)]
@@ -347,6 +358,17 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
         } => run_ops_status(&config_root, &profile, intended_sha.as_deref()),
         OpsCommand::InitKillSwitchStore { config } => run_init_kill_switch_store(&config),
         OpsCommand::ReferenceLiveProbe { config } => run_reference_live_probe_command(&config),
+        OpsCommand::StrikeLiveProbe {
+            config,
+            client_key,
+            instrument_id,
+            window_open_unix_seconds,
+        } => run_resolution_strike_live_probe_command(
+            &config,
+            &client_key,
+            instrument_id.as_deref(),
+            window_open_unix_seconds,
+        ),
         OpsCommand::ReferenceCurrentPriceHealth { config } => {
             run_reference_current_price_health_command(&config)
         }
@@ -2197,6 +2219,39 @@ mod tests {
                 assert_eq!(config, PathBuf::from("config/root.toml"));
             }
             _ => panic!("expected ops reference-live-probe command"),
+        }
+    }
+
+    #[test]
+    fn ops_strike_live_probe_cli_parses_config_client_and_optional_window() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "strike-live-probe",
+            "--config",
+            "config/root.toml",
+            "--client-key",
+            "chainlink_strike",
+            "--instrument-id",
+            "BTC-USD.CHAINLINK",
+            "--window-open-unix-seconds",
+            "1700000100",
+        ])
+        .expect("strike live probe command should parse");
+
+        match parsed_ops_command(cli) {
+            OpsCommand::StrikeLiveProbe {
+                config,
+                client_key,
+                instrument_id,
+                window_open_unix_seconds,
+            } => {
+                assert_eq!(config, PathBuf::from("config/root.toml"));
+                assert_eq!(client_key, "chainlink_strike");
+                assert_eq!(instrument_id.as_deref(), Some("BTC-USD.CHAINLINK"));
+                assert_eq!(window_open_unix_seconds, Some(1_700_000_100));
+            }
+            _ => panic!("expected ops strike-live-probe command"),
         }
     }
 

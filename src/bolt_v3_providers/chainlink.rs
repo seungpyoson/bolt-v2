@@ -28,15 +28,25 @@ pub(crate) use report::{
     DecodedPriceToBeatReport, PriceToBeatReportBinding, decode_price_to_beat_report,
     is_lowercase_chainlink_feed_id,
 };
+pub use strike_source::{
+    ChainlinkStrikeFeedBinding, ChainlinkStrikeLiveProbeResult, ChainlinkStrikeLiveProbeVerdict,
+    ChainlinkStrikeSourceConfig, run_strike_live_probe,
+};
 pub(crate) use strike_source::{
-    ChainlinkStrikeFeedBinding, ChainlinkStrikeSourceConfig, ChainlinkStrikeSourceFactory,
-    STRIKE_FETCH_INSTRUMENT_ID_PARAM, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM, parse_feed_binding,
-    strike_fetch_request_data_type,
+    ChainlinkStrikeSourceFactory, STRIKE_FETCH_INSTRUMENT_ID_PARAM,
+    STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM, parse_feed_binding, strike_fetch_request_data_type,
 };
 
-use std::{any::Any, sync::Arc};
+use std::{
+    any::Any,
+    path::Path,
+    str::FromStr,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use nautilus_core::string::secret::REDACTED;
+use nautilus_model::identifiers::{ClientId, InstrumentId};
 use serde::Deserialize;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -44,13 +54,17 @@ use crate::{
     bolt_v3_adapters::{
         BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3DataClientAdapterConfig,
     },
-    bolt_v3_config::{BoltV3RootConfig, ClientBlock},
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
         ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
         ResolvedClientSecrets, SsmSecretResolver,
     },
-    bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    bolt_v3_secrets::{
+        BoltV3SecretError, check_no_forbidden_credential_env_vars, resolve_bolt_v3_client_secrets,
+        resolve_field,
+    },
+    secrets::SsmResolverSession,
 };
 
 /// NT venue identifier for the live Chainlink Data Streams strike-source client.
@@ -75,6 +89,8 @@ pub const CREDENTIAL_LOG_MODULES: &[&str] = &[];
 /// The bolt-owned Chainlink signer resolves credentials only from SSM; it never
 /// reads any environment variable as a secret fallback.
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[];
+const STRIKE_LIVE_PROBE_TARGET_CADENCE_SECS_FIELD: &str = "cadence_secs";
+const STRIKE_LIVE_PROBE_UNAVAILABLE_FIELD: &str = "unavailable";
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -305,6 +321,247 @@ pub fn map_adapters(
         data,
         execution: None,
     })
+}
+
+pub fn strike_source_config(
+    root: &BoltV3RootConfig,
+    client_key: &str,
+    client: &ClientBlock,
+    resolved: &crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
+) -> Result<ChainlinkStrikeSourceConfig, BoltV3AdapterMappingError> {
+    let data = client
+        .data
+        .as_ref()
+        .ok_or_else(|| BoltV3AdapterMappingError::SchemaParse {
+            client_key: client_key.to_string(),
+            block: "data",
+            message: "Chainlink strike live probe requires the selected client to declare [data]"
+                .to_string(),
+        })?;
+    let secrets = secrets_for(client_key, resolved)?;
+    map_data(root, client_key, data, secrets)
+}
+
+pub fn run_strike_live_probe_command(
+    config: &Path,
+    client_key: &str,
+    requested_instrument_id: Option<&str>,
+    requested_window_open_unix_seconds: Option<u64>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_bolt_v3_config(config)?;
+    check_no_forbidden_credential_env_vars(&loaded.root)?;
+    let client = loaded.root.clients.get(client_key).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("strike-live-probe client_key `{client_key}` is not configured"),
+        )
+    })?;
+    let ssm_resolver_session = SsmResolverSession::new()?;
+    let resolved = resolve_bolt_v3_client_secrets(&ssm_resolver_session, &loaded, client_key)?;
+    let strike_config = strike_source_config(&loaded.root, client_key, client, &resolved)?;
+    let instrument_id =
+        selected_strike_live_probe_instrument_id(&strike_config, requested_instrument_id)?;
+    let window_open_unix_seconds = match requested_window_open_unix_seconds {
+        Some(window_open_unix_seconds) => window_open_unix_seconds,
+        None => {
+            let cadence_secs =
+                configured_strike_live_probe_cadence_secs(&loaded, client_key, instrument_id)?;
+            recent_already_open_boundary_unix_seconds(cadence_secs)?
+        }
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let report = runtime.block_on(run_strike_live_probe(
+        &strike_config,
+        instrument_id,
+        window_open_unix_seconds,
+    ));
+    print_strike_live_probe_report(&report);
+    if report.is_pass() {
+        Ok(())
+    } else {
+        Err("Chainlink strike live probe failed".into())
+    }
+}
+
+fn selected_strike_live_probe_instrument_id(
+    config: &ChainlinkStrikeSourceConfig,
+    requested_instrument_id: Option<&str>,
+) -> Result<InstrumentId, Box<dyn std::error::Error>> {
+    if let Some(requested_instrument_id) = requested_instrument_id {
+        let instrument_id = InstrumentId::from_str(requested_instrument_id)?;
+        if config
+            .feed_bindings
+            .iter()
+            .any(|binding| binding.instrument_id == instrument_id)
+        {
+            return Ok(instrument_id);
+        }
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "strike-live-probe instrument_id `{requested_instrument_id}` has no feed binding"
+            ),
+        )
+        .into());
+    }
+    match config.feed_bindings.as_slice() {
+        [binding] => Ok(binding.instrument_id),
+        [] => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "strike-live-probe requires at least one Chainlink strike feed binding",
+        )
+        .into()),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "strike-live-probe requires --instrument-id when multiple feed bindings are configured",
+        )
+        .into()),
+    }
+}
+
+fn configured_strike_live_probe_cadence_secs(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    instrument_id: InstrumentId,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let client_id = ClientId::from(client_key);
+    let mut cadences = Vec::new();
+    for strategy in &loaded.strategies {
+        let Some(resolution_data) = &strategy.config.resolution_data else {
+            continue;
+        };
+        if resolution_data.data_client_id != client_id
+            || resolution_data.instrument_id != instrument_id
+        {
+            continue;
+        }
+        let Some(cadence_secs) = strategy
+            .config
+            .target
+            .get(STRIKE_LIVE_PROBE_TARGET_CADENCE_SECS_FIELD)
+            .and_then(toml::Value::as_integer)
+            .and_then(|value| u64::try_from(value).ok())
+            .and_then(std::num::NonZeroU64::new)
+            .map(std::num::NonZeroU64::get)
+        else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{} target.cadence_secs must be a positive integer",
+                    strategy.relative_path
+                ),
+            )
+            .into());
+        };
+        if !cadences.contains(&cadence_secs) {
+            cadences.push(cadence_secs);
+        }
+    }
+    match cadences.as_slice() {
+        [cadence_secs] => Ok(*cadence_secs),
+        [] => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "strike-live-probe could not derive target.cadence_secs for client_key={client_key} instrument_id={instrument_id}"
+            ),
+        )
+        .into()),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "strike-live-probe found multiple target.cadence_secs values for client_key={client_key} instrument_id={instrument_id}: {cadences:?}"
+            ),
+        )
+        .into()),
+    }
+}
+
+fn recent_already_open_boundary_unix_seconds(
+    cadence_secs: u64,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    if cadence_secs == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "strike-live-probe cadence_secs must be positive",
+        )
+        .into());
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "system clock is before Unix epoch",
+            )
+        })?
+        .as_secs();
+    recent_already_open_boundary_unix_seconds_for_now(now, cadence_secs)
+}
+
+fn recent_already_open_boundary_unix_seconds_for_now(
+    now_unix_seconds: u64,
+    cadence_secs: u64,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    if cadence_secs == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "strike-live-probe cadence_secs must be positive",
+        )
+        .into());
+    }
+    let current_boundary = now_unix_seconds - (now_unix_seconds % cadence_secs);
+    current_boundary.checked_sub(cadence_secs).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "strike-live-probe cannot select an already-open boundary before Unix epoch",
+        )
+        .into()
+    })
+}
+
+fn print_strike_live_probe_report(report: &ChainlinkStrikeLiveProbeResult) {
+    println!(
+        "REQUESTED window_open_unix_seconds={} feed_id={} instrument_id={}",
+        report.requested_window_open_unix_seconds, report.feed_id, report.instrument_id
+    );
+    println!(
+        "HTTP status={}",
+        report
+            .http_status
+            .map(|status| status.to_string())
+            .unwrap_or_else(|| STRIKE_LIVE_PROBE_UNAVAILABLE_FIELD.to_string())
+    );
+    println!(
+        "DECODED validFrom_ms={} benchmark_price={}",
+        report
+            .decoded_valid_from_timestamp_ms
+            .map(|timestamp| timestamp.to_string())
+            .unwrap_or_else(|| STRIKE_LIVE_PROBE_UNAVAILABLE_FIELD.to_string()),
+        report
+            .decoded_benchmark_price
+            .map(|price| price.to_string())
+            .unwrap_or_else(|| STRIKE_LIVE_PROBE_UNAVAILABLE_FIELD.to_string())
+    );
+    println!(
+        "OFFSET = {}",
+        report
+            .offset_ms
+            .map(|offset| offset.to_string())
+            .unwrap_or_else(|| STRIKE_LIVE_PROBE_UNAVAILABLE_FIELD.to_string())
+    );
+    match &report.verdict {
+        ChainlinkStrikeLiveProbeVerdict::Pass => println!("VERDICT: PASS"),
+        ChainlinkStrikeLiveProbeVerdict::Fail { reason } => println!(
+            "VERDICT: FAIL reason={} offset={}",
+            reason,
+            report
+                .offset_ms
+                .map(|offset| offset.to_string())
+                .unwrap_or_else(|| STRIKE_LIVE_PROBE_UNAVAILABLE_FIELD.to_string())
+        ),
+    }
 }
 
 pub fn reference_price_instrument_in_shared_catalog(
@@ -684,5 +941,27 @@ price_precision = 2
             errors.iter().any(|e| e.contains("https")),
             "expected an https-scheme rejection for an http:// rest_base_url, got: {errors:?}"
         );
+    }
+
+    #[test]
+    fn strike_live_probe_derives_btc_cadence_from_loaded_resolution_data() {
+        let loaded = load_bolt_v3_config(std::path::Path::new("config/root.toml"))
+            .expect("root config should load");
+        let cadence_secs = configured_strike_live_probe_cadence_secs(
+            &loaded,
+            "chainlink_strike",
+            InstrumentId::from("BTC-USD.CHAINLINK"),
+        )
+        .expect("BTC strike cadence should derive from config");
+
+        assert_eq!(cadence_secs, 300);
+    }
+
+    #[test]
+    fn strike_live_probe_selects_previous_already_open_boundary() {
+        let boundary = recent_already_open_boundary_unix_seconds_for_now(1_700_000_650, 300)
+            .expect("boundary should be selected");
+
+        assert_eq!(boundary, 1_700_000_200);
     }
 }

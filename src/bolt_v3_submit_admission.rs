@@ -1402,55 +1402,39 @@ impl BoltV3SubmitAdmissionState {
             let admitted_order_count_before = inner.admitted_order_count;
             let forced_reduction_order_count_before =
                 inner.live_kill_switch_forced_reduction_order_count;
-            let Some(next_admitted_order_count) = inner.admitted_order_count.checked_add(1) else {
+            let fail_with_exhausted = |inner: &mut std::sync::MutexGuard<'_, _>, evaluation: &mut BoltV3SubmitAdmissionEvaluation| {
                 if let Some(rollback) = evaluation.rollback.as_ref() {
-                    rollback_capital_admission_reservation(&mut inner, rollback);
+                    rollback_capital_admission_reservation(inner, rollback);
                 }
                 evaluation.outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                if let Err(err) = self.record_admission_decision(request, &evaluation, now_ns) {
+                if let Err(err) = self.record_admission_decision(request, evaluation, now_ns) {
                     return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                         reason: format!("{err:#}"),
                     });
                 }
-                return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+                Err(BoltV3SubmitAdmissionError::CountCapExhausted)
+            };
+
+            let next_admitted_order_count = match inner.admitted_order_count.checked_add(1) {
+                Some(count) => count,
+                None => return fail_with_exhausted(&mut inner, &mut evaluation),
             };
             let current_execution_client_count = inner
                 .admitted_order_count_by_execution_client
                 .get(&request.execution_client_id)
                 .copied()
                 .unwrap_or(0);
-            let Some(next_execution_client_count) = current_execution_client_count.checked_add(1)
-            else {
-                if let Some(rollback) = evaluation.rollback.as_ref() {
-                    rollback_capital_admission_reservation(&mut inner, rollback);
-                }
-                evaluation.outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                if let Err(err) = self.record_admission_decision(request, &evaluation, now_ns) {
-                    return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
-                        reason: format!("{err:#}"),
-                    });
-                }
-                return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+            let next_execution_client_count = match current_execution_client_count.checked_add(1) {
+                Some(count) => count,
+                None => return fail_with_exhausted(&mut inner, &mut evaluation),
             };
             let next_forced_reduction_count = if request.intent_kind
                 == BoltV3SubmitIntentKind::KillSwitchForcedReduction
             {
-                let Some(next) = inner
-                    .live_kill_switch_forced_reduction_order_count
-                    .checked_add(1)
-                else {
-                    if let Some(rollback) = evaluation.rollback.as_ref() {
-                        rollback_capital_admission_reservation(&mut inner, rollback);
-                    }
-                    evaluation.outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                    if let Err(err) = self.record_admission_decision(request, &evaluation, now_ns) {
-                        return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
-                            reason: format!("{err:#}"),
-                        });
-                    }
-                    return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
-                };
-                next
+                match inner.live_kill_switch_forced_reduction_order_count.checked_add(1) {
+                    Some(next) => next,
+                    None => return fail_with_exhausted(&mut inner, &mut evaluation),
+                }
             } else {
                 inner.live_kill_switch_forced_reduction_order_count
             };
@@ -1784,15 +1768,13 @@ impl BoltV3SubmitAdmissionState {
         now_ns: u64,
     ) {
         let snapshot = inner.loss_snapshot.as_ref();
-        let stale_reason = match snapshot {
-            Some(snapshot) => loss_snapshot_stale_reason(loss_policy, snapshot, now_ns)
-                .unwrap_or(BoltV3StaleLossReason::MissingSnapshot),
-            None => BoltV3StaleLossReason::MissingSnapshot,
-        };
-        let source_for_key = snapshot
-            .map(|snapshot| snapshot.source.as_str())
-            .filter(|source| !source.trim().is_empty())
-            .unwrap_or("none");
+        let snapshot_ref = snapshot.unwrap_or_else(|| panic!("Missing loss snapshot"));
+        let stale_reason = loss_snapshot_stale_reason(loss_policy, snapshot_ref, now_ns)
+            .unwrap_or_else(|| panic!("Missing loss snapshot stale reason"));
+        let source_for_key = snapshot_ref.source.as_str();
+        if source_for_key.trim().is_empty() {
+            panic!("Empty source for loss snapshot");
+        }
         let stable_halt_key = format!("{}:{}", stale_loss_reason_key(stale_reason), source_for_key);
 
         let (retry_count, elapsed_since_first_halt_ns) =

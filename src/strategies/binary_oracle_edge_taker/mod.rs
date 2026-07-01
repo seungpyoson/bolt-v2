@@ -1218,10 +1218,11 @@ impl BinaryOracleEdgeTaker {
                             Some(quote.observed_ts_ms()),
                             Some(quote.received_ts_ms()),
                         ),
-                        None => self
-                            .reference_price_source_health
-                            .get(source_id)
-                            .map(|health| match health.status() {
+                        None => {
+                            let health = self.reference_price_source_health.get(source_id).unwrap_or_else(|| {
+                                panic!("Reference price source health missing for source_id: {}", source_id)
+                            });
+                            match health.status() {
                                 ReferencePriceSourceStatus::AuthRejected
                                 | ReferencePriceSourceStatus::SubscriptionRejected
                                 | ReferencePriceSourceStatus::Stale
@@ -1233,8 +1234,8 @@ impl BinaryOracleEdgeTaker {
                                     health.received_ts_ms(),
                                 ),
                                 _ => (ReferencePriceSourceStatus::Silent, None, None),
-                            })
-                            .unwrap_or((ReferencePriceSourceStatus::Silent, None, None)),
+                            }
+                        },
                     };
                 Some((source_id.clone(), status, observed_ts_ms, received_ts_ms))
             })
@@ -2282,7 +2283,7 @@ impl BinaryOracleEdgeTaker {
         reason: &'static str,
     ) -> Result<()> {
         let reason_category = entry_skip_reason_category_from_str(reason)
-            .unwrap_or(BoltV3EntrySkipReasonCategory::Unclassified);
+            .unwrap_or_else(|| panic!("Unclassified entry skip reason: {}", reason));
         let unclassified_context = (reason_category == BoltV3EntrySkipReasonCategory::Unclassified)
             .then(|| reason.to_string());
         self.record_entry_skip_once(now_ms, decision, reason_category, unclassified_context)?;

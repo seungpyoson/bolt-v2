@@ -25,19 +25,7 @@ jobs:
       ${{
         github.event.pull_request.draft == false
         && github.event.pull_request.head.repo.full_name == github.repository
-        && (
-          github.event.action == 'ready_for_review'
-          || github.event.action == 'opened'
-          || github.event.label.name == 'ai-review'
-          || github.event.label.name == 'ai-review-kimi'
-          || (
-            github.event.action == 'synchronize'
-            && (
-              contains(github.event.pull_request.labels.*.name, 'ai-review')
-              || contains(github.event.pull_request.labels.*.name, 'ai-review-kimi')
-            )
-          )
-        )
+        && contains(fromJSON('["opened","ready_for_review","labeled","synchronize"]'), github.event.action)
       }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     # Job-level timeouts cannot read the TOML loaded later in this job; keep
@@ -114,6 +102,7 @@ jobs:
         if: steps.pause.outputs.paused != 'true'
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
           import tomllib
           from pathlib import Path
 
@@ -121,11 +110,15 @@ jobs:
           github = config["github"]
           review = config["review"]
           kimi = config["kimi"]
+          smart_trigger_configured = "smart_trigger" in kimi
+          smart = kimi.get("smart_trigger") or {}
           workflow = kimi["workflow"]
 
           def emit(name, value):
               if isinstance(value, bool):
                   value = "true" if value else "false"
+              elif isinstance(value, list):
+                  value = json.dumps(value, separators=(",", ":"))
               print(f"{name}={value}")
 
           def notice_marker(table):
@@ -146,6 +139,8 @@ jobs:
           emit("kimi_model_default_thinking", kimi["default_thinking"])
           emit("kimi_deliverable_marker", kimi["deliverable_marker"])
           emit("kimi_notice_marker", notice_marker(kimi))
+          emit("kimi_smart_trigger_configured", smart_trigger_configured)
+          emit("kimi_review_labels", smart.get("review_labels", []))
           emit("kimi_review_max_chunk_chars", kimi["review_max_chunk_chars"])
           emit("kimi_cli_timeout_seconds", kimi["cli_timeout_seconds"])
           emit("kimi_node_version", workflow["node_version"])
@@ -153,8 +148,86 @@ jobs:
           emit("kimi_fallback_timeout_minutes", workflow["fallback_timeout_minutes"])
           PY
 
+      - name: Decide whether Kimi should review
+        id: review-decision
+        if: steps.pause.outputs.paused != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+          PR_ACTION: ${{ github.event.action }}
+          PR_LABEL_NAME: ${{ github.event.label.name }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          KIMI_SMART_TRIGGER_CONFIGURED: ${{ steps.runtime-config.outputs.kimi_smart_trigger_configured }}
+          KIMI_REVIEW_LABELS: ${{ steps.runtime-config.outputs.kimi_review_labels }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          import subprocess
+          import sys
+
+          action = os.environ["PR_ACTION"]
+          label_name = os.environ["PR_LABEL_NAME"]
+          pr_labels = set(json.loads(os.environ["PR_LABELS"] or "[]"))
+          smart_trigger_configured = os.environ["KIMI_SMART_TRIGGER_CONFIGURED"] == "true"
+          review_labels = set(json.loads(os.environ["KIMI_REVIEW_LABELS"] or "[]"))
+
+          def emit(should_review, reason):
+              print(f"should_review={'true' if should_review else 'false'}")
+              print(f"reason={reason}")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+                  summary.write("### Kimi review decision\n\n")
+                  summary.write(f"- Decision: {'review' if should_review else 'skip'}\n")
+                  summary.write(f"- Reason: `{reason}`\n")
+
+          if action in {"opened", "ready_for_review"}:
+              emit(True, action)
+              raise SystemExit(0)
+
+          if action == "labeled":
+              if not smart_trigger_configured:
+                  emit(True, "legacy-smart-trigger-missing")
+                  raise SystemExit(0)
+              emit(label_name in review_labels, "review-label" if label_name in review_labels else "non-review-label")
+              raise SystemExit(0)
+
+          if action == "synchronize":
+              if not smart_trigger_configured:
+                  emit(True, "legacy-smart-trigger-missing")
+                  raise SystemExit(0)
+              if pr_labels & review_labels:
+                  emit(True, "review-label")
+                  raise SystemExit(0)
+              retry = subprocess.run(
+                  (
+                      "python3",
+                      ".ai-review/base/scripts/ai_review_deliverables.py",
+                      "retry-needed",
+                      "--provider",
+                      "kimi",
+                      "--config-file",
+                      ".ai-review/base/ci/ai-review.toml",
+                  ),
+                  check=False,
+                  capture_output=True,
+                  text=True,
+              )
+              if retry.returncode != 0:
+                  print("::warning::Kimi retry state check failed; reviewing to avoid preserving a stale failure notice.", file=sys.stderr)
+                  emit(True, "retry-check-unavailable")
+                  raise SystemExit(0)
+              retry_lines = set(retry.stdout.splitlines())
+              if "retry_needed=true" in retry_lines:
+                  emit(True, "previous-failure-notice")
+                  raise SystemExit(0)
+              emit(False, "no-review-label-or-failure-notice")
+              raise SystemExit(0)
+
+          emit(False, action)
+          PY
+
       - name: Notice when Kimi secret is not configured
-        if: steps.pause.outputs.paused != 'true' && steps.kimi-secret.outputs.configured == 'false'
+        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.kimi-secret.outputs.configured == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -186,7 +259,7 @@ jobs:
           This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
           EOF
           existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
-            | jq -r --arg login "$expected_bot_login" --arg marker "$marker" --arg run_url "$run_url" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | select(.body | contains($run_url)) | .id' \
+            | jq -r --arg login "$expected_bot_login" --arg marker "$marker" '.[] | select(.user.login == $login) | select((.body // "") | startswith($marker)) | .id' \
             | tail -n 1)"
           if [ -n "$existing_id" ]; then
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null
@@ -196,7 +269,7 @@ jobs:
 
       - name: Check AI review model freshness
         id: model-freshness
-        if: steps.kimi-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true'
+        if: steps.kimi-secret.outputs.configured == 'true' && steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true'
         continue-on-error: true
         run: >-
           python3 .ai-review/base/scripts/verify_ai_review_model_freshness.py
@@ -207,7 +280,7 @@ jobs:
 
       - name: Prepare Kimi review standards
         id: prepare-standards
-        if: steps.pause.outputs.paused != 'true' && steps.kimi-secret.outputs.configured == 'true'
+        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.kimi-secret.outputs.configured == 'true'
         run: |
           mkdir -p .ai-review/standards
           {
@@ -233,26 +306,26 @@ jobs:
 
       - name: Capture Kimi review window
         id: review-window
-        if: steps.pause.outputs.paused != 'true' && steps.kimi-secret.outputs.configured == 'true'
+        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.kimi-secret.outputs.configured == 'true'
         run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js for Kimi CLI
         id: setup-node
-        if: steps.pause.outputs.paused != 'true' && steps.kimi-secret.outputs.configured == 'true'
+        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.kimi-secret.outputs.configured == 'true'
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: ${{ steps.runtime-config.outputs.kimi_node_version }}
 
       - name: Install Kimi Code CLI
         id: install-kimi
-        if: steps.pause.outputs.paused != 'true' && steps.kimi-secret.outputs.configured == 'true'
+        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.kimi-secret.outputs.configured == 'true'
         env:
           KIMI_CLI_PACKAGE: ${{ steps.runtime-config.outputs.kimi_cli_package }}
         run: npm install -g "$KIMI_CLI_PACKAGE"
 
       - name: Run Kimi CLI review
         id: kimi-review
-        if: steps.pause.outputs.paused != 'true' && steps.kimi-secret.outputs.configured == 'true'
+        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.kimi-secret.outputs.configured == 'true'
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.kimi_primary_timeout_minutes) }}
         env:
@@ -280,7 +353,7 @@ jobs:
 
       - name: Ensure Kimi deliverable or post split fallback
         id: kimi_fallback
-        if: steps.pause.outputs.paused != 'true' && steps.kimi-secret.outputs.configured == 'true'
+        if: steps.pause.outputs.paused != 'true' && steps.review-decision.outputs.should_review == 'true' && steps.kimi-secret.outputs.configured == 'true'
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.kimi_fallback_timeout_minutes) }}
         env:
@@ -311,6 +384,7 @@ jobs:
           ${{
             steps.kimi-secret.outputs.configured == 'true'
             && steps.pause.outputs.paused != 'true'
+            && steps.review-decision.outputs.should_review == 'true'
             && always()
             && steps.model-freshness.outputs.kimi_warning != ''
           }}
@@ -329,12 +403,19 @@ jobs:
           ${{
             steps.kimi-secret.outputs.configured == 'true'
             && steps.pause.outputs.paused != 'true'
+            && (
+              steps.review-decision.outputs.should_review == 'true'
+              || steps.runtime-config.outcome == 'failure'
+              || steps.review-decision.outcome == 'failure'
+            )
             && always()
             && (
               steps.checkout-head.outcome == 'failure'
               || steps.checkout-base.outcome == 'failure'
               || steps.runtime-config.outcome == 'failure'
+              || steps.review-decision.outcome == 'failure'
               || steps.prepare-standards.outcome == 'failure'
+              || steps.review-window.outcome == 'failure'
               || steps.setup-node.outcome == 'failure'
               || steps.install-kimi.outcome == 'failure'
               || steps.kimi_fallback.outcome == 'failure'
@@ -372,7 +453,7 @@ jobs:
           This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
           EOF
           existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
-            | jq -r --arg login "$expected_bot_login" --arg marker "$marker" --arg run_url "$run_url" '.[] | select(.user.login == $login) | select(.body | contains($marker)) | select(.body | contains($run_url)) | .id' \
+            | jq -r --arg login "$expected_bot_login" --arg marker "$marker" '.[] | select(.user.login == $login) | select((.body // "") | startswith($marker)) | .id' \
             | tail -n 1)"
           if [ -n "$existing_id" ]; then
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null

@@ -1744,17 +1744,23 @@ def run_matches_exact_sha(
     config: ProvenanceConfig,
     requested_sha: str,
     current_run_id: int | str | None,
+    *,
+    allow_incomplete: bool = False,
 ) -> bool:
     if current_run_id is not None and as_text(run.get("id")) == as_text(current_run_id):
         return False
-    return (
+    if not (
         as_text(run.get("path")) == config.workflow_path
         and as_text(run.get("event")) == config.deploy_source_event
         and as_text(run.get("head_branch")) == config.deploy_source_branch
         and as_text(run.get("head_sha")) == requested_sha
-        and as_text(run.get("status")) == "completed"
-        and as_text(run.get("conclusion")) == "success"
-    )
+    ):
+        return False
+    status = as_text(run.get("status"))
+    conclusion = as_text(run.get("conclusion"))
+    if status == "completed":
+        return conclusion == "success"
+    return allow_incomplete and not conclusion
 
 
 def run_matches_fingerprint_reuse(
@@ -1954,6 +1960,7 @@ def resolve_exact_sha_evidence(
     api_json=github_api_json,
     api_bytes=github_api_bytes,
     now: datetime.datetime | None = None,
+    allow_incomplete_run_with_successful_jobs: bool = False,
 ) -> ResolvedEvidence:
     if SHA_RE.fullmatch(requested_sha) is None:
         raise ProvenanceError("requested_sha must be a 40-character lowercase hex SHA")
@@ -2003,7 +2010,13 @@ def resolve_exact_sha_evidence(
                 page_has_old_run = True
                 continue
             page_has_fresh_run = True
-            if run_matches_exact_sha(run, config, requested_sha, current_run_id):
+            if run_matches_exact_sha(
+                run,
+                config,
+                requested_sha,
+                current_run_id,
+                allow_incomplete=allow_incomplete_run_with_successful_jobs,
+            ):
                 candidates.append(run)
         if page_has_old_run and not page_has_fresh_run and not candidates:
             raise ProvenanceError("lookback age limit exhausted before candidate evidence was found")

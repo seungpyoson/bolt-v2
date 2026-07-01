@@ -100,10 +100,9 @@ impl PolymarketClobFeeProvider {
     }
 
     fn cache(&self) -> MutexGuard<'_, HashMap<InstrumentId, FeeCacheEntry>> {
-        self.cache.lock().unwrap_or_else(|poisoned| {
-            log::warn!("Polymarket fee cache mutex poisoned; recovering cached fee state");
-            poisoned.into_inner()
-        })
+        self.cache
+            .lock()
+            .expect("Polymarket fee cache mutex poisoned")
     }
 
     fn entry_within_ttl(&self, entry: &FeeCacheEntry, now: Instant) -> bool {
@@ -198,7 +197,10 @@ impl FeeProvider for PolymarketClobFeeProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
+    use std::{
+        collections::VecDeque,
+        panic::{AssertUnwindSafe, catch_unwind},
+    };
 
     use crate::bolt_v3_config::BoltV3RootConfig;
     use nautilus_core::{Params, UnixNanos};
@@ -406,6 +408,36 @@ mod tests {
             }
             .boxed()
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "Polymarket fee cache mutex poisoned")]
+    fn fee_provider_fee_bps_panics_on_poisoned_cache() {
+        let clock = TestClock::new();
+        let fetcher = MockFeeRateFetcher::new(Vec::new());
+        let provider = PolymarketClobFeeProvider::new_for_tests(
+            Arc::new(fetcher),
+            clock.source(),
+            test_fee_cache_ttl(),
+        );
+        let instrument_id = instrument_id_for_token("token_poison");
+        let fetched_at = *clock.now.lock().expect("clock mutex poisoned");
+        provider.cache().insert(
+            instrument_id,
+            FeeCacheEntry {
+                fee_bps: decimal("5.00"),
+                fetched_at,
+            },
+        );
+        let cache = provider.cache.clone();
+        let poison_result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = cache.lock().unwrap();
+            panic!("poison fee cache");
+        }));
+        assert!(poison_result.is_err());
+        assert!(cache.lock().is_err());
+
+        provider.fee_bps(instrument_id);
     }
 
     #[derive(Clone)]

@@ -560,7 +560,7 @@ jobs:
           name: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}
           path: .nextest-archive-fingerprint/cache-key.txt
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
 
   nextest-fingerprint-reuse:
     name: nextest fingerprint reuse
@@ -913,7 +913,7 @@ jobs:
           name: ci-provenance-attempt-${{ github.run_attempt }}
           path: ci-provenance.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
 
   same-sha-main-evidence:
     name: same-sha-main-evidence
@@ -11558,7 +11558,7 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
         ".github/workflows/ci.yml nextest-fingerprint upload-nextest-fingerprint artifact ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }} must set retention-days",
         {
             ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
-                "          retention-days: 30\n",
+                "          retention-days: 14\n",
                 "",
                 1,
             )
@@ -11689,7 +11689,7 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
         "retention-days must be a positive integer",
         {
             ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml").replace(
-                "          name: ${{ steps.provenance.outputs.artifact_name }}\n          path: ${{ env.CAPTURE_OUTPUT_DIR }}\n          if-no-files-found: error\n          retention-days: 30",
+                "          name: ${{ steps.provenance.outputs.artifact_name }}\n          path: ${{ env.CAPTURE_OUTPUT_DIR }}\n          if-no-files-found: error\n          retention-days: 14",
                 "          name: ${{ steps.provenance.outputs.artifact_name }}\n          path: ${{ env.CAPTURE_OUTPUT_DIR }}\n          if-no-files-found: error\n          retention-days: ${{ github.event.inputs.retention_days }}",
                 1,
             ),
@@ -11780,8 +11780,12 @@ def assert_artifact_retention_config_ref_retention_is_exact() -> None:
         REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml"
     ).read_text(encoding="utf-8")
     over_ceiling_capture_config = capture_config_text.replace(
-        "[ci_provenance.artifacts]\nretention_days = 30",
-        "[ci_provenance.artifacts]\nretention_days = 365",
+        "retention_days = 14",
+        "retention_days = 13",
+        1,
+    ).replace(
+        "max_lookback_age_seconds = 1209600",
+        "max_lookback_age_seconds = 1123200",
         1,
     )
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
@@ -11808,8 +11812,8 @@ def assert_artifact_retention_config_ref_retention_is_exact() -> None:
             verifier.DEFAULT_RUNNERS_CONFIG = original_config
     expected = (
         ".github/workflows/ci.yml capture upload-capture-artifact artifact "
-        "${{ steps.provenance.outputs.artifact_name }} retention-days 30 "
-        "does not match configured retention-days 365"
+        "${{ steps.provenance.outputs.artifact_name }} retention-days 14 "
+        "does not match configured retention-days 13"
     )
     if not any(expected in error for error in errors):
         raise AssertionError(f"config-ref retention must be checked exactly, got: {errors}")
@@ -11859,17 +11863,17 @@ lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
 """
     cases = {
         "artifact_retention.classes.reuse-bound.max_retention_days must be a positive integer": config_text.replace(
-            "max_retention_days = 30",
+            "max_retention_days = 14",
             "max_retention_days = true",
             1,
         ),
         "artifact_retention.classes.reuse-bound has unexpected keys: ['allowed_refs']": config_text.replace(
-            "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30",
-            '[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30\nallowed_refs = ["refs/heads/main"]',
+            "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 14",
+            '[artifact_retention.classes.reuse-bound]\nmax_retention_days = 14\nallowed_refs = ["refs/heads/main"]',
             1,
         ),
         "ci_provenance.artifacts.retention_days must be a positive integer": config_text.replace(
-            "retention_days = 30",
+            "retention_days = 14",
             "retention_days = true",
             1,
         ),
@@ -11894,18 +11898,18 @@ lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
             1,
         ),
         "ci_provenance.api_limits.max_lookback_age_seconds must not exceed artifact retention": config_text.replace(
-            "max_lookback_age_seconds = 2592000",
-            "max_lookback_age_seconds = 2592001",
+            "max_lookback_age_seconds = 1209600",
+            "max_lookback_age_seconds = 1209601",
             1,
         ),
         "artifact_retention.classes.reuse-bound.max_retention_days_config_ref references missing TOML key": config_text.replace(
-            "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30",
+            "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 14",
             '[artifact_retention.classes.reuse-bound]\nmax_retention_days_config_file = "ci/github-actions-runners.toml"\nmax_retention_days_config_ref = "ci_provenance.artifacts.missing"',
             1,
         ),
         "artifact_retention.classes.reuse-bound must define exactly one max retention source": config_text.replace(
-            "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30",
-            '[artifact_retention.classes.reuse-bound]\nmax_retention_days = 30\nmax_retention_days_config_file = "ci/github-actions-runners.toml"\nmax_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
+            "[artifact_retention.classes.reuse-bound]\nmax_retention_days = 14",
+            '[artifact_retention.classes.reuse-bound]\nmax_retention_days = 14\nmax_retention_days_config_file = "ci/github-actions-runners.toml"\nmax_retention_days_config_ref = "ci_provenance.artifacts.retention_days"',
             1,
         ),
         "artifact_retention.classes has unused classes: ['unused']": config_text.replace(
@@ -12054,8 +12058,8 @@ lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
             else:
                 raise AssertionError(f"config mutation did not fail: {expected}")
         capture_lookback_config = capture_config_text.replace(
-            "max_lookback_age_seconds = 2592000",
-            "max_lookback_age_seconds = 2592001",
+            "max_lookback_age_seconds = 1209600",
+            "max_lookback_age_seconds = 1209601",
             1,
         )
         config_path = write_temp_runner_config(pathlib.Path(tmp), config_text)
@@ -15026,12 +15030,12 @@ def main() -> int:
         ),
     )
     assert_artifact_retention_error(
-        ".github/workflows/ci.yml ci-provenance-emit upload-ci-provenance artifact ci-provenance-attempt-${{ github.run_attempt }} retention-days 31 does not match configured retention-days 30",
+        ".github/workflows/ci.yml ci-provenance-emit upload-ci-provenance artifact ci-provenance-attempt-${{ github.run_attempt }} retention-days 13 does not match configured retention-days 14",
         {
             ".github/workflows/ci.yml": replace_once(
                 BASE_WORKFLOW,
-                "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 30",
-                "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 31",
+                "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 14",
+                "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 13",
             )
         },
     )

@@ -533,7 +533,20 @@ if [[ -z "$changed" ]]; then
 fi
 base_tree="$RUNNER_TEMP/self-authorizing-governance-base-tree"
 mkdir -p "$base_tree"
-git archive "$base_ref" scripts/ ci/rust-verification.toml | tar -x -C "$base_tree"
+git archive "$base_ref" \\
+  .github/ \\
+  .config/ \\
+  ci/ \\
+  crates/backtesting-vertical-slice/ci/ \\
+  scripts/ \\
+  tests/ \\
+  AGENTS.md \\
+  Cargo.toml \\
+  justfile \\
+  .mergify.yml \\
+  .no-mistakes.yaml \\
+  .pr_agent.toml \\
+  | tar -x -C "$base_tree"
 python3 "$base_tree/scripts/verify_ci_workflow_hygiene.py" self-authorizing-governance \\
   --repo "$GITHUB_WORKSPACE" \\
   --base "$base_ref" \\

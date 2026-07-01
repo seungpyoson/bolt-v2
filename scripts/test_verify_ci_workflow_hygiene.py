@@ -357,7 +357,20 @@ jobs:
           fi
           base_tree="$RUNNER_TEMP/self-authorizing-governance-base-tree"
           mkdir -p "$base_tree"
-          git archive "$base_ref" scripts/ ci/rust-verification.toml | tar -x -C "$base_tree"
+          git archive "$base_ref" \
+            .github/ \
+            .config/ \
+            ci/ \
+            crates/backtesting-vertical-slice/ci/ \
+            scripts/ \
+            tests/ \
+            AGENTS.md \
+            Cargo.toml \
+            justfile \
+            .mergify.yml \
+            .no-mistakes.yaml \
+            .pr_agent.toml \
+            | tar -x -C "$base_tree"
           python3 "$base_tree/scripts/verify_ci_workflow_hygiene.py" self-authorizing-governance \
             --repo "$GITHUB_WORKSPACE" \
             --base "$base_ref" \
@@ -2189,8 +2202,36 @@ jobs:
     if not any("secret reference secrets.JULES_API_KEY" in error for error in moved_errors):
         raise AssertionError(f"moving secret-using workflow into active path must be blocked, got: {moved_errors}")
 
-    if 'git archive "$base_ref" scripts/ ci/rust-verification.toml | tar -x -C "$base_tree"' not in BASE_WORKFLOW:
-        raise AssertionError("self-authorizing base-tree bootstrap must archive lane policy with scripts")
+    required_self_authorizing_archive = (
+        'git archive "$base_ref"',
+        ".github/",
+        ".config/",
+        "ci/",
+        "crates/backtesting-vertical-slice/ci/",
+        "scripts/",
+        "tests/",
+        "AGENTS.md",
+        "Cargo.toml",
+        "justfile",
+        ".mergify.yml",
+        ".no-mistakes.yaml",
+        ".pr_agent.toml",
+        '| tar -x -C "$base_tree"',
+    )
+    self_authorizing_archive_start = BASE_WORKFLOW.find('git archive "$base_ref"', BASE_WORKFLOW.find("self-authorizing-governance-base-tree"))
+    self_authorizing_archive_end = BASE_WORKFLOW.find(
+        'python3 "$base_tree/scripts/verify_ci_workflow_hygiene.py"',
+        self_authorizing_archive_start,
+    )
+    self_authorizing_archive = BASE_WORKFLOW[self_authorizing_archive_start:self_authorizing_archive_end]
+    missing_archive_inputs = [
+        value for value in required_self_authorizing_archive if value not in self_authorizing_archive
+    ]
+    if missing_archive_inputs:
+        raise AssertionError(
+            "self-authorizing base-tree bootstrap must archive trusted verifier inputs, "
+            f"missing {missing_archive_inputs}"
+        )
 
     with tempfile.TemporaryDirectory() as tmp:
         cli_fixture = pathlib.Path(tmp) / "fixture"

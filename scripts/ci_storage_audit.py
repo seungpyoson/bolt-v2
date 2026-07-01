@@ -1260,6 +1260,10 @@ def branch_ref_event_allows_head_branch(
     return any(fnmatch.fnmatchcase(head_branch, pattern) for pattern in branch_ref_events.get(event, ()))
 
 
+def branch_ref_events_require_event(branch_ref_events: dict[str, tuple[str, ...]]) -> bool:
+    return any(pattern != "*" for patterns in branch_ref_events.values() for pattern in patterns)
+
+
 def classify_workflow_ref(
     workflow_run: dict[str, Any],
     *,
@@ -1274,6 +1278,13 @@ def classify_workflow_ref(
     if ref_branch is not None and isinstance(event, str) and event in branch_ref_events:
         if not branch_ref_event_allows_head_branch(event, ref_branch, branch_ref_events):
             return ClassifiedText(value=None, failure=input_failure(FIELD_ARTIFACT_REF, STATE_INVALID))
+    if (
+        ref_branch is not None
+        and not isinstance(event, str)
+        and branch_ref_events_require_event(branch_ref_events)
+        and workflow_run.get("status_source") == "run_api"
+    ):
+        return ClassifiedText(value=None, failure=input_failure(FIELD_ARTIFACT_REF, STATE_INVALID))
     if cleanup_ref_has_known_namespace(ref.value):
         return ref
     head_branch = classify_cleanup_ref(workflow_run.get("head_branch"), FIELD_ARTIFACT_REF, allow_canonical_refs=False)

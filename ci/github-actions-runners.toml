@@ -449,10 +449,10 @@ protected_ref_globs = [
   "deploy/*",
   "tag-archive-*",
 ]
-branch_ref_events = ["pull_request"]
+branch_ref_events = { pull_request = ["*"], workflow_dispatch = ["codex/*"] }
 active_run_statuses = ["queued", "in_progress", "waiting", "requested", "pending"]
 terminal_run_statuses = ["completed"]
-workflow_run_fetch_limit = 100
+workflow_run_fetch_limit = 900
 billing_probe_paths = [
   "users/{owner}/settings/billing/actions",
   "orgs/{owner}/settings/billing/actions",

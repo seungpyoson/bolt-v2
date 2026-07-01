@@ -1000,43 +1000,100 @@ def wrong_workflow_mergify_required_check_finding(
     }
 
 
+def with_merge_condition_check(
+    finding: dict[str, object],
+    *,
+    merge_check: str,
+    source_check: str,
+) -> dict[str, object]:
+    if merge_check == source_check:
+        return finding
+    return {
+        **finding,
+        "evidence": {
+            **dict(finding.get("evidence", {})),
+            "merge_condition_check": merge_check,
+        },
+    }
+
+
+def source_check_evidence(readiness: Mapping[str, object]) -> tuple[object, ...]:
+    if "source_checks" in readiness:
+        raw_checks = readiness["source_checks"]
+    else:
+        raw_checks = readiness.get("checks", ())
+    if raw_checks is None:
+        return ()
+    if isinstance(raw_checks, (str, bytes)) or not isinstance(raw_checks, Sequence):
+        return ()
+    return tuple(raw_checks)
+
+
 def mergify_required_check_finding(
     *,
-    required_check: str,
+    merge_check: str,
+    source_check: str,
     readiness: Mapping[str, object],
     expected_workflow: str | None,
 ) -> dict[str, object] | None:
-    checks = tuple(readiness.get("checks", ()))
+    checks = source_check_evidence(readiness)
     metadata = dict(readiness.get("metadata", {}))
     actual_head = str(metadata.get("headRefOid", ""))
-    matches = tuple(check for check in checks if check_name_matches(check, required_check))
+    matches = tuple(check for check in checks if check_name_matches(check, source_check))
     if not matches:
-        return missing_mergify_required_check_finding(
-            required_check=required_check,
+        finding = missing_mergify_required_check_finding(
+            required_check=source_check,
             actual_head=actual_head,
+        )
+        return with_merge_condition_check(
+            finding,
+            merge_check=merge_check,
+            source_check=source_check,
         )
     if len(matches) > 1:
-        return duplicate_mergify_required_check_finding(
-            required_check=required_check,
+        finding = duplicate_mergify_required_check_finding(
+            required_check=source_check,
             actual_head=actual_head,
         )
+        return with_merge_condition_check(
+            finding,
+            merge_check=merge_check,
+            source_check=source_check,
+        )
     if expected_workflow is None:
-        return duplicate_mergify_required_check_finding(
-            required_check=required_check,
+        finding = duplicate_mergify_required_check_finding(
+            required_check=source_check,
             actual_head=actual_head,
+        )
+        return with_merge_condition_check(
+            finding,
+            merge_check=merge_check,
+            source_check=source_check,
         )
     actual_workflow = matches[0].get("workflow")
     if actual_workflow != expected_workflow:
-        return wrong_workflow_mergify_required_check_finding(
-            required_check=required_check,
+        finding = wrong_workflow_mergify_required_check_finding(
+            required_check=source_check,
             expected_workflow=expected_workflow,
             actual_workflow=actual_workflow,
             actual_head=actual_head,
         )
-    return required_check_state_finding(
+        return with_merge_condition_check(
+            finding,
+            merge_check=merge_check,
+            source_check=source_check,
+        )
+    finding = required_check_state_finding(
         check=matches[0],
         expected_head=actual_head,
         actual_head=actual_head,
+    )
+    if finding is None:
+        return None
+    return with_merge_condition_check(
+        finding,
+        merge_check=merge_check,
+        source_check=source_check,
     )
 
 
@@ -1062,6 +1119,7 @@ def selected_mergify_required_check_findings(
     route_findings: Sequence[Mapping[str, object]],
     readiness: Sequence[Mapping[str, object]],
     required_check_workflows: Mapping[str, str],
+    source_check_aliases: Mapping[str, str],
 ) -> tuple[dict[str, object], ...]:
     rules_by_name = mergify_queue_rules_by_name(config)
     readiness_by_pr = {int(item["pr"]): item for item in readiness}
@@ -1075,10 +1133,12 @@ def selected_mergify_required_check_findings(
         rule = rules_by_name[queue_rule]
         item = readiness_by_pr[pr]
         for required_check in mergify_required_check_names(rule):
+            source_check = source_check_aliases.get(required_check, required_check)
             finding = mergify_required_check_finding(
-                required_check=required_check,
+                merge_check=required_check,
+                source_check=source_check,
                 readiness=item,
-                expected_workflow=required_check_workflows.get(required_check),
+                expected_workflow=required_check_workflows.get(source_check),
             )
             if finding is not None:
                 findings.append(
@@ -1232,6 +1292,7 @@ def available_mergify_config_route_and_batch_findings(
     config: Mapping[str, object],
     readiness: Sequence[Mapping[str, object]],
     required_check_workflows: Mapping[str, str],
+    source_check_aliases: Mapping[str, str],
 ) -> tuple[dict[str, object], ...]:
     route_findings = available_mergify_queue_route_findings(config=config, readiness=readiness)
     return (
@@ -1241,6 +1302,7 @@ def available_mergify_config_route_and_batch_findings(
             route_findings=route_findings,
             readiness=readiness,
             required_check_workflows=required_check_workflows,
+            source_check_aliases=source_check_aliases,
         ),
         *selected_mergify_queue_proof_source_findings(
             config=config,
@@ -1260,6 +1322,7 @@ def unavailable_mergify_queue_route_findings(
     config: object,
     readiness: Sequence[Mapping[str, object]],
     required_check_workflows: Mapping[str, str],
+    source_check_aliases: Mapping[str, str],
 ) -> tuple[dict[str, object], ...]:
     return ()
 
@@ -1276,6 +1339,7 @@ def mergify_config_findings(
     base_sha: str,
     readiness: Sequence[Mapping[str, object]],
     required_check_workflows: Mapping[str, str],
+    source_check_aliases: Mapping[str, str],
     input_timeout_seconds: int,
 ) -> tuple[dict[str, object], ...]:
     snapshot = mergify_config_snapshot_finding(
@@ -1305,6 +1369,7 @@ def mergify_config_findings(
             config=config,
             readiness=readiness,
             required_check_workflows=required_check_workflows,
+            source_check_aliases=source_check_aliases,
         ),
     )
 
@@ -1707,6 +1772,7 @@ class PreflightConfig:
     default_verifier_profile: str
     verifier_profiles: dict[str, tuple[str, ...]]
     required_check_workflows: dict[str, str]
+    source_check_aliases: dict[str, str]
     input_timeout_seconds: int
     verifier_timeout_seconds: int
     output_policy: OutputPolicy
@@ -1883,6 +1949,19 @@ def require_string_map(parent: dict[str, object], key: str, prefix: str) -> dict
     return result
 
 
+def validate_source_check_aliases(
+    source_check_aliases: Mapping[str, str],
+    required_check_workflows: Mapping[str, str],
+) -> None:
+    for merge_check, source_check in source_check_aliases.items():
+        if source_check not in required_check_workflows:
+            raise PreflightError(
+                "config.merge_queue_preflight.source_check_aliases."
+                f"{merge_check} target {source_check!r} must exist in "
+                "config.merge_queue_preflight.required_check_workflows"
+            )
+
+
 def load_config(path: pathlib.Path) -> PreflightConfig:
     root = load_toml(path)
     settings = require_table(root, "merge_queue_preflight", "config")
@@ -1910,6 +1989,12 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
         "required_check_workflows",
         "config.merge_queue_preflight",
     )
+    source_check_aliases = require_string_map(
+        settings,
+        "source_check_aliases",
+        "config.merge_queue_preflight",
+    )
+    validate_source_check_aliases(source_check_aliases, required_check_workflows)
     output_settings = require_table(settings, "output", "config.merge_queue_preflight")
     output_policy = OutputPolicy(
         verifier_stream_max_lines=require_positive_int(
@@ -1947,6 +2032,7 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
         default_verifier_profile=default_profile,
         verifier_profiles=profiles,
         required_check_workflows=required_check_workflows,
+        source_check_aliases=source_check_aliases,
         input_timeout_seconds=input_timeout_seconds,
         verifier_timeout_seconds=verifier_timeout_seconds,
         output_policy=output_policy,
@@ -2296,7 +2382,7 @@ def pr_readiness(
     fetched_head: str | None = None,
 ) -> dict[str, object]:
     if not use_gh:
-        return {"pr": pr_number, "warnings": [], "warning_details": [], "checks": []}
+        return {"pr": pr_number, "warnings": [], "warning_details": [], "checks": [], "source_checks": []}
     payload = gh_json(
         [
             "pr",
@@ -2323,6 +2409,19 @@ def pr_readiness(
     )
     if not isinstance(checks, list):
         raise PreflightError(f"gh pr checks {pr_number} did not return a list")
+    source_checks = gh_json(
+        [
+            "pr",
+            "checks",
+            str(pr_number),
+            "--json",
+            "name,state,bucket,workflow",
+        ],
+        allowed_returncodes=GH_PR_CHECKS_JSON_RETURNCODES,
+        timeout_seconds=input_timeout_seconds,
+    )
+    if not isinstance(source_checks, list):
+        raise PreflightError(f"gh pr checks {pr_number} did not return a list")
     issues = readiness_issues(
         payload,
         checks,
@@ -2335,6 +2434,7 @@ def pr_readiness(
         "warning_details": [issue.as_json() for issue in issues],
         "metadata": payload,
         "checks": checks,
+        "source_checks": source_checks,
     }
 
 
@@ -2371,6 +2471,7 @@ def readiness_for_wave(
                     "warnings": [],
                     "warning_details": [],
                     "checks": [],
+                    "source_checks": [],
                     "metadata_unavailable": True,
                     "metadata_error": str(exc),
                 }
@@ -2611,6 +2712,7 @@ def preflight(
     input_timeout_seconds: int,
     verifier_timeout_seconds: int,
     required_check_workflows: Mapping[str, str],
+    source_check_aliases: Mapping[str, str],
     output_policy: OutputPolicy,
     use_gh: bool,
 ) -> tuple[dict[str, object], int]:
@@ -2627,6 +2729,7 @@ def preflight(
             input_timeout_seconds=input_timeout_seconds,
             verifier_timeout_seconds=verifier_timeout_seconds,
             required_check_workflows=required_check_workflows,
+            source_check_aliases=source_check_aliases,
             output_policy=output_policy,
             use_gh=use_gh,
             fetch_refs=fetch_refs,
@@ -2647,6 +2750,7 @@ def preflight_with_fetch_refs(
     input_timeout_seconds: int,
     verifier_timeout_seconds: int,
     required_check_workflows: Mapping[str, str],
+    source_check_aliases: Mapping[str, str],
     output_policy: OutputPolicy,
     use_gh: bool,
     fetch_refs: PrivateFetchRefs,
@@ -2700,6 +2804,7 @@ def preflight_with_fetch_refs(
         base_sha=base_sha,
         readiness=readiness,
         required_check_workflows=required_check_workflows,
+        source_check_aliases=source_check_aliases,
         input_timeout_seconds=input_timeout_seconds,
     )
     batch_max_limits = mergify_batch_limits(mergify_findings)
@@ -3028,6 +3133,7 @@ def main(argv: list[str] | None = None) -> int:
             input_timeout_seconds=config.input_timeout_seconds,
             verifier_timeout_seconds=config.verifier_timeout_seconds,
             required_check_workflows=config.required_check_workflows,
+            source_check_aliases=config.source_check_aliases,
             output_policy=config.output_policy,
             use_gh=not args.no_gh,
         )

@@ -30,17 +30,15 @@ EXPECTED_RESIDUAL_RISKS = [
     "reset_on_external_merge",
     "max_parallel_checks_cost",
 ]
-MERGIFY_REQUIRED_CHECK_NAMES = (
-    "gate",
-    "backtester-gate",
-    "actionlint",
-    "host-health",
-)
-MERGIFY_REQUIRED_CHECK_WORKFLOWS = {
-    "gate": "CI",
-    "backtester-gate": "Backtester CI",
+SOURCE_PR_CHECK_WORKFLOWS = {
+    "gate-iteration": "CI",
+    "backtester-gate-iteration": "Backtester CI",
     "actionlint": "actionlint",
     "host-health": "CI",
+}
+SOURCE_CHECK_ALIASES = {
+    "gate": "gate-iteration",
+    "backtester-gate": "backtester-gate-iteration",
 }
 MERGIFY_QUEUE_MAX_BATCH_SIZE = {"hotfix": 1, "default": 10}
 
@@ -523,6 +521,62 @@ def assert_preflight_input_timeout_is_config_driven() -> None:
     assert_equal(loaded.input_timeout_seconds, 17, "input timeout config")
 
 
+def assert_source_check_alias_targets_must_have_workflows() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_preflight_config(pathlib.Path(tmp), "none", [])
+        write(
+            config,
+            config.read_text(encoding="utf-8").replace(
+                '"gate" = "gate-iteration"',
+                '"gate" = "missing-source-check"',
+            ),
+        )
+        try:
+            module.load_config(config)
+        except module.PreflightError as exc:
+            expected = (
+                "config.merge_queue_preflight.source_check_aliases.gate target "
+                "'missing-source-check' must exist in "
+                "config.merge_queue_preflight.required_check_workflows"
+            )
+            if expected not in str(exc):
+                raise AssertionError(str(exc))
+        else:
+            raise AssertionError("missing source check workflow did not fail config load")
+
+
+def assert_source_check_evidence_fallback_is_precise() -> None:
+    module = load_preflight_module()
+    metadata = {"headRefOid": "1" * 40}
+    check = passing_source_pr_check("gate-iteration")
+    legacy_fallback = module.mergify_required_check_finding(
+        merge_check="gate",
+        source_check="gate-iteration",
+        readiness={"metadata": metadata, "checks": [check]},
+        expected_workflow="CI",
+    )
+    assert_equal(legacy_fallback, None, "missing source_checks falls back to checks")
+
+    for label, source_checks in (("empty", []), ("none", None)):
+        finding = module.mergify_required_check_finding(
+            merge_check="gate",
+            source_check="gate-iteration",
+            readiness={
+                "metadata": metadata,
+                "checks": [check],
+                "source_checks": source_checks,
+            },
+            expected_workflow="CI",
+        )
+        if finding is None:
+            raise AssertionError(f"{label} source_checks must fail closed")
+        evidence = finding["evidence"]
+        assert_equal(finding["reason_code"], "required_check_missing", f"{label} source_checks reason")
+        assert_equal(evidence["check_name"], "gate-iteration", f"{label} source check name")
+        assert_equal(evidence["merge_condition_check"], "gate", f"{label} merge condition")
+
+
 def assert_git_and_gh_use_input_timeout() -> None:
     module = load_preflight_module()
     calls: list[dict[str, object]] = []
@@ -823,7 +877,11 @@ def write_preflight_config(
     rendered_commands = ", ".join(json.dumps(command) for command in commands)
     rendered_workflows = "\n".join(
         f"{json.dumps(name)} = {json.dumps(workflow)}"
-        for name, workflow in MERGIFY_REQUIRED_CHECK_WORKFLOWS.items()
+        for name, workflow in SOURCE_PR_CHECK_WORKFLOWS.items()
+    )
+    rendered_aliases = "\n".join(
+        f"{json.dumps(name)} = {json.dumps(alias)}"
+        for name, alias in SOURCE_CHECK_ALIASES.items()
     )
     path = root / "preflight.toml"
     write(
@@ -837,6 +895,8 @@ def write_preflight_config(
         f"verifier_seconds = {verifier_timeout_seconds}\n\n"
         "[merge_queue_preflight.required_check_workflows]\n"
         f"{rendered_workflows}\n\n"
+        "[merge_queue_preflight.source_check_aliases]\n"
+        f"{rendered_aliases}\n\n"
         "[merge_queue_preflight.output]\n"
         f"verifier_stream_max_lines = {verifier_stream_max_lines}\n"
         f"verifier_stream_max_bytes = {verifier_stream_max_bytes}\n\n"
@@ -851,6 +911,7 @@ def write_fake_gh(
     *,
     views: dict[int, dict[str, object]],
     checks: dict[int, list[dict[str, object]]] | None = None,
+    required_checks: dict[int, list[dict[str, object]]] | None = None,
     failed_views: dict[int, str] | None = None,
     check_exit_codes: dict[int, int] | None = None,
 ) -> pathlib.Path:
@@ -858,6 +919,7 @@ def write_fake_gh(
     bin_dir.mkdir()
     path = bin_dir / "gh"
     checks_by_pr = {pr: [] for pr in views} | (checks or {})
+    required_checks_by_pr = checks_by_pr | (required_checks or {})
     check_exit_codes_by_pr = {pr: 0 for pr in views} | (check_exit_codes or {})
     write(
         path,
@@ -866,6 +928,7 @@ def write_fake_gh(
         "import sys\n"
         f"views = {views!r}\n"
         f"checks = {checks_by_pr!r}\n"
+        f"required_checks = {required_checks_by_pr!r}\n"
         f"failed_views = {(failed_views or {})!r}\n"
         f"check_exit_codes = {check_exit_codes_by_pr!r}\n"
         "args = sys.argv[1:]\n"
@@ -876,7 +939,8 @@ def write_fake_gh(
         "    print(json.dumps(views[int(args[2])]))\n"
         "elif len(args) >= 3 and args[0:2] == ['pr', 'checks']:\n"
         "    pr = int(args[2])\n"
-        "    print(json.dumps(checks[pr]))\n"
+        "    selected = required_checks if '--required' in args else checks\n"
+        "    print(json.dumps(selected[pr]))\n"
         "    raise SystemExit(check_exit_codes[pr])\n"
         "else:\n"
         "    raise SystemExit(f'unexpected gh args: {args}')\n",
@@ -910,23 +974,30 @@ def approved_pr_view(
     }
 
 
-def passing_required_check(name: str = "gate") -> dict[str, object]:
+def passing_source_pr_check(name: str = "gate-iteration") -> dict[str, object]:
     return {
         "name": name,
         "state": "SUCCESS",
         "bucket": "pass",
-        "workflow": MERGIFY_REQUIRED_CHECK_WORKFLOWS[name],
+        "workflow": SOURCE_PR_CHECK_WORKFLOWS[name],
     }
 
 
-def passing_required_checks(*prs: int) -> dict[int, list[dict[str, object]]]:
+def passing_source_pr_checks(*prs: int) -> dict[int, list[dict[str, object]]]:
     return {
         pr: [
-            passing_required_check(name)
-            for name in MERGIFY_REQUIRED_CHECK_NAMES
+            passing_source_pr_check(name)
+            for name in SOURCE_PR_CHECK_WORKFLOWS
         ]
         for pr in prs
     }
+
+
+def passing_source_pr_branch_required_checks() -> list[dict[str, object]]:
+    return [
+        passing_source_pr_check("actionlint"),
+        passing_source_pr_check("host-health"),
+    ]
 
 
 def run_preflight_with_gh(
@@ -1083,7 +1154,8 @@ def assert_unsupported_mergify_queue_condition_route_is_inconclusive() -> None:
                 "checks": [],
             }
         ],
-        required_check_workflows=MERGIFY_REQUIRED_CHECK_WORKFLOWS,
+        required_check_workflows=SOURCE_PR_CHECK_WORKFLOWS,
+        source_check_aliases=SOURCE_CHECK_ALIASES,
     )
     assert_equal(
         findings,
@@ -1113,15 +1185,15 @@ def assert_mergify_queue_routing_uses_pr_labels() -> None:
                 1: approved_pr_view(hotfix_head, labels=("hotfix",)),
                 2: approved_pr_view(default_head),
             },
-            checks=passing_required_checks(1, 2),
+            checks=passing_source_pr_checks(1, 2),
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1", "2")
         assert_equal(result.returncode, 1, "queue routing rc")
         payload = parse_json(result.stdout)
-        assert readiness_ready_finding(1, hotfix_head, passing_required_checks(1)[1]) in payload["findings"], (
+        assert readiness_ready_finding(1, hotfix_head, passing_source_pr_checks(1)[1]) in payload["findings"], (
             payload["findings"]
         )
-        assert readiness_ready_finding(2, default_head, passing_required_checks(2)[2]) in payload["findings"], (
+        assert readiness_ready_finding(2, default_head, passing_source_pr_checks(2)[2]) in payload["findings"], (
             payload["findings"]
         )
         assert mergify_queue_route_finding(1, "hotfix", ["hotfix"], ["label = hotfix"]) in payload["findings"], (
@@ -1191,7 +1263,7 @@ def assert_default_queue_above_max_is_split_advised() -> None:
         bin_dir = write_fake_gh(
             root,
             views={pr: approved_pr_view(head) for pr, head in heads.items()},
-            checks=passing_required_checks(*heads),
+            checks=passing_source_pr_checks(*heads),
         )
         result = run_preflight_with_gh(
             fixture.repo,
@@ -1218,7 +1290,7 @@ def assert_default_queue_below_min_reports_wait_behavior() -> None:
         bin_dir = write_fake_gh(
             root,
             views={1: approved_pr_view(head)},
-            checks=passing_required_checks(1),
+            checks=passing_source_pr_checks(1),
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
         assert_equal(result.returncode, 0, "default queue below min rc")
@@ -1449,7 +1521,7 @@ def assert_ready_batch_conflict_is_split_advised() -> None:
                 1: approved_pr_view(first_head),
                 2: approved_pr_view(second_head),
             },
-            checks=passing_required_checks(1, 2),
+            checks=passing_source_pr_checks(1, 2),
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1", "2")
         assert_equal(result.returncode, 1, "ready batch conflict rc")
@@ -1784,7 +1856,7 @@ def assert_batch_verifier_failure_is_split_advised() -> None:
                 1: approved_pr_view(first_head),
                 2: approved_pr_view(second_head),
             },
-            checks=passing_required_checks(1, 2),
+            checks=passing_source_pr_checks(1, 2),
         )
         command = [
             sys.executable,
@@ -2125,6 +2197,175 @@ def assert_wrong_base_ref_is_inconclusive() -> None:
         assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "wrong base contract")
 
 
+def assert_source_pr_iteration_checks_are_queue_admitted() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks=passing_source_pr_checks(1),
+            required_checks={
+                1: passing_source_pr_branch_required_checks(),
+            },
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 0, "source PR iteration checks rc")
+        payload = parse_json(result.stdout)
+        assert_equal(payload["wave_status"], "ready", "source PR iteration checks wave")
+        assert_equal(
+            (payload["verdict"], payload["contract_exit_code"]),
+            ("queue_as_one_wave", 0),
+            "source PR iteration checks contract",
+        )
+        readiness = payload["readiness"][0]
+        assert_equal(
+            sorted(check["name"] for check in readiness["checks"]),
+            ["actionlint", "host-health"],
+            "source PR branch-required checks",
+        )
+        assert_equal(
+            sorted(check["name"] for check in readiness["source_checks"]),
+            [
+                "actionlint",
+                "backtester-gate-iteration",
+                "gate-iteration",
+                "host-health",
+            ],
+            "source PR all-check evidence",
+        )
+        missing_gate_findings = [
+            finding
+            for finding in payload["findings"]
+            if finding["reason_code"] == "required_check_missing"
+            and (
+                finding["evidence"].get("check_name") in {"gate", "backtester-gate"}
+                or finding["evidence"].get("merge_condition_check") in {"gate", "backtester-gate"}
+            )
+        ]
+        assert_equal(missing_gate_findings, [], "source PR must not require merge proof gates")
+
+
+def assert_aliased_source_check_pending_is_inconclusive_at_runtime() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        checks = [
+            {
+                **check,
+                "state": "PENDING",
+                "bucket": "pending",
+            }
+            if check["name"] == "gate-iteration"
+            else check
+            for check in passing_source_pr_checks(1)[1]
+        ]
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks={1: checks},
+            required_checks={1: passing_source_pr_branch_required_checks()},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 3, "aliased pending source check rc")
+        payload = parse_json(result.stdout)
+        pending_findings = [
+            finding
+            for finding in payload["findings"]
+            if finding["reason_code"] == "required_check_pending"
+        ]
+        if len(pending_findings) != 1:
+            raise AssertionError(payload["findings"])
+        evidence = pending_findings[0]["evidence"]
+        assert_equal(evidence["check_name"], "gate-iteration", "pending source check name")
+        assert_equal(evidence["merge_condition_check"], "gate", "pending merge condition")
+        assert_equal(payload["lane_statuses"]["readiness"], "inconclusive", "aliased pending readiness lane")
+        assert_equal(
+            (payload["verdict"], payload["contract_exit_code"]),
+            ("inconclusive", 3),
+            "aliased pending source check contract",
+        )
+
+
+def assert_aliased_source_check_failure_blocks_at_runtime() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        checks = [
+            {
+                **check,
+                "state": "FAILURE",
+                "bucket": "fail",
+            }
+            if check["name"] == "gate-iteration"
+            else check
+            for check in passing_source_pr_checks(1)[1]
+        ]
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks={1: checks},
+            required_checks={1: passing_source_pr_branch_required_checks()},
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 2, "aliased failed source check rc")
+        payload = parse_json(result.stdout)
+        failed_findings = [
+            finding
+            for finding in payload["findings"]
+            if finding["reason_code"] == "required_check_failed"
+        ]
+        if len(failed_findings) != 1:
+            raise AssertionError(payload["findings"])
+        evidence = failed_findings[0]["evidence"]
+        assert_equal(evidence["check_name"], "gate-iteration", "failed source check name")
+        assert_equal(evidence["merge_condition_check"], "gate", "failed merge condition")
+        assert_equal(payload["lane_statuses"]["readiness"], "blocked", "aliased failed readiness lane")
+        assert_equal(
+            (payload["verdict"], payload["contract_exit_code"]),
+            ("blocked", 2),
+            "aliased failed source check contract",
+        )
+
+
+def assert_required_merge_proof_check_on_source_pr_is_inconclusive() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={1: approved_pr_view(head)},
+            checks=passing_source_pr_checks(1),
+            required_checks={
+                1: [
+                    {"name": "gate", "state": "PENDING", "bucket": "pending", "workflow": "CI"},
+                    {
+                        "name": "backtester-gate",
+                        "state": "PENDING",
+                        "bucket": "pending",
+                        "workflow": "Backtester CI",
+                    },
+                    *passing_source_pr_branch_required_checks(),
+                ]
+            },
+        )
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+        assert_equal(result.returncode, 3, "source PR required merge proof check rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        assert_equal(len(blocked), 1, "source PR required merge proof check blocked count")
+        assert_equal(blocked[0]["type"], "required_check_pending", "source PR required proof block")
+        assert_equal(
+            (payload["verdict"], payload["contract_exit_code"]),
+            ("inconclusive", 3),
+            "source PR required merge proof check contract",
+        )
+
+
 def assert_required_check_pending_is_inconclusive() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -2200,7 +2441,7 @@ def assert_selected_mergify_check_missing_is_inconclusive_at_runtime() -> None:
         bin_dir = write_fake_gh(
             root,
             views={1: approved_pr_view(head)},
-            checks={1: [passing_required_check("gate")]},
+            checks={1: [passing_source_pr_check("gate-iteration")]},
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
         assert_equal(result.returncode, 3, "missing selected Mergify check rc")
@@ -2213,6 +2454,7 @@ def assert_selected_mergify_check_missing_is_inconclusive_at_runtime() -> None:
         missing_contexts = {
             (
                 finding["evidence"]["check_name"],
+                finding["evidence"].get("merge_condition_check"),
                 finding["evidence"]["pr"],
                 finding["evidence"]["queue_rule"],
             )
@@ -2221,9 +2463,9 @@ def assert_selected_mergify_check_missing_is_inconclusive_at_runtime() -> None:
         assert_equal(
             missing_contexts,
             {
-                ("backtester-gate", 1, "default"),
-                ("actionlint", 1, "default"),
-                ("host-health", 1, "default"),
+                ("backtester-gate-iteration", "backtester-gate", 1, "default"),
+                ("actionlint", None, 1, "default"),
+                ("host-health", None, 1, "default"),
             },
             "missing selected Mergify check context",
         )
@@ -2284,7 +2526,7 @@ def assert_required_check_wrong_workflow_is_inconclusive_at_runtime() -> None:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
         head = fixture.make_pr(1, {"one.txt": "one\n"})
-        checks = passing_required_checks(1)[1]
+        checks = passing_source_pr_checks(1)[1]
         checks[0] = {**checks[0], "workflow": "Wrong CI"}
         bin_dir = write_fake_gh(
             root,
@@ -2302,7 +2544,8 @@ def assert_required_check_wrong_workflow_is_inconclusive_at_runtime() -> None:
         if len(wrong_workflow_findings) != 1:
             raise AssertionError(payload["findings"])
         evidence = wrong_workflow_findings[0]["evidence"]
-        assert_equal(evidence["check_name"], "gate", "wrong check workflow name")
+        assert_equal(evidence["check_name"], "gate-iteration", "wrong check workflow name")
+        assert_equal(evidence["merge_condition_check"], "gate", "wrong check merge condition")
         assert_equal(evidence["workflow"], "Wrong CI", "wrong check workflow actual")
         assert_equal(evidence["expected_workflow"], "CI", "wrong check workflow expected")
         readiness_findings = [
@@ -2322,7 +2565,7 @@ def assert_selected_mergify_reviewer_must_approve_at_runtime() -> None:
         bin_dir = write_fake_gh(
             root,
             views={1: approved_pr_view(head, approving_reviewers=("other-reviewer",))},
-            checks=passing_required_checks(1),
+            checks=passing_source_pr_checks(1),
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
         assert_equal(result.returncode, 2, "required reviewer identity rc")
@@ -2396,7 +2639,7 @@ def assert_partial_gh_metadata_failure_preserves_other_readiness() -> None:
             root,
             views={1: approved_pr_view(head)},
             failed_views={2: "simulated metadata failure"},
-            checks=passing_required_checks(1),
+            checks=passing_source_pr_checks(1),
         )
         result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1", "2")
         assert_equal(result.returncode, 3, "partial metadata failure rc")
@@ -2428,7 +2671,7 @@ def assert_fetch_failure_after_readiness_is_inconclusive_not_tool_error() -> Non
                 1: approved_pr_view(head),
                 2: approved_pr_view(missing_head),
             },
-            checks=passing_required_checks(1, 2),
+            checks=passing_source_pr_checks(1, 2),
         )
         command = [
             sys.executable,
@@ -2649,6 +2892,8 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
 def main() -> int:
     assert_contract_result_reduces_findings_by_table()
     assert_preflight_input_timeout_is_config_driven()
+    assert_source_check_alias_targets_must_have_workflows()
+    assert_source_check_evidence_fallback_is_precise()
     assert_git_and_gh_use_input_timeout()
     assert_gh_timeout_is_preflight_error()
     assert_merge_tree_timeout_is_preflight_error()
@@ -2686,6 +2931,10 @@ def main() -> int:
     assert_json_output_uses_bounded_verifier_previews()
     assert_head_oid_mismatch_blocks_pr()
     assert_wrong_base_ref_is_inconclusive()
+    assert_source_pr_iteration_checks_are_queue_admitted()
+    assert_aliased_source_check_pending_is_inconclusive_at_runtime()
+    assert_aliased_source_check_failure_blocks_at_runtime()
+    assert_required_merge_proof_check_on_source_pr_is_inconclusive()
     assert_required_check_pending_is_inconclusive()
     assert_required_check_neutral_is_inconclusive_at_runtime()
     assert_empty_required_checks_are_inconclusive_at_runtime()

@@ -28,7 +28,7 @@ RUN_ID = 24623219988
 CHECK_SUITE_ID = 65233803543
 NEXTEST_FINGERPRINT = f"nextest-archive-v2-Linux-X64-test-profile-shards-4-{'a' * 64}"
 NEXTEST_FINGERPRINT_ARTIFACT = f"nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-{'a' * 64}"
-CAPTURE_PROVENANCE_CONFIG_DIGEST = "028c908b23a2e3088a09ace96b904d31be59e85239edc2198755989a2262a580"
+CAPTURE_PROVENANCE_CONFIG_DIGEST = "19260091d9871d34cf51fd2fa797ffbb12aa420b5aa059d0829dd7736d409993"
 
 CONFIG_TOML = """
 schema_version = 1
@@ -213,10 +213,10 @@ workflow_runs_per_page = 100
 run_jobs_per_page = 100
 run_artifacts_per_page = 100
 max_lookback_pages = 10
-max_lookback_age_seconds = 2592000
+max_lookback_age_seconds = 1209600
 
 [ci_provenance.artifacts]
-retention_days = 30
+retention_days = 14
 
 [ci_provenance.policy]
 draft_pr_synchronize = "iteration"
@@ -286,10 +286,10 @@ temp_pr_head_ref_prefix = "mergify/merge-queue/"
 mergify_temp_pr_actor_id = 37929162
 
 [ci_provenance.artifacts]
-retention_days = 30
+retention_days = 14
 
 [ci_provenance.api_limits]
-max_lookback_age_seconds = 2592000
+max_lookback_age_seconds = 1209600
 max_lookback_pages = 10
 run_artifacts_per_page = 100
 run_jobs_per_page = 100
@@ -761,12 +761,12 @@ def assert_positive_int_config_rejects_booleans() -> None:
     module = load_script()
     cases = {
         "ci_provenance.api_limits.max_lookback_age_seconds must be a positive integer": CONFIG_TOML.replace(
-            "max_lookback_age_seconds = 2592000",
+            "max_lookback_age_seconds = 1209600",
             "max_lookback_age_seconds = true",
             1,
         ),
         "ci_provenance.artifacts.retention_days must be a positive integer": CONFIG_TOML.replace(
-            "retention_days = 30",
+            "retention_days = 14",
             "retention_days = true",
             1,
         ),
@@ -3175,7 +3175,7 @@ def assert_lookback_age_exhaustion_fails() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(
             pathlib.Path(tmp),
-            CONFIG_TOML.replace("max_lookback_age_seconds = 2592000", "max_lookback_age_seconds = 1"),
+            CONFIG_TOML.replace("max_lookback_age_seconds = 1209600", "max_lookback_age_seconds = 1"),
         )
         fake = FakeGitHub(runs_pages=[[run_payload(created_at="2020-01-01T00:00:00Z")]])
         assert_raises("lookback age limit exhausted", lambda: resolve_with_fake(module, config, fake))
@@ -3329,6 +3329,58 @@ def assert_jobs_page_total_count_boundary_is_accepted() -> None:
         resolved = resolve_with_fake(module, config, fake)
         if resolved.run.get("id") != RUN_ID:
             raise AssertionError(f"expected run {RUN_ID}, got {resolved.run}")
+
+
+def assert_incomplete_exact_sha_runs_require_explicit_job_validated_opt_in() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = valid_record(module, config)
+        queued_run = run_payload(status="queued", conclusion=None)
+        fake = FakeGitHub(
+            runs_pages=[[queued_run]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact(id=1)]}},
+            records_by_artifact_id={1: record},
+            jobs_by_run_id={RUN_ID: {"jobs": required_job_payloads()}},
+        )
+        assert_raises("no candidate provenance evidence", lambda: resolve_with_fake(module, config, fake))
+        resolved = module.resolve_exact_sha_evidence(
+            repo="seungpyoson/bolt-v2",
+            token="token",
+            requested_sha=SHA,
+            config=module.load_config(config),
+            config_path=config,
+            api_json=fake.json,
+            api_bytes=fake.bytes,
+            now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            allow_incomplete_run_with_successful_jobs=True,
+        )
+        if resolved.run.get("id") != RUN_ID:
+            raise AssertionError(f"expected queued run {RUN_ID}, got {resolved.run}")
+
+        failed_job_fake = FakeGitHub(
+            runs_pages=[[queued_run]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact(id=1)]}},
+            records_by_artifact_id={1: record},
+            jobs_by_run_id={
+                RUN_ID: {"jobs": with_required_job_conclusion(required_job_payloads(), "source-fence", "failure")}
+            },
+        )
+        assert_raises(
+            "required job source-fence was 'completed'/'failure'",
+            lambda: module.resolve_exact_sha_evidence(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                config=module.load_config(config),
+                config_path=config,
+                api_json=failed_job_fake.json,
+                api_bytes=failed_job_fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+                allow_incomplete_run_with_successful_jobs=True,
+            ),
+        )
 
 
 def assert_complete_first_page_rejects_incomplete_or_malformed_counts() -> None:
@@ -4652,6 +4704,7 @@ def main() -> int:
     assert_artifact_page_total_count_boundary_is_accepted()
     assert_jobs_page_saturation_fails_closed()
     assert_jobs_page_total_count_boundary_is_accepted()
+    assert_incomplete_exact_sha_runs_require_explicit_job_validated_opt_in()
     assert_complete_first_page_rejects_incomplete_or_malformed_counts()
     assert_latest_successful_attempt_selected()
     assert_record_attempt_mismatch_rejected()

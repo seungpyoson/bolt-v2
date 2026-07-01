@@ -591,6 +591,7 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
                     config=sidecar_config,
                     config_path=config_path,
                     current_run_id=current_run_id,
+                    allow_incomplete_run_with_successful_jobs=True,
                 )
             except ci_provenance.ProvenanceError as exc:
                 findings.append(f"{rel}: GitHub capture provenance resolution failed: {exc}")

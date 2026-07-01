@@ -685,7 +685,7 @@ jobs:
           name: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}
           path: .nextest-archive-fingerprint/cache-key.txt
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
 
   nextest-fingerprint-reuse:
     name: nextest fingerprint reuse
@@ -1235,7 +1235,7 @@ jobs:
           name: ${{ steps.provenance.outputs.artifact_name }}
           path: ${{ env.CAPTURE_OUTPUT_DIR }}
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
 
   capture-gate:
     name: capture-gate
@@ -1368,7 +1368,7 @@ jobs:
           name: ci-provenance-attempt-${{ github.run_attempt }}
           path: ci-provenance.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
 
   same-sha-main-evidence:
     name: same-sha-main-evidence

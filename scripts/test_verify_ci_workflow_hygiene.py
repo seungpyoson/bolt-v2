@@ -842,13 +842,14 @@ jobs:
           echo "stage_dir=$stage_dir" >> "$GITHUB_OUTPUT"
       - name: Upload artifact
         id: upload-bolt-v2-binary
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bolt-v2-binary
           path: |
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
-          retention-days: 30
+          retention-days: 3
 
   ci-provenance-emit:
     name: ci-provenance-emit
@@ -1028,6 +1029,14 @@ jobs:
           sha256sum -c bolt-v2.sha256
       - run: echo deploy
 """
+
+BOLT_V2_BINARY_UPLOAD_IF = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
+BOLT_V2_BINARY_UPLOAD_IF_LINE = f"        if: {BOLT_V2_BINARY_UPLOAD_IF}\n"
+BOLT_V2_BINARY_UPLOAD_WITH_BLOCK = """          name: bolt-v2-binary
+          path: |
+            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
+            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
+          retention-days: 3"""
 
 
 BASE_DISPATCH_CI_CANCEL_WORKFLOW = """
@@ -11556,11 +11565,33 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
         },
     )
     assert_artifact_retention_error(
-        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary retention-days 31 does not match configured retention-days 30",
+        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary retention-days 31 does not match configured retention-days 3",
         {
             ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 31",
+                BOLT_V2_BINARY_UPLOAD_WITH_BLOCK,
+                BOLT_V2_BINARY_UPLOAD_WITH_BLOCK.replace("retention-days: 3", "retention-days: 31"),
+                1,
+            )
+        },
+    )
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary "
+        f"must set if to configured if {BOLT_V2_BINARY_UPLOAD_IF}",
+        {
+            ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
+                BOLT_V2_BINARY_UPLOAD_IF_LINE,
+                "",
+                1,
+            )
+        },
+    )
+    assert_artifact_retention_error(
+        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary "
+        f"if ${{{{ github.event_name == 'pull_request' }}}} does not match configured if {BOLT_V2_BINARY_UPLOAD_IF}",
+        {
+            ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
+                BOLT_V2_BINARY_UPLOAD_IF,
+                "${{ github.event_name == 'pull_request' }}",
                 1,
             )
         },
@@ -11569,8 +11600,8 @@ def assert_artifact_retention_policy_spine_gaps_are_reported() -> None:
         ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary must set exactly one retention-days",
         {
             ".github/workflows/ci.yml": BASE_WORKFLOW.replace(
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30\n          retention-days: 31",
+                BOLT_V2_BINARY_UPLOAD_WITH_BLOCK,
+                BOLT_V2_BINARY_UPLOAD_WITH_BLOCK + "\n          retention-days: 31",
                 1,
             )
         },
@@ -11749,8 +11780,8 @@ def assert_artifact_retention_config_ref_retention_is_exact() -> None:
         REPO_ROOT / "ci" / "chainlink-reference-fixture-capture-provenance.toml"
     ).read_text(encoding="utf-8")
     over_ceiling_capture_config = capture_config_text.replace(
-        "retention_days = 30",
-        "retention_days = 365",
+        "[ci_provenance.artifacts]\nretention_days = 30",
+        "[ci_provenance.artifacts]\nretention_days = 365",
         1,
     )
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
@@ -11822,8 +11853,8 @@ def assert_artifact_retention_config_refs_are_validated() -> None:
     build_lookback_binding = """[artifact_retention.lookback_bindings.build_deploy]
 upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
 config_file = "ci/github-actions-runners.toml"
-retention_ref = "ci_provenance.artifacts.retention_days"
-lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
+retention_ref = "ci_provenance.deploy.artifact_retention_days"
+lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
 
 """
     cases = {
@@ -11840,6 +11871,26 @@ lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
         "ci_provenance.artifacts.retention_days must be a positive integer": config_text.replace(
             "retention_days = 30",
             "retention_days = true",
+            1,
+        ),
+        "ci_provenance.deploy.artifact_retention_days must be a positive integer": config_text.replace(
+            "artifact_retention_days = 3",
+            "artifact_retention_days = true",
+            1,
+        ),
+        "ci_provenance.deploy.artifact_lookback_age_seconds must be a positive integer": config_text.replace(
+            "artifact_lookback_age_seconds = 259200",
+            "artifact_lookback_age_seconds = true",
+            1,
+        ),
+        "ci_provenance.deploy.artifact_lookback_age_seconds must not exceed artifact retention": config_text.replace(
+            "artifact_lookback_age_seconds = 259200",
+            "artifact_lookback_age_seconds = 259201",
+            1,
+        ),
+        "ci_provenance.deploy.artifact_upload_if must match push to main deploy source policy": config_text.replace(
+            'artifact_upload_if = "${{ github.event_name == \'push\' && github.ref == \'refs/heads/main\' }}"',
+            'artifact_upload_if = "${{ always() }}"',
             1,
         ),
         "ci_provenance.api_limits.max_lookback_age_seconds must not exceed artifact retention": config_text.replace(
@@ -11920,14 +11971,57 @@ lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
             '\nretention_days_config_ref = "ci_provenance.artifacts.missing"',
             1,
         ),
+        "required_if_config_ref references missing TOML key": config_text.replace(
+            'required_if_config_ref = "ci_provenance.deploy.artifact_upload_if"',
+            'required_if_config_ref = "ci_provenance.deploy.missing_artifact_upload_if"',
+            1,
+        ),
+        "has partial required if source; missing ['required_if_config_file']": config_text.replace(
+            'required_if_config_file = "ci/github-actions-runners.toml"\n'
+            'required_if_config_ref = "ci_provenance.deploy.artifact_upload_if"',
+            'required_if_config_ref = "ci_provenance.deploy.artifact_upload_if"',
+            1,
+        ),
+        "deployable uploads must define required_if": config_text.replace(
+            'required_if_config_file = "ci/github-actions-runners.toml"\n'
+            'required_if_config_ref = "ci_provenance.deploy.artifact_upload_if"\n',
+            "",
+            1,
+        ),
+        "artifact_class must be deployable": config_text.replace(
+            'artifact_class = "deployable"',
+            'artifact_class = "reuse-bound"',
+            1,
+        ),
+        "required_if_config_ref must be ci_provenance.deploy.artifact_upload_if": config_text.replace(
+            'required_if_config_ref = "ci_provenance.deploy.artifact_upload_if"',
+            'required_if_config_ref = "storage_audit.cleanup_feasibility_alert.workflow.json_artifact_upload_if"',
+            1,
+        ),
         "artifact_retention.lookback_bindings.build_deploy.upload must reference a configured upload": config_text.replace(
             'upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"',
             'upload = ".github/workflows/ci.yml::build::missing-upload"',
             1,
         ),
         "artifact_retention.lookback_bindings.build_deploy must match the upload retention source": config_text.replace(
-            'retention_ref = "ci_provenance.artifacts.retention_days"',
+            'retention_ref = "ci_provenance.deploy.artifact_retention_days"',
             'retention_ref = "ci_provenance.api_limits.max_lookback_age_seconds"',
+            1,
+        ),
+        "artifact_retention.lookback_bindings.build_deploy.lookback_ref must be ci_provenance.deploy.artifact_lookback_age_seconds": config_text.replace(
+            'lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"',
+            'lookback_ref = "ci_provenance.merge_readiness.poll_seconds"',
+            1,
+        ),
+        "artifact_retention.lookback_bindings.renamed_deploy.lookback_ref must be ci_provenance.deploy.artifact_lookback_age_seconds": config_text.replace(
+            build_lookback_binding,
+            """[artifact_retention.lookback_bindings.renamed_deploy]
+upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
+config_file = "ci/github-actions-runners.toml"
+retention_ref = "ci_provenance.deploy.artifact_retention_days"
+lookback_ref = "ci_provenance.merge_readiness.poll_seconds"
+
+""",
             1,
         ),
         binding_coverage_error: config_text.replace(
@@ -11944,8 +12038,8 @@ lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
 [artifact_retention.lookback_bindings.duplicate_build]
 upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
 config_file = "ci/github-actions-runners.toml"
-retention_ref = "ci_provenance.artifacts.retention_days"
-lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
+retention_ref = "ci_provenance.deploy.artifact_retention_days"
+lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
 """,
         ),
     ]
@@ -14523,8 +14617,14 @@ def main() -> int:
         "actions/upload-artifact must be pinned to a 40-character SHA",
         replace_once(
             BASE_WORKFLOW,
-            f"      - name: Upload artifact\n        id: upload-bolt-v2-binary\n        {base_upload_artifact_action_line()}",
-            "      - name: Upload artifact\n        id: upload-bolt-v2-binary\n        uses: actions/upload-artifact@v7",
+            "      - name: Upload artifact\n"
+            "        id: upload-bolt-v2-binary\n"
+            f"{BOLT_V2_BINARY_UPLOAD_IF_LINE}"
+            f"        {base_upload_artifact_action_line()}",
+            "      - name: Upload artifact\n"
+            "        id: upload-bolt-v2-binary\n"
+            f"{BOLT_V2_BINARY_UPLOAD_IF_LINE}"
+            "        uses: actions/upload-artifact@v7",
         ),
     )
     assert_error(
@@ -15018,12 +15118,12 @@ def main() -> int:
         BASE_WORKFLOW.replace("${{ steps.managed_artifact.outputs.stage_dir }}", "$RUNNER_TEMP/bolt-v2-binary"),
     )
     assert_artifact_retention_error(
-        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary retention-days 31 does not match configured retention-days 30",
+        ".github/workflows/ci.yml build upload-bolt-v2-binary artifact bolt-v2-binary retention-days 31 does not match configured retention-days 3",
         {
             ".github/workflows/ci.yml": replace_once(
                 BASE_WORKFLOW,
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 31",
+                BOLT_V2_BINARY_UPLOAD_WITH_BLOCK,
+                BOLT_V2_BINARY_UPLOAD_WITH_BLOCK.replace("retention-days: 3", "retention-days: 31"),
             )
         },
     )
@@ -15032,8 +15132,8 @@ def main() -> int:
         {
             ".github/workflows/ci.yml": replace_once(
                 BASE_WORKFLOW,
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256",
+                BOLT_V2_BINARY_UPLOAD_WITH_BLOCK,
+                BOLT_V2_BINARY_UPLOAD_WITH_BLOCK.replace("\n          retention-days: 3", ""),
             )
         },
     )
@@ -15042,8 +15142,8 @@ def main() -> int:
         {
             ".github/workflows/ci.yml": replace_once(
                 BASE_WORKFLOW,
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
-                "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30\n          retention-days: 31",
+                BOLT_V2_BINARY_UPLOAD_WITH_BLOCK,
+                BOLT_V2_BINARY_UPLOAD_WITH_BLOCK + "\n          retention-days: 31",
             )
         },
     )

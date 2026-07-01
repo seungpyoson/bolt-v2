@@ -221,6 +221,9 @@ conditional = "detector.build_required"
 
 [ci_provenance.deploy]
 artifact_name = "bolt-v2-binary"
+artifact_upload_if = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
+artifact_retention_days = 3
+artifact_lookback_age_seconds = 259200
 require_source_event = "push"
 require_source_branch = "main"
 require_gate_check = true
@@ -346,6 +349,9 @@ max_lookback_age_seconds = 2592000
 [ci_provenance.artifacts]
 retention_days = 30
 
+[artifact_retention.classes.deployable]
+max_retention_days = 3
+
 [artifact_retention.classes.reuse-bound]
 max_retention_days = 30
 
@@ -364,9 +370,11 @@ retention_days_config_ref = "ci_provenance.artifacts.retention_days"
 [artifact_retention.uploads.".github/workflows/ci.yml::build::upload-bolt-v2-binary"]
 artifact_name_config_file = "ci/github-actions-runners.toml"
 artifact_name_config_ref = "ci_provenance.deploy.artifact_name"
-artifact_class = "reuse-bound"
+artifact_class = "deployable"
 retention_days_config_file = "ci/github-actions-runners.toml"
-retention_days_config_ref = "ci_provenance.artifacts.retention_days"
+retention_days_config_ref = "ci_provenance.deploy.artifact_retention_days"
+required_if_config_file = "ci/github-actions-runners.toml"
+required_if_config_ref = "ci_provenance.deploy.artifact_upload_if"
 
 [artifact_retention.uploads.".github/workflows/ci.yml::ci-provenance-emit::upload-ci-provenance"]
 artifact_name_template_config_file = "ci/github-actions-runners.toml"
@@ -400,8 +408,8 @@ retention_days = 7
 [artifact_retention.lookback_bindings.build_deploy]
 upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
 config_file = "ci/github-actions-runners.toml"
-retention_ref = "ci_provenance.artifacts.retention_days"
-lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
+retention_ref = "ci_provenance.deploy.artifact_retention_days"
+lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
 
 [artifact_retention.lookback_bindings.nextest_fingerprint]
 upload = ".github/workflows/ci.yml::nextest-fingerprint::upload-nextest-fingerprint"

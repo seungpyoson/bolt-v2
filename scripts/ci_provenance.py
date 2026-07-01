@@ -176,6 +176,8 @@ class ProvenanceConfig:
     conditional_job_outputs: dict[str, str]
     jobs: dict[str, JobConfig]
     deploy_artifact_name: str
+    deploy_artifact_retention_days: int | None
+    deploy_artifact_lookback_age_seconds: int | None
     deploy_source_event: str
     deploy_source_branch: str
     deploy_require_gate_check: bool
@@ -279,6 +281,15 @@ def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
 def check_lookback_le_retention(retention_days: int, max_lookback_age_seconds: int) -> None:
     if max_lookback_age_seconds > retention_days * 24 * 60 * 60:
         raise ProvenanceError("max lookback age must not exceed artifact retention")
+
+
+def optional_positive_int(parent: dict[str, object], key: str, prefix: str) -> int | None:
+    if key not in parent:
+        return None
+    value = parent.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ProvenanceError(f"{prefix}.{key} must be a positive integer")
+    return value
 
 
 def require_bool(parent: dict[str, object], key: str, prefix: str) -> bool:
@@ -602,7 +613,10 @@ def provenance_config_digest(path: pathlib.Path = DEFAULT_CONFIG) -> str:
 
 
 def load_config(
-    path: pathlib.Path = DEFAULT_CONFIG, *, require_workflows: bool = True
+    path: pathlib.Path = DEFAULT_CONFIG,
+    *,
+    require_workflows: bool = True,
+    require_deploy_window: bool = True,
 ) -> ProvenanceConfig:
     data = load_toml(path)
     workflows = data.get("workflows")
@@ -714,6 +728,39 @@ def load_config(
         api_limits, "max_lookback_age_seconds", "ci_provenance.api_limits"
     )
     check_lookback_le_retention(retention_days, max_lookback_age_seconds)
+    if require_deploy_window:
+        deploy_artifact_retention_days = require_positive_int(
+            deploy, "artifact_retention_days", "ci_provenance.deploy"
+        )
+        deploy_artifact_lookback_age_seconds = require_positive_int(
+            deploy, "artifact_lookback_age_seconds", "ci_provenance.deploy"
+        )
+    else:
+        deploy_artifact_retention_days = optional_positive_int(
+            deploy, "artifact_retention_days", "ci_provenance.deploy"
+        )
+        deploy_artifact_lookback_age_seconds = optional_positive_int(
+            deploy, "artifact_lookback_age_seconds", "ci_provenance.deploy"
+        )
+        if (deploy_artifact_retention_days is None) != (
+            deploy_artifact_lookback_age_seconds is None
+        ):
+            raise ProvenanceError(
+                "ci_provenance.deploy artifact retention and lookback must be configured together"
+            )
+    if (
+        deploy_artifact_retention_days is not None
+        and deploy_artifact_lookback_age_seconds is not None
+    ):
+        try:
+            check_lookback_le_retention(
+                deploy_artifact_retention_days,
+                deploy_artifact_lookback_age_seconds,
+            )
+        except ProvenanceError as exc:
+            raise ProvenanceError(
+                "ci_provenance.deploy.artifact_lookback_age_seconds must not exceed artifact retention"
+            ) from exc
 
     unexpected_policy_keys = sorted(set(policy_table) - set(POLICY_ROWS) - {"override"})
     if unexpected_policy_keys:
@@ -803,6 +850,8 @@ def load_config(
         conditional_job_outputs=dict(conditional_job_outputs),
         jobs=jobs,
         deploy_artifact_name=require_string(deploy, "artifact_name", "ci_provenance.deploy"),
+        deploy_artifact_retention_days=deploy_artifact_retention_days,
+        deploy_artifact_lookback_age_seconds=deploy_artifact_lookback_age_seconds,
         deploy_source_event=require_string(deploy, "require_source_event", "ci_provenance.deploy"),
         deploy_source_branch=require_string(deploy, "require_source_branch", "ci_provenance.deploy"),
         deploy_require_gate_check=deploy.get("require_gate_check") is True,
@@ -1910,7 +1959,12 @@ def resolve_exact_sha_evidence(
         raise ProvenanceError("requested_sha must be a 40-character lowercase hex SHA")
     if now is None:
         now = datetime.datetime.now(datetime.timezone.utc)
-    cutoff = now - datetime.timedelta(seconds=config.max_lookback_age_seconds)
+    lookback_age_seconds = (
+        config.deploy_artifact_lookback_age_seconds
+        if config.deploy_artifact_lookback_age_seconds is not None
+        else config.max_lookback_age_seconds
+    )
+    cutoff = now - datetime.timedelta(seconds=lookback_age_seconds)
     candidates: list[dict[str, object]] = []
     last_page_len = 0
 
@@ -2829,7 +2883,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = parser_for_mode(mode)
     try:
         args = parser.parse_args(rest)
-        config = load_config(args.config, require_workflows=mode != "artifact-metadata")
+        config = load_config(
+            args.config,
+            require_workflows=mode != "artifact-metadata",
+            require_deploy_window=mode != "artifact-metadata",
+        )
         if mode == "artifact-metadata":
             run_attempt = positive_int_value(args.run_attempt, "run_attempt")
             print(f"artifact_name={provenance_artifact_name(config, run_attempt)}")

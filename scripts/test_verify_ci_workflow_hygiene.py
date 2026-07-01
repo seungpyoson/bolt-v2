@@ -1120,12 +1120,6 @@ permissions:
 jobs:
   coverage-enforcer:
     name: coverage-enforcer
-    if: >-
-      ${{ !(github.event_name == 'pull_request'
-            && github.event.action == 'edited'
-            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-            && !(github.event.changes.base.ref.from != '')) }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1144,12 +1138,12 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           if [ ! -f scripts/coverage_enforcer.py ]; then
-            echo "coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py"
-            exit 0
+            echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py"
+            exit 1
           fi
           if ! grep -q "def expected_registry_checks_for_policy" scripts/coverage_enforcer.py; then
-            echo "coverage-enforcer bootstrap: trusted base tree lacks event-aware scripts/coverage_enforcer.py"
-            exit 0
+            echo "coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py"
+            exit 1
           fi
           python3 scripts/coverage_enforcer.py
 """
@@ -6320,6 +6314,19 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
     )
     if clean_errors:
         raise AssertionError(f"expected clean coverage-enforcer workflow, got: {clean_errors}")
+    quoted_permissions = (
+        BASE_COVERAGE_ENFORCER_WORKFLOW.replace("  checks: read\n", "  'checks': 'read'\n", 1)
+        .replace("  contents: read\n", '  "contents": "read"\n', 1)
+        .replace("  pull-requests: read\n", "  'pull-requests': 'read'\n", 1)
+    )
+    quoted_permissions_errors = verifier.verify_coverage_enforcer_workflow(
+        {workflow_name: quoted_permissions}
+    )
+    if quoted_permissions_errors:
+        raise AssertionError(
+            "expected quoted exact coverage-enforcer permissions to pass, "
+            f"got: {quoted_permissions_errors}"
+        )
 
     cases = [
         (
@@ -6343,20 +6350,31 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "    types: [checks_requested]\n", "    types: [requested]\n")},
         ),
         (
-            "permissions must include checks: read",
+            "permissions must match the exact read-only map",
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  checks: read\n", "")},
         ),
         (
-            "permissions must not include checks: write",
+            "permissions must match the exact read-only map",
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  checks: read\n", "  checks: write\n")},
         ),
         (
-            "permissions must include pull-requests: read",
+            "permissions must match the exact read-only map",
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  pull-requests: read\n", "")},
         ),
         (
-            "permissions must not include contents: write",
+            "permissions must match the exact read-only map",
             {workflow_name: replace_once(BASE_COVERAGE_ENFORCER_WORKFLOW, "  contents: read\n", "  contents: write\n")},
+        ),
+        (
+            "permissions must match the exact read-only map",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "  pull-requests: read\n",
+                    "  pull-requests: read\n"
+                    "  statuses: write\n",
+                )
+            },
         ),
         (
             "must define coverage-enforcer job",
@@ -6384,10 +6402,135 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
                     "          if [ ! -f scripts/coverage_enforcer.py ]; then\n"
-                    "            echo \"coverage-enforcer bootstrap: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
-                    "            exit 0\n"
+                    "            echo \"coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
+                    "            exit 1\n"
                     "          fi\n",
                     "",
+                )
+            },
+        ),
+        (
+            "job must guard first-run trusted-base bootstrap",
+            {
+                workflow_name: BASE_COVERAGE_ENFORCER_WORKFLOW.replace(
+                    "            echo \"coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
+                    "            exit 1\n",
+                    "            echo \"coverage-enforcer bootstrap fail-closed: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
+                    "            exit 0\n",
+                )
+            },
+        ),
+        (
+            "job must guard first-run trusted-base bootstrap",
+            {
+                workflow_name: BASE_COVERAGE_ENFORCER_WORKFLOW.replace(
+                    "            echo \"coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py\"\n"
+                    "            exit 1\n",
+                    "            echo \"coverage-enforcer bootstrap fail-closed: trusted base tree lacks event-aware scripts/coverage_enforcer.py\"\n"
+                    "            exit 0\n",
+                )
+            },
+        ),
+        (
+            "job must guard first-run trusted-base bootstrap",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n",
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n"
+                    "            echo \"coverage-enforcer bootstrap fail-open: trusted base tree lacks scripts/coverage_enforcer.py\"\n"
+                    "            exit 0\n"
+                    "          fi\n"
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n",
+                )
+            },
+        ),
+        (
+            "job must guard first-run trusted-base bootstrap",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n",
+                    "          python3 scripts/coverage_enforcer.py\n"
+                    "          if [ ! -f scripts/coverage_enforcer.py ]; then\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer Enforce coverage map step must be canonical",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "      - name: Enforce coverage map\n",
+                    "      - name: Enforce coverage map\n"
+                    "        if: ${{ github.event_name == 'pull_request' }}\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer Enforce coverage map step must be canonical",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "      - name: Enforce coverage map\n",
+                    "      - name: Enforce coverage map\n"
+                    "        continue-on-error: true\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer Enforce coverage map step must be canonical",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "        run: |\n",
+                    "        run: >\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer Enforce coverage map step must be canonical",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "        run: |\n",
+                    "        run: \"|\"\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job steps must match the pinned trusted-base topology",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "      - name: Enforce coverage map\n",
+                    "      - name: Accidental pre-enforcer\n"
+                    "        run: python3 scripts/coverage_enforcer.py\n\n"
+                    "      - name: Enforce coverage map\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job steps must match the pinned trusted-base topology",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "      - name: Enforce coverage map\n",
+                    "      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4\n\n"
+                    "      - name: Enforce coverage map\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job steps must match the pinned trusted-base topology",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "      - name: Enforce coverage map\n",
+                    "      - name: Quoted run pre-enforcer\n"
+                    "        'run': |\n"
+                    "          python3 scripts/coverage_enforcer.py\n\n"
+                    "      - name: Enforce coverage map\n",
                 )
             },
         ),
@@ -6403,58 +6546,60 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             },
         ),
         (
-            "coverage-enforcer job if-condition must run on ordinary PRs",
+            "coverage-enforcer job must not define a job-level if-condition",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "            && github.event.action == 'edited'\n",
-                    "",
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                    "    if: ${{ github.event_name == 'pull_request' }}\n"
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
                 )
             },
         ),
         (
-            "coverage-enforcer job if-condition must run on ordinary PRs",
+            "coverage-enforcer job must not define a job-level if-condition",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
-                    "",
+                    "          python3 scripts/coverage_enforcer.py\n",
+                    "          python3 scripts/coverage_enforcer.py\n"
+                    "    if: ${{ github.event_name == 'pull_request' }}\n",
                 )
             },
         ),
         (
-            "coverage-enforcer job if-condition must run on ordinary PRs",
+            "coverage-enforcer job must not define a job-level if-condition",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "      ${{ !(github.event_name == 'pull_request'\n"
-                    "            && github.event.action == 'edited'\n"
-                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
-                    "            && !(github.event.changes.base.ref.from != '')) }}\n",
-                    "      ${{ github.event_name == 'merge_group'\n"
-                    "          || (github.event_name == 'pull_request'\n"
-                    "              && github.event.pull_request.draft == false\n"
-                    "              && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-                    "                  || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
-                    "              && !(github.event.action == 'edited'\n"
-                    "                   && !(github.event.changes.base.ref.from != ''))) }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+                    "    'if': ${{ github.event_name == 'pull_request' }}\n",
                 )
             },
         ),
         (
-            "coverage-enforcer job if-condition must run on ordinary PRs",
+            "coverage-enforcer job must not define job-level continue-on-error",
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "    if: >-\n"
-                    "      ${{ !(github.event_name == 'pull_request'\n"
-                    "            && github.event.action == 'edited'\n"
-                    "            && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-                    "                || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
-                    "            && !(github.event.changes.base.ref.from != '')) }}\n",
-                    "",
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+                    "    continue-on-error: true\n",
+                )
+            },
+        ),
+        (
+            "coverage-enforcer job must not define job-level permissions",
+            {
+                workflow_name: replace_once(
+                    BASE_COVERAGE_ENFORCER_WORKFLOW,
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+                    "    permissions:\n"
+                    "      contents: write\n"
+                    "      checks: write\n"
+                    "      pull-requests: write\n",
                 )
             },
         ),

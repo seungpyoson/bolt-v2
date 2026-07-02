@@ -625,8 +625,8 @@ jobs:
       nextest_archive_cache_key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
       root_bin_sidecars_cache_key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
       archive_build_target_cache_key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
-      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}
-      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}
+      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit || 'false' }}
+      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit || 'false' }}
       archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}
       nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}
       root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}
@@ -5823,6 +5823,14 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             ),
         ),
         (
+            "test-archive must expose cache persistence audit outputs",
+            replace_once(
+                workflow,
+                "      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit || 'false' }}\n",
+                "      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}\n",
+            ),
+        ),
+        (
             "test-archive must expose cache persistence save outcomes",
             replace_once(
                 workflow,
@@ -8367,6 +8375,17 @@ def assert_backtester_ci_input_set_config_covers_systematic_inputs() -> None:
         raise AssertionError(f"CI input set config must reject missing target discovery helper cache input, got: {helper_errors}")
     if not any("backtester_detect input set must include scripts/rust_test_targets.py" in error for error in helper_errors):
         raise AssertionError(f"CI input set config must reject missing target discovery helper detect input, got: {helper_errors}")
+    workflow_in_cache = config.replace(
+        '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+        '  "scripts/rust_test_targets.py",\n  ".github/workflows/backtester-ci.yml",\n]\n\n[sets.backtester_detect]\n',
+        1,
+    )
+    workflow_in_cache_errors = verifier.verify_repo_automation_texts({config_path: workflow_in_cache})
+    if not any(
+        "backtester_cache input set must not include CI governance input .github/workflows/backtester-ci.yml" in error
+        for error in workflow_in_cache_errors
+    ):
+        raise AssertionError(f"CI input set config must reject workflow governance cache input, got: {workflow_in_cache_errors}")
 
 
 def assert_backtester_ci_requires_pr_event_types() -> None:
@@ -13042,6 +13061,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BVS_NEXTEST_SHARDS: "4"
       NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+      NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+      NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
       NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
     steps:
       - name: Compute BVS cache input hash
@@ -13055,8 +13076,41 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: Resolve BVS nextest artifact cache eligibility
         id: bvs-nextest-artifact-cache
         continue-on-error: true
+        env:
+          ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+          ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+          REGION: ${{ vars.CI_SCCACHE_REGION }}
+          PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
+        run: |
+          cache_mode=""
+          role_arn=""
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            cache_mode="read_write"
+            role_arn="$ROLE_ARN"
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$GITHUB_EVENT_NAME" == "merge_group" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            cache_mode="read_only"
+            role_arn="$PR_READONLY_ROLE_ARN"
+          fi
+          vars_present=true
+          [[ "$ENABLED" == "true" && -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false
+          if [[ -n "$cache_mode" && "$vars_present" == "true" ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "role_arn=$role_arn" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=$cache_mode" >> "$GITHUB_OUTPUT"
+      - name: Configure AWS credentials for BVS nextest artifact cache
+        id: bvs-nextest-artifact-cache-aws
+        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true'
+        continue-on-error: true
+        with:
+          role-to-assume: ${{ steps.bvs-nextest-artifact-cache.outputs.role_arn }}
       - name: Restore BVS nextest archive from S3
         id: bvs-nextest-archive-cache
+        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'
         env:
           CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
           DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
@@ -13072,6 +13126,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           exit 0
       - name: Restore BVS binary sidecars from S3
         id: bvs-bin-sidecars-cache
+        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'
         env:
           CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
           DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
@@ -13104,7 +13159,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"
       - name: Save BVS nextest archive
         id: bvs-nextest-archive-cache-save
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         run: aws s3 cp "$BVS_NEXTEST_ARCHIVE_PATH" "$uri" --only-show-errors
       - name: Build BVS binary sidecars
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
@@ -13114,6 +13170,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
       - name: Save BVS binary sidecars
         id: bvs-bin-sidecars-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         run: aws s3 cp "$BVS_BIN_SIDECARS_PATH" "$uri" --only-show-errors
       - name: Save archive build target cache
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
@@ -13168,6 +13226,39 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     good_errors = bvs_cache_errors(good)
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
 
+    missing_bvs_eligibility_fail_open = replace_once(
+        good,
+        "        continue-on-error: true\n        env:\n          ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}\n",
+        "        env:\n          ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}\n",
+    )
+    missing_bvs_eligibility_fail_open_errors = bvs_cache_errors(missing_bvs_eligibility_fail_open)
+    assert any(
+        "backtester bvs-test archive S3 artifact cache eligibility must be fail-open" in error
+        for error in missing_bvs_eligibility_fail_open_errors
+    ), missing_bvs_eligibility_fail_open_errors
+
+    weakened_bvs_role_split = replace_once(
+        good,
+        '          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$GITHUB_EVENT_NAME" == "merge_group" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then\n',
+        '          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then\n',
+    )
+    weakened_bvs_role_split_errors = bvs_cache_errors(weakened_bvs_role_split)
+    assert any(
+        "backtester bvs-test archive S3 role selection must split main writers from read-only consumers" in error
+        for error in weakened_bvs_role_split_errors
+    ), weakened_bvs_role_split_errors
+
+    missing_bvs_aws_fail_open = replace_once(
+        good,
+        "        continue-on-error: true\n        with:\n          role-to-assume: ${{ steps.bvs-nextest-artifact-cache.outputs.role_arn }}\n",
+        "        with:\n          role-to-assume: ${{ steps.bvs-nextest-artifact-cache.outputs.role_arn }}\n",
+    )
+    missing_bvs_aws_fail_open_errors = bvs_cache_errors(missing_bvs_aws_fail_open)
+    assert any(
+        "backtester bvs-test archive S3 AWS credential setup must be fail-open" in error
+        for error in missing_bvs_aws_fail_open_errors
+    ), missing_bvs_aws_fail_open_errors
+
     github_artifact_cache = replace_once(
         good,
         "      - name: Restore BVS nextest archive from S3\n",
@@ -13215,6 +13306,18 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         in error
         for error in missing_bvs_sidecar_integrity_errors
     ), missing_bvs_sidecar_integrity_errors
+
+    weakened_bvs_s3_save_credentials = replace_once(
+        good,
+        "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' }}",
+        "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' }}",
+    )
+    weakened_bvs_s3_save_credentials_errors = bvs_cache_errors(weakened_bvs_s3_save_credentials)
+    assert any(
+        "backtester bvs-test archive must save nextest archive to S3 only from push-to-main with write credentials"
+        in error
+        for error in weakened_bvs_s3_save_credentials_errors
+    ), weakened_bvs_s3_save_credentials_errors
 
     weakened_target_save = replace_once(
         good,

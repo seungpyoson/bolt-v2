@@ -808,8 +808,8 @@ TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS = (
     f"nextest_archive_cache_key: {TEST_ARCHIVE_CACHE_KEY_OUTPUT}",
     f"root_bin_sidecars_cache_key: {TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT}",
     f"archive_build_target_cache_key: {TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT}",
-    "nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}",
-    "root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}",
+    "nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit || 'false' }}",
+    "root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit || 'false' }}",
     "archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}",
 )
 TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS = (
@@ -12560,6 +12560,43 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     ]
     if artifact_cache_blocks:
         errors.append("backtester bvs-test archive payloads must use S3 artifact cache, not GitHub Actions cache")
+    bvs_s3_eligibility_block = named_step_block(archive_job, "Resolve BVS nextest artifact cache eligibility")
+    bvs_s3_aws_block = named_step_block(archive_job, "Configure AWS credentials for BVS nextest artifact cache")
+    bvs_archive_s3_save_block = named_step_block(archive_job, "Save BVS nextest archive")
+    bvs_sidecar_s3_save_block = named_step_block(archive_job, "Save BVS binary sidecars")
+    bvs_s3_eligibility_text = uncommented_text(bvs_s3_eligibility_block) if bvs_s3_eligibility_block else ""
+    bvs_s3_aws_text = uncommented_text(bvs_s3_aws_block) if bvs_s3_aws_block else ""
+    if bvs_s3_eligibility_block is None or "continue-on-error: true" not in bvs_s3_eligibility_text:
+        errors.append("backtester bvs-test archive S3 artifact cache eligibility must be fail-open")
+    if (
+        'if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then' not in bvs_s3_eligibility_text
+        or 'cache_mode="read_write"' not in bvs_s3_eligibility_text
+        or 'role_arn="$ROLE_ARN"' not in bvs_s3_eligibility_text
+        or 'elif [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$GITHUB_EVENT_NAME" == "merge_group" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then' not in bvs_s3_eligibility_text
+        or 'cache_mode="read_only"' not in bvs_s3_eligibility_text
+        or 'role_arn="$PR_READONLY_ROLE_ARN"' not in bvs_s3_eligibility_text
+        or 'echo "role_arn=$role_arn" >> "$GITHUB_OUTPUT"' not in bvs_s3_eligibility_text
+        or 'echo "cache_mode=$cache_mode" >> "$GITHUB_OUTPUT"' not in bvs_s3_eligibility_text
+    ):
+        errors.append("backtester bvs-test archive S3 role selection must split main writers from read-only consumers")
+    if bvs_s3_aws_block is None or "continue-on-error: true" not in bvs_s3_aws_text:
+        errors.append("backtester bvs-test archive S3 AWS credential setup must be fail-open")
+    if "role-to-assume: ${{ steps.bvs-nextest-artifact-cache.outputs.role_arn }}" not in bvs_s3_aws_text:
+        errors.append("backtester bvs-test archive S3 AWS credential setup must assume the resolved role")
+    for block, label in (
+        (bvs_archive_s3_save_block, "nextest archive"),
+        (bvs_sidecar_s3_save_block, "binary sidecars"),
+    ):
+        block_text = uncommented_text(block) if block is not None else ""
+        if block is None or "continue-on-error: true" not in block_text:
+            errors.append(f"backtester bvs-test archive must save {label} to S3 fail-open")
+        if (
+            "github.event_name == 'push'" not in block_text
+            or "github.ref == 'refs/heads/main'" not in block_text
+            or "steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write'" not in block_text
+            or "steps.bvs-nextest-artifact-cache-aws.outcome == 'success'" not in block_text
+        ):
+            errors.append(f"backtester bvs-test archive must save {label} to S3 only from push-to-main with write credentials")
 
     archive_fragments = [
         ("backtester bvs-test archive must use archive job name", "name: bvs-test archive"),
@@ -13165,12 +13202,20 @@ def ci_input_set_config_errors(file_name: str, text: str) -> list[str]:
         "crates/backtesting-vertical-slice/src/**",
         "crates/backtesting-vertical-slice/tests/**",
         "scripts/rust_test_targets.py",
-        "scripts/ci_input_sets.py",
-        "ci/rust-ci-inputs.toml",
     ]:
         if required not in cache:
             errors.append(f"backtester_cache input set must include {required}")
+    for forbidden in [
+        ".github/workflows/backtester-ci.yml",
+        "scripts/ci_input_sets.py",
+        "ci/rust-ci-inputs.toml",
+    ]:
+        if forbidden in cache:
+            errors.append(f"backtester_cache input set must not include CI governance input {forbidden}")
     for required in [
+        "scripts/ci_input_sets.py",
+        "ci/rust-ci-inputs.toml",
+        ".github/actions/setup-environment/**",
         "scripts/ci_provenance.py",
         "ci/github-actions-runners.toml",
         ".github/workflows/backtester-ci.yml",

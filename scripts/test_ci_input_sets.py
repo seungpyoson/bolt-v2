@@ -189,7 +189,15 @@ def assert_backtester_sets_cover_cache_and_detector_inputs() -> None:
     }:
         if required not in cache:
             raise AssertionError(f"backtester_cache missing {required}")
+    for forbidden in {
+        ".github/workflows/backtester-ci.yml",
+    }:
+        if forbidden in cache:
+            raise AssertionError(f"backtester_cache must not include CI governance input {forbidden}")
     for required in {
+        "scripts/ci_input_sets.py",
+        "ci/rust-ci-inputs.toml",
+        ".github/actions/setup-environment/**",
         "scripts/ci_provenance.py",
         "ci/github-actions-runners.toml",
         ".github/workflows/backtester-ci.yml",

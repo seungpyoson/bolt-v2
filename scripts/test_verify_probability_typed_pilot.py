@@ -49,7 +49,10 @@ struct TakerPricingResult {
     pub fair_probability_up: f64,
     pub fair_probability_down: f64,
 }
-struct TakerPricingState { last_lead_gap_probability: Option<Probability> }
+struct TakerPricingState {
+    last_lead_gap_probability: Option<Probability>,
+    last_jitter_penalty_probability: Option<Probability>,
+}
 """,
         "src/strategies/binary_oracle_edge_taker/entry_decision.rs": """
 struct EntryEvaluation {
@@ -121,6 +124,55 @@ struct EntryEvaluationLogFields {
             raise AssertionError(f"expected EntryEvaluation finding, got {findings!r}")
 
 
+def test_verify_rejects_raw_taker_jitter_penalty_probability() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/bolt_v3_taker_pricing.rs": """
+struct TakerPricingResult {
+    pub fair_probability_up: f64,
+    pub fair_probability_down: f64,
+}
+struct TakerPricingState {
+    last_lead_gap_probability: Option<Probability>,
+    last_jitter_penalty_probability: Option<f64>,
+}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any("jitter-penalty state" in finding for finding in findings):
+            raise AssertionError(f"expected jitter-penalty finding, got {findings!r}")
+
+
+def test_verify_rejects_typed_evidence_boundary() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        write_sources(
+            root,
+            {
+                "src/strategies/binary_oracle_edge_taker/entry_decision.rs": """
+struct EntryEvaluation {
+    fair_probability_up: Option<Probability>,
+    uncertainty_band_probability: Option<Probability>,
+}
+struct EntryEvaluationLogFields {
+    pub(super) fair_probability_up: Option<Probability>,
+    pub(super) fair_probability_down: Option<Probability>,
+}
+""",
+            },
+        )
+        findings = VERIFIER.verify(root)
+        if not any(
+            "EntryEvaluationLogFields remains an f64 evidence boundary" in finding
+            for finding in findings
+        ):
+            raise AssertionError(f"expected evidence-boundary finding, got {findings!r}")
+
+
 def test_verify_rejects_probability_tuple_construction() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -186,6 +238,8 @@ def main() -> int:
     tests = [
         test_verify_accepts_expected_typed_surface,
         test_verify_rejects_raw_entry_evaluation_probability,
+        test_verify_rejects_raw_taker_jitter_penalty_probability,
+        test_verify_rejects_typed_evidence_boundary,
         test_verify_rejects_probability_tuple_construction,
         test_verify_rejects_probability_serde_derive,
         test_verify_rejects_decision_evidence_probability_field,

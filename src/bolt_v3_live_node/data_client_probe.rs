@@ -92,7 +92,7 @@ pub async fn run_bolt_v3_data_client_probe(
                     probe_loaded
                         .root
                         .persistence
-                        .runtime_capture_start_poll_interval_ms,
+                        .data_client_readiness_probe_poll_interval_ms,
                 ),
             )?;
             metadata_driver = Some(metadata.driver());
@@ -202,7 +202,7 @@ pub async fn run_bolt_v3_data_client_census(
         census_loaded
             .root
             .persistence
-            .runtime_capture_start_poll_interval_ms,
+            .data_client_readiness_probe_poll_interval_ms,
     );
     runtime
         .run_strategy_free_until_running_then_stop(start_timeout, stop_timeout, poll_interval)
@@ -369,6 +369,61 @@ struct StrategyFreeMetadataResponseProbeObserver {
     state: Rc<StrategyFreeMetadataResponseProbeState>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MetadataResponseInstrumentUpdate {
+    Existing,
+    NewBeforeSnapshotClosed,
+    NewAfterSnapshotClosed,
+}
+
+fn record_source_owned_metadata_response_instrument(
+    instruments: &mut BTreeMap<InstrumentId, InstrumentId>,
+    metadata_snapshot_closed: bool,
+    instrument_id: InstrumentId,
+) -> MetadataResponseInstrumentUpdate {
+    if instruments.contains_key(&instrument_id) {
+        return MetadataResponseInstrumentUpdate::Existing;
+    }
+    instruments.insert(instrument_id, instrument_id);
+    if metadata_snapshot_closed {
+        MetadataResponseInstrumentUpdate::NewAfterSnapshotClosed
+    } else {
+        MetadataResponseInstrumentUpdate::NewBeforeSnapshotClosed
+    }
+}
+
+fn handle_source_owned_metadata_response_instrument(
+    instruments: &mut BTreeMap<InstrumentId, InstrumentId>,
+    metadata_snapshot_closed: bool,
+    instrument_id: InstrumentId,
+    notify_driver: impl FnOnce(),
+    fail_late_instrument: impl FnOnce(InstrumentId),
+    stop_runtime: impl FnOnce(),
+) -> MetadataResponseInstrumentUpdate {
+    let update = record_source_owned_metadata_response_instrument(
+        instruments,
+        metadata_snapshot_closed,
+        instrument_id,
+    );
+    match update {
+        MetadataResponseInstrumentUpdate::Existing => {}
+        MetadataResponseInstrumentUpdate::NewBeforeSnapshotClosed => notify_driver(),
+        MetadataResponseInstrumentUpdate::NewAfterSnapshotClosed => {
+            fail_late_instrument(instrument_id);
+            stop_runtime();
+        }
+    }
+    update
+}
+
+fn close_metadata_response_instrument_snapshot(
+    instruments: &RefCell<BTreeMap<InstrumentId, InstrumentId>>,
+    metadata_snapshot_closed: &Cell<bool>,
+) -> Vec<InstrumentId> {
+    metadata_snapshot_closed.set(true);
+    instruments.borrow().values().cloned().collect::<Vec<_>>()
+}
+
 impl StrategyFreeMetadataResponseProbeObserver {
     fn register(
         handle: &BoltV3StrategyFreeReferenceQuoteProbeHandle,
@@ -391,6 +446,7 @@ impl StrategyFreeMetadataResponseProbeObserver {
             market_data_kind,
             book_type,
             instruments: RefCell::new(BTreeMap::new()),
+            metadata_snapshot_closed: Cell::new(false),
             subscriptions: RefCell::new(Vec::new()),
             market_observer: RefCell::new(None),
             notify: tokio::sync::Notify::new(),
@@ -404,11 +460,18 @@ impl StrategyFreeMetadataResponseProbeObserver {
                 return;
             }
             let mut instruments = handler_state.instruments.borrow_mut();
-            let previous_len = instruments.len();
-            instruments.insert(instrument_id.to_string(), instrument_id);
-            if instruments.len() != previous_len {
-                handler_state.notify.notify_one();
-            }
+            handle_source_owned_metadata_response_instrument(
+                &mut instruments,
+                handler_state.metadata_snapshot_closed(),
+                instrument_id,
+                || handler_state.notify.notify_one(),
+                |instrument_id| {
+                    handler_state
+                        .handle
+                        .fail_late_metadata_response_instrument(instrument_id);
+                },
+                || handler_state.stop_handle.stop(),
+            );
         });
         let pattern = crate::bolt_v3_instrument_metadata_bus::metadata_instrument_pattern(venue);
         crate::bolt_v3_instrument_metadata_bus::attach_metadata_instrument_handler(
@@ -448,7 +511,8 @@ struct StrategyFreeMetadataResponseProbeState {
     venue: Venue,
     market_data_kind: DataClientReadinessProbeMarketDataKind,
     book_type: Option<BookType>,
-    instruments: RefCell<BTreeMap<String, InstrumentId>>,
+    instruments: RefCell<BTreeMap<InstrumentId, InstrumentId>>,
+    metadata_snapshot_closed: Cell<bool>,
     subscriptions: RefCell<Vec<StrategyFreeReferenceQuoteSubscription>>,
     market_observer: RefCell<Option<StrategyFreeDataClientProbeObserver>>,
     notify: tokio::sync::Notify,
@@ -456,21 +520,41 @@ struct StrategyFreeMetadataResponseProbeState {
     runtime_state_poll_interval: Duration,
 }
 
+fn send_metadata_response_probe_subscriptions_with_rollback<TObserver>(
+    subscriptions: &[StrategyFreeReferenceQuoteSubscription],
+    register_observer: impl FnOnce() -> TObserver,
+    mut send_subscription: impl FnMut(
+        &StrategyFreeReferenceQuoteSubscription,
+    ) -> Result<(), BoltV3LiveNodeError>,
+    unregister_observer: impl FnOnce(TObserver),
+) -> Result<TObserver, BoltV3LiveNodeError> {
+    let observer = register_observer();
+    for subscription in subscriptions {
+        if let Err(error) = send_subscription(subscription) {
+            unregister_observer(observer);
+            return Err(error);
+        }
+    }
+    Ok(observer)
+}
+
 impl StrategyFreeMetadataResponseProbeState {
     fn has_subscriptions(&self) -> bool {
         !self.subscriptions.borrow().is_empty()
+    }
+
+    fn metadata_snapshot_closed(&self) -> bool {
+        self.metadata_snapshot_closed.get()
     }
 
     fn install_and_subscribe(&self) -> Result<(), BoltV3LiveNodeError> {
         if self.has_subscriptions() {
             return Ok(());
         }
-        let instrument_ids = self
-            .instruments
-            .borrow()
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+        let instrument_ids = close_metadata_response_instrument_snapshot(
+            &self.instruments,
+            &self.metadata_snapshot_closed,
+        );
         let subscriptions = self
             .handle
             .install_metadata_response_instrument_ids(instrument_ids);
@@ -481,18 +565,30 @@ impl StrategyFreeMetadataResponseProbeState {
                 .unwrap_or_else(|| METADATA_RESPONSE_EMPTY_TARGETS_FAILURE.to_string());
             return Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed { reason });
         }
-        let market_observer = StrategyFreeDataClientProbeObserver::register(
-            &self.handle,
+        let mut sent_subscriptions = Vec::new();
+        let market_observer = send_metadata_response_probe_subscriptions_with_rollback(
             &subscriptions,
-            self.stop_handle.clone(),
-        );
-        for subscription in &subscriptions {
-            send_strategy_free_probe_subscription(
-                subscription,
-                self.market_data_kind,
-                self.book_type,
-            )?;
-        }
+            || {
+                StrategyFreeDataClientProbeObserver::register(
+                    &self.handle,
+                    &subscriptions,
+                    self.stop_handle.clone(),
+                )
+            },
+            |subscription| {
+                send_strategy_free_probe_subscription(
+                    subscription,
+                    self.market_data_kind,
+                    self.book_type,
+                )?;
+                sent_subscriptions.push(subscription.clone());
+                Ok(())
+            },
+            StrategyFreeDataClientProbeObserver::unregister,
+        )
+        .inspect_err(|_| {
+            *self.subscriptions.borrow_mut() = sent_subscriptions.clone();
+        })?;
         *self.subscriptions.borrow_mut() = subscriptions;
         *self.market_observer.borrow_mut() = Some(market_observer);
         Ok(())
@@ -523,7 +619,10 @@ impl StrategyFreeMetadataResponseProbeDriverState for StrategyFreeMetadataRespon
 
 #[cfg(test)]
 mod metadata_response_probe_driver_tests {
-    use std::{cell::Cell, time::Duration};
+    use std::{
+        cell::{Cell, RefCell},
+        time::Duration,
+    };
 
     use super::*;
 
@@ -667,6 +766,212 @@ mod metadata_response_probe_driver_tests {
         );
         assert_eq!(state.install_calls.get(), 1);
         assert!(!state.has_subscriptions.get());
+    }
+
+    #[test]
+    fn metadata_response_records_new_instrument_before_snapshot_closed() {
+        let early = InstrumentId::from("EARLY.POLYMARKET");
+        let mut instruments = BTreeMap::from([(early, early)]);
+
+        let update = record_source_owned_metadata_response_instrument(
+            &mut instruments,
+            false,
+            InstrumentId::from("NEW.POLYMARKET"),
+        );
+
+        assert_eq!(
+            update,
+            MetadataResponseInstrumentUpdate::NewBeforeSnapshotClosed,
+            "new metadata before snapshot closure should wake the install driver"
+        );
+        assert_eq!(instruments.len(), 2);
+    }
+
+    #[test]
+    fn metadata_response_records_late_new_instrument_after_snapshot_closed() {
+        let early = InstrumentId::from("EARLY.POLYMARKET");
+        let mut instruments = BTreeMap::from([(early, early)]);
+
+        let update = record_source_owned_metadata_response_instrument(
+            &mut instruments,
+            true,
+            InstrumentId::from("LATE.POLYMARKET"),
+        );
+
+        assert_eq!(
+            update,
+            MetadataResponseInstrumentUpdate::NewAfterSnapshotClosed,
+            "new metadata after snapshot closure must be reported as a contract violation"
+        );
+        assert_eq!(instruments.len(), 2);
+    }
+
+    #[test]
+    fn metadata_response_ignores_duplicate_instrument_after_snapshot_closed() {
+        let early = InstrumentId::from("EARLY.POLYMARKET");
+        let mut instruments = BTreeMap::from([(early, early)]);
+
+        let update = record_source_owned_metadata_response_instrument(
+            &mut instruments,
+            true,
+            InstrumentId::from("EARLY.POLYMARKET"),
+        );
+
+        assert_eq!(
+            update,
+            MetadataResponseInstrumentUpdate::Existing,
+            "duplicate metadata after subscription should not fail the probe"
+        );
+        assert_eq!(instruments.len(), 1);
+    }
+
+    #[test]
+    fn metadata_response_handler_notifies_new_instrument_before_snapshot_closed() {
+        let early = InstrumentId::from("EARLY.POLYMARKET");
+        let mut instruments = BTreeMap::from([(early, early)]);
+        let notified = Cell::new(false);
+        let failed = RefCell::new(None);
+        let stopped = Cell::new(false);
+
+        let update = handle_source_owned_metadata_response_instrument(
+            &mut instruments,
+            false,
+            InstrumentId::from("NEW.POLYMARKET"),
+            || notified.set(true),
+            |instrument_id| *failed.borrow_mut() = Some(instrument_id),
+            || stopped.set(true),
+        );
+
+        assert_eq!(
+            update,
+            MetadataResponseInstrumentUpdate::NewBeforeSnapshotClosed
+        );
+        assert!(
+            notified.get(),
+            "new pre-snapshot metadata should wake the driver"
+        );
+        assert_eq!(*failed.borrow(), None);
+        assert!(!stopped.get());
+    }
+
+    #[test]
+    fn metadata_response_handler_fails_and_stops_late_new_instrument() {
+        let early = InstrumentId::from("EARLY.POLYMARKET");
+        let late = InstrumentId::from("LATE.POLYMARKET");
+        let mut instruments = BTreeMap::from([(early, early)]);
+        let notified = Cell::new(false);
+        let failed = RefCell::new(None);
+        let stopped = Cell::new(false);
+
+        let update = handle_source_owned_metadata_response_instrument(
+            &mut instruments,
+            true,
+            late,
+            || notified.set(true),
+            |instrument_id| *failed.borrow_mut() = Some(instrument_id),
+            || stopped.set(true),
+        );
+
+        assert_eq!(
+            update,
+            MetadataResponseInstrumentUpdate::NewAfterSnapshotClosed
+        );
+        assert!(!notified.get());
+        assert_eq!(*failed.borrow(), Some(late));
+        assert!(stopped.get(), "late metadata must stop the probe runtime");
+    }
+
+    #[test]
+    fn metadata_response_handler_ignores_duplicate_after_snapshot_closed() {
+        let early = InstrumentId::from("EARLY.POLYMARKET");
+        let mut instruments = BTreeMap::from([(early, early)]);
+        let notified = Cell::new(false);
+        let failed = RefCell::new(None);
+        let stopped = Cell::new(false);
+
+        let update = handle_source_owned_metadata_response_instrument(
+            &mut instruments,
+            true,
+            early,
+            || notified.set(true),
+            |instrument_id| *failed.borrow_mut() = Some(instrument_id),
+            || stopped.set(true),
+        );
+
+        assert_eq!(update, MetadataResponseInstrumentUpdate::Existing);
+        assert!(!notified.get());
+        assert_eq!(*failed.borrow(), None);
+        assert!(!stopped.get());
+    }
+
+    #[test]
+    fn metadata_response_snapshot_closes_before_collecting_targets() {
+        let early = InstrumentId::from("EARLY.POLYMARKET");
+        let late = InstrumentId::from("LATE.POLYMARKET");
+        let instruments = RefCell::new(BTreeMap::from([(early, early)]));
+        let snapshot_closed = Cell::new(false);
+
+        let snapshot = close_metadata_response_instrument_snapshot(&instruments, &snapshot_closed);
+        let late_update = record_source_owned_metadata_response_instrument(
+            &mut instruments.borrow_mut(),
+            snapshot_closed.get(),
+            late,
+        );
+
+        assert!(snapshot_closed.get());
+        assert_eq!(snapshot, vec![early]);
+        assert_eq!(
+            late_update,
+            MetadataResponseInstrumentUpdate::NewAfterSnapshotClosed,
+            "metadata arriving after the target snapshot should fail closed"
+        );
+    }
+
+    #[test]
+    fn metadata_response_install_unregisters_observer_when_send_fails() {
+        let subscriptions = vec![
+            StrategyFreeReferenceQuoteSubscription {
+                data_client_id: ClientId::from("POLYMARKET_MAIN"),
+                instrument_id: InstrumentId::from("FIRST.POLYMARKET"),
+            },
+            StrategyFreeReferenceQuoteSubscription {
+                data_client_id: ClientId::from("POLYMARKET_MAIN"),
+                instrument_id: InstrumentId::from("SECOND.POLYMARKET"),
+            },
+        ];
+        let sent = RefCell::new(Vec::new());
+        let unregistered = Cell::new(false);
+
+        let result = send_metadata_response_probe_subscriptions_with_rollback(
+            &subscriptions,
+            || (),
+            |subscription| {
+                if subscription.instrument_id == InstrumentId::from("SECOND.POLYMARKET") {
+                    return Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed {
+                        reason: "forced subscription failure".to_string(),
+                    });
+                }
+                sent.borrow_mut()
+                    .push(subscription.instrument_id.to_string());
+                Ok(())
+            },
+            |_| unregistered.set(true),
+        );
+
+        let error = result.expect_err("second subscription should fail");
+        assert!(
+            error.to_string().contains("forced subscription failure"),
+            "expected send failure to propagate, got: {error}"
+        );
+        assert_eq!(
+            sent.borrow().as_slice(),
+            ["FIRST.POLYMARKET"],
+            "failed subscription sends must not be recorded as successfully sent"
+        );
+        assert!(
+            unregistered.get(),
+            "observer handlers must be unregistered when install fails"
+        );
     }
 }
 

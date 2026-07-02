@@ -24,6 +24,13 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
                 .to_string(),
         );
     }
+    if block.data_client_readiness_probe_poll_interval_ms == 0 {
+        errors.push(format!(
+            "{}.{} must be a positive integer",
+            stringify!(persistence),
+            stringify!(data_client_readiness_probe_poll_interval_ms)
+        ));
+    }
     if block
         .min_free_bytes
         .is_some_and(|min_free_bytes| min_free_bytes == 0)

@@ -398,6 +398,12 @@ impl BoltV3StrategyFreeReferenceQuoteProbeHandle {
         self.quote_notify.notify_one();
     }
 
+    pub(super) fn fail_late_metadata_response_instrument(&self, instrument_id: InstrumentId) {
+        self.fail_metadata_response_probe(format!(
+            "metadata_response published source-owned instrument {instrument_id} after the readiness metadata snapshot was closed; metadata_response readiness requires startup metadata to be complete before LiveNodeHandle::is_running()"
+        ));
+    }
+
     #[cfg(test)]
     pub(super) fn evidence(&self) -> BoltV3StrategyFreeReferenceQuoteEvidence {
         BoltV3StrategyFreeReferenceQuoteEvidence {

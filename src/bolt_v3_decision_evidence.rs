@@ -3049,6 +3049,18 @@ mod tests {
         types::{Price, Quantity},
     };
 
+    #[test]
+    fn probability_evidence_uses_probability_value_bytes() {
+        let probability = Probability::new(0.6).expect("fixture probability");
+
+        assert_eq!(probability_evidence(probability), "0.6");
+        assert_eq!(
+            option_probability_evidence(Some(probability)),
+            Some("0.6".to_string())
+        );
+        assert_eq!(option_probability_evidence(None), None);
+    }
+
     mod decision_commit_chokepoint {
         use super::*;
 

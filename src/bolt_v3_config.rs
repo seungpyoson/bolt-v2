@@ -431,7 +431,6 @@ pub struct RealizedVolatilityPolicyBlock {
     pub sampling_interval_ms: u64,
     pub min_ready_sources: usize,
     pub max_source_age_ms: u64,
-    pub max_event_receive_lag_ms: u64,
     pub max_inter_sample_gap_ms: u64,
     pub min_coverage_ratio: f64,
     pub max_cross_source_dispersion: f64,
@@ -809,7 +808,6 @@ pub fn realized_volatility_engine_config(
         sampling_interval_ms: surface.policy.sampling_interval_ms,
         min_ready_sources: surface.policy.min_ready_sources,
         max_source_age_ms: surface.policy.max_source_age_ms,
-        max_event_receive_lag_ms: surface.policy.max_event_receive_lag_ms,
         max_inter_sample_gap_ms: surface.policy.max_inter_sample_gap_ms,
         min_coverage_ratio: surface.policy.min_coverage_ratio,
         max_cross_source_dispersion: surface.policy.max_cross_source_dispersion,
@@ -1443,7 +1441,6 @@ window_ms = 4000
 sampling_interval_ms = 1000
 min_ready_sources = 1
 max_source_age_ms = 500
-max_event_receive_lag_ms = 250
 max_inter_sample_gap_ms = 2000
 min_coverage_ratio = 0.75
 max_cross_source_dispersion = 0.50

@@ -386,7 +386,9 @@ impl RealizedVolSurfaceRuntime {
         }
         updated_surface_ids
             .into_iter()
-            .filter_map(|surface_id| self.publish_surface_at(surface_id.as_str(), recv_ts_ms, true))
+            .filter_map(|surface_id| {
+                self.publish_surface_at(surface_id.as_str(), event_ts_ms, true)
+            })
             .collect()
     }
 }

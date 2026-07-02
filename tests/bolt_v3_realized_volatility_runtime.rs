@@ -8,11 +8,18 @@ use bolt_v2::{
     },
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
 };
+use nautilus_core::UnixNanos;
+use nautilus_model::{
+    data::QuoteTick,
+    identifiers::InstrumentId,
+    types::{Price, Quantity},
+};
 
 const SURFACE_A: &str = "<SURFACE_A>";
 const SURFACE_B: &str = "<SURFACE_B>";
 const SOURCE_A: &str = "<SOURCE_A>";
 const SOURCE_B: &str = "<SOURCE_B>";
+const NANOS_PER_MILLI: u64 = 1_000_000;
 
 fn source(source_id: &str, instrument_id: &str) -> RealizedVolSourceConfig {
     RealizedVolSourceConfig {
@@ -35,7 +42,6 @@ fn config(surface_id: &str, source_id: &str, instrument_id: &str) -> RealizedVol
         sampling_interval_ms: 1_000,
         min_ready_sources: 1,
         max_source_age_ms: 500,
-        max_event_receive_lag_ms: 250,
         max_inter_sample_gap_ms: 2_000,
         min_coverage_ratio: 0.75,
         max_cross_source_dispersion: 0.50,
@@ -55,6 +61,25 @@ fn observation(source_id: &str, price: f64, ts_ms: u64) -> RealizedVolObservatio
         event_ts_ms: ts_ms,
         recv_ts_ms: ts_ms,
     }
+}
+
+fn quote_tick_with_receive_ms(
+    instrument_id: &str,
+    bid: f64,
+    ask: f64,
+    event_ts_ms: u64,
+    recv_ts_ms: u64,
+) -> QuoteTick {
+    QuoteTick::new_checked(
+        InstrumentId::from(instrument_id),
+        Price::new(bid, 2),
+        Price::new(ask, 2),
+        Quantity::new(1.0, 0),
+        Quantity::new(1.0, 0),
+        UnixNanos::from(event_ts_ms.saturating_mul(NANOS_PER_MILLI)),
+        UnixNanos::from(recv_ts_ms.saturating_mul(NANOS_PER_MILLI)),
+    )
+    .expect("test quote tick should be valid")
 }
 
 #[test]
@@ -102,6 +127,53 @@ fn runtime_publishes_snapshot_by_surface_id_for_multiple_consumers() {
     assert!(snapshot.ready);
     assert_eq!(pricing_consumer, monitoring_consumer);
     assert_eq!(pricing_consumer.surface_id, SURFACE_A);
+}
+
+#[test]
+fn routed_quote_replay_uses_event_clock_for_rv_windows() {
+    let instrument_id = "<INSTRUMENT_A>.<DATA_CLIENT_ID>";
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(
+        SURFACE_A.to_string(),
+        config(SURFACE_A, SOURCE_A, instrument_id),
+    )]))
+    .expect("runtime should build");
+
+    for (index, (bid, ask)) in [
+        (99.0, 101.0),
+        (100.0, 102.0),
+        (101.0, 103.0),
+        (102.0, 104.0),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let event_ts_ms = (index as u64 + 1) * 1_000;
+        let recv_ts_ms = event_ts_ms.saturating_sub(750);
+        let snapshots = runtime.observe_quote(&quote_tick_with_receive_ms(
+            instrument_id,
+            *bid,
+            *ask,
+            event_ts_ms,
+            recv_ts_ms,
+        ));
+        let latest = snapshots
+            .last()
+            .expect("routed quote should publish a surface snapshot");
+        assert_eq!(latest.as_of_ms, event_ts_ms);
+    }
+
+    let snapshot = runtime
+        .snapshot(SURFACE_A)
+        .expect("event-clock replay should publish the latest snapshot");
+
+    assert!(snapshot.ready);
+    assert_eq!(snapshot.as_of_ms, 4_000);
+    assert_eq!(snapshot.source_diagnostics[0].raw_sample_count, 4);
+    assert_eq!(snapshot.source_diagnostics[0].grid_sample_count, 4);
+    assert!(
+        snapshot.annualized_realized_vol_decimal.is_some(),
+        "event-clock quote sequence should populate realized volatility"
+    );
 }
 
 #[test]

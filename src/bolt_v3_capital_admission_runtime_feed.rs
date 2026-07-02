@@ -257,16 +257,19 @@ impl CapitalAdmissionRuntimeFeed {
         &mut self,
         snapshot: VenueTruthSnapshot,
     ) -> Result<Option<BoltV3SubmitCapitalAdmissionNtComponents>, VenueTruthDivergence> {
-        self.venue_truth_reconciler
-            .reconcile_snapshot(snapshot.clone())?;
+        let observed_at_ns = snapshot.captured_at.as_u64();
+        let account_id = snapshot.account_id.to_string();
+        let spendable_collateral = snapshot.collateral_balance.as_decimal();
+        let collateral_allowance = snapshot.collateral_allowance.as_decimal();
+        self.venue_truth_reconciler.reconcile_snapshot(snapshot)?;
         let venue_spendability = VenueSpendabilitySnapshot {
             source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
-            observed_at_ns: snapshot.captured_at.as_u64(),
+            observed_at_ns,
             venue_id: self.config.venue_id.clone(),
-            account_id: snapshot.account_id.to_string(),
+            account_id,
             collateral_currency: self.config.collateral_currency.clone(),
-            spendable_collateral: snapshot.collateral_balance.as_decimal(),
-            collateral_allowance: snapshot.collateral_allowance.as_decimal(),
+            spendable_collateral,
+            collateral_allowance,
         };
         Ok(self.on_venue_spendability_snapshot(venue_spendability))
     }

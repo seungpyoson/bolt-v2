@@ -225,6 +225,58 @@ fn filled_order_event_explains_open_order_and_position_delta() {
 }
 
 #[test]
+fn filled_order_event_does_not_explain_unrelated_collateral_delta() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .reconcile_snapshot(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("initial venue truth establishes the baseline");
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Accepted(order_accepted_event(
+            "client-order-1",
+            "venue-order-1",
+            "condition-token123.POLYMARKET",
+            1_100,
+        )),
+    );
+    reconciler
+        .reconcile_snapshot(snapshot_with_order(
+            1_200,
+            Decimal::new(50_000_000, 0),
+            Decimal::ZERO,
+            0.0,
+        ))
+        .expect("accepted order should explain the venue order appearance");
+
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_300,
+        )),
+    );
+
+    let divergence = reconciler
+        .reconcile_snapshot(snapshot_with_order(
+            1_400,
+            Decimal::new(51_000_000, 0),
+            Decimal::new(4, 0),
+            4.0,
+        ))
+        .expect_err("unrelated collateral movement must not be explained by a valid fill");
+
+    assert_eq!(
+        divergence.kind,
+        VenueTruthDivergenceKind::UnexplainedCollateralDelta
+    );
+}
+
+#[test]
 fn collateral_only_operator_transfer_is_unexplainable() {
     let mut reconciler = VenueTruthReconciler::new();
     reconciler

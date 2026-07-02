@@ -101,6 +101,11 @@ struct VenueTruthEventProjection {
     sell_fill_quantity_by_product_id: BTreeMap<String, Decimal>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VenueTruthOpenOrderDelta {
+    collateral_balance_delta: Decimal,
+}
+
 // The bolt-v3 legacy-default fence forbids a `Default` impl on the production
 // surface, so the no-argument `new` is sanctioned with an explicit allow rather
 // than satisfying `clippy::new_without_default` by adding a forbidden `Default`.
@@ -122,7 +127,7 @@ impl VenueTruthReconciler {
         &mut self,
         snapshot: VenueTruthSnapshot,
     ) -> Result<VenueTruthReconciliation, VenueTruthDivergence> {
-        let Some(previous) = self.previous_snapshot.clone() else {
+        let Some(previous) = &self.previous_snapshot else {
             self.previous_snapshot = Some(snapshot);
             return Ok(VenueTruthReconciliation::BaselineAccepted);
         };
@@ -135,33 +140,31 @@ impl VenueTruthReconciler {
         }
 
         let mut projection = self.event_projection.clone();
-        let order_fill_delta_explained =
-            match explain_open_order_delta(&previous, &snapshot, &mut projection) {
-                Ok(explained) => explained,
-                Err(kind) => {
-                    return Err(divergence(
-                        kind,
-                        Some(previous.captured_at),
-                        snapshot.captured_at,
-                    ));
-                }
-            };
-        let position_delta_explained =
-            match explain_position_delta(&previous, &snapshot, &mut projection) {
-                Ok(explained) => explained,
-                Err(kind) => {
-                    return Err(divergence(
-                        kind,
-                        Some(previous.captured_at),
-                        snapshot.captured_at,
-                    ));
-                }
-            };
-        let collateral_delta = previous.collateral_balance != snapshot.collateral_balance
-            || previous.collateral_allowance != snapshot.collateral_allowance;
-        if collateral_delta && !order_fill_delta_explained && !position_delta_explained {
+        let open_order_delta = match explain_open_order_delta(previous, &snapshot, &mut projection)
+        {
+            Ok(delta) => delta,
+            Err(kind) => {
+                return Err(divergence(
+                    kind,
+                    Some(previous.captured_at),
+                    snapshot.captured_at,
+                ));
+            }
+        };
+        if let Err(kind) = explain_position_delta(previous, &snapshot, &mut projection) {
             return Err(divergence(
-                VenueTruthDivergenceKind::UnexplainedCollateralDelta,
+                kind,
+                Some(previous.captured_at),
+                snapshot.captured_at,
+            ));
+        }
+        if let Err(kind) = explain_collateral_delta(
+            previous,
+            &snapshot,
+            open_order_delta.collateral_balance_delta,
+        ) {
+            return Err(divergence(
+                kind,
                 Some(previous.captured_at),
                 snapshot.captured_at,
             ));
@@ -238,8 +241,8 @@ fn explain_open_order_delta(
     previous: &VenueTruthSnapshot,
     current: &VenueTruthSnapshot,
     projection: &mut VenueTruthEventProjection,
-) -> Result<bool, VenueTruthDivergenceKind> {
-    let mut fill_delta_explained = false;
+) -> Result<VenueTruthOpenOrderDelta, VenueTruthDivergenceKind> {
+    let mut collateral_balance_delta = Decimal::ZERO;
     for (venue_order_id, current_order) in &current.open_orders {
         match previous.open_orders.get(venue_order_id) {
             None => {
@@ -249,14 +252,17 @@ fn explain_open_order_delta(
                 if current_order.size_matched > Decimal::ZERO
                     && !consume_decimal(
                         &mut projection.fill_quantity_by_venue_order_id,
-                        *venue_order_id,
+                        venue_order_id,
                         current_order.size_matched,
                     )
                 {
                     return Err(VenueTruthDivergenceKind::UnexplainedOpenOrderDelta);
                 }
                 if current_order.size_matched > Decimal::ZERO {
-                    fill_delta_explained = true;
+                    collateral_balance_delta += collateral_balance_delta_for_fill(
+                        current_order,
+                        current_order.size_matched,
+                    )?;
                 }
             }
             Some(previous_order) => {
@@ -274,12 +280,13 @@ fn explain_open_order_delta(
                 if matched_delta > Decimal::ZERO {
                     if !consume_decimal(
                         &mut projection.fill_quantity_by_venue_order_id,
-                        *venue_order_id,
+                        venue_order_id,
                         matched_delta,
                     ) {
                         return Err(VenueTruthDivergenceKind::UnexplainedOpenOrderDelta);
                     }
-                    fill_delta_explained = true;
+                    collateral_balance_delta +=
+                        collateral_balance_delta_for_fill(current_order, matched_delta)?;
                 }
             }
         }
@@ -293,15 +300,18 @@ fn explain_open_order_delta(
         }
         if consume_decimal(
             &mut projection.fill_quantity_by_venue_order_id,
-            *venue_order_id,
+            venue_order_id,
             previous_order.open_size,
         ) {
-            fill_delta_explained = true;
+            collateral_balance_delta +=
+                collateral_balance_delta_for_fill(previous_order, previous_order.open_size)?;
             continue;
         }
         return Err(VenueTruthDivergenceKind::UnexplainedOpenOrderDelta);
     }
-    Ok(fill_delta_explained)
+    Ok(VenueTruthOpenOrderDelta {
+        collateral_balance_delta,
+    })
 }
 
 fn explain_position_delta(
@@ -329,7 +339,7 @@ fn explain_position_delta(
         if delta > Decimal::ZERO {
             if !consume_decimal(
                 &mut projection.buy_fill_quantity_by_product_id,
-                product_id.to_string(),
+                product_id,
                 delta,
             ) {
                 return Err(VenueTruthDivergenceKind::UnexplainedPositionDelta);
@@ -338,7 +348,7 @@ fn explain_position_delta(
         } else if delta < Decimal::ZERO {
             if !consume_decimal(
                 &mut projection.sell_fill_quantity_by_product_id,
-                product_id.to_string(),
+                product_id,
                 -delta,
             ) {
                 return Err(VenueTruthDivergenceKind::UnexplainedPositionDelta);
@@ -347,6 +357,33 @@ fn explain_position_delta(
         }
     }
     Ok(explained)
+}
+
+fn explain_collateral_delta(
+    previous: &VenueTruthSnapshot,
+    current: &VenueTruthSnapshot,
+    expected_collateral_balance_delta: Decimal,
+) -> Result<(), VenueTruthDivergenceKind> {
+    if previous.collateral_allowance != current.collateral_allowance {
+        return Err(VenueTruthDivergenceKind::UnexplainedCollateralDelta);
+    }
+    let collateral_balance_delta =
+        current.collateral_balance.as_decimal() - previous.collateral_balance.as_decimal();
+    if collateral_balance_delta != expected_collateral_balance_delta {
+        return Err(VenueTruthDivergenceKind::UnexplainedCollateralDelta);
+    }
+    Ok(())
+}
+
+fn collateral_balance_delta_for_fill(
+    order: &VenueTruthOpenOrder,
+    quantity: Decimal,
+) -> Result<Decimal, VenueTruthDivergenceKind> {
+    match order.side {
+        OrderSide::Buy => Ok(-(quantity * order.price)),
+        OrderSide::Sell => Ok(quantity * order.price),
+        _ => Err(VenueTruthDivergenceKind::UnexplainedCollateralDelta),
+    }
 }
 
 fn divergence(
@@ -370,19 +407,28 @@ where
         .or_insert(amount);
 }
 
-fn consume_decimal<K>(map: &mut BTreeMap<K, Decimal>, key: K, amount: Decimal) -> bool
+fn consume_decimal<K, Q>(map: &mut BTreeMap<K, Decimal>, key: &Q, amount: Decimal) -> bool
 where
-    K: Ord,
+    K: Ord + std::borrow::Borrow<Q>,
+    Q: Ord + ?Sized,
 {
     if amount <= Decimal::ZERO {
         return true;
     }
-    let Some(current) = map.get_mut(&key) else {
-        return false;
-    };
-    if *current < amount {
+    let mut remove = false;
+    if let Some(current) = map.get_mut(key) {
+        if *current < amount {
+            return false;
+        }
+        *current -= amount;
+        if *current == Decimal::ZERO {
+            remove = true;
+        }
+    } else {
         return false;
     }
-    *current -= amount;
+    if remove {
+        map.remove(key);
+    }
     true
 }

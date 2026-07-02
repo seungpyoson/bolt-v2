@@ -587,7 +587,10 @@ impl StrategyFreeMetadataResponseProbeDriverState for StrategyFreeMetadataRespon
 
 #[cfg(test)]
 mod metadata_response_probe_driver_tests {
-    use std::{cell::Cell, time::Duration};
+    use std::{
+        cell::{Cell, RefCell},
+        time::Duration,
+    };
 
     use super::*;
 

@@ -500,6 +500,7 @@ jobs:
           lint-workflow-contract: "true"
           toolchain-components: clippy, rustfmt
           include-managed-target-dir: "true"
+          build-jobs-key: ci.clippy
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -522,14 +523,21 @@ jobs:
       - name: clippy
         shell: bash
         run: |
-          BOLT_SPIKE_TIME_FILE="$RUNNER_TEMP/clippy.time"
+          BOLT_SPIKE_TIME_FILE="${RUNNER_TEMP:-/tmp}/clippy.time"
           just() {
-            command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" just "$@"
+            if /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE.probe" true >/dev/null 2>&1; then
+              command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" env just "$@"
+            else
+              command just "$@"
+            fi
+            local timed_rc=$?
+            cat "$BOLT_SPIKE_TIME_FILE" || true
+            return "$timed_rc"
           }
           set +e
           just clippy
           rc=$?
-          cat "$BOLT_SPIKE_TIME_FILE" || true
+          set -e
           exit "$rc"
 
   check-aarch64:
@@ -557,6 +565,7 @@ jobs:
           include-build-values: "true"
           use-default-target: "true"
           include-managed-target-dir: "true"
+          build-jobs-key: ci.check-aarch64
 
       - name: Install aarch64 cross compiler
         if: needs.detector.outputs.build_required != 'true'
@@ -601,6 +610,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-managed-target-dir: "true"
+          build-jobs-key: ci.source-fence
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -767,6 +777,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+          build-jobs-key: ci.test-archive
 
       - name: Resolve root nextest cache keys
         id: root-nextest-cache-keys
@@ -914,9 +925,16 @@ jobs:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
-          BOLT_SPIKE_TIME_FILE="$RUNNER_TEMP/nextest-archive-build.time"
+          BOLT_SPIKE_TIME_FILE="${RUNNER_TEMP:-/tmp}/nextest-archive-build.time"
           just() {
-            command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" just "$@"
+            if /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE.probe" true >/dev/null 2>&1; then
+              command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" env just "$@"
+            else
+              command just "$@"
+            fi
+            local timed_rc=$?
+            cat "$BOLT_SPIKE_TIME_FILE" || true
+            return "$timed_rc"
           }
           # Fail-open guarantee: sccache must never be able to fail this required
           # build. SCCACHE_IGNORE_SERVER_IO_ERROR covers in-flight S3/server I/O
@@ -928,12 +946,14 @@ jobs:
           set +e
           just test-archive "$NEXTEST_ARCHIVE_PATH"
           rc=$?
-          cat "$BOLT_SPIKE_TIME_FILE" || true
           set -e
           if [[ "$rc" -ne 0 && "${BOLT_RUST_VERIFICATION_SCCACHE:-0}" == "1" ]]; then
             echo "::warning::nextest archive build failed (rc=$rc) with sccache active; retrying once without sccache (fail-open)"
+            set +e
             BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive "$NEXTEST_ARCHIVE_PATH"
-            cat "$BOLT_SPIKE_TIME_FILE" || true
+            rc=$?
+            set -e
+            exit "$rc"
           elif [[ "$rc" -ne 0 ]]; then
             exit "$rc"
           fi
@@ -1140,14 +1160,21 @@ jobs:
       - name: build
         shell: bash
         run: |
-          BOLT_SPIKE_TIME_FILE="$RUNNER_TEMP/build.time"
+          BOLT_SPIKE_TIME_FILE="${RUNNER_TEMP:-/tmp}/build.time"
           just() {
-            command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" just "$@"
+            if /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE.probe" true >/dev/null 2>&1; then
+              command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" env just "$@"
+            else
+              command just "$@"
+            fi
+            local timed_rc=$?
+            cat "$BOLT_SPIKE_TIME_FILE" || true
+            return "$timed_rc"
           }
           set +e
           just build
           rc=$?
-          cat "$BOLT_SPIKE_TIME_FILE" || true
+          set -e
           exit "$rc"
 
       - name: Stage managed build artifact

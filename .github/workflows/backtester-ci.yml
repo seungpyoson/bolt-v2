@@ -302,6 +302,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           toolchain-components: clippy
+          build-jobs-key: backtester_ci.clippy
 
       # The setup action's managed_target_dir output is hardcoded to --repo $GITHUB_WORKSPACE
       # (the bolt-v2 root namespace). Resolve THIS crate's lane explicitly instead, or the cache
@@ -373,6 +374,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          build-jobs-key: backtester_ci.test-archive
 
       - name: Restore BVS nextest archive
         id: bvs-nextest-archive-cache

@@ -33,6 +33,10 @@ inputs:
     description: Whether to resolve the managed target dir.
     required: false
     default: "false"
+  build-jobs-key:
+    description: Optional ci/github-actions-runners.toml cargo_build_jobs key to export as CARGO_BUILD_JOBS.
+    required: false
+    default: ""
 
 outputs:
   rust_toolchain:
@@ -62,6 +66,9 @@ outputs:
   managed_target_dir_relative:
     description: Managed cargo target directory relative to the repository root when include-managed-target-dir is true.
     value: ${{ steps.target_dir.outputs.managed_target_dir_relative }}
+  cargo_build_jobs:
+    description: Cargo build job cap resolved from ci/github-actions-runners.toml when build-jobs-key is set.
+    value: ${{ steps.shared.outputs.cargo_build_jobs }}
 
 runs:
   using: composite
@@ -94,6 +101,20 @@ runs:
           echo "target=$(just --evaluate target)" >> "$GITHUB_OUTPUT"
           echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
           echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
+        fi
+        if [ -n "${{ inputs.build-jobs-key }}" ]; then
+          cargo_build_jobs="$(python3 -c 'import pathlib, sys, tomllib
+config = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+value = config.get("cargo_build_jobs")
+for part in sys.argv[2].split("."):
+    if not isinstance(value, dict):
+        raise SystemExit(f"cargo_build_jobs.{sys.argv[2]} missing")
+    value = value.get(part)
+if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+    raise SystemExit(f"cargo_build_jobs.{sys.argv[2]} must be a positive integer")
+print(value)' ci/github-actions-runners.toml "${{ inputs.build-jobs-key }}")"
+          echo "cargo_build_jobs=$cargo_build_jobs" >> "$GITHUB_OUTPUT"
+          echo "CARGO_BUILD_JOBS=$cargo_build_jobs" >> "$GITHUB_ENV"
         fi
 
     - name: Resolve managed target dir

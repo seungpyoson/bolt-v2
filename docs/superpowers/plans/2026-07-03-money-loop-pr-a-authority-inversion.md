@@ -2,19 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make Polymarket venue REST truth the continuous runtime authority for money state and latch a whole-node submit-admission halt on any structural divergence from NT advisory state.
+**Goal:** Make Polymarket venue REST observations the continuous runtime authority for money state after causal reconciliation, and latch a whole-node halt on any venue delta unexplainable by recorded orders, fills, terminal events, or already-booked settlements.
 
-**Architecture:** Add a focused venue-truth module that normalizes CLOB balance/open-order and Data API position reads. Feed those snapshots into capital admission as authoritative state, keep NT account/cache events advisory after the first venue snapshot, and wire divergence into the existing kill-switch path used by submit admission. Live-node wiring owns the poller lifecycle and reads cadence from TOML.
+**Architecture:** Add a focused venue-truth module that normalizes CLOB balance/open-order and Data API position reads. Add a causal reconciler that derives explanations from the already-captured NT order-event stream instead of a parallel durable store. Promote only explainable venue snapshots into capital admission, and route unexplainable deltas to the existing submit-admission kill-switch path.
 
 **Tech Stack:** Rust 1.96.0, Nautilus Trader Rust Polymarket adapter at the pinned git checkout, TOML config, existing `just` verification recipes, remote-first Rust CI.
 
 ## Global Constraints
 
-- Runtime values come from TOML config; no hardcoded IDs, quantities, timeouts, thresholds, or cadences.
+- Part of #1179; every PR body must say `Part of #1179` and must not use closing keywords.
+- Runtime values come from TOML config; no hardcoded IDs, quantities, timeouts, thresholds, tolerance bands, or cadences.
+- No time-tolerance windows and no numeric-equality divergence gate.
 - No alternate money path or secret source.
+- The causal ledger derives from the captured NT order-event stream; do not create a parallel durable bookkeeping store.
 - Strategies produce intent only; do not add strategy submit mechanics or strategy-local money gates.
-- Whole-node halt is the approved divergence scope.
-- PR-A excludes governance mode, exit clamp, and settlement booking.
+- Whole-node halt is the approved unexplainable-delta scope.
+- Manual operator transfers while running are unexplainable venue deltas and must halt.
+- PR-A excludes governance mode, exit clamp, settlement booking, and Lane 5 shutdown drain.
 - Tests must be written before production code for each changed behavior.
 - Local compile-heavy Rust verification is not default; use explicit `BOLT_ALLOW_LOCAL_RUST=1` only for targeted fast gates requested by this lane.
 
@@ -27,90 +31,186 @@
 - Modify: `src/lib.rs`
 
 **Interfaces:**
-- Produces: `PolymarketVenueTruthSnapshot`, `PolymarketVenueTruthOpenOrder`, `extract_polymarket_token_id(instrument_id: &InstrumentId) -> Option<String>`, and conversion helpers consumed by the runtime feed and live poller.
+- Produces: `PolymarketVenueTruthSnapshot`, `PolymarketVenueTruthOpenOrder`, `extract_polymarket_token_id(instrument_id: &InstrumentId) -> Option<String>`, and conversion helpers consumed by the reconciler and live poller.
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **Step 1: Write the failing tests**
 
-Add tests for extracting token ids from Polymarket binary instrument ids and converting venue balance/allowance/positions into one snapshot.
+Add focused tests for these cases:
 
-- [ ] **Step 2: Verify red**
+```text
+extract_polymarket_token_id("condition-with-dash-token123.POLYMARKET") returns "token123"
+snapshot conversion preserves collateral balance and allowance
+snapshot conversion indexes open orders by venue order id
+snapshot conversion indexes positions by token id
+```
 
-Run a targeted Rust test for the new module. Expected failure: unresolved module/types/functions.
+- [ ] **Step 2: Run test to verify it fails**
 
-- [ ] **Step 3: Implement minimal snapshot model**
+Run: `BOLT_ALLOW_LOCAL_RUST=1 cargo test --locked bolt_v3_polymarket_venue_truth --lib`
 
-Create the module with normalized snapshot structs, token-id extraction, and conversion helpers using existing `Money`, `AccountId`, `InstrumentId`, and decimal types already used by capital admission.
+Expected: FAIL because `bolt_v3_polymarket_venue_truth` does not exist yet.
 
-- [ ] **Step 4: Verify green**
+- [ ] **Step 3: Write minimal implementation**
 
-Run the same targeted Rust test. Expected result: tests pass.
+Create the module with normalized snapshot structs, token-id extraction, and conversion helpers using existing `Money`, `AccountId`, `InstrumentId`, `VenueOrderId`, and `Decimal` types.
 
-### Task 2: Runtime Feed Authority Inversion
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `BOLT_ALLOW_LOCAL_RUST=1 cargo test --locked bolt_v3_polymarket_venue_truth --lib`
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+Run:
+
+```bash
+git add src/bolt_v3_polymarket_venue_truth.rs src/lib.rs
+git commit -m "feat: add Polymarket venue truth snapshots"
+```
+
+### Task 2: Event-Derived Causal Reconciler
+
+**Files:**
+- Modify: `src/bolt_v3_polymarket_venue_truth.rs`
+- Test: module tests in `src/bolt_v3_polymarket_venue_truth.rs`
+
+**Interfaces:**
+- Consumes: previous accepted `PolymarketVenueTruthSnapshot`, current `PolymarketVenueTruthSnapshot`, and normalized order events derived from the captured NT order-event stream.
+- Produces: `PolymarketVenueTruthReconciliation` with `accepted` and `unexplainable_delta` outcomes.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add tests for these cases:
+
+```text
+new venue open order is explainable by an Accepted event carrying the same venue_order_id and client_order_id
+position increase is explainable by a Filled event for a mapped accepted order
+open quantity reduction is explainable by a Filled event for a mapped accepted order
+manual collateral deposit without an order/fill/settlement cause is unexplainable
+settlement-shaped position removal without booked settlement evidence is unexplainable
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `BOLT_ALLOW_LOCAL_RUST=1 cargo test --locked polymarket_venue_truth_reconciler --lib`
+
+Expected: FAIL because the reconciliation API does not exist yet.
+
+- [ ] **Step 3: Write minimal implementation**
+
+Implement an in-memory reconciliation pass that is derived only from the captured order-event inputs supplied to it. It may build an ephemeral projection while reconciling one snapshot, but it must not write a durable causal store.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `BOLT_ALLOW_LOCAL_RUST=1 cargo test --locked polymarket_venue_truth_reconciler --lib`
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+Run:
+
+```bash
+git add src/bolt_v3_polymarket_venue_truth.rs
+git commit -m "feat: reconcile Polymarket venue truth causally"
+```
+
+### Task 3: Runtime Feed Promotion
 
 **Files:**
 - Modify: `src/bolt_v3_capital_admission_runtime_feed.rs`
-- Test: existing unit test module in the same file or the repo's existing integration-test location if that file already routes feed tests elsewhere.
+- Test: `tests/bolt_v3_capital_admission_runtime_feed.rs`
 
 **Interfaces:**
-- Consumes: `PolymarketVenueTruthSnapshot`.
-- Produces: `CapitalAdmissionRuntimeFeed::on_polymarket_venue_truth_snapshot(...)` or equivalent, returning whether state was accepted or divergence was detected.
+- Consumes: `PolymarketVenueTruthSnapshot` and the normalized event-derived causal reconciliation inputs.
+- Produces: runtime feed ingestion that promotes only accepted venue snapshots into `BoltV3SubmitCapitalAdmissionNtComponents`.
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **Step 1: Write the failing tests**
 
-Cover these behaviors:
+Add tests for these behaviors:
 
 ```text
-venue truth replaces NT account/cache collateral authority
-venue truth supplies yes/no position quantities keyed by token id
-NT account state after venue truth remains advisory and cannot increase spendability
+explainable venue truth replaces NT account/cache collateral authority
+explainable venue truth supplies yes/no positions keyed by token id
+NT account state after accepted venue truth remains advisory and cannot increase spendability
+unexplainable venue truth is not promoted into capital admission
 ```
 
-- [ ] **Step 2: Verify red**
+- [ ] **Step 2: Run test to verify it fails**
 
-Run the focused runtime-feed test. Expected failure: venue-truth ingestion API missing.
+Run: `BOLT_ALLOW_LOCAL_RUST=1 cargo test --locked bolt_v3_capital_admission_runtime_feed --test bolt_v3_capital_admission_runtime_feed`
 
-- [ ] **Step 3: Implement minimal authority inversion**
+Expected: FAIL because venue-truth ingestion API is missing.
 
-Add venue-truth ingestion to update capital admission components from venue collateral, allowance, positions, and open orders. Preserve existing NT event capture as advisory evidence.
+- [ ] **Step 3: Write minimal implementation**
 
-- [ ] **Step 4: Verify green**
+Add venue-truth ingestion to the runtime feed. Derive causal event inputs from the order events already observed by the feed/capture path, promote accepted snapshots, and leave NT account/cache events advisory after accepted venue truth.
 
-Run the focused runtime-feed test. Expected result: tests pass.
+- [ ] **Step 4: Run test to verify it passes**
 
-### Task 3: Whole-Node Divergence Halt
+Run: `BOLT_ALLOW_LOCAL_RUST=1 cargo test --locked bolt_v3_capital_admission_runtime_feed --test bolt_v3_capital_admission_runtime_feed`
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+Run:
+
+```bash
+git add src/bolt_v3_capital_admission_runtime_feed.rs tests/bolt_v3_capital_admission_runtime_feed.rs
+git commit -m "feat: promote causally reconciled venue truth"
+```
+
+### Task 4: Whole-Node Halt And Alarm
 
 **Files:**
 - Modify: `src/bolt_v3_kill_switch.rs`
 - Modify: `src/bolt_v3_submit_admission.rs`
 - Modify: `src/bolt_v3_capital_admission_runtime_feed.rs`
+- Test: `tests/bolt_v3_capital_admission_runtime_feed.rs`
 
 **Interfaces:**
 - Produces: `KillSwitchTriggerKind::VenueTruthDivergence`.
-- Produces: a runtime-feed path that can replace submit admission kill-switch state with a non-armed state when divergence is structural.
+- Produces: a runtime-feed path that replaces submit admission kill-switch state with a non-armed state when a venue delta is unexplainable.
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **Step 1: Write the failing tests**
 
-Cover these behaviors:
+Add tests for these behaviors:
 
 ```text
-venue/NT collateral conflict latches submit admission into non-armed state
-venue/NT position conflict latches submit admission into non-armed state
-repeated matching snapshots do not repeatedly halt
+unexplained venue open order latches submit admission into non-armed state
+unexplained manual collateral transfer latches submit admission into non-armed state
+unbooked settlement-shaped position removal latches submit admission into non-armed state
+repeated already-accepted explainable snapshots do not repeatedly halt
 ```
 
-- [ ] **Step 2: Verify red**
+- [ ] **Step 2: Run test to verify it fails**
 
-Run the focused divergence tests. Expected failure: kill-switch kind and latch wiring missing.
+Run: `BOLT_ALLOW_LOCAL_RUST=1 cargo test --locked venue_truth_divergence --test bolt_v3_capital_admission_runtime_feed`
 
-- [ ] **Step 3: Implement minimal halt wiring**
+Expected: FAIL because the kill-switch trigger and latch wiring are missing.
 
-Add the trigger kind and feed-to-submit-admission latch path using existing kill-switch state replacement APIs.
+- [ ] **Step 3: Write minimal implementation**
 
-- [ ] **Step 4: Verify green**
+Add the trigger kind and feed-to-submit-admission latch path using existing kill-switch state replacement APIs. Include structured alarm fields for account id, field, prior venue value, current venue value, and missing causal explanation.
 
-Run the focused divergence tests. Expected result: tests pass.
+- [ ] **Step 4: Run test to verify it passes**
 
-### Task 4: Live Poller And Config
+Run: `BOLT_ALLOW_LOCAL_RUST=1 cargo test --locked venue_truth_divergence --test bolt_v3_capital_admission_runtime_feed`
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+Run:
+
+```bash
+git add src/bolt_v3_kill_switch.rs src/bolt_v3_submit_admission.rs src/bolt_v3_capital_admission_runtime_feed.rs tests/bolt_v3_capital_admission_runtime_feed.rs
+git commit -m "feat: halt on unexplained venue truth"
+```
+
+### Task 5: Live Poller And Config
 
 **Files:**
 - Modify: `src/bolt_v3_providers/polymarket.rs`
@@ -121,11 +221,11 @@ Run the focused divergence tests. Expected result: tests pass.
 
 **Interfaces:**
 - Consumes: `PolymarketExecutionConfig::venue_truth_poll_interval_ms`.
-- Produces: a live-node-owned poller that periodically reads venue truth, feeds capital admission, and halts on read failure or divergence according to existing fail-closed live-node behavior.
+- Produces: a live-node-owned poller that periodically reads venue truth, runs causal reconciliation, promotes accepted snapshots, and halts on read failure or unexplainable deltas according to existing fail-closed live-node behavior.
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **Step 1: Write the failing tests**
 
-Cover these behaviors:
+Add tests for these behaviors:
 
 ```text
 missing venue-truth poll interval fails config validation when Polymarket capital admission is enforced
@@ -133,19 +233,32 @@ zero venue-truth poll interval fails config validation
 configured positive interval is accepted
 ```
 
-- [ ] **Step 2: Verify red**
+- [ ] **Step 2: Run test to verify it fails**
 
-Run the focused config/live-node tests. Expected failure: config field and poller wiring missing.
+Run: `BOLT_ALLOW_LOCAL_RUST=1 cargo test --locked venue_truth_poll_interval --test config_parsing`
 
-- [ ] **Step 3: Implement minimal poller wiring**
+Expected: FAIL because the config field and validation are missing.
+
+- [ ] **Step 3: Write minimal implementation**
 
 Add the TOML field, build the REST clients from existing Polymarket execution config, reuse the filtered Data API read-window logic, and call runtime feed ingestion on every poll.
 
-- [ ] **Step 4: Verify green**
+- [ ] **Step 4: Run test to verify it passes**
 
-Run the focused config/live-node tests. Expected result: tests pass.
+Run: `BOLT_ALLOW_LOCAL_RUST=1 cargo test --locked venue_truth_poll_interval --test config_parsing`
 
-### Task 5: Verification, Commit, PR
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+Run:
+
+```bash
+git add src/bolt_v3_providers/polymarket.rs src/bolt_v3_providers/polymarket/venue_account_state_source.rs src/bolt_v3_providers/polymarket/collateral_accounting_source.rs src/bolt_v3_live_node.rs config/root.toml
+git commit -m "feat: poll Polymarket venue truth continuously"
+```
+
+### Task 6: Verification, PR Notes, And Draft PR
 
 **Files:**
 - All changed files.
@@ -156,12 +269,20 @@ Run `just fmt-check`, `just deny`, `just ci-lint-workflow`, and `just source-fen
 
 - [ ] **Step 2: Run targeted Rust tests**
 
-Run only the targeted tests needed for PR-A with `BOLT_ALLOW_LOCAL_RUST=1`. Record exact commands.
+Run the targeted PR-A tests with `BOLT_ALLOW_LOCAL_RUST=1`. Record exact commands.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Prepare PR body**
 
-Commit with conventional commits. Keep docs and code reviewable.
+The PR body must contain:
+
+```text
+Part of #1179
+```
+
+It must avoid closing keywords. If captured order-event completeness is a limitation because Lane 5 has not landed, state that the causal reconciler depends on the captured NT order-event stream and that shutdown-drain completeness is tracked by Lane 5.
+
+Also state that PR-D must prove the hold-to-resolution replay books settlement payout and does not trigger a false venue-truth halt.
 
 - [ ] **Step 4: Push and open draft PR**
 
-Push `fix/money-loop`, open a draft PR against `main`, and request the required reviewer only after local findings are resolved and exact-head CI is green.
+Push `fix/1179-money-loop`, open a draft PR against `main`, and request the required reviewer only after local findings are resolved and exact-head CI is green.

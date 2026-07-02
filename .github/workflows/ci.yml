@@ -522,7 +522,17 @@ jobs:
         run: just fmt-check
 
       - name: clippy
-        run: just clippy
+        shell: bash
+        run: |
+          BOLT_SPIKE_TIME_FILE="$RUNNER_TEMP/clippy.time"
+          just() {
+            command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" just "$@"
+          }
+          set +e
+          just clippy
+          rc=$?
+          cat "$BOLT_SPIKE_TIME_FILE" || true
+          exit "$rc"
 
   check-aarch64:
     name: check-aarch64
@@ -911,6 +921,10 @@ jobs:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
+          BOLT_SPIKE_TIME_FILE="$RUNNER_TEMP/nextest-archive-build.time"
+          just() {
+            command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" just "$@"
+          }
           # Fail-open guarantee: sccache must never be able to fail this required
           # build. SCCACHE_IGNORE_SERVER_IO_ERROR covers in-flight S3/server I/O
           # errors, but not a mid-build sccache server crash that also fails to
@@ -921,10 +935,12 @@ jobs:
           set +e
           just test-archive "$NEXTEST_ARCHIVE_PATH"
           rc=$?
+          cat "$BOLT_SPIKE_TIME_FILE" || true
           set -e
           if [[ "$rc" -ne 0 && "${BOLT_RUST_VERIFICATION_SCCACHE:-0}" == "1" ]]; then
             echo "::warning::nextest archive build failed (rc=$rc) with sccache active; retrying once without sccache (fail-open)"
             BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive "$NEXTEST_ARCHIVE_PATH"
+            cat "$BOLT_SPIKE_TIME_FILE" || true
           elif [[ "$rc" -ne 0 ]]; then
             exit "$rc"
           fi
@@ -1129,7 +1145,17 @@ jobs:
           fallback: none
 
       - name: build
-        run: just build
+        shell: bash
+        run: |
+          BOLT_SPIKE_TIME_FILE="$RUNNER_TEMP/build.time"
+          just() {
+            command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" just "$@"
+          }
+          set +e
+          just build
+          rc=$?
+          cat "$BOLT_SPIKE_TIME_FILE" || true
+          exit "$rc"
 
       - name: Stage managed build artifact
         id: managed_artifact

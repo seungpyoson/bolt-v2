@@ -163,6 +163,7 @@ impl TakerPricingState {
         config: &TakerPricingConfig<'_>,
     ) {
         if !is_positive_finite(quote.price) {
+            self.observe_invalid_signal_quote(&quote.venue, quote.observed_ts_ms);
             return;
         }
 
@@ -212,6 +213,12 @@ impl TakerPricingState {
             jitter_ms,
             !eligible,
         );
+    }
+
+    pub fn observe_invalid_signal_quote(&mut self, venue: &str, observed_ts_ms: u64) {
+        self.lead_quality_policy_applied = true;
+        let jitter_ms = self.record_signal_quote_timing(venue, observed_ts_ms);
+        self.mark_signal_incoherent(jitter_ms);
     }
 
     pub(crate) fn jitter_penalty_probability(
@@ -709,6 +716,46 @@ mod tests {
     }
 
     #[test]
+    fn invalid_signal_quote_clears_stale_fast_spot_and_keeps_reference_from_repopulating() {
+        let config = config(1, 30, 10);
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            100.0,
+            1_000,
+        ));
+        pricing.observe_signal_quote(&quote(signal_venue(), 100.0, 1_000), &config);
+        assert_eq!(
+            pricing.selected_pricing_spot().map(|spot| spot.price),
+            Some(100.0)
+        );
+        assert!(pricing.last_lead_gap_probability.is_some());
+        assert!(pricing.last_jitter_penalty_probability.is_some());
+        assert!(pricing.last_lead_agreement_corr.is_some());
+
+        pricing.observe_signal_quote(&quote(signal_venue(), f64::NAN, 1_100), &config);
+
+        assert_eq!(pricing.selected_pricing_spot(), None);
+        assert!(pricing.fast_venue_incoherent);
+        assert!(pricing.lead_quality_policy_applied);
+        assert_eq!(pricing.last_lead_gap_probability, None);
+        assert_eq!(pricing.last_jitter_penalty_probability, None);
+        assert_eq!(pricing.last_lead_agreement_corr, None);
+        assert_eq!(pricing.last_fast_venue_age_ms, Some(INITIAL_COUNTER_U64));
+        assert_eq!(pricing.last_fast_venue_jitter_ms, Some(INITIAL_COUNTER_U64));
+
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            101.0,
+            1_200,
+        ));
+
+        assert_eq!(pricing.selected_pricing_spot(), None);
+        assert_eq!(pricing.last_reference_current_price(), Some(101.0));
+    }
+
+    #[test]
     fn overflowing_lead_price_ratio_clears_derived_signal_probabilities() {
         let config = config(1, 30, 10);
         let mut pricing = TakerPricingState::from_config(&config);
@@ -726,6 +773,19 @@ mod tests {
         assert_eq!(pricing.last_lead_gap_probability, None);
         assert_eq!(pricing.last_jitter_penalty_probability, None);
         assert_eq!(pricing.last_lead_agreement_corr, None);
+
+        pricing.seed_ready_realized_vol(Some("rv".to_string()), 1.5, 1_000);
+        let blocked_by = pricing
+            .entry_pricing_inputs_at(
+                &config,
+                TakerPricingRequest {
+                    now_ms: 1_000,
+                    strike_price: Some(100.0),
+                    seconds_to_market_end: Some(300),
+                },
+            )
+            .expect_err("overflowing ratio must block public pricing inputs");
+        assert_eq!(blocked_by, vec![TakerPricingBlockReason::SpotPriceMissing]);
     }
 
     #[test]

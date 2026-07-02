@@ -730,16 +730,31 @@ impl BinaryOracleEdgeTaker {
     fn observe_signal_quote(&mut self, quote: &FastSpotObservation) {
         self.pricing
             .observe_signal_quote(quote, &taker_pricing_config(&self.config));
+        self.after_signal_quote_observed(quote.observed_ts_ms, quote.received_ts_ms);
+    }
+
+    fn observe_invalid_signal_quote(
+        &mut self,
+        venue: &str,
+        observed_ts_ms: u64,
+        received_ts_ms: Option<u64>,
+    ) {
+        self.pricing
+            .observe_invalid_signal_quote(venue, observed_ts_ms);
+        self.after_signal_quote_observed(observed_ts_ms, received_ts_ms);
+    }
+
+    fn after_signal_quote_observed(&mut self, observed_ts_ms: u64, received_ts_ms: Option<u64>) {
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
         self.refresh_fee_readiness();
         self.sync_exposure_context_from_active();
         if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
-                quote.observed_ts_ms,
+                observed_ts_ms,
                 ExitEvaluationTriggerContext::new(
                     BoltV3ExitTriggerSource::SignalQuote,
-                    quote.observed_ts_ms,
-                    quote.received_ts_ms,
+                    observed_ts_ms,
+                    received_ts_ms,
                 ),
             )
         {
@@ -747,7 +762,7 @@ impl BinaryOracleEdgeTaker {
                 "binary_oracle_edge_taker exit submit failed on signal update: strategy_id={} market_id={:?} ts_ms={} error={:#}",
                 self.config.strategy_id,
                 self.active.market_id,
-                quote.observed_ts_ms,
+                observed_ts_ms,
                 error,
             );
         }
@@ -5172,9 +5187,16 @@ impl DataActor for BinaryOracleEdgeTaker {
         if self
             .signal_instrument_id()
             .is_some_and(|instrument_id| quote.instrument_id == instrument_id)
-            && let Some(signal_quote) = self.signal_quote_from_tick(quote)
         {
-            self.observe_signal_quote(&signal_quote);
+            if let Some(signal_quote) = self.signal_quote_from_tick(quote) {
+                self.observe_signal_quote(&signal_quote);
+            } else if let Some(signal_venue) = self.config.signal_venue.clone() {
+                self.observe_invalid_signal_quote(
+                    &signal_venue,
+                    quote.ts_event.as_u64() / NANOS_PER_MILLI_U64,
+                    Some(quote.ts_init.as_u64() / NANOS_PER_MILLI_U64),
+                );
+            }
         }
         for snapshot in self.context.observe_realized_volatility_quote(quote) {
             self.pricing.observe_realized_vol_snapshot(snapshot);

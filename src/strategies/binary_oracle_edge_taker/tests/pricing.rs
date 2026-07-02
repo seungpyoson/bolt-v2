@@ -84,6 +84,31 @@ fn signal_quote_tick_updates_pricing_from_configured_signal_data() {
 }
 
 #[test]
+fn invalid_signal_quote_tick_clears_stale_pricing_state() {
+    let mut strategy = test_strategy();
+    strategy
+        .pricing
+        .observe_reference_current_price(&fast_spot("chainlink_primary", 101.0, 1_100));
+    strategy
+        .on_quote(&quote_tick("SIGNAL.SOURCE", 100.5, 102.5, 1_200))
+        .expect("signal quote should seed pricing");
+    assert!(strategy.pricing.selected_pricing_spot().is_some());
+    assert!(!strategy.pricing.fast_venue_incoherent);
+
+    strategy
+        .on_quote(&invalid_quote_tick("SIGNAL.SOURCE", 1_300))
+        .expect("invalid signal quote should fail closed");
+
+    assert_eq!(strategy.pricing.selected_pricing_spot().cloned(), None);
+    assert!(strategy.pricing.fast_venue_incoherent);
+    assert!(strategy.active.fast_venue_incoherent);
+    assert!(strategy.pricing.lead_quality_policy_applied);
+    assert_eq!(strategy.pricing.last_lead_gap_probability, None);
+    assert_eq!(strategy.pricing.last_jitter_penalty_probability, None);
+    assert_eq!(strategy.pricing.last_lead_agreement_corr, None);
+}
+
+#[test]
 fn signal_quote_tick_does_not_warm_active_reference_state() {
     let mut strategy = test_strategy();
     let mut market = candidate_market("market-1", 1_000);

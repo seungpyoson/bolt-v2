@@ -489,8 +489,6 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    env:
-      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -502,6 +500,7 @@ jobs:
           lint-workflow-contract: "true"
           toolchain-components: clippy, rustfmt
           include-managed-target-dir: "true"
+          build-jobs-key: ci.clippy
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -522,15 +521,30 @@ jobs:
         run: just fmt-check
 
       - name: clippy
-        run: just clippy
+        shell: bash
+        run: |
+          BOLT_SPIKE_TIME_FILE="${RUNNER_TEMP:-/tmp}/clippy.time"
+          just() {
+            if /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE.probe" true >/dev/null 2>&1; then
+              command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" env just "$@"
+            else
+              command just "$@"
+            fi
+            local timed_rc=$?
+            cat "$BOLT_SPIKE_TIME_FILE" || true
+            return "$timed_rc"
+          }
+          set +e
+          just clippy
+          rc=$?
+          set -e
+          exit "$rc"
 
   check-aarch64:
     name: check-aarch64
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    env:
-      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -551,6 +565,7 @@ jobs:
           include-build-values: "true"
           use-default-target: "true"
           include-managed-target-dir: "true"
+          build-jobs-key: ci.check-aarch64
 
       - name: Install aarch64 cross compiler
         if: needs.detector.outputs.build_required != 'true'
@@ -584,8 +599,6 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    env:
-      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -597,6 +610,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-managed-target-dir: "true"
+          build-jobs-key: ci.source-fence
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -742,7 +756,6 @@ jobs:
       actions: read
       id-token: write
     env:
-      CARGO_BUILD_JOBS: "2"
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
       # S3 sccache compile cache (#1011/#1023). Inert unless the build step opts
@@ -764,6 +777,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+          build-jobs-key: ci.test-archive
 
       - name: Resolve root nextest cache keys
         id: root-nextest-cache-keys
@@ -911,6 +925,17 @@ jobs:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
+          BOLT_SPIKE_TIME_FILE="${RUNNER_TEMP:-/tmp}/nextest-archive-build.time"
+          just() {
+            if /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE.probe" true >/dev/null 2>&1; then
+              command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" env just "$@"
+            else
+              command just "$@"
+            fi
+            local timed_rc=$?
+            cat "$BOLT_SPIKE_TIME_FILE" || true
+            return "$timed_rc"
+          }
           # Fail-open guarantee: sccache must never be able to fail this required
           # build. SCCACHE_IGNORE_SERVER_IO_ERROR covers in-flight S3/server I/O
           # errors, but not a mid-build sccache server crash that also fails to
@@ -924,7 +949,11 @@ jobs:
           set -e
           if [[ "$rc" -ne 0 && "${BOLT_RUST_VERIFICATION_SCCACHE:-0}" == "1" ]]; then
             echo "::warning::nextest archive build failed (rc=$rc) with sccache active; retrying once without sccache (fail-open)"
+            set +e
             BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive "$NEXTEST_ARCHIVE_PATH"
+            rc=$?
+            set -e
+            exit "$rc"
           elif [[ "$rc" -ne 0 ]]; then
             exit "$rc"
           fi
@@ -1129,7 +1158,24 @@ jobs:
           fallback: none
 
       - name: build
-        run: just build
+        shell: bash
+        run: |
+          BOLT_SPIKE_TIME_FILE="${RUNNER_TEMP:-/tmp}/build.time"
+          just() {
+            if /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE.probe" true >/dev/null 2>&1; then
+              command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" env just "$@"
+            else
+              command just "$@"
+            fi
+            local timed_rc=$?
+            cat "$BOLT_SPIKE_TIME_FILE" || true
+            return "$timed_rc"
+          }
+          set +e
+          just build
+          rc=$?
+          set -e
+          exit "$rc"
 
       - name: Stage managed build artifact
         id: managed_artifact

@@ -7,6 +7,88 @@ const TEST_SOURCE_ID: &str = "<SOURCE_ID_A>";
 const TEST_SOURCE_ID_B: &str = "<SOURCE_ID_B>";
 const TEST_TRADE_SOURCE_ID: &str = "<SOURCE_ID_TRADE>";
 const TEST_RV_INSTRUMENT_ID: &str = "<INSTRUMENT_ID_A>.<DATA_CLIENT_ID>";
+const STRATEGY_INPUT_QUOTE_REPLAY: &str =
+    include_str!("../../../../tests/fixtures/bolt_v3/strategy_input_quote_replay.toml");
+
+#[derive(Debug, serde::Deserialize)]
+struct StrategyInputQuoteReplay {
+    market_start_ms: u64,
+    evaluation_now_ms: u64,
+    forced_flat_stale_reference_ms: u64,
+    reference_max_source_age_ms: u64,
+    realized_vol: f64,
+    reference: ReplayReferenceQuote,
+    signal: ReplaySignalQuote,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ReplayReferenceQuote {
+    source_id: String,
+    provider: String,
+    provider_instrument: String,
+    price: f64,
+    observed_ts_ms: u64,
+    received_ts_ms: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ReplaySignalQuote {
+    instrument_id: String,
+    bid: f64,
+    ask: f64,
+    observed_ts_ms: u64,
+}
+
+fn strategy_input_quote_replay() -> StrategyInputQuoteReplay {
+    toml::from_str(STRATEGY_INPUT_QUOTE_REPLAY)
+        .expect("strategy input quote replay fixture should parse")
+}
+
+fn replay_reference_price_config(
+    replay: &StrategyInputQuoteReplay,
+) -> crate::bolt_v3_config::ReferencePriceBlock {
+    crate::bolt_v3_config::ReferencePriceBlock {
+        asset: "BTC".to_string(),
+        source_order: vec![replay.reference.source_id.clone()],
+        min_valid_sources: 1,
+        selection_policy:
+            crate::bolt_v3_config::ReferencePriceSelectionPolicy::FirstValidPerInterval,
+        max_source_age_ms: replay.reference_max_source_age_ms,
+        max_source_drift_bps: 25,
+        drift_policy: crate::bolt_v3_config::ReferencePriceDriftPolicy::Observe,
+        stale_policy: crate::bolt_v3_config::ReferencePriceStalePolicy::Block,
+        sources: std::collections::BTreeMap::from([(
+            replay.reference.source_id.clone(),
+            crate::bolt_v3_config::ReferencePriceSourceBlock {
+                provider: crate::bolt_v3_config::ReferencePriceProvider::new(
+                    replay.reference.provider.clone(),
+                )
+                .expect("fixture provider should be valid"),
+                enabled: true,
+                required: false,
+                client_id: nautilus_model::identifiers::ClientId::from("chainlink_reference"),
+                instrument_id: Some(replay.reference.provider_instrument.clone()),
+                symbol: None,
+            },
+        )]),
+    }
+}
+
+fn replay_reference_update(replay: &StrategyInputQuoteReplay) -> nautilus_model::data::CustomData {
+    crate::bolt_v3_reference_price::ReferencePriceUpdate::try_new(
+        "BTC",
+        replay.reference.source_id.as_str(),
+        replay.reference.provider.as_str(),
+        replay.reference.provider_instrument.as_str(),
+        replay.reference.price,
+        None,
+        None,
+        replay.reference.observed_ts_ms,
+        replay.reference.received_ts_ms,
+    )
+    .expect("replay reference quote should construct")
+    .to_custom_data()
+}
 
 #[derive(Default)]
 struct CapturingLogger {
@@ -918,6 +1000,165 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
         admission.outcome,
         crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::RejectedNotionalCapExceeded
     );
+}
+
+#[test]
+fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
+    let replay = strategy_input_quote_replay();
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    strategy.config.reference_current_price = Some(replay_reference_price_config(&replay));
+    strategy.config.forced_flat_stale_reference_ms = replay.forced_flat_stale_reference_ms;
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", replay.market_start_ms));
+    strategy.active.price_to_beat = Some(replay.reference.price);
+    strategy.active.interval_open = Some(replay.reference.price);
+    strategy.active.warmup_count = strategy.config.warmup_tick_count;
+    strategy.active.outcome_fees.up_ready = true;
+    strategy.active.outcome_fees.down_ready = true;
+    strategy.active.books.up.last_observed_instrument_id = strategy.active.books.up.instrument_id;
+    strategy
+        .active
+        .books
+        .up
+        .bid_levels
+        .insert(Price::new(0.50, 2), 5_000.0);
+    strategy
+        .active
+        .books
+        .up
+        .ask_levels
+        .insert(Price::new(0.50, 2), 5_000.0);
+    strategy.active.books.up.best_bid = Some(0.50);
+    strategy.active.books.up.best_ask = Some(0.50);
+    strategy.active.books.up.liquidity_available = Some(5_000.0);
+    strategy.active.books.down.last_observed_instrument_id =
+        strategy.active.books.down.instrument_id;
+    strategy
+        .active
+        .books
+        .down
+        .bid_levels
+        .insert(Price::new(0.48, 2), 5_000.0);
+    strategy
+        .active
+        .books
+        .down
+        .ask_levels
+        .insert(Price::new(0.49, 2), 5_000.0);
+    strategy.active.books.down.best_bid = Some(0.48);
+    strategy.active.books.down.best_ask = Some(0.49);
+    strategy.active.books.down.liquidity_available = Some(5_000.0);
+    strategy.pricing.set_selected_pricing_spot(None);
+    strategy.pricing.seed_ready_realized_vol(
+        Some("fixture_replay".to_string()),
+        replay.realized_vol,
+        replay.evaluation_now_ms,
+    );
+
+    let (cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    clock.borrow_mut().set_time(UnixNanos::from(
+        replay
+            .reference
+            .received_ts_ms
+            .saturating_mul(NANOS_PER_MILLI_U64),
+    ));
+
+    let reference_update = replay_reference_update(&replay);
+    DataActor::on_data(&mut strategy, &reference_update)
+        .expect("replay reference quote should be observed");
+    assert_eq!(
+        strategy.active.reference_current_price,
+        Some(replay.reference.price)
+    );
+
+    clock.borrow_mut().set_time(UnixNanos::from(
+        replay.evaluation_now_ms.saturating_mul(NANOS_PER_MILLI_U64),
+    ));
+    strategy.refresh_current_reference_price_selection_at(replay.evaluation_now_ms);
+    assert_eq!(
+        strategy.active.last_reference_ts_ms,
+        Some(replay.reference.observed_ts_ms)
+    );
+    assert_eq!(strategy.active.reference_current_price, None);
+
+    let signal_quote = quote_tick(
+        replay.signal.instrument_id.as_str(),
+        replay.signal.bid,
+        replay.signal.ask,
+        replay.signal.observed_ts_ms,
+    );
+    DataActor::on_quote(&mut strategy, &signal_quote)
+        .expect("replay signal quote should be observed");
+    assert_eq!(strategy.pricing.spot_price(), None);
+    assert!(strategy.pricing.fast_venue_incoherent);
+
+    let replay_decision = strategy.entry_submission_decision_at(replay.evaluation_now_ms);
+    let snapshot = strategy
+        .blocked_entry_strategy_input_evidence_snapshot_at(
+            replay.evaluation_now_ms,
+            &replay_decision,
+        )
+        .expect("replay should build blocked strategy-input evidence");
+    assert_eq!(snapshot.spot_price, "108642.25");
+    assert_eq!(
+        snapshot.reference_current_price.as_deref(),
+        Some("108500.25")
+    );
+    assert_eq!(
+        snapshot.reference_current_price_source_id.as_deref(),
+        Some(replay.reference.source_id.as_str())
+    );
+    assert_eq!(snapshot.reference_current_price_failed_over, Some(false));
+    let log_fields =
+        strategy.entry_evaluation_log_fields_at(replay.evaluation_now_ms, &replay_decision);
+    assert_eq!(log_fields.spot_price, Some(108642.25));
+    assert_eq!(log_fields.reference_current_price, Some(108500.25));
+    assert!(
+        !log_fields.fast_venue_available,
+        "raw signal observation should not change admitted fast-venue diagnostics"
+    );
+
+    let submitted = strategy
+        .try_submit_entry_order(replay.evaluation_now_ms)
+        .expect("blocked replay entry should record skip evidence without submit error");
+    assert_eq!(submitted, None);
+
+    let entry_skips = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entry_skips.len(),
+        1,
+        "replay should produce exactly one entry skip"
+    );
+    let skip = &entry_skips[0];
+    assert!(
+        skip.pricing_blocked_by.contains(
+            &crate::bolt_v3_decision_evidence::BoltV3EntryPricingBlockReason::SpotPriceMissing
+        ),
+        "replay should preserve the incident blocker shape, got {:?}",
+        skip.pricing_blocked_by
+    );
+    assert_eq!(skip.realized_vol.as_deref(), Some("0.287"));
+    assert_eq!(
+        skip.last_reference_ts_ms,
+        Some(replay.reference.observed_ts_ms)
+    );
+    assert!(skip.fast_venue_incoherent);
+    assert_eq!(skip.spot_price.as_deref(), Some("108642.25"));
+    assert_eq!(skip.reference_current_price.as_deref(), Some("108500.25"));
 }
 
 #[test]

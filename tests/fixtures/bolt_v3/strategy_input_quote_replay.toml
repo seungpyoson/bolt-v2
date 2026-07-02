@@ -1,0 +1,19 @@
+market_start_ms = 1782993900000
+evaluation_now_ms = 1782993994000
+forced_flat_stale_reference_ms = 300000
+reference_max_source_age_ms = 2000
+realized_vol = 0.287
+
+[reference]
+source_id = "chainlink_primary"
+provider = "chainlink_ws"
+provider_instrument = "BTC-USD.CHAINLINK"
+price = 108500.25
+observed_ts_ms = 1782993925000
+received_ts_ms = 1782993925100
+
+[signal]
+instrument_id = "SIGNAL.SOURCE"
+bid = 108642.00
+ask = 108642.50
+observed_ts_ms = 1782993994000

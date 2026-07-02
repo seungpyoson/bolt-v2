@@ -1246,20 +1246,25 @@ def mergify_temp_pr_matches(
     pull_request_head_ref: str,
     temp_pr_head_ref_prefix: str,
     event_sender_id: int,
-    pull_request_author_id: int = -1,
     temp_pr_actor_id: int,
+    pull_request_author_id: int = -1,
+    pull_request_base_changed: bool | str = False,
 ) -> bool:
     # GAP-1 fix (#981): a head-ref prefix alone must NEVER grant the required gate —
     # any actor can open a draft PR whose head ref starts with the mergify prefix. The
-    # temp PR is recognized only when the event sender is the bound mergify actor. The
-    # one exception is ready_for_review: a human can mark a Mergify-authored proof PR
-    # ready, so that metadata-only transition may bind through pull_request.user.id.
+    # temp PR is recognized only when the event sender is the bound mergify actor. A
+    # non-draft Mergify-authored proof PR can bind through pull_request.user.id only
+    # for proof-affecting transitions: ready_for_review and base-ref edits.
     transient_head_ref_prefix = f"{MERGIFY_TEMP_PR_TRANSIENT_PREFIX}{temp_pr_head_ref_prefix}"
     actor_bound = event_sender_id == temp_pr_actor_id
-    ready_author_bound = (
-        event_action == "ready_for_review"
+    author_bound = pull_request_author_id == temp_pr_actor_id
+    proof_affecting_author_bound = (
+        (
+            event_action == "ready_for_review"
+            or (event_action == "edited" and pull_request_base_changed_for_policy(pull_request_base_changed))
+        )
         and not pull_request_draft
-        and pull_request_author_id == temp_pr_actor_id
+        and author_bound
     )
     return (
         event_name == "pull_request"
@@ -1267,11 +1272,20 @@ def mergify_temp_pr_matches(
             pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
             or pull_request_head_ref.startswith(transient_head_ref_prefix)
         )
-        and ((pull_request_draft and actor_bound) or ready_author_bound)
+        and ((pull_request_draft and actor_bound) or proof_affecting_author_bound)
     )
 
 
-MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review", "edited"})
+MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
+
+
+def pull_request_base_changed_for_policy(value: bool | str) -> bool:
+    if isinstance(value, bool):
+        return value
+    try:
+        return parse_bool(value)
+    except ProvenanceError:
+        return True
 
 
 def mergify_temp_pr_requires_full_ci(
@@ -1279,10 +1293,8 @@ def mergify_temp_pr_requires_full_ci(
     event_action: str,
     pull_request_base_changed: bool | str,
 ) -> bool:
-    # `pull_request_base_changed` remains part of the caller contract, but live
-    # Mergify proof PRs can arrive as draft metadata edits without base changes.
-    # Actor binding is the safety boundary for these proof events.
-    _ = pull_request_base_changed
+    if event_action == "edited":
+        return pull_request_base_changed_for_policy(pull_request_base_changed)
     return event_action in MERGIFY_TEMP_PR_FULL_ACTIONS
 
 
@@ -1308,6 +1320,7 @@ def evaluate_ci_policy(
         temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,
         event_sender_id=event_sender_id,
         pull_request_author_id=pull_request_author_id,
+        pull_request_base_changed=pull_request_base_changed,
         temp_pr_actor_id=config.mergify_temp_pr_actor_id,
     )
     if event_name == "merge_group":

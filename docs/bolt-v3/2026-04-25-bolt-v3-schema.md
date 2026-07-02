@@ -193,6 +193,7 @@ catalog_directory = "/srv/bolt-v2/var/bolt-v3-live/catalog"
 required_catalog_prefix = "/srv/bolt-v2"
 min_free_bytes = 10737418240
 runtime_capture_start_poll_interval_ms = 50
+data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
@@ -1774,6 +1775,7 @@ catalog_directory = "/srv/bolt-v2/var/bolt-v3-live/catalog"
 required_catalog_prefix = "/srv/bolt-v2"
 min_free_bytes = 10737418240
 runtime_capture_start_poll_interval_ms = 50
+data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"

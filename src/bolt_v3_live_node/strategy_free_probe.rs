@@ -53,6 +53,9 @@ pub(super) struct StrategyFreeReferenceQuoteSubscription {
     pub(super) instrument_id: InstrumentId,
 }
 
+pub(super) const METADATA_RESPONSE_EMPTY_TARGETS_FAILURE: &str =
+    "metadata_response readiness probe produced no source-owned instrument targets";
+
 /// Live state for a trade chunk-count readiness walk. The probe subscribes one
 /// chunk of the instrument universe at a time (so it never holds more than
 /// `chunk_size` channels at once, staying below the venue's silent delivery
@@ -428,6 +431,10 @@ impl BoltV3StrategyFreeReferenceQuoteProbeHandle {
             return Vec::new();
         };
         let metadata_quote_targets = instrument_ids.len();
+        if metadata_quote_targets == 0 {
+            self.fail_metadata_response_probe(METADATA_RESPONSE_EMPTY_TARGETS_FAILURE.to_string());
+            return Vec::new();
+        }
         if metadata_quote_targets > max_quote_targets {
             if self.metadata_response_allow_target_sampling {
                 instrument_ids =

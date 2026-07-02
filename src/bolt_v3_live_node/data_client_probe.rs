@@ -356,13 +356,9 @@ async fn drive_metadata_response_probe_until_subscribed(
             return state.install_and_subscribe();
         }
 
-        let notified = state.notify().notified();
-        tokio::pin!(notified);
-        let poll = tokio::time::sleep(state.runtime_state_poll_interval());
-        tokio::pin!(poll);
         tokio::select! {
-            () = &mut notified => continue,
-            () = &mut poll => continue,
+            () = state.notify().notified() => continue,
+            () = tokio::time::sleep(state.runtime_state_poll_interval()) => continue,
         }
     }
 }

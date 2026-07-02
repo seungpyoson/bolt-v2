@@ -18,6 +18,10 @@ pub(super) fn find_error<'a>(
         .unwrap_or_else(|| panic!("missing error {field} / {code}: {errors:?}"))
 }
 
+pub(super) fn probability(value: f64) -> Probability {
+    Probability::new(value).expect("valid probability")
+}
+
 pub(super) fn valid_raw_config() -> Value {
     toml::toml! {
         strategy_id = "BINARYORACLEEDGETAKER-001"
@@ -1047,7 +1051,7 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
-    strategy.pricing.last_lead_gap_probability = Some(0.0);
+    strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
     strategy.pricing.last_jitter_penalty_probability = Some(0.0);
     strategy
 }
@@ -1115,7 +1119,7 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
-    strategy.pricing.last_lead_gap_probability = Some(0.0);
+    strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
     strategy.pricing.last_jitter_penalty_probability = Some(0.0);
     (strategy, fee_provider)
 }
@@ -1705,9 +1709,9 @@ pub(super) fn lead_signal(
         observed_ts_ms: Some(1_000),
         age_ms,
         jitter_ms,
-        agreement_corr,
+        agreement_corr: probability(agreement_corr),
         effective_weight,
-        lead_gap_probability,
+        lead_gap_probability: probability(lead_gap_probability),
     }
 }
 

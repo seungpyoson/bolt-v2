@@ -9,7 +9,7 @@
 use crate::{
     bolt_v3_decision_evidence::BoltV3RvGateResult,
     bolt_v3_market_families::{self, FairProbabilityInputs},
-    bolt_v3_numeric::{UNIT_F64, is_positive_finite},
+    bolt_v3_numeric::is_positive_finite,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
 };
 
@@ -290,8 +290,8 @@ impl FairValuePricingState {
             realized_vol_surface_id,
             realized_vol_source_venue,
             realized_vol_source_ts_ms,
-            fair_probability_up,
-            fair_probability_down: UNIT_F64 - fair_probability_up,
+            fair_probability_up: fair_probability_up.value(),
+            fair_probability_down: fair_probability_up.complement().value(),
         })
     }
 

@@ -88,6 +88,12 @@ pub async fn run_bolt_v3_data_client_probe(
                 market_data_kind,
                 book_type,
                 runtime.handle(),
+                Duration::from_millis(
+                    probe_loaded
+                        .root
+                        .persistence
+                        .runtime_capture_start_poll_interval_ms,
+                ),
             )?;
             metadata_driver = Some(metadata.driver());
             metadata_observer = Some(metadata);
@@ -327,14 +333,32 @@ struct StrategyFreeMetadataResponseProbeDriver {
 
 impl StrategyFreeMetadataResponseProbeDriver {
     async fn drive_until_subscribed(&self) -> Result<(), BoltV3LiveNodeError> {
-        loop {
-            if self.state.has_subscriptions() {
-                return Ok(());
-            }
-            if self.state.instrument_count() >= self.state.max_metadata_quote_targets {
-                return self.state.install_and_subscribe();
-            }
-            self.state.notify.notified().await;
+        drive_metadata_response_probe_until_subscribed(self.state.as_ref()).await
+    }
+}
+
+trait StrategyFreeMetadataResponseProbeDriverState {
+    fn has_subscriptions(&self) -> bool;
+    fn is_runtime_running(&self) -> bool;
+    fn install_and_subscribe(&self) -> Result<(), BoltV3LiveNodeError>;
+    fn notify(&self) -> &tokio::sync::Notify;
+    fn runtime_state_poll_interval(&self) -> Duration;
+}
+
+async fn drive_metadata_response_probe_until_subscribed(
+    state: &impl StrategyFreeMetadataResponseProbeDriverState,
+) -> Result<(), BoltV3LiveNodeError> {
+    loop {
+        if state.has_subscriptions() {
+            return Ok(());
+        }
+        if state.is_runtime_running() {
+            return state.install_and_subscribe();
+        }
+
+        tokio::select! {
+            () = state.notify().notified() => continue,
+            () = tokio::time::sleep(state.runtime_state_poll_interval()) => continue,
         }
     }
 }
@@ -352,24 +376,26 @@ impl StrategyFreeMetadataResponseProbeObserver {
         market_data_kind: DataClientReadinessProbeMarketDataKind,
         book_type: Option<BookType>,
         stop_handle: LiveNodeHandle,
+        runtime_state_poll_interval: Duration,
     ) -> Result<Self, BoltV3LiveNodeError> {
-        let max_metadata_quote_targets =
-            handle.metadata_response_max_quote_targets.ok_or_else(|| {
-                BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(anyhow::anyhow!(
+        if handle.metadata_response_max_quote_targets.is_none() {
+            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+                anyhow::anyhow!(
                     "data-client readiness probe requires clients.<id>.readiness_probe.max_metadata_quote_targets when quote_target_source = \"metadata_response\""
-                ))
-            })?;
+                ),
+            ));
+        }
         let state = Rc::new(StrategyFreeMetadataResponseProbeState {
             handle: handle.clone(),
             venue,
             market_data_kind,
             book_type,
-            max_metadata_quote_targets,
             instruments: RefCell::new(BTreeMap::new()),
             subscriptions: RefCell::new(Vec::new()),
             market_observer: RefCell::new(None),
             notify: tokio::sync::Notify::new(),
             stop_handle,
+            runtime_state_poll_interval,
         });
         let handler_state = state.clone();
         let handler = TypedHandler::from(move |instrument: &InstrumentAny| {
@@ -380,9 +406,7 @@ impl StrategyFreeMetadataResponseProbeObserver {
             let mut instruments = handler_state.instruments.borrow_mut();
             let previous_len = instruments.len();
             instruments.insert(instrument_id.to_string(), instrument_id);
-            if instruments.len() != previous_len
-                && instruments.len() >= handler_state.max_metadata_quote_targets
-            {
+            if instruments.len() != previous_len {
                 handler_state.notify.notify_one();
             }
         });
@@ -424,19 +448,15 @@ struct StrategyFreeMetadataResponseProbeState {
     venue: Venue,
     market_data_kind: DataClientReadinessProbeMarketDataKind,
     book_type: Option<BookType>,
-    max_metadata_quote_targets: usize,
     instruments: RefCell<BTreeMap<String, InstrumentId>>,
     subscriptions: RefCell<Vec<StrategyFreeReferenceQuoteSubscription>>,
     market_observer: RefCell<Option<StrategyFreeDataClientProbeObserver>>,
     notify: tokio::sync::Notify,
     stop_handle: LiveNodeHandle,
+    runtime_state_poll_interval: Duration,
 }
 
 impl StrategyFreeMetadataResponseProbeState {
-    fn instrument_count(&self) -> usize {
-        self.instruments.borrow().len()
-    }
-
     fn has_subscriptions(&self) -> bool {
         !self.subscriptions.borrow().is_empty()
     }
@@ -455,10 +475,10 @@ impl StrategyFreeMetadataResponseProbeState {
             .handle
             .install_metadata_response_instrument_ids(instrument_ids);
         if subscriptions.is_empty() {
-            let reason = self.handle.failure_error().unwrap_or_else(|| {
-                "metadata_response readiness probe produced no source-owned instrument targets"
-                    .to_string()
-            });
+            let reason = self
+                .handle
+                .failure_error()
+                .unwrap_or_else(|| METADATA_RESPONSE_EMPTY_TARGETS_FAILURE.to_string());
             return Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed { reason });
         }
         let market_observer = StrategyFreeDataClientProbeObserver::register(
@@ -476,6 +496,177 @@ impl StrategyFreeMetadataResponseProbeState {
         *self.subscriptions.borrow_mut() = subscriptions;
         *self.market_observer.borrow_mut() = Some(market_observer);
         Ok(())
+    }
+}
+
+impl StrategyFreeMetadataResponseProbeDriverState for StrategyFreeMetadataResponseProbeState {
+    fn has_subscriptions(&self) -> bool {
+        StrategyFreeMetadataResponseProbeState::has_subscriptions(self)
+    }
+
+    fn is_runtime_running(&self) -> bool {
+        self.stop_handle.is_running()
+    }
+
+    fn install_and_subscribe(&self) -> Result<(), BoltV3LiveNodeError> {
+        StrategyFreeMetadataResponseProbeState::install_and_subscribe(self)
+    }
+
+    fn notify(&self) -> &tokio::sync::Notify {
+        &self.notify
+    }
+
+    fn runtime_state_poll_interval(&self) -> Duration {
+        self.runtime_state_poll_interval
+    }
+}
+
+#[cfg(test)]
+mod metadata_response_probe_driver_tests {
+    use std::{cell::Cell, time::Duration};
+
+    use super::*;
+
+    struct FakeMetadataResponseProbeState {
+        has_subscriptions: Cell<bool>,
+        runtime_running: Cell<bool>,
+        install_calls: Cell<usize>,
+        fail_install: bool,
+        notify: tokio::sync::Notify,
+        runtime_state_poll_interval: Duration,
+    }
+
+    impl FakeMetadataResponseProbeState {
+        fn pending() -> Self {
+            Self {
+                has_subscriptions: Cell::new(false),
+                runtime_running: Cell::new(false),
+                install_calls: Cell::new(0),
+                fail_install: false,
+                notify: tokio::sync::Notify::new(),
+                runtime_state_poll_interval: Duration::from_secs(60),
+            }
+        }
+
+        fn running() -> Self {
+            let state = Self::pending();
+            state.runtime_running.set(true);
+            state
+        }
+
+        fn running_with_empty_metadata_failure() -> Self {
+            Self {
+                fail_install: true,
+                ..Self::running()
+            }
+        }
+
+        fn mark_runtime_running(&self) {
+            self.runtime_running.set(true);
+            self.notify.notify_one();
+        }
+    }
+
+    impl StrategyFreeMetadataResponseProbeDriverState for FakeMetadataResponseProbeState {
+        fn has_subscriptions(&self) -> bool {
+            self.has_subscriptions.get()
+        }
+
+        fn is_runtime_running(&self) -> bool {
+            self.runtime_running.get()
+        }
+
+        fn install_and_subscribe(&self) -> Result<(), BoltV3LiveNodeError> {
+            self.install_calls.set(self.install_calls.get() + 1);
+            if self.fail_install {
+                return Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed {
+                    reason: METADATA_RESPONSE_EMPTY_TARGETS_FAILURE.to_string(),
+                });
+            }
+            self.has_subscriptions.set(true);
+            Ok(())
+        }
+
+        fn notify(&self) -> &tokio::sync::Notify {
+            &self.notify
+        }
+
+        fn runtime_state_poll_interval(&self) -> Duration {
+            self.runtime_state_poll_interval
+        }
+    }
+
+    #[test]
+    fn metadata_response_driver_waits_for_runtime_running_before_installing() {
+        let state = FakeMetadataResponseProbeState::pending();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let driver = drive_metadata_response_probe_until_subscribed(&state);
+            tokio::pin!(driver);
+            state.notify.notify_one();
+
+            tokio::select! {
+                result = &mut driver => {
+                    panic!("driver installed before runtime startup drain completed: {result:?}");
+                }
+                () = tokio::task::yield_now() => {}
+            }
+
+            assert_eq!(
+                state.install_calls.get(),
+                0,
+                "metadata_response driver must wait for LiveNode running state before installing"
+            );
+            state.mark_runtime_running();
+            driver
+                .await
+                .expect("driver should install after runtime is running");
+        });
+
+        assert_eq!(state.install_calls.get(), 1);
+        assert!(state.has_subscriptions.get());
+    }
+
+    #[test]
+    fn metadata_response_driver_installs_after_runtime_running() {
+        let state = FakeMetadataResponseProbeState::running();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime should build");
+
+        runtime
+            .block_on(drive_metadata_response_probe_until_subscribed(&state))
+            .expect("driver should install available metadata targets");
+
+        assert_eq!(state.install_calls.get(), 1);
+        assert!(state.has_subscriptions.get());
+    }
+
+    #[test]
+    fn metadata_response_driver_fails_empty_metadata_after_runtime_running() {
+        let state = FakeMetadataResponseProbeState::running_with_empty_metadata_failure();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime should build");
+
+        let failure = runtime
+            .block_on(drive_metadata_response_probe_until_subscribed(&state))
+            .expect_err("empty metadata universe should fail closed after startup drain");
+
+        assert!(
+            failure
+                .to_string()
+                .contains("no source-owned instrument targets"),
+            "failure should explain the empty metadata target set: {failure}"
+        );
+        assert_eq!(state.install_calls.get(), 1);
+        assert!(!state.has_subscriptions.get());
     }
 }
 

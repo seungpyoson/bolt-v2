@@ -13,6 +13,7 @@ use crate::{
         BoltV3RealizedVolatilitySourceDiagnosticEvidence,
     },
     bolt_v3_market_families::OutcomeSide,
+    bolt_v3_numeric::Probability,
     bolt_v3_taker_pricing::TakerPricingBlockReason,
 };
 
@@ -153,8 +154,8 @@ pub(super) fn push_executable_edge_pricing_block(
 pub(super) struct EntryEvaluation {
     pub(super) gate: EntryGateDecision,
     pub(super) pricing_blocked_by: Vec<EntryPricingBlockReason>,
-    pub(super) fair_probability_up: Option<f64>,
-    pub(super) uncertainty_band_probability: Option<f64>,
+    pub(super) fair_probability_up: Option<Probability>,
+    pub(super) uncertainty_band_probability: Option<Probability>,
     pub(super) up_executable_edge: Option<BinaryOutcomeEdgeResult>,
     pub(super) down_executable_edge: Option<BinaryOutcomeEdgeResult>,
     pub(super) up_worst_case_ev_bps: Option<f64>,

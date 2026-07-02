@@ -352,11 +352,11 @@ TAG_SKIPPED_JOBS = (
     "build",
     "ci-provenance-emit",
 )
-PR_BASE_CHANGED_EXPR = "github.event.changes.base.ref.from != ''"
+PR_BASE_CHANGED_EXPR = "github.event.changes.base.ref.from && true || false"
 READY_PR_NOOP_EXPR = (
     "github.event.pull_request.draft == false"
     " && (github.event.action == 'reopened'"
-    " || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))"
+    " || (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false)))"
 )
 TAG_SKIP_REQUIRED_JOBS = (
     "deny",
@@ -623,6 +623,22 @@ SETUP_TARGET_DIR_RELATIVE_EXPORT_RE = re.compile(
 SETUP_TARGET_DIR_RELATIVE_OUTPUT_RE = re.compile(
     r'^\s*echo\s+"managed_target_dir_relative=\$managed_target_dir_relative"\s*>>\s*"\$GITHUB_OUTPUT"\s*$'
 )
+SETUP_CARGO_BUILD_JOBS_ENV_OUTPUT_RE = re.compile(
+    r'^\s*echo\s+"CARGO_BUILD_JOBS=\$cargo_build_jobs"\s*>>\s*"\$GITHUB_ENV"\s*$'
+)
+INLINE_CARGO_BUILD_JOBS_RE = re.compile(r"\bCARGO_BUILD_JOBS\b")
+CARGO_BUILD_JOBS_COMPILE_COMMAND_RE = re.compile(
+    r"(?:^|[\s;&|()])(?:"
+    r"cargo\s+(?:build|check|clippy|test|nextest|zigbuild)\b|"
+    r"cargo\s+--repo\b|"
+    r"just\s+(?:"
+    r"build|check-aarch64|clippy|source-fence|source-fence-static|cargo-shim-tests|"
+    r"test-archive|test-archive-run|test|"
+    r"bte-clippy|bte-test-archive|bte-test-archive-run|bte-test"
+    r")\b"
+    r")"
+)
+SPIKE_PROBE_MARKER_RE = re.compile(r"\bBOLT_SPIKE_[A-Z0-9_]*\b")
 SETUP_TARGET_DIR_RELATIVE_COMPUTE = (
     "managed_target_dir_relative=\"$(python3 -c 'import os, sys; "
     "print(os.path.relpath(sys.argv[2], sys.argv[1]))' \"$GITHUB_WORKSPACE\" \"$managed_target_dir\")\""
@@ -636,6 +652,7 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "inputs.include-nextest-version",
     "inputs.include-build-values",
     "inputs.lint-workflow-contract",
+    "inputs.build-jobs-key",
     "just ci-lint-workflow",
     "awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml",
     "just --evaluate deny_version",
@@ -644,6 +661,8 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate zig_version",
     "just --evaluate zigbuild_version",
     "just --evaluate rust_verification_owner",
+    "ci/github-actions-runners.toml",
+    "cargo_build_jobs=$cargo_build_jobs",
     'target-dir --repo "$GITHUB_WORKSPACE"',
     "os.path.relpath",
 )
@@ -657,6 +676,7 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
     "rust_verification_owner": "steps.shared.outputs.rust_verification_owner",
     "managed_target_dir": "steps.target_dir.outputs.managed_target_dir",
     "managed_target_dir_relative": "steps.target_dir.outputs.managed_target_dir_relative",
+    "cargo_build_jobs": "steps.shared.outputs.cargo_build_jobs",
 }
 SETUP_ACTION_ORDERED_STEPS = (
     "Lint workflow contract",
@@ -1183,8 +1203,9 @@ MERGIFY_PROOF_PR_READY_PREDICATE = (
 )
 MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE = (
     "github.event.action == 'edited' "
-    "&& !(github.event.changes.base.ref.from != '')"
+    "&& !(github.event.changes.base.ref.from && true || false)"
 )
+MERGIFY_PROOF_PR_HEAD_SHA = "github.event.pull_request.head.sha"
 
 EXPECTED_MERGE_READINESS_PROGRESS_IF = (
     "${{ " + MERGIFY_PROOF_PR_READY_PREDICATE + " "
@@ -1234,12 +1255,12 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "group: >- ${{ github.event_name == 'pull_request' "
     "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
     "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
-    "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
+    "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
     "|| github.event_name == 'pull_request' && github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
     "&& format('pr-{0}-deferred', github.event.number) || github.event_name == 'pull_request' "
     "&& github.event.pull_request.draft == false && (github.event.action == 'reopened' "
-    "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) "
+    "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false))) "
     "&& format('pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
     "&& format('pr-{0}-full', github.event.number) || github.event_name == 'workflow_dispatch' "
     "&& github.event.inputs.full_ci == 'true' && format('{0}-dispatch-full', github.ref_name) "
@@ -1251,7 +1272,7 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "group: >- actionlint-${{ github.event_name == 'pull_request' "
     "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
     "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
-    "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
+    "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
     "|| github.event_name == 'pull_request' && format('pr-{0}', github.event.number) "
     "|| github.event_name == 'merge_group' && format('mq-{0}', github.ref) "
     "|| format('{0}-{1}', github.ref_name, github.sha) }}",
@@ -1260,18 +1281,32 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "group: >- ${{ github.event_name == 'pull_request' "
     "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
     "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
-    "&& format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
+    "&& format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
     "|| github.event_name == 'pull_request' && github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
     "&& format('bvs-pr-{0}-deferred', github.event.number) || github.event_name == 'pull_request' "
     "&& github.event.pull_request.draft == false && (github.event.action == 'reopened' "
-    "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) "
+    "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false))) "
     "&& format('bvs-pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
     "&& format('bvs-pr-{0}-full', github.event.number) || github.event_name == 'workflow_dispatch' "
     "&& github.event.inputs.full_ci == 'true' && format('bvs-{0}-dispatch-full', github.ref_name) "
     "|| github.event_name == 'workflow_dispatch' && format('bvs-{0}-dispatch-iteration', github.ref_name) "
     "|| github.event_name == 'merge_group' && format('bvs-mq-{0}', github.ref) "
     "|| format('bvs-{0}-{1}', github.ref_name, github.sha) }}",
+    # .github/workflows/coverage-enforcer.yml — coverage-specific namespace with
+    # the same PR class split as ci.yml and a merge_group arm before fallback.
+    "group: >- coverage-${{ github.event_name == 'pull_request' "
+    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
+    "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
+    "|| github.event_name == 'pull_request' && github.event.pull_request.draft == true "
+    "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
+    "&& format('pr-{0}-deferred', github.event.number) || github.event_name == 'pull_request' "
+    "&& github.event.pull_request.draft == false && (github.event.action == 'reopened' "
+    "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false))) "
+    "&& format('pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
+    "&& format('pr-{0}-full', github.event.number) || github.event_name == 'merge_group' "
+    "&& format('mq-{0}', github.ref) || format('{0}-{1}', github.ref_name, github.sha) }}",
 })
 
 # cancel-in-progress is fail-closed for merge_group only when it is provably
@@ -1287,16 +1322,21 @@ KNOWN_SAFE_CANCEL_FORMS = frozenset(
     {
         "${{ github.event_name == 'pull_request' && !(github.event.pull_request.draft == false "
         "&& (github.event.action == 'reopened' || (github.event.action == 'edited' "
-        "&& !(github.event.changes.base.ref.from != '')))) || github.event_name == 'workflow_dispatch' }}",
+        "&& !(github.event.changes.base.ref.from && true || false)))) || github.event_name == 'workflow_dispatch' }}",
         "${{ github.event_name == 'pull_request' "
         "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
         "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
         "&& !(github.event.pull_request.draft == false && (github.event.action == 'reopened' "
-        "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))) "
+        "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false)))) "
         "|| github.event_name == 'workflow_dispatch' }}",
         "${{ github.event_name == 'pull_request' "
         "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
         "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) }}",
+        "${{ github.event_name == 'pull_request' "
+        "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+        "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
+        "&& !(github.event.pull_request.draft == false && (github.event.action == 'reopened' "
+        "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false)))) }}",
     }
 )
 
@@ -1409,9 +1449,20 @@ def mergify_proof_pr_concurrency_errors(
     if (
         head_ref_predicate not in normalized_group
         or MERGIFY_PROOF_PR_GROUP_TOKEN not in normalized_group
-        or "github.run_id" not in normalized_group
+        or MERGIFY_PROOF_PR_HEAD_SHA not in normalized_group
     ):
         errors.append("concurrency group must isolate Mergify proof PR runs")
+    if "github.run_id" in normalized_group:
+        errors.append("Mergify proof PR concurrency group must key on head SHA, not run_id")
+    # Split on event arms, not every `||`: the Mergify head-ref predicate itself
+    # contains an inner OR between stable and transient queue prefixes.
+    group_arms = re.split(r"\s+\|\|\s+github\.event_name\b", normalized_group)
+    if any(
+        head_ref_predicate in arm
+        and MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE in arm
+        for arm in group_arms
+    ):
+        errors.append("queue-branch metadata-only edits must use the Mergify proof group")
     if cancel_guard not in normalized_cancel:
         errors.append("cancel-in-progress must not cancel Mergify proof PR validations")
     return errors
@@ -1644,14 +1695,6 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
     errors.extend(mergify_proof_pr_concurrency_errors(group_text, cancel_text))
     errors.extend(merge_group_concurrency_workflow_errors(workflow_text))
     return errors
-
-
-MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review", "edited"})
-
-
-def mergify_temp_pr_requires_full_ci(*, action: str, pull_request_base_changed: bool | str) -> bool:
-    _ = pull_request_base_changed
-    return action in MERGIFY_TEMP_PR_FULL_ACTIONS
 
 
 def evaluate_ci_policy(
@@ -2547,6 +2590,40 @@ def verify_artifact_retention_policy(
 
 def job_has_setup_input(job_lines: list[str], name: str, value: str | None = None) -> bool:
     return any(block_has_input(block, name, value) for block in setup_action_blocks(job_lines))
+
+
+def step_if_condition(block: list[str]) -> str | None:
+    for line in block:
+        clean = strip_comment(line).strip()
+        if clean.startswith("if:"):
+            return clean[3:].strip()
+    return None
+
+
+def block_has_cargo_build_jobs_compile_command(block: list[str]) -> bool:
+    return CARGO_BUILD_JOBS_COMPILE_COMMAND_RE.search(uncommented_text(block)) is not None
+
+
+def cargo_build_jobs_setup_order_errors(job_lines: list[str], expected_key: str) -> list[str]:
+    setup_conditions: set[str | None] = set()
+    for block in step_blocks(job_lines):
+        if any("./.github/actions/setup-environment" in line for line in block) and block_has_input(
+            block, "build-jobs-key", expected_key
+        ):
+            setup_conditions.add(step_if_condition(block))
+            continue
+        if not block_has_cargo_build_jobs_compile_command(block):
+            continue
+        compile_condition = step_if_condition(block)
+        if None in setup_conditions or compile_condition in setup_conditions:
+            continue
+        if setup_conditions:
+            return [
+                "build-jobs-key setup-environment step must be unconditional "
+                "or match the cargo/just compile step condition"
+            ]
+        return ["build-jobs-key setup-environment step must run before cargo/just compile commands"]
+    return []
 
 
 def job_has_toolchain_component(job_lines: list[str], component: str) -> bool:
@@ -6569,6 +6646,8 @@ SOURCE_FENCE_STATIC_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/verify_lane_governance.py",
     "python3 scripts/test_verify_fail_closed_contracts.py",
     "python3 scripts/verify_fail_closed_contracts.py",
+    "python3 scripts/test_verify_probability_typed_pilot.py",
+    "python3 scripts/verify_probability_typed_pilot.py",
 )
 
 
@@ -10824,6 +10903,10 @@ def input_block_has_default_false(input_block: list[str]) -> bool:
     return any(re.match(r"^\s+default:\s*(['\"]?)false\1\s*$", strip_comment(line)) for line in input_block)
 
 
+def input_block_has_default_empty(input_block: list[str]) -> bool:
+    return any(re.match(r"^\s+default:\s*(?:\"\"|'')\s*$", strip_comment(line)) for line in input_block)
+
+
 def action_step_line(action_text: str, step_name: str) -> int | None:
     pattern = re.compile(rf"^\s+-\s+name:\s*{re.escape(step_name)}\s*$")
     for line_number, line in enumerate(action_text.splitlines(), start=1):
@@ -10854,6 +10937,8 @@ def extract_action_output_block(action_text: str, output_name: str) -> list[str]
 
 def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
+    if SPIKE_PROBE_MARKER_RE.search(uncommented_text(workflow_text.splitlines())):
+        errors.append("ci workflow must not contain BOLT_SPIKE probe instrumentation")
     errors.extend(workflow_steps_alias_errors(workflow_text))
     jobs = parse_jobs(workflow_text)
     triggers = workflow_trigger_keys(workflow_text)
@@ -11594,6 +11679,11 @@ def verify_setup_action(action_text: str) -> list[str]:
         errors.append("setup action missing include-managed-target-dir input")
     elif not input_block_has_default_false(target_dir_input):
         errors.append("setup action include-managed-target-dir default must be false")
+    cargo_build_jobs_input = extract_action_input_block(action_text, "build-jobs-key")
+    if not cargo_build_jobs_input:
+        errors.append("setup action missing build-jobs-key input")
+    elif not input_block_has_default_empty(cargo_build_jobs_input):
+        errors.append("setup action build-jobs-key default must be empty")
     if not any(SETUP_TARGET_DIR_EXPORT_RE.match(line) for line in uncommented_lines):
         errors.append("setup action must export managed_target_dir from target_dir step")
     if not any(SETUP_TARGET_DIR_RELATIVE_EXPORT_RE.match(line) for line in uncommented_lines):
@@ -11604,6 +11694,8 @@ def verify_setup_action(action_text: str) -> list[str]:
         errors.append("setup action target_dir step must write managed_target_dir_relative")
     if not any(SETUP_TARGET_DIR_IF_RE.match(line) for line in uncommented_lines):
         errors.append("setup action target dir step must be conditional")
+    if not any(SETUP_CARGO_BUILD_JOBS_ENV_OUTPUT_RE.match(line) for line in uncommented_lines):
+        errors.append("setup action must export configured CARGO_BUILD_JOBS to GITHUB_ENV")
     return errors
 
 
@@ -14161,6 +14253,7 @@ def load_github_actions_runners_config(
     artifact_retention = validate_artifact_retention_config(data, path)
     dispatch_cancel = validate_dispatch_cancel_config(data)
     jules_advisory = validate_jules_advisory_config(data)
+    cargo_build_jobs = validate_cargo_build_jobs_config(data)
     meter_workflows = meter.get("included_workflows")
     if not isinstance(meter_workflows, list) or not all(
         isinstance(workflow, str) and workflow for workflow in meter_workflows
@@ -14211,6 +14304,7 @@ def load_github_actions_runners_config(
         "artifact_retention": artifact_retention,
         "dispatch_cancel": dispatch_cancel,
         "jules_advisory": jules_advisory,
+        "cargo_build_jobs": cargo_build_jobs,
     }
 
 
@@ -14263,6 +14357,26 @@ def load_ci_runner_debug_config(path: pathlib.Path = DEFAULT_RUNNERS_CONFIG) -> 
         raise ValueError(
             "ci_runner_debug.ssh_runner_action must pin ubicloud/ssh-runner to a 40-character SHA"
         )
+    return config
+
+
+def validate_cargo_build_jobs_config(data: dict[str, object]) -> dict[str, dict[str, int]]:
+    section = data.get("cargo_build_jobs")
+    if not isinstance(section, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [cargo_build_jobs]")
+    config: dict[str, dict[str, int]] = {}
+    for workflow_key, job_table in section.items():
+        if not isinstance(workflow_key, str) or not workflow_key:
+            raise ValueError("cargo_build_jobs workflow keys must be non-empty strings")
+        if not isinstance(job_table, dict):
+            raise ValueError(f"cargo_build_jobs.{workflow_key} must be a table")
+        config[workflow_key] = {}
+        for job, value in job_table.items():
+            if not isinstance(job, str) or not job:
+                raise ValueError(f"cargo_build_jobs.{workflow_key} job keys must be non-empty strings")
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"cargo_build_jobs.{workflow_key}.{job} must be a positive integer")
+            config[workflow_key][job] = value
     return config
 
 
@@ -14500,6 +14614,7 @@ def verify_coverage_enforcer_workflow(workflows: dict[str, str]) -> list[str]:
     merge_group_trigger = "\n".join(workflow_trigger_block(workflow_text, "merge_group"))
     if "types: [checks_requested]" not in merge_group_trigger:
         errors.append(f"{workflow_name} merge_group trigger must use checks_requested")
+    errors.extend(f"{workflow_name} {error}" for error in verify_merge_group_concurrency(workflow_text))
 
     if top_level_mapping_items(workflow_text, "permissions") != EXPECTED_COVERAGE_ENFORCER_PERMISSIONS:
         errors.append(f"{workflow_name} permissions must match the exact read-only map")
@@ -15010,6 +15125,7 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
     tier_to_var = config["tier_to_var"]
     meter_included_workflows = set(config["meter_included_workflows"])
     workflow_tables = config["workflows"]
+    cargo_build_jobs = config["cargo_build_jobs"]
     errors: list[str] = []
     known_workflow_keys = set(WORKFLOW_RUNNER_CONFIG_KEYS.values())
     for workflow_key in sorted(workflow_tables):
@@ -15041,6 +15157,21 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
             errors.append(
                 f"workflows.{workflow_key} nextest-fingerprint and test-archive must use the same runner tier"
             )
+    if isinstance(cargo_build_jobs, dict):
+        for workflow_key, job_table in sorted(cargo_build_jobs.items()):
+            configured_workflow = workflow_tables.get(workflow_key)
+            if not isinstance(configured_workflow, dict):
+                errors.append(
+                    f"cargo_build_jobs.{workflow_key} in ci/github-actions-runners.toml has no workflow contract"
+                )
+                continue
+            if not isinstance(job_table, dict):
+                continue
+            for job in sorted(job_table):
+                if job not in configured_workflow:
+                    errors.append(
+                        f"cargo_build_jobs.{workflow_key}.{job} must reference a configured workflow job"
+                    )
 
     for workflow_name, workflow_text in sorted(workflows.items()):
         jobs = parse_jobs(workflow_text)
@@ -15056,6 +15187,14 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
         if not isinstance(job_table, dict):
             errors.append(f"workflows.{workflow_key} missing in ci/github-actions-runners.toml")
             continue
+        cargo_job_table = cargo_build_jobs.get(workflow_key) if isinstance(cargo_build_jobs, dict) else None
+        if not isinstance(cargo_job_table, dict):
+            cargo_job_table = {}
+        workflow_env_text = uncommented_text(top_level_block(workflow_text, "env"))
+        if INLINE_CARGO_BUILD_JOBS_RE.search(workflow_env_text):
+            errors.append(
+                f"{workflow_name} workflow-level CARGO_BUILD_JOBS must come from ci/github-actions-runners.toml via setup-environment"
+            )
         configured_jobs = set(job_table)
         actual_jobs = set(jobs)
         for job in sorted(configured_jobs - actual_jobs):
@@ -15082,6 +15221,24 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
             if actual_var != expected_var:
                 errors.append(
                     f"{workflow_name} {job} runs-on must use vars.{expected_var}, got vars.{actual_var}"
+                )
+            job_text = uncommented_text(jobs[job])
+            if INLINE_CARGO_BUILD_JOBS_RE.search(job_text):
+                errors.append(
+                    f"{workflow_name} {job} CARGO_BUILD_JOBS must come from ci/github-actions-runners.toml via setup-environment"
+                )
+            if job in cargo_job_table:
+                expected_key = f"{workflow_key}.{job}"
+                if not job_has_setup_input(jobs[job], "build-jobs-key", expected_key):
+                    errors.append(
+                        f"{workflow_name} {job} must resolve CARGO_BUILD_JOBS from cargo_build_jobs.{expected_key}"
+                    )
+                else:
+                    for setup_error in cargo_build_jobs_setup_order_errors(jobs[job], expected_key):
+                        errors.append(f"{workflow_name} {job} {setup_error}")
+            elif "build-jobs-key:" in job_text:
+                errors.append(
+                    f"{workflow_name} {job} has build-jobs-key but is missing from cargo_build_jobs.{workflow_key} in ci/github-actions-runners.toml"
                 )
     return errors
 

@@ -38,7 +38,7 @@ concurrency:
     actionlint-${{ github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)
+        && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
         || github.event_name == 'pull_request'
         && format('pr-{0}', github.event.number)
         || github.event_name == 'merge_group'

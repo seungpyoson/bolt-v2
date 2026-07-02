@@ -84,6 +84,31 @@ fn signal_quote_tick_updates_pricing_from_configured_signal_data() {
 }
 
 #[test]
+fn invalid_signal_quote_tick_clears_stale_pricing_state() {
+    let mut strategy = test_strategy();
+    strategy
+        .pricing
+        .observe_reference_current_price(&fast_spot("chainlink_primary", 101.0, 1_100));
+    strategy
+        .on_quote(&quote_tick("SIGNAL.SOURCE", 100.5, 102.5, 1_200))
+        .expect("signal quote should seed pricing");
+    assert!(strategy.pricing.selected_pricing_spot().is_some());
+    assert!(!strategy.pricing.fast_venue_incoherent);
+
+    strategy
+        .on_quote(&invalid_quote_tick("SIGNAL.SOURCE", 1_300))
+        .expect("invalid signal quote should fail closed");
+
+    assert_eq!(strategy.pricing.selected_pricing_spot().cloned(), None);
+    assert!(strategy.pricing.fast_venue_incoherent);
+    assert!(strategy.active.fast_venue_incoherent);
+    assert!(strategy.pricing.lead_quality_policy_applied);
+    assert_eq!(strategy.pricing.last_lead_gap_probability, None);
+    assert_eq!(strategy.pricing.last_jitter_penalty_probability, None);
+    assert_eq!(strategy.pricing.last_lead_agreement_corr, None);
+}
+
+#[test]
 fn signal_quote_tick_does_not_warm_active_reference_state() {
     let mut strategy = test_strategy();
     let mut market = candidate_market("market-1", 1_000);
@@ -397,7 +422,7 @@ fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
     let fair_probability = strategy
         .current_fair_probability_up_at(4_000)
         .expect("warmed pricing state should produce fair probability");
-    assert!(fair_probability > 0.5);
+    assert!(fair_probability.value() > 0.5);
 
     let decision = strategy.entry_evaluation_at(4_000);
     assert!(decision.pricing_blocked_by.is_empty());
@@ -732,7 +757,7 @@ fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
     assert!(
         decision
             .fair_probability_up
-            .is_some_and(|value| value > 0.5),
+            .is_some_and(|value| value.value() > 0.5),
         "live pricing should infer an up edge from spot above strike"
     );
     assert!(decision.up_worst_case_ev_bps.is_some());
@@ -917,8 +942,8 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
-    strategy.pricing.last_lead_gap_probability = Some(0.0);
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     register_test_strategy_with_active_instruments(&mut strategy);
 
     let up_instrument_id = strategy
@@ -977,17 +1002,18 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
     // time term (realized_vol 1.5 * sqrt(T)) at seconds_to_expiry = 300 (snapshot
     // start 1_000ms, eval 1_200ms => 0 elapsed seconds). The prior inverted term
     // was exactly 0 at market open, which is why this used to assert band == 0.5.
-    let expected_band = 0.5
-        + crate::bolt_v3_taker_updown_signal::time_uncertainty_probability(
-            1.5,
-            300,
-            crate::bolt_v3_numeric::SECONDS_PER_YEAR_F64,
-        )
-        .expect("finite realized vol yields a time-uncertainty band");
+    let expected_time_band = crate::bolt_v3_taker_updown_signal::time_uncertainty_probability(
+        1.5,
+        300,
+        crate::bolt_v3_numeric::SECONDS_PER_YEAR_F64,
+    )
+    .expect("finite realized vol yields a time-uncertainty band")
+    .value();
+    let expected_band = 0.5 + expected_time_band;
     assert!(
         evaluation
             .uncertainty_band_probability
-            .is_some_and(|band| (band - expected_band).abs() < 1e-9),
+            .is_some_and(|band| (band.value() - expected_band).abs() < 1e-9),
         "final selected-side band should be the recomputed sized fee plus the diffusion time term: {evaluation:#?}"
     );
 }
@@ -1065,7 +1091,7 @@ fn sized_acceptance_rejects_notional_unsupported_by_final_repriced_edge() {
     let band_probability = calibration_evaluation
         .uncertainty_band_probability
         .expect("calibration must expose the uncertainty band");
-    let worst_case_probability = fair_probability - band_probability;
+    let worst_case_probability = fair_probability.narrowed(band_probability).value();
     assert!(
         (0.52..=0.97).contains(&worst_case_probability),
         "calibration produced an unusable worst-case probability \
@@ -1256,8 +1282,8 @@ fn executable_edge_fee_uses_exact_size_vwap_price_not_limit_price() {
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
-    strategy.pricing.last_lead_gap_probability = Some(0.0);
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     register_test_strategy_with_active_instruments(&mut strategy);
     set_configured_books_depth(
         &mut strategy,
@@ -1309,8 +1335,8 @@ fn executable_edge_fee_requires_cached_instrument_in_test_builds() {
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
-    strategy.pricing.last_lead_gap_probability = Some(0.0);
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     set_configured_books_depth(
         &mut strategy,
         &[
@@ -1494,8 +1520,8 @@ fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
-    strategy.pricing.last_lead_gap_probability = Some(0.02);
-    strategy.pricing.last_jitter_penalty_probability = Some(0.01);
+    strategy.pricing.last_lead_gap_probability = Some(probability(0.02));
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.01));
 
     let decision = strategy.entry_evaluation_at(1_200);
 
@@ -1503,7 +1529,7 @@ fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
     assert!(
         decision
             .uncertainty_band_probability
-            .is_some_and(|value| value > 0.0)
+            .is_some_and(|value| value.value() > 0.0)
     );
 }
 
@@ -1611,7 +1637,10 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
         Some("<SOURCE_ID>")
     );
     assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
-    assert_eq!(fields.fair_probability_up, evaluation.fair_probability_up);
+    assert_eq!(
+        fields.fair_probability_up,
+        evaluation.fair_probability_up.map(Probability::value)
+    );
     assert_eq!(fields.selected_side, evaluation.selected_side);
     assert!(fields.uncertainty_band_probability.is_some());
     assert!(fields.uncertainty_band_live);
@@ -1774,7 +1803,7 @@ fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatili
 
     assert_eq!(
         strategy.current_position_fair_probability_up_at(1_200),
-        Some(1.0)
+        Some(probability(1.0))
     );
     assert!(
         strategy

@@ -76,6 +76,10 @@ verify-bolt-v3-schema-current: check-workspace
     python3 scripts/test_verify_bolt_v3_schema_current.py
     python3 scripts/verify_bolt_v3_schema_current.py
 
+verify-probability-typed-pilot: check-workspace
+    python3 scripts/test_verify_probability_typed_pilot.py
+    python3 scripts/verify_probability_typed_pilot.py
+
 verify-bolt-v3-core-boundary: check-workspace
     python3 scripts/test_verify_bolt_v3_core_boundary.py
     python3 scripts/verify_bolt_v3_core_boundary.py
@@ -393,6 +397,8 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_fail_closed_contracts.py
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
     python3 scripts/verify_bolt_v3_legacy_default_fence.py
+    python3 scripts/test_verify_probability_typed_pilot.py
+    python3 scripts/verify_probability_typed_pilot.py
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/test_verify_outcome_group_nt_reuse.py

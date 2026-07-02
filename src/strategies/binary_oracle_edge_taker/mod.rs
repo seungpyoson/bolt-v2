@@ -44,6 +44,8 @@ use crate::{
         BoltV3ExitTriggerSource, BoltV3ExposureOccupancy, BoltV3ForcedFlatReason,
         BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OutcomeSide,
         BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        number_evidence as evidence_number, option_number_evidence as option_evidence_number,
+        option_probability_evidence as option_evidence_probability, probability_evidence,
         realized_vol_blocker_to_exit_evidence, realized_volatility_aggregation_evidence_label,
         realized_volatility_block_reason_evidence_label,
         realized_volatility_pricing_component_evidence_label,
@@ -54,8 +56,8 @@ use crate::{
     },
     bolt_v3_market_families::{self, FairProbabilityInputs, OutcomeSide},
     bolt_v3_numeric::{
-        BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, SECONDS_PER_YEAR_F64,
-        UNIT_F64, clamp_probability, is_non_negative_finite, is_positive_finite,
+        BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, Probability,
+        SECONDS_PER_YEAR_F64, UNIT_F64, is_non_negative_finite, is_positive_finite,
         notional_float_tolerance,
     },
     bolt_v3_order_execution::{
@@ -98,7 +100,6 @@ use crate::{
         BoltV3EntryPricingBlockReason, BoltV3ExitBlockedReason, BoltV3ExitDecisionOutcome,
     },
     bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity},
-    bolt_v3_numeric::sanitize_probability,
     bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
     bolt_v3_taker_pricing::VenueTimingState,
     bolt_v3_taker_updown_signal::{price_agreement_corr, price_gap_probability},
@@ -447,23 +448,29 @@ impl PricingState {
         if let Some(candidate) =
             arbitrate_lead_reference(&candidates, min_agreement_corr, max_jitter_ms)
         {
+            let (Some(price), Some(observed_ts_ms), Some(jitter_penalty_probability)) = (
+                candidate.price,
+                candidate.observed_ts_ms,
+                PricingState::jitter_penalty_probability(candidate.jitter_ms, max_jitter_ms),
+            ) else {
+                self.set_selected_pricing_spot(None);
+                self.last_lead_gap_probability = None;
+                self.last_jitter_penalty_probability = None;
+                self.last_lead_agreement_corr = None;
+                self.last_fast_venue_age_ms = None;
+                self.last_fast_venue_jitter_ms = None;
+                self.fast_venue_incoherent = true;
+                return;
+            };
             let fast_spot = FastSpotObservation {
                 venue: candidate.venue_name.clone(),
-                price: candidate
-                    .price
-                    .expect("selected lead venue should carry price"),
-                observed_ts_ms: candidate
-                    .observed_ts_ms
-                    .expect("selected lead venue should carry timestamp"),
+                price,
+                observed_ts_ms,
                 received_ts_ms: None,
             };
             self.set_selected_pricing_spot(Some(fast_spot));
             self.last_lead_gap_probability = Some(candidate.lead_gap_probability);
-            self.last_jitter_penalty_probability = Some(if max_jitter_ms == 0 {
-                0.0
-            } else {
-                (candidate.jitter_ms as f64 / max_jitter_ms as f64).clamp(0.0, 1.0)
-            });
+            self.last_jitter_penalty_probability = Some(jitter_penalty_probability);
             self.last_lead_agreement_corr = Some(candidate.agreement_corr);
             self.last_fast_venue_age_ms = Some(candidate.age_ms);
             self.last_fast_venue_jitter_ms = Some(candidate.jitter_ms);
@@ -723,16 +730,31 @@ impl BinaryOracleEdgeTaker {
     fn observe_signal_quote(&mut self, quote: &FastSpotObservation) {
         self.pricing
             .observe_signal_quote(quote, &taker_pricing_config(&self.config));
+        self.after_signal_quote_observed(quote.observed_ts_ms, quote.received_ts_ms);
+    }
+
+    fn observe_invalid_signal_quote(
+        &mut self,
+        venue: &str,
+        observed_ts_ms: u64,
+        received_ts_ms: Option<u64>,
+    ) {
+        self.pricing
+            .observe_invalid_signal_quote(venue, observed_ts_ms);
+        self.after_signal_quote_observed(observed_ts_ms, received_ts_ms);
+    }
+
+    fn after_signal_quote_observed(&mut self, observed_ts_ms: u64, received_ts_ms: Option<u64>) {
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
         self.refresh_fee_readiness();
         self.sync_exposure_context_from_active();
         if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
-                quote.observed_ts_ms,
+                observed_ts_ms,
                 ExitEvaluationTriggerContext::new(
                     BoltV3ExitTriggerSource::SignalQuote,
-                    quote.observed_ts_ms,
-                    quote.received_ts_ms,
+                    observed_ts_ms,
+                    received_ts_ms,
                 ),
             )
         {
@@ -740,7 +762,7 @@ impl BinaryOracleEdgeTaker {
                 "binary_oracle_edge_taker exit submit failed on signal update: strategy_id={} market_id={:?} ts_ms={} error={:#}",
                 self.config.strategy_id,
                 self.active.market_id,
-                quote.observed_ts_ms,
+                observed_ts_ms,
                 error,
             );
         }
@@ -1800,7 +1822,7 @@ impl BinaryOracleEdgeTaker {
             })
     }
 
-    fn current_fair_probability_up_at(&self, now_ms: u64) -> Option<f64> {
+    fn current_fair_probability_up_at(&self, now_ms: u64) -> Option<Probability> {
         self.pricing
             .entry_pricing_at(
                 &taker_pricing_config(&self.config),
@@ -1811,7 +1833,7 @@ impl BinaryOracleEdgeTaker {
                 },
             )
             .ok()
-            .map(|result| result.fair_probability_up)
+            .and_then(|result| Probability::new(result.fair_probability_up))
     }
 
     fn current_position_fast_spot(&self) -> Option<&FastSpotObservation> {
@@ -1840,7 +1862,7 @@ impl BinaryOracleEdgeTaker {
         now_ms: u64,
         up_fee_bps: f64,
         down_fee_bps: f64,
-    ) -> Option<f64> {
+    ) -> Option<Probability> {
         let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms)?;
         let realized_vol = self.current_realized_vol_at(now_ms)?;
         self.uncertainty_band_probability_for_seconds(
@@ -1857,11 +1879,11 @@ impl BinaryOracleEdgeTaker {
         realized_vol: f64,
         up_fee_bps: f64,
         down_fee_bps: f64,
-    ) -> Option<f64> {
+    ) -> Option<Probability> {
         let time_uncertainty_probability =
             time_uncertainty_probability(realized_vol, seconds_to_expiry, SECONDS_PER_YEAR_F64)?;
         let fee_uncertainty_probability =
-            clamp_probability(up_fee_bps.max(down_fee_bps) / BPS_DENOMINATOR);
+            Probability::clamped(up_fee_bps.max(down_fee_bps) / BPS_DENOMINATOR)?;
         let lead_gap_probability = self.pricing.last_lead_gap_probability?;
         let jitter_penalty_probability = self.pricing.last_jitter_penalty_probability?;
 
@@ -1905,16 +1927,23 @@ impl BinaryOracleEdgeTaker {
             theta_scaled_min_edge_bps: evaluation
                 .min_worst_case_ev_bps
                 .or_else(|| self.current_scaled_min_edge_bps_at(now_ms)),
-            fair_probability_up: evaluation.fair_probability_up,
-            fair_probability_down: evaluation.fair_probability_up.map(|value| UNIT_F64 - value),
-            uncertainty_band_probability: evaluation.uncertainty_band_probability,
+            fair_probability_up: evaluation.fair_probability_up.map(Probability::value),
+            fair_probability_down: evaluation
+                .fair_probability_up
+                .map(|value| value.complement().value()),
+            uncertainty_band_probability: evaluation
+                .uncertainty_band_probability
+                .map(Probability::value),
             uncertainty_band_live: evaluation.uncertainty_band_probability.is_some(),
             uncertainty_band_reason: if evaluation.uncertainty_band_probability.is_some() {
                 EVIDENCE_REASON_DERIVED_FROM_LEAD_GAP_JITTER_TIME_AND_FEE
             } else {
                 EVIDENCE_REASON_UNCERTAINTY_BAND_UNAVAILABLE
             },
-            lead_agreement_corr: self.pricing.last_lead_agreement_corr,
+            lead_agreement_corr: self
+                .pricing
+                .last_lead_agreement_corr
+                .map(Probability::value),
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
             up_fee_bps: executable_edge_fee_bps(evaluation.up_executable_edge),
@@ -2460,8 +2489,8 @@ impl BinaryOracleEdgeTaker {
     fn executable_edge_for_side(
         &self,
         side: OutcomeSide,
-        fair_probability_up: f64,
-        adjusted_probability_up: f64,
+        fair_probability_up: Probability,
+        adjusted_probability_up: Probability,
         minimum_edge_bps: f64,
         probe: ExecutableEntryProbe,
     ) -> BinaryOutcomeEdgeResult {
@@ -2490,21 +2519,17 @@ impl BinaryOracleEdgeTaker {
         &self,
         now_ms: u64,
         side: OutcomeSide,
-        fair_probability_up: f64,
+        fair_probability_up: Probability,
         fee_uncertainty_bps: f64,
-    ) -> Option<(f64, f64)> {
+    ) -> Option<(Probability, Probability)> {
         let uncertainty_band_probability = self.current_uncertainty_band_probability_at(
             now_ms,
             fee_uncertainty_bps,
             fee_uncertainty_bps,
         )?;
         let adjusted_probability_up = match side {
-            OutcomeSide::Up => {
-                clamp_probability(fair_probability_up - uncertainty_band_probability)
-            }
-            OutcomeSide::Down => {
-                clamp_probability(fair_probability_up + uncertainty_band_probability)
-            }
+            OutcomeSide::Up => fair_probability_up.narrowed(uncertainty_band_probability),
+            OutcomeSide::Down => fair_probability_up.widened(uncertainty_band_probability),
         };
         Some((uncertainty_band_probability, adjusted_probability_up))
     }
@@ -3026,7 +3051,7 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn current_position_fair_probability_up_at(&self, now_ms: u64) -> Option<f64> {
+    fn current_position_fair_probability_up_at(&self, now_ms: u64) -> Option<Probability> {
         let open_position = &self.managed_position()?.position;
         let spot_price = self.current_position_spot_price()?;
         let strike_price = open_position
@@ -3046,7 +3071,7 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn current_position_uncertainty_band_probability_at(&self, now_ms: u64) -> Option<f64> {
+    fn current_position_uncertainty_band_probability_at(&self, now_ms: u64) -> Option<Probability> {
         let seconds_to_expiry = self.current_position_seconds_to_expiry_at(now_ms)?;
         let realized_vol = self.current_realized_vol_at(now_ms)?;
         let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
@@ -3420,12 +3445,15 @@ impl BinaryOracleEdgeTaker {
             trigger_ts_init_ms: trigger_context.ts_init_ms,
             pricing_kurtosis: self.config.pricing_kurtosis,
             exit_hysteresis_bps: self.config.exit_hysteresis_bps,
-            fair_probability_up: self.current_position_fair_probability_up_at(now_ms),
+            fair_probability_up: self
+                .current_position_fair_probability_up_at(now_ms)
+                .map(Probability::value),
             fair_probability_down: self
                 .current_position_fair_probability_up_at(now_ms)
-                .map(|value| UNIT_F64 - value),
+                .map(|value| value.complement().value()),
             uncertainty_band_probability: self
-                .current_position_uncertainty_band_probability_at(now_ms),
+                .current_position_uncertainty_band_probability_at(now_ms)
+                .map(Probability::value),
             up_fee_bps: self.position_outcome_fee_bps(OutcomeSide::Up),
             down_fee_bps: self.position_outcome_fee_bps(OutcomeSide::Down),
             hold_ev_bps: decision.evaluation.hold_ev_bps,
@@ -3945,13 +3973,11 @@ impl BinaryOracleEdgeTaker {
             fair_probability_up: decision
                 .evaluation
                 .fair_probability_up
-                .filter(|value| value.is_finite())
-                .map_or_else(String::new, evidence_number),
+                .map_or_else(String::new, probability_evidence),
             uncertainty_band_probability: decision
                 .evaluation
                 .uncertainty_band_probability
-                .filter(|value| value.is_finite())
-                .map_or_else(String::new, evidence_number),
+                .map_or_else(String::new, probability_evidence),
             expected_edge_basis_points: expected_edge_basis_points
                 .filter(|value| value.is_finite())
                 .map_or_else(String::new, evidence_number),
@@ -3984,7 +4010,7 @@ impl BinaryOracleEdgeTaker {
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
             fast_venue_incoherent: self.pricing.fast_venue_incoherent,
-            lead_agreement_corr: option_evidence_number(self.pricing.last_lead_agreement_corr),
+            lead_agreement_corr: option_evidence_probability(self.pricing.last_lead_agreement_corr),
             fee_rate_basis_points: String::new(),
             selected_side: decision
                 .evaluation
@@ -4056,17 +4082,12 @@ impl BinaryOracleEdgeTaker {
             .ok_or_else(|| {
                 anyhow::anyhow!("entry strategy input evidence requires theta-scaled minimum edge")
             })?;
-        let fair_probability_up = decision
-            .evaluation
-            .fair_probability_up
-            .filter(|value| value.is_finite())
-            .ok_or_else(|| {
-                anyhow::anyhow!("entry strategy input evidence requires fair probability")
-            })?;
+        let fair_probability_up = decision.evaluation.fair_probability_up.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires fair probability")
+        })?;
         let uncertainty_band_probability = decision
             .evaluation
             .uncertainty_band_probability
-            .filter(|value| value.is_finite())
             .ok_or_else(|| {
                 anyhow::anyhow!("entry strategy input evidence requires uncertainty band")
             })?;
@@ -4182,8 +4203,8 @@ impl BinaryOracleEdgeTaker {
             pricing_kurtosis: evidence_number(self.config.pricing_kurtosis),
             theta_decay_factor: evidence_number(self.config.theta_decay_factor),
             theta_scaled_min_edge_bps: evidence_number(theta_scaled_min_edge_bps),
-            fair_probability_up: evidence_number(fair_probability_up),
-            uncertainty_band_probability: evidence_number(uncertainty_band_probability),
+            fair_probability_up: probability_evidence(fair_probability_up),
+            uncertainty_band_probability: probability_evidence(uncertainty_band_probability),
             expected_edge_basis_points: evidence_number(expected_edge_basis_points),
             worst_case_edge_basis_points: evidence_number(worst_case_edge_basis_points),
             up_worst_case_edge_basis_points: option_evidence_number(
@@ -4212,7 +4233,7 @@ impl BinaryOracleEdgeTaker {
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
             fast_venue_incoherent: self.pricing.fast_venue_incoherent,
-            lead_agreement_corr: option_evidence_number(self.pricing.last_lead_agreement_corr),
+            lead_agreement_corr: option_evidence_probability(self.pricing.last_lead_agreement_corr),
             fee_rate_basis_points: evidence_number(fee_rate_basis_points),
             selected_side: Some(outcome_side_evidence_label(selected_side).to_string()),
             submission_instrument_id: instrument_id.to_string(),
@@ -4872,10 +4893,9 @@ impl BinaryOracleEdgeTaker {
         };
         evaluation.uncertainty_band_probability = Some(uncertainty_band_probability);
 
-        let up_adjusted_probability_up =
-            clamp_probability(fair_probability_up - uncertainty_band_probability);
+        let up_adjusted_probability_up = fair_probability_up.narrowed(uncertainty_band_probability);
         let down_adjusted_probability_up =
-            clamp_probability(fair_probability_up + uncertainty_band_probability);
+            fair_probability_up.widened(uncertainty_band_probability);
         let up_executable_edge = match up_probe {
             Ok(probe) => self.executable_edge_for_side(
                 OutcomeSide::Up,
@@ -5167,9 +5187,16 @@ impl DataActor for BinaryOracleEdgeTaker {
         if self
             .signal_instrument_id()
             .is_some_and(|instrument_id| quote.instrument_id == instrument_id)
-            && let Some(signal_quote) = self.signal_quote_from_tick(quote)
         {
-            self.observe_signal_quote(&signal_quote);
+            if let Some(signal_quote) = self.signal_quote_from_tick(quote) {
+                self.observe_signal_quote(&signal_quote);
+            } else if let Some(signal_venue) = self.config.signal_venue.clone() {
+                self.observe_invalid_signal_quote(
+                    &signal_venue,
+                    quote.ts_event.as_u64() / NANOS_PER_MILLI_U64,
+                    Some(quote.ts_init.as_u64() / NANOS_PER_MILLI_U64),
+                );
+            }
         }
         for snapshot in self.context.observe_realized_volatility_quote(quote) {
             self.pricing.observe_realized_vol_snapshot(snapshot);
@@ -5690,10 +5717,6 @@ const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quan
 const EXIT_BLOCK_REASON_EXIT_PRICE_MISSING: &str = "exit_price_missing";
 const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_positive";
 
-fn evidence_number(value: f64) -> String {
-    value.to_string()
-}
-
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 struct LeadVenueSignal {
@@ -5702,20 +5725,18 @@ struct LeadVenueSignal {
     observed_ts_ms: Option<u64>,
     age_ms: u64,
     jitter_ms: u64,
-    agreement_corr: f64,
+    agreement_corr: Probability,
     effective_weight: f64,
-    lead_gap_probability: f64,
+    lead_gap_probability: Probability,
 }
 
 #[cfg(test)]
 impl LeadVenueSignal {
     fn is_eligible(&self, min_agreement_corr: f64, max_jitter_ms: u64) -> bool {
-        self.agreement_corr.is_finite()
-            && self.agreement_corr >= min_agreement_corr
+        self.agreement_corr.value() >= min_agreement_corr
             && self.jitter_ms <= max_jitter_ms
             && self.effective_weight.is_finite()
             && self.effective_weight > 0.0
-            && sanitize_probability(self.lead_gap_probability).is_some()
     }
 }
 
@@ -5758,7 +5779,7 @@ fn lead_composite_score(
     let freshness_score = 1.0 / (candidate.age_ms as f64 + 1.0);
     let jitter_score = 1.0 / (candidate.jitter_ms as f64 + 1.0);
 
-    Some(candidate.agreement_corr + freshness_score + jitter_score)
+    Some(candidate.agreement_corr.value() + freshness_score + jitter_score)
 }
 
 #[cfg(test)]
@@ -5783,10 +5804,6 @@ fn best_healthy_oracle_price(snapshot: &ReferenceSnapshot) -> Option<f64> {
                 .then_with(|| lhs.venue_name.cmp(&rhs.venue_name))
         })
         .and_then(|venue| venue.observed_price)
-}
-
-fn option_evidence_number(value: Option<f64>) -> Option<String> {
-    value.filter(|value| value.is_finite()).map(evidence_number)
 }
 
 fn outcome_side_to_evidence(side: OutcomeSide) -> BoltV3OutcomeSide {

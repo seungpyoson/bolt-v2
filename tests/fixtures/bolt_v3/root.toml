@@ -182,6 +182,7 @@ fileout_level = "INFO"
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
 runtime_capture_start_poll_interval_ms = 50
+data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"

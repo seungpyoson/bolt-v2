@@ -13,10 +13,7 @@ use crate::{
         FairValuePricingBlockReason, FairValuePricingConfig, FairValuePricingInputs,
         FairValuePricingRequest, FairValuePricingResult, FairValuePricingState,
     },
-    bolt_v3_numeric::{
-        MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64, clamp_probability, is_positive_finite,
-        sanitize_probability,
-    },
+    bolt_v3_numeric::{MILLIS_PER_SECOND_U64, Probability, UNIT_F64, ZERO_F64, is_positive_finite},
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_taker_updown_signal::{
         ThetaScalerInputs, compute_theta_scaler, price_agreement_corr, price_gap_probability,
@@ -102,9 +99,9 @@ impl VenueTimingState {
 pub struct TakerPricingState {
     fair_value: FairValuePricingState,
     pub(crate) venue_timing: BTreeMap<String, VenueTimingState>,
-    pub(crate) last_lead_gap_probability: Option<f64>,
-    pub(crate) last_jitter_penalty_probability: Option<f64>,
-    pub(crate) last_lead_agreement_corr: Option<f64>,
+    pub(crate) last_lead_gap_probability: Option<Probability>,
+    pub(crate) last_jitter_penalty_probability: Option<Probability>,
+    pub(crate) last_lead_agreement_corr: Option<Probability>,
     pub(crate) last_fast_venue_age_ms: Option<u64>,
     pub(crate) last_fast_venue_jitter_ms: Option<u64>,
     pub(crate) fast_venue_incoherent: bool,
@@ -166,6 +163,7 @@ impl TakerPricingState {
         config: &TakerPricingConfig<'_>,
     ) {
         if !is_positive_finite(quote.price) {
+            self.observe_invalid_signal_quote(&quote.venue, quote.observed_ts_ms);
             return;
         }
 
@@ -183,48 +181,84 @@ impl TakerPricingState {
             .last_reference_fair_value()
             .filter(|value| is_positive_finite(*value))
         else {
-            self.fair_value.clear_pricing_spot();
-            self.last_lead_gap_probability = None;
-            self.last_jitter_penalty_probability = None;
-            self.last_lead_agreement_corr = None;
-            self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
-            self.last_fast_venue_jitter_ms = Some(jitter_ms);
-            self.fast_venue_incoherent = true;
+            self.mark_signal_incoherent(jitter_ms);
             return;
         };
-        let agreement_corr = price_agreement_corr(quote.price, reference_fair_value)
-            .expect("validated signal/reference current prices should yield agreement");
-        let lead_gap_probability = price_gap_probability(quote.price, reference_fair_value)
-            .expect("validated signal/reference current prices should yield a gap");
-        let eligible = agreement_corr >= config.lead_agreement_min_corr
-            && jitter_ms <= config.lead_jitter_max_ms
-            && sanitize_probability(lead_gap_probability).is_some();
+        let Some(agreement_corr) = price_agreement_corr(quote.price, reference_fair_value) else {
+            self.mark_signal_incoherent(jitter_ms);
+            return;
+        };
+        // Keep the gap derivation separate from the agreement guard. The price
+        // helpers currently share a ratio, but either one becoming non-derivable
+        // must fail closed.
+        let (Some(lead_gap_probability), Some(jitter_penalty_probability)) = (
+            price_gap_probability(quote.price, reference_fair_value),
+            Self::jitter_penalty_probability(jitter_ms, config.lead_jitter_max_ms),
+        ) else {
+            self.mark_signal_incoherent(jitter_ms);
+            return;
+        };
+        let eligible = agreement_corr.value() >= config.lead_agreement_min_corr
+            && jitter_ms <= config.lead_jitter_max_ms;
 
         if eligible {
             self.fair_value.observe_pricing_spot(quote);
-            self.last_lead_gap_probability = Some(lead_gap_probability);
-            self.last_jitter_penalty_probability = Some(if config.lead_jitter_max_ms == 0 {
-                ZERO_F64
-            } else {
-                clamp_probability(jitter_ms as f64 / config.lead_jitter_max_ms as f64)
-            });
-            self.last_lead_agreement_corr = Some(agreement_corr);
-            self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
-            self.last_fast_venue_jitter_ms = Some(jitter_ms);
-            self.fast_venue_incoherent = false;
         } else {
             self.fair_value.clear_pricing_spot();
-            self.last_lead_gap_probability = Some(lead_gap_probability);
-            self.last_jitter_penalty_probability = Some(if config.lead_jitter_max_ms == 0 {
-                ZERO_F64
-            } else {
-                clamp_probability(jitter_ms as f64 / config.lead_jitter_max_ms as f64)
-            });
-            self.last_lead_agreement_corr = Some(agreement_corr);
-            self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
-            self.last_fast_venue_jitter_ms = Some(jitter_ms);
-            self.fast_venue_incoherent = true;
         }
+        self.record_signal_quality(
+            lead_gap_probability,
+            jitter_penalty_probability,
+            agreement_corr,
+            jitter_ms,
+            !eligible,
+        );
+    }
+
+    pub fn observe_invalid_signal_quote(&mut self, venue: &str, observed_ts_ms: u64) {
+        self.lead_quality_policy_applied = true;
+        let jitter_ms = self.record_signal_quote_timing(venue, observed_ts_ms);
+        self.mark_signal_incoherent(jitter_ms);
+    }
+
+    pub(crate) fn jitter_penalty_probability(
+        jitter_ms: u64,
+        lead_jitter_max_ms: u64,
+    ) -> Option<Probability> {
+        if lead_jitter_max_ms == 0 {
+            Probability::new(ZERO_F64)
+        } else {
+            Probability::clamped(jitter_ms as f64 / lead_jitter_max_ms as f64)
+        }
+    }
+
+    fn record_signal_quality(
+        &mut self,
+        lead_gap_probability: Probability,
+        jitter_penalty_probability: Probability,
+        agreement_corr: Probability,
+        jitter_ms: u64,
+        fast_venue_incoherent: bool,
+    ) {
+        self.last_lead_gap_probability = Some(lead_gap_probability);
+        self.last_jitter_penalty_probability = Some(jitter_penalty_probability);
+        self.last_lead_agreement_corr = Some(agreement_corr);
+        self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
+        self.last_fast_venue_jitter_ms = Some(jitter_ms);
+        self.fast_venue_incoherent = fast_venue_incoherent;
+    }
+
+    fn mark_signal_incoherent(&mut self, jitter_ms: u64) {
+        // Preserve spike cooldown and the lead-quality policy latch. They describe
+        // observed signal history, while this reset clears only derived pricing
+        // inputs that must fail closed until a coherent signal quote arrives.
+        self.fair_value.clear_pricing_spot();
+        self.last_lead_gap_probability = None;
+        self.last_jitter_penalty_probability = None;
+        self.last_lead_agreement_corr = None;
+        self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
+        self.last_fast_venue_jitter_ms = Some(jitter_ms);
+        self.fast_venue_incoherent = true;
     }
 
     pub fn observe_realized_vol_snapshot(&mut self, snapshot: RealizedVolSnapshot) {
@@ -682,6 +716,79 @@ mod tests {
     }
 
     #[test]
+    fn invalid_signal_quote_clears_stale_fast_spot_and_keeps_reference_from_repopulating() {
+        let config = config(1, 30, 10);
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            100.0,
+            1_000,
+        ));
+        pricing.observe_signal_quote(&quote(signal_venue(), 100.0, 1_000), &config);
+        assert_eq!(
+            pricing.selected_pricing_spot().map(|spot| spot.price),
+            Some(100.0)
+        );
+        assert!(pricing.last_lead_gap_probability.is_some());
+        assert!(pricing.last_jitter_penalty_probability.is_some());
+        assert!(pricing.last_lead_agreement_corr.is_some());
+
+        pricing.observe_signal_quote(&quote(signal_venue(), f64::NAN, 1_100), &config);
+
+        assert_eq!(pricing.selected_pricing_spot(), None);
+        assert!(pricing.fast_venue_incoherent);
+        assert!(pricing.lead_quality_policy_applied);
+        assert_eq!(pricing.last_lead_gap_probability, None);
+        assert_eq!(pricing.last_jitter_penalty_probability, None);
+        assert_eq!(pricing.last_lead_agreement_corr, None);
+        assert_eq!(pricing.last_fast_venue_age_ms, Some(INITIAL_COUNTER_U64));
+        assert_eq!(pricing.last_fast_venue_jitter_ms, Some(INITIAL_COUNTER_U64));
+
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            101.0,
+            1_200,
+        ));
+
+        assert_eq!(pricing.selected_pricing_spot(), None);
+        assert_eq!(pricing.last_reference_current_price(), Some(101.0));
+    }
+
+    #[test]
+    fn overflowing_lead_price_ratio_clears_derived_signal_probabilities() {
+        let config = config(1, 30, 10);
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            f64::MIN_POSITIVE,
+            1_000,
+        ));
+        pricing.observe_signal_quote(&quote(signal_venue(), f64::MAX, 1_000), &config);
+
+        assert_eq!(pricing.selected_pricing_spot(), None);
+        assert!(pricing.fast_venue_incoherent);
+        assert!(pricing.lead_quality_policy_applied);
+        assert_eq!(pricing.last_lead_gap_probability, None);
+        assert_eq!(pricing.last_jitter_penalty_probability, None);
+        assert_eq!(pricing.last_lead_agreement_corr, None);
+
+        pricing.seed_ready_realized_vol(Some("rv".to_string()), 1.5, 1_000);
+        let blocked_by = pricing
+            .entry_pricing_inputs_at(
+                &config,
+                TakerPricingRequest {
+                    now_ms: 1_000,
+                    strike_price: Some(100.0),
+                    seconds_to_market_end: Some(300),
+                },
+            )
+            .expect_err("overflowing ratio must block public pricing inputs");
+        assert_eq!(blocked_by, vec![TakerPricingBlockReason::SpotPriceMissing]);
+    }
+
+    #[test]
     fn reference_tick_does_not_clear_fast_venue_incoherence() {
         let mut config = config(1, 30, 10);
         config.lead_agreement_min_corr = 0.99;
@@ -971,11 +1078,17 @@ mod tests {
         observe_reference_and_signal(&mut pricing, &config, "bybit", 100.0, 2_000);
 
         assert!(!pricing.fast_venue_incoherent);
-        assert_eq!(pricing.last_jitter_penalty_probability, Some(ZERO_F64));
+        assert_eq!(
+            pricing.last_jitter_penalty_probability,
+            Probability::new(ZERO_F64)
+        );
 
         observe_reference_and_signal(&mut pricing, &config, "bybit", 100.0, 2_500);
 
         assert!(pricing.fast_venue_incoherent);
-        assert_eq!(pricing.last_jitter_penalty_probability, Some(ZERO_F64));
+        assert_eq!(
+            pricing.last_jitter_penalty_probability,
+            Probability::new(ZERO_F64)
+        );
     }
 }

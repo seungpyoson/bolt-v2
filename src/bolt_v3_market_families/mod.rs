@@ -21,6 +21,7 @@ use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
     bolt_v3_instrument_filters::InstrumentFilterError,
     bolt_v3_maker_settlement::BinarySettlementPayout,
+    bolt_v3_numeric::Probability,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
 };
@@ -100,7 +101,7 @@ pub struct MarketFamilyValidationBinding {
     /// probability that the underlying finishes *up*, or `None` when
     /// the family's inputs are degenerate (the strategy already treats
     /// `None` as "pricing unavailable").
-    pub fair_probability_up: fn(&FairProbabilityInputs) -> Option<f64>,
+    pub fair_probability_up: fn(&FairProbabilityInputs) -> Option<Probability>,
     pub maker_quote_targets: fn(FamilyQuoteInputs) -> Option<QuoteTargets>,
     pub maker_settlement_payout: fn(BinarySettlementPayout, Leg) -> Option<f64>,
     pub maker_settlement_payout_from_reference_prices:
@@ -677,7 +678,7 @@ pub fn inject_derived_cadence_slug_token_with_bindings(
 pub fn fair_probability_up_for_family(
     family_key: &str,
     inputs: &FairProbabilityInputs,
-) -> Option<f64> {
+) -> Option<Probability> {
     fair_probability_up_for_family_with_bindings(family_key, inputs, validation_bindings())
 }
 
@@ -685,7 +686,7 @@ pub fn fair_probability_up_for_family_with_bindings(
     family_key: &str,
     inputs: &FairProbabilityInputs,
     bindings: &[MarketFamilyValidationBinding],
-) -> Option<f64> {
+) -> Option<Probability> {
     bindings
         .iter()
         .find(|binding| binding.key == family_key)
@@ -1242,8 +1243,8 @@ mod tests {
         }])
     }
 
-    fn fake_fair_probability_up(_inputs: &FairProbabilityInputs) -> Option<f64> {
-        Some(0.5)
+    fn fake_fair_probability_up(_inputs: &FairProbabilityInputs) -> Option<Probability> {
+        Probability::new(0.5)
     }
 
     fn fake_maker_quote_targets(_inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
@@ -1632,7 +1633,7 @@ mod tests {
         )
         .expect("injected family binding should own fair-value dispatch");
 
-        assert_eq!(routed, 0.5);
+        assert_eq!(routed.value(), 0.5);
     }
 
     fn fixture_quote_inputs() -> FamilyQuoteInputs {

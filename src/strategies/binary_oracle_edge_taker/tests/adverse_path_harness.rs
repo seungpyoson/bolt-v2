@@ -50,6 +50,7 @@ fn dropped_terminal_event_after_accepted_entry_is_not_left_pending() {
     let pending = pending_entry_state(&mut strategy, entry_client_order_id);
     let instrument_id = pending.instrument_id;
     let sequence = accepted_without_terminal_sequence(entry_client_order_id, instrument_id);
+    // The venue replay fixture documents the incident sequence; the strategy state is set below.
     assert_event_types(&sequence, &["Initialized", "Submitted", "Accepted"]);
 
     set_pending_entry(&mut strategy, pending);
@@ -256,13 +257,15 @@ fn hold_to_resolution_books_realized_cash_and_settlement_evidence() {
         .observe_resolution_strike(3_101.0, 1_000, 1_300);
 
     let evidence_events = evidence.events();
-    let settlement_evidence_present = evidence_events.iter().any(|event| {
-        format!("{event:?}")
-            .to_ascii_lowercase()
-            .contains("settlement")
+    let settlement_evidence_matches_expected = evidence_events.iter().any(|event| {
+        matches!(
+            event,
+            RecordedDecisionEvidenceEvent::Settlement(evidence)
+                if (evidence.realized_pnl - expected.realized_pnl).abs() <= f64::EPSILON
+        )
     });
     assert!(
-        strategy.managed_position().is_none() && settlement_evidence_present,
+        strategy.managed_position().is_none() && settlement_evidence_matches_expected,
         "hold-to-resolution must close exposure, book realized cash {}, and record settlement evidence; exposure={:?} evidence_events={:?}",
         expected.realized_pnl,
         strategy.exposure,

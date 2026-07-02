@@ -500,6 +500,12 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     ExitEvaluation(Box<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence>),
     LossGovernorHalt(crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence),
     RequoteThrottle(crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence),
+    Settlement(RecordedSettlementEvidenceEvent),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct RecordedSettlementEvidenceEvent {
+    pub(super) realized_pnl: f64,
 }
 
 #[derive(Debug, Default)]

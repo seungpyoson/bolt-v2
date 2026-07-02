@@ -75,12 +75,6 @@ concurrency:
     ${{ github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && github.event.action == 'edited'
-        && !(github.event.changes.base.ref.from && true || false)
-        && format('pr-{0}-noop', github.event.number)
-        || github.event_name == 'pull_request'
-        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
         || github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
@@ -489,8 +483,6 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    env:
-      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -502,6 +494,7 @@ jobs:
           lint-workflow-contract: "true"
           toolchain-components: clippy, rustfmt
           include-managed-target-dir: "true"
+          build-jobs-key: ci.clippy
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -529,8 +522,6 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    env:
-      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -551,6 +542,7 @@ jobs:
           include-build-values: "true"
           use-default-target: "true"
           include-managed-target-dir: "true"
+          build-jobs-key: ci.check-aarch64
 
       - name: Install aarch64 cross compiler
         if: needs.detector.outputs.build_required != 'true'
@@ -584,8 +576,6 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    env:
-      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -597,6 +587,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-managed-target-dir: "true"
+          build-jobs-key: ci.source-fence
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -742,7 +733,6 @@ jobs:
       actions: read
       id-token: write
     env:
-      CARGO_BUILD_JOBS: "2"
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
       # S3 sccache compile cache (#1011/#1023). Inert unless the build step opts
@@ -764,6 +754,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+          build-jobs-key: ci.test-archive
 
       - name: Resolve root nextest cache keys
         id: root-nextest-cache-keys

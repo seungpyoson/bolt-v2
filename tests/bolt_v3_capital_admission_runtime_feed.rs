@@ -51,7 +51,7 @@ use nautilus_model::{
     },
     types::{AccountBalance, Currency, Money, Price, Quantity},
 };
-use nautilus_polymarket::http::query::BalanceAllowance;
+use nautilus_polymarket::http::{models::DataApiPosition, query::BalanceAllowance};
 use rust_decimal::Decimal;
 use ustr::Ustr;
 
@@ -169,6 +169,56 @@ fn polymarket_venue_truth_snapshot_promotes_rest_spendability() {
             .source,
         "polymarket_venue_truth_rest"
     );
+}
+
+#[test]
+fn polymarket_venue_truth_snapshot_promotes_token_positions_to_product_state() {
+    let admission = Arc::new(capital_admission_configured_admission());
+    let mut config = runtime_feed_config();
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
+    product.yes_instrument_id = "condition-yes-tokenyes.VENUE-A".to_string();
+    product.no_instrument_id = "condition-no-tokenno.VENUE-A".to_string();
+    let mut feed = CapitalAdmissionRuntimeFeed::new(config, admission.clone());
+
+    let _ = feed.on_account_state(&account_state(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        1_000,
+        100.0,
+    ));
+    let _ = feed.on_portfolio_snapshot(&portfolio_snapshot(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        1_100,
+        100.0,
+    ));
+
+    let components = feed
+        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot_with_positions(
+            1_200,
+            Decimal::new(45_000_000, 0),
+            Decimal::new(40_000_000, 0),
+            vec![
+                data_api_position("tokenyes", 3.0),
+                data_api_position("tokenno", 2.5),
+            ],
+        ))
+        .expect("venue truth baseline with positions should be explainable")
+        .expect("account, portfolio, and venue truth should publish components");
+
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.source, "polymarket_venue_truth_rest");
+    assert_eq!(product.observed_at_ns, 1_200);
+    assert_eq!(product.yes_position, Decimal::new(3, 0));
+    assert_eq!(product.no_position, Decimal::new(25, 1));
+
+    let state = admission
+        .capital_admission_state_snapshot()
+        .expect("promoted venue truth should update submit admission");
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "polymarket_venue_truth_rest");
+    assert_eq!(product.yes_position, Decimal::new(3, 0));
+    assert_eq!(product.no_position, Decimal::new(25, 1));
 }
 
 #[test]
@@ -2620,6 +2670,15 @@ fn polymarket_venue_truth_snapshot(
     balance: Decimal,
     allowance: Decimal,
 ) -> VenueTruthSnapshot {
+    polymarket_venue_truth_snapshot_with_positions(captured_at, balance, allowance, Vec::new())
+}
+
+fn polymarket_venue_truth_snapshot_with_positions(
+    captured_at: u64,
+    balance: Decimal,
+    allowance: Decimal,
+    positions: Vec<DataApiPosition>,
+) -> VenueTruthSnapshot {
     build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
         captured_at: UnixNanos::from(captured_at),
         account_id: AccountId::from("ACCOUNT-001"),
@@ -2629,9 +2688,18 @@ fn polymarket_venue_truth_snapshot(
             allowance: Some(allowance),
         },
         open_orders: Vec::new(),
-        positions: Vec::new(),
+        positions,
     })
     .expect("test venue truth snapshot should be valid")
+}
+
+fn data_api_position(asset: &str, size: f64) -> DataApiPosition {
+    DataApiPosition {
+        asset: asset.to_string(),
+        condition_id: "condition".to_string(),
+        size,
+        avg_price: None,
+    }
 }
 
 fn order_canceled_event(client_order_id: &str, ts_event: u64) -> OrderCanceled {

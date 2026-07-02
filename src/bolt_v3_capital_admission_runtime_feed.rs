@@ -261,7 +261,10 @@ impl CapitalAdmissionRuntimeFeed {
         let account_id = snapshot.account_id.to_string();
         let spendable_collateral = snapshot.collateral_balance.as_decimal();
         let collateral_allowance = snapshot.collateral_allowance.as_decimal();
+        let positions_by_product_id = snapshot.positions_by_product_id.clone();
         self.venue_truth_reconciler.reconcile_snapshot(snapshot)?;
+        self.component_builder
+            .record_venue_truth_positions(&positions_by_product_id, observed_at_ns);
         let venue_spendability = VenueSpendabilitySnapshot {
             source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
             observed_at_ns,
@@ -745,6 +748,25 @@ impl CapitalAdmissionRuntimeComponentBuilder {
         self.latest_venue_spendability = Some(snapshot);
     }
 
+    fn record_venue_truth_positions(
+        &mut self,
+        positions_by_product_id: &BTreeMap<String, Decimal>,
+        observed_at_ns: u64,
+    ) {
+        let ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) = &mut self.product_state;
+        if snapshot.observed_at_ns > observed_at_ns {
+            return;
+        }
+        snapshot.source = POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string();
+        snapshot.observed_at_ns = observed_at_ns;
+        snapshot.yes_position =
+            venue_position_for_instrument(&snapshot.yes_instrument_id, positions_by_product_id)
+                .unwrap_or(Decimal::ZERO);
+        snapshot.no_position =
+            venue_position_for_instrument(&snapshot.no_instrument_id, positions_by_product_id)
+                .unwrap_or(Decimal::ZERO);
+    }
+
     fn record_nt_account_spendability(
         &mut self,
         config: &CapitalAdmissionRuntimeFeedConfig,
@@ -923,6 +945,30 @@ impl CapitalAdmissionRuntimeComponentBuilder {
             loss_snapshot: None,
         })
     }
+}
+
+fn venue_position_for_instrument(
+    instrument_id: &str,
+    positions_by_product_id: &BTreeMap<String, Decimal>,
+) -> Option<Decimal> {
+    positions_by_product_id
+        .get(instrument_id)
+        .copied()
+        .or_else(|| {
+            instrument_symbol(instrument_id)
+                .and_then(|symbol| positions_by_product_id.get(symbol).copied())
+        })
+        .or_else(|| {
+            instrument_symbol(instrument_id).and_then(|symbol| {
+                symbol
+                    .rsplit_once('-')
+                    .and_then(|(_, product_id)| positions_by_product_id.get(product_id).copied())
+            })
+        })
+}
+
+fn instrument_symbol(instrument_id: &str) -> Option<&str> {
+    instrument_id.rsplit_once('.').map(|(symbol, _)| symbol)
 }
 
 fn is_terminal_order_event(event: &OrderEventAny) -> bool {

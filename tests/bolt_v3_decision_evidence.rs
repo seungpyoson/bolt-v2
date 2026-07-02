@@ -1590,10 +1590,10 @@ fn binary_oracle_edge_taker_routes_evidence_admission_and_submit_through_shared_
     let strategy_source = strategy_source.as_str();
     let execution_source = include_str!("../src/bolt_v3_order_execution.rs");
     let evidence_index = execution_source
-        .find(".record_order_intent(&routing.intent)")
+        .find("decision_evidence.record_order_intent(&intent)")
         .expect("shared execution policy must record decision evidence");
     let admission_index = execution_source
-        .find("routing.submit_admission.admit(&routing.request)")
+        .find("submit_admission.admit(&request)")
         .expect("shared execution policy must submit through admission");
     let submit_index = execution_source
         .find("sink.submit_order_via_nt(order, context)")

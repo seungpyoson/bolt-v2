@@ -8139,6 +8139,21 @@ def assert_runner_contract_requires_configured_cargo_build_jobs() -> None:
     inline_errors = verifier.verify_github_actions_runner_contract({workflow_name: inline_cap})
     if not any("clippy CARGO_BUILD_JOBS must come from ci/github-actions-runners.toml" in error for error in inline_errors):
         raise AssertionError(f"runner contract must reject inline CARGO_BUILD_JOBS, got: {inline_errors}")
+    workflow_env_cap = replace_once(
+        workflow,
+        "env:\n  JUST_VERSION: \"1.49.0\"\n",
+        "env:\n  JUST_VERSION: \"1.49.0\"\n  CARGO_BUILD_JOBS: \"9\"\n",
+    )
+    workflow_env_errors = verifier.verify_github_actions_runner_contract(
+        {workflow_name: workflow_env_cap}
+    )
+    if not any(
+        "workflow-level CARGO_BUILD_JOBS must come from ci/github-actions-runners.toml" in error
+        for error in workflow_env_errors
+    ):
+        raise AssertionError(
+            f"runner contract must reject workflow-level CARGO_BUILD_JOBS, got: {workflow_env_errors}"
+        )
     shell_inline_anchor = (
         "  clippy:\n"
         "    name: clippy\n"
@@ -8168,6 +8183,57 @@ def assert_runner_contract_requires_configured_cargo_build_jobs() -> None:
             raise AssertionError(
                 f"runner contract must reject shell inline CARGO_BUILD_JOBS via {case}, got: {shell_inline_errors}"
             )
+    conditional_setup = replace_once(
+        workflow,
+        """      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          lint-workflow-contract: "true"
+          toolchain-components: clippy, rustfmt
+          include-managed-target-dir: "true"
+          build-jobs-key: ci.clippy
+""",
+        """      - name: Setup environment
+        id: setup
+        if: ${{ false }}
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          lint-workflow-contract: "true"
+          toolchain-components: clippy, rustfmt
+          include-managed-target-dir: "true"
+          build-jobs-key: ci.clippy
+""",
+    )
+    conditional_setup_errors = verifier.verify_github_actions_runner_contract(
+        {workflow_name: conditional_setup}
+    )
+    if not any(
+        (
+            "clippy build-jobs-key setup-environment step must be unconditional "
+            "or match the cargo/just compile step condition"
+        )
+        in error
+        for error in conditional_setup_errors
+    ):
+        raise AssertionError(
+            f"runner contract must reject conditional CARGO_BUILD_JOBS setup, got: {conditional_setup_errors}"
+        )
+    late_setup = replace_once(
+        workflow,
+        shell_inline_anchor,
+        shell_inline_anchor + "      - run: just clippy\n",
+    )
+    late_setup_errors = verifier.verify_github_actions_runner_contract({workflow_name: late_setup})
+    if not any(
+        "clippy build-jobs-key setup-environment step must run before cargo/just compile commands" in error
+        for error in late_setup_errors
+    ):
+        raise AssertionError(
+            f"runner contract must reject compile commands before CARGO_BUILD_JOBS setup, got: {late_setup_errors}"
+        )
     invalid_config = ci_provenance_config_fixture().replace("clippy = 2", "clippy = true", 1)
     error = runner_config_load_error(invalid_config, verifier=verifier)
     if "cargo_build_jobs.ci.clippy must be a positive integer" not in error:

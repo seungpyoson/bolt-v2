@@ -627,6 +627,17 @@ SETUP_CARGO_BUILD_JOBS_ENV_OUTPUT_RE = re.compile(
     r'^\s*echo\s+"CARGO_BUILD_JOBS=\$cargo_build_jobs"\s*>>\s*"\$GITHUB_ENV"\s*$'
 )
 INLINE_CARGO_BUILD_JOBS_RE = re.compile(r"\bCARGO_BUILD_JOBS\b")
+CARGO_BUILD_JOBS_COMPILE_COMMAND_RE = re.compile(
+    r"(?:^|[\s;&|()])(?:"
+    r"cargo\s+(?:build|check|clippy|test|nextest|zigbuild)\b|"
+    r"cargo\s+--repo\b|"
+    r"just\s+(?:"
+    r"build|check-aarch64|clippy|source-fence|source-fence-static|cargo-shim-tests|"
+    r"test-archive|test-archive-run|test|"
+    r"bte-clippy|bte-test-archive|bte-test-archive-run|bte-test"
+    r")\b"
+    r")"
+)
 SPIKE_PROBE_MARKER_RE = re.compile(r"\bBOLT_SPIKE_[A-Z0-9_]*\b")
 SETUP_TARGET_DIR_RELATIVE_COMPUTE = (
     "managed_target_dir_relative=\"$(python3 -c 'import os, sys; "
@@ -2579,6 +2590,40 @@ def verify_artifact_retention_policy(
 
 def job_has_setup_input(job_lines: list[str], name: str, value: str | None = None) -> bool:
     return any(block_has_input(block, name, value) for block in setup_action_blocks(job_lines))
+
+
+def step_if_condition(block: list[str]) -> str | None:
+    for line in block:
+        clean = strip_comment(line).strip()
+        if clean.startswith("if:"):
+            return clean[3:].strip()
+    return None
+
+
+def block_has_cargo_build_jobs_compile_command(block: list[str]) -> bool:
+    return CARGO_BUILD_JOBS_COMPILE_COMMAND_RE.search(uncommented_text(block)) is not None
+
+
+def cargo_build_jobs_setup_order_errors(job_lines: list[str], expected_key: str) -> list[str]:
+    setup_conditions: set[str | None] = set()
+    for block in step_blocks(job_lines):
+        if any("./.github/actions/setup-environment" in line for line in block) and block_has_input(
+            block, "build-jobs-key", expected_key
+        ):
+            setup_conditions.add(step_if_condition(block))
+            continue
+        if not block_has_cargo_build_jobs_compile_command(block):
+            continue
+        compile_condition = step_if_condition(block)
+        if None in setup_conditions or compile_condition in setup_conditions:
+            continue
+        if setup_conditions:
+            return [
+                "build-jobs-key setup-environment step must be unconditional "
+                "or match the cargo/just compile step condition"
+            ]
+        return ["build-jobs-key setup-environment step must run before cargo/just compile commands"]
+    return []
 
 
 def job_has_toolchain_component(job_lines: list[str], component: str) -> bool:
@@ -15145,6 +15190,11 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
         cargo_job_table = cargo_build_jobs.get(workflow_key) if isinstance(cargo_build_jobs, dict) else None
         if not isinstance(cargo_job_table, dict):
             cargo_job_table = {}
+        workflow_env_text = uncommented_text(top_level_block(workflow_text, "env"))
+        if INLINE_CARGO_BUILD_JOBS_RE.search(workflow_env_text):
+            errors.append(
+                f"{workflow_name} workflow-level CARGO_BUILD_JOBS must come from ci/github-actions-runners.toml via setup-environment"
+            )
         configured_jobs = set(job_table)
         actual_jobs = set(jobs)
         for job in sorted(configured_jobs - actual_jobs):
@@ -15183,6 +15233,9 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
                     errors.append(
                         f"{workflow_name} {job} must resolve CARGO_BUILD_JOBS from cargo_build_jobs.{expected_key}"
                     )
+                else:
+                    for setup_error in cargo_build_jobs_setup_order_errors(jobs[job], expected_key):
+                        errors.append(f"{workflow_name} {job} {setup_error}")
             elif "build-jobs-key:" in job_text:
                 errors.append(
                     f"{workflow_name} {job} has build-jobs-key but is missing from cargo_build_jobs.{workflow_key} in ci/github-actions-runners.toml"

@@ -6379,6 +6379,25 @@ def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
                 f"{workflow_name} must reject queue-branch metadata-only noop groups, got: {legacy_metadata_noop_errors}"
             )
 
+    misplaced_metadata_after_proof_group = (
+        "group: >- ${{ github.event_name == 'pull_request' "
+        f"&& {verifier.MERGIFY_PROOF_PR_HEAD_REF_PREDICATE} "
+        "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
+        "|| github.event_name == 'pull_request' "
+        f"&& {verifier.MERGIFY_PROOF_PR_HEAD_REF_PREDICATE} "
+        f"&& {verifier.MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE} "
+        "&& format('pr-{0}-noop', github.event.number) }}"
+    )
+    misplaced_metadata_errors = verifier.mergify_proof_pr_concurrency_errors(
+        misplaced_metadata_after_proof_group,
+        f"cancel-in-progress: ${{{{ github.event_name == 'pull_request' && {verifier.MERGIFY_PROOF_PR_CANCEL_GUARD} }}}}",
+    )
+    if not any("queue-branch metadata-only edits must use the Mergify proof group" in error for error in misplaced_metadata_errors):
+        raise AssertionError(
+            "Mergify proof PR concurrency must reject metadata-only edit predicates even after the proof group, "
+            f"got: {misplaced_metadata_errors}"
+        )
+
 
 def assert_dispatch_cancel_watchdog_gaps_are_reported() -> None:
     verifier = load_verifier()

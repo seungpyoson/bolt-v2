@@ -1426,8 +1426,6 @@ def mergify_proof_pr_concurrency_errors(
     errors: list[str] = []
     normalized_group = _normalize_concurrency_text(group_text)
     normalized_cancel = _normalize_concurrency_text(cancel_text)
-    metadata_index = normalized_group.find(MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE)
-    proof_index = normalized_group.find(MERGIFY_PROOF_PR_GROUP_TOKEN)
     if (
         head_ref_predicate not in normalized_group
         or MERGIFY_PROOF_PR_GROUP_TOKEN not in normalized_group
@@ -1436,7 +1434,8 @@ def mergify_proof_pr_concurrency_errors(
         errors.append("concurrency group must isolate Mergify proof PR runs")
     if "github.run_id" in normalized_group:
         errors.append("Mergify proof PR concurrency group must key on head SHA, not run_id")
-    if metadata_index != -1 and (proof_index == -1 or metadata_index < proof_index):
+    queue_metadata_predicate = f"{head_ref_predicate} && {MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE}"
+    if queue_metadata_predicate in normalized_group:
         errors.append("queue-branch metadata-only edits must use the Mergify proof group")
     if cancel_guard not in normalized_cancel:
         errors.append("cancel-in-progress must not cancel Mergify proof PR validations")

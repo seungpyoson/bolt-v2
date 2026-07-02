@@ -193,6 +193,7 @@ catalog_directory = "/srv/bolt-v2/var/bolt-v3-live/catalog"
 required_catalog_prefix = "/srv/bolt-v2"
 min_free_bytes = 10737418240
 runtime_capture_start_poll_interval_ms = 50
+data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
@@ -633,6 +634,13 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - required: yes
 - local poll interval used while waiting for runtime-capture startup evidence to appear
 - stays in TOML so startup/capture timing is operator-owned and not hardcoded in code
+
+#### `data_client_readiness_probe_poll_interval_ms`
+
+- type: positive integer
+- required: yes
+- local poll interval used while data-client readiness probes wait for LiveNode startup and instrument census readiness
+- separate from `runtime_capture_start_poll_interval_ms` so readiness timing and capture timing can be tuned independently
 
 ### `[persistence.decision_evidence]`
 
@@ -1774,6 +1782,7 @@ catalog_directory = "/srv/bolt-v2/var/bolt-v3-live/catalog"
 required_catalog_prefix = "/srv/bolt-v2"
 min_free_bytes = 10737418240
 runtime_capture_start_poll_interval_ms = 50
+data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"

@@ -5566,6 +5566,7 @@ fileout_level = "INFO"
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
 runtime_capture_start_poll_interval_ms = 50
+data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
@@ -5992,6 +5993,7 @@ fileout_level = "INFO"
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
 runtime_capture_start_poll_interval_ms = 50
+data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
@@ -8058,6 +8060,27 @@ fn rejects_zero_runtime_capture_start_poll_interval() {
                 && m.contains("must be a positive integer")
         }),
         "expected positive-integer runtime-capture poll validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_zero_data_client_readiness_probe_poll_interval() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "data_client_readiness_probe_poll_interval_ms = 50",
+        "data_client_readiness_probe_poll_interval_ms = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero data-client readiness poll fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|m| {
+            m.contains("persistence.data_client_readiness_probe_poll_interval_ms")
+                && m.contains("must be a positive integer")
+        }),
+        "expected positive-integer data-client readiness poll validation error, got: {messages:#?}"
     );
 }
 

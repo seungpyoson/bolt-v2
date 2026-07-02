@@ -466,12 +466,26 @@ FINGERPRINT_REUSE_JOB_IF_VALUE = (
 FINGERPRINT_REUSE_ALLOWED_OUTPUT = (
     "fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}"
 )
+DETECTOR_REFS_STEP_ALLOWED_KEYS = frozenset(("name", "id", "if", "shell", "env", "run"))
+DETECTOR_REFS_STEP_SCALARS = {
+    "id": "pr_refs",
+    "if": "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+    "shell": "bash",
+    "env": "",
+    "run": "|",
+}
+DETECTOR_REFS_STEP_ENV = {
+    "EVENT_NAME": "${{ github.event_name }}",
+    "PR_NUMBER": "${{ github.event.pull_request.number || github.run_id }}",
+    "PR_BASE_REF": "${{ github.event.pull_request.base.ref || '' }}",
+    "MERGE_GROUP_BASE_REF": "${{ github.event.merge_group.base_ref || '' }}",
+}
 FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ALLOWED_KEYS = frozenset(
     ("name", "id", "if", "shell", "run")
 )
 FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_SCALARS = {
     "id": "fingerprint_reuse_inputs_changed",
-    "if": "github.event_name == 'pull_request'",
+    "if": "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
     "shell": "bash",
     "run": "|",
 }
@@ -500,6 +514,34 @@ NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_SCALARS = {
     "run": ">",
 }
 NEXTEST_FINGERPRINT_REUSE_RESOLVER_ENV = {"GITHUB_TOKEN": "${{ github.token }}"}
+DETECTOR_REFS_RUN = '''if [[ "$EVENT_NAME" == "pull_request" ]]; then
+  base_branch="$PR_BASE_REF"
+  base_ref="refs/remotes/origin/pr-base-${PR_NUMBER}"
+  head_ref="refs/remotes/origin/pr-head-${PR_NUMBER}"
+  git check-ref-format "refs/heads/$base_branch"
+  git fetch --no-tags origin \\
+    "+refs/heads/${base_branch}:${base_ref}" \\
+    "+refs/pull/${PR_NUMBER}/head:${head_ref}"
+elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+  merge_group_base="$MERGE_GROUP_BASE_REF"
+  if [[ "$merge_group_base" == refs/heads/* ]]; then
+    base_branch="${merge_group_base#refs/heads/}"
+  elif [[ "$merge_group_base" == refs/* ]]; then
+    echo "unsupported merge_group base_ref: $merge_group_base" >&2
+    exit 1
+  else
+    base_branch="$merge_group_base"
+  fi
+  base_ref="refs/remotes/origin/pr-base-merge-group-${GITHUB_RUN_ID}"
+  head_ref="HEAD"
+  git check-ref-format "refs/heads/$base_branch"
+  git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+else
+  echo "unsupported detector refs event: $EVENT_NAME" >&2
+  exit 1
+fi
+echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
+echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"'''
 FINGERPRINT_REUSE_INPUTS_CHANGED_RUN = """base_ref="${{ steps.pr_refs.outputs.base_ref }}"
 head_ref="${{ steps.pr_refs.outputs.head_ref }}"
 changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
@@ -10472,6 +10514,7 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
     text = uncommented_text(job_lines)
     fingerprint_inputs_text = ""
     allowance_text = ""
+    detector_refs_block = unique_step_with_id(job_lines, "pr_refs")
     fingerprint_inputs_block = unique_step_with_id(job_lines, "fingerprint_reuse_inputs_changed")
     allowance_block = unique_step_with_id(job_lines, "fingerprint_reuse_allowed")
     for block in step_blocks(job_lines):
@@ -10482,6 +10525,18 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
             allowance_text = block_text
     if FINGERPRINT_REUSE_ALLOWED_OUTPUT not in text:
         errors.append("detector must expose fingerprint_reuse_allowed")
+    if detector_refs_block is None or not block_has_canonical_step_envelope(
+        detector_refs_block,
+        DETECTOR_REFS_STEP_ALLOWED_KEYS,
+        DETECTOR_REFS_STEP_SCALARS,
+        {"env": DETECTOR_REFS_STEP_ENV},
+    ):
+        errors.append("detector base/head refs step must match canonical envelope")
+    if detector_refs_block is None or not block_run_body_matches(
+        detector_refs_block,
+        DETECTOR_REFS_RUN,
+    ):
+        errors.append("detector base/head refs step must match canonical script")
     if fingerprint_inputs_block is None or not block_has_canonical_step_envelope(
         fingerprint_inputs_block,
         FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ALLOWED_KEYS,

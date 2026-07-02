@@ -273,16 +273,42 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # detector probe insertion point
-      - name: Fetch PR base/head refs
+      - name: Fetch detector base/head refs
         id: pr_refs
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
         run: |
-          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
-          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
-          git fetch --no-tags origin \
-            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
-            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_ref="refs/remotes/origin/pr-base-${PR_NUMBER}"
+            head_ref="refs/remotes/origin/pr-head-${PR_NUMBER}"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin \
+              "+refs/heads/${base_branch}:${base_ref}" \
+              "+refs/pull/${PR_NUMBER}/head:${head_ref}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_ref="refs/remotes/origin/pr-base-merge-group-${GITHUB_RUN_ID}"
+            head_ref="HEAD"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          else
+            echo "unsupported detector refs event: $EVENT_NAME" >&2
+            exit 1
+          fi
           echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
           echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"
 
@@ -310,7 +336,7 @@ jobs:
 
       - name: Detect fingerprint-reuse governance changes
         id: fingerprint_reuse_inputs_changed
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
         run: |
           base_ref="${{ steps.pr_refs.outputs.base_ref }}"
@@ -13462,6 +13488,47 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
 """,
         ),
     )
+    pr_only_detector_refs = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Fetch detector base/head refs",
+        "        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+        "        if: github.event_name == 'pull_request'",
+    )
+    assert_error("detector base/head refs step must match canonical envelope", pr_only_detector_refs)
+    detector_refs_without_merge_group_branch = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Fetch detector base/head refs",
+        """          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_ref="refs/remotes/origin/pr-base-merge-group-${GITHUB_RUN_ID}"
+            head_ref="HEAD"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+""",
+        "",
+    )
+    assert_error(
+        "detector base/head refs step must match canonical script",
+        detector_refs_without_merge_group_branch,
+    )
+    pr_only_governance_detector = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Detect fingerprint-reuse governance changes",
+        "        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+        "        if: github.event_name == 'pull_request'",
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        pr_only_governance_detector,
+    )
 
     assert_error(
         "detector must map fingerprint-reuse governance changes to any_changed=true",
@@ -13523,7 +13590,7 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         replace_once_after(
             BASE_WORKFLOW,
             "      - name: Detect fingerprint-reuse governance changes",
-            "        if: github.event_name == 'pull_request'",
+            "        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
             "        if: false",
         ),
     )
@@ -13532,7 +13599,7 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         without_once_after(
             BASE_WORKFLOW,
             "      - name: Detect fingerprint-reuse governance changes",
-            "        if: github.event_name == 'pull_request'\n",
+            "        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'\n",
         ),
     )
     assert_error(
@@ -13576,8 +13643,8 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         replace_once_after(
             BASE_WORKFLOW,
             "      - name: Detect fingerprint-reuse governance changes",
-            "        if: github.event_name == 'pull_request'\n",
-            """        if: github.event_name == 'pull_request'
+            "        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'\n",
+            """        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         if: false
 """,
         ),

@@ -124,12 +124,6 @@ concurrency:
     ${{ github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && github.event.action == 'edited'
-        && !(github.event.changes.base.ref.from && true || false)
-        && format('pr-{0}-noop', github.event.number)
-        || github.event_name == 'pull_request'
-        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
         || github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
@@ -1130,12 +1124,6 @@ on:
 concurrency:
   group: >-
     coverage-${{ github.event_name == 'pull_request'
-        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && github.event.action == 'edited'
-        && !(github.event.changes.base.ref.from && true || false)
-        && format('pr-{0}-noop', github.event.number)
-        || github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
@@ -3704,6 +3692,99 @@ def assert_ci_policy_resolvers_agree() -> None:
                 f"Mergify temp PR string base_changed={string_base_changed!r} resolved incorrectly: {ver_tuple}"
             )
 
+    def assert_mergify_non_proof_case(
+        *,
+        label: str,
+        action: str,
+        base_changed: bool,
+        event_sender_id: int,
+        pull_request_author_id: int,
+        expected_reason: str,
+    ) -> None:
+        ver = verifier.evaluate_ci_policy(
+            policy,
+            gate_names,
+            event_name="pull_request",
+            action=action,
+            pull_request_draft=False,
+            pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+            pull_request_base_changed=base_changed,
+            workflow_dispatch_full_ci="",
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
+            mergify_temp_pr_actor_id=actor_id,
+            event_sender_id=event_sender_id,
+            pull_request_author_id=pull_request_author_id,
+            ref="refs/pull/965/merge",
+        )
+        prov = provenance.evaluate_ci_policy(
+            prov_config,
+            event_name="pull_request",
+            event_action=action,
+            pull_request_draft=False,
+            pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+            pull_request_base_changed=base_changed,
+            workflow_dispatch_full_ci="",
+            event_sender_id=event_sender_id,
+            pull_request_author_id=pull_request_author_id,
+            ref="refs/pull/965/merge",
+        )
+        ver_tuple = (
+            ver.ci_policy_path,
+            ver.full_ci_required,
+            ver.full_ci_deferred,
+            ver.gate_name,
+            ver.backtester_gate_name,
+            ver.expected_event_class,
+            ver.reason,
+        )
+        prov_tuple = (
+            prov.ci_policy_path,
+            prov.full_ci_required,
+            prov.full_ci_deferred,
+            prov.gate_name,
+            prov.backtester_gate_name,
+            prov.expected_event_class,
+            prov.reason,
+        )
+        expected = (
+            "iteration",
+            False,
+            False,
+            "gate-iteration",
+            "backtester-gate-iteration",
+            "iteration",
+            expected_reason,
+        )
+        if ver_tuple != prov_tuple:
+            raise AssertionError(
+                f"ci_policy resolver drift for {label}: verifier={ver_tuple} provenance={prov_tuple}"
+            )
+        if ver_tuple != expected:
+            raise AssertionError(f"{label} must stay non-proof: {ver_tuple}")
+
+    assert_mergify_non_proof_case(
+        label="non-draft Mergify base edit from wrong author",
+        action="edited",
+        base_changed=True,
+        event_sender_id=actor_id,
+        pull_request_author_id=actor_id + 1,
+        expected_reason="ready_pr",
+    )
+    for action, expected_reason in [
+        ("synchronize", "ready_pr"),
+        ("reopened", "ready_pr_reopened"),
+    ]:
+        # Non-draft synchronize/reopened events are intentionally not proof-affecting
+        # author-bound Mergify transitions; only ready_for_review and base edits are.
+        assert_mergify_non_proof_case(
+            label=f"non-draft Mergify {action}",
+            action=action,
+            base_changed=False,
+            event_sender_id=actor_id,
+            pull_request_author_id=actor_id,
+            expected_reason=expected_reason,
+        )
+
 
 def assert_ci_policy_rejects_literal_event_sender_id_argument() -> None:
     ci_ref_arg = '            --ref "${{ github.ref }}"'
@@ -5001,12 +5082,6 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         "    actionlint-${{ github.event_name == 'pull_request'\n"
         "        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
         "            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
-        "        && github.event.action == 'edited'\n"
-        "        && !(github.event.changes.base.ref.from && true || false)\n"
-        "        && format('pr-{0}-noop', github.event.number)\n"
-        "        || github.event_name == 'pull_request'\n"
-        "        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-        "            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
         "        && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)\n"
         "        || github.event_name == 'pull_request'\n"
         "        && format('pr-{0}', github.event.number)\n"
@@ -5025,12 +5100,6 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         "             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) }}\n"
         "  group: >-\n"
         "    actionlint-${{ github.event_name == 'pull_request'\n"
-        "        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-        "            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
-        "        && github.event.action == 'edited'\n"
-        "        && !(github.event.changes.base.ref.from && true || false)\n"
-        "        && format('pr-{0}-noop', github.event.number)\n"
-        "        || github.event_name == 'pull_request'\n"
         "        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
         "            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
         "        && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)\n"
@@ -6203,6 +6272,14 @@ def assert_mergify_proof_prefix_alignment_detects_drift() -> None:
 
 def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
     verifier = load_verifier()
+
+    def workflow_errors(workflow_name: str, workflow: str) -> list[str]:
+        if workflow_name.endswith("/coverage-enforcer.yml"):
+            return verifier.verify_coverage_enforcer_workflow({workflow_name: workflow})
+        if workflow_name.endswith("/ci.yml"):
+            return verifier.verify_workflow(workflow)
+        return verifier.verify_repo_automation_texts({workflow_name: workflow})
+
     cases = [
         (
             ".github/workflows/ci.yml",
@@ -6231,6 +6308,15 @@ def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
             " }}\n",
             "concurrency group must isolate Mergify proof PR runs",
         ),
+        (
+            ".github/workflows/coverage-enforcer.yml",
+            "format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)",
+            "format('pr-{0}-noop', github.event.number)",
+            "        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+            "             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n",
+            "",
+            "concurrency group must isolate Mergify proof PR runs",
+        ),
     ]
     for workflow_name, group_fragment, group_replacement, cancel_guard, cancel_replacement, expected_error in cases:
         workflow = repo_workflow_text(workflow_name)
@@ -6242,11 +6328,7 @@ def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
             group_fragment,
             group_replacement,
         )
-        group_errors = (
-            verifier.verify_workflow(missing_group)
-            if workflow_name.endswith("/ci.yml")
-            else verifier.verify_repo_automation_texts({workflow_name: missing_group})
-        )
+        group_errors = workflow_errors(workflow_name, missing_group)
         if not any(expected_error in error for error in group_errors):
             raise AssertionError(f"{workflow_name} must reject missing Mergify proof PR group, got: {group_errors}")
 
@@ -6256,11 +6338,7 @@ def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
             cancel_guard,
             cancel_replacement,
         )
-        cancel_errors = (
-            verifier.verify_workflow(missing_cancel_guard)
-            if workflow_name.endswith("/ci.yml")
-            else verifier.verify_repo_automation_texts({workflow_name: missing_cancel_guard})
-        )
+        cancel_errors = workflow_errors(workflow_name, missing_cancel_guard)
         if not any("cancel-in-progress must not cancel Mergify proof PR validations" in error for error in cancel_errors):
             raise AssertionError(f"{workflow_name} must reject cancelling Mergify proof PRs, got: {cancel_errors}")
 
@@ -6271,34 +6349,34 @@ def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
             group_fragment,
             run_id_keyed,
         )
-        old_group_errors = (
-            verifier.verify_workflow(old_group)
-            if workflow_name.endswith("/ci.yml")
-            else verifier.verify_repo_automation_texts({workflow_name: old_group})
-        )
+        old_group_errors = workflow_errors(workflow_name, old_group)
         if not any("must key on head SHA" in error for error in old_group_errors):
             raise AssertionError(f"{workflow_name} must reject run_id-keyed Mergify proof groups, got: {old_group_errors}")
 
-        metadata_branch = (
+        head_ref_predicate = (
+            "        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+            "            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
+        )
+        proof_group_arm = head_ref_predicate + f"        && {group_fragment}\n"
+        legacy_metadata_noop_branch = (
             "        && github.event.action == 'edited'\n"
             "        && !(github.event.changes.base.ref.from && true || false)\n"
             f"        && {group_replacement}\n"
             "        || github.event_name == 'pull_request'\n"
         )
-        no_metadata_class = replace_once_after(
-            workflow,
-            "concurrency:",
-            metadata_branch,
-            "",
-        )
-        metadata_errors = (
-            verifier.verify_workflow(no_metadata_class)
-            if workflow_name.endswith("/ci.yml")
-            else verifier.verify_repo_automation_texts({workflow_name: no_metadata_class})
-        )
-        if not any("metadata-only edits must be classified before proof runs" in error for error in metadata_errors):
+        if legacy_metadata_noop_branch in workflow:
+            legacy_metadata_noop_workflow = workflow
+        else:
+            legacy_metadata_noop_workflow = replace_once_after(
+                workflow,
+                "concurrency:",
+                proof_group_arm,
+                head_ref_predicate + legacy_metadata_noop_branch + proof_group_arm,
+            )
+        legacy_metadata_noop_errors = workflow_errors(workflow_name, legacy_metadata_noop_workflow)
+        if not any("queue-branch metadata-only edits must use the Mergify proof group" in error for error in legacy_metadata_noop_errors):
             raise AssertionError(
-                f"{workflow_name} must reject metadata-only edits reaching Mergify proof groups, got: {metadata_errors}"
+                f"{workflow_name} must reject queue-branch metadata-only noop groups, got: {legacy_metadata_noop_errors}"
             )
 
 
@@ -8892,12 +8970,6 @@ def without_pr_concurrency(workflow: str) -> str:
         """concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
-        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && github.event.action == 'edited'
-        && !(github.event.changes.base.ref.from && true || false)
-        && format('pr-{0}-noop', github.event.number)
-        || github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
@@ -14151,12 +14223,6 @@ def main() -> int:
             BASE_WORKFLOW,
             """  group: >-
     ${{ github.event_name == 'pull_request'
-        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
-            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && github.event.action == 'edited'
-        && !(github.event.changes.base.ref.from && true || false)
-        && format('pr-{0}-noop', github.event.number)
-        || github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)

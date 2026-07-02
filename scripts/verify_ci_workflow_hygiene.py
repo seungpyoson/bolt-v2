@@ -1235,10 +1235,6 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "group: >- ${{ github.event_name == 'pull_request' "
     "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
     "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
-    "&& github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false) "
-    "&& format('pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
-    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
-    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
     "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
     "|| github.event_name == 'pull_request' && github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
@@ -1256,10 +1252,6 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "group: >- actionlint-${{ github.event_name == 'pull_request' "
     "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
     "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
-    "&& github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false) "
-    "&& format('pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
-    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
-    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
     "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
     "|| github.event_name == 'pull_request' && format('pr-{0}', github.event.number) "
     "|| github.event_name == 'merge_group' && format('mq-{0}', github.ref) "
@@ -1267,10 +1259,6 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # .github/workflows/backtester-ci.yml — same draft/full PR split as ci.yml
     # with a backtester-prefixed merge_group arm before the per-ref/sha fallback.
     "group: >- ${{ github.event_name == 'pull_request' "
-    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
-    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
-    "&& github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false) "
-    "&& format('bvs-pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
     "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
     "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
     "&& format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
@@ -1288,10 +1276,6 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # .github/workflows/coverage-enforcer.yml — coverage-specific namespace with
     # the same PR class split as ci.yml and a merge_group arm before fallback.
     "group: >- coverage-${{ github.event_name == 'pull_request' "
-    "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
-    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
-    "&& github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false) "
-    "&& format('pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
     "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
     "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
     "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
@@ -1442,8 +1426,6 @@ def mergify_proof_pr_concurrency_errors(
     errors: list[str] = []
     normalized_group = _normalize_concurrency_text(group_text)
     normalized_cancel = _normalize_concurrency_text(cancel_text)
-    metadata_index = normalized_group.find(MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE)
-    proof_index = normalized_group.find(MERGIFY_PROOF_PR_GROUP_TOKEN)
     if (
         head_ref_predicate not in normalized_group
         or MERGIFY_PROOF_PR_GROUP_TOKEN not in normalized_group
@@ -1452,8 +1434,15 @@ def mergify_proof_pr_concurrency_errors(
         errors.append("concurrency group must isolate Mergify proof PR runs")
     if "github.run_id" in normalized_group:
         errors.append("Mergify proof PR concurrency group must key on head SHA, not run_id")
-    if metadata_index == -1 or (proof_index != -1 and metadata_index > proof_index):
-        errors.append("Mergify proof PR metadata-only edits must be classified before proof runs")
+    # Split on event arms, not every `||`: the Mergify head-ref predicate itself
+    # contains an inner OR between stable and transient queue prefixes.
+    group_arms = re.split(r"\s+\|\|\s+github\.event_name\b", normalized_group)
+    if any(
+        head_ref_predicate in arm
+        and MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE in arm
+        for arm in group_arms
+    ):
+        errors.append("queue-branch metadata-only edits must use the Mergify proof group")
     if cancel_guard not in normalized_cancel:
         errors.append("cancel-in-progress must not cancel Mergify proof PR validations")
     return errors

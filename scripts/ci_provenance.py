@@ -120,6 +120,13 @@ NEXTEST_FINGERPRINT_RE = re.compile(
     r"(?P<shards>[1-9][0-9]*)-"
     r"(?P<digest>[0-9a-f]{64})$"
 )
+REUSE_RELEVANT_WORKFLOW_JOBS = (
+    "nextest-fingerprint",
+    "test-archive",
+    "test",
+    "build",
+)
+REUSE_RELEVANT_WORKFLOW_ENV_KEYS = ("JUST_VERSION",)
 GITHUB_API_HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
@@ -1583,6 +1590,107 @@ def workflow_file_digest(config: ProvenanceConfig, workflow_file: pathlib.Path |
     return sha256_file(workflow_file)
 
 
+def workflow_text_from_bytes(workflow_bytes: bytes) -> str:
+    try:
+        return workflow_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProvenanceError("workflow bytes must be UTF-8") from exc
+
+
+def top_level_block_lines(workflow_text: str, block_name: str) -> list[str]:
+    lines = workflow_text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line == f"{block_name}:":
+            start = index
+            break
+    if start is None:
+        raise ProvenanceError(f"workflow reuse scope missing top-level {block_name} block")
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if not line or line.startswith(" ") or line.startswith("#"):
+            continue
+        end = index
+        break
+    return lines[start:end]
+
+
+def top_level_env_entry_line(workflow_text: str, key: str) -> str:
+    for line in top_level_block_lines(workflow_text, "env"):
+        if re.match(rf"^  {re.escape(key)}\s*:", line):
+            return line.rstrip()
+    raise ProvenanceError(f"workflow reuse scope missing env.{key}")
+
+
+def workflow_job_block_lines(workflow_text: str, job_name: str) -> list[str]:
+    lines = workflow_text.splitlines()
+    jobs_start = None
+    for index, line in enumerate(lines):
+        if line == "jobs:":
+            jobs_start = index
+            break
+    if jobs_start is None:
+        raise ProvenanceError("workflow reuse scope missing jobs block")
+
+    start = None
+    job_header_re = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
+    for index in range(jobs_start + 1, len(lines)):
+        line = lines[index]
+        if line and not line.startswith(" ") and not line.startswith("#"):
+            break
+        match = job_header_re.match(line)
+        if match is not None and match.group(1) == job_name:
+            start = index
+            break
+    if start is None:
+        raise ProvenanceError(f"workflow reuse scope missing job {job_name}")
+
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if line and not line.startswith(" ") and not line.startswith("#"):
+            end = index
+            break
+        match = job_header_re.match(line)
+        if match is not None:
+            end = index
+            break
+    return lines[start:end]
+
+
+def normalize_workflow_scope_lines(lines: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        normalized.append(line.rstrip())
+    return normalized
+
+
+def workflow_reuse_scope_digest_from_bytes(config: ProvenanceConfig, workflow_bytes: bytes) -> str:
+    workflow_text = workflow_text_from_bytes(workflow_bytes)
+    scope_lines = [f"workflow_path={config.workflow_path}"]
+    for key in REUSE_RELEVANT_WORKFLOW_ENV_KEYS:
+        scope_lines.append(f"[env:{key}]")
+        scope_lines.append(top_level_env_entry_line(workflow_text, key))
+    for job_name in REUSE_RELEVANT_WORKFLOW_JOBS:
+        scope_lines.append(f"[job:{job_name}]")
+        scope_lines.extend(normalize_workflow_scope_lines(workflow_job_block_lines(workflow_text, job_name)))
+    payload = "\n".join(scope_lines).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def workflow_reuse_scope_digest(
+    config: ProvenanceConfig,
+    workflow_file: pathlib.Path | None = None,
+) -> str:
+    if workflow_file is None:
+        workflow_file = REPO_ROOT / config.workflow_path
+    return workflow_reuse_scope_digest_from_bytes(config, workflow_file.read_bytes())
+
+
 def require_record_string(record: dict[str, object], key: str) -> str:
     value = record.get(key)
     if not isinstance(value, str) or not value:
@@ -1804,8 +1912,20 @@ def workflow_digest_from_github(
     tested_sha: str,
     api_bytes,
 ) -> str:
+    return hashlib.sha256(
+        workflow_bytes_from_github(repo, token, config, tested_sha, api_bytes)
+    ).hexdigest()
+
+
+def workflow_bytes_from_github(
+    repo: str,
+    token: str,
+    config: ProvenanceConfig,
+    tested_sha: str,
+    api_bytes,
+) -> bytes:
     url = f"https://raw.githubusercontent.com/{repo}/{tested_sha}/{config.workflow_path}"
-    return hashlib.sha256(api_bytes(repo, token, url)).hexdigest()
+    return api_bytes(repo, token, url)
 
 
 def validate_artifact_run_metadata(
@@ -2502,17 +2622,22 @@ def validate_fingerprint_candidate(
         if positive_int_value(record.get("run_attempt"), "record run_attempt") != run_attempt:
             return no_fingerprint_reuse("record run_attempt does not match source run attempt")
         tested_sha = require_record_sha(record, "tested_sha")
-        expected_workflow_digest = workflow_digest_from_github(
+        source_workflow_bytes = workflow_bytes_from_github(
             repo, token, config, tested_sha, api_bytes
         )
+        expected_workflow_digest = hashlib.sha256(source_workflow_bytes).hexdigest()
         validate_record_schema(
             record,
             config,
             config_path=config_path,
             expected_workflow_digest=expected_workflow_digest,
         )
-        if require_record_digest(record, "workflow_digest") != workflow_file_digest(config):
-            return no_fingerprint_reuse(f"source run {run_id} workflow digest does not match current workflow")
+        if workflow_reuse_scope_digest_from_bytes(
+            config, source_workflow_bytes
+        ) != workflow_reuse_scope_digest(config):
+            return no_fingerprint_reuse(
+                f"source run {run_id} workflow reuse scope does not match current workflow"
+            )
         validate_record_matches_run(record, run)
         record_fingerprint = parse_nextest_fingerprint(
             record.get("nextest_fingerprint"), label="source record"

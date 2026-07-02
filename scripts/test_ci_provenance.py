@@ -1201,12 +1201,96 @@ def assert_fingerprint_reuse_requires_exact_fingerprint_components() -> None:
                 raise AssertionError((fingerprint, result))
 
 
-def assert_fingerprint_reuse_rejects_source_workflow_digest_drift() -> None:
+def assert_fingerprint_reuse_rejects_source_record_workflow_digest_mismatch() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         config = write_config(tmp_path)
-        source_workflow_bytes = b"name: CI\n# source workflow bytes differ from current checkout\n"
+        source_workflow_bytes = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_bytes()
+        record = record_with_fingerprint(module, config)
+        record["workflow_digest"] = "0" * 64
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+            },
+            records_by_artifact_id={2: record},
+            workflow_bytes=source_workflow_bytes,
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if "workflow_digest" not in result.reason:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_allows_unrelated_workflow_drift() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        source_workflow_bytes = (
+            (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_bytes()
+            + b"\n# governance-only comment outside nextest archive reuse scope\n"
+        )
+        record = record_with_fingerprint(module, config)
+        record["workflow_digest"] = hashlib.sha256(source_workflow_bytes).hexdigest()
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+            },
+            records_by_artifact_id={2: record},
+            workflow_bytes=source_workflow_bytes,
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not True:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_allows_deploy_only_env_drift() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        source_workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        source_workflow_text = source_workflow_text.replace(
+            'S3_DEPLOY_PATH: "s3://bolt-deploy-artifacts/artifacts/bolt-v2"',
+            'S3_DEPLOY_PATH: "s3://bolt-deploy-artifacts/artifacts/bolt-v2-previous"',
+            1,
+        )
+        source_workflow_bytes = source_workflow_text.encode("utf-8")
+        record = record_with_fingerprint(module, config)
+        record["workflow_digest"] = hashlib.sha256(source_workflow_bytes).hexdigest()
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+            },
+            records_by_artifact_id={2: record},
+            workflow_bytes=source_workflow_bytes,
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not True:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        source_workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        source_workflow_text = source_workflow_text.replace(
+            "name: nextest archive",
+            "name: nextest archive drift",
+            1,
+        )
+        source_workflow_bytes = source_workflow_text.encode("utf-8")
         record = record_with_fingerprint(module, config)
         record["workflow_digest"] = hashlib.sha256(source_workflow_bytes).hexdigest()
         fake = FakeGitHub(
@@ -1220,7 +1304,7 @@ def assert_fingerprint_reuse_rejects_source_workflow_digest_drift() -> None:
         result = resolve_fingerprint_with_fake(module, config, fake)
         if result.reuse_found is not False:
             raise AssertionError(result)
-        if "workflow digest" not in result.reason:
+        if "workflow reuse scope" not in result.reason:
             raise AssertionError(result)
 
 
@@ -4683,7 +4767,10 @@ def main() -> int:
     assert_fingerprint_reuse_rejects_failed_cancelled_and_wrong_workflow_runs()
     assert_fingerprint_reuse_rejects_ambiguous_and_expired_artifacts()
     assert_fingerprint_reuse_requires_exact_fingerprint_components()
-    assert_fingerprint_reuse_rejects_source_workflow_digest_drift()
+    assert_fingerprint_reuse_rejects_source_record_workflow_digest_mismatch()
+    assert_fingerprint_reuse_allows_unrelated_workflow_drift()
+    assert_fingerprint_reuse_allows_deploy_only_env_drift()
+    assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
     assert_fingerprint_reuse_rejects_failed_source_archive_through_resolver()
     assert_fingerprint_reuse_source_run_must_be_trusted_main_push()

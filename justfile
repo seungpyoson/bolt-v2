@@ -397,6 +397,8 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_fail_closed_contracts.py
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
     python3 scripts/verify_bolt_v3_legacy_default_fence.py
+    python3 scripts/test_verify_probability_typed_pilot.py
+    python3 scripts/verify_probability_typed_pilot.py
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/test_verify_outcome_group_nt_reuse.py

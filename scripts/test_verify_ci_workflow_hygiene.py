@@ -8399,6 +8399,8 @@ source-fence-static-inner: require-local-verification-gate
     python3 scripts/verify_lane_governance.py
     python3 scripts/test_verify_fail_closed_contracts.py
     python3 scripts/verify_fail_closed_contracts.py
+    python3 scripts/test_verify_probability_typed_pilot.py
+    python3 scripts/verify_probability_typed_pilot.py
 
 source-fence: source-fence-static
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
@@ -8476,6 +8478,24 @@ source-fence: source-fence-static
             raise AssertionError(
                 f"source-fence-static must require fail-closed command {command}, "
                 f"got: {missing_fail_closed_pair_errors}"
+            )
+
+    missing_probability_pair = justfile_text.replace(
+        "    python3 scripts/test_verify_probability_typed_pilot.py\n"
+        "    python3 scripts/verify_probability_typed_pilot.py\n",
+        "",
+    )
+    missing_probability_pair_errors = verifier.verify_source_fence_static_recipe(
+        missing_probability_pair
+    )
+    for command in (
+        "python3 scripts/test_verify_probability_typed_pilot.py",
+        "python3 scripts/verify_probability_typed_pilot.py",
+    ):
+        if not any(f"must run {command}" in error for error in missing_probability_pair_errors):
+            raise AssertionError(
+                f"source-fence-static must require probability typed-pilot command {command}, "
+                f"got: {missing_probability_pair_errors}"
             )
 
     commented_lane_test = justfile_text.replace(

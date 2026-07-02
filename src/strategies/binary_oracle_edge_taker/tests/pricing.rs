@@ -918,7 +918,7 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     register_test_strategy_with_active_instruments(&mut strategy);
 
     let up_instrument_id = strategy
@@ -1258,7 +1258,7 @@ fn executable_edge_fee_uses_exact_size_vwap_price_not_limit_price() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     register_test_strategy_with_active_instruments(&mut strategy);
     set_configured_books_depth(
         &mut strategy,
@@ -1311,7 +1311,7 @@ fn executable_edge_fee_requires_cached_instrument_in_test_builds() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     set_configured_books_depth(
         &mut strategy,
         &[
@@ -1496,7 +1496,7 @@ fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.02));
-    strategy.pricing.last_jitter_penalty_probability = Some(0.01);
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.01));
 
     let decision = strategy.entry_evaluation_at(1_200);
 

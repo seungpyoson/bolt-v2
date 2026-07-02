@@ -448,23 +448,38 @@ impl PricingState {
         if let Some(candidate) =
             arbitrate_lead_reference(&candidates, min_agreement_corr, max_jitter_ms)
         {
+            let (Some(price), Some(observed_ts_ms)) = (candidate.price, candidate.observed_ts_ms)
+            else {
+                self.set_selected_pricing_spot(None);
+                self.last_lead_gap_probability = None;
+                self.last_jitter_penalty_probability = None;
+                self.last_lead_agreement_corr = None;
+                self.last_fast_venue_age_ms = None;
+                self.last_fast_venue_jitter_ms = None;
+                self.fast_venue_incoherent = true;
+                return;
+            };
+            let Some(jitter_penalty_probability) =
+                PricingState::jitter_penalty_probability(candidate.jitter_ms, max_jitter_ms)
+            else {
+                self.set_selected_pricing_spot(None);
+                self.last_lead_gap_probability = None;
+                self.last_jitter_penalty_probability = None;
+                self.last_lead_agreement_corr = None;
+                self.last_fast_venue_age_ms = None;
+                self.last_fast_venue_jitter_ms = None;
+                self.fast_venue_incoherent = true;
+                return;
+            };
             let fast_spot = FastSpotObservation {
                 venue: candidate.venue_name.clone(),
-                price: candidate
-                    .price
-                    .expect("selected lead venue should carry price"),
-                observed_ts_ms: candidate
-                    .observed_ts_ms
-                    .expect("selected lead venue should carry timestamp"),
+                price,
+                observed_ts_ms,
                 received_ts_ms: None,
             };
             self.set_selected_pricing_spot(Some(fast_spot));
             self.last_lead_gap_probability = Some(candidate.lead_gap_probability);
-            self.last_jitter_penalty_probability = Some(if max_jitter_ms == 0 {
-                0.0
-            } else {
-                (candidate.jitter_ms as f64 / max_jitter_ms as f64).clamp(0.0, 1.0)
-            });
+            self.last_jitter_penalty_probability = Some(jitter_penalty_probability);
             self.last_lead_agreement_corr = Some(candidate.agreement_corr);
             self.last_fast_venue_age_ms = Some(candidate.age_ms);
             self.last_fast_venue_jitter_ms = Some(candidate.jitter_ms);
@@ -1864,8 +1879,7 @@ impl BinaryOracleEdgeTaker {
         let fee_uncertainty_probability =
             Probability::clamped(up_fee_bps.max(down_fee_bps) / BPS_DENOMINATOR)?;
         let lead_gap_probability = self.pricing.last_lead_gap_probability?;
-        let jitter_penalty_probability =
-            Probability::new(self.pricing.last_jitter_penalty_probability?)?;
+        let jitter_penalty_probability = self.pricing.last_jitter_penalty_probability?;
 
         uncertainty_band_probability(&UncertaintyBandInputs {
             lead_gap_probability,

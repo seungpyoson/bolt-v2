@@ -1052,7 +1052,7 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     strategy
 }
 
@@ -1120,7 +1120,7 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     (strategy, fee_provider)
 }
 

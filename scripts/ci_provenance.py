@@ -1597,11 +1597,21 @@ def workflow_text_from_bytes(workflow_bytes: bytes) -> str:
         raise ProvenanceError("workflow bytes must be UTF-8") from exc
 
 
+def workflow_yaml_structural_line(line: str) -> str:
+    return line.split("#", 1)[0].rstrip()
+
+
+def is_top_level_workflow_key(line: str, key: str) -> bool:
+    if line.startswith((" ", "\t")):
+        return False
+    return re.fullmatch(rf"['\"]?{re.escape(key)}['\"]?\s*:\s*", workflow_yaml_structural_line(line)) is not None
+
+
 def top_level_block_lines(workflow_text: str, block_name: str) -> list[str]:
     lines = workflow_text.splitlines()
     start = None
     for index, line in enumerate(lines):
-        if line == f"{block_name}:":
+        if is_top_level_workflow_key(line, block_name):
             start = index
             break
     if start is None:
@@ -1609,7 +1619,7 @@ def top_level_block_lines(workflow_text: str, block_name: str) -> list[str]:
     end = len(lines)
     for index in range(start + 1, len(lines)):
         line = lines[index]
-        if not line or line.startswith(" ") or line.startswith("#"):
+        if not workflow_yaml_structural_line(line) or line.startswith((" ", "\t")):
             continue
         end = index
         break
@@ -1617,9 +1627,11 @@ def top_level_block_lines(workflow_text: str, block_name: str) -> list[str]:
 
 
 def top_level_env_entry_line(workflow_text: str, key: str) -> str:
+    env_entry_re = re.compile(rf"^\s+['\"]?{re.escape(key)}['\"]?\s*:\s*(?P<value>.*?)\s*$")
     for line in top_level_block_lines(workflow_text, "env"):
-        if re.match(rf"^  {re.escape(key)}\s*:", line):
-            return line.rstrip()
+        match = env_entry_re.match(workflow_yaml_structural_line(line))
+        if match is not None:
+            return f"  {key}: {match.group('value').rstrip()}"
     raise ProvenanceError(f"workflow reuse scope missing env.{key}")
 
 
@@ -1627,19 +1639,20 @@ def workflow_job_block_lines(workflow_text: str, job_name: str) -> list[str]:
     lines = workflow_text.splitlines()
     jobs_start = None
     for index, line in enumerate(lines):
-        if line == "jobs:":
+        if is_top_level_workflow_key(line, "jobs"):
             jobs_start = index
             break
     if jobs_start is None:
         raise ProvenanceError("workflow reuse scope missing jobs block")
 
     start = None
-    job_header_re = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
+    job_header_re = re.compile(r"^  ['\"]?([A-Za-z0-9_-]+)['\"]?:\s*$")
     for index in range(jobs_start + 1, len(lines)):
         line = lines[index]
-        if line and not line.startswith(" ") and not line.startswith("#"):
+        active_line = workflow_yaml_structural_line(line)
+        if active_line and not line.startswith((" ", "\t")):
             break
-        match = job_header_re.match(line)
+        match = job_header_re.match(active_line)
         if match is not None and match.group(1) == job_name:
             start = index
             break
@@ -1649,10 +1662,11 @@ def workflow_job_block_lines(workflow_text: str, job_name: str) -> list[str]:
     end = len(lines)
     for index in range(start + 1, len(lines)):
         line = lines[index]
-        if line and not line.startswith(" ") and not line.startswith("#"):
+        active_line = workflow_yaml_structural_line(line)
+        if active_line and not line.startswith((" ", "\t")):
             end = index
             break
-        match = job_header_re.match(line)
+        match = job_header_re.match(active_line)
         if match is not None:
             end = index
             break
@@ -1660,12 +1674,18 @@ def workflow_job_block_lines(workflow_text: str, job_name: str) -> list[str]:
 
 
 def normalize_workflow_scope_lines(lines: list[str]) -> list[str]:
+    job_header_re = re.compile(r"^  ['\"]?([A-Za-z0-9_-]+)['\"]?:\s*$")
     normalized: list[str] = []
     for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        active_line = workflow_yaml_structural_line(line)
+        stripped = active_line.strip()
+        if not stripped:
             continue
-        normalized.append(line.rstrip())
+        job_header = job_header_re.match(active_line)
+        if job_header is not None:
+            normalized.append(f"  {job_header.group(1)}:")
+        else:
+            normalized.append(line.rstrip())
     return normalized
 
 

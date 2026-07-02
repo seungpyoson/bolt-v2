@@ -1277,6 +1277,39 @@ def assert_fingerprint_reuse_allows_deploy_only_env_drift() -> None:
             raise AssertionError(result)
 
 
+def assert_workflow_reuse_scope_digest_accepts_yaml_header_formatting() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        formatted_text = workflow_text.replace("env:\n", "env: # top-level env\n", 1)
+        formatted_text = formatted_text.replace(
+            '  JUST_VERSION: "1.49.0"',
+            '  "JUST_VERSION": "1.49.0" # tool version',
+            1,
+        )
+        formatted_text = formatted_text.replace("jobs:\n", "jobs: # workflow jobs\n", 1)
+        for job_name in module.REUSE_RELEVANT_WORKFLOW_JOBS:
+            formatted_text = formatted_text.replace(
+                f"  {job_name}:",
+                f'  "{job_name}": # reuse-relevant job',
+                1,
+            )
+
+        expected = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            workflow_text.encode("utf-8"),
+        )
+        actual = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            formatted_text.encode("utf-8"),
+        )
+        if actual != expected:
+            raise AssertionError((expected, actual))
+
+
 def assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -4770,6 +4803,7 @@ def main() -> int:
     assert_fingerprint_reuse_rejects_source_record_workflow_digest_mismatch()
     assert_fingerprint_reuse_allows_unrelated_workflow_drift()
     assert_fingerprint_reuse_allows_deploy_only_env_drift()
+    assert_workflow_reuse_scope_digest_accepts_yaml_header_formatting()
     assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
     assert_fingerprint_reuse_rejects_failed_source_archive_through_resolver()

@@ -15190,6 +15190,10 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
                     errors.append(
                         f"{workflow_name} {job} must resolve CARGO_BUILD_JOBS from cargo_build_jobs.{expected_key}"
                     )
+            elif "build-jobs-key:" in job_text:
+                errors.append(
+                    f"{workflow_name} {job} has build-jobs-key but is missing from cargo_build_jobs.{workflow_key} in ci/github-actions-runners.toml"
+                )
     return errors
 
 

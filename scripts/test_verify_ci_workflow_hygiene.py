@@ -1292,6 +1292,8 @@ runs:
     - name: Read shared values
       id: shared
       shell: bash
+      env:
+        BUILD_JOBS_KEY: ${{ inputs.build-jobs-key }}
       run: |
         echo "rust_toolchain=$(awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
         echo "rust_verification_owner=$(just --evaluate rust_verification_owner)" >> "$GITHUB_OUTPUT"
@@ -1306,17 +1308,24 @@ runs:
           echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
           echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
         fi
-        if [ -n "${{ inputs.build-jobs-key }}" ]; then
-          cargo_build_jobs="$(python3 -c 'import pathlib, sys, tomllib
-config = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-value = config.get("cargo_build_jobs")
-for part in sys.argv[2].split("."):
-    if not isinstance(value, dict):
-        raise SystemExit(f"cargo_build_jobs.{sys.argv[2]} missing")
-    value = value.get(part)
-if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-    raise SystemExit(f"cargo_build_jobs.{sys.argv[2]} must be a positive integer")
-print(value)' ci/github-actions-runners.toml "${{ inputs.build-jobs-key }}")"
+        if [ -n "$BUILD_JOBS_KEY" ]; then
+          cargo_build_jobs="$(
+            python3 - ci/github-actions-runners.toml "$BUILD_JOBS_KEY" <<'PY'
+        import pathlib
+        import sys
+        import tomllib
+
+        config = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+        value = config.get("cargo_build_jobs")
+        for part in sys.argv[2].split("."):
+            if not isinstance(value, dict) or part not in value:
+                raise SystemExit(f"cargo_build_jobs.{sys.argv[2]} missing")
+            value = value.get(part)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise SystemExit(f"cargo_build_jobs.{sys.argv[2]} must be a positive integer")
+        print(value)
+        PY
+          )"
           echo "cargo_build_jobs=$cargo_build_jobs" >> "$GITHUB_OUTPUT"
           echo "CARGO_BUILD_JOBS=$cargo_build_jobs" >> "$GITHUB_ENV"
         fi
@@ -8018,6 +8027,22 @@ def assert_runner_contract_requires_configured_cargo_build_jobs() -> None:
     error = runner_config_load_error(invalid_config, verifier=verifier)
     if "cargo_build_jobs.ci.clippy must be a positive integer" not in error:
         raise AssertionError(f"runner contract must reject invalid cargo build jobs config, got: {error!r}")
+    missing_config = ci_provenance_config_fixture().replace("clippy = 2\n", "", 1)
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = write_temp_runner_config(pathlib.Path(tmp), missing_config)
+        verifier.DEFAULT_RUNNERS_CONFIG = config_path
+        try:
+            missing_config_errors = verifier.verify_github_actions_runner_contract({workflow_name: workflow})
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    if not any(
+        "clippy has build-jobs-key but is missing from cargo_build_jobs.ci" in error
+        for error in missing_config_errors
+    ):
+        raise AssertionError(
+            f"runner contract must reject workflow build-jobs-key without TOML config, got: {missing_config_errors}"
+        )
 
 
 def assert_debug_workflow_rejects_non_manual_trigger() -> None:

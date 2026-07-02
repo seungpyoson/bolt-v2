@@ -5,6 +5,7 @@ use std::{
 
 const EXPECTED_DECLARED_MODULES: &[&str] = &[
     "shared_fixture",
+    "adverse_path_harness",
     "book_sizing",
     "config",
     "core_glue",
@@ -19,6 +20,7 @@ const EXPECTED_DECLARED_MODULES: &[&str] = &[
 const EXPECTED_TEST_FILES: &[&str] = &[
     "mod.rs",
     "shared_fixture.rs",
+    "adverse_path_harness.rs",
     "book_sizing.rs",
     "config.rs",
     "core_glue.rs",

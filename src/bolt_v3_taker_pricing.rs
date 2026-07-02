@@ -187,16 +187,13 @@ impl TakerPricingState {
             self.mark_signal_incoherent(jitter_ms);
             return;
         };
-        // Keep this separate from the agreement guard. The helpers currently
-        // share a ratio, but either one becoming non-derivable must fail closed.
-        let Some(lead_gap_probability) = price_gap_probability(quote.price, reference_fair_value)
-        else {
-            self.mark_signal_incoherent(jitter_ms);
-            return;
-        };
-        let Some(jitter_penalty_probability) =
-            Self::jitter_penalty_probability(jitter_ms, config.lead_jitter_max_ms)
-        else {
+        // Keep the gap derivation separate from the agreement guard. The price
+        // helpers currently share a ratio, but either one becoming non-derivable
+        // must fail closed.
+        let (Some(lead_gap_probability), Some(jitter_penalty_probability)) = (
+            price_gap_probability(quote.price, reference_fair_value),
+            Self::jitter_penalty_probability(jitter_ms, config.lead_jitter_max_ms),
+        ) else {
             self.mark_signal_incoherent(jitter_ms);
             return;
         };

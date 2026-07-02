@@ -448,20 +448,11 @@ impl PricingState {
         if let Some(candidate) =
             arbitrate_lead_reference(&candidates, min_agreement_corr, max_jitter_ms)
         {
-            let (Some(price), Some(observed_ts_ms)) = (candidate.price, candidate.observed_ts_ms)
-            else {
-                self.set_selected_pricing_spot(None);
-                self.last_lead_gap_probability = None;
-                self.last_jitter_penalty_probability = None;
-                self.last_lead_agreement_corr = None;
-                self.last_fast_venue_age_ms = None;
-                self.last_fast_venue_jitter_ms = None;
-                self.fast_venue_incoherent = true;
-                return;
-            };
-            let Some(jitter_penalty_probability) =
-                PricingState::jitter_penalty_probability(candidate.jitter_ms, max_jitter_ms)
-            else {
+            let (Some(price), Some(observed_ts_ms), Some(jitter_penalty_probability)) = (
+                candidate.price,
+                candidate.observed_ts_ms,
+                PricingState::jitter_penalty_probability(candidate.jitter_ms, max_jitter_ms),
+            ) else {
                 self.set_selected_pricing_spot(None);
                 self.last_lead_gap_probability = None;
                 self.last_jitter_penalty_probability = None;

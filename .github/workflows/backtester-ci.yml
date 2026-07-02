@@ -293,8 +293,6 @@ jobs:
     needs: [ci-policy, detect, fmt]
     if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    env:
-      CARGO_BUILD_JOBS: "3"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -352,7 +350,6 @@ jobs:
     if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     env:
-      CARGO_BUILD_JOBS: "3"
       BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BVS_NEXTEST_SHARDS: "4"

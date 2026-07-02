@@ -489,8 +489,6 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    env:
-      CARGO_BUILD_JOBS: "3"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -539,8 +537,6 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    env:
-      CARGO_BUILD_JOBS: "3"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -594,8 +590,6 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    env:
-      CARGO_BUILD_JOBS: "3"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -752,7 +746,6 @@ jobs:
       actions: read
       id-token: write
     env:
-      CARGO_BUILD_JOBS: "3"
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
       # S3 sccache compile cache (#1011/#1023). Inert unless the build step opts

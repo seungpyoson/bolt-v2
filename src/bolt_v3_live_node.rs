@@ -125,8 +125,8 @@ use crate::{
     bolt_v3_config::{
         BoltV3RootConfig, CapitalPoolBlock, DataClientReadinessProbeBlock,
         DataClientReadinessProbeBookType, DataClientReadinessProbeMarketDataKind,
-        DataClientReadinessProbeQuoteTargetSource, LoadedBoltV3Config, LoadedStrategy,
-        resolve_root_relative_path,
+        DataClientReadinessProbeQuoteTargetSource, LiveSubmitGovernanceMode, LoadedBoltV3Config,
+        LoadedStrategy, resolve_root_relative_path,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
@@ -1815,6 +1815,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let loss_policy = loss_governor_policy_from_loaded(loaded)?;
     let loss_halt_action_policy = loss_governor_halt_action_policy_from_loaded(loaded)?;
     let capital_admission = capital_admission_config_from_loaded(loaded)?;
+    validate_live_submit_governance(
+        loaded,
+        live_submit_approval_limits.is_empty(),
+        loss_policy.is_some(),
+        capital_admission.is_some(),
+    )?;
     let iv_client_errors = crate::bolt_v3_validate::validate_iv_source_clients(&loaded.root);
     if !iv_client_errors.is_empty() {
         return Err(BoltV3LiveNodeError::StrategyRegistration(
@@ -2050,6 +2056,35 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     );
     runtime.refresh_capital_admission_venue_spendability_from_configured_source()?;
     Ok((runtime, summary))
+}
+
+fn validate_live_submit_governance(
+    loaded: &LoadedBoltV3Config,
+    live_submit_approval_limits_empty: bool,
+    loss_policy_present: bool,
+    capital_admission_present: bool,
+) -> Result<(), BoltV3LiveNodeError> {
+    if loaded.strategies.is_empty()
+        || loss_policy_present
+        || capital_admission_present
+        || !live_submit_approval_limits_empty
+    {
+        return Ok(());
+    }
+    match loaded
+        .root
+        .risk
+        .live_submit_governance
+        .as_ref()
+        .map(|governance| governance.mode)
+    {
+        Some(LiveSubmitGovernanceMode::SupervisedDepositCapped) => Ok(()),
+        None => Err(BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "submit-capable live node has no capital admission, no live-submit approval limits, \
+             and no loss policy; declare risk.live_submit_governance.mode = \
+             \"supervised_deposit_capped\" for supervised deposit-capped operation"
+        ))),
+    }
 }
 
 #[cfg(test)]

@@ -39,6 +39,7 @@ static NEXT_TEST_CATALOG_ID: AtomicU64 = AtomicU64::new(0);
 
 mod data_client_probe;
 mod fixtures;
+mod governance_mode;
 mod iv_runtime;
 mod live_node_config;
 mod provider_approvals;

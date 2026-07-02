@@ -401,7 +401,8 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         realized_vol: 1.5,
         pricing_kurtosis: fair_input.pricing_kurtosis,
     })
-    .expect("updown fixture should price");
+    .expect("updown fixture should price")
+    .value();
     let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");

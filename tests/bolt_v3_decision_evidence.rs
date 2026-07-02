@@ -659,6 +659,45 @@ fn entry_skip_evidence_writes_one_durable_line_and_readers_skip_it() {
 }
 
 #[test]
+fn probability_wire_fields_remain_string_payload_bytes() {
+    let entry_skip = sample_entry_skip_evidence();
+    let entry_skip_bytes =
+        serde_json::to_string(&entry_skip).expect("entry skip evidence should serialize");
+
+    assert_eq!(
+        entry_skip_bytes,
+        concat!(
+            r#"{"strategy_id":"strategy-one","now_ms":1200,"reason_category":"entry_pricing_blocked","#,
+            r#""unclassified_context":null,"gate_blocked_by":[{"forced_flat":"stale_reference"}],"#,
+            r#""pricing_blocked_by":["realized_vol_not_ready"],"market_id":"market-one","#,
+            r#""phase":"Active","seconds_to_market_end":300,"spot_price":"3100.5","#,
+            r#""reference_current_price":"3100.5","realized_vol":"2.5","#,
+            r#""realized_vol_source_venue":"fast-source","realized_vol_source_ts_ms":1100,"#,
+            r#""fair_probability_up":"0.6","fair_probability_down":"0.4","selected_side":"up","#,
+            r#""sized_notional":"25","sized_worst_case_ev_bps":"12.5","#,
+            r#""sized_edge_cents_per_share":"1.25","theta_scaled_min_edge_bps":"10","#,
+            r#""up_fee_bps":"2","down_fee_bps":"3","#,
+            r#""submission_blocked_reason":"entry_pricing_blocked","stale_reference_after_ms":1500,"#,
+            r#""last_reference_ts_ms":1000,"min_liquidity_required":"100","#,
+            r#""liquidity_available":"80","frozen":false,"metadata_matches_selection":true,"#,
+            r#""fast_venue_incoherent":false}"#,
+        )
+    );
+
+    let snapshot_line = sample_entry_decision_evidence_lines()[0].clone();
+    let snapshot = &snapshot_line["snapshot"];
+    assert_eq!(snapshot["fair_probability_up"], serde_json::json!("0.6"));
+    assert_eq!(
+        snapshot["uncertainty_band_probability"],
+        serde_json::json!("0.01")
+    );
+    assert!(
+        snapshot["fair_probability_up"].is_string()
+            && snapshot["uncertainty_band_probability"].is_string()
+    );
+}
+
+#[test]
 fn exit_decision_evidence_writes_one_durable_line_and_readers_skip_it() {
     let (_temp, evidence_path, writer) = temp_decision_evidence_writer("exit-decision");
     let evidence = sample_exit_decision_evidence();

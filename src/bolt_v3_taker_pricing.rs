@@ -14,8 +14,8 @@ use crate::{
         FairValuePricingRequest, FairValuePricingResult, FairValuePricingState,
     },
     bolt_v3_numeric::{
-        MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64, clamp_probability, is_positive_finite,
-        sanitize_probability,
+        MILLIS_PER_SECOND_U64, Probability, UNIT_F64, ZERO_F64, clamp_probability,
+        is_positive_finite,
     },
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_taker_updown_signal::{
@@ -102,9 +102,9 @@ impl VenueTimingState {
 pub struct TakerPricingState {
     fair_value: FairValuePricingState,
     pub(crate) venue_timing: BTreeMap<String, VenueTimingState>,
-    pub(crate) last_lead_gap_probability: Option<f64>,
+    pub(crate) last_lead_gap_probability: Option<Probability>,
     pub(crate) last_jitter_penalty_probability: Option<f64>,
-    pub(crate) last_lead_agreement_corr: Option<f64>,
+    pub(crate) last_lead_agreement_corr: Option<Probability>,
     pub(crate) last_fast_venue_age_ms: Option<u64>,
     pub(crate) last_fast_venue_jitter_ms: Option<u64>,
     pub(crate) fast_venue_incoherent: bool,
@@ -183,22 +183,20 @@ impl TakerPricingState {
             .last_reference_fair_value()
             .filter(|value| is_positive_finite(*value))
         else {
-            self.fair_value.clear_pricing_spot();
-            self.last_lead_gap_probability = None;
-            self.last_jitter_penalty_probability = None;
-            self.last_lead_agreement_corr = None;
-            self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
-            self.last_fast_venue_jitter_ms = Some(jitter_ms);
-            self.fast_venue_incoherent = true;
+            self.mark_signal_incoherent(jitter_ms);
             return;
         };
-        let agreement_corr = price_agreement_corr(quote.price, reference_fair_value)
-            .expect("validated signal/reference current prices should yield agreement");
-        let lead_gap_probability = price_gap_probability(quote.price, reference_fair_value)
-            .expect("validated signal/reference current prices should yield a gap");
-        let eligible = agreement_corr >= config.lead_agreement_min_corr
-            && jitter_ms <= config.lead_jitter_max_ms
-            && sanitize_probability(lead_gap_probability).is_some();
+        let Some(agreement_corr) = price_agreement_corr(quote.price, reference_fair_value) else {
+            self.mark_signal_incoherent(jitter_ms);
+            return;
+        };
+        let Some(lead_gap_probability) = price_gap_probability(quote.price, reference_fair_value)
+        else {
+            self.mark_signal_incoherent(jitter_ms);
+            return;
+        };
+        let eligible = agreement_corr.value() >= config.lead_agreement_min_corr
+            && jitter_ms <= config.lead_jitter_max_ms;
 
         if eligible {
             self.fair_value.observe_pricing_spot(quote);
@@ -225,6 +223,16 @@ impl TakerPricingState {
             self.last_fast_venue_jitter_ms = Some(jitter_ms);
             self.fast_venue_incoherent = true;
         }
+    }
+
+    fn mark_signal_incoherent(&mut self, jitter_ms: u64) {
+        self.fair_value.clear_pricing_spot();
+        self.last_lead_gap_probability = None;
+        self.last_jitter_penalty_probability = None;
+        self.last_lead_agreement_corr = None;
+        self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
+        self.last_fast_venue_jitter_ms = Some(jitter_ms);
+        self.fast_venue_incoherent = true;
     }
 
     pub fn observe_realized_vol_snapshot(&mut self, snapshot: RealizedVolSnapshot) {

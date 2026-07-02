@@ -4,8 +4,7 @@ use crate::{
     bolt_v3_executable_cost::{ExecutableCostBlockReason, ExecutableCostBreakdown},
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::{
-        BPS_DENOMINATOR, CENTS_PER_SHARE, UNIT_F64, ZERO_F64, is_non_negative_finite,
-        is_positive_finite, sanitize_probability,
+        BPS_DENOMINATOR, CENTS_PER_SHARE, Probability, ZERO_F64, is_positive_finite,
     },
 };
 
@@ -76,8 +75,8 @@ impl From<ExecutableCostBlockReason> for BinaryOutcomeEdgeBlockReason {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct BinaryOutcomeEdgeInputs {
     pub(crate) side: OutcomeSide,
-    pub(crate) fair_probability_up: Option<f64>,
-    pub(crate) adjusted_probability_up: Option<f64>,
+    pub(crate) fair_probability_up: Option<Probability>,
+    pub(crate) adjusted_probability_up: Option<Probability>,
     pub(crate) order_side: OrderSide,
     pub(crate) cost_breakdown: ExecutableCostBreakdown,
     pub(crate) minimum_edge_bps: f64,
@@ -130,18 +129,14 @@ pub(crate) fn evaluate_binary_outcome_edge(
         );
     }
 
-    let Some(adjusted_probability_up) = inputs
-        .adjusted_probability_up
-        .and_then(sanitize_probability)
-    else {
+    let Some(adjusted_probability_up) = inputs.adjusted_probability_up else {
         return BinaryOutcomeEdgeResult::blocked_with_cost(
             inputs.side,
             inputs.cost_breakdown,
             BinaryOutcomeEdgeBlockReason::InvalidProbability,
         );
     };
-    let Some(fair_probability_up) = inputs.fair_probability_up.and_then(sanitize_probability)
-    else {
+    let Some(fair_probability_up) = inputs.fair_probability_up else {
         return BinaryOutcomeEdgeResult::blocked_with_cost(
             inputs.side,
             inputs.cost_breakdown,
@@ -164,24 +159,17 @@ pub(crate) fn evaluate_binary_outcome_edge(
 
     let success_probability = match inputs.side {
         OutcomeSide::Up => adjusted_probability_up,
-        OutcomeSide::Down => UNIT_F64 - adjusted_probability_up,
+        OutcomeSide::Down => adjusted_probability_up.complement(),
     };
     let fair_success_probability = match inputs.side {
         OutcomeSide::Up => fair_probability_up,
-        OutcomeSide::Down => UNIT_F64 - fair_probability_up,
+        OutcomeSide::Down => fair_probability_up.complement(),
     };
-    if !is_non_negative_finite(success_probability) || success_probability > UNIT_F64 {
-        return BinaryOutcomeEdgeResult::blocked_with_cost(
-            inputs.side,
-            inputs.cost_breakdown,
-            BinaryOutcomeEdgeBlockReason::InvalidProbability,
-        );
-    }
 
     let gross_edge_cents_per_share =
-        fair_success_probability * CENTS_PER_SHARE - inputs.cost_breakdown.gross_cost_cents;
-    let edge_cents_per_share =
-        success_probability * CENTS_PER_SHARE - inputs.cost_breakdown.total_adjusted_cost_cents;
+        fair_success_probability.value() * CENTS_PER_SHARE - inputs.cost_breakdown.gross_cost_cents;
+    let edge_cents_per_share = success_probability.value() * CENTS_PER_SHARE
+        - inputs.cost_breakdown.total_adjusted_cost_cents;
     if !is_positive_finite(inputs.cost_breakdown.total_adjusted_cost_cents) {
         return BinaryOutcomeEdgeResult::blocked_with_cost(
             inputs.side,
@@ -215,7 +203,7 @@ pub(crate) fn evaluate_binary_outcome_edge(
 
     BinaryOutcomeEdgeResult {
         selected_side: inputs.side,
-        adjusted_probability: success_probability,
+        adjusted_probability: success_probability.value(),
         edge_bps,
         edge_cents_per_share,
         cost_breakdown: inputs.cost_breakdown,
@@ -231,9 +219,14 @@ mod tests {
     use crate::{
         bolt_v3_executable_cost::{self, ExactSizeVwap, ExecutableCostBreakdown},
         bolt_v3_market_families::OutcomeSide,
+        bolt_v3_numeric::Probability,
     };
 
     const EPSILON: f64 = 1e-9;
+
+    fn probability(value: f64) -> Probability {
+        Probability::new(value).expect("valid probability")
+    }
 
     fn cost_breakdown(
         vwap_price: f64,
@@ -259,8 +252,8 @@ mod tests {
     ) -> super::BinaryOutcomeEdgeInputs {
         super::BinaryOutcomeEdgeInputs {
             side,
-            fair_probability_up: Some(0.64),
-            adjusted_probability_up: Some(0.64),
+            fair_probability_up: Some(probability(0.64)),
+            adjusted_probability_up: Some(probability(0.64)),
             order_side: OrderSide::Buy,
             cost_breakdown,
             minimum_edge_bps: 0.0,
@@ -288,8 +281,8 @@ mod tests {
     #[test]
     fn fair_probability_controls_fee_slippage_wipe_classification() {
         let mut inputs = inputs(OutcomeSide::Up, cost_breakdown(0.50, 200.0, 0));
-        inputs.fair_probability_up = Some(0.51);
-        inputs.adjusted_probability_up = Some(0.505);
+        inputs.fair_probability_up = Some(probability(0.51));
+        inputs.adjusted_probability_up = Some(probability(0.505));
 
         let result = super::evaluate_binary_outcome_edge(&inputs);
 
@@ -303,8 +296,8 @@ mod tests {
     #[test]
     fn fair_probability_controls_edge_below_threshold_classification() {
         let mut inputs = inputs(OutcomeSide::Up, cost_breakdown(0.50, 200.0, 0));
-        inputs.fair_probability_up = Some(0.49);
-        inputs.adjusted_probability_up = Some(0.505);
+        inputs.fair_probability_up = Some(probability(0.49));
+        inputs.adjusted_probability_up = Some(probability(0.505));
 
         let result = super::evaluate_binary_outcome_edge(&inputs);
 
@@ -318,7 +311,7 @@ mod tests {
     #[test]
     fn slippage_buffer_wipes_out_otherwise_positive_edge() {
         let mut inputs = inputs(OutcomeSide::Up, cost_breakdown(0.50, 0.0, 200));
-        inputs.adjusted_probability_up = Some(0.505);
+        inputs.adjusted_probability_up = Some(probability(0.505));
 
         let result = super::evaluate_binary_outcome_edge(&inputs);
 
@@ -341,7 +334,8 @@ mod tests {
         let fee_bps = 200.0;
         let gross_edge_cents_per_share = 0.5;
         let mut inputs = inputs(OutcomeSide::Up, cost_breakdown(0.50, fee_bps, 0));
-        inputs.adjusted_probability_up = Some(0.50 + (gross_edge_cents_per_share / 100.0));
+        inputs.adjusted_probability_up =
+            Some(probability(0.50 + (gross_edge_cents_per_share / 100.0)));
         inputs.minimum_edge_bps = -fee_bps;
 
         let result = super::evaluate_binary_outcome_edge(&inputs);
@@ -357,7 +351,7 @@ mod tests {
     #[test]
     fn edge_equal_to_minimum_threshold_blocks() {
         let mut inputs = inputs(OutcomeSide::Up, cost_breakdown(0.50, 0.0, 0));
-        inputs.adjusted_probability_up = Some(0.60);
+        inputs.adjusted_probability_up = Some(probability(0.60));
         inputs.minimum_edge_bps = 2_000.0;
 
         let result = super::evaluate_binary_outcome_edge(&inputs);
@@ -371,38 +365,36 @@ mod tests {
 
     #[test]
     fn invalid_probability_blocks_trade() {
-        for adjusted_probability_up in [f64::NAN, -0.01, 1.01] {
-            let mut inputs = inputs(OutcomeSide::Up, cost_breakdown(0.50, 0.0, 0));
-            inputs.adjusted_probability_up = Some(adjusted_probability_up);
+        assert_eq!(Probability::new(f64::NAN), None);
+        assert_eq!(Probability::new(-0.01), None);
+        assert_eq!(Probability::new(1.01), None);
 
-            let result = super::evaluate_binary_outcome_edge(&inputs);
+        let mut missing_adjusted = inputs(OutcomeSide::Up, cost_breakdown(0.50, 0.0, 0));
+        missing_adjusted.adjusted_probability_up = None;
+        let adjusted_result = super::evaluate_binary_outcome_edge(&missing_adjusted);
 
-            assert_eq!(
-                result.block_reason,
-                Some(super::BinaryOutcomeEdgeBlockReason::InvalidProbability)
-            );
-            assert!(!result.trade_allowed);
-        }
+        assert_eq!(
+            adjusted_result.block_reason,
+            Some(super::BinaryOutcomeEdgeBlockReason::InvalidProbability)
+        );
+        assert!(!adjusted_result.trade_allowed);
 
-        for fair_probability_up in [f64::NAN, -0.01, 1.01] {
-            let mut inputs = inputs(OutcomeSide::Up, cost_breakdown(0.50, 0.0, 0));
-            inputs.fair_probability_up = Some(fair_probability_up);
+        let mut missing_fair = inputs(OutcomeSide::Up, cost_breakdown(0.50, 0.0, 0));
+        missing_fair.fair_probability_up = None;
+        let fair_result = super::evaluate_binary_outcome_edge(&missing_fair);
 
-            let result = super::evaluate_binary_outcome_edge(&inputs);
-
-            assert_eq!(
-                result.block_reason,
-                Some(super::BinaryOutcomeEdgeBlockReason::InvalidProbability)
-            );
-            assert!(!result.trade_allowed);
-        }
+        assert_eq!(
+            fair_result.block_reason,
+            Some(super::BinaryOutcomeEdgeBlockReason::InvalidProbability)
+        );
+        assert!(!fair_result.trade_allowed);
     }
 
     #[test]
     fn down_uses_one_minus_adjusted_probability_up() {
         let mut inputs = inputs(OutcomeSide::Down, cost_breakdown(0.40, 0.0, 0));
-        inputs.fair_probability_up = Some(0.30);
-        inputs.adjusted_probability_up = Some(0.30);
+        inputs.fair_probability_up = Some(probability(0.30));
+        inputs.adjusted_probability_up = Some(probability(0.30));
 
         let result = super::evaluate_binary_outcome_edge(&inputs);
 

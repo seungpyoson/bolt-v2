@@ -2193,10 +2193,10 @@ def assert_mergify_temp_pr_synchronize_requires_sender_binding() -> None:
             raise AssertionError(f"human-sync Mergify proof PR must demote without sender binding: {result}")
 
 
-def assert_mergify_temp_pr_edited_event_keeps_required_gate() -> None:
-    # Live Mergify queue proof PRs can arrive as draft pull_request/edited events
-    # without a base change. When the sender and author are the bound Mergify actor,
-    # that still represents the queue proof PR and must publish the required gates.
+def assert_mergify_temp_pr_edited_event_splits_metadata_from_base_change() -> None:
+    # Mergify temp PR title/body edits arrive as pull_request/edited without a base
+    # change. They must not start a fresh full proof run; only edited events that
+    # actually change the base ref still publish required gates.
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
         args = [
@@ -2225,7 +2225,25 @@ def assert_mergify_temp_pr_edited_event_keeps_required_gate() -> None:
 
         code, stdout, stderr = run_cli_with_event_sender(args, "37929162")
         if code != 0:
-            raise AssertionError(f"Mergify edited proof PR ci-policy failed: {stderr}")
+            raise AssertionError(f"Mergify edited metadata PR ci-policy failed: {stderr}")
+        result = output_dict(stdout)
+        expected = {
+            "ci_policy_path": "iteration",
+            "full_ci_required": "false",
+            "gate_name": "gate-iteration",
+            "backtester_gate_name": "backtester-gate-iteration",
+            "expected_event_class": "iteration",
+            "reason": "draft_pr_edited",
+        }
+        actual = {key: result.get(key) for key in expected}
+        if actual != expected:
+            raise AssertionError(f"Mergify edited metadata PR must stay iteration-only: {actual}")
+
+        base_change_args = list(args)
+        base_change_args[base_change_args.index("--pull-request-base-changed") + 1] = "true"
+        code, stdout, stderr = run_cli_with_event_sender(base_change_args, "37929162")
+        if code != 0:
+            raise AssertionError(f"Mergify edited base-change PR ci-policy failed: {stderr}")
         result = output_dict(stdout)
         expected = {
             "ci_policy_path": "full",
@@ -2237,7 +2255,19 @@ def assert_mergify_temp_pr_edited_event_keeps_required_gate() -> None:
         }
         actual = {key: result.get(key) for key in expected}
         if actual != expected:
-            raise AssertionError(f"Mergify edited proof PR must publish required gates: {actual}")
+            raise AssertionError(f"Mergify edited base-change PR must publish required gates: {actual}")
+
+        non_draft_base_change_args = list(base_change_args)
+        non_draft_base_change_args[
+            non_draft_base_change_args.index("--pull-request-draft") + 1
+        ] = "false"
+        code, stdout, stderr = run_cli_with_event_sender(non_draft_base_change_args, "37929162")
+        if code != 0:
+            raise AssertionError(f"ready Mergify edited base-change PR ci-policy failed: {stderr}")
+        result = output_dict(stdout)
+        actual = {key: result.get(key) for key in expected}
+        if actual != expected:
+            raise AssertionError(f"ready Mergify edited base-change PR must publish required gates: {actual}")
 
 
 def assert_parse_event_sender_id_fails_closed() -> None:
@@ -4671,7 +4701,7 @@ def main() -> int:
     assert_mergify_temp_pr_requires_actor_binding()
     assert_mergify_temp_pr_ready_event_uses_author_binding()
     assert_mergify_temp_pr_synchronize_requires_sender_binding()
-    assert_mergify_temp_pr_edited_event_keeps_required_gate()
+    assert_mergify_temp_pr_edited_event_splits_metadata_from_base_change()
     assert_parse_event_sender_id_fails_closed()
     assert_ci_policy_non_numeric_sender_id_does_not_crash()
     assert_mergify_actor_binding_demotes_every_full_action()

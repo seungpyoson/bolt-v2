@@ -479,10 +479,10 @@ impl StrategyFreeMetadataResponseProbeState {
             .handle
             .install_metadata_response_instrument_ids(instrument_ids);
         if subscriptions.is_empty() {
-            let reason = self.handle.failure_error().unwrap_or_else(|| {
-                "metadata_response readiness probe produced no source-owned instrument targets"
-                    .to_string()
-            });
+            let reason = self
+                .handle
+                .failure_error()
+                .unwrap_or_else(|| METADATA_RESPONSE_EMPTY_TARGETS_FAILURE.to_string());
             return Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed { reason });
         }
         let market_observer = StrategyFreeDataClientProbeObserver::register(
@@ -584,8 +584,7 @@ mod metadata_response_probe_driver_tests {
             self.install_calls.set(self.install_calls.get() + 1);
             if self.fail_install {
                 return Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed {
-                    reason: "metadata_response readiness probe produced no source-owned instrument targets"
-                        .to_string(),
+                    reason: METADATA_RESPONSE_EMPTY_TARGETS_FAILURE.to_string(),
                 });
             }
             self.has_subscriptions.set(true);

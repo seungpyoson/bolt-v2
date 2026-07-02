@@ -428,6 +428,13 @@ impl BoltV3StrategyFreeReferenceQuoteProbeHandle {
             return Vec::new();
         };
         let metadata_quote_targets = instrument_ids.len();
+        if metadata_quote_targets == 0 {
+            self.fail_metadata_response_probe(
+                "metadata_response readiness probe produced no source-owned instrument targets"
+                    .to_string(),
+            );
+            return Vec::new();
+        }
         if metadata_quote_targets > max_quote_targets {
             if self.metadata_response_allow_target_sampling {
                 instrument_ids =

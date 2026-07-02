@@ -277,6 +277,105 @@ fn data_client_readiness_metadata_response_probe_starts_pending_until_targets_ar
 }
 
 #[test]
+fn data_client_readiness_metadata_response_probe_uses_actual_count_below_cap() {
+    let mut loaded = fixture_loaded_config();
+    let client = loaded
+        .root
+        .clients
+        .get_mut("polymarket_main")
+        .expect("fixture should include a data client");
+    client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(20),
+        allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
+        quote_targets: None,
+    });
+
+    let handle = strategy_free_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+        .expect("metadata-response readiness quote handle should build");
+    let installed = handle.install_metadata_response_instrument_ids(vec![
+        InstrumentId::from("CONFIGURED-FIRST.SOURCE"),
+        InstrumentId::from("CONFIGURED-SECOND.SOURCE"),
+        InstrumentId::from("CONFIGURED-THIRD.SOURCE"),
+        InstrumentId::from("CONFIGURED-FOURTH.SOURCE"),
+    ]);
+
+    assert_eq!(
+        installed.len(),
+        4,
+        "metadata_response probes must subscribe every source-owned target below the configured cap"
+    );
+    assert_eq!(
+        handle.required_market_data_count(),
+        4,
+        "required observations must be based on actual subscribed targets, not max_metadata_quote_targets"
+    );
+
+    for subscription in installed {
+        handle
+            .quotes
+            .borrow_mut()
+            .push(BoltV3StrategyFreeReferenceQuote {
+                data_client_id: subscription.data_client_id.to_string(),
+                instrument_id: subscription.instrument_id.to_string(),
+                bid_price: 1.0,
+                ask_price: 2.0,
+                ts_event_unix_nanos: 1_000,
+                ts_init_unix_nanos: 1_100,
+                captured_at_unix_nanos: 1_200,
+            });
+    }
+
+    assert_eq!(handle.observed_market_data_count(), 4);
+    assert!(
+        handle.has_all_required_quotes(),
+        "fewer metadata instruments than the cap should still be enough to pass once all subscribed targets tick"
+    );
+}
+
+#[test]
+fn data_client_readiness_metadata_response_probe_rejects_empty_metadata_universe() {
+    let mut loaded = fixture_loaded_config();
+    let client = loaded
+        .root
+        .clients
+        .get_mut("polymarket_main")
+        .expect("fixture should include a data client");
+    client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(20),
+        allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
+        quote_targets: None,
+    });
+
+    let handle = strategy_free_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+        .expect("metadata-response readiness quote handle should build");
+    let installed = handle.install_metadata_response_instrument_ids(Vec::new());
+
+    assert!(
+        installed.is_empty(),
+        "empty metadata_response universes must not install subscriptions"
+    );
+    let failure = handle
+        .failure_error()
+        .expect("empty metadata_response universe should fail closed");
+    assert!(
+        failure.contains("no source-owned instrument targets"),
+        "failure should explain the empty metadata_response target set: {failure}"
+    );
+}
+
+#[test]
 fn data_client_readiness_metadata_response_probe_rejects_unbounded_metadata_universe() {
     let mut loaded = fixture_loaded_config();
     let client = loaded

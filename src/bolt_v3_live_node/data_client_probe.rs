@@ -327,15 +327,60 @@ struct StrategyFreeMetadataResponseProbeDriver {
 
 impl StrategyFreeMetadataResponseProbeDriver {
     async fn drive_until_subscribed(&self) -> Result<(), BoltV3LiveNodeError> {
-        loop {
-            if self.state.has_subscriptions() {
-                return Ok(());
-            }
-            if self.state.instrument_count() >= self.state.max_metadata_quote_targets {
-                return self.state.install_and_subscribe();
-            }
-            self.state.notify.notified().await;
+        drive_metadata_response_probe_until_subscribed(self.state.as_ref()).await
+    }
+}
+
+trait StrategyFreeMetadataResponseProbeDriverState {
+    fn has_subscriptions(&self) -> bool;
+    fn instrument_count(&self) -> usize;
+    fn install_and_subscribe(&self) -> Result<(), BoltV3LiveNodeError>;
+    fn notify(&self) -> &tokio::sync::Notify;
+}
+
+async fn drive_metadata_response_probe_until_subscribed(
+    state: &impl StrategyFreeMetadataResponseProbeDriverState,
+) -> Result<(), BoltV3LiveNodeError> {
+    loop {
+        if state.has_subscriptions() {
+            return Ok(());
         }
+        let instrument_count = state.instrument_count();
+        if instrument_count > 0 {
+            let notified = state.notify().notified();
+            tokio::pin!(notified);
+            tokio::select! {
+                () = &mut notified => continue,
+                () = tokio::task::yield_now() => {
+                    if state.has_subscriptions() {
+                        return Ok(());
+                    }
+                    if state.instrument_count() == instrument_count {
+                        return state.install_and_subscribe();
+                    }
+                }
+            }
+            continue;
+        }
+        state.notify().notified().await;
+    }
+}
+
+impl StrategyFreeMetadataResponseProbeDriverState for StrategyFreeMetadataResponseProbeState {
+    fn has_subscriptions(&self) -> bool {
+        StrategyFreeMetadataResponseProbeState::has_subscriptions(self)
+    }
+
+    fn instrument_count(&self) -> usize {
+        StrategyFreeMetadataResponseProbeState::instrument_count(self)
+    }
+
+    fn install_and_subscribe(&self) -> Result<(), BoltV3LiveNodeError> {
+        StrategyFreeMetadataResponseProbeState::install_and_subscribe(self)
+    }
+
+    fn notify(&self) -> &tokio::sync::Notify {
+        &self.notify
     }
 }
 
@@ -353,18 +398,18 @@ impl StrategyFreeMetadataResponseProbeObserver {
         book_type: Option<BookType>,
         stop_handle: LiveNodeHandle,
     ) -> Result<Self, BoltV3LiveNodeError> {
-        let max_metadata_quote_targets =
-            handle.metadata_response_max_quote_targets.ok_or_else(|| {
-                BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(anyhow::anyhow!(
+        if handle.metadata_response_max_quote_targets.is_none() {
+            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+                anyhow::anyhow!(
                     "data-client readiness probe requires clients.<id>.readiness_probe.max_metadata_quote_targets when quote_target_source = \"metadata_response\""
-                ))
-            })?;
+                ),
+            ));
+        }
         let state = Rc::new(StrategyFreeMetadataResponseProbeState {
             handle: handle.clone(),
             venue,
             market_data_kind,
             book_type,
-            max_metadata_quote_targets,
             instruments: RefCell::new(BTreeMap::new()),
             subscriptions: RefCell::new(Vec::new()),
             market_observer: RefCell::new(None),
@@ -380,9 +425,7 @@ impl StrategyFreeMetadataResponseProbeObserver {
             let mut instruments = handler_state.instruments.borrow_mut();
             let previous_len = instruments.len();
             instruments.insert(instrument_id.to_string(), instrument_id);
-            if instruments.len() != previous_len
-                && instruments.len() >= handler_state.max_metadata_quote_targets
-            {
+            if instruments.len() != previous_len {
                 handler_state.notify.notify_one();
             }
         });
@@ -424,7 +467,6 @@ struct StrategyFreeMetadataResponseProbeState {
     venue: Venue,
     market_data_kind: DataClientReadinessProbeMarketDataKind,
     book_type: Option<BookType>,
-    max_metadata_quote_targets: usize,
     instruments: RefCell<BTreeMap<String, InstrumentId>>,
     subscriptions: RefCell<Vec<StrategyFreeReferenceQuoteSubscription>>,
     market_observer: RefCell<Option<StrategyFreeDataClientProbeObserver>>,
@@ -628,6 +670,69 @@ fn readiness_probe_market_data_kind_label(
         DataClientReadinessProbeMarketDataKind::Quote => "quote",
         DataClientReadinessProbeMarketDataKind::Book => "book",
         DataClientReadinessProbeMarketDataKind::Trade => "trade",
+    }
+}
+
+#[cfg(test)]
+mod metadata_response_probe_driver_tests {
+    use super::*;
+
+    struct FakeMetadataResponseProbeState {
+        instrument_count: Cell<usize>,
+        has_subscriptions: Cell<bool>,
+        install_calls: Cell<usize>,
+        notify: tokio::sync::Notify,
+    }
+
+    impl FakeMetadataResponseProbeState {
+        fn with_instrument_count(instrument_count: usize) -> Self {
+            Self {
+                instrument_count: Cell::new(instrument_count),
+                has_subscriptions: Cell::new(false),
+                install_calls: Cell::new(0),
+                notify: tokio::sync::Notify::new(),
+            }
+        }
+    }
+
+    impl StrategyFreeMetadataResponseProbeDriverState for FakeMetadataResponseProbeState {
+        fn has_subscriptions(&self) -> bool {
+            self.has_subscriptions.get()
+        }
+
+        fn instrument_count(&self) -> usize {
+            self.instrument_count.get()
+        }
+
+        fn install_and_subscribe(&self) -> Result<(), BoltV3LiveNodeError> {
+            self.install_calls.set(self.install_calls.get() + 1);
+            self.has_subscriptions.set(true);
+            Ok(())
+        }
+
+        fn notify(&self) -> &tokio::sync::Notify {
+            &self.notify
+        }
+    }
+
+    #[test]
+    fn metadata_response_driver_installs_when_count_is_below_cap() {
+        let state = FakeMetadataResponseProbeState::with_instrument_count(4);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime should build");
+
+        runtime
+            .block_on(drive_metadata_response_probe_until_subscribed(&state))
+            .expect("driver should install available metadata targets");
+
+        assert_eq!(
+            state.install_calls.get(),
+            1,
+            "max_metadata_quote_targets must not be treated as a required minimum"
+        );
+        assert!(state.has_subscriptions.get());
     }
 }
 

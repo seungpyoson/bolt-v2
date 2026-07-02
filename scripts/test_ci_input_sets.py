@@ -191,6 +191,7 @@ def assert_backtester_sets_cover_cache_and_detector_inputs() -> None:
             raise AssertionError(f"backtester_cache missing {required}")
     for forbidden in {
         ".github/workflows/backtester-ci.yml",
+        ".github/actions/setup-environment/**",
     }:
         if forbidden in cache:
             raise AssertionError(f"backtester_cache must not include CI governance input {forbidden}")

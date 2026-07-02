@@ -732,7 +732,7 @@ jobs:
           just test-archive "$NEXTEST_ARCHIVE_PATH"
       - name: Save nextest archive to S3
         id: nextest-archive-cache-save
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-archive-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-artifact-cache-aws.outcome == 'success' && steps.nextest-archive-cache.outputs.cache-hit != 'true' }}
         continue-on-error: true
         env:
           CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
@@ -765,7 +765,7 @@ jobs:
             --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
       - name: Save root binary sidecars to S3
         id: root-bin-sidecars-cache-save
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-artifact-cache-aws.outcome == 'success' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true' }}
         continue-on-error: true
         env:
           CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
@@ -8386,6 +8386,19 @@ def assert_backtester_ci_input_set_config_covers_systematic_inputs() -> None:
         for error in workflow_in_cache_errors
     ):
         raise AssertionError(f"CI input set config must reject workflow governance cache input, got: {workflow_in_cache_errors}")
+    setup_action_in_cache = config.replace(
+        '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+        '  "scripts/rust_test_targets.py",\n  ".github/actions/setup-environment/**",\n]\n\n[sets.backtester_detect]\n',
+        1,
+    )
+    setup_action_in_cache_errors = verifier.verify_repo_automation_texts({config_path: setup_action_in_cache})
+    if not any(
+        "backtester_cache input set must not include CI governance input .github/actions/setup-environment/**" in error
+        for error in setup_action_in_cache_errors
+    ):
+        raise AssertionError(
+            f"CI input set config must reject setup-environment cache input, got: {setup_action_in_cache_errors}"
+        )
 
 
 def assert_backtester_ci_requires_pr_event_types() -> None:
@@ -13275,6 +13288,31 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         for error in github_artifact_cache_errors
     ), github_artifact_cache_errors
 
+    weakened_bvs_nextest_restore_guard = replace_once(
+        good,
+        "        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'\n",
+        "        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true'\n",
+    )
+    weakened_bvs_nextest_restore_guard_errors = bvs_cache_errors(weakened_bvs_nextest_restore_guard)
+    assert any(
+        "backtester bvs-test archive must restore nextest archive from S3 only when eligible with AWS credentials"
+        in error
+        for error in weakened_bvs_nextest_restore_guard_errors
+    ), weakened_bvs_nextest_restore_guard_errors
+
+    weakened_bvs_sidecar_restore_guard = replace_once_after(
+        good,
+        "      - name: Restore BVS binary sidecars from S3\n",
+        "        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'\n",
+        "        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true'\n",
+    )
+    weakened_bvs_sidecar_restore_guard_errors = bvs_cache_errors(weakened_bvs_sidecar_restore_guard)
+    assert any(
+        "backtester bvs-test archive must restore binary sidecars from S3 only when eligible with AWS credentials"
+        in error
+        for error in weakened_bvs_sidecar_restore_guard_errors
+    ), weakened_bvs_sidecar_restore_guard_errors
+
     missing_bvs_nextest_integrity = replace_once(
         good,
         """          if [[ "$metadata_digest" != "$DIGEST" ]]; then
@@ -15033,6 +15071,22 @@ def main() -> int:
             BASE_WORKFLOW,
             "      - name: Save nextest archive to S3\n        id: nextest-archive-cache-save\n",
             "",
+        ),
+    )
+    assert_error(
+        "test-archive must save nextest archive to S3 only from push-to-main with write credentials",
+        replace_once(
+            BASE_WORKFLOW,
+            "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-artifact-cache-aws.outcome == 'success' && steps.nextest-archive-cache.outputs.cache-hit != 'true' }}\n",
+            "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-archive-cache.outputs.cache-hit != 'true' }}\n",
+        ),
+    )
+    assert_error(
+        "test-archive must save root binary sidecar to S3 only from push-to-main with write credentials",
+        replace_once(
+            BASE_WORKFLOW,
+            "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-artifact-cache-aws.outcome == 'success' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true' }}\n",
+            "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true' }}\n",
         ),
     )
     assert_error(

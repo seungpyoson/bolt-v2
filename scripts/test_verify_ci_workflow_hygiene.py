@@ -49,11 +49,14 @@ GATE_NOOP_BLOCK = f"""          if [[ "$policy_path" == "noop" ]]; then
           fi
 """
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, deny, clippy, check-aarch64, source-fence, test]"
-EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
+FORBIDDEN_MANAGED_TARGET_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
     "'.github/actions/setup-environment/action.yml'",
     "'.no-mistakes.yaml'",
+    "'ci/rust-verification.toml'",
+    "'justfile'",
     "'scripts/command_understanding.py'",
+    "'scripts/rust_verification.py'",
 )
 
 def load_verifier(
@@ -451,14 +454,23 @@ jobs:
           cache-targets: false
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
-      - uses: actions/cache@example
+      - name: Restore clippy managed target cache
+        id: clippy-managed-target-cache
+        uses: actions/cache/restore@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-
       - run: just fmt-check
       - run: just clippy
+      - name: Save clippy managed target cache
+        id: clippy-managed-target-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.clippy-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
   check-aarch64:
     name: check-aarch64
@@ -491,15 +503,24 @@ jobs:
           cache-targets: false
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
-      - uses: actions/cache@example
+      - name: Restore check-aarch64 managed target cache
+        id: check-aarch64-managed-target-cache
+        uses: actions/cache/restore@example
         if: needs.detector.outputs.build_required != 'true'
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-
       - if: needs.detector.outputs.build_required != 'true'
         run: just check-aarch64
+      - name: Save check-aarch64 managed target cache
+        id: check-aarch64-managed-target-cache-save
+        if: ${{ needs.detector.outputs.build_required != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.check-aarch64-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
   source-fence:
     name: source-fence
@@ -521,10 +542,12 @@ jobs:
           cache-targets: false
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
-      - uses: actions/cache@example
+      - name: Restore source-fence managed target cache
+        id: source-fence-managed-target-cache
+        uses: actions/cache/restore@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
       - run: |
@@ -533,6 +556,13 @@ jobs:
           else
             just source-fence-static
           fi
+      - name: Save source-fence managed target cache
+        id: source-fence-managed-target-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.source-fence-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
   nextest-fingerprint:
     name: nextest fingerprint
@@ -609,6 +639,10 @@ jobs:
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
+      NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+      NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+      NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
+      NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
     steps:
       - uses: ./.github/actions/setup-environment
         id: setup
@@ -623,8 +657,23 @@ jobs:
           {
             echo "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
             echo "root_bin_sidecars_cache_key=root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
-            echo "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}"
+            echo "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
           } >> "$GITHUB_OUTPUT"
+      - name: Resolve nextest artifact cache eligibility
+        id: nextest-artifact-cache
+        continue-on-error: true
+        run: |
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+          echo "role_arn=$ROLE_ARN" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=read_write" >> "$GITHUB_OUTPUT"
+      - name: Configure AWS credentials for nextest artifact cache
+        id: nextest-artifact-cache-aws
+        if: steps.nextest-artifact-cache.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@example
+        with:
+          role-to-assume: ${{ steps.nextest-artifact-cache.outputs.role_arn }}
+          aws-region: ${{ vars.CI_SCCACHE_REGION }}
       - uses: Swatinem/rust-cache@example
         with:
           cache-on-failure: true
@@ -632,18 +681,28 @@ jobs:
           cache-targets: false
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
-      - name: Restore nextest archive
+      - name: Restore nextest archive from S3
         id: nextest-archive-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
-      - name: Restore root binary sidecars
+        if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'
+        continue-on-error: true
+        env:
+          CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+        run: |
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/nextest-archive/${CACHE_KEY}.tar.zst"
+          aws s3 cp "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}" "$NEXTEST_ARCHIVE_PATH"
+          echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Restore root binary sidecars from S3
         id: root-bin-sidecars-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
-        with:
-          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
-          key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+        if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'
+        continue-on-error: true
+        env:
+          CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+        run: |
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/root-bin-sidecars/${CACHE_KEY}.tar.gz"
+          aws s3 cp "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}" "$ROOT_BIN_SIDECARS_PATH"
+          echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Restore archive build target cache
         id: test-target-cache
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
@@ -666,13 +725,15 @@ jobs:
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
           just test-archive "$NEXTEST_ARCHIVE_PATH"
-      - name: Save nextest archive
+      - name: Save nextest archive to S3
         id: nextest-archive-cache-save
-        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-archive-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        env:
+          CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+        run: |
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/nextest-archive/${CACHE_KEY}.tar.zst"
+          aws s3 cp "$NEXTEST_ARCHIVE_PATH" "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
       - name: Extract root binary sidecars
         if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
         run: |
@@ -697,16 +758,18 @@ jobs:
             --repo-root "$GITHUB_WORKSPACE" \
             --target-dir "$target_dir" \
             --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
-      - name: Save root binary sidecars
+      - name: Save root binary sidecars to S3
         id: root-bin-sidecars-cache-save
-        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
-        with:
-          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
-          key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        env:
+          CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+        run: |
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/root-bin-sidecars/${CACHE_KEY}.tar.gz"
+          aws s3 cp "$ROOT_BIN_SIDECARS_PATH" "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
       - name: Save archive build target cache
         id: test-target-cache-save
-        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
@@ -761,8 +824,6 @@ jobs:
             --save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}" \
             --save-outcome "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}" \
             --save-outcome "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}" \
-            --cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}" \
-            --cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}" \
             --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"
 
   test:
@@ -818,10 +879,12 @@ jobs:
           cache-targets: false
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
-      - uses: actions/cache@example
+      - name: Restore build managed target cache
+        id: build-managed-target-cache
+        uses: actions/cache/restore@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-
       - name: Install zig
@@ -833,6 +896,13 @@ jobs:
           tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
           fallback: none
       - run: just build
+      - name: Save build managed target cache
+        id: build-managed-target-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.build-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
       - name: Stage managed build artifact
         id: managed_artifact
         run: |
@@ -4112,8 +4182,8 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             "must require CI_SCCACHE_S3_KEY_PREFIX",
             replace_once(
                 workflow,
-                ' && -n "$PREFIX"',
-                "",
+                '          [[ -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false',
+                '          [[ -n "$role_arn" && -n "$BUCKET" && -n "$REGION" ]] || vars_present=false',
             ),
         ),
         (
@@ -4148,8 +4218,15 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             "must configure PR read-only sccache role path",
             replace_once(
                 workflow,
-                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
-                "",
+                "          ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n"
+                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n"
+                "          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}\n"
+                "          REGION: ${{ vars.CI_SCCACHE_REGION }}\n"
+                "          PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}",
+                "          ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n"
+                "          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}\n"
+                "          REGION: ${{ vars.CI_SCCACHE_REGION }}\n"
+                "          PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}",
             ),
         ),
         (
@@ -11332,10 +11409,10 @@ def assert_v6_red_renamed_path_cargo_source_builds_are_reported() -> None:
 
 
 def workflow_with_exact_head_governance_cache_inputs(workflow: str) -> str:
-    if all(cache_input in workflow for cache_input in EXACT_HEAD_GOVERNANCE_CACHE_INPUTS):
+    if all(cache_input in workflow for cache_input in FORBIDDEN_MANAGED_TARGET_CACHE_INPUTS):
         return workflow
-    governance_inputs = ", " + ", ".join(EXACT_HEAD_GOVERNANCE_CACHE_INPUTS)
-    return workflow.replace("'justfile') }}", f"'justfile'{governance_inputs}) }}").replace(
+    governance_inputs = ", " + ", ".join(FORBIDDEN_MANAGED_TARGET_CACHE_INPUTS)
+    return workflow.replace("'.cargo/config.toml') }}", f"'.cargo/config.toml'{governance_inputs}) }}").replace(
         "'specs/**/*.md') }}",
         f"'specs/**/*.md'{governance_inputs}) }}",
     )
@@ -12631,12 +12708,7 @@ commands: { test: "cargo test" }
 
 def assert_v6_red_exact_head_governance_inputs_are_cache_keyed() -> None:
     governed_workflow = workflow_with_exact_head_governance_cache_inputs(BASE_WORKFLOW)
-    assert_clean(governed_workflow)
-    for cache_input in EXACT_HEAD_GOVERNANCE_CACHE_INPUTS:
-        assert_error(
-            "cache keys must include exact-head CI/no-mistakes governance inputs",
-            governed_workflow.replace(f", {cache_input}", ""),
-        )
+    assert_error("managed target cache keys must use Rust-relevant inputs only", governed_workflow)
 
 
 def assert_shell_logical_lines_handles_crlf_continuations() -> None:
@@ -12804,6 +12876,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BVS_NEXTEST_SHARDS: "4"
+      NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+      NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
     steps:
       - name: Compute BVS cache input hash
         id: bvs_cache_inputs
@@ -12813,16 +12887,21 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           else
             echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
           fi
-      - name: Restore BVS nextest archive
+      - name: Resolve BVS nextest artifact cache eligibility
+        id: bvs-nextest-artifact-cache
+        continue-on-error: true
+      - name: Restore BVS nextest archive from S3
         id: bvs-nextest-archive-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
-        with:
-          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
-      - name: Restore BVS binary sidecars
+        continue-on-error: true
+        env:
+          CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
+        run: aws s3 cp "$uri" "$BVS_NEXTEST_ARCHIVE_PATH" --only-show-errors
+      - name: Restore BVS binary sidecars from S3
         id: bvs-bin-sidecars-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
-        with:
-          key: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
+        continue-on-error: true
+        env:
+          CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
+        run: aws s3 cp "$uri" "$BVS_BIN_SIDECARS_PATH" --only-show-errors
       - name: Resolve crate managed target dir
         id: crate_target
       - uses: Swatinem/rust-cache@example
@@ -12832,14 +12911,18 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         id: test-target-cache
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}
       - name: Build BVS nextest archive
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
         run: |
           mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)
+          printf 'BVS archive args: %s\\n' "${archive_args[*]}"
           just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"
       - name: Save BVS nextest archive
-        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        id: bvs-nextest-archive-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' }}
+        run: aws s3 cp "$BVS_NEXTEST_ARCHIVE_PATH" "$uri" --only-show-errors
       - name: Build BVS binary sidecars
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
         run: |
@@ -12847,10 +12930,13 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- "${cargo_args[@]}"
           tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
       - name: Save BVS binary sidecars
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        id: bvs-bin-sidecars-cache-save
+        run: aws s3 cp "$BVS_BIN_SIDECARS_PATH" "$uri" --only-show-errors
       - name: Save archive build target cache
-        if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}
       - name: Require BVS local payload
         run: |
           test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }
@@ -12889,15 +12975,49 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
 """
-    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
+    def bvs_cache_errors(workflow: str) -> list[str]:
+        return verifier.backtester_test_shard_errors(
+            ".github/workflows/backtester-ci.yml", workflow
+        ) + verifier.backtester_managed_target_cache_errors(
+            ".github/workflows/backtester-ci.yml", workflow
+        )
+
+    good_errors = bvs_cache_errors(good)
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
+
+    github_artifact_cache = replace_once(
+        good,
+        "      - name: Restore BVS nextest archive from S3\n",
+        "      - name: Restore forbidden BVS nextest archive cache\n"
+        "        uses: actions/cache/restore@example\n"
+        "        with:\n"
+        "          path: ${{ env.BVS_NEXTEST_ARCHIVE_PATH }}\n"
+        "          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}\n"
+        "      - name: Restore BVS nextest archive from S3\n",
+    )
+    github_artifact_cache_errors = bvs_cache_errors(github_artifact_cache)
+    assert any(
+        "backtester bvs-test archive payloads must use S3 artifact cache" in error
+        for error in github_artifact_cache_errors
+    ), github_artifact_cache_errors
+
+    weakened_target_save = replace_once(
+        good,
+        "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
+        "        if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
+    )
+    weakened_target_save_errors = bvs_cache_errors(weakened_target_save)
+    assert any(
+        "backtester managed target cache saves must be push-to-main only" in error
+        for error in weakened_target_save_errors
+    ), weakened_target_save_errors
 
     fanout = good.replace(
         "      - name: Require BVS local payload\n",
         "      - name: Upload BVS test payload\n        with:\n          name: bvs-test-payload\n      - name: Require BVS local payload\n",
         1,
     )
-    fanout_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": fanout})
+    fanout_errors = bvs_cache_errors(fanout)
     assert any("legacy fan-out payload" in error for error in fanout_errors), fanout_errors
 
     download_in_archive = good.replace(
@@ -12907,9 +13027,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "      - name: Require BVS local payload\n",
         1,
     )
-    download_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": download_in_archive}
-    )
+    download_errors = bvs_cache_errors(download_in_archive)
     assert any(
         "backtester required bvs-test path must not download a test payload artifact" in error
         for error in download_errors
@@ -12924,22 +13042,20 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "      - name: Build issue #789 lib archive\n",
         1,
     )
-    consumer_target_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": consumer_managed_target}
-    )
+    consumer_target_errors = bvs_cache_errors(consumer_managed_target)
     assert any(
         "backtester bvs-test consumers must not restore the managed target cache" in error
         for error in consumer_target_errors
     ), consumer_target_errors
 
     hardcoded_archive_targets = good.replace(
-        'mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)\n          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"',
+        "mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)\n"
+        "          printf 'BVS archive args: %s\\n' \"${archive_args[*]}\"\n"
+        '          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"',
         'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" --lib --test backtesting_vertical_slice_tests --bin backtesting-vertical-slice',
         1,
     )
-    hardcoded_archive_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": hardcoded_archive_targets}
-    )
+    hardcoded_archive_errors = bvs_cache_errors(hardcoded_archive_targets)
     assert any("archive targets must be discovered" in error for error in hardcoded_archive_errors), hardcoded_archive_errors
 
     weakened_archive_guard = good.replace(
@@ -12947,9 +13063,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || true',
         1,
     )
-    weakened_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": weakened_archive_guard}
-    )
+    weakened_errors = bvs_cache_errors(weakened_archive_guard)
     assert any("backtester bvs-test archive must fail closed on missing local payload" in error for error in weakened_errors), weakened_errors
 
     exit_one_archive_guard = good.replace(
@@ -12957,9 +13071,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1',
         1,
     )
-    exit_one_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": exit_one_archive_guard}
-    )
+    exit_one_errors = bvs_cache_errors(exit_one_archive_guard)
     assert any(
         "backtester bvs-test archive must fail closed on missing local payload" in error
         for error in exit_one_errors
@@ -14324,8 +14436,8 @@ def main() -> int:
         "check-aarch64 managed target cache must run only when build_required is not true",
         replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        if: needs.detector.outputs.build_required != 'true'",
-            "      - uses: actions/cache@example",
+            "      - name: Restore check-aarch64 managed target cache\n        id: check-aarch64-managed-target-cache\n        uses: actions/cache/restore@example\n        if: needs.detector.outputs.build_required != 'true'",
+            "      - name: Restore check-aarch64 managed target cache\n        id: check-aarch64-managed-target-cache\n        uses: actions/cache/restore@example",
         ),
     )
     assert_error(
@@ -14353,11 +14465,11 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, '          use-default-target: "true"', '          # use-default-target: "true"'),
     )
     assert_error(
-        "check-aarch64 must use setup.outputs.managed_target_dir",
+        "check-aarch64 must use isolated managed target cache",
         replace_once(
             BASE_WORKFLOW,
-            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}",
         ),
     )
     assert_error(
@@ -14396,7 +14508,7 @@ def main() -> int:
         "clippy must use isolated managed target cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n",
+            "      - name: Restore clippy managed target cache\n        id: clippy-managed-target-cache\n        uses: actions/cache/restore@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n",
             "",
         ),
     )
@@ -14492,13 +14604,13 @@ def main() -> int:
         "test-archive must use only shared Cargo registry/git rust-cache blocks",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Restore nextest archive",
+            "      - name: Restore nextest archive from S3",
             "      - uses: Swatinem/rust-cache@example\n"
             "        with:\n"
             "          cache-targets: true\n"
             "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}\n"
             "          key: nextest-archive-build-v1\n"
-            "      - name: Restore nextest archive",
+            "      - name: Restore nextest archive from S3",
         ),
     )
     assert_error(
@@ -14543,7 +14655,7 @@ def main() -> int:
             BASE_WORKFLOW,
             """      - name: Save archive build target cache
         id: test-target-cache-save
-        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
@@ -14556,41 +14668,41 @@ def main() -> int:
         "test-archive must save target cache only on target cache miss",
         replace_once(
             BASE_WORKFLOW,
-            "        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}\n",
+            "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}\n",
             "",
         ),
     )
     assert_error(
-        "test-archive managed target cache key must include src/**",
-        BASE_WORKFLOW.replace("'src/**', ", ""),
-    )
-    assert_error(
-        "test-archive managed target cache key must include tests/**",
-        BASE_WORKFLOW.replace(", 'tests/**'", ""),
+        "test-archive cache persistence keys must come from single-source cache key outputs",
+        replace_once(
+            BASE_WORKFLOW,
+            "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ needs.nextest-fingerprint.outputs.nextest_digest }}",
+            "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock') }}",
+        ),
     )
     assert_error(
         "test-archive must not save a second archive-build cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Restore nextest archive",
+            "      - name: Restore nextest archive from S3",
             "      - name: Archive build cache key marker\n"
             "        run: echo nextest-archive-build-v1\n"
-            "      - name: Restore nextest archive",
+            "      - name: Restore nextest archive from S3",
         ),
     )
     assert_error(
-        "test-archive must restore nextest archive cache",
+        "test-archive must restore nextest archive from S3 fail-open",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Restore nextest archive\n        id: nextest-archive-cache\n        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
+            "      - name: Restore nextest archive from S3\n        id: nextest-archive-cache\n",
             "",
         ),
     )
     assert_error(
-        "test-archive must save nextest archive cache",
+        "test-archive must save nextest archive to S3 only from push-to-main",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Save nextest archive\n        id: nextest-archive-cache-save\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
+            "      - name: Save nextest archive to S3\n        id: nextest-archive-cache-save\n",
             "",
         ),
     )
@@ -14603,11 +14715,27 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive cache must not use restore-keys",
+        "managed target cache keys must use Rust-relevant inputs only",
         replace_once(
             BASE_WORKFLOW,
-            "          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}\n      - name: Restore root binary sidecars",
-            "          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}\n          restore-keys: nextest-archive-v2-\n      - name: Restore root binary sidecars",
+            "hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml')",
+            "hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'justfile')",
+        ),
+    )
+    assert_error(
+        "test-archive payloads must use S3 artifact cache, not GitHub Actions cache",
+        replace_once(
+            BASE_WORKFLOW,
+            "      NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}",
+            "      # NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}",
+        ),
+    )
+    assert_error(
+        "managed target cache saves must be push-to-main only",
+        replace_once(
+            BASE_WORKFLOW,
+            "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.clippy-managed-target-cache.outputs.cache-hit != 'true' }}",
+            "        if: ${{ steps.clippy-managed-target-cache.outputs.cache-hit != 'true' }}",
         ),
     )
     # #400: every managed-target cache must declare a restore-keys prefix fallback.
@@ -14615,8 +14743,8 @@ def main() -> int:
         "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just fmt-check\n      - run: just clippy",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n      - run: just fmt-check\n      - run: just clippy",
         ),
     )
     assert_error(
@@ -14631,24 +14759,24 @@ def main() -> int:
         "check-aarch64 managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-\n      - if: needs.detector.outputs.build_required != 'true'",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - if: needs.detector.outputs.build_required != 'true'",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-\n      - if: needs.detector.outputs.build_required != 'true'",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n      - if: needs.detector.outputs.build_required != 'true'",
         ),
     )
     assert_error(
         "source-fence managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: |",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: |",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: |",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n      - run: |",
         ),
     )
     assert_error(
         "build managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-\n      - name: Install zig",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - name: Install zig",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-\n      - name: Install zig",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n      - name: Install zig",
         ),
     )
     # #400 parser tightness: the inline-scalar form of restore-keys is a valid
@@ -14713,8 +14841,8 @@ def main() -> int:
     assert_clean(
         workflow=replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
-            "      - uses: actions/cache@example\n        name: \"Cache with restore-keys: probe\"\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
+            "      - name: Restore clippy managed target cache\n        id: clippy-managed-target-cache\n        uses: actions/cache/restore@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
+            "      - name: \"Cache with restore-keys: probe\"\n        id: clippy-managed-target-cache\n        uses: actions/cache/restore@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
         ),
     )
     assert_error(
@@ -16192,11 +16320,11 @@ def main() -> int:
         ),
     )
     assert_error(
-        "clippy must use setup.outputs.managed_target_dir",
+        "clippy must use isolated managed target cache",
         replace_once(
             BASE_WORKFLOW,
-            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}",
         ),
     )
     assert_error(

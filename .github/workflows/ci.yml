@@ -511,10 +511,12 @@ jobs:
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Restore clippy managed target cache
+        id: clippy-managed-target-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-
 
@@ -523,6 +525,14 @@ jobs:
 
       - name: clippy
         run: just clippy
+
+      - name: Save clippy managed target cache
+        id: clippy-managed-target-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.clippy-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
   check-aarch64:
     name: check-aarch64
@@ -567,17 +577,27 @@ jobs:
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Restore check-aarch64 managed target cache
+        id: check-aarch64-managed-target-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         if: needs.detector.outputs.build_required != 'true'
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-
 
       - name: check-aarch64
         if: needs.detector.outputs.build_required != 'true'
         run: just check-aarch64
+
+      - name: Save check-aarch64 managed target cache
+        id: check-aarch64-managed-target-cache-save
+        if: ${{ needs.detector.outputs.build_required != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.check-aarch64-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
   source-fence:
     name: source-fence
@@ -622,11 +642,13 @@ jobs:
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Restore source-fence managed target cache
+        id: source-fence-managed-target-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
 
@@ -643,6 +665,14 @@ jobs:
           else
             just source-fence-static
           fi
+
+      - name: Save source-fence managed target cache
+        id: source-fence-managed-target-cache-save
+        if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.source-fence-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
   # #342 owns these canonical source-fence filters. #332 intentionally keeps
   # full nextest duplicate coverage under the same aggregate gate rather than
@@ -745,6 +775,10 @@ jobs:
       CARGO_BUILD_JOBS: "2"
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
+      NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+      NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+      NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
+      NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
       # S3 sccache compile cache (#1011/#1023). Inert unless the build step opts
       # in via BOLT_RUST_VERIFICATION_SCCACHE=1 on an eligible cache-miss build.
       SCCACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
@@ -772,22 +806,124 @@ jobs:
           {
             echo "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
             echo "root_bin_sidecars_cache_key=root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
-            echo "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}"
+            echo "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Restore nextest archive
-        id: nextest-archive-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+      - name: Resolve nextest artifact cache eligibility
+        id: nextest-artifact-cache
+        continue-on-error: true
+        env:
+          ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+          ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+          REGION: ${{ vars.CI_SCCACHE_REGION }}
+          PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
+        run: |
+          cache_mode=""
+          role_arn=""
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            cache_mode="read_write"
+            role_arn="$ROLE_ARN"
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$GITHUB_EVENT_NAME" == "merge_group" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            cache_mode="read_only"
+            role_arn="$PR_READONLY_ROLE_ARN"
+          fi
+          vars_present=true
+          [[ "$ENABLED" == "true" && -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false
+          if [[ -n "$cache_mode" && "$vars_present" == "true" ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "role_arn=$role_arn" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=$cache_mode" >> "$GITHUB_OUTPUT"
+          echo "enabled=$ENABLED cache_mode=$cache_mode vars_present=$vars_present"
 
-      - name: Restore root binary sidecars
-        id: root-bin-sidecars-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Configure AWS credentials for nextest artifact cache
+        id: nextest-artifact-cache-aws
+        if: steps.nextest-artifact-cache.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
         with:
-          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
-          key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+          role-to-assume: ${{ steps.nextest-artifact-cache.outputs.role_arn }}
+          aws-region: ${{ vars.CI_SCCACHE_REGION }}
+
+      - name: Restore nextest archive from S3
+        id: nextest-archive-cache
+        if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'
+        continue-on-error: true
+        env:
+          CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+          DIGEST: ${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+        run: |
+          set +e
+          start_epoch="$(date +%s)"
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/nextest-archive/${CACHE_KEY}.tar.zst"
+          uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
+          mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
+          if aws s3 cp "$uri" "$NEXTEST_ARCHIVE_PATH" --only-show-errors; then
+            bytes="$(wc -c < "$NEXTEST_ARCHIVE_PATH" | tr -d ' ')"
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=true"
+              echo "restore-bytes=$bytes"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "nextest archive S3 restore: hit"
+              echo "nextest archive S3 egress bytes: $bytes"
+              echo "nextest archive S3 restore seconds: $elapsed"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            rm -f "$NEXTEST_ARCHIVE_PATH"
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=false"
+              echo "restore-bytes=0"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::nextest archive S3 cache miss or restore unavailable for digest ${DIGEST}; building locally"
+          fi
+          exit 0
+
+      - name: Restore root binary sidecars from S3
+        id: root-bin-sidecars-cache
+        if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'
+        continue-on-error: true
+        env:
+          CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+          DIGEST: ${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+        run: |
+          set +e
+          start_epoch="$(date +%s)"
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/root-bin-sidecars/${CACHE_KEY}.tar.gz"
+          uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
+          mkdir -p "$(dirname "$ROOT_BIN_SIDECARS_PATH")"
+          if aws s3 cp "$uri" "$ROOT_BIN_SIDECARS_PATH" --only-show-errors; then
+            bytes="$(wc -c < "$ROOT_BIN_SIDECARS_PATH" | tr -d ' ')"
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=true"
+              echo "restore-bytes=$bytes"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "root binary sidecars S3 restore: hit"
+              echo "root binary sidecars S3 egress bytes: $bytes"
+              echo "root binary sidecars S3 restore seconds: $elapsed"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            rm -f "$ROOT_BIN_SIDECARS_PATH"
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=false"
+              echo "restore-bytes=0"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::root binary sidecar S3 cache miss or restore unavailable for digest ${DIGEST}; rebuilding sidecars"
+          fi
+          exit 0
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -933,13 +1069,38 @@ jobs:
         if: always() && steps.sccache.outputs.enabled == 'true'
         run: '"$SCCACHE_PATH" --show-stats || true'
 
-      - name: Save nextest archive
+      - name: Save nextest archive to S3
         id: nextest-archive-cache-save
-        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-artifact-cache-aws.outcome == 'success' && steps.nextest-archive-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        env:
+          CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+          DIGEST: ${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+        run: |
+          set +e
+          if [[ ! -s "$NEXTEST_ARCHIVE_PATH" ]]; then
+            echo "::warning::nextest archive was not produced; skipping S3 save"
+            exit 0
+          fi
+          start_epoch="$(date +%s)"
+          bytes="$(wc -c < "$NEXTEST_ARCHIVE_PATH" | tr -d ' ')"
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/nextest-archive/${CACHE_KEY}.tar.zst"
+          uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
+          if aws s3 cp "$NEXTEST_ARCHIVE_PATH" "$uri" --only-show-errors --metadata "nextest-digest=${DIGEST},artifact-kind=nextest-archive,github-sha=${GITHUB_SHA}"; then
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "save-bytes=$bytes"
+              echo "save-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "nextest archive S3 save: success"
+              echo "nextest archive S3 saved bytes: $bytes"
+              echo "nextest archive S3 save seconds: $elapsed"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::nextest archive S3 save failed; continuing because cache save is fail-open"
+          fi
+          exit 0
 
       - name: Extract root binary sidecars
         if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
@@ -972,17 +1133,42 @@ jobs:
             --target-dir "$target_dir" \
             --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
 
-      - name: Save root binary sidecars
+      - name: Save root binary sidecars to S3
         id: root-bin-sidecars-cache-save
-        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
-          key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-artifact-cache-aws.outcome == 'success' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        env:
+          CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+          DIGEST: ${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+        run: |
+          set +e
+          if [[ ! -s "$ROOT_BIN_SIDECARS_PATH" ]]; then
+            echo "::warning::root binary sidecars were not produced; skipping S3 save"
+            exit 0
+          fi
+          start_epoch="$(date +%s)"
+          bytes="$(wc -c < "$ROOT_BIN_SIDECARS_PATH" | tr -d ' ')"
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/root-bin-sidecars/${CACHE_KEY}.tar.gz"
+          uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
+          if aws s3 cp "$ROOT_BIN_SIDECARS_PATH" "$uri" --only-show-errors --metadata "nextest-digest=${DIGEST},artifact-kind=root-bin-sidecars,github-sha=${GITHUB_SHA}"; then
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "save-bytes=$bytes"
+              echo "save-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "root binary sidecars S3 save: success"
+              echo "root binary sidecars S3 saved bytes: $bytes"
+              echo "root binary sidecars S3 save seconds: $elapsed"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::root binary sidecars S3 save failed; continuing because cache save is fail-open"
+          fi
+          exit 0
 
       - name: Save archive build target cache
         id: test-target-cache-save
-        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
@@ -1039,8 +1225,6 @@ jobs:
             --save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}" \
             --save-outcome "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}" \
             --save-outcome "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}" \
-            --cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}" \
-            --cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}" \
             --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"
 
   test:
@@ -1107,10 +1291,12 @@ jobs:
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Restore build managed target cache
+        id: build-managed-target-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-
 
@@ -1130,6 +1316,14 @@ jobs:
 
       - name: build
         run: just build
+
+      - name: Save build managed target cache
+        id: build-managed-target-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.build-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
       - name: Stage managed build artifact
         id: managed_artifact

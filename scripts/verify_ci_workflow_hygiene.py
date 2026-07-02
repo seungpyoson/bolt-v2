@@ -723,11 +723,14 @@ TEST_ARCHIVE_FINGERPRINT_SCRIPT_ARGS = (
 TEST_ARCHIVE_FINGERPRINT_ARTIFACT_NAME_OUTPUT = (
     "name: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}"
 )
-EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
+FORBIDDEN_MANAGED_TARGET_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
     "'.github/actions/setup-environment/action.yml'",
     "'.no-mistakes.yaml'",
+    "'ci/rust-verification.toml'",
+    "'justfile'",
     "'scripts/command_understanding.py'",
+    "'scripts/rust_verification.py'",
 )
 TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
 TEST_ARCHIVE_SIDECAR_PATH = "ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz"
@@ -791,14 +794,10 @@ TEST_ARCHIVE_SIDECAR_PACK_GUARD = (
     "&& steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
 )
 TEST_ARCHIVE_TARGET_CACHE_RESTORE_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
-TEST_ARCHIVE_TARGET_CACHE_SAVE_GUARD = "if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}"
+TEST_ARCHIVE_TARGET_CACHE_SAVE_GUARD = "if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}"
 TEST_ARCHIVE_TARGET_CACHE_KEY = (
-    "managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ "
-    "hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', "
-    "'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', "
-    "'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', "
-    "'.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', "
-    "'src/**', 'tests/**') }}"
+    "managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-"
+    "${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
 )
 TEST_ARCHIVE_CACHE_AUDIT_STEP = "Resolve root nextest cache keys"
 TEST_ARCHIVE_CACHE_AUDIT_STEP_ID = "id: root-nextest-cache-keys"
@@ -819,13 +818,13 @@ TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS = (
     "archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}",
 )
 TEST_ARCHIVE_CACHE_SAVE_STEP_IDS = (
-    ("Save nextest archive", "id: nextest-archive-cache-save"),
-    ("Save root binary sidecars", "id: root-bin-sidecars-cache-save"),
+    ("Save nextest archive to S3", "id: nextest-archive-cache-save"),
+    ("Save root binary sidecars to S3", "id: root-bin-sidecars-cache-save"),
     ("Save archive build target cache", "id: test-target-cache-save"),
 )
 TEST_ARCHIVE_CACHE_RESTORE_STEP_IDS = (
-    ("Restore nextest archive", "id: nextest-archive-cache"),
-    ("Restore root binary sidecars", "id: root-bin-sidecars-cache"),
+    ("Restore nextest archive from S3", "id: nextest-archive-cache"),
+    ("Restore root binary sidecars from S3", "id: root-bin-sidecars-cache"),
     ("Restore archive build target cache", "id: test-target-cache"),
 )
 TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS = (
@@ -836,8 +835,6 @@ TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS = (
 CACHE_PERSISTENCE_AUDIT_PROBE_STEP = "Probe saved cache keys"
 CACHE_PERSISTENCE_AUDIT_NEEDS = ("ci-policy", "nextest-fingerprint-reuse", "test-archive")
 CACHE_PERSISTENCE_AUDIT_CACHE_KEYS = (
-    '--cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}"',
-    '--cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}"',
     '--cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"',
 )
 CACHE_PERSISTENCE_AUDIT_CACHE_REFS = (
@@ -900,6 +897,14 @@ TEST_ARCHIVE_SIDECAR_BUILD_COMMAND = (
 TEST_ARCHIVE_SIDECAR_PACK_COMMAND = "python3 scripts/root_bin_sidecars.py pack"
 TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae"
+TEST_ARCHIVE_S3_AWS_CONFIG_STEP = "Configure AWS credentials for nextest artifact cache"
+TEST_ARCHIVE_S3_ELIGIBILITY_STEP = "Resolve nextest artifact cache eligibility"
+TEST_ARCHIVE_S3_RESTORE_GUARD = "if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'"
+TEST_ARCHIVE_S3_MAIN_SAVE_GUARD = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+TEST_ARCHIVE_S3_PREFIX_ENV = "NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}"
+TEST_ARCHIVE_S3_ENABLED_ENV = "NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}"
+TEST_ARCHIVE_S3_BUCKET_ENV = "NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}"
+TEST_ARCHIVE_S3_REGION_ENV = "NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}"
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ARTIFACT_SHA_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*([\"']?)actions/upload-artifact@[0-9a-fA-F]{40}\1\s*$")
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
@@ -3145,7 +3150,7 @@ def block_is_shared_registry_cache(block: list[str]) -> bool:
 
 
 def block_uses_managed_target_cache(block: list[str]) -> bool:
-    return any("actions/cache@" in strip_comment(line) for line in block) and block_has_input(
+    return any("actions/cache" in strip_comment(line) for line in block) and block_has_input(
         block, "path", "${{ steps.setup.outputs.managed_target_dir }}"
     )
 
@@ -3217,8 +3222,6 @@ def nextest_fingerprint_errors(fingerprint_lines: list[str], archive_lines: list
         return ["nextest-fingerprint must publish nextest fingerprint before repo-controlled steps"]
     cache_key_step = named_step_block(archive_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
     cache_key_step_text = uncommented_text(cache_key_step) if cache_key_step is not None else ""
-    if not cache_blocks or not all(block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY_OUTPUT) for block in cache_blocks):
-        return ["nextest archive cache key must use nextest fingerprint output"]
     if any("hashFiles(" in (block_input_value(block, "key") or "") for block in cache_blocks):
         return ["nextest archive cache key must use nextest fingerprint output"]
     if TEST_ARCHIVE_CACHE_KEY not in cache_key_step_text:
@@ -3269,13 +3272,28 @@ def block_declares_restore_keys_prefix(block: list[str], prefix: str) -> bool:
 
 def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
     expected_key = MANAGED_TARGET_CACHE_KEYS[job]
-    target_blocks = [
+    combined_blocks = [
         block
-        for block in github_cache_blocks(job_lines)
+        for block in action_blocks(job_lines, "actions/cache@")
         if block_has_input(block, "path", "${{ steps.setup.outputs.managed_target_dir }}")
     ]
-    if not target_blocks:
+    restore_blocks = [
+        block
+        for block in action_blocks(job_lines, "actions/cache/restore@")
+        if block_has_input(block, "path", "${{ steps.setup.outputs.managed_target_dir }}")
+    ]
+    save_blocks = [
+        block
+        for block in action_blocks(job_lines, "actions/cache/save@")
+        if block_has_input(block, "path", "${{ steps.setup.outputs.managed_target_dir }}")
+    ]
+    target_blocks = restore_blocks + save_blocks
+    if combined_blocks:
+        return ["managed target cache saves must be push-to-main only"]
+    if not restore_blocks:
         return [f"{job} must use isolated managed target cache"]
+    if not save_blocks:
+        return ["managed target cache saves must be push-to-main only"]
 
     expected_prefix = (
         f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-"
@@ -3292,10 +3310,12 @@ def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
         for block in target_blocks
     ):
         cache_key_step = named_step_block(job_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
-        if cache_key_step is not None:
-            key_sources.append(uncommented_text(cache_key_step))
-    if not any(expected_prefix in key_source for key_source in key_sources):
+        if cache_key_step is None or expected_prefix not in uncommented_text(cache_key_step):
+            return [f"{job} managed target cache key must isolate {expected_key}"]
+    elif not key_sources or any(expected_prefix not in key_source for key_source in key_sources):
         return [f"{job} managed target cache key must isolate {expected_key}"]
+    if not all(TEST_ARCHIVE_S3_MAIN_SAVE_GUARD in uncommented_text(block) for block in save_blocks):
+        return ["managed target cache saves must be push-to-main only"]
 
     # #400: each managed-target cache MUST declare a restore-keys prefix fallback
     # matching the job's key prefix. Without it, any change to CI orchestration
@@ -3303,7 +3323,7 @@ def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
     # scripts/rust_verification.py) misses the exact key and pays the full
     # ~22m aarch64 release cross-compile instead of an incremental rebuild.
     if not any(
-        block_declares_restore_keys_prefix(block, expected_prefix) for block in target_blocks
+        block_declares_restore_keys_prefix(block, expected_prefix) for block in restore_blocks
     ):
         return [
             f"{job} managed target cache must declare restore-keys prefix {expected_prefix}"
@@ -6796,8 +6816,8 @@ def exact_head_governance_cache_errors(workflow_text: str) -> list[str]:
             continue
         if "managed-target-v1-" not in clean and "nextest-archive-v1-" not in clean:
             continue
-        if any(cache_input not in clean for cache_input in EXACT_HEAD_GOVERNANCE_CACHE_INPUTS):
-            return ["cache keys must include exact-head CI/no-mistakes governance inputs"]
+        if any(cache_input in clean for cache_input in FORBIDDEN_MANAGED_TARGET_CACHE_INPUTS):
+            return ["managed target cache keys must use Rust-relevant inputs only"]
     return []
 
 
@@ -9648,6 +9668,20 @@ def check_aarch64_has_coverage_owner_step(job_lines: list[str]) -> bool:
 
 def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
+    def has_build_required_guard(block: list[str]) -> bool:
+        for line in block:
+            text = strip_comment(line)
+            if CHECK_AARCH64_STANDALONE_IF_RE.match(text):
+                return True
+            normalized = text.replace('"true"', "'true'")
+            if (
+                re.match(r"^\s+(?:-\s*)?if:\s*", normalized)
+                and "needs.detector.outputs.build_required != 'true'" in normalized
+                and "||" not in normalized
+            ):
+                return True
+        return False
+
     checks = (
         (
             "check-aarch64 setup must run only when build_required is not true",
@@ -9674,7 +9708,7 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
     blocks = step_blocks(job_lines)
     for message, matches in checks:
         for block in blocks:
-            if matches(block) and not has_line_matching(block, CHECK_AARCH64_STANDALONE_IF_RE):
+            if matches(block) and not has_build_required_guard(block):
                 errors.append(message)
                 break
     return errors
@@ -11110,6 +11144,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
         ]
         cache_key_step = named_step_block(archive_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
         cache_key_step_text = uncommented_text(cache_key_step) if cache_key_step is not None else ""
+        archive_s3_restore_block = named_step_block(archive_lines, "Restore nextest archive from S3")
+        archive_s3_save_block = named_step_block(archive_lines, "Save nextest archive to S3")
+        sidecar_s3_restore_block = named_step_block(archive_lines, "Restore root binary sidecars from S3")
+        sidecar_s3_save_block = named_step_block(archive_lines, "Save root binary sidecars to S3")
+        s3_eligibility_block = named_step_block(archive_lines, TEST_ARCHIVE_S3_ELIGIBILITY_STEP)
+        s3_aws_block = named_step_block(archive_lines, TEST_ARCHIVE_S3_AWS_CONFIG_STEP)
         target_cache_keys = [
             block_input_value(block, "key") or ""
             for block in target_restore_blocks + target_save_blocks
@@ -11120,24 +11160,49 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must declare nextest archive path")
         if TEST_ARCHIVE_SIDECAR_PATH not in archive_text:
             errors.append("test-archive must declare root binary sidecar path")
-        if not archive_cache_blocks or not all(
-            block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY_OUTPUT)
-            for block in archive_cache_blocks
-        ):
-            errors.append("nextest archive cache key must use nextest fingerprint output")
+        if archive_cache_blocks or sidecar_cache_blocks:
+            errors.append("test-archive payloads must use S3 artifact cache, not GitHub Actions cache")
         if any("hashFiles(" in (block_input_value(block, "key") or "") for block in archive_cache_blocks):
             errors.append("nextest archive cache key must use nextest fingerprint output")
         if TEST_ARCHIVE_CACHE_KEY not in cache_key_step_text:
             errors.append("nextest archive cache key must use nextest fingerprint output")
-        if not sidecar_cache_blocks or not all(
-            block_has_input(block, "key", TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT)
-            for block in sidecar_cache_blocks
-        ):
-            errors.append("root binary sidecar cache key must use nextest fingerprint output")
         if any("hashFiles(" in (block_input_value(block, "key") or "") for block in sidecar_cache_blocks):
             errors.append("root binary sidecar cache key must use nextest fingerprint output")
         if TEST_ARCHIVE_SIDECAR_CACHE_KEY not in cache_key_step_text:
             errors.append("root binary sidecar cache key must use nextest fingerprint output")
+        for required in (
+            TEST_ARCHIVE_S3_ENABLED_ENV,
+            TEST_ARCHIVE_S3_BUCKET_ENV,
+            TEST_ARCHIVE_S3_REGION_ENV,
+            TEST_ARCHIVE_S3_PREFIX_ENV,
+        ):
+            if required not in archive_text:
+                errors.append("test-archive payloads must use S3 artifact cache, not GitHub Actions cache")
+                break
+        if s3_eligibility_block is None or "continue-on-error: true" not in uncommented_text(s3_eligibility_block):
+            errors.append("test-archive S3 artifact cache eligibility must be fail-open")
+        if s3_aws_block is None or "continue-on-error: true" not in uncommented_text(s3_aws_block):
+            errors.append("test-archive S3 artifact cache AWS credential setup must be fail-open")
+        for block, label, key_output, path_var, object_fragment in (
+            (archive_s3_restore_block, "nextest archive", TEST_ARCHIVE_CACHE_KEY_OUTPUT, "$NEXTEST_ARCHIVE_PATH", "/nextest-archive/${CACHE_KEY}.tar.zst"),
+            (sidecar_s3_restore_block, "root binary sidecar", TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT, "$ROOT_BIN_SIDECARS_PATH", "/root-bin-sidecars/${CACHE_KEY}.tar.gz"),
+        ):
+            text = uncommented_text(block) if block is not None else ""
+            if block is None or TEST_ARCHIVE_S3_RESTORE_GUARD not in text or "continue-on-error: true" not in text:
+                errors.append(f"test-archive must restore {label} from S3 fail-open")
+            if key_output not in text or path_var not in text or object_fragment not in text or "aws s3 cp" not in text:
+                errors.append(f"test-archive must restore {label} from S3 fail-open")
+            if "cache-hit=false" not in text or "exit 0" not in text:
+                errors.append(f"test-archive must restore {label} from S3 fail-open")
+        for block, label, key_output, path_var, object_fragment in (
+            (archive_s3_save_block, "nextest archive", TEST_ARCHIVE_CACHE_KEY_OUTPUT, "$NEXTEST_ARCHIVE_PATH", "/nextest-archive/${CACHE_KEY}.tar.zst"),
+            (sidecar_s3_save_block, "root binary sidecar", TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT, "$ROOT_BIN_SIDECARS_PATH", "/root-bin-sidecars/${CACHE_KEY}.tar.gz"),
+        ):
+            text = uncommented_text(block) if block is not None else ""
+            if block is None or TEST_ARCHIVE_S3_MAIN_SAVE_GUARD not in text or "continue-on-error: true" not in text:
+                errors.append(f"test-archive must save {label} to S3 only from push-to-main")
+            if key_output not in text or path_var not in text or object_fragment not in text or "aws s3 cp" not in text:
+                errors.append(f"test-archive must save {label} to S3 only from push-to-main")
         if not job_has_setup_input(archive_lines, "include-managed-target-dir", '"true"'):
             errors.append("test-archive must opt into managed target dir")
         if not target_restore_blocks:
@@ -11161,25 +11226,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive managed target cache key must use root nextest cache key output")
         if TEST_ARCHIVE_TARGET_CACHE_KEY not in cache_key_step_text:
             errors.append("test-archive cache persistence keys must come from single-source cache key outputs")
-        for required in ("src/**", "tests/**"):
-            if not any(required in key for key in target_cache_keys):
-                errors.append(f"test-archive managed target cache key must include {required}")
         if "nextest-archive-build-v1" in archive_text:
             errors.append("test-archive must not save a second archive-build cache")
-        if not archive_restore_blocks:
-            errors.append("test-archive must restore nextest archive cache")
-        if not archive_save_blocks:
-            errors.append("test-archive must save nextest archive cache")
         if archive_upload_blocks:
             errors.append("test-archive must not upload nextest archive artifact")
         if any(block_has_input(block, "restore-keys") for block in archive_cache_blocks):
             errors.append("test-archive cache must not use restore-keys")
         if any(block_has_input(block, "restore-keys") for block in sidecar_cache_blocks):
             errors.append("root binary sidecar cache must not use restore-keys")
-        if archive_text.count(TEST_ARCHIVE_CACHE_PATH) < 2:
-            errors.append("test-archive cache must use archive path env")
-        if archive_text.count(TEST_ARCHIVE_SIDECAR_CACHE_PATH) < 2:
-            errors.append("root binary sidecar cache must use sidecar path env")
         archive_build_block = named_step_block(archive_lines, "Build nextest archive")
         if archive_build_block is None or TEST_ARCHIVE_CACHE_HIT_GUARD not in uncommented_text(archive_build_block):
             errors.append("test-archive build must be skipped on archive cache hit")
@@ -11197,10 +11251,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must pack root binary sidecars from archive builds on archive-cache miss")
         if sidecar_pack_block is None or TEST_ARCHIVE_SIDECAR_PACK_COMMAND not in uncommented_text(sidecar_pack_block):
             errors.append("test-archive archive-miss sidecar pack must use tracked root binary sidecar helper")
-        if (
-            TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD not in archive_text
-            or TEST_ARCHIVE_SIDECAR_BUILD_COMMAND not in archive_text
-        ):
+        if TEST_ARCHIVE_SIDECAR_BUILD_COMMAND not in archive_text:
             errors.append("test-archive must build CARGO_BIN_EXE sidecars on sidecar cache miss")
         sidecar_block = named_step_block(archive_lines, "Build root binary sidecars")
         if sidecar_block is None or TEST_ARCHIVE_SIDECAR_BUILD_GUARD not in uncommented_text(sidecar_block):
@@ -11209,12 +11260,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive sidecar build must use dev profile debug knob")
         if sidecar_block is None or TEST_ARCHIVE_SIDECAR_PACK_COMMAND not in uncommented_text(sidecar_block):
             errors.append("test-archive sidecar build must use tracked root binary sidecar helper")
-        if not sidecar_restore_blocks:
-            errors.append("test-archive must restore root binary sidecar cache")
-        if not sidecar_save_blocks:
-            errors.append("test-archive must save root binary sidecar cache")
-        if any(TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD not in uncommented_text(block) for block in sidecar_save_blocks):
-            errors.append("test-archive must save root binary sidecar cache only on sidecar cache miss")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
         for output in TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS:
@@ -11992,6 +12037,16 @@ def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[st
             or 'echo "digest=bootstrap-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"' not in job_text
         ):
             errors.append("backtester cache key digest must use exact-head namespace when CI input-set bootstrap changes")
+        for block in action_blocks(job_lines, "actions/cache@"):
+            block_text = uncommented_text(block)
+            if "managed-target-bvs-v" in block_text:
+                errors.append("backtester managed target cache saves must be push-to-main only")
+        for block in action_blocks(job_lines, "actions/cache/save@"):
+            block_text = uncommented_text(block)
+            if "managed-target-bvs-v" not in block_text:
+                continue
+            if "github.event_name == 'push'" not in block_text or "github.ref == 'refs/heads/main'" not in block_text:
+                errors.append("backtester managed target cache saves must be push-to-main only")
     return errors
 
 
@@ -12493,12 +12548,36 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         "issue_789" in extract_needs(gate_job) or "needs.issue_789.result" in gate_text
     ):
         errors.append("backtester diagnostic issue-789 lane must not gate merge proof")
+    artifact_cache_blocks = [
+        block
+        for block in action_blocks(archive_job, "actions/cache/restore@")
+        + action_blocks(archive_job, "actions/cache/save@")
+        if any(
+            fragment in uncommented_text(block)
+            for fragment in (
+                "BVS_NEXTEST_ARCHIVE_PATH",
+                "BVS_BIN_SIDECARS_PATH",
+                "bvs-nextest-archive-v",
+                "bvs-bin-sidecars-v",
+            )
+        )
+    ]
+    if artifact_cache_blocks:
+        errors.append("backtester bvs-test archive payloads must use S3 artifact cache, not GitHub Actions cache")
 
     archive_fragments = [
         ("backtester bvs-test archive must use archive job name", "name: bvs-test archive"),
         ("backtester bvs-test archive must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
         ("backtester bvs-test archive must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
         ("backtester bvs-test archive must declare four archive partitions", 'BVS_NEXTEST_SHARDS: "4"'),
+        (
+            "backtester bvs-test archive must expose nextest artifact S3 kill switch",
+            "NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}",
+        ),
+        (
+            "backtester bvs-test archive must expose nextest artifact S3 prefix",
+            "NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}",
+        ),
         (
             "backtester bvs-test archive must compute the shared BVS cache input digest",
             "python3 scripts/ci_input_sets.py hash backtester_cache",
@@ -12508,12 +12587,20 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "id: bvs-nextest-archive-cache",
         ),
         (
-            "backtester bvs-test archive must restore caches through pinned actions/cache",
-            "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae",
+            "backtester bvs-test archive must resolve S3 cache eligibility",
+            "id: bvs-nextest-artifact-cache",
+        ),
+        (
+            "backtester bvs-test archive S3 restore must be fail-open",
+            "continue-on-error: true",
+        ),
+        (
+            "backtester bvs-test archive must restore caches from S3",
+            'aws s3 cp "$uri" "$BVS_NEXTEST_ARCHIVE_PATH" --only-show-errors',
         ),
         (
             "backtester bvs-test archive cache key must be exact and content-addressed",
-            "key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}",
+            "CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}",
         ),
         (
             "backtester bvs-test archive must restore binary sidecar cache",
@@ -12521,7 +12608,11 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test sidecar cache key must be exact and content-addressed",
-            "key: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}",
+            "CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}",
+        ),
+        (
+            "backtester bvs-test sidecars must restore from S3",
+            'aws s3 cp "$uri" "$BVS_BIN_SIDECARS_PATH" --only-show-errors',
         ),
         (
             "backtester bvs-test archive must resolve the crate managed target directory",
@@ -12545,7 +12636,15 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive must save nextest archive cache explicitly",
-            "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae",
+            "id: bvs-nextest-archive-cache-save",
+        ),
+        (
+            "backtester bvs-test archive saves must be main-only",
+            "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+        ),
+        (
+            "backtester bvs-test archive must save nextest archive to S3",
+            'aws s3 cp "$BVS_NEXTEST_ARCHIVE_PATH" "$uri" --only-show-errors',
         ),
         (
             "backtester bvs-test archive must build sidecars only on sidecar cache miss",
@@ -12569,7 +12668,11 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive must save binary sidecar cache",
-            "Save BVS binary sidecars",
+            "id: bvs-bin-sidecars-cache-save",
+        ),
+        (
+            "backtester bvs-test archive must save binary sidecars to S3",
+            'aws s3 cp "$BVS_BIN_SIDECARS_PATH" "$uri" --only-show-errors',
         ),
         (
             "backtester bvs-test archive must restore target cache only while producing caches",
@@ -12577,7 +12680,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive must save target cache only after archive/sidecar misses",
-            "if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
+            "if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
         ),
         (
             "backtester bvs-test archive must fail closed on missing local payload",

@@ -852,7 +852,6 @@ jobs:
       - name: Restore nextest archive from S3
         id: nextest-archive-cache
         if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'
-        continue-on-error: true
         env:
           CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
           DIGEST: ${{ needs.nextest-fingerprint.outputs.nextest_digest }}
@@ -862,6 +861,22 @@ jobs:
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/nextest-archive/${CACHE_KEY}.tar.zst"
           uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          head_rc=$?
+          if [[ "$head_rc" -ne 0 ]]; then
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=false"
+              echo "restore-bytes=0"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::nextest archive S3 cache miss or metadata unavailable for digest ${DIGEST}; building locally"
+            exit 0
+          fi
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::nextest archive S3 metadata digest mismatch for ${object_key}: expected ${DIGEST}, got ${metadata_digest:-<empty>}"
+            exit 1
+          fi
           if aws s3 cp "$uri" "$NEXTEST_ARCHIVE_PATH" --only-show-errors; then
             bytes="$(wc -c < "$NEXTEST_ARCHIVE_PATH" | tr -d ' ')"
             elapsed="$(( $(date +%s) - start_epoch ))"
@@ -890,7 +905,6 @@ jobs:
       - name: Restore root binary sidecars from S3
         id: root-bin-sidecars-cache
         if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'
-        continue-on-error: true
         env:
           CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
           DIGEST: ${{ needs.nextest-fingerprint.outputs.nextest_digest }}
@@ -900,6 +914,22 @@ jobs:
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/root-bin-sidecars/${CACHE_KEY}.tar.gz"
           uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
           mkdir -p "$(dirname "$ROOT_BIN_SIDECARS_PATH")"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          head_rc=$?
+          if [[ "$head_rc" -ne 0 ]]; then
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=false"
+              echo "restore-bytes=0"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::root binary sidecar S3 cache miss or metadata unavailable for digest ${DIGEST}; rebuilding sidecars"
+            exit 0
+          fi
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::root binary sidecar S3 metadata digest mismatch for ${object_key}: expected ${DIGEST}, got ${metadata_digest:-<empty>}"
+            exit 1
+          fi
           if aws s3 cp "$uri" "$ROOT_BIN_SIDECARS_PATH" --only-show-errors; then
             bytes="$(wc -c < "$ROOT_BIN_SIDECARS_PATH" | tr -d ' ')"
             elapsed="$(( $(date +%s) - start_epoch ))"

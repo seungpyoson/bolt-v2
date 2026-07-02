@@ -23,6 +23,11 @@ objects. Managed-target cache saves are also limited to `push` runs on
 `refs/heads/main`; PR and merge-queue runs restore from the default-branch cache
 namespace but do not write cache entries.
 
+Every S3 restore validates the object's `nextest-digest` metadata against the
+current digest before the payload is used. A missing object or unavailable S3
+read is a cache miss; a metadata mismatch is an integrity failure and must fail
+the job.
+
 ## Week-One Metrics
 
 Each S3 restore/save step writes byte counts and elapsed seconds to the job

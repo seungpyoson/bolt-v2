@@ -684,22 +684,32 @@ jobs:
       - name: Restore nextest archive from S3
         id: nextest-archive-cache
         if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'
-        continue-on-error: true
         env:
           CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+          DIGEST: ${{ needs.nextest-fingerprint.outputs.nextest_digest }}
         run: |
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/nextest-archive/${CACHE_KEY}.tar.zst"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::nextest archive S3 metadata digest mismatch"
+            exit 1
+          fi
           aws s3 cp "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}" "$NEXTEST_ARCHIVE_PATH"
           echo "cache-hit=false" >> "$GITHUB_OUTPUT"
           exit 0
       - name: Restore root binary sidecars from S3
         id: root-bin-sidecars-cache
         if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'
-        continue-on-error: true
         env:
           CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+          DIGEST: ${{ needs.nextest-fingerprint.outputs.nextest_digest }}
         run: |
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/root-bin-sidecars/${CACHE_KEY}.tar.gz"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::root binary sidecar S3 metadata digest mismatch"
+            exit 1
+          fi
           aws s3 cp "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}" "$ROOT_BIN_SIDECARS_PATH"
           echo "cache-hit=false" >> "$GITHUB_OUTPUT"
           exit 0
@@ -12892,16 +12902,34 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         continue-on-error: true
       - name: Restore BVS nextest archive from S3
         id: bvs-nextest-archive-cache
-        continue-on-error: true
         env:
           CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
-        run: aws s3 cp "$uri" "$BVS_NEXTEST_ARCHIVE_PATH" --only-show-errors
+          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+        run: |
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-nextest-archive/${CACHE_KEY}.tar.zst"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::BVS nextest archive S3 metadata digest mismatch"
+            exit 1
+          fi
+          aws s3 cp "$uri" "$BVS_NEXTEST_ARCHIVE_PATH" --only-show-errors || true
+          echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Restore BVS binary sidecars from S3
         id: bvs-bin-sidecars-cache
-        continue-on-error: true
         env:
           CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
-        run: aws s3 cp "$uri" "$BVS_BIN_SIDECARS_PATH" --only-show-errors
+          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+        run: |
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-bin-sidecars/${CACHE_KEY}.tar.gz"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::BVS binary sidecar S3 metadata digest mismatch"
+            exit 1
+          fi
+          aws s3 cp "$uri" "$BVS_BIN_SIDECARS_PATH" --only-show-errors || true
+          echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Resolve crate managed target dir
         id: crate_target
       - uses: Swatinem/rust-cache@example
@@ -13000,6 +13028,38 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "backtester bvs-test archive payloads must use S3 artifact cache" in error
         for error in github_artifact_cache_errors
     ), github_artifact_cache_errors
+
+    missing_bvs_nextest_integrity = replace_once(
+        good,
+        """          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::BVS nextest archive S3 metadata digest mismatch"
+            exit 1
+          fi
+""",
+        "",
+    )
+    missing_bvs_nextest_integrity_errors = bvs_cache_errors(missing_bvs_nextest_integrity)
+    assert any(
+        "backtester bvs-test archive must fail closed on nextest archive S3 digest mismatch"
+        in error
+        for error in missing_bvs_nextest_integrity_errors
+    ), missing_bvs_nextest_integrity_errors
+
+    missing_bvs_sidecar_integrity = replace_once(
+        good,
+        """          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::BVS binary sidecar S3 metadata digest mismatch"
+            exit 1
+          fi
+""",
+        "",
+    )
+    missing_bvs_sidecar_integrity_errors = bvs_cache_errors(missing_bvs_sidecar_integrity)
+    assert any(
+        "backtester bvs-test archive must fail closed on binary sidecar S3 digest mismatch"
+        in error
+        for error in missing_bvs_sidecar_integrity_errors
+    ), missing_bvs_sidecar_integrity_errors
 
     weakened_target_save = replace_once(
         good,
@@ -14696,6 +14756,23 @@ def main() -> int:
             BASE_WORKFLOW,
             "      - name: Restore nextest archive from S3\n        id: nextest-archive-cache\n",
             "",
+        ),
+    )
+    assert_error(
+        "test-archive must fail closed on nextest archive S3 digest mismatch",
+        replace_once(
+            BASE_WORKFLOW,
+            '          if [[ "$metadata_digest" != "$DIGEST" ]]; then\n',
+            '          if [[ "$metadata_digest" == "$DIGEST" ]]; then\n',
+        ),
+    )
+    assert_error(
+        "test-archive must fail closed on root binary sidecar S3 digest mismatch",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Restore root binary sidecars from S3",
+            '          if [[ "$metadata_digest" != "$DIGEST" ]]; then\n',
+            '          if [[ "$metadata_digest" == "$DIGEST" ]]; then\n',
         ),
     )
     assert_error(

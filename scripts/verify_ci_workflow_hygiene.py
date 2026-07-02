@@ -11188,12 +11188,19 @@ def verify_workflow(workflow_text: str) -> list[str]:
             (sidecar_s3_restore_block, "root binary sidecar", TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT, "$ROOT_BIN_SIDECARS_PATH", "/root-bin-sidecars/${CACHE_KEY}.tar.gz"),
         ):
             text = uncommented_text(block) if block is not None else ""
-            if block is None or TEST_ARCHIVE_S3_RESTORE_GUARD not in text or "continue-on-error: true" not in text:
+            if block is None or TEST_ARCHIVE_S3_RESTORE_GUARD not in text:
                 errors.append(f"test-archive must restore {label} from S3 fail-open")
             if key_output not in text or path_var not in text or object_fragment not in text or "aws s3 cp" not in text:
                 errors.append(f"test-archive must restore {label} from S3 fail-open")
             if "cache-hit=false" not in text or "exit 0" not in text:
                 errors.append(f"test-archive must restore {label} from S3 fail-open")
+            if (
+                "aws s3api head-object" not in text
+                or 'Metadata."nextest-digest"' not in text
+                or '"$metadata_digest" != "$DIGEST"' not in text
+                or "exit 1" not in text
+            ):
+                errors.append(f"test-archive must fail closed on {label} S3 digest mismatch")
         for block, label, key_output, path_var, object_fragment in (
             (archive_s3_save_block, "nextest archive", TEST_ARCHIVE_CACHE_KEY_OUTPUT, "$NEXTEST_ARCHIVE_PATH", "/nextest-archive/${CACHE_KEY}.tar.zst"),
             (sidecar_s3_save_block, "root binary sidecar", TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT, "$ROOT_BIN_SIDECARS_PATH", "/root-bin-sidecars/${CACHE_KEY}.tar.gz"),
@@ -12592,7 +12599,27 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive S3 restore must be fail-open",
-            "continue-on-error: true",
+            "cache-hit=false",
+        ),
+        (
+            "backtester bvs-test archive must fail closed on S3 digest mismatch",
+            "aws s3api head-object",
+        ),
+        (
+            "backtester bvs-test archive must fail closed on S3 digest mismatch",
+            'Metadata."nextest-digest"',
+        ),
+        (
+            "backtester bvs-test archive must fail closed on S3 digest mismatch",
+            '"$metadata_digest" != "$DIGEST"',
+        ),
+        (
+            "backtester bvs-test archive must fail closed on nextest archive S3 digest mismatch",
+            "BVS nextest archive S3 metadata digest mismatch",
+        ),
+        (
+            "backtester bvs-test archive must fail closed on binary sidecar S3 digest mismatch",
+            "BVS binary sidecar S3 metadata digest mismatch",
         ),
         (
             "backtester bvs-test archive must restore caches from S3",

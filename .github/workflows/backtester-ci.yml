@@ -437,7 +437,6 @@ jobs:
       - name: Restore BVS nextest archive from S3
         id: bvs-nextest-archive-cache
         if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'
-        continue-on-error: true
         env:
           CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
           DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
@@ -447,6 +446,22 @@ jobs:
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-nextest-archive/${CACHE_KEY}.tar.zst"
           uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
           mkdir -p "$(dirname "$BVS_NEXTEST_ARCHIVE_PATH")"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          head_rc=$?
+          if [[ "$head_rc" -ne 0 ]]; then
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=false"
+              echo "restore-bytes=0"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::BVS nextest archive S3 cache miss or metadata unavailable for digest ${DIGEST}; building locally"
+            exit 0
+          fi
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::BVS nextest archive S3 metadata digest mismatch for ${object_key}: expected ${DIGEST}, got ${metadata_digest:-<empty>}"
+            exit 1
+          fi
           if aws s3 cp "$uri" "$BVS_NEXTEST_ARCHIVE_PATH" --only-show-errors; then
             bytes="$(wc -c < "$BVS_NEXTEST_ARCHIVE_PATH" | tr -d ' ')"
             elapsed="$(( $(date +%s) - start_epoch ))"
@@ -475,7 +490,6 @@ jobs:
       - name: Restore BVS binary sidecars from S3
         id: bvs-bin-sidecars-cache
         if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'
-        continue-on-error: true
         env:
           CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
           DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
@@ -485,6 +499,22 @@ jobs:
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-bin-sidecars/${CACHE_KEY}.tar.gz"
           uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
           mkdir -p "$(dirname "$BVS_BIN_SIDECARS_PATH")"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          head_rc=$?
+          if [[ "$head_rc" -ne 0 ]]; then
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=false"
+              echo "restore-bytes=0"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::BVS binary sidecar S3 cache miss or metadata unavailable for digest ${DIGEST}; rebuilding sidecars"
+            exit 0
+          fi
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::BVS binary sidecar S3 metadata digest mismatch for ${object_key}: expected ${DIGEST}, got ${metadata_digest:-<empty>}"
+            exit 1
+          fi
           if aws s3 cp "$uri" "$BVS_BIN_SIDECARS_PATH" --only-show-errors; then
             bytes="$(wc -c < "$BVS_BIN_SIDECARS_PATH" | tr -d ' ')"
             elapsed="$(( $(date +%s) - start_epoch ))"

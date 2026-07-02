@@ -921,6 +921,20 @@ pub(super) fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) ->
     .expect("test quote tick should be valid")
 }
 
+pub(super) fn invalid_quote_tick(instrument_id: &str, ts_ms: u64) -> QuoteTick {
+    let invalid_price = Price::from_raw(nautilus_model::types::PRICE_ERROR, 0);
+    QuoteTick::new_checked(
+        InstrumentId::from(instrument_id),
+        invalid_price,
+        invalid_price,
+        Quantity::new(1.0, 0),
+        Quantity::new(1.0, 0),
+        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+    )
+    .expect("test invalid quote tick should preserve sentinel prices")
+}
+
 pub(super) fn trade_tick(
     instrument_id: &str,
     price: f64,
@@ -1052,7 +1066,7 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     strategy
 }
 
@@ -1120,7 +1134,7 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     (strategy, fee_provider)
 }
 

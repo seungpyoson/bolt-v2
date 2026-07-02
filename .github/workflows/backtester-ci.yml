@@ -287,8 +287,6 @@ jobs:
     needs: [ci-policy, detect, fmt]
     if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    env:
-      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -298,6 +296,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           toolchain-components: clippy
+          build-jobs-key: backtester_ci.clippy
 
       # The setup action's managed_target_dir output is hardcoded to --repo $GITHUB_WORKSPACE
       # (the bolt-v2 root namespace). Resolve THIS crate's lane explicitly instead, or the cache
@@ -359,7 +358,6 @@ jobs:
       contents: read
       id-token: write
     env:
-      CARGO_BUILD_JOBS: "2"
       BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BVS_NEXTEST_SHARDS: "4"
@@ -387,6 +385,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          build-jobs-key: backtester_ci.test-archive
 
       - name: Resolve BVS nextest artifact cache eligibility
         id: bvs-nextest-artifact-cache

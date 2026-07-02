@@ -381,11 +381,11 @@ fn record_source_owned_metadata_response_instrument(
     subscriptions_installed: bool,
     instrument_id: InstrumentId,
 ) -> MetadataResponseInstrumentUpdate {
-    let previous_len = instruments.len();
+    if instruments.contains_key(instrument_id.as_str()) {
+        return MetadataResponseInstrumentUpdate::Existing;
+    }
     instruments.insert(instrument_id.to_string(), instrument_id);
-    if instruments.len() == previous_len {
-        MetadataResponseInstrumentUpdate::Existing
-    } else if subscriptions_installed {
+    if subscriptions_installed {
         MetadataResponseInstrumentUpdate::NewAfterSubscription
     } else {
         MetadataResponseInstrumentUpdate::NewBeforeSubscription

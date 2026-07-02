@@ -19545,3 +19545,67 @@ literal = "0"
 context = '''|| envelope.ranges.max_quantity_policy_versions == 0'''
 classification = "policy_epoch_envelope_zero_bound_reject"
 reason = "A safety-policy envelope with zero quantity-policy versions cannot approve any prepared quantity-policy bundle; the bound is envelope-owned, while zero is the structural empty-bound rejection sentinel."
+
+[[allowed]]
+path = "src/bolt_v3_capital_admission_runtime_feed.rs"
+kind = "string"
+literal = '''"polymarket_venue_truth_rest"'''
+context = '''pub(crate) const POLYMARKET_VENUE_TRUTH_REST_SOURCE: &str = "polymarket_venue_truth_rest";'''
+classification = "capital_admission_evidence_source_label"
+reason = "Evidence source label for Polymarket venue-truth snapshots promoted into submit-capital admission after causal reconciliation; balances, allowances, and order state remain venue-owned facts."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch.rs"
+kind = "string"
+literal = '''b"venue_truth_divergence"'''
+context = '''KillSwitchHaltTriggerKind::VenueTruthDivergence => b"venue_truth_divergence".as_slice(),'''
+classification = "kill_switch_trigger_kind_hash_label"
+reason = "Stable trigger-kind label included in halt-id derivation for venue-truth divergence halts; not a venue, size, timeout, or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "number"
+literal = "0"
+context = '''0,'''
+classification = "venue_truth_clock_failure_absent_timestamp_sentinel"
+reason = "Absent-source-timestamp sentinel used only when the local clock fails before a Polymarket venue-truth poll can be timestamped; it is fail-closed halt evidence shape, not a runtime knob."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "number"
+literal = "1"
+context = '''Decimal::new(1, USDC_DECIMALS)'''
+classification = "polymarket_usdc_wire_unit_scale_numerator"
+reason = "Fixed numerator for converting Polymarket CLOB integer USDC wire units using the canonical USDC decimal exponent; the exponent is adapter-owned currency metadata, not operator policy."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "string"
+literal = '''"resolve Polymarket credentials for venue-truth runtime source"'''
+context = '''.context("resolve Polymarket credentials for venue-truth runtime source")?;'''
+classification = "provider_runtime_diagnostic_context"
+reason = "Static error context for fail-closed construction of the Polymarket venue-truth source; it does not configure credentials, endpoints, sizing, or timing."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "string"
+literal = '''"construct Polymarket CLOB venue-truth client"'''
+context = '''.context("construct Polymarket CLOB venue-truth client")?;'''
+classification = "provider_runtime_diagnostic_context"
+reason = "Static error context for fail-closed construction of the Polymarket CLOB client; endpoints and timeouts remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "string"
+literal = '''"construct Polymarket Data API venue-truth client"'''
+context = '''.context("construct Polymarket Data API venue-truth client")?;'''
+classification = "provider_runtime_diagnostic_context"
+reason = "Static error context for fail-closed construction of the Polymarket Data API client; endpoints and timeouts remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "string"
+literal = '''"poll Polymarket venue-truth endpoints"'''
+context = '''.context("poll Polymarket venue-truth endpoints")?;'''
+classification = "provider_runtime_diagnostic_context"
+reason = "Static error context for fail-closed venue-truth REST polling; cadence, endpoints, account, and credentials remain TOML or SSM-owned."

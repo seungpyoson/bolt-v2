@@ -1366,6 +1366,7 @@ TEST_HARNESS_NAMES = (
     "platform_config",
     "runtime_capture_io",
     "wiring_registration",
+    "bolt_v3_polymarket_venue_truth",
     "bolt_v3_risk_reservation_substrate",
     "bolt_v3_risk_reservation_epoch_manager",
 )

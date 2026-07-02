@@ -45,7 +45,7 @@ pub use polymarket::KEY as OUTCOME_GROUP_POLYMARKET_VENUE_KEY;
 
 use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, sync::Arc};
 
-use nautilus_model::{enums::TimeInForce, identifiers::Venue};
+use nautilus_model::{enums::TimeInForce, identifiers::Venue, types::Currency};
 use rust_decimal::Decimal;
 use serde::Serialize;
 
@@ -58,6 +58,7 @@ use crate::{
     bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, WrittenOperatorArtifact},
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
+    bolt_v3_venue_truth::{VenueTruthOrderEventMapper, VenueTruthSnapshotSource},
     strategies::registry::FeeProvider,
 };
 
@@ -117,6 +118,20 @@ pub struct ProviderAdapterMapContext<'a> {
     pub plan: &'a MarketIdentityPlan,
     pub clock: BoltV3MarketClockFn,
     pub runtime_approvals: ProviderRuntimeApprovals<'a>,
+}
+
+pub struct ProviderVenueTruthSourceContext<'a> {
+    pub client_key: &'a str,
+    pub client: &'a ClientBlock,
+    pub resolved: &'a ResolvedBoltV3Secrets,
+    pub collateral_currency: Currency,
+}
+
+#[derive(Clone)]
+pub struct ProviderVenueTruthRuntimeSource {
+    pub source: Arc<dyn VenueTruthSnapshotSource>,
+    pub order_event_mapper: Arc<dyn VenueTruthOrderEventMapper>,
+    pub poll_interval_ms: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -271,6 +286,10 @@ type ProductSubmitProofArtifactWriter =
     ) -> Result<WrittenOperatorArtifact, anyhow::Error>;
 
 type MetadataRefreshIntervalLoader = fn(&ClientBlock) -> Result<Option<u64>, String>;
+type VenueTruthRuntimeSourceBuilder =
+    for<'a> fn(
+        ProviderVenueTruthSourceContext<'a>,
+    ) -> Result<ProviderVenueTruthRuntimeSource, anyhow::Error>;
 
 // PROVIDER-SPECIFIC (Polymarket CLOB v2) — DEFER (P3-F3). Every `ClobV2*` type and
 // `*_clob_v2_*` fn below materializes Polymarket CLOB v2 signing / fee / collateral
@@ -562,6 +581,7 @@ pub struct ProviderBinding {
     pub write_live_submit_approval_artifact: Option<LiveSubmitApprovalArtifactWriter>,
     pub write_product_submit_proof_artifact: Option<ProductSubmitProofArtifactWriter>,
     pub build_fee_provider: Option<FeeProviderBuilder>,
+    pub build_venue_truth_runtime_source: Option<VenueTruthRuntimeSourceBuilder>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -714,6 +734,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: Some(polymarket::build_fee_provider),
+        build_venue_truth_runtime_source: Some(polymarket::build_venue_truth_runtime_source),
     },
     ProviderBinding {
         key: binance::KEY,
@@ -733,6 +754,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     },
     ProviderBinding {
         key: hyperliquid::KEY,
@@ -754,6 +776,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         ),
         write_product_submit_proof_artifact: Some(hyperliquid::write_product_submit_proof_artifact),
         build_fee_provider: Some(hyperliquid::build_fee_provider),
+        build_venue_truth_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::BITMEX_KEY,
@@ -773,6 +796,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::BYBIT_KEY,
@@ -792,6 +816,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::COINBASE_KEY,
@@ -811,6 +836,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::DERIBIT_KEY,
@@ -830,6 +856,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::OKX_KEY,
@@ -849,6 +876,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::KRAKEN_KEY,
@@ -868,6 +896,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     },
     ProviderBinding {
         key: chainlink::KEY,
@@ -887,6 +916,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     },
     ProviderBinding {
         key: chainlink_reference::KEY,
@@ -906,6 +936,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     },
     ProviderBinding {
         key: polyresearch::KEY,
@@ -925,6 +956,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     },
 ];
 

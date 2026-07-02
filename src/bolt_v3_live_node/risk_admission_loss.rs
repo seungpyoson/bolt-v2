@@ -20,6 +20,22 @@ pub(super) struct BoltV3SubmitReservationRecoveryConfig {
     pub(super) max_bytes: u64,
 }
 
+pub(super) struct BoltV3VenueTruthRuntimeConfig {
+    pub(super) source: Arc<dyn crate::bolt_v3_venue_truth::VenueTruthSnapshotSource>,
+    pub(super) order_event_mapper: Arc<dyn crate::bolt_v3_venue_truth::VenueTruthOrderEventMapper>,
+    pub(super) poll_interval_ms: u64,
+}
+
+pub(super) struct BoltV3VenueTruthRuntimeGuard {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for BoltV3VenueTruthRuntimeGuard {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 pub(super) fn loss_governor_runtime_feed_config_from_loaded(
     loaded: &LoadedBoltV3Config,
 ) -> Result<Option<LossGovernorRuntimeFeedConfig>, BoltV3LiveNodeError> {
@@ -37,6 +53,142 @@ pub(super) fn loss_governor_runtime_feed_config_from_loaded(
             block.active_position_pnl_max_entries,
         )?,
     }))
+}
+
+pub(super) fn venue_truth_runtime_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    feed_config: Option<&CapitalAdmissionRuntimeFeedConfig>,
+) -> Result<Option<BoltV3VenueTruthRuntimeConfig>, BoltV3LiveNodeError> {
+    let Some(feed_config) = feed_config else {
+        return Ok(None);
+    };
+    let Some(binding) = crate::bolt_v3_providers::binding_for_provider_key(&feed_config.venue_id)
+    else {
+        return Ok(None);
+    };
+    let Some(build_source) = binding.build_venue_truth_runtime_source else {
+        return Ok(None);
+    };
+    let (client_key, client) = loaded
+        .strategies
+        .iter()
+        .find_map(|strategy| {
+            let client_key = strategy.config.execution_client_id.as_str();
+            let client = loaded.root.clients.get(client_key)?;
+            (client.venue.as_str() == feed_config.venue_id && client.execution.is_some())
+                .then_some((client_key, client))
+        })
+        .ok_or_else(|| {
+            BoltV3LiveNodeError::Build(anyhow::anyhow!(
+                "capital admission requires a configured execution client for venue truth on venue `{}`",
+                feed_config.venue_id
+            ))
+        })?;
+    let source = build_source(crate::bolt_v3_providers::ProviderVenueTruthSourceContext {
+        client_key,
+        client,
+        resolved,
+        collateral_currency: nautilus_model::types::Currency::from(
+            feed_config.collateral_currency.as_str(),
+        ),
+    })
+    .map_err(BoltV3LiveNodeError::Build)?;
+
+    Ok(Some(BoltV3VenueTruthRuntimeConfig {
+        source: source.source,
+        order_event_mapper: source.order_event_mapper,
+        poll_interval_ms: source.poll_interval_ms,
+    }))
+}
+
+pub(super) fn spawn_venue_truth_runtime(
+    config: BoltV3VenueTruthRuntimeConfig,
+    feed: Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    stop_handle: LiveNodeHandle,
+) -> BoltV3VenueTruthRuntimeGuard {
+    let handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(config.poll_interval_ms));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let captured_at = match current_unix_nanos() {
+                Ok(value) => value,
+                Err(error) => {
+                    halt_for_venue_truth(
+                        &submit_admission,
+                        &stop_handle,
+                        0,
+                        format!("clock failed before venue truth poll: {error:#}"),
+                    );
+                    break;
+                }
+            };
+            let snapshot = match config
+                .source
+                .snapshot(nautilus_core::UnixNanos::from(captured_at))
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    halt_for_venue_truth(
+                        &submit_admission,
+                        &stop_handle,
+                        captured_at,
+                        format!("venue truth poll failed: {error:#}"),
+                    );
+                    break;
+                }
+            };
+            let reconcile = {
+                let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                feed.on_venue_truth_snapshot(snapshot)
+            };
+            if let Err(divergence) = reconcile {
+                halt_for_venue_truth(
+                    &submit_admission,
+                    &stop_handle,
+                    divergence.current_captured_at.as_u64(),
+                    format!("venue truth divergence: {:?}", divergence.kind),
+                );
+                break;
+            }
+        }
+    });
+    BoltV3VenueTruthRuntimeGuard { handle }
+}
+
+fn halt_for_venue_truth(
+    submit_admission: &BoltV3SubmitAdmissionState,
+    stop_handle: &LiveNodeHandle,
+    source_timestamp_unix_nanos: u64,
+    reason: String,
+) {
+    log::error!("{reason}");
+    let trigger = KillSwitchHaltTrigger::venue_truth_divergence(
+        crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE,
+        source_timestamp_unix_nanos,
+        reason,
+    );
+    match transition_kill_switch_state(
+        KillSwitchState::Armed,
+        KillSwitchEvent::HaltTriggered(trigger),
+        KillSwitchTransitionContext {
+            state_write_succeeded: false,
+            durable_halt_evidence_recorded: false,
+            operator_authorized: false,
+            manual_reset_evidence_valid: false,
+            mandatory_proof_streams_fresh: false,
+            no_outstanding_order_risk: false,
+            no_open_positions: false,
+            no_pending_entry_risk: false,
+        },
+    ) {
+        Ok(state) => submit_admission.replace_kill_switch_state(state),
+        Err(error) => log::error!("venue truth halt transition failed: {error:?}"),
+    }
+    stop_handle.stop();
 }
 
 pub(super) fn capital_admission_runtime_feed_config_from_loaded(

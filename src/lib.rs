@@ -90,6 +90,7 @@ pub mod bolt_v3_taker_pricing;
 pub mod bolt_v3_taker_updown_signal;
 pub mod bolt_v3_trade_flow;
 pub mod bolt_v3_validate;
+pub mod bolt_v3_venue_truth;
 pub mod bolt_v3_wire_boundary;
 mod bounded_config_read;
 pub mod execution_state;

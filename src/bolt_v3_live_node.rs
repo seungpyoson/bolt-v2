@@ -153,7 +153,10 @@ use crate::{
         time::UnixNanos,
         types::IvSourceKind,
     },
-    bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind},
+    bolt_v3_kill_switch::{
+        KillSwitchEvent, KillSwitchHaltTrigger, KillSwitchState, KillSwitchStateKind,
+        KillSwitchTransitionContext, transition_kill_switch_state,
+    },
     bolt_v3_kill_switch_store::{
         KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore, KillSwitchStoreError,
     },
@@ -240,15 +243,16 @@ pub use live_node_config::{
 use risk_admission_loss::capital_admission_venue_spendability_snapshot_from_source_config;
 use risk_admission_loss::{
     BoltV3CapitalAdmissionVenueSpendabilitySourceConfig, BoltV3SubmitReservationRecoveryConfig,
-    capital_admission_config_from_loaded, capital_admission_runtime_feed_config_from_loaded,
+    BoltV3VenueTruthRuntimeGuard, capital_admission_config_from_loaded,
+    capital_admission_runtime_feed_config_from_loaded,
     capital_admission_venue_spendability_source_config_from_loaded,
     configure_bolt_v3_kill_switch_loss_protection, loss_governor_halt_action_handler_from_node,
     loss_governor_halt_action_policy_from_loaded, loss_governor_policy_from_loaded,
     loss_governor_runtime_feed_config_from_loaded, order_reject_observer_account_id_from_loaded,
     recover_kill_switch_state_before_live_node_build,
-    refresh_capital_admission_venue_spendability_from_source,
+    refresh_capital_admission_venue_spendability_from_source, spawn_venue_truth_runtime,
     submit_reservation_recovery_config_from_loaded, sync_nt_trading_state_for_kill_switch,
-    wire_bolt_v3_loss_protection_runtime,
+    venue_truth_runtime_config_from_loaded, wire_bolt_v3_loss_protection_runtime,
 };
 pub use secrets_builders::{
     build_bolt_v3_live_node_with_resolved, build_bolt_v3_strategy_free_data_client_probe_live_node,
@@ -286,6 +290,7 @@ pub struct BoltV3LiveNodeRuntime {
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
     capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
     capital_admission_runtime_feed_subscription: Option<CapitalAdmissionRuntimeFeedSubscription>,
+    venue_truth_runtime_guard: Option<BoltV3VenueTruthRuntimeGuard>,
     capital_admission_venue_spendability_source:
         Option<BoltV3CapitalAdmissionVenueSpendabilitySourceConfig>,
     submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
@@ -411,6 +416,7 @@ struct BoltV3LiveNodeRuntimeFeeds {
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
     capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
     capital_admission_runtime_feed_subscription: Option<CapitalAdmissionRuntimeFeedSubscription>,
+    venue_truth_runtime_guard: Option<BoltV3VenueTruthRuntimeGuard>,
     capital_admission_venue_spendability_source:
         Option<BoltV3CapitalAdmissionVenueSpendabilitySourceConfig>,
     submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
@@ -439,6 +445,7 @@ impl BoltV3LiveNodeRuntime {
             capital_admission_runtime_feed: feeds.capital_admission_runtime_feed,
             capital_admission_runtime_feed_subscription: feeds
                 .capital_admission_runtime_feed_subscription,
+            venue_truth_runtime_guard: feeds.venue_truth_runtime_guard,
             capital_admission_venue_spendability_source: feeds
                 .capital_admission_venue_spendability_source,
             submit_reservation_recovery: feeds.submit_reservation_recovery,
@@ -916,6 +923,10 @@ impl BoltV3LiveNodeRuntime {
     pub fn order_reject_observer_feed_configured(&self) -> bool {
         self.order_reject_observer_feed.is_some()
             && self.order_reject_observer_feed_subscription.is_some()
+    }
+
+    pub fn venue_truth_runtime_configured(&self) -> bool {
+        self.venue_truth_runtime_guard.is_some()
     }
 
     pub fn nt_risk_trading_state(&self) -> TradingState {
@@ -1857,6 +1868,14 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let order_reject_observer_account_id = order_reject_observer_account_id_from_loaded(loaded);
     let capital_admission_venue_spendability_source =
         capital_admission_venue_spendability_source_config_from_loaded(loaded)?;
+    let venue_truth_runtime_config = venue_truth_runtime_config_from_loaded(
+        loaded,
+        resolved,
+        capital_admission_runtime_feed_config.as_ref(),
+    )?;
+    let venue_truth_order_event_mapper = venue_truth_runtime_config
+        .as_ref()
+        .map(|config| config.order_event_mapper.clone());
     let submit_reservation_recovery = if capital_admission_runtime_feed_config.is_some() {
         submit_reservation_recovery_config_from_loaded(loaded)?
     } else {
@@ -1879,10 +1898,13 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let (capital_admission_runtime_feed, capital_admission_runtime_feed_subscription) =
         match capital_admission_runtime_feed_config {
             Some(config) => {
-                let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
-                    config,
-                    submit_admission.clone(),
-                )));
+                let feed = Arc::new(Mutex::new(
+                    CapitalAdmissionRuntimeFeed::new_with_venue_truth_order_event_mapper(
+                        config,
+                        submit_admission.clone(),
+                        venue_truth_order_event_mapper.clone(),
+                    ),
+                ));
                 let subscription = subscribe_capital_admission_runtime_feed(feed.clone());
                 (Some(feed), Some(subscription))
             }
@@ -1913,6 +1935,23 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
+    let venue_truth_runtime_guard = match (
+        venue_truth_runtime_config,
+        capital_admission_runtime_feed.as_ref(),
+    ) {
+        (Some(config), Some(feed)) => Some(spawn_venue_truth_runtime(
+            config,
+            feed.clone(),
+            submit_admission.clone(),
+            node.handle(),
+        )),
+        (None, _) => None,
+        (Some(_), None) => {
+            return Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
+                "venue truth runtime requires the capital admission runtime feed"
+            )));
+        }
+    };
     // Sync the recovered kill-switch state into NT's RiskEngine trading state so
     // the NT risk engine and the submit-admission latch agree on the halt. The
     // loss-protection seed below can override this for fail-closed cases.
@@ -2041,6 +2080,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             order_reject_observer_feed_subscription,
             capital_admission_runtime_feed,
             capital_admission_runtime_feed_subscription,
+            venue_truth_runtime_guard,
             capital_admission_venue_spendability_source,
             submit_reservation_recovery,
         },

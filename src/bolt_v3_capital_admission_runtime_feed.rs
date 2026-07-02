@@ -27,6 +27,10 @@ use crate::{
         BoltV3SubmitCapitalAdmissionFillUpdate, BoltV3SubmitCapitalAdmissionLifecycleDecision,
         BoltV3SubmitCapitalAdmissionNtComponents,
     },
+    bolt_v3_venue_truth::{
+        VenueTruthDivergence, VenueTruthOrderEvent, VenueTruthOrderEventMapper,
+        VenueTruthReconciler, VenueTruthSnapshot,
+    },
     nt_runtime_capture::{
         account_states_pattern, order_events_pattern, portfolio_snapshots_pattern,
         position_events_pattern,
@@ -37,6 +41,7 @@ const CAPITAL_ADMISSION_ORDER_TERMINAL_SOURCE: &str = stringify!(nt_order_termin
 const NT_ACCOUNT_STATE_PORTFOLIO_SOURCE: &str = stringify!(nt_account_state);
 const NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE: &str = "nt_account_cache";
 const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";
+pub(crate) const POLYMARKET_VENUE_TRUTH_REST_SOURCE: &str = "polymarket_venue_truth_rest";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct PositionFillTradeKey {
@@ -63,6 +68,8 @@ pub struct CapitalAdmissionRuntimeFeed {
     seen_known_position_fill_trade_ids: BTreeMap<PositionFillTradeKey, u64>,
     seen_external_position_fill_trade_ids: BTreeMap<PositionFillTradeKey, u64>,
     external_position_fill_trade_id_retention_exhausted: bool,
+    venue_truth_reconciler: VenueTruthReconciler,
+    venue_truth_order_event_mapper: Option<Arc<dyn VenueTruthOrderEventMapper>>,
 }
 
 pub struct CapitalAdmissionRuntimeFeedSubscription {
@@ -161,6 +168,15 @@ impl CapitalAdmissionRuntimeFeed {
         config: CapitalAdmissionRuntimeFeedConfig,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
     ) -> Self {
+        Self::new_with_venue_truth_order_event_mapper(config, submit_admission, None)
+    }
+
+    #[must_use]
+    pub fn new_with_venue_truth_order_event_mapper(
+        config: CapitalAdmissionRuntimeFeedConfig,
+        submit_admission: Arc<BoltV3SubmitAdmissionState>,
+        venue_truth_order_event_mapper: Option<Arc<dyn VenueTruthOrderEventMapper>>,
+    ) -> Self {
         let component_builder = CapitalAdmissionRuntimeComponentBuilder::new(&config);
         Self {
             config,
@@ -170,6 +186,8 @@ impl CapitalAdmissionRuntimeFeed {
             seen_known_position_fill_trade_ids: BTreeMap::new(),
             seen_external_position_fill_trade_ids: BTreeMap::new(),
             external_position_fill_trade_id_retention_exhausted: false,
+            venue_truth_reconciler: VenueTruthReconciler::new(),
+            venue_truth_order_event_mapper,
         }
     }
 
@@ -233,6 +251,24 @@ impl CapitalAdmissionRuntimeFeed {
         self.component_builder
             .record_venue_spendability(&self.config, snapshot);
         self.publish_components_if_ready()
+    }
+
+    pub fn on_venue_truth_snapshot(
+        &mut self,
+        snapshot: VenueTruthSnapshot,
+    ) -> Result<Option<BoltV3SubmitCapitalAdmissionNtComponents>, VenueTruthDivergence> {
+        self.venue_truth_reconciler
+            .reconcile_snapshot(snapshot.clone())?;
+        let venue_spendability = VenueSpendabilitySnapshot {
+            source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
+            observed_at_ns: snapshot.captured_at.as_u64(),
+            venue_id: self.config.venue_id.clone(),
+            account_id: snapshot.account_id.to_string(),
+            collateral_currency: self.config.collateral_currency.clone(),
+            spendable_collateral: snapshot.collateral_balance.as_decimal(),
+            collateral_allowance: snapshot.collateral_allowance.as_decimal(),
+        };
+        Ok(self.on_venue_spendability_snapshot(venue_spendability))
     }
 
     pub fn on_position_event(&mut self, _event: &PositionEvent) -> Option<()> {
@@ -316,6 +352,10 @@ impl CapitalAdmissionRuntimeFeed {
         &mut self,
         event: &OrderEventAny,
     ) -> Option<BoltV3SubmitCapitalAdmissionLifecycleDecision> {
+        if let Some(venue_truth_order_event) = self.venue_truth_order_event_from_nt(event) {
+            self.venue_truth_reconciler
+                .record_order_event(venue_truth_order_event);
+        }
         if let OrderEventAny::Filled(fill) = event {
             return self.on_fill_event(fill);
         }
@@ -459,6 +499,22 @@ impl CapitalAdmissionRuntimeFeed {
             return None;
         }
         Some(decision)
+    }
+
+    fn venue_truth_order_event_from_nt(
+        &self,
+        event: &OrderEventAny,
+    ) -> Option<VenueTruthOrderEvent> {
+        if event.instrument_id().venue.as_str() != self.config.venue_id
+            || event
+                .account_id()
+                .is_some_and(|account_id| account_id != self.config.account_id)
+        {
+            return None;
+        }
+        self.venue_truth_order_event_mapper
+            .as_ref()
+            .and_then(|mapper| mapper.map_order_event(event))
     }
 
     #[must_use]

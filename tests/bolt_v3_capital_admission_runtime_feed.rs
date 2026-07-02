@@ -15,6 +15,9 @@ use bolt_v2::bolt_v3_capital_admission_state::{
     PortfolioCapitalAdmissionSnapshot, ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
 };
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
+use bolt_v2::bolt_v3_providers::polymarket::{
+    PolymarketVenueTruthInput, build_polymarket_venue_truth_snapshot,
+};
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CapitalAdmissionRejectReason, BoltV3CompiledOrderAdmissionEvidence,
     BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
@@ -24,6 +27,7 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitCapitalAdmissionOpenOrderReservation, BoltV3SubmitIntentKind,
     BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
 };
+use bolt_v2::bolt_v3_venue_truth::VenueTruthSnapshot;
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
     publish_position_event, subscribe_account_state, subscribe_order_events,
@@ -47,6 +51,7 @@ use nautilus_model::{
     },
     types::{AccountBalance, Currency, Money, Price, Quantity},
 };
+use nautilus_polymarket::http::query::BalanceAllowance;
 use rust_decimal::Decimal;
 use ustr::Ustr;
 
@@ -114,6 +119,55 @@ fn subscribed_account_and_portfolio_events_publish_account_spendability() {
     assert_eq!(
         admission.capital_admission_state_observed_at_ns(),
         Some(1_100)
+    );
+}
+
+#[test]
+fn polymarket_venue_truth_snapshot_promotes_rest_spendability() {
+    let admission = Arc::new(capital_admission_configured_admission());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    let _ = feed.on_account_state(&account_state(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        1_000,
+        100.0,
+    ));
+    let _ = feed.on_portfolio_snapshot(&portfolio_snapshot(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        1_100,
+        100.0,
+    ));
+
+    let components = feed
+        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
+            1_200,
+            Decimal::new(45_000_000, 0),
+            Decimal::new(40_000_000, 0),
+        ))
+        .expect("initial venue truth baseline should be explainable")
+        .expect("account, portfolio, and venue truth should publish components");
+
+    assert_eq!(
+        components.venue_spendability.source,
+        "polymarket_venue_truth_rest"
+    );
+    assert_eq!(
+        components.venue_spendability.spendable_collateral,
+        Decimal::new(45, 0)
+    );
+    assert_eq!(
+        components.venue_spendability.collateral_allowance,
+        Decimal::new(40, 0)
+    );
+    assert_eq!(
+        admission
+            .capital_admission_state_snapshot()
+            .expect("promoted components should update admission")
+            .venue_spendability
+            .source,
+        "polymarket_venue_truth_rest"
     );
 }
 
@@ -2559,6 +2613,25 @@ fn venue_spendability_snapshot(
         spendable_collateral: Decimal::new(spendable_collateral, 0),
         collateral_allowance: Decimal::new(collateral_allowance, 0),
     }
+}
+
+fn polymarket_venue_truth_snapshot(
+    captured_at: u64,
+    balance: Decimal,
+    allowance: Decimal,
+) -> VenueTruthSnapshot {
+    build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
+        captured_at: UnixNanos::from(captured_at),
+        account_id: AccountId::from("ACCOUNT-001"),
+        collateral_currency: Currency::from("USD"),
+        collateral: BalanceAllowance {
+            balance,
+            allowance: Some(allowance),
+        },
+        open_orders: Vec::new(),
+        positions: Vec::new(),
+    })
+    .expect("test venue truth snapshot should be valid")
 }
 
 fn order_canceled_event(client_order_id: &str, ts_event: u64) -> OrderCanceled {

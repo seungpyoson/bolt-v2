@@ -523,6 +523,7 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     };
 
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
@@ -543,6 +544,7 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     };
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
@@ -563,6 +565,7 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
+        build_venue_truth_runtime_source: None,
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {

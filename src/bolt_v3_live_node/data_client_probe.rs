@@ -377,14 +377,14 @@ enum MetadataResponseInstrumentUpdate {
 }
 
 fn record_source_owned_metadata_response_instrument(
-    instruments: &mut BTreeMap<String, InstrumentId>,
+    instruments: &mut BTreeMap<InstrumentId, InstrumentId>,
     subscriptions_installed: bool,
     instrument_id: InstrumentId,
 ) -> MetadataResponseInstrumentUpdate {
-    if instruments.contains_key(instrument_id.as_str()) {
+    if instruments.contains_key(&instrument_id) {
         return MetadataResponseInstrumentUpdate::Existing;
     }
-    instruments.insert(instrument_id.to_string(), instrument_id);
+    instruments.insert(instrument_id, instrument_id);
     if subscriptions_installed {
         MetadataResponseInstrumentUpdate::NewAfterSubscription
     } else {
@@ -482,7 +482,7 @@ struct StrategyFreeMetadataResponseProbeState {
     venue: Venue,
     market_data_kind: DataClientReadinessProbeMarketDataKind,
     book_type: Option<BookType>,
-    instruments: RefCell<BTreeMap<String, InstrumentId>>,
+    instruments: RefCell<BTreeMap<InstrumentId, InstrumentId>>,
     subscriptions: RefCell<Vec<StrategyFreeReferenceQuoteSubscription>>,
     market_observer: RefCell<Option<StrategyFreeDataClientProbeObserver>>,
     notify: tokio::sync::Notify,
@@ -738,10 +738,8 @@ mod metadata_response_probe_driver_tests {
 
     #[test]
     fn metadata_response_records_late_new_instrument_after_subscription() {
-        let mut instruments = BTreeMap::from([(
-            "EARLY.POLYMARKET".to_string(),
-            InstrumentId::from("EARLY.POLYMARKET"),
-        )]);
+        let early = InstrumentId::from("EARLY.POLYMARKET");
+        let mut instruments = BTreeMap::from([(early, early)]);
 
         let update = record_source_owned_metadata_response_instrument(
             &mut instruments,
@@ -759,10 +757,8 @@ mod metadata_response_probe_driver_tests {
 
     #[test]
     fn metadata_response_ignores_duplicate_instrument_after_subscription() {
-        let mut instruments = BTreeMap::from([(
-            "EARLY.POLYMARKET".to_string(),
-            InstrumentId::from("EARLY.POLYMARKET"),
-        )]);
+        let early = InstrumentId::from("EARLY.POLYMARKET");
+        let mut instruments = BTreeMap::from([(early, early)]);
 
         let update = record_source_owned_metadata_response_instrument(
             &mut instruments,

@@ -226,6 +226,7 @@ fn hold_to_resolution_books_realized_cash_and_settlement_evidence() {
         evidence.clone(),
         submit_admission,
     );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
     let instrument_id = selected_entry_instrument(&strategy);
     materialize_configured_position(
         &mut strategy,
@@ -252,9 +253,16 @@ fn hold_to_resolution_books_realized_cash_and_settlement_evidence() {
         .result
         .expect("fixture payout should settle the held YES lot");
 
-    strategy
-        .active
-        .observe_resolution_strike(3_101.0, 1_000, 1_300);
+    let resolution_update = IndexPriceUpdate::new(
+        strategy
+            .resolution_instrument_id()
+            .expect("fixture should configure the resolution instrument"),
+        Price::new(3_101.0, 1),
+        UnixNanos::from(1_000_u64 * NANOS_PER_MILLI_U64),
+        UnixNanos::from(1_300_u64 * NANOS_PER_MILLI_U64),
+    );
+    DataActor::on_index_price(&mut strategy, &resolution_update)
+        .expect("resolution index price should route through the strategy handler");
 
     let evidence_events = evidence.events();
     let settlement_evidence_matches_expected = evidence_events.iter().any(|event| {

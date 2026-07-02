@@ -16106,6 +16106,14 @@ classification = "strategy_free_probe_fail_closed_diagnostic"
 reason = "Fail-closed readiness probe diagnostic when the data client returns no owned targets; it does not configure behavior."
 
 [[allowed]]
+path = "src/bolt_v3_live_node/strategy_free_probe.rs"
+kind = "string"
+literal = '''"metadata_response readiness probe produced no source-owned instrument targets"'''
+context = '''"metadata_response readiness probe produced no source-owned instrument targets"'''
+classification = "strategy_free_probe_fail_closed_diagnostic"
+reason = "Fail-closed readiness probe diagnostic when a metadata-response target install receives an empty source-owned universe; it does not configure behavior."
+
+[[allowed]]
 path = "src/bolt_v3_live_node/data_client_probe.rs"
 kind = "string"
 literal = '''"quote"'''

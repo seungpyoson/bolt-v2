@@ -84,6 +84,31 @@ fn signal_quote_tick_updates_pricing_from_configured_signal_data() {
 }
 
 #[test]
+fn invalid_signal_quote_tick_clears_stale_pricing_state() {
+    let mut strategy = test_strategy();
+    strategy
+        .pricing
+        .observe_reference_current_price(&fast_spot("chainlink_primary", 101.0, 1_100));
+    strategy
+        .on_quote(&quote_tick("SIGNAL.SOURCE", 100.5, 102.5, 1_200))
+        .expect("signal quote should seed pricing");
+    assert!(strategy.pricing.selected_pricing_spot().is_some());
+    assert!(!strategy.pricing.fast_venue_incoherent);
+
+    strategy
+        .on_quote(&invalid_quote_tick("SIGNAL.SOURCE", 1_300))
+        .expect("invalid signal quote should fail closed");
+
+    assert_eq!(strategy.pricing.selected_pricing_spot().cloned(), None);
+    assert!(strategy.pricing.fast_venue_incoherent);
+    assert!(strategy.active.fast_venue_incoherent);
+    assert!(strategy.pricing.lead_quality_policy_applied);
+    assert_eq!(strategy.pricing.last_lead_gap_probability, None);
+    assert_eq!(strategy.pricing.last_jitter_penalty_probability, None);
+    assert_eq!(strategy.pricing.last_lead_agreement_corr, None);
+}
+
+#[test]
 fn signal_quote_tick_does_not_warm_active_reference_state() {
     let mut strategy = test_strategy();
     let mut market = candidate_market("market-1", 1_000);
@@ -918,7 +943,7 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     register_test_strategy_with_active_instruments(&mut strategy);
 
     let up_instrument_id = strategy
@@ -1258,7 +1283,7 @@ fn executable_edge_fee_uses_exact_size_vwap_price_not_limit_price() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     register_test_strategy_with_active_instruments(&mut strategy);
     set_configured_books_depth(
         &mut strategy,
@@ -1311,7 +1336,7 @@ fn executable_edge_fee_requires_cached_instrument_in_test_builds() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
     set_configured_books_depth(
         &mut strategy,
         &[
@@ -1496,7 +1521,7 @@ fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.02));
-    strategy.pricing.last_jitter_penalty_probability = Some(0.01);
+    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.01));
 
     let decision = strategy.entry_evaluation_at(1_200);
 

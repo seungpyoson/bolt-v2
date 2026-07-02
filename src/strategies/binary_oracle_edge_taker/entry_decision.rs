@@ -262,6 +262,10 @@ pub(super) struct EntrySkipDedupeKey {
     pub(super) pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
     pub(super) market_id: Option<String>,
     pub(super) interval_open: Option<String>,
+    pub(super) spot_price: Option<String>,
+    pub(super) reference_current_price: Option<String>,
+    pub(super) last_reference_ts_ms: Option<u64>,
+    pub(super) fast_venue_incoherent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1850,6 +1850,57 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
 }
 
 #[test]
+fn entry_skip_evidence_records_later_observed_feed_inputs_for_same_blocker() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.pricing.set_selected_pricing_spot(None);
+    strategy.latest_signal_quote = None;
+
+    let mut spot_missing = minimal_entry_submission_decision();
+    spot_missing.evaluation.pricing_blocked_by = vec![EntryPricingBlockReason::SpotPriceMissing];
+
+    strategy
+        .record_entry_skip_once(
+            1_200,
+            &spot_missing,
+            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+            None,
+        )
+        .expect("first spot-missing skip should record");
+
+    strategy.latest_signal_quote = Some(fast_spot("bybit", 3_101.5, 1_201));
+    strategy
+        .record_entry_skip_once(
+            1_201,
+            &spot_missing,
+            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+            None,
+        )
+        .expect("same blocker with newly observed spot evidence should record");
+
+    let entry_skips = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entry_skips.len(),
+        2,
+        "same blocker must not dedupe away newly observed feed evidence"
+    );
+    assert_eq!(entry_skips[0].spot_price, None);
+    assert_eq!(entry_skips[1].spot_price.as_deref(), Some("3101.5"));
+}
+
+#[test]
 fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_seconds() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());

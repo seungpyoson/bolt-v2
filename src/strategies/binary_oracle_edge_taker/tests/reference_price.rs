@@ -1455,6 +1455,70 @@ fn stale_selected_source_update_clears_accepted_reference_price_state() {
 }
 
 #[test]
+fn cleared_reference_selection_fallback_preserves_selected_source_not_latest_quote() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price.max_source_age_ms = 50;
+    reference_price.min_valid_sources = 1;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_170_u64 * NANOS_PER_MILLI_U64));
+
+    let primary = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_140,
+        1_145,
+    );
+    DataActor::on_data(&mut strategy, &primary).expect("primary quote should be handled");
+    assert_eq!(strategy.active.reference_current_price, Some(100.0));
+    assert_eq!(
+        strategy.active.reference_current_price_source_id.as_deref(),
+        Some(CHAINLINK_PRIMARY_SOURCE_ID)
+    );
+
+    let backup = reference_price_update(
+        POLYRESEARCH_BACKUP_SOURCE_ID,
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        POLYRESEARCH_REFERENCE_SYMBOL,
+        101.0,
+        1_160,
+        1_165,
+    );
+    DataActor::on_data(&mut strategy, &backup)
+        .expect("later backup quote should be retained without replacing selected primary");
+    assert_eq!(
+        strategy.active.reference_current_price_source_id.as_deref(),
+        Some(CHAINLINK_PRIMARY_SOURCE_ID)
+    );
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_250_u64 * NANOS_PER_MILLI_U64));
+    strategy.refresh_current_reference_price_selection_at(1_250);
+
+    assert_eq!(strategy.active.reference_current_price, None);
+    assert_eq!(strategy.active.reference_current_price_source_id, None);
+    assert_eq!(strategy.evidence_reference_current_price(), Some(100.0));
+    assert_eq!(
+        strategy
+            .evidence_reference_current_price_source_id()
+            .as_deref(),
+        Some(CHAINLINK_PRIMARY_SOURCE_ID)
+    );
+    assert_eq!(
+        strategy.evidence_reference_current_price_failed_over(),
+        Some(false)
+    );
+}
+
+#[test]
 fn drift_block_marks_reference_price_sources_unavailable() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();

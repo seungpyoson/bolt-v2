@@ -562,6 +562,7 @@ pub struct BinaryOracleEdgeTaker {
     last_recorded_exit_decision: Option<ExitDecisionDedupeKey>,
     pricing: PricingState,
     latest_signal_quote: Option<FastSpotObservation>,
+    latest_selected_reference_quote: Option<SelectedReferenceQuoteEvidence>,
     reference_price_selector: Option<ReferencePriceSelector>,
     reference_price_quotes: BTreeMap<String, ReferenceQuote>,
     reference_price_source_health: BTreeMap<String, ReferencePriceSourceHealth>,
@@ -586,6 +587,12 @@ pub struct BinaryOracleEdgeTaker {
     reference_price_subscribe_events: Vec<ReferencePriceSubscribeEvent>,
     #[cfg(test)]
     live_input_subscription_retry_events: Vec<LiveInputSubscriptionRetryEvent>,
+}
+
+#[derive(Clone, Debug)]
+struct SelectedReferenceQuoteEvidence {
+    quote: ReferenceQuote,
+    failed_over: bool,
 }
 
 impl BinaryOracleEdgeTaker {
@@ -631,6 +638,7 @@ impl BinaryOracleEdgeTaker {
             last_recorded_exit_decision: None,
             pricing,
             latest_signal_quote: None,
+            latest_selected_reference_quote: None,
             reference_price_selector,
             reference_price_quotes: BTreeMap::new(),
             reference_price_source_health,
@@ -666,6 +674,7 @@ impl BinaryOracleEdgeTaker {
         self.active.apply_selection_timing(&snapshot);
         if reference_current_price_boundary_changed(&previous_active, &self.active) {
             self.latest_signal_quote = None;
+            self.latest_selected_reference_quote = None;
             self.reset_reference_current_price_runtime_state();
         }
         // Bind the live strike to the market's interval-open boundary.
@@ -743,6 +752,7 @@ impl BinaryOracleEdgeTaker {
         observed_ts_ms: u64,
         received_ts_ms: Option<u64>,
     ) {
+        self.latest_signal_quote = None;
         self.pricing
             .observe_invalid_signal_quote(venue, observed_ts_ms);
         self.after_signal_quote_observed(observed_ts_ms, received_ts_ms);
@@ -1134,6 +1144,10 @@ impl BinaryOracleEdgeTaker {
                 .active
                 .observe_reference_price_quote(selected_quote, selection.failed_over())
         {
+            self.latest_selected_reference_quote = Some(SelectedReferenceQuoteEvidence {
+                quote: selected_quote.clone(),
+                failed_over: selection.failed_over(),
+            });
             self.pricing
                 .observe_reference_current_price(&FastSpotObservation {
                     venue: selected_quote.source_id().to_string(),
@@ -1818,10 +1832,8 @@ impl BinaryOracleEdgeTaker {
             })
     }
 
-    fn latest_reference_quote_for_evidence(&self) -> Option<&ReferenceQuote> {
-        self.reference_price_quotes
-            .values()
-            .max_by_key(|quote| quote.observed_ts_ms())
+    fn selected_reference_quote_for_evidence(&self) -> Option<&SelectedReferenceQuoteEvidence> {
+        self.latest_selected_reference_quote.as_ref()
     }
 
     fn evidence_reference_current_price(&self) -> Option<f64> {
@@ -1834,8 +1846,8 @@ impl BinaryOracleEdgeTaker {
                     .filter(|value| is_positive_finite(*value))
             })
             .or_else(|| {
-                self.latest_reference_quote_for_evidence()
-                    .map(ReferenceQuote::price)
+                self.selected_reference_quote_for_evidence()
+                    .map(|evidence| evidence.quote.price())
                     .filter(|value| is_positive_finite(*value))
             })
     }
@@ -1845,21 +1857,15 @@ impl BinaryOracleEdgeTaker {
             .reference_current_price_source_id
             .clone()
             .or_else(|| {
-                self.latest_reference_quote_for_evidence()
-                    .map(|quote| quote.source_id().to_string())
+                self.selected_reference_quote_for_evidence()
+                    .map(|evidence| evidence.quote.source_id().to_string())
             })
     }
 
     fn evidence_reference_current_price_failed_over(&self) -> Option<bool> {
         self.active.reference_current_price_failed_over.or_else(|| {
-            let source_id = self.latest_reference_quote_for_evidence()?.source_id();
-            let reference_price = self.config.reference_current_price.as_ref()?;
-            Some(
-                reference_price
-                    .source_order
-                    .first()
-                    .is_some_and(|primary| primary != source_id),
-            )
+            self.selected_reference_quote_for_evidence()
+                .map(|evidence| evidence.failed_over)
         })
     }
 
@@ -2329,6 +2335,7 @@ impl BinaryOracleEdgeTaker {
         unclassified_context: Option<String>,
     ) -> Result<()> {
         let fields = self.entry_evaluation_log_fields_at(now_ms, decision);
+        let forced_flat_inputs = self.entry_forced_flat_evidence_inputs();
         let key = EntrySkipDedupeKey {
             reason_category,
             gate_blocked_by: fields
@@ -2343,6 +2350,10 @@ impl BinaryOracleEdgeTaker {
                 .collect(),
             market_id: fields.market_id.clone(),
             interval_open: option_evidence_number(fields.interval_open),
+            spot_price: option_evidence_number(fields.spot_price),
+            reference_current_price: option_evidence_number(fields.reference_current_price),
+            last_reference_ts_ms: forced_flat_inputs.last_reference_ts_ms,
+            fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
         };
         if self.last_recorded_entry_skip.as_ref() == Some(&key) {
             return Ok(());
@@ -2353,7 +2364,7 @@ impl BinaryOracleEdgeTaker {
             reason_category,
             unclassified_context,
             &fields,
-            self.entry_forced_flat_evidence_inputs(),
+            forced_flat_inputs,
         );
         if let Err(error) = self
             .context

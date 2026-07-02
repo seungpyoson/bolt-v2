@@ -400,7 +400,7 @@ impl BoltV3StrategyFreeReferenceQuoteProbeHandle {
 
     pub(super) fn fail_late_metadata_response_instrument(&self, instrument_id: InstrumentId) {
         self.fail_metadata_response_probe(format!(
-            "metadata_response published source-owned instrument {instrument_id} after readiness subscriptions were installed; metadata_response readiness requires startup metadata to be complete before LiveNodeHandle::is_running()"
+            "metadata_response published source-owned instrument {instrument_id} after the readiness metadata snapshot was closed; metadata_response readiness requires startup metadata to be complete before LiveNodeHandle::is_running()"
         ));
     }
 

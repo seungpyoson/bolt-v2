@@ -372,23 +372,23 @@ struct StrategyFreeMetadataResponseProbeObserver {
 #[derive(Debug, PartialEq, Eq)]
 enum MetadataResponseInstrumentUpdate {
     Existing,
-    NewBeforeSubscription,
-    NewAfterSubscription,
+    NewBeforeSnapshotClosed,
+    NewAfterSnapshotClosed,
 }
 
 fn record_source_owned_metadata_response_instrument(
     instruments: &mut BTreeMap<InstrumentId, InstrumentId>,
-    subscriptions_installed: bool,
+    metadata_snapshot_closed: bool,
     instrument_id: InstrumentId,
 ) -> MetadataResponseInstrumentUpdate {
     if instruments.contains_key(&instrument_id) {
         return MetadataResponseInstrumentUpdate::Existing;
     }
     instruments.insert(instrument_id, instrument_id);
-    if subscriptions_installed {
-        MetadataResponseInstrumentUpdate::NewAfterSubscription
+    if metadata_snapshot_closed {
+        MetadataResponseInstrumentUpdate::NewAfterSnapshotClosed
     } else {
-        MetadataResponseInstrumentUpdate::NewBeforeSubscription
+        MetadataResponseInstrumentUpdate::NewBeforeSnapshotClosed
     }
 }
 
@@ -414,6 +414,7 @@ impl StrategyFreeMetadataResponseProbeObserver {
             market_data_kind,
             book_type,
             instruments: RefCell::new(BTreeMap::new()),
+            metadata_snapshot_closed: Cell::new(false),
             subscriptions: RefCell::new(Vec::new()),
             market_observer: RefCell::new(None),
             notify: tokio::sync::Notify::new(),
@@ -429,14 +430,14 @@ impl StrategyFreeMetadataResponseProbeObserver {
             let mut instruments = handler_state.instruments.borrow_mut();
             match record_source_owned_metadata_response_instrument(
                 &mut instruments,
-                handler_state.has_subscriptions(),
+                handler_state.metadata_snapshot_closed(),
                 instrument_id,
             ) {
                 MetadataResponseInstrumentUpdate::Existing => {}
-                MetadataResponseInstrumentUpdate::NewBeforeSubscription => {
+                MetadataResponseInstrumentUpdate::NewBeforeSnapshotClosed => {
                     handler_state.notify.notify_one();
                 }
-                MetadataResponseInstrumentUpdate::NewAfterSubscription => {
+                MetadataResponseInstrumentUpdate::NewAfterSnapshotClosed => {
                     handler_state
                         .handle
                         .fail_late_metadata_response_instrument(instrument_id);
@@ -483,6 +484,7 @@ struct StrategyFreeMetadataResponseProbeState {
     market_data_kind: DataClientReadinessProbeMarketDataKind,
     book_type: Option<BookType>,
     instruments: RefCell<BTreeMap<InstrumentId, InstrumentId>>,
+    metadata_snapshot_closed: Cell<bool>,
     subscriptions: RefCell<Vec<StrategyFreeReferenceQuoteSubscription>>,
     market_observer: RefCell<Option<StrategyFreeDataClientProbeObserver>>,
     notify: tokio::sync::Notify,
@@ -513,10 +515,15 @@ impl StrategyFreeMetadataResponseProbeState {
         !self.subscriptions.borrow().is_empty()
     }
 
+    fn metadata_snapshot_closed(&self) -> bool {
+        self.metadata_snapshot_closed.get()
+    }
+
     fn install_and_subscribe(&self) -> Result<(), BoltV3LiveNodeError> {
         if self.has_subscriptions() {
             return Ok(());
         }
+        self.metadata_snapshot_closed.set(true);
         let instrument_ids = self
             .instruments
             .borrow()
@@ -737,7 +744,26 @@ mod metadata_response_probe_driver_tests {
     }
 
     #[test]
-    fn metadata_response_records_late_new_instrument_after_subscription() {
+    fn metadata_response_records_new_instrument_before_snapshot_closed() {
+        let early = InstrumentId::from("EARLY.POLYMARKET");
+        let mut instruments = BTreeMap::from([(early, early)]);
+
+        let update = record_source_owned_metadata_response_instrument(
+            &mut instruments,
+            false,
+            InstrumentId::from("NEW.POLYMARKET"),
+        );
+
+        assert_eq!(
+            update,
+            MetadataResponseInstrumentUpdate::NewBeforeSnapshotClosed,
+            "new metadata before snapshot closure should wake the install driver"
+        );
+        assert_eq!(instruments.len(), 2);
+    }
+
+    #[test]
+    fn metadata_response_records_late_new_instrument_after_snapshot_closed() {
         let early = InstrumentId::from("EARLY.POLYMARKET");
         let mut instruments = BTreeMap::from([(early, early)]);
 
@@ -749,14 +775,14 @@ mod metadata_response_probe_driver_tests {
 
         assert_eq!(
             update,
-            MetadataResponseInstrumentUpdate::NewAfterSubscription,
-            "new metadata after subscription must be reported as a contract violation"
+            MetadataResponseInstrumentUpdate::NewAfterSnapshotClosed,
+            "new metadata after snapshot closure must be reported as a contract violation"
         );
         assert_eq!(instruments.len(), 2);
     }
 
     #[test]
-    fn metadata_response_ignores_duplicate_instrument_after_subscription() {
+    fn metadata_response_ignores_duplicate_instrument_after_snapshot_closed() {
         let early = InstrumentId::from("EARLY.POLYMARKET");
         let mut instruments = BTreeMap::from([(early, early)]);
 

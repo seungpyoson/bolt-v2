@@ -6397,6 +6397,25 @@ def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
             "Mergify proof PR concurrency must reject metadata-only edit predicates even after the proof group, "
             f"got: {misplaced_metadata_errors}"
         )
+    interposed_queue_metadata_group = (
+        "group: >- ${{ github.event_name == 'pull_request' "
+        f"&& {verifier.MERGIFY_PROOF_PR_HEAD_REF_PREDICATE} "
+        "&& github.event.pull_request.draft == false "
+        f"&& {verifier.MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE} "
+        "&& format('pr-{0}-noop', github.event.number) "
+        "|| github.event_name == 'pull_request' "
+        f"&& {verifier.MERGIFY_PROOF_PR_HEAD_REF_PREDICATE} "
+        "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) }}"
+    )
+    interposed_metadata_errors = verifier.mergify_proof_pr_concurrency_errors(
+        interposed_queue_metadata_group,
+        f"cancel-in-progress: ${{{{ github.event_name == 'pull_request' && {verifier.MERGIFY_PROOF_PR_CANCEL_GUARD} }}}}",
+    )
+    if not any("queue-branch metadata-only edits must use the Mergify proof group" in error for error in interposed_metadata_errors):
+        raise AssertionError(
+            "Mergify proof PR concurrency must reject queue metadata predicates even when another predicate "
+            f"sits between the head-ref and metadata checks, got: {interposed_metadata_errors}"
+        )
 
 
 def assert_dispatch_cancel_watchdog_gaps_are_reported() -> None:

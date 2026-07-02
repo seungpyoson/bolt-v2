@@ -1434,8 +1434,14 @@ def mergify_proof_pr_concurrency_errors(
         errors.append("concurrency group must isolate Mergify proof PR runs")
     if "github.run_id" in normalized_group:
         errors.append("Mergify proof PR concurrency group must key on head SHA, not run_id")
-    queue_metadata_predicate = f"{head_ref_predicate} && {MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE}"
-    if queue_metadata_predicate in normalized_group:
+    # Split on event arms, not every `||`: the Mergify head-ref predicate itself
+    # contains an inner OR between stable and transient queue prefixes.
+    group_arms = re.split(r"\s+\|\|\s+github\.event_name\b", normalized_group)
+    if any(
+        head_ref_predicate in arm
+        and MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE in arm
+        for arm in group_arms
+    ):
         errors.append("queue-branch metadata-only edits must use the Mergify proof group")
     if cancel_guard not in normalized_cancel:
         errors.append("cancel-in-progress must not cancel Mergify proof PR validations")

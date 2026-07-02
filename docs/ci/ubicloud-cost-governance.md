@@ -39,7 +39,7 @@ Fingerprint evidence is provenance-based. Runs before this instrumentation have 
 
 The nextest cache/fingerprint expression remains inline in `.github/workflows/ci.yml` because GitHub Actions evaluates `hashFiles(...)` inside workflow YAML. The hygiene verifier enforces structural identity across the cache restore key, cache save key, fingerprint file, and fingerprint artifact name so version, shard, or input drift fails CI.
 
-Fingerprint reuse is available only on pull request runs. It is disabled on pull requests that change the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests. Those PRs, plus branch `workflow_dispatch` runs dispatched with `full_ci=true`, must run the normal nextest archive lane so PR-controlled reuse logic cannot decide to skip test execution outside the diff guard. `workflow_dispatch` runs are feedback only and are not merge proof.
+Fingerprint reuse is available on full-CI `pull_request`, `workflow_dispatch`, and `merge_group` consumers when the Rust-only nextest fingerprint matches a trusted archived `push` run on `main`. It is disabled on pull requests that change the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests, so PR-controlled reuse logic cannot decide to skip test execution outside the diff guard. `workflow_dispatch` runs are feedback only and are not merge proof.
 
 ## Baseline Evidence
 

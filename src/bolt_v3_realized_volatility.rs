@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::bolt_v3_numeric::{
     HALF_F64, MILLIS_PER_SECOND_F64, POWER_OF_TWO, UNIT_F64, ZERO_F64, is_positive_finite,
 };
-use crate::bolt_v3_timestamp_domain::DomainTimestampMs;
+use crate::bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs};
 
 const ZERO_MILLIS_U64: u64 = u64::MIN;
 const ZERO_COUNT_USIZE: usize = usize::MIN;
@@ -754,31 +754,23 @@ fn reject_observation(
     if !is_positive_finite(observation.price) {
         return Some(RealizedVolSourceRejectReason::InvalidPrice);
     }
-    let observed_event_ts = DomainTimestampMs::venue_event(observation.event_ts_ms);
-    if samples.back().is_some_and(|sample| {
-        observed_event_ts
-            .lt_same_domain(DomainTimestampMs::venue_event(sample.event_ts_ms))
-            .unwrap_or(false)
-    }) {
+    let observed_event_ts = VenueEventMs::new(observation.event_ts_ms);
+    if samples
+        .back()
+        .is_some_and(|sample| observed_event_ts < VenueEventMs::new(sample.event_ts_ms))
+    {
         return Some(RealizedVolSourceRejectReason::EventTimeRegression);
     }
-    if let Some(sample) = samples.back().filter(|sample| {
-        observed_event_ts
-            .eq_same_domain(DomainTimestampMs::venue_event(sample.event_ts_ms))
-            .unwrap_or(false)
-    }) {
-        let observed_receive_ts = DomainTimestampMs::local_receive(observation.recv_ts_ms);
-        let prior_receive_ts = DomainTimestampMs::local_receive(sample.recv_ts_ms);
-        if observed_receive_ts
-            .eq_same_domain(prior_receive_ts)
-            .unwrap_or(false)
-        {
+    if let Some(sample) = samples
+        .back()
+        .filter(|sample| observed_event_ts == VenueEventMs::new(sample.event_ts_ms))
+    {
+        let observed_receive_ts = LocalReceiveMs::new(observation.recv_ts_ms);
+        let prior_receive_ts = LocalReceiveMs::new(sample.recv_ts_ms);
+        if observed_receive_ts == prior_receive_ts {
             return Some(RealizedVolSourceRejectReason::DuplicateTimestamp);
         }
-        if observed_receive_ts
-            .lt_same_domain(prior_receive_ts)
-            .unwrap_or(false)
-        {
+        if observed_receive_ts < prior_receive_ts {
             return Some(RealizedVolSourceRejectReason::StaleSameEventUpdate);
         }
     }

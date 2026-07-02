@@ -353,6 +353,22 @@ impl RealizedVolSurfaceRuntime {
         Some(snapshot)
     }
 
+    fn publish_surface_after_routed_observation(
+        &mut self,
+        surface_id: &str,
+        event_ts_ms: u64,
+    ) -> Option<RealizedVolSnapshot> {
+        let as_of_ms = {
+            let state = self.surfaces.get(surface_id)?;
+            state
+                .last_refresh_ms
+                .map_or(event_ts_ms, |last_refresh_ms| {
+                    last_refresh_ms.max(event_ts_ms)
+                })
+        };
+        self.publish_surface_at(surface_id, as_of_ms, true)
+    }
+
     pub fn snapshot(&self, surface_id: &str) -> Option<RealizedVolSnapshot> {
         self.surfaces
             .get(surface_id)
@@ -387,7 +403,7 @@ impl RealizedVolSurfaceRuntime {
         updated_surface_ids
             .into_iter()
             .filter_map(|surface_id| {
-                self.publish_surface_at(surface_id.as_str(), event_ts_ms, true)
+                self.publish_surface_after_routed_observation(surface_id.as_str(), event_ts_ms)
             })
             .collect()
     }

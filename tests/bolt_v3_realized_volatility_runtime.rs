@@ -14,6 +14,7 @@ use nautilus_model::{
     identifiers::InstrumentId,
     types::{Price, Quantity},
 };
+use serde::Deserialize;
 
 const SURFACE_A: &str = "<SURFACE_A>";
 const SURFACE_B: &str = "<SURFACE_B>";
@@ -82,6 +83,34 @@ fn quote_tick_with_receive_ms(
     .expect("test quote tick should be valid")
 }
 
+#[derive(Debug, Deserialize)]
+struct QuoteReplayFixture {
+    quotes: Vec<QuoteReplayTick>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuoteReplayTick {
+    bid: String,
+    ask: String,
+    event_ts_ms: u64,
+    recv_ts_ms: u64,
+}
+
+impl QuoteReplayTick {
+    fn bid(&self) -> f64 {
+        self.bid.parse().expect("fixture bid should parse")
+    }
+
+    fn ask(&self) -> f64 {
+        self.ask.parse().expect("fixture ask should parse")
+    }
+}
+
+fn event_clock_replay_fixture() -> QuoteReplayFixture {
+    toml::from_str(include_str!("fixtures/bolt_v3/rv_event_clock_replay.toml"))
+        .expect("event-clock RV replay fixture should parse")
+}
+
 #[test]
 fn runtime_builds_all_surfaces_from_config_map() {
     let runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([
@@ -132,6 +161,45 @@ fn runtime_publishes_snapshot_by_surface_id_for_multiple_consumers() {
 #[test]
 fn routed_quote_replay_uses_event_clock_for_rv_windows() {
     let instrument_id = "<INSTRUMENT_A>.<DATA_CLIENT_ID>";
+    let fixture = event_clock_replay_fixture();
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(
+        SURFACE_A.to_string(),
+        config(SURFACE_A, SOURCE_A, instrument_id),
+    )]))
+    .expect("runtime should build");
+
+    assert_eq!(fixture.quotes.len(), 4);
+    for quote in &fixture.quotes {
+        let snapshots = runtime.observe_quote(&quote_tick_with_receive_ms(
+            instrument_id,
+            quote.bid(),
+            quote.ask(),
+            quote.event_ts_ms,
+            quote.recv_ts_ms,
+        ));
+        let latest = snapshots
+            .last()
+            .expect("routed quote should publish a surface snapshot");
+        assert_eq!(latest.as_of_ms, quote.event_ts_ms);
+    }
+
+    let snapshot = runtime
+        .snapshot(SURFACE_A)
+        .expect("event-clock replay should publish the latest snapshot");
+
+    assert!(snapshot.ready);
+    assert_eq!(snapshot.as_of_ms, 4_000);
+    assert_eq!(snapshot.source_diagnostics[0].raw_sample_count, 4);
+    assert_eq!(snapshot.source_diagnostics[0].grid_sample_count, 4);
+    assert!(
+        snapshot.annualized_realized_vol_decimal.is_some(),
+        "event-clock quote sequence should populate realized volatility"
+    );
+}
+
+#[test]
+fn routed_quote_rejection_refreshes_diagnostics_without_regressing_snapshot_clock() {
+    let instrument_id = "<INSTRUMENT_A>.<DATA_CLIENT_ID>";
     let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(
         SURFACE_A.to_string(),
         config(SURFACE_A, SOURCE_A, instrument_id),
@@ -148,32 +216,124 @@ fn routed_quote_replay_uses_event_clock_for_rv_windows() {
     .enumerate()
     {
         let event_ts_ms = (index as u64 + 1) * 1_000;
-        let recv_ts_ms = event_ts_ms.saturating_sub(750);
         let snapshots = runtime.observe_quote(&quote_tick_with_receive_ms(
             instrument_id,
             *bid,
             *ask,
             event_ts_ms,
-            recv_ts_ms,
+            event_ts_ms,
         ));
-        let latest = snapshots
-            .last()
-            .expect("routed quote should publish a surface snapshot");
-        assert_eq!(latest.as_of_ms, event_ts_ms);
+        assert_eq!(
+            snapshots
+                .last()
+                .expect("routed quote should publish a surface snapshot")
+                .as_of_ms,
+            event_ts_ms
+        );
     }
 
-    let snapshot = runtime
+    let published = runtime
         .snapshot(SURFACE_A)
-        .expect("event-clock replay should publish the latest snapshot");
+        .expect("event-clock quote sequence should publish a snapshot");
+    assert!(published.ready);
+    assert_eq!(published.as_of_ms, 4_000);
+    assert_eq!(published.source_diagnostics[0].last_rejected_reason, None);
 
-    assert!(snapshot.ready);
-    assert_eq!(snapshot.as_of_ms, 4_000);
-    assert_eq!(snapshot.source_diagnostics[0].raw_sample_count, 4);
-    assert_eq!(snapshot.source_diagnostics[0].grid_sample_count, 4);
-    assert!(
-        snapshot.annualized_realized_vol_decimal.is_some(),
-        "event-clock quote sequence should populate realized volatility"
+    let late_snapshots = runtime.observe_quote(&quote_tick_with_receive_ms(
+        instrument_id,
+        103.0,
+        105.0,
+        3_500,
+        5_000,
+    ));
+    let latest = late_snapshots
+        .last()
+        .expect("routed rejection should republish diagnostics");
+    assert_eq!(latest.as_of_ms, 4_000);
+
+    let diagnostic = latest
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == SOURCE_A)
+        .expect("configured source should remain diagnostic-visible");
+    assert_eq!(
+        diagnostic.last_rejected_reason,
+        Some(RealizedVolSourceRejectReason::EventTimeRegression)
     );
+    assert_eq!(
+        diagnostic
+            .rejection_counters
+            .get(&RealizedVolSourceRejectReason::EventTimeRegression),
+        Some(&1)
+    );
+}
+
+#[test]
+fn routed_cross_source_update_recomputes_at_surface_clock_when_event_time_skews_lower() {
+    let instrument_a = "<INSTRUMENT_A>.<DATA_CLIENT_ID>";
+    let instrument_b = "<INSTRUMENT_B>.<DATA_CLIENT_ID>";
+    let mut surface_config = config(SURFACE_A, SOURCE_A, instrument_a);
+    surface_config.sources.push(source(SOURCE_B, instrument_b));
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(
+        SURFACE_A.to_string(),
+        surface_config,
+    )]))
+    .expect("runtime should build");
+
+    for (index, (bid, ask)) in [
+        (99.0, 101.0),
+        (100.0, 102.0),
+        (101.0, 103.0),
+        (102.0, 104.0),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let event_ts_ms = (index as u64 + 1) * 1_000;
+        let snapshots = runtime.observe_quote(&quote_tick_with_receive_ms(
+            instrument_a,
+            *bid,
+            *ask,
+            event_ts_ms,
+            event_ts_ms,
+        ));
+        assert_eq!(
+            snapshots
+                .last()
+                .expect("source A quote should publish a surface snapshot")
+                .as_of_ms,
+            event_ts_ms
+        );
+    }
+
+    let published = runtime
+        .snapshot(SURFACE_A)
+        .expect("source A quote sequence should publish a snapshot");
+    assert_eq!(published.as_of_ms, 4_000);
+    let initial_source_b = published
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == SOURCE_B)
+        .expect("source B should be diagnostic-visible before samples arrive");
+    assert_eq!(initial_source_b.raw_sample_count, 0);
+
+    let skewed_snapshots = runtime.observe_quote(&quote_tick_with_receive_ms(
+        instrument_b,
+        200.0,
+        202.0,
+        3_500,
+        3_500,
+    ));
+    let latest = skewed_snapshots
+        .last()
+        .expect("accepted skewed source update should publish diagnostics");
+    assert_eq!(latest.as_of_ms, 4_000);
+    let source_b = latest
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == SOURCE_B)
+        .expect("source B should remain diagnostic-visible");
+    assert_eq!(source_b.raw_sample_count, 1);
 }
 
 #[test]

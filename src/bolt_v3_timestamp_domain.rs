@@ -1,66 +1,62 @@
-//! Shared timestamp-domain comparisons for bolt-v3 runtime evidence.
+//! Shared timestamp-domain wrappers for bolt-v3 runtime evidence.
+//!
+//! Each clock domain has its own type, so cross-domain comparisons fail during
+//! compilation instead of becoming runtime `None` values.
+//!
+//! ```compile_fail
+//! use bolt_v2::bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs};
+//!
+//! let _ = VenueEventMs::new(1_000) < LocalReceiveMs::new(1_000);
+//! ```
 
-use std::cmp::Ordering;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct VenueEventMs(u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimestampDomain {
-    VenueEvent,
-    LocalReceive,
-    NtStrategyClock,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DomainTimestampMs {
-    domain: TimestampDomain,
-    value: u64,
-}
-
-impl DomainTimestampMs {
-    pub const fn venue_event(value: u64) -> Self {
-        Self {
-            domain: TimestampDomain::VenueEvent,
-            value,
-        }
-    }
-
-    pub const fn local_receive(value: u64) -> Self {
-        Self {
-            domain: TimestampDomain::LocalReceive,
-            value,
-        }
-    }
-
-    pub const fn nt_strategy_clock(value: u64) -> Self {
-        Self {
-            domain: TimestampDomain::NtStrategyClock,
-            value,
-        }
-    }
-
-    pub const fn domain(self) -> TimestampDomain {
-        self.domain
+impl VenueEventMs {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
     }
 
     pub const fn value(self) -> u64 {
-        self.value
+        self.0
     }
 
-    pub fn cmp_same_domain(self, other: Self) -> Option<Ordering> {
-        (self.domain == other.domain).then(|| self.value.cmp(&other.value))
+    pub const fn saturating_duration_since(self, earlier: Self) -> u64 {
+        self.0.saturating_sub(earlier.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LocalReceiveMs(u64);
+
+impl LocalReceiveMs {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
     }
 
-    pub fn eq_same_domain(self, other: Self) -> Option<bool> {
-        self.cmp_same_domain(other)
-            .map(|ordering| ordering == Ordering::Equal)
+    pub const fn value(self) -> u64 {
+        self.0
     }
 
-    pub fn lt_same_domain(self, other: Self) -> Option<bool> {
-        self.cmp_same_domain(other)
-            .map(|ordering| ordering == Ordering::Less)
+    pub const fn saturating_duration_since(self, earlier: Self) -> u64 {
+        self.0.saturating_sub(earlier.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NtStrategyClockMs(u64);
+
+impl NtStrategyClockMs {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
     }
 
-    pub fn saturating_duration_since_same_domain(self, earlier: Self) -> Option<u64> {
-        (self.domain == earlier.domain).then(|| self.value.saturating_sub(earlier.value))
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+
+    pub const fn saturating_duration_since(self, earlier: Self) -> u64 {
+        self.0.saturating_sub(earlier.0)
     }
 }
 
@@ -70,24 +66,21 @@ mod tests {
 
     #[test]
     fn same_domain_timestamps_compare() {
-        let earlier = DomainTimestampMs::venue_event(1_000);
-        let later = DomainTimestampMs::venue_event(1_500);
+        let earlier = VenueEventMs::new(1_000);
+        let later = VenueEventMs::new(1_500);
 
-        assert_eq!(later.cmp_same_domain(earlier), Some(Ordering::Greater));
-        assert_eq!(
-            later.saturating_duration_since_same_domain(earlier),
-            Some(500)
-        );
+        assert!(later > earlier);
+        assert_eq!(later.saturating_duration_since(earlier), 500);
     }
 
     #[test]
-    fn cross_domain_timestamps_do_not_compare() {
-        let event = DomainTimestampMs::venue_event(1_000);
-        let receive = DomainTimestampMs::local_receive(1_001);
-        let strategy = DomainTimestampMs::nt_strategy_clock(1_002);
+    fn domain_timestamps_expose_raw_values() {
+        let event = VenueEventMs::new(1_000);
+        let receive = LocalReceiveMs::new(1_001);
+        let strategy = NtStrategyClockMs::new(1_002);
 
-        assert_eq!(event.cmp_same_domain(receive), None);
-        assert_eq!(receive.lt_same_domain(strategy), None);
-        assert_eq!(strategy.saturating_duration_since_same_domain(event), None);
+        assert_eq!(event.value(), 1_000);
+        assert_eq!(receive.value(), 1_001);
+        assert_eq!(strategy.value(), 1_002);
     }
 }

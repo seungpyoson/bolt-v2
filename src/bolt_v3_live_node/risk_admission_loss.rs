@@ -1,3 +1,10 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+use tokio::sync::Notify;
+
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -27,12 +34,20 @@ pub(super) struct BoltV3VenueTruthRuntimeConfig {
 }
 
 pub(super) struct BoltV3VenueTruthRuntimeGuard {
-    handle: tokio::task::JoinHandle<()>,
+    shutdown_requested: Arc<AtomicBool>,
+    shutdown_notify: Arc<Notify>,
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for BoltV3VenueTruthRuntimeGuard {
     fn drop(&mut self) {
-        self.handle.abort();
+        self.shutdown_requested.store(true, Ordering::SeqCst);
+        self.shutdown_notify.notify_waiters();
+        if let Some(handle) = self.handle.take()
+            && let Err(error) = handle.join()
+        {
+            log::error!("venue truth runtime thread join failed: {error:?}");
+        }
     }
 }
 
@@ -70,28 +85,39 @@ pub(super) fn venue_truth_runtime_config_from_loaded(
     let Some(build_source) = binding.build_venue_truth_runtime_source else {
         return Ok(None);
     };
-    let (client_key, client) = loaded
-        .strategies
+    let matching_clients = loaded
+        .root
+        .clients
         .iter()
-        .find_map(|strategy| {
-            let client_key = strategy.config.execution_client_id.as_str();
-            let client = loaded.root.clients.get(client_key)?;
-            (client.venue.as_str() == feed_config.venue_id && client.execution.is_some())
-                .then_some((client_key, client))
+        .filter(|(_, client)| {
+            client.venue.as_str() == feed_config.venue_id && client.execution.is_some()
         })
-        .ok_or_else(|| {
-            BoltV3LiveNodeError::Build(anyhow::anyhow!(
+        .collect::<Vec<_>>();
+    let (client_key, client) = match matching_clients.as_slice() {
+        [] => {
+            return Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
                 "capital admission requires a configured execution client for venue truth on venue `{}`",
                 feed_config.venue_id
-            ))
-        })?;
+            )));
+        }
+        [(client_key, client)] => (client_key.as_str(), *client),
+        _ => {
+            return Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
+                "capital admission requires one execution client for venue truth on venue `{}`; found {}",
+                feed_config.venue_id,
+                matching_clients
+                    .iter()
+                    .map(|(client_key, _)| client_key.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+    };
     let source = build_source(crate::bolt_v3_providers::ProviderVenueTruthSourceContext {
         client_key,
         client,
         resolved,
-        collateral_currency: nautilus_model::types::Currency::from(
-            feed_config.collateral_currency.as_str(),
-        ),
+        collateral_currency: feed_config.collateral_currency.as_str(),
     })
     .map_err(BoltV3LiveNodeError::Build)?;
 
@@ -108,55 +134,121 @@ pub(super) fn spawn_venue_truth_runtime(
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     stop_handle: LiveNodeHandle,
 ) -> BoltV3VenueTruthRuntimeGuard {
-    let handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(config.poll_interval_ms));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            interval.tick().await;
-            let captured_at = match current_unix_nanos() {
-                Ok(value) => value,
-                Err(error) => {
-                    halt_for_venue_truth(
-                        &submit_admission,
-                        &stop_handle,
-                        0,
-                        format!("clock failed before venue truth poll: {error:#}"),
-                    );
-                    break;
-                }
-            };
-            let snapshot = match config
-                .source
-                .snapshot(nautilus_core::UnixNanos::from(captured_at))
-                .await
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
+    let shutdown_notify = Arc::new(Notify::new());
+    let thread_shutdown_requested = Arc::clone(&shutdown_requested);
+    let thread_shutdown_notify = Arc::clone(&shutdown_notify);
+    let spawn_submit_admission = Arc::clone(&submit_admission);
+    let spawn_stop_handle = stop_handle.clone();
+    let handle = std::thread::Builder::new()
+        .name("bolt-v3-venue-truth-runtime".to_string())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
             {
-                Ok(snapshot) => snapshot,
+                Ok(runtime) => runtime,
                 Err(error) => {
                     halt_for_venue_truth(
-                        &submit_admission,
-                        &stop_handle,
-                        captured_at,
-                        format!("venue truth poll failed: {error:#}"),
+                        &spawn_submit_admission,
+                        &spawn_stop_handle,
+                        0,
+                        format!("venue truth runtime build failed: {error:#}"),
                     );
-                    break;
+                    return;
                 }
             };
-            let reconcile = {
-                let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                feed.on_venue_truth_snapshot(snapshot)
-            };
-            if let Err(divergence) = reconcile {
+            runtime.block_on(run_venue_truth_runtime(
+                config,
+                feed,
+                spawn_submit_admission,
+                spawn_stop_handle,
+                thread_shutdown_requested,
+                thread_shutdown_notify,
+            ));
+        });
+    let handle = match handle {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            halt_for_venue_truth(
+                &submit_admission,
+                &stop_handle,
+                0,
+                format!("venue truth runtime thread spawn failed: {error:#}"),
+            );
+            None
+        }
+    };
+    BoltV3VenueTruthRuntimeGuard {
+        shutdown_requested,
+        shutdown_notify,
+        handle,
+    }
+}
+
+async fn run_venue_truth_runtime(
+    config: BoltV3VenueTruthRuntimeConfig,
+    feed: Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    stop_handle: LiveNodeHandle,
+    shutdown_requested: Arc<AtomicBool>,
+    shutdown_notify: Arc<Notify>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_millis(config.poll_interval_ms));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        if shutdown_requested.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::select! {
+            () = shutdown_notify.notified() => break,
+            _ = interval.tick() => {}
+        }
+        if shutdown_requested.load(Ordering::SeqCst) {
+            break;
+        }
+        let captured_at = match current_unix_nanos() {
+            Ok(value) => value,
+            Err(error) => {
                 halt_for_venue_truth(
                     &submit_admission,
                     &stop_handle,
-                    divergence.current_captured_at.as_u64(),
-                    format!("venue truth divergence: {:?}", divergence.kind),
+                    0,
+                    format!("clock failed before venue truth poll: {error:#}"),
                 );
                 break;
             }
+        };
+        let snapshot = tokio::select! {
+            () = shutdown_notify.notified() => break,
+            result = config.source.snapshot(nautilus_core::UnixNanos::from(captured_at)) => result,
+        };
+        let snapshot = match snapshot {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                halt_for_venue_truth(
+                    &submit_admission,
+                    &stop_handle,
+                    captured_at,
+                    format!("venue truth poll failed: {error:#}"),
+                );
+                break;
+            }
+        };
+        let reconcile = {
+            let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            feed.on_venue_truth_snapshot(snapshot)
+        };
+        if let Err(divergence) = reconcile {
+            halt_for_venue_truth(
+                &submit_admission,
+                &stop_handle,
+                divergence.current_captured_at.as_u64(),
+                format!("venue truth divergence: {:?}", divergence.kind),
+            );
+            break;
         }
-    });
-    BoltV3VenueTruthRuntimeGuard { handle }
+    }
 }
 
 fn halt_for_venue_truth(

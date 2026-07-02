@@ -52,7 +52,7 @@ use std::{
 };
 
 use nautilus_core::string::secret::REDACTED;
-use nautilus_model::identifiers::AccountId;
+use nautilus_model::{identifiers::AccountId, types::Currency};
 use nautilus_polymarket::{
     common::consts::{HTTP_RATE_LIMIT, LOT_SIZE_SCALE},
     common::credential::{EvmPrivateKey, Secrets as PolymarketSecrets},
@@ -841,13 +841,30 @@ pub fn build_venue_truth_runtime_source(
                 context.client_key
             )
         })?;
-    let source =
-        build_polymarket_venue_truth_runtime_source(&cfg, resolved, context.collateral_currency)?;
+    let collateral_currency = polymarket_venue_truth_collateral_currency(
+        context.client_key,
+        context.collateral_currency,
+    )?;
+    let source = build_polymarket_venue_truth_runtime_source(&cfg, resolved, collateral_currency)?;
     Ok(ProviderVenueTruthRuntimeSource {
         source: Arc::new(source),
         order_event_mapper: Arc::new(PolymarketVenueTruthOrderEventMapper),
         poll_interval_ms,
     })
+}
+
+fn polymarket_venue_truth_collateral_currency(
+    client_key: &str,
+    configured: &str,
+) -> Result<Currency, anyhow::Error> {
+    let collateral_currency = Currency::pUSD();
+    if configured.eq_ignore_ascii_case(collateral_currency.code.as_str()) {
+        return Ok(collateral_currency);
+    }
+    Err(anyhow::anyhow!(
+        "clients.{client_key}.execution venue truth collateral currency must be `{}`, got `{configured}`",
+        collateral_currency.code
+    ))
 }
 
 fn map_data(

@@ -19571,6 +19571,30 @@ classification = "venue_truth_clock_failure_absent_timestamp_sentinel"
 reason = "Absent-source-timestamp sentinel used only when the local clock fails before a Polymarket venue-truth poll can be timestamped; it is fail-closed halt evidence shape, not a runtime knob."
 
 [[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"bolt-v3-venue-truth-runtime"'''
+context = '''.name("bolt-v3-venue-truth-runtime".to_string())'''
+classification = "venue_truth_runtime_thread_label"
+reason = "Static diagnostic thread name for the owned Polymarket venue-truth runtime thread; cadence, endpoints, credentials, and halt behavior remain configured or structural."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''", "'''
+context = '''.join(", ")'''
+classification = "venue_truth_diagnostic_list_separator"
+reason = "Static separator for rendering ambiguous venue-truth execution-client diagnostics; it does not select a client or configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/transport_scope.rs"
+kind = "string"
+literal = '''", "'''
+context = '''matching_client_keys.join(", ")'''
+classification = "capital_admission_transport_diagnostic_list_separator"
+reason = "Static separator for rendering ambiguous capital-admission execution-client diagnostics; it does not select a client or configure runtime behavior."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
 kind = "number"
 literal = "1"

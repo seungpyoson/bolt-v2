@@ -45,7 +45,7 @@ pub use polymarket::KEY as OUTCOME_GROUP_POLYMARKET_VENUE_KEY;
 
 use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, sync::Arc};
 
-use nautilus_model::{enums::TimeInForce, identifiers::Venue, types::Currency};
+use nautilus_model::{enums::TimeInForce, identifiers::Venue};
 use rust_decimal::Decimal;
 use serde::Serialize;
 
@@ -124,7 +124,7 @@ pub struct ProviderVenueTruthSourceContext<'a> {
     pub client_key: &'a str,
     pub client: &'a ClientBlock,
     pub resolved: &'a ResolvedBoltV3Secrets,
-    pub collateral_currency: Currency,
+    pub collateral_currency: &'a str,
 }
 
 #[derive(Clone)]

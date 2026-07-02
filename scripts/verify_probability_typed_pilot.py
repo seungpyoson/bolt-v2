@@ -86,6 +86,11 @@ REQUIRED_PATTERNS = [
         "taker lead-gap state is typed",
     ),
     PatternCheck(
+        "src/bolt_v3_taker_pricing.rs",
+        r"last_jitter_penalty_probability:\s*Option<Probability>",
+        "taker jitter-penalty state is typed",
+    ),
+    PatternCheck(
         "src/strategies/binary_oracle_edge_taker/entry_decision.rs",
         r"fair_probability_up:\s*Option<Probability>",
         "entry evaluation fair probability is typed",

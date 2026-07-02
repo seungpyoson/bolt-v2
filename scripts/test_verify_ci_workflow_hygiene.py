@@ -438,6 +438,7 @@ jobs:
           lint-workflow-contract: "true"
           toolchain-components: clippy, rustfmt
           include-managed-target-dir: "true"
+          build-jobs-key: ci.clippy
       - uses: Swatinem/rust-cache@example
         with:
           cache-on-failure: true
@@ -474,6 +475,7 @@ jobs:
           include-build-values: "true"
           use-default-target: "true"
           include-managed-target-dir: "true"
+          build-jobs-key: ci.check-aarch64
       - name: Install aarch64 cross compiler
         if: needs.detector.outputs.build_required != 'true'
         run: sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
@@ -508,6 +510,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-managed-target-dir: "true"
+          build-jobs-key: ci.source-fence
       - uses: Swatinem/rust-cache@example
         with:
           cache-on-failure: true
@@ -610,6 +613,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+          build-jobs-key: ci.test-archive
       - name: Resolve root nextest cache keys
         id: root-nextest-cache-keys
         shell: bash
@@ -1237,6 +1241,9 @@ inputs:
     description: Whether to resolve the managed target dir.
     required: false
     default: "false"
+  build-jobs-key:
+    required: false
+    default: ""
 outputs:
   rust_toolchain:
     value: ${{ steps.shared.outputs.rust_toolchain }}
@@ -1256,6 +1263,8 @@ outputs:
     value: ${{ steps.target_dir.outputs.managed_target_dir }}
   managed_target_dir_relative:
     value: ${{ steps.target_dir.outputs.managed_target_dir_relative }}
+  cargo_build_jobs:
+    value: ${{ steps.shared.outputs.cargo_build_jobs }}
 runs:
   using: composite
   steps:
@@ -1271,6 +1280,8 @@ runs:
     - name: Read shared values
       id: shared
       shell: bash
+      env:
+        BUILD_JOBS_KEY: ${{ inputs.build-jobs-key }}
       run: |
         echo "rust_toolchain=$(awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
         echo "rust_verification_owner=$(just --evaluate rust_verification_owner)" >> "$GITHUB_OUTPUT"
@@ -1284,6 +1295,27 @@ runs:
           echo "target=$(just --evaluate target)" >> "$GITHUB_OUTPUT"
           echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
           echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
+        fi
+        if [ -n "$BUILD_JOBS_KEY" ]; then
+          cargo_build_jobs="$(
+            python3 - ci/github-actions-runners.toml "$BUILD_JOBS_KEY" <<'PY'
+        import pathlib
+        import sys
+        import tomllib
+
+        config = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+        value = config.get("cargo_build_jobs")
+        for part in sys.argv[2].split("."):
+            if not isinstance(value, dict) or part not in value:
+                raise SystemExit(f"cargo_build_jobs.{sys.argv[2]} missing")
+            value = value.get(part)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise SystemExit(f"cargo_build_jobs.{sys.argv[2]} must be a positive integer")
+        print(value)
+        PY
+          )"
+          echo "cargo_build_jobs=$cargo_build_jobs" >> "$GITHUB_OUTPUT"
+          echo "CARGO_BUILD_JOBS=$cargo_build_jobs" >> "$GITHUB_ENV"
         fi
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}
@@ -7030,17 +7062,23 @@ jobs:
   flaky-detection-rust-root:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
-      - run: echo root
+      - uses: ./.github/actions/setup-environment
+        with:
+          build-jobs-key: flaky_test_detection.flaky-detection-rust-root
 
   flaky-detection-rust-backtester:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
-      - run: echo backtester
+      - uses: ./.github/actions/setup-environment
+        with:
+          build-jobs-key: flaky_test_detection.flaky-detection-rust-backtester
 
   flaky-detection-rust-backtester-issue-789:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
-      - run: echo issue-789
+      - uses: ./.github/actions/setup-environment
+        with:
+          build-jobs-key: flaky_test_detection.flaky-detection-rust-backtester-issue-789
 """
     smoke_workflow_name = ".github/workflows/flaky-test-smoke.yml"
     smoke_workflow = """name: Flaky Test Smoke
@@ -7052,17 +7090,23 @@ jobs:
   flaky-smoke-rust-root:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
-      - run: echo root-smoke
+      - uses: ./.github/actions/setup-environment
+        with:
+          build-jobs-key: flaky_test_smoke.flaky-smoke-rust-root
 
   flaky-smoke-rust-backtester:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
-      - run: echo backtester-smoke
+      - uses: ./.github/actions/setup-environment
+        with:
+          build-jobs-key: flaky_test_smoke.flaky-smoke-rust-backtester
 
   flaky-smoke-rust-backtester-issue-789:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
-      - run: echo issue-789-smoke
+      - uses: ./.github/actions/setup-environment
+        with:
+          build-jobs-key: flaky_test_smoke.flaky-smoke-rust-backtester-issue-789
 """
     errors = verifier.verify_github_actions_runner_contract(
         {
@@ -8077,6 +8121,158 @@ def assert_runner_contract_requires_fingerprint_archive_tier_coupling() -> None:
             verifier.DEFAULT_RUNNERS_CONFIG = original_config
     if not any("nextest-fingerprint and test-archive must use the same runner tier" in error for error in errors):
         raise AssertionError(f"runner contract must reject nextest fingerprint/archive tier split, got: {errors}")
+
+
+def assert_runner_contract_requires_configured_cargo_build_jobs() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/ci.yml"
+    workflow = repo_workflow_text(workflow_name)
+    missing_key = workflow.replace("          build-jobs-key: ci.clippy\n", "", 1)
+    errors = verifier.verify_github_actions_runner_contract({workflow_name: missing_key})
+    if not any("clippy must resolve CARGO_BUILD_JOBS from cargo_build_jobs.ci.clippy" in error for error in errors):
+        raise AssertionError(f"runner contract must reject uncapped compile lanes, got: {errors}")
+    inline_cap = replace_once(
+        workflow,
+        "  clippy:\n    name: clippy\n    needs: [ci-policy, detector]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && !startsWith(github.ref, 'refs/tags/v') }}\n    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n    steps:\n",
+        '  clippy:\n    name: clippy\n    needs: [ci-policy, detector]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == \'true\' && !startsWith(github.ref, \'refs/tags/v\') }}\n    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n    env:\n      CARGO_BUILD_JOBS: "9"\n    steps:\n',
+    )
+    inline_errors = verifier.verify_github_actions_runner_contract({workflow_name: inline_cap})
+    if not any("clippy CARGO_BUILD_JOBS must come from ci/github-actions-runners.toml" in error for error in inline_errors):
+        raise AssertionError(f"runner contract must reject inline CARGO_BUILD_JOBS, got: {inline_errors}")
+    workflow_env_cap = replace_once(
+        workflow,
+        "env:\n  JUST_VERSION: \"1.49.0\"\n",
+        "env:\n  JUST_VERSION: \"1.49.0\"\n  CARGO_BUILD_JOBS: \"9\"\n",
+    )
+    workflow_env_errors = verifier.verify_github_actions_runner_contract(
+        {workflow_name: workflow_env_cap}
+    )
+    if not any(
+        "workflow-level CARGO_BUILD_JOBS must come from ci/github-actions-runners.toml" in error
+        for error in workflow_env_errors
+    ):
+        raise AssertionError(
+            f"runner contract must reject workflow-level CARGO_BUILD_JOBS, got: {workflow_env_errors}"
+        )
+    shell_inline_anchor = (
+        "  clippy:\n"
+        "    name: clippy\n"
+        "    needs: [ci-policy, detector]\n"
+        "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && !startsWith(github.ref, 'refs/tags/v') }}\n"
+        "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n"
+        "    steps:\n"
+    )
+    shell_inline_cases = {
+        "github env append": '      - run: echo "CARGO_BUILD_JOBS=9" >> "$GITHUB_ENV"\n',
+        "export": "      - run: export CARGO_BUILD_JOBS=9\n",
+        "inline env prefix": "      - run: CARGO_BUILD_JOBS=9 just clippy\n",
+    }
+    for case, injected_step in shell_inline_cases.items():
+        shell_inline_cap = replace_once(
+            workflow,
+            shell_inline_anchor,
+            shell_inline_anchor + injected_step,
+        )
+        shell_inline_errors = verifier.verify_github_actions_runner_contract(
+            {workflow_name: shell_inline_cap}
+        )
+        if not any(
+            "clippy CARGO_BUILD_JOBS must come from ci/github-actions-runners.toml" in error
+            for error in shell_inline_errors
+        ):
+            raise AssertionError(
+                f"runner contract must reject shell inline CARGO_BUILD_JOBS via {case}, got: {shell_inline_errors}"
+            )
+    conditional_setup = replace_once(
+        workflow,
+        """      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          lint-workflow-contract: "true"
+          toolchain-components: clippy, rustfmt
+          include-managed-target-dir: "true"
+          build-jobs-key: ci.clippy
+""",
+        """      - name: Setup environment
+        id: setup
+        if: ${{ false }}
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          lint-workflow-contract: "true"
+          toolchain-components: clippy, rustfmt
+          include-managed-target-dir: "true"
+          build-jobs-key: ci.clippy
+""",
+    )
+    conditional_setup_errors = verifier.verify_github_actions_runner_contract(
+        {workflow_name: conditional_setup}
+    )
+    if not any(
+        (
+            "clippy build-jobs-key setup-environment step must be unconditional "
+            "or match the cargo/just compile step condition"
+        )
+        in error
+        for error in conditional_setup_errors
+    ):
+        raise AssertionError(
+            f"runner contract must reject conditional CARGO_BUILD_JOBS setup, got: {conditional_setup_errors}"
+        )
+    late_setup = replace_once(
+        workflow,
+        shell_inline_anchor,
+        shell_inline_anchor + "      - run: just clippy\n",
+    )
+    late_setup_errors = verifier.verify_github_actions_runner_contract({workflow_name: late_setup})
+    if not any(
+        "clippy build-jobs-key setup-environment step must run before cargo/just compile commands" in error
+        for error in late_setup_errors
+    ):
+        raise AssertionError(
+            f"runner contract must reject compile commands before CARGO_BUILD_JOBS setup, got: {late_setup_errors}"
+        )
+    invalid_config = ci_provenance_config_fixture().replace("clippy = 2", "clippy = true", 1)
+    error = runner_config_load_error(invalid_config, verifier=verifier)
+    if "cargo_build_jobs.ci.clippy must be a positive integer" not in error:
+        raise AssertionError(f"runner contract must reject invalid cargo build jobs config, got: {error!r}")
+    missing_config = ci_provenance_config_fixture().replace("clippy = 2\n", "", 1)
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = write_temp_runner_config(pathlib.Path(tmp), missing_config)
+        verifier.DEFAULT_RUNNERS_CONFIG = config_path
+        try:
+            missing_config_errors = verifier.verify_github_actions_runner_contract({workflow_name: workflow})
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    if not any(
+        "clippy has build-jobs-key but is missing from cargo_build_jobs.ci" in error
+        for error in missing_config_errors
+    ):
+        raise AssertionError(
+            f"runner contract must reject workflow build-jobs-key without TOML config, got: {missing_config_errors}"
+        )
+
+
+def assert_ci_workflow_rejects_spike_probe_markers() -> None:
+    verifier = load_verifier()
+    workflow = textwrap.dedent(
+        """
+        name: CI
+        jobs:
+          clippy:
+            steps:
+              - name: clippy
+                run: |
+                  BOLT_SPIKE_TIME_FILE="${RUNNER_TEMP:-/tmp}/clippy.time"
+                  just clippy
+        """
+    )
+    errors = verifier.verify_workflow(workflow)
+    if not any("BOLT_SPIKE" in error for error in errors):
+        raise AssertionError(f"ci workflow must reject spike probe markers, got: {errors}")
 
 
 def assert_debug_workflow_rejects_non_manual_trigger() -> None:
@@ -14615,12 +14811,14 @@ def main() -> int:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+          build-jobs-key: ci.test-archive
       - name: Resolve root nextest cache keys""",
             """      - uses: ./.github/actions/setup-environment
         id: setup
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          build-jobs-key: ci.test-archive
       - name: Resolve root nextest cache keys""",
         ),
     )
@@ -16456,6 +16654,8 @@ def main() -> int:
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
     assert_runner_contract_requires_meter_api_limits()
     assert_runner_contract_requires_fingerprint_archive_tier_coupling()
+    assert_runner_contract_requires_configured_cargo_build_jobs()
+    assert_ci_workflow_rejects_spike_probe_markers()
     assert_jules_advisory_workflow_contracts()
     assert_jules_advisory_config_carries_repo_variable_values()
     assert_self_authorizing_governance_detector_contract()

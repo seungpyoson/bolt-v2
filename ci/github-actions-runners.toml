@@ -75,6 +75,26 @@ probe-unsupported-job-timeout = "managed_light"
 probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
+[cargo_build_jobs.ci]
+clippy = 2
+check-aarch64 = 2
+source-fence = 2
+test-archive = 2
+
+[cargo_build_jobs.backtester_ci]
+clippy = 2
+test-archive = 2
+
+[cargo_build_jobs.flaky_test_detection]
+flaky-detection-rust-root = 2
+flaky-detection-rust-backtester = 2
+flaky-detection-rust-backtester-issue-789 = 2
+
+[cargo_build_jobs.flaky_test_smoke]
+flaky-smoke-rust-root = 2
+flaky-smoke-rust-backtester = 2
+flaky-smoke-rust-backtester-issue-789 = 2
+
 [workflows.actionlint]
 actionlint = "github_hosted"
 

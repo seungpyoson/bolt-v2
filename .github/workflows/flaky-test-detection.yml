@@ -19,8 +19,6 @@ jobs:
       fail-fast: false
       matrix:
         run_number: [1, 2, 3, 4, 5]
-    env:
-      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -31,6 +29,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+          build-jobs-key: flaky_test_detection.flaky-detection-rust-root
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -95,8 +94,6 @@ jobs:
       matrix:
         run_number: [1, 2, 3, 4, 5]
         shard: [1, 2, 3, 4]
-    env:
-      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -106,6 +103,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          build-jobs-key: flaky_test_detection.flaky-detection-rust-backtester
 
       - name: Resolve crate managed target dir
         id: crate_target
@@ -179,8 +177,6 @@ jobs:
       fail-fast: false
       matrix:
         run_number: [1, 2, 3, 4, 5]
-    env:
-      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -190,6 +186,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          build-jobs-key: flaky_test_detection.flaky-detection-rust-backtester-issue-789
 
       - name: Resolve crate managed target dir
         id: crate_target

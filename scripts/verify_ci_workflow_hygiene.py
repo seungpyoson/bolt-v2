@@ -909,7 +909,7 @@ TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb91720
 UPLOAD_ARTIFACT_SHA_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*([\"']?)actions/upload-artifact@[0-9a-fA-F]{40}\1\s*$")
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 SHARED_REGISTRY_CACHE_KEY = "cargo-registry-git-v1"
-SHARED_REGISTRY_SAVE_IF = "${{ github.job == 'test-archive' }}"
+SHARED_REGISTRY_SAVE_IF = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}"
 REGISTRY_CACHE_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
 # Jobs that opt into the managed-target actions/cache. Each value is the
 # job-specific key prefix segment between `managed-target-v1-${runner.os}-
@@ -3134,7 +3134,7 @@ def shared_registry_cache_errors(job: str, job_lines: list[str]) -> list[str]:
         if not block_has_input(block, "cache-bin", "false"):
             errors.append(f"{job} shared Cargo registry/git cache must disable cargo bin caching")
         if not block_has_input(block, "save-if", SHARED_REGISTRY_SAVE_IF):
-            errors.append(f"{job} shared Cargo registry/git cache save must be single-owner")
+            errors.append(f"{job} shared Cargo registry/git cache save must be main-only")
         if block_has_input(block, "cache-directories"):
             errors.append(f"{job} shared Cargo registry/git cache must not include target directories")
     return errors
@@ -12647,7 +12647,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive must save shared registry cache from the archive producer only",
-            "save-if: ${{ github.job == 'test-archive' }}",
+            "save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}",
         ),
         (
             "backtester bvs-test archive must build archive only on cache miss",

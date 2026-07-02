@@ -58,6 +58,7 @@ FORBIDDEN_MANAGED_TARGET_CACHE_INPUTS = (
     "'scripts/command_understanding.py'",
     "'scripts/rust_verification.py'",
 )
+MAIN_ONLY_SHARED_REGISTRY_SAVE_IF = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}"
 
 def load_verifier(
     path: pathlib.Path = VERIFIER_PATH, module_name: str = "verify_ci_workflow_hygiene"
@@ -427,7 +428,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
       - name: Install cargo-deny
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
@@ -453,7 +454,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
       - name: Restore clippy managed target cache
         id: clippy-managed-target-cache
         uses: actions/cache/restore@example
@@ -502,7 +503,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
       - name: Restore check-aarch64 managed target cache
         id: check-aarch64-managed-target-cache
         uses: actions/cache/restore@example
@@ -541,7 +542,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
       - name: Restore source-fence managed target cache
         id: source-fence-managed-target-cache
         uses: actions/cache/restore@example
@@ -680,7 +681,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
       - name: Restore nextest archive from S3
         id: nextest-archive-cache
         if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'
@@ -888,7 +889,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
       - name: Restore build managed target cache
         id: build-managed-target-cache
         uses: actions/cache/restore@example
@@ -5780,14 +5781,14 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             "test-archive cache persistence keys must come from single-source cache key outputs",
             replace_once(
                 workflow,
-                "      - name: Restore nextest archive\n",
+                "      - name: Restore nextest archive from S3\n",
                 """      - name: Emit cache persistence audit keys
         id: cache-audit-keys
         shell: bash
         run: |
           echo "nextest_archive_cache_key=duplicated-template" >> "$GITHUB_OUTPUT"
 
-      - name: Restore nextest archive
+      - name: Restore nextest archive from S3
 """,
             ),
         ),
@@ -5805,11 +5806,10 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
         ),
         (
             "test-archive cache persistence keys must come from single-source cache key outputs",
-            replace_once_after(
+            replace_once(
                 workflow,
-                "      - name: Resolve root nextest cache keys\n",
-                "'src/**', 'tests/**') }}",
-                "'src/**', 'tests/**', 'extra/**') }}",
+                "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ needs.nextest-fingerprint.outputs.nextest_digest }}",
+                "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ github.sha }}",
             ),
         ),
         (
@@ -9492,6 +9492,51 @@ def test_harness_manifest_rejects_quoted_retired_member_test_flag() -> None:
     )
 
 
+def test_shared_registry_cache_save_is_main_push_only() -> None:
+    verifier = load_verifier()
+    old_job_only_guard = "${{ github.job == 'test-archive' }}"
+    workflow = f"""jobs:
+  test-archive:
+    steps:
+      - uses: Swatinem/rust-cache@example
+        with:
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: {old_job_only_guard}
+"""
+    errors = verifier.shared_registry_cache_errors(
+        "test-archive",
+        verifier.parse_jobs(workflow)["test-archive"],
+    )
+    expected = "test-archive shared Cargo registry/git cache save must be main-only"
+    if not any(expected in error for error in errors):
+        raise AssertionError(f"expected {expected!r}, got: {errors}")
+
+    main_only = workflow.replace(old_job_only_guard, MAIN_ONLY_SHARED_REGISTRY_SAVE_IF)
+    main_only_errors = verifier.shared_registry_cache_errors(
+        "test-archive",
+        verifier.parse_jobs(main_only)["test-archive"],
+    )
+    if any(expected in error for error in main_only_errors):
+        raise AssertionError(f"main-only save guard was rejected: {main_only_errors}")
+
+
+def test_nextest_artifact_cache_doc_names_rollout_evidence() -> None:
+    doc = (REPO_ROOT / "docs" / "ci" / "nextest-artifact-cache.md").read_text(encoding="utf-8")
+    required = (
+        "## Post-Merge Acceptance Evidence",
+        "push-to-main run",
+        "restore HIT",
+        "CI Storage Tripwire",
+        "week-one metrics",
+    )
+    missing = [fragment for fragment in required if fragment not in doc]
+    if missing:
+        raise AssertionError(f"nextest artifact cache doc is missing rollout evidence terms: {missing!r}")
+
+
 def test_nextest_config_rejects_surprise_binary_overrides() -> None:
     verifier = load_verifier()
     manifest = all_standalone_live_node_manifest(verifier)
@@ -12934,7 +12979,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         id: crate_target
       - uses: Swatinem/rust-cache@example
         with:
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
       - name: Restore archive build target cache
         id: test-target-cache
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
@@ -14581,19 +14626,19 @@ def main() -> int:
         ),
     )
     assert_error(
-        "deny shared Cargo registry/git cache save must be single-owner",
+        "deny shared Cargo registry/git cache save must be main-only",
         replace_once(
             BASE_WORKFLOW,
-            "          save-if: ${{ github.job == 'test-archive' }}",
+            "          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}",
             "          save-if: true",
         ),
     )
     assert_error(
-        "deny shared Cargo registry/git cache save must be single-owner",
+        "deny shared Cargo registry/git cache save must be main-only",
         replace_once(
             BASE_WORKFLOW,
-            "          save-if: ${{ github.job == 'test-archive' }}",
-            "          cache-comment: |\n            save-if: ${{ github.job == 'test-archive' }}",
+            "          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}",
+            "          cache-comment: |\n            save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}",
         ),
     )
     assert_clean(

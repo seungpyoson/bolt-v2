@@ -552,7 +552,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-bvs-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
 
       - name: Restore archive build target cache
         id: test-target-cache

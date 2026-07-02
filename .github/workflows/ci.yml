@@ -473,7 +473,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
@@ -509,7 +509,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
 
       - name: Restore clippy managed target cache
         id: clippy-managed-target-cache
@@ -575,7 +575,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
 
       - name: Restore check-aarch64 managed target cache
         id: check-aarch64-managed-target-cache
@@ -640,7 +640,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
 
       - name: Restore source-fence managed target cache
         id: source-fence-managed-target-cache
@@ -961,7 +961,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
 
       - name: Restore archive build target cache
         id: test-target-cache
@@ -1319,7 +1319,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
 
       - name: Restore build managed target cache
         id: build-managed-target-cache

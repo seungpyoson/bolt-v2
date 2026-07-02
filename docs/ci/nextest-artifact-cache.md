@@ -19,14 +19,28 @@ archive payloads do not write to the branch-scoped Actions cache.
 Set `CI_NEXTEST_ARCHIVE_S3_ENABLED` to any value other than `true` to disable
 the S3 backend. A disabled backend or failed restore is fail-open: CI builds the
 archive and sidecars normally, and only the post-merge main writer may save new
-objects. Managed-target cache saves are also limited to `push` runs on
-`refs/heads/main`; PR and merge-queue runs restore from the default-branch cache
-namespace but do not write cache entries.
+objects. Managed-target cache saves and shared Cargo registry/Git rust-cache
+saves are also limited to `push` runs on `refs/heads/main`; PR and merge-queue
+runs restore from the default-branch cache namespace but do not write cache
+entries.
 
 Every S3 restore validates the object's `nextest-digest` metadata against the
 current digest before the payload is used. A missing object or unavailable S3
 read is a cache miss; a metadata mismatch is an integrity failure and must fail
 the job.
+
+## Post-Merge Acceptance Evidence
+
+Do not close the rollout issue from pre-merge checks alone. The PR or follow-up
+issue must link these artifacts:
+
+- A push-to-main run that saves the root and BVS S3 payloads.
+- A later PR or merge-queue run that reports a restore HIT for each main-saved
+  payload key.
+- A manually dispatched `CI Storage Tripwire` run from `main` after the first
+  main save.
+- The first week-one metrics comparison for S3 egress bytes/run, restore time,
+  save time, and Actions cache listed bytes.
 
 ## Week-One Metrics
 

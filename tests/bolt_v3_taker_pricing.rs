@@ -91,6 +91,42 @@ fn assert_close(actual: f64, expected: f64) {
 }
 
 #[test]
+fn overflowing_lead_price_ratio_fails_closed_without_panicking() {
+    let config = pricing_config();
+    let mut pricing = TakerPricingState::from_config(&config);
+
+    pricing.observe_reference_current_price(&FastSpotObservation {
+        venue: "reference".to_string(),
+        price: f64::MIN_POSITIVE,
+        observed_ts_ms: 1_000,
+        received_ts_ms: None,
+    });
+    pricing.observe_signal_quote(
+        &FastSpotObservation {
+            venue: "bybit".to_string(),
+            price: f64::MAX,
+            observed_ts_ms: 1_000,
+            received_ts_ms: None,
+        },
+        &config,
+    );
+    seed_ready_realized_vol(&mut pricing, Some("rv".to_string()), 0.50, 1_000);
+
+    let blocked = pricing
+        .entry_pricing_inputs_at(
+            &config,
+            TakerPricingRequest {
+                now_ms: 1_000,
+                strike_price: Some(1.0),
+                seconds_to_market_end: Some(300),
+            },
+        )
+        .expect_err("overflowed finite lead/reference ratio must fail closed");
+
+    assert_eq!(blocked, vec![TakerPricingBlockReason::SpotPriceMissing]);
+}
+
+#[test]
 fn taker_pricing_consumes_realized_vol_snapshot_without_internal_estimator_warmup() {
     let config = pricing_config();
     let mut pricing = TakerPricingState::from_config(&config);

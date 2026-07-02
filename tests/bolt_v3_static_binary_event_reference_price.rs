@@ -15,5 +15,5 @@ fn static_binary_event_uses_reference_current_price_probability() {
         },
     );
 
-    assert_eq!(fair_probability, Some(0.63));
+    assert_eq!(fair_probability.map(|value| value.value()), Some(0.63));
 }

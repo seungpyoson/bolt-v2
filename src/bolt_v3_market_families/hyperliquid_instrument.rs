@@ -19,6 +19,7 @@ use crate::{
         SelectedMarketRequirement, SelectedMarketRequirementParts, TargetRuntimeFields,
         selected_market_metadata_provenance_fields, selected_market_requirement_from_parts,
     },
+    bolt_v3_numeric::Probability,
 };
 
 pub const KEY: &str = "hyperliquid_instrument";
@@ -239,7 +240,7 @@ pub fn selected_market_requirement(
     Err(binary_market_unsupported())
 }
 
-pub fn fair_probability_up(_inputs: &FairProbabilityInputs) -> Option<f64> {
+pub fn fair_probability_up(_inputs: &FairProbabilityInputs) -> Option<Probability> {
     None
 }
 

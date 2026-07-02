@@ -9,7 +9,7 @@ use crate::{
     bolt_v3_config::LoadedStrategy,
     bolt_v3_instrument_filters::InstrumentFilterError,
     bolt_v3_maker_settlement::BinarySettlementPayout,
-    bolt_v3_numeric::sanitize_probability,
+    bolt_v3_numeric::Probability,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
 };
@@ -351,8 +351,8 @@ pub fn selected_market_requirement(
     })
 }
 
-pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
-    sanitize_probability(inputs.spot_price)
+pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<Probability> {
+    Probability::new(inputs.spot_price)
 }
 
 pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
@@ -1088,7 +1088,7 @@ mod tests {
             },
         );
 
-        assert_eq!(fair_probability, Some(0.63));
+        assert_eq!(fair_probability.map(|value| value.value()), Some(0.63));
     }
 
     #[test]

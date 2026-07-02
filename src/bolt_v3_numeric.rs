@@ -53,6 +53,67 @@ pub(crate) fn notional_float_tolerance(reference_notional: f64) -> f64 {
     reference_notional.abs() * f64::EPSILON * NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER
 }
 
+/// Closed-interval probability value for Bolt-v3 compute-layer math.
+///
+/// ```compile_fail
+/// use bolt_v2::bolt_v3_numeric::Probability;
+///
+/// fn accepts_probability(_: Probability) {}
+///
+/// accepts_probability(0.42_f64);
+/// ```
+///
+/// ```compile_fail
+/// use bolt_v2::bolt_v3_numeric::Probability;
+///
+/// let probability = Probability::new(0.42_f64).expect("valid probability");
+/// let price = 10.0_f64;
+///
+/// let _mixed = probability + price;
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Probability {
+    value: f64,
+}
+
+impl Probability {
+    pub fn new(value: f64) -> Option<Self> {
+        sanitize_probability(value).map(|value| Self { value })
+    }
+
+    pub fn clamped(value: f64) -> Option<Self> {
+        if value.is_finite() {
+            Some(Self {
+                value: clamp_probability(value),
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn value(self) -> f64 {
+        self.value
+    }
+
+    pub fn complement(self) -> Self {
+        Self {
+            value: clamp_probability(UNIT_F64 - self.value),
+        }
+    }
+
+    pub fn widened(self, band: Self) -> Self {
+        Self {
+            value: clamp_probability(self.value + band.value),
+        }
+    }
+
+    pub fn narrowed(self, band: Self) -> Self {
+        Self {
+            value: clamp_probability(self.value - band.value),
+        }
+    }
+}
+
 pub(crate) fn clamp_probability(value: f64) -> f64 {
     value.clamp(ZERO_F64, UNIT_F64)
 }
@@ -122,6 +183,56 @@ mod tests {
         assert_eq!(sanitize_probability(1.000_001), None);
         assert_eq!(sanitize_probability(f64::NAN), None);
         assert_eq!(sanitize_probability(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn probability_new_rejects_out_of_range_and_non_finite() {
+        assert_eq!(
+            Probability::new(HALF_F64).map(Probability::value),
+            Some(HALF_F64)
+        );
+        assert_eq!(
+            Probability::new(ZERO_F64).map(Probability::value),
+            Some(ZERO_F64)
+        );
+        assert_eq!(
+            Probability::new(UNIT_F64).map(Probability::value),
+            Some(UNIT_F64)
+        );
+        assert_eq!(Probability::new(f64::NAN), None);
+        assert_eq!(Probability::new(-0.001), None);
+        assert_eq!(Probability::new(1.001), None);
+        assert_eq!(Probability::new(f64::INFINITY), None);
+        assert_eq!(Probability::new(f64::NEG_INFINITY), None);
+    }
+
+    #[test]
+    fn probability_clamped_rejects_non_finite_and_clamps_finite_values() {
+        assert_eq!(
+            Probability::clamped(-0.001).map(Probability::value),
+            Some(ZERO_F64)
+        );
+        assert_eq!(
+            Probability::clamped(1.001).map(Probability::value),
+            Some(UNIT_F64)
+        );
+        assert_eq!(
+            Probability::clamped(HALF_F64).map(Probability::value),
+            Some(HALF_F64)
+        );
+        assert_eq!(Probability::clamped(f64::NAN), None);
+        assert_eq!(Probability::clamped(f64::INFINITY), None);
+        assert_eq!(Probability::clamped(f64::NEG_INFINITY), None);
+    }
+
+    #[test]
+    fn probability_arithmetic_helpers_keep_values_in_bounds() {
+        let probability = Probability::new(0.75).expect("valid probability");
+        let band = Probability::new(HALF_F64).expect("valid probability");
+
+        assert_eq!(probability.complement().value(), 0.25);
+        assert_eq!(probability.widened(band).value(), UNIT_F64);
+        assert_eq!(probability.narrowed(band).value(), 0.25);
     }
 
     #[test]

@@ -191,6 +191,8 @@ def assert_backtester_sets_cover_cache_and_detector_inputs() -> None:
             raise AssertionError(f"backtester_cache missing {required}")
     for forbidden in {
         ".github/workflows/backtester-ci.yml",
+        "scripts/ci_input_sets.py",
+        "ci/rust-ci-inputs.toml",
         ".github/actions/setup-environment/**",
     }:
         if forbidden in cache:

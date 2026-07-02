@@ -828,8 +828,8 @@ TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS = (
     f"nextest_archive_cache_key: {TEST_ARCHIVE_CACHE_KEY_OUTPUT}",
     f"root_bin_sidecars_cache_key: {TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT}",
     f"archive_build_target_cache_key: {TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT}",
-    "nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit || 'false' }}",
-    "root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit || 'false' }}",
+    "nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outcome == 'skipped' && 'skipped' || (steps.nextest-archive-cache.outputs.cache-hit || 'false') }}",
+    "root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outcome == 'skipped' && 'skipped' || (steps.root-bin-sidecars-cache.outputs.cache-hit || 'false') }}",
     "archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}",
 )
 TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS = (
@@ -12658,19 +12658,14 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester bvs-test archive S3 AWS credential setup must be fail-open")
     if "role-to-assume: ${{ steps.bvs-nextest-artifact-cache.outputs.role_arn }}" not in bvs_s3_aws_text:
         errors.append("backtester bvs-test archive S3 AWS credential setup must assume the resolved role")
-    for block, label in (
-        (bvs_archive_s3_restore_block, "nextest archive"),
-        (bvs_sidecar_s3_restore_block, "binary sidecars"),
-    ):
+    bvs_restore_guard = (
+        "if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' "
+        "&& steps.bvs-nextest-artifact-cache-aws.outcome == 'success'"
+    )
+    for block in (bvs_archive_s3_restore_block, bvs_sidecar_s3_restore_block):
         block_text = uncommented_text(block) if block is not None else ""
-        if (
-            block is None
-            or "steps.bvs-nextest-artifact-cache.outputs.eligible == 'true'" not in block_text
-            or "steps.bvs-nextest-artifact-cache-aws.outcome == 'success'" not in block_text
-        ):
-            errors.append(
-                f"backtester bvs-test archive must restore {label} from S3 only when eligible with AWS credentials"
-            )
+        if block is None or bvs_restore_guard not in block_text:
+            errors.append("backtester bvs-test archive must gate S3 restores on eligibility and AWS credential success")
     for block, label in (
         (bvs_archive_s3_save_block, "nextest archive"),
         (bvs_sidecar_s3_save_block, "binary sidecars"),
@@ -12814,6 +12809,22 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         (
             "backtester bvs-test archive must save binary sidecars to S3",
             'aws s3 cp "$BVS_BIN_SIDECARS_PATH" "$uri" --only-show-errors',
+        ),
+        (
+            "backtester bvs-test archive must expose BVS S3 save outcomes",
+            "bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}",
+        ),
+        (
+            "backtester bvs-test archive must expose BVS S3 save outcomes",
+            "bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outcome }}",
+        ),
+        (
+            "backtester bvs-test archive must summarize BVS S3 save outcomes",
+            "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}",
+        ),
+        (
+            "backtester bvs-test archive must summarize BVS S3 save outcomes",
+            "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outcome }}",
         ),
         (
             "backtester bvs-test archive must restore target cache only while producing caches",

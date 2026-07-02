@@ -628,8 +628,8 @@ jobs:
       nextest_archive_cache_key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
       root_bin_sidecars_cache_key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
       archive_build_target_cache_key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
-      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit || 'false' }}
-      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit || 'false' }}
+      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outcome == 'skipped' && 'skipped' || (steps.nextest-archive-cache.outputs.cache-hit || 'false') }}
+      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outcome == 'skipped' && 'skipped' || (steps.root-bin-sidecars-cache.outputs.cache-hit || 'false') }}
       archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}
       nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}
       root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}
@@ -5858,8 +5858,16 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             "test-archive must expose cache persistence audit outputs",
             replace_once(
                 workflow,
+                "      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outcome == 'skipped' && 'skipped' || (steps.nextest-archive-cache.outputs.cache-hit || 'false') }}\n",
                 "      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit || 'false' }}\n",
-                "      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}\n",
+            ),
+        ),
+        (
+            "test-archive must expose cache persistence audit outputs",
+            replace_once(
+                workflow,
+                "      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outcome == 'skipped' && 'skipped' || (steps.root-bin-sidecars-cache.outputs.cache-hit || 'false') }}\n",
+                "      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit || 'false' }}\n",
             ),
         ),
         (
@@ -8582,6 +8590,32 @@ def assert_backtester_ci_input_set_config_covers_systematic_inputs() -> None:
         for error in workflow_in_cache_errors
     ):
         raise AssertionError(f"CI input set config must reject workflow governance cache input, got: {workflow_in_cache_errors}")
+    input_script_in_cache = config.replace(
+        '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+        '  "scripts/rust_test_targets.py",\n  "scripts/ci_input_sets.py",\n]\n\n[sets.backtester_detect]\n',
+        1,
+    )
+    input_script_in_cache_errors = verifier.verify_repo_automation_texts({config_path: input_script_in_cache})
+    if not any(
+        "backtester_cache input set must not include CI governance input scripts/ci_input_sets.py" in error
+        for error in input_script_in_cache_errors
+    ):
+        raise AssertionError(
+            f"CI input set config must reject input-set helper governance cache input, got: {input_script_in_cache_errors}"
+        )
+    input_config_in_cache = config.replace(
+        '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+        '  "scripts/rust_test_targets.py",\n  "ci/rust-ci-inputs.toml",\n]\n\n[sets.backtester_detect]\n',
+        1,
+    )
+    input_config_in_cache_errors = verifier.verify_repo_automation_texts({config_path: input_config_in_cache})
+    if not any(
+        "backtester_cache input set must not include CI governance input ci/rust-ci-inputs.toml" in error
+        for error in input_config_in_cache_errors
+    ):
+        raise AssertionError(
+            f"CI input set config must reject input-set config governance cache input, got: {input_config_in_cache_errors}"
+        )
     setup_action_in_cache = config.replace(
         '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
         '  "scripts/rust_test_targets.py",\n  ".github/actions/setup-environment/**",\n]\n\n[sets.backtester_detect]\n',
@@ -13265,6 +13299,9 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
   test-archive:
     name: bvs-test archive
     needs: [ci-policy, detect, fmt]
+    outputs:
+      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}
+      bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outcome }}
     env:
       BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
@@ -13387,6 +13424,11 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}
+      - name: Summarize BVS S3 save outcomes
+        if: always()
+        run: |
+          echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outcome }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Require BVS local payload
         run: |
           test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }
@@ -13484,30 +13526,28 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         for error in github_artifact_cache_errors
     ), github_artifact_cache_errors
 
-    weakened_bvs_nextest_restore_guard = replace_once(
+    missing_bvs_nextest_restore_guard = replace_once(
         good,
         "        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'\n",
-        "        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true'\n",
+        "",
     )
-    weakened_bvs_nextest_restore_guard_errors = bvs_cache_errors(weakened_bvs_nextest_restore_guard)
+    missing_bvs_nextest_restore_guard_errors = bvs_cache_errors(missing_bvs_nextest_restore_guard)
     assert any(
-        "backtester bvs-test archive must restore nextest archive from S3 only when eligible with AWS credentials"
-        in error
-        for error in weakened_bvs_nextest_restore_guard_errors
-    ), weakened_bvs_nextest_restore_guard_errors
+        "backtester bvs-test archive must gate S3 restores on eligibility and AWS credential success" in error
+        for error in missing_bvs_nextest_restore_guard_errors
+    ), missing_bvs_nextest_restore_guard_errors
 
-    weakened_bvs_sidecar_restore_guard = replace_once_after(
+    missing_bvs_sidecar_restore_guard = replace_once_after(
         good,
         "      - name: Restore BVS binary sidecars from S3\n",
         "        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'\n",
-        "        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true'\n",
+        "",
     )
-    weakened_bvs_sidecar_restore_guard_errors = bvs_cache_errors(weakened_bvs_sidecar_restore_guard)
+    missing_bvs_sidecar_restore_guard_errors = bvs_cache_errors(missing_bvs_sidecar_restore_guard)
     assert any(
-        "backtester bvs-test archive must restore binary sidecars from S3 only when eligible with AWS credentials"
-        in error
-        for error in weakened_bvs_sidecar_restore_guard_errors
-    ), weakened_bvs_sidecar_restore_guard_errors
+        "backtester bvs-test archive must gate S3 restores on eligibility and AWS credential success" in error
+        for error in missing_bvs_sidecar_restore_guard_errors
+    ), missing_bvs_sidecar_restore_guard_errors
 
     missing_bvs_nextest_integrity = replace_once(
         good,
@@ -13552,6 +13592,28 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         in error
         for error in weakened_bvs_s3_save_credentials_errors
     ), weakened_bvs_s3_save_credentials_errors
+
+    missing_bvs_save_outcome_output = replace_once(
+        good,
+        "      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}\n",
+        "",
+    )
+    missing_bvs_save_outcome_output_errors = bvs_cache_errors(missing_bvs_save_outcome_output)
+    assert any(
+        "backtester bvs-test archive must expose BVS S3 save outcomes" in error
+        for error in missing_bvs_save_outcome_output_errors
+    ), missing_bvs_save_outcome_output_errors
+
+    missing_bvs_save_outcome_summary = replace_once(
+        good,
+        '          echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}" >> "$GITHUB_STEP_SUMMARY"\n',
+        "",
+    )
+    missing_bvs_save_outcome_summary_errors = bvs_cache_errors(missing_bvs_save_outcome_summary)
+    assert any(
+        "backtester bvs-test archive must summarize BVS S3 save outcomes" in error
+        for error in missing_bvs_save_outcome_summary_errors
+    ), missing_bvs_save_outcome_summary_errors
 
     weakened_target_save = replace_once(
         good,

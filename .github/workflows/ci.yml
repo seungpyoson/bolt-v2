@@ -438,12 +438,12 @@ jobs:
         id: fingerprint_reuse_allowed
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          if [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=false" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
-            echo "value=false" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
           fi
 
   deny:
@@ -690,7 +690,7 @@ jobs:
   nextest-fingerprint-reuse:
     name: nextest fingerprint reuse
     needs: [ci-policy, detector, nextest-fingerprint]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('["pull_request","workflow_dispatch","merge_group"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     outputs:
       reuse_found: ${{ steps.reuse.outputs.reuse_found }}

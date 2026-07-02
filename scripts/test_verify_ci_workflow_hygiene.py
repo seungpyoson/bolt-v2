@@ -394,12 +394,12 @@ jobs:
         id: fingerprint_reuse_allowed
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          if [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=false" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
-            echo "value=false" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
           fi
 
   deny:
@@ -565,7 +565,7 @@ jobs:
   nextest-fingerprint-reuse:
     name: nextest fingerprint reuse
     needs: [ci-policy, detector, nextest-fingerprint]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('["pull_request","workflow_dispatch","merge_group"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
     outputs:
       reuse_found: ${{ steps.reuse.outputs.reuse_found }}
@@ -13447,16 +13447,19 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     )
 
     assert_error(
-        "nextest-fingerprint-reuse must be PR-only",
-        remove_fragment_if_present(BASE_WORKFLOW, " && github.event_name == 'pull_request'"),
-    )
-    assert_error(
-        "detector must deny fingerprint reuse outside pull_request",
+        "nextest-fingerprint-reuse must admit PR, workflow_dispatch, and merge_group consumers",
         remove_fragment_if_present(
             BASE_WORKFLOW,
-            """          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            echo "value=false" >> "$GITHUB_OUTPUT"
-          elif """,
+            " && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name)",
+        ),
+    )
+    assert_error(
+        "detector must determine fingerprint_reuse_allowed",
+        remove_fragment_if_present(
+            BASE_WORKFLOW,
+            """          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+""",
         ),
     )
 
@@ -13624,14 +13627,14 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     assert_error("nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed", relocated_job_if)
     folded_job_if = replace_once(
         BASE_WORKFLOW,
-        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
-        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main'\n      || github.event_name == 'pull_request' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main'\n      || github.event_name == 'pull_request' }}",
     )
     assert_error("nextest-fingerprint-reuse must use the canonical job if", folded_job_if)
     folded_job_if_with_canonical_first_line = replace_once(
         BASE_WORKFLOW,
-        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
-        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}\n      || github.event_name == 'pull_request'",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}\n      || github.event_name == 'pull_request'",
     )
     assert_error("nextest-fingerprint-reuse must use the canonical job if", folded_job_if_with_canonical_first_line)
 
@@ -13720,13 +13723,13 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         replace_once_after(
             BASE_WORKFLOW,
             "      - name: Determine fingerprint reuse allowance",
-            """          else
+            """          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
-          fi""",
-            """          else
+""",
+            """          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
-          fi
-          echo "value=true" >> "$GITHUB_OUTPUT\"""",
+            echo "value=true" >> "$GITHUB_OUTPUT"
+""",
         ),
     )
     assert_error(

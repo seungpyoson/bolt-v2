@@ -454,10 +454,12 @@ NEXTEST_REUSE_MISS_EXPR = "needs.nextest-fingerprint-reuse.outputs.reuse_found !
 MAIN_BRANCH_SKIP_EXPR = "github.ref != 'refs/heads/main'"
 BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
 FINGERPRINT_REUSE_ALLOWED_EXPR = "needs.detector.outputs.fingerprint_reuse_allowed == 'true'"
-FINGERPRINT_REUSE_PR_EVENT_EXPR = "github.event_name == 'pull_request'"
+FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR = (
+    "contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name)"
+)
 FINGERPRINT_REUSE_JOB_IF_VALUE = (
     "${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' "
-    "&& github.event_name == 'pull_request' "
+    "&& contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) "
     "&& needs.detector.outputs.fingerprint_reuse_allowed == 'true' "
     "&& github.ref != 'refs/heads/main' }}"
 )
@@ -519,12 +521,12 @@ if [[ -n "$changed" ]]; then
 else
   echo "any_changed=false" >> "$GITHUB_OUTPUT"
 fi"""
-FINGERPRINT_REUSE_ALLOWED_RUN = """if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+FINGERPRINT_REUSE_ALLOWED_RUN = """if [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
   echo "value=false" >> "$GITHUB_OUTPUT"
-elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
-  echo "value=false" >> "$GITHUB_OUTPUT"
-else
+elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
   echo "value=true" >> "$GITHUB_OUTPUT"
+else
+  echo "value=false" >> "$GITHUB_OUTPUT"
 fi"""
 SELF_AUTHORIZING_GOVERNANCE_RUN = """set -euo pipefail
 base_ref="${{ steps.pr_refs.outputs.base_ref }}"
@@ -9494,8 +9496,8 @@ def fingerprint_reuse_gates_on_detector_allowed(job_lines: list[str]) -> bool:
     return FINGERPRINT_REUSE_ALLOWED_EXPR in job_if_value(job_lines)
 
 
-def fingerprint_reuse_gates_on_pull_request(job_lines: list[str]) -> bool:
-    return FINGERPRINT_REUSE_PR_EVENT_EXPR in job_if_value(job_lines)
+def fingerprint_reuse_gates_on_consumer_events(job_lines: list[str]) -> bool:
+    return FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR in job_if_value(job_lines)
 
 
 def test_shards_skip_on_fingerprint_reuse(job_lines: list[str]) -> bool:
@@ -10507,21 +10509,30 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
         FINGERPRINT_REUSE_ALLOWED_RUN,
     ):
         errors.append("detector fingerprint-reuse allowance step must match canonical script")
-    allowance_chain = if_chain_bodies(allowance_text, '"${{ github.event_name }}" != "pull_request"')
+    allowance_chain = if_chain_bodies(
+        allowance_text,
+        '"${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true"',
+    )
     if allowance_chain is None:
-        errors.append("detector must deny fingerprint reuse outside pull_request")
+        errors.append("detector must determine fingerprint_reuse_allowed")
     elif (
         'echo "value=false" >> "$GITHUB_OUTPUT"'
-        not in allowance_chain.get(("if", '"${{ github.event_name }}" != "pull_request"'), "")
-        or 'echo "value=false" >> "$GITHUB_OUTPUT"'
         not in allowance_chain.get(
             (
-                "elif",
+                "if",
                 '"${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true"',
             ),
             "",
         )
-        or 'echo "value=true" >> "$GITHUB_OUTPUT"' not in allowance_chain.get(("else", ""), "")
+        or 'echo "value=true" >> "$GITHUB_OUTPUT"'
+        not in allowance_chain.get(
+            (
+                "elif",
+                '"${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group"',
+            ),
+            "",
+        )
+        or 'echo "value=false" >> "$GITHUB_OUTPUT"' not in allowance_chain.get(("else", ""), "")
         or allowance_text.count('echo "value=false" >> "$GITHUB_OUTPUT"') != 2
         or allowance_text.count('echo "value=true" >> "$GITHUB_OUTPUT"') != 1
     ):
@@ -11332,8 +11343,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest-fingerprint-reuse must gate on full_ci_required")
         if not fingerprint_reuse_uses_canonical_job_if(reuse_lines):
             errors.append("nextest-fingerprint-reuse must use the canonical job if")
-        if not fingerprint_reuse_gates_on_pull_request(reuse_lines):
-            errors.append("nextest-fingerprint-reuse must be PR-only")
+        if not fingerprint_reuse_gates_on_consumer_events(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must admit PR, workflow_dispatch, and merge_group consumers")
         if not fingerprint_reuse_skips_main_branch(reuse_lines):
             errors.append("nextest-fingerprint-reuse must skip main branch")
         if not fingerprint_reuse_gates_on_detector_allowed(reuse_lines):

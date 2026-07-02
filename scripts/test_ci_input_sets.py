@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
 import subprocess
 import sys
@@ -189,14 +190,24 @@ def assert_backtester_sets_cover_cache_and_detector_inputs() -> None:
     }:
         if required not in cache:
             raise AssertionError(f"backtester_cache missing {required}")
-    for forbidden in {
+    def pathspec_may_cover(pathspec: str, path: str) -> bool:
+        pathspec = pathspec.rstrip("/")
+        path = path.rstrip("/")
+        if pathspec == path:
+            return True
+        if not any(char in pathspec for char in "*?["):
+            return path.startswith(pathspec + "/")
+        return fnmatch.fnmatchcase(path, pathspec)
+
+    forbidden_cache_targets = {
         ".github/workflows/backtester-ci.yml",
         "scripts/ci_input_sets.py",
         "ci/rust-ci-inputs.toml",
-        ".github/actions/setup-environment/**",
-    }:
-        if forbidden in cache:
-            raise AssertionError(f"backtester_cache must not include CI governance input {forbidden}")
+        ".github/actions/setup-environment/action.yml",
+    }
+    for pathspec in sorted(cache):
+        if any(pathspec_may_cover(pathspec, forbidden) for forbidden in forbidden_cache_targets):
+            raise AssertionError(f"backtester_cache must not include CI governance input {pathspec}")
     for required in {
         "scripts/ci_input_sets.py",
         "ci/rust-ci-inputs.toml",

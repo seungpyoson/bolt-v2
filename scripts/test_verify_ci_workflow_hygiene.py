@@ -8629,6 +8629,27 @@ def assert_backtester_ci_input_set_config_covers_systematic_inputs() -> None:
         raise AssertionError(
             f"CI input set config must reject setup-environment cache input, got: {setup_action_in_cache_errors}"
         )
+    for setup_pathspec in (
+        ".github/actions/setup-environment/action.yml",
+        ".github/actions/setup-environment",
+        ".github/actions/**",
+    ):
+        overlapping_setup_action_in_cache = config.replace(
+            '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+            f'  "scripts/rust_test_targets.py",\n  "{setup_pathspec}",\n]\n\n[sets.backtester_detect]\n',
+            1,
+        )
+        overlapping_setup_action_errors = verifier.verify_repo_automation_texts(
+            {config_path: overlapping_setup_action_in_cache}
+        )
+        if not any(
+            f"backtester_cache input set must not include CI governance input {setup_pathspec}" in error
+            for error in overlapping_setup_action_errors
+        ):
+            raise AssertionError(
+                f"CI input set config must reject setup-environment-overlapping cache input "
+                f"{setup_pathspec}, got: {overlapping_setup_action_errors}"
+            )
 
 
 def assert_backtester_ci_requires_pr_event_types() -> None:

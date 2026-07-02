@@ -8023,6 +8023,35 @@ def assert_runner_contract_requires_configured_cargo_build_jobs() -> None:
     inline_errors = verifier.verify_github_actions_runner_contract({workflow_name: inline_cap})
     if not any("clippy CARGO_BUILD_JOBS must come from ci/github-actions-runners.toml" in error for error in inline_errors):
         raise AssertionError(f"runner contract must reject inline CARGO_BUILD_JOBS, got: {inline_errors}")
+    shell_inline_anchor = (
+        "  clippy:\n"
+        "    name: clippy\n"
+        "    needs: [ci-policy, detector]\n"
+        "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && !startsWith(github.ref, 'refs/tags/v') }}\n"
+        "    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}\n"
+        "    steps:\n"
+    )
+    shell_inline_cases = {
+        "github env append": '      - run: echo "CARGO_BUILD_JOBS=9" >> "$GITHUB_ENV"\n',
+        "export": "      - run: export CARGO_BUILD_JOBS=9\n",
+        "inline env prefix": "      - run: CARGO_BUILD_JOBS=9 just clippy\n",
+    }
+    for case, injected_step in shell_inline_cases.items():
+        shell_inline_cap = replace_once(
+            workflow,
+            shell_inline_anchor,
+            shell_inline_anchor + injected_step,
+        )
+        shell_inline_errors = verifier.verify_github_actions_runner_contract(
+            {workflow_name: shell_inline_cap}
+        )
+        if not any(
+            "clippy CARGO_BUILD_JOBS must come from ci/github-actions-runners.toml" in error
+            for error in shell_inline_errors
+        ):
+            raise AssertionError(
+                f"runner contract must reject shell inline CARGO_BUILD_JOBS via {case}, got: {shell_inline_errors}"
+            )
     invalid_config = ci_provenance_config_fixture().replace("clippy = 2", "clippy = true", 1)
     error = runner_config_load_error(invalid_config, verifier=verifier)
     if "cargo_build_jobs.ci.clippy must be a positive integer" not in error:
@@ -8043,6 +8072,25 @@ def assert_runner_contract_requires_configured_cargo_build_jobs() -> None:
         raise AssertionError(
             f"runner contract must reject workflow build-jobs-key without TOML config, got: {missing_config_errors}"
         )
+
+
+def assert_ci_workflow_rejects_spike_probe_markers() -> None:
+    verifier = load_verifier()
+    workflow = textwrap.dedent(
+        """
+        name: CI
+        jobs:
+          clippy:
+            steps:
+              - name: clippy
+                run: |
+                  BOLT_SPIKE_TIME_FILE="${RUNNER_TEMP:-/tmp}/clippy.time"
+                  just clippy
+        """
+    )
+    errors = verifier.verify_workflow(workflow)
+    if not any("BOLT_SPIKE" in error for error in errors):
+        raise AssertionError(f"ci workflow must reject spike probe markers, got: {errors}")
 
 
 def assert_debug_workflow_rejects_non_manual_trigger() -> None:
@@ -16437,6 +16485,7 @@ def main() -> int:
     assert_runner_contract_requires_meter_api_limits()
     assert_runner_contract_requires_fingerprint_archive_tier_coupling()
     assert_runner_contract_requires_configured_cargo_build_jobs()
+    assert_ci_workflow_rejects_spike_probe_markers()
     assert_jules_advisory_workflow_contracts()
     assert_jules_advisory_config_carries_repo_variable_values()
     assert_self_authorizing_governance_detector_contract()

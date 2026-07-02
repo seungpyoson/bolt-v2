@@ -521,24 +521,7 @@ jobs:
         run: just fmt-check
 
       - name: clippy
-        shell: bash
-        run: |
-          BOLT_SPIKE_TIME_FILE="${RUNNER_TEMP:-/tmp}/clippy.time"
-          just() {
-            if /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE.probe" true >/dev/null 2>&1; then
-              command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" env just "$@"
-            else
-              command just "$@"
-            fi
-            local timed_rc=$?
-            cat "$BOLT_SPIKE_TIME_FILE" || true
-            return "$timed_rc"
-          }
-          set +e
-          just clippy
-          rc=$?
-          set -e
-          exit "$rc"
+        run: just clippy
 
   check-aarch64:
     name: check-aarch64
@@ -925,17 +908,6 @@ jobs:
           BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
-          BOLT_SPIKE_TIME_FILE="${RUNNER_TEMP:-/tmp}/nextest-archive-build.time"
-          just() {
-            if /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE.probe" true >/dev/null 2>&1; then
-              command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" env just "$@"
-            else
-              command just "$@"
-            fi
-            local timed_rc=$?
-            cat "$BOLT_SPIKE_TIME_FILE" || true
-            return "$timed_rc"
-          }
           # Fail-open guarantee: sccache must never be able to fail this required
           # build. SCCACHE_IGNORE_SERVER_IO_ERROR covers in-flight S3/server I/O
           # errors, but not a mid-build sccache server crash that also fails to
@@ -949,11 +921,7 @@ jobs:
           set -e
           if [[ "$rc" -ne 0 && "${BOLT_RUST_VERIFICATION_SCCACHE:-0}" == "1" ]]; then
             echo "::warning::nextest archive build failed (rc=$rc) with sccache active; retrying once without sccache (fail-open)"
-            set +e
             BOLT_RUST_VERIFICATION_SCCACHE=0 just test-archive "$NEXTEST_ARCHIVE_PATH"
-            rc=$?
-            set -e
-            exit "$rc"
           elif [[ "$rc" -ne 0 ]]; then
             exit "$rc"
           fi
@@ -1158,24 +1126,7 @@ jobs:
           fallback: none
 
       - name: build
-        shell: bash
-        run: |
-          BOLT_SPIKE_TIME_FILE="${RUNNER_TEMP:-/tmp}/build.time"
-          just() {
-            if /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE.probe" true >/dev/null 2>&1; then
-              command /usr/bin/time -v -o "$BOLT_SPIKE_TIME_FILE" env just "$@"
-            else
-              command just "$@"
-            fi
-            local timed_rc=$?
-            cat "$BOLT_SPIKE_TIME_FILE" || true
-            return "$timed_rc"
-          }
-          set +e
-          just build
-          rc=$?
-          set -e
-          exit "$rc"
+        run: just build
 
       - name: Stage managed build artifact
         id: managed_artifact

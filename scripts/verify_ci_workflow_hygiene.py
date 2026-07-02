@@ -626,6 +626,8 @@ SETUP_TARGET_DIR_RELATIVE_OUTPUT_RE = re.compile(
 SETUP_CARGO_BUILD_JOBS_ENV_OUTPUT_RE = re.compile(
     r'^\s*echo\s+"CARGO_BUILD_JOBS=\$cargo_build_jobs"\s*>>\s*"\$GITHUB_ENV"\s*$'
 )
+INLINE_CARGO_BUILD_JOBS_RE = re.compile(r"\bCARGO_BUILD_JOBS\b")
+SPIKE_PROBE_MARKER_RE = re.compile(r"\bBOLT_SPIKE_[A-Z0-9_]*\b")
 SETUP_TARGET_DIR_RELATIVE_COMPUTE = (
     "managed_target_dir_relative=\"$(python3 -c 'import os, sys; "
     "print(os.path.relpath(sys.argv[2], sys.argv[1]))' \"$GITHUB_WORKSPACE\" \"$managed_target_dir\")\""
@@ -10901,6 +10903,8 @@ def extract_action_output_block(action_text: str, output_name: str) -> list[str]
 
 def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
+    if SPIKE_PROBE_MARKER_RE.search(uncommented_text(workflow_text.splitlines())):
+        errors.append("ci workflow must not contain BOLT_SPIKE probe instrumentation")
     errors.extend(workflow_steps_alias_errors(workflow_text))
     jobs = parse_jobs(workflow_text)
     triggers = workflow_trigger_keys(workflow_text)
@@ -15180,7 +15184,7 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
                     f"{workflow_name} {job} runs-on must use vars.{expected_var}, got vars.{actual_var}"
                 )
             job_text = uncommented_text(jobs[job])
-            if "CARGO_BUILD_JOBS:" in job_text:
+            if INLINE_CARGO_BUILD_JOBS_RE.search(job_text):
                 errors.append(
                     f"{workflow_name} {job} CARGO_BUILD_JOBS must come from ci/github-actions-runners.toml via setup-environment"
                 )

@@ -62,8 +62,8 @@ use crate::{
         selected_market_requirement_from_parts,
     },
     bolt_v3_numeric::{
-        HALF_F64, MILLIS_PER_SECOND_U64, POWER_OF_TWO, SECONDS_PER_YEAR_F64, UNIT_F64, ZERO_F64,
-        is_non_negative_finite, is_positive_finite, sanitize_probability,
+        HALF_F64, MILLIS_PER_SECOND_U64, POWER_OF_TWO, Probability, SECONDS_PER_YEAR_F64, UNIT_F64,
+        ZERO_F64, is_non_negative_finite, is_positive_finite,
     },
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
@@ -1257,7 +1257,7 @@ fn selected_market_resolution_mapping(
 /// regimes price wider. Invalid degenerate inputs fail closed
 /// (return `None`); zero effective volatility returns the deterministic
 /// expiry-limit probability.
-pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
+pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<Probability> {
     if !is_positive_finite(inputs.spot_price)
         || !is_positive_finite(inputs.strike_price)
         || !is_non_negative_finite(inputs.realized_vol)
@@ -1277,25 +1277,22 @@ pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
         return None;
     }
     if sigma_eff == ZERO_F64 {
-        return Some(deterministic_up_probability(
-            inputs.spot_price,
-            inputs.strike_price,
-        ));
+        return deterministic_up_probability(inputs.spot_price, inputs.strike_price);
     }
 
     let d2 = ((inputs.spot_price / inputs.strike_price).ln()
         - (sigma_eff.powi(POWER_OF_TWO) / SIGMA_SQUARED_HALF_DIVISOR) * time_to_expiry_years)
         / (sigma_eff * time_to_expiry_years.sqrt());
-    sanitize_probability(standard_normal_cdf(d2))
+    Probability::new(standard_normal_cdf(d2))
 }
 
-fn deterministic_up_probability(spot_price: f64, strike_price: f64) -> f64 {
+fn deterministic_up_probability(spot_price: f64, strike_price: f64) -> Option<Probability> {
     if spot_price > strike_price {
-        UNIT_F64
+        Probability::new(UNIT_F64)
     } else if spot_price < strike_price {
-        ZERO_F64
+        Probability::new(ZERO_F64)
     } else {
-        HALF_F64
+        Probability::new(HALF_F64)
     }
 }
 
@@ -2029,11 +2026,11 @@ mod tests {
         .expect("valid inputs should produce fair probability");
 
         assert!(
-            above > 0.5,
+            above.value() > 0.5,
             "above-strike spot should imply >50% up probability"
         );
         assert!(
-            below < 0.5,
+            below.value() < 0.5,
             "below-strike spot should imply <50% up probability"
         );
         assert!(above > below);
@@ -2049,7 +2046,7 @@ mod tests {
                 realized_vol: 0.0,
                 pricing_kurtosis: 0.0,
             }),
-            Some(UNIT_F64)
+            Probability::new(UNIT_F64)
         );
         assert_eq!(
             fair_probability_up(&FairProbabilityInputs {
@@ -2059,7 +2056,7 @@ mod tests {
                 realized_vol: 0.0,
                 pricing_kurtosis: 0.0,
             }),
-            Some(ZERO_F64)
+            Probability::new(ZERO_F64)
         );
         assert_eq!(
             fair_probability_up(&FairProbabilityInputs {
@@ -2069,7 +2066,7 @@ mod tests {
                 realized_vol: 0.0,
                 pricing_kurtosis: 0.0,
             }),
-            Some(HALF_F64)
+            Probability::new(HALF_F64)
         );
     }
 

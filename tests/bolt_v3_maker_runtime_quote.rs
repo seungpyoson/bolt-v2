@@ -300,6 +300,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
             pricing_kurtosis: input.pricing_kurtosis,
         })
         .expect("same updown fair-value inputs should price")
+        .value()
     );
 
     let mut blocked_selector = ReferencePriceSelector::new(

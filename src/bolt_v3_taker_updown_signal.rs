@@ -11,42 +11,41 @@
 
 use crate::bolt_v3_market_families::OutcomeSide;
 use crate::bolt_v3_numeric::{
-    BPS_DENOMINATOR, POWER_OF_TWO, UNIT_F64, ZERO_F64, clamp_probability, is_non_negative_finite,
-    is_positive_finite, sanitize_probability,
+    BPS_DENOMINATOR, POWER_OF_TWO, Probability, UNIT_F64, ZERO_F64, clamp_probability,
+    is_non_negative_finite, is_positive_finite,
 };
 
-pub(crate) fn price_agreement_corr(observed_price: f64, anchor_price: f64) -> Option<f64> {
+pub(crate) fn price_agreement_corr(observed_price: f64, anchor_price: f64) -> Option<Probability> {
     if !is_positive_finite(observed_price) || !is_positive_finite(anchor_price) {
         return None;
     }
-    Some(clamp_probability(
-        UNIT_F64 - ((observed_price - anchor_price).abs() / anchor_price),
-    ))
+    Probability::clamped(UNIT_F64 - ((observed_price - anchor_price).abs() / anchor_price))
 }
 
-pub(crate) fn price_gap_probability(observed_price: f64, reference_price: f64) -> Option<f64> {
+pub(crate) fn price_gap_probability(
+    observed_price: f64,
+    reference_price: f64,
+) -> Option<Probability> {
     if !is_positive_finite(observed_price) || !is_positive_finite(reference_price) {
         return None;
     }
-    Some(clamp_probability(
-        (observed_price - reference_price).abs() / reference_price,
-    ))
+    Probability::clamped((observed_price - reference_price).abs() / reference_price)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct UncertaintyBandInputs {
-    pub(crate) lead_gap_probability: f64,
-    pub(crate) jitter_penalty_probability: f64,
-    pub(crate) time_uncertainty_probability: f64,
-    pub(crate) fee_uncertainty_probability: f64,
+    pub(crate) lead_gap_probability: Probability,
+    pub(crate) jitter_penalty_probability: Probability,
+    pub(crate) time_uncertainty_probability: Probability,
+    pub(crate) fee_uncertainty_probability: Probability,
 }
 
-pub(crate) fn uncertainty_band_probability(inputs: &UncertaintyBandInputs) -> Option<f64> {
-    sanitize_probability(
-        sanitize_probability(inputs.lead_gap_probability)?
-            + sanitize_probability(inputs.jitter_penalty_probability)?
-            + sanitize_probability(inputs.time_uncertainty_probability)?
-            + sanitize_probability(inputs.fee_uncertainty_probability)?,
+pub(crate) fn uncertainty_band_probability(inputs: &UncertaintyBandInputs) -> Option<Probability> {
+    Probability::new(
+        inputs.lead_gap_probability.value()
+            + inputs.jitter_penalty_probability.value()
+            + inputs.time_uncertainty_probability.value()
+            + inputs.fee_uncertainty_probability.value(),
     )
 }
 
@@ -67,12 +66,12 @@ pub(crate) fn time_uncertainty_probability(
     realized_vol: f64,
     seconds_to_market_end: u64,
     seconds_per_year: f64,
-) -> Option<f64> {
+) -> Option<Probability> {
     if !is_non_negative_finite(realized_vol) || !is_positive_finite(seconds_per_year) {
         return None;
     }
     let horizon_years = seconds_to_market_end as f64 / seconds_per_year;
-    Some(clamp_probability(realized_vol * horizon_years.sqrt()))
+    Probability::clamped(realized_vol * horizon_years.sqrt())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -107,8 +106,8 @@ pub(crate) fn outcome_side_evidence_label(side: OutcomeSide) -> &'static str {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct WorstCaseEvInputs {
-    pub(crate) fair_probability: Option<f64>,
-    pub(crate) uncertainty_band_probability: f64,
+    pub(crate) fair_probability: Option<Probability>,
+    pub(crate) uncertainty_band_probability: Probability,
     pub(crate) executable_entry_cost: f64,
     pub(crate) fee_bps: Option<f64>,
 }
@@ -117,8 +116,7 @@ pub(crate) fn compute_worst_case_ev_bps(
     side: OutcomeSide,
     inputs: &WorstCaseEvInputs,
 ) -> Option<f64> {
-    let fair_probability = sanitize_probability(inputs.fair_probability?)?;
-    let uncertainty_band_probability = sanitize_probability(inputs.uncertainty_band_probability)?;
+    let fair_probability = inputs.fair_probability?;
     let executable_entry_cost = inputs.executable_entry_cost;
     let fee_bps = inputs.fee_bps?;
 
@@ -129,11 +127,11 @@ pub(crate) fn compute_worst_case_ev_bps(
         return None;
     }
 
-    let p_lo = clamp_probability(fair_probability - uncertainty_band_probability);
-    let p_hi = clamp_probability(fair_probability + uncertainty_band_probability);
+    let p_lo = fair_probability.narrowed(inputs.uncertainty_band_probability);
+    let p_hi = fair_probability.widened(inputs.uncertainty_band_probability);
     let worst_case_success_probability = match side {
         OutcomeSide::Up => p_lo,
-        OutcomeSide::Down => UNIT_F64 - p_hi,
+        OutcomeSide::Down => p_hi.complement(),
     };
     let total_entry_cost = executable_entry_cost * (UNIT_F64 + fee_bps / BPS_DENOMINATOR);
 
@@ -141,7 +139,10 @@ pub(crate) fn compute_worst_case_ev_bps(
         return None;
     }
 
-    Some(((worst_case_success_probability - total_entry_cost) / total_entry_cost) * BPS_DENOMINATOR)
+    Some(
+        ((worst_case_success_probability.value() - total_entry_cost) / total_entry_cost)
+            * BPS_DENOMINATOR,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -176,6 +177,10 @@ pub(crate) fn choose_entry_side(inputs: &SideSelectionInputs) -> Option<OutcomeS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn probability(value: f64) -> Probability {
+        Probability::new(value).expect("valid probability")
+    }
 
     #[test]
     fn theta_scaler_helper_increases_near_expiry_and_can_be_disabled() {
@@ -215,24 +220,24 @@ mod tests {
     #[test]
     fn task4_uncertainty_band_grows_with_jitter_and_time_to_resolution() {
         let narrow = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.002,
-            time_uncertainty_probability: 0.003,
-            fee_uncertainty_probability: 0.0,
+            lead_gap_probability: probability(0.01),
+            jitter_penalty_probability: probability(0.002),
+            time_uncertainty_probability: probability(0.003),
+            fee_uncertainty_probability: probability(0.0),
         })
         .expect("valid uncertainty inputs should produce a band");
         let wider_from_jitter = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.004,
-            time_uncertainty_probability: 0.003,
-            fee_uncertainty_probability: 0.0,
+            lead_gap_probability: probability(0.01),
+            jitter_penalty_probability: probability(0.004),
+            time_uncertainty_probability: probability(0.003),
+            fee_uncertainty_probability: probability(0.0),
         })
         .expect("valid uncertainty inputs should produce a band");
         let wider_from_time = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.002,
-            time_uncertainty_probability: 0.005,
-            fee_uncertainty_probability: 0.0,
+            lead_gap_probability: probability(0.01),
+            jitter_penalty_probability: probability(0.002),
+            time_uncertainty_probability: probability(0.005),
+            fee_uncertainty_probability: probability(0.0),
         })
         .expect("valid uncertainty inputs should produce a band");
 
@@ -251,17 +256,22 @@ mod tests {
         let far = time_uncertainty_probability(0.48, 280, year).expect("finite vol");
         let near = time_uncertainty_probability(0.48, 10, year).expect("finite vol");
         let at_expiry = time_uncertainty_probability(0.48, 0, year).expect("finite vol");
+        let far_value = far.value();
+        let near_value = near.value();
 
         assert!(
-            far > near,
-            "more time remaining must widen the band (far={far}, near={near})"
+            far_value > near_value,
+            "more time remaining must widen the band (far={far_value}, near={near_value})"
         );
-        assert_eq!(at_expiry, 0.0, "band must vanish at expiry");
+        assert_eq!(at_expiry.value(), 0.0, "band must vanish at expiry");
         assert!(
-            near < 0.05,
-            "near-expiry band must stay a small margin, got {near}"
+            near_value < 0.05,
+            "near-expiry band must stay a small margin, got {near_value}"
         );
-        assert!(far < 0.05, "band must stay a small margin, got {far}");
+        assert!(
+            far_value < 0.05,
+            "band must stay a small margin, got {far_value}"
+        );
     }
 
     #[test]
@@ -275,17 +285,17 @@ mod tests {
     #[test]
     fn task4_uncertainty_band_grows_with_fee_uncertainty() {
         let narrow = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.002,
-            time_uncertainty_probability: 0.003,
-            fee_uncertainty_probability: 0.0,
+            lead_gap_probability: probability(0.01),
+            jitter_penalty_probability: probability(0.002),
+            time_uncertainty_probability: probability(0.003),
+            fee_uncertainty_probability: probability(0.0),
         })
         .expect("valid uncertainty inputs should produce a band");
         let wide = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.002,
-            time_uncertainty_probability: 0.003,
-            fee_uncertainty_probability: 0.02,
+            lead_gap_probability: probability(0.01),
+            jitter_penalty_probability: probability(0.002),
+            time_uncertainty_probability: probability(0.003),
+            fee_uncertainty_probability: probability(0.02),
         })
         .expect("valid uncertainty inputs should produce a band");
 
@@ -294,30 +304,14 @@ mod tests {
 
     #[test]
     fn task4_uncertainty_band_fails_closed_on_invalid_component() {
+        assert_eq!(Probability::new(f64::NAN), None);
+        assert_eq!(Probability::new(1.2), None);
         assert_eq!(
             uncertainty_band_probability(&UncertaintyBandInputs {
-                lead_gap_probability: f64::NAN,
-                jitter_penalty_probability: 0.002,
-                time_uncertainty_probability: 0.003,
-                fee_uncertainty_probability: 0.0,
-            }),
-            None
-        );
-        assert_eq!(
-            uncertainty_band_probability(&UncertaintyBandInputs {
-                lead_gap_probability: 1.2,
-                jitter_penalty_probability: 0.002,
-                time_uncertainty_probability: 0.003,
-                fee_uncertainty_probability: 0.0,
-            }),
-            None
-        );
-        assert_eq!(
-            uncertainty_band_probability(&UncertaintyBandInputs {
-                lead_gap_probability: 0.40,
-                jitter_penalty_probability: 0.30,
-                time_uncertainty_probability: 0.20,
-                fee_uncertainty_probability: 0.20,
+                lead_gap_probability: probability(0.40),
+                jitter_penalty_probability: probability(0.30),
+                time_uncertainty_probability: probability(0.20),
+                fee_uncertainty_probability: probability(0.20),
             }),
             None
         );
@@ -328,8 +322,8 @@ mod tests {
         let up_zero_fee = compute_worst_case_ev_bps(
             OutcomeSide::Up,
             &WorstCaseEvInputs {
-                fair_probability: Some(0.60),
-                uncertainty_band_probability: 0.05,
+                fair_probability: Some(probability(0.60)),
+                uncertainty_band_probability: probability(0.05),
                 executable_entry_cost: 0.50,
                 fee_bps: Some(0.0),
             },
@@ -338,8 +332,8 @@ mod tests {
         let up_paid_fee = compute_worst_case_ev_bps(
             OutcomeSide::Up,
             &WorstCaseEvInputs {
-                fair_probability: Some(0.60),
-                uncertainty_band_probability: 0.05,
+                fair_probability: Some(probability(0.60)),
+                uncertainty_band_probability: probability(0.05),
                 executable_entry_cost: 0.50,
                 fee_bps: Some(200.0),
             },
@@ -348,8 +342,8 @@ mod tests {
         let down_zero_fee = compute_worst_case_ev_bps(
             OutcomeSide::Down,
             &WorstCaseEvInputs {
-                fair_probability: Some(0.60),
-                uncertainty_band_probability: 0.05,
+                fair_probability: Some(probability(0.60)),
+                uncertainty_band_probability: probability(0.05),
                 executable_entry_cost: 0.50,
                 fee_bps: Some(0.0),
             },
@@ -362,8 +356,8 @@ mod tests {
             compute_worst_case_ev_bps(
                 OutcomeSide::Up,
                 &WorstCaseEvInputs {
-                    fair_probability: Some(0.60),
-                    uncertainty_band_probability: 0.05,
+                    fair_probability: Some(probability(0.60)),
+                    uncertainty_band_probability: probability(0.05),
                     executable_entry_cost: 0.50,
                     fee_bps: None,
                 },
@@ -374,20 +368,8 @@ mod tests {
             compute_worst_case_ev_bps(
                 OutcomeSide::Up,
                 &WorstCaseEvInputs {
-                    fair_probability: Some(1.2),
-                    uncertainty_band_probability: 0.05,
-                    executable_entry_cost: 0.50,
-                    fee_bps: Some(0.0),
-                },
-            ),
-            None
-        );
-        assert_eq!(
-            compute_worst_case_ev_bps(
-                OutcomeSide::Up,
-                &WorstCaseEvInputs {
-                    fair_probability: Some(0.60),
-                    uncertainty_band_probability: 1.5,
+                    fair_probability: None,
+                    uncertainty_band_probability: probability(0.05),
                     executable_entry_cost: 0.50,
                     fee_bps: Some(0.0),
                 },

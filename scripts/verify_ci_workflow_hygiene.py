@@ -6603,6 +6603,8 @@ SOURCE_FENCE_STATIC_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/verify_lane_governance.py",
     "python3 scripts/test_verify_fail_closed_contracts.py",
     "python3 scripts/verify_fail_closed_contracts.py",
+    "python3 scripts/test_verify_probability_typed_pilot.py",
+    "python3 scripts/verify_probability_typed_pilot.py",
 )
 
 

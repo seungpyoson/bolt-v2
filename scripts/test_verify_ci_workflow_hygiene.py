@@ -49,12 +49,16 @@ GATE_NOOP_BLOCK = f"""          if [[ "$policy_path" == "noop" ]]; then
           fi
 """
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, deny, clippy, check-aarch64, source-fence, test]"
-EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
+FORBIDDEN_MANAGED_TARGET_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
     "'.github/actions/setup-environment/action.yml'",
     "'.no-mistakes.yaml'",
+    "'ci/rust-verification.toml'",
+    "'justfile'",
     "'scripts/command_understanding.py'",
+    "'scripts/rust_verification.py'",
 )
+MAIN_ONLY_SHARED_REGISTRY_SAVE_IF = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}"
 
 def load_verifier(
     path: pathlib.Path = VERIFIER_PATH, module_name: str = "verify_ci_workflow_hygiene"
@@ -157,6 +161,10 @@ permissions:
   contents: read
   actions: read
   issues: read
+
+env:
+  JUST_VERSION: "1.49.0"
+  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
 
 jobs:
   merge-readiness-progress:
@@ -273,16 +281,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # detector probe insertion point
-      - name: Fetch PR base/head refs
+      - name: Fetch detector base/head refs
         id: pr_refs
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          DISPATCH_BASE_REF: ${{ github.event.repository.default_branch }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
         run: |
-          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
-          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
-          git fetch --no-tags origin \
-            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
-            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_ref="refs/remotes/origin/pr-base-${PR_NUMBER}"
+            head_ref="refs/remotes/origin/pr-head-${PR_NUMBER}"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin \
+              "+refs/heads/${base_branch}:${base_ref}" \
+              "+refs/pull/${PR_NUMBER}/head:${head_ref}"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            base_branch="$DISPATCH_BASE_REF"
+            if [[ "$base_branch" == refs/* ]]; then
+              echo "unsupported workflow_dispatch default_branch: $base_branch" >&2
+              exit 1
+            fi
+            base_ref="refs/remotes/origin/dispatch-base-${GITHUB_RUN_ID}"
+            head_ref="HEAD"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_ref="refs/remotes/origin/pr-base-merge-group-${GITHUB_RUN_ID}"
+            head_ref="HEAD"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          else
+            echo "unsupported detector refs event: $EVENT_NAME" >&2
+            exit 1
+          fi
           echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
           echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"
 
@@ -310,12 +355,17 @@ jobs:
 
       - name: Detect fingerprint-reuse governance changes
         id: fingerprint_reuse_inputs_changed
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
         shell: bash
         run: |
           base_ref="${{ steps.pr_refs.outputs.base_ref }}"
           head_ref="${{ steps.pr_refs.outputs.head_ref }}"
-          changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            diff_range="${base_ref}..${head_ref}"
+          else
+            diff_range="${base_ref}...${head_ref}"
+          fi
+          changed="$(git diff --name-only "$diff_range" -- \
             .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
             ci/nextest-fingerprint.toml \
@@ -394,12 +444,12 @@ jobs:
         id: fingerprint_reuse_allowed
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          if [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=false" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
-            echo "value=false" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
           fi
 
   deny:
@@ -418,7 +468,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
       - name: Install cargo-deny
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
@@ -445,15 +495,24 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
-      - uses: actions/cache@example
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
+      - name: Restore clippy managed target cache
+        id: clippy-managed-target-cache
+        uses: actions/cache/restore@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-
       - run: just fmt-check
       - run: just clippy
+      - name: Save clippy managed target cache
+        id: clippy-managed-target-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.clippy-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
   check-aarch64:
     name: check-aarch64
@@ -486,16 +545,25 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
-      - uses: actions/cache@example
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
+      - name: Restore check-aarch64 managed target cache
+        id: check-aarch64-managed-target-cache
+        uses: actions/cache/restore@example
         if: needs.detector.outputs.build_required != 'true'
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-
       - if: needs.detector.outputs.build_required != 'true'
         run: just check-aarch64
+      - name: Save check-aarch64 managed target cache
+        id: check-aarch64-managed-target-cache-save
+        if: ${{ needs.detector.outputs.build_required != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.check-aarch64-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
   source-fence:
     name: source-fence
@@ -517,11 +585,13 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
-      - uses: actions/cache@example
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
+      - name: Restore source-fence managed target cache
+        id: source-fence-managed-target-cache
+        uses: actions/cache/restore@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
       - run: |
@@ -530,6 +600,13 @@ jobs:
           else
             just source-fence-static
           fi
+      - name: Save source-fence managed target cache
+        id: source-fence-managed-target-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.source-fence-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
   nextest-fingerprint:
     name: nextest fingerprint
@@ -568,7 +645,7 @@ jobs:
   nextest-fingerprint-reuse:
     name: nextest fingerprint reuse
     needs: [ci-policy, detector, nextest-fingerprint]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('["pull_request","workflow_dispatch","merge_group"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
     outputs:
       reuse_found: ${{ steps.reuse.outputs.reuse_found }}
@@ -597,15 +674,19 @@ jobs:
       nextest_archive_cache_key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
       root_bin_sidecars_cache_key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
       archive_build_target_cache_key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
-      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}
-      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}
-      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}
-      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}
-      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}
+      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outcome == 'skipped' && 'skipped' || (steps.nextest-archive-cache.outputs.cache-hit || 'false') }}
+      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outcome == 'skipped' && 'skipped' || (steps.root-bin-sidecars-cache.outputs.cache-hit || 'false') }}
+      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || (steps.test-target-cache.outputs.cache-hit || 'false') }}
+      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || (steps.nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
+      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outputs.save-status || (steps.root-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
       archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
+      NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+      NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+      NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
+      NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
     steps:
       - uses: ./.github/actions/setup-environment
         id: setup
@@ -621,27 +702,62 @@ jobs:
           {
             echo "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
             echo "root_bin_sidecars_cache_key=root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
-            echo "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}"
+            echo "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
           } >> "$GITHUB_OUTPUT"
+      - name: Resolve nextest artifact cache eligibility
+        id: nextest-artifact-cache
+        continue-on-error: true
+        run: |
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+          echo "role_arn=$ROLE_ARN" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=read_write" >> "$GITHUB_OUTPUT"
+      - name: Configure AWS credentials for nextest artifact cache
+        id: nextest-artifact-cache-aws
+        if: steps.nextest-artifact-cache.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@example
+        with:
+          role-to-assume: ${{ steps.nextest-artifact-cache.outputs.role_arn }}
+          aws-region: ${{ vars.CI_SCCACHE_REGION }}
       - uses: Swatinem/rust-cache@example
         with:
           cache-on-failure: true
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
-      - name: Restore nextest archive
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
+      - name: Restore nextest archive from S3
         id: nextest-archive-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
-      - name: Restore root binary sidecars
+        if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'
+        env:
+          CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+          DIGEST: ${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+        run: |
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/nextest-archive/${CACHE_KEY}.tar.zst"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::nextest archive S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
+            exit 1
+          fi
+          aws s3 cp "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}" "$NEXTEST_ARCHIVE_PATH"
+          echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Restore root binary sidecars from S3
         id: root-bin-sidecars-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
-        with:
-          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
-          key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+        if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'
+        env:
+          CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+          DIGEST: ${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+        run: |
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/root-bin-sidecars/${CACHE_KEY}.tar.gz"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::root binary sidecar S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
+            exit 1
+          fi
+          aws s3 cp "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}" "$ROOT_BIN_SIDECARS_PATH"
+          echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Restore archive build target cache
         id: test-target-cache
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
@@ -664,13 +780,24 @@ jobs:
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
           just test-archive "$NEXTEST_ARCHIVE_PATH"
-      - name: Save nextest archive
+      - name: Save nextest archive to S3
         id: nextest-archive-cache-save
-        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-artifact-cache-aws.outcome == 'success' && steps.nextest-archive-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        env:
+          CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
+        run: |
+          if [[ ! -s "$NEXTEST_ARCHIVE_PATH" ]]; then
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/nextest-archive/${CACHE_KEY}.tar.zst"
+          if aws s3 cp "$NEXTEST_ARCHIVE_PATH" "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"; then
+            echo "save-status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
       - name: Extract root binary sidecars
         if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
         run: |
@@ -695,16 +822,27 @@ jobs:
             --repo-root "$GITHUB_WORKSPACE" \
             --target-dir "$target_dir" \
             --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
-      - name: Save root binary sidecars
+      - name: Save root binary sidecars to S3
         id: root-bin-sidecars-cache-save
-        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
-        with:
-          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
-          key: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-artifact-cache-aws.outcome == 'success' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        env:
+          CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
+        run: |
+          if [[ ! -s "$ROOT_BIN_SIDECARS_PATH" ]]; then
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/root-bin-sidecars/${CACHE_KEY}.tar.gz"
+          if aws s3 cp "$ROOT_BIN_SIDECARS_PATH" "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"; then
+            echo "save-status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
       - name: Save archive build target cache
         id: test-target-cache-save
-        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
@@ -759,8 +897,6 @@ jobs:
             --save-outcome "nextest archive=${{ needs.test-archive.outputs.nextest_archive_cache_save_outcome }}" \
             --save-outcome "root binary sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_save_outcome }}" \
             --save-outcome "archive build target=${{ needs.test-archive.outputs.archive_build_target_cache_save_outcome }}" \
-            --cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}" \
-            --cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}" \
             --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"
 
   test:
@@ -815,11 +951,13 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' }}
-      - uses: actions/cache@example
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
+      - name: Restore build managed target cache
+        id: build-managed-target-cache
+        uses: actions/cache/restore@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-
       - name: Install zig
@@ -831,6 +969,13 @@ jobs:
           tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
           fallback: none
       - run: just build
+      - name: Save build managed target cache
+        id: build-managed-target-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.build-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
       - name: Stage managed build artifact
         id: managed_artifact
         run: |
@@ -2601,6 +2746,25 @@ def replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new, 1)
 
 
+def replace_config_key_line_once(config: str, section: str, key: str, new_line: str | None) -> str:
+    # Tunable config values (e.g. cargo_build_jobs caps) change over time; anchor
+    # fixture mutations on section+key so the mutation fails loud instead of
+    # silently no-oping when the live value drifts.
+    header = f"[{section}]\n"
+    start = config.find(header)
+    if start == -1:
+        raise AssertionError(f"config section not found: {section!r}")
+    body_start = start + len(header)
+    next_section = config.find("\n[", body_start)
+    body_end = len(config) if next_section == -1 else next_section + 1
+    body = config[body_start:body_end]
+    match = re.search(rf"(?m)^{re.escape(key)} = .+\n", body)
+    if match is None:
+        raise AssertionError(f"config key not found in section {section!r}: {key!r}")
+    replacement = "" if new_line is None else new_line + "\n"
+    return config[:body_start] + body[: match.start()] + replacement + body[match.end() :] + config[body_end:]
+
+
 def base_upload_artifact_action_line() -> str:
     return next(
         line.strip()
@@ -4226,8 +4390,8 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             "must require CI_SCCACHE_S3_KEY_PREFIX",
             replace_once(
                 workflow,
-                ' && -n "$PREFIX"',
-                "",
+                '          [[ -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false',
+                '          [[ -n "$role_arn" && -n "$BUCKET" && -n "$REGION" ]] || vars_present=false',
             ),
         ),
         (
@@ -4262,8 +4426,15 @@ def assert_test_archive_sccache_fail_open_contract() -> None:
             "must configure PR read-only sccache role path",
             replace_once(
                 workflow,
-                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
-                "",
+                "          ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n"
+                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n"
+                "          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}\n"
+                "          REGION: ${{ vars.CI_SCCACHE_REGION }}\n"
+                "          PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}",
+                "          ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}\n"
+                "          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}\n"
+                "          REGION: ${{ vars.CI_SCCACHE_REGION }}\n"
+                "          PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}",
             ),
         ),
         (
@@ -5763,15 +5934,39 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             "test-archive archive build target cache hit output must be explicit when restore is skipped",
             replace_once(
                 workflow,
-                "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}\n",
+                "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || (steps.test-target-cache.outputs.cache-hit || 'false') }}\n",
                 "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}\n",
+            ),
+        ),
+        (
+            "test-archive archive build target cache hit output must default cache misses to false",
+            replace_once(
+                workflow,
+                "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || (steps.test-target-cache.outputs.cache-hit || 'false') }}\n",
+                "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}\n",
+            ),
+        ),
+        (
+            "test-archive must expose cache persistence audit outputs",
+            replace_once(
+                workflow,
+                "      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outcome == 'skipped' && 'skipped' || (steps.nextest-archive-cache.outputs.cache-hit || 'false') }}\n",
+                "      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit || 'false' }}\n",
+            ),
+        ),
+        (
+            "test-archive must expose cache persistence audit outputs",
+            replace_once(
+                workflow,
+                "      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outcome == 'skipped' && 'skipped' || (steps.root-bin-sidecars-cache.outputs.cache-hit || 'false') }}\n",
+                "      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit || 'false' }}\n",
             ),
         ),
         (
             "test-archive must expose cache persistence save outcomes",
             replace_once(
                 workflow,
-                "      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}\n",
+                "      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || (steps.nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}\n",
                 "",
             ),
         ),
@@ -5795,14 +5990,14 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             "test-archive cache persistence keys must come from single-source cache key outputs",
             replace_once(
                 workflow,
-                "      - name: Restore nextest archive\n",
+                "      - name: Restore nextest archive from S3\n",
                 """      - name: Emit cache persistence audit keys
         id: cache-audit-keys
         shell: bash
         run: |
           echo "nextest_archive_cache_key=duplicated-template" >> "$GITHUB_OUTPUT"
 
-      - name: Restore nextest archive
+      - name: Restore nextest archive from S3
 """,
             ),
         ),
@@ -5820,11 +6015,10 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
         ),
         (
             "test-archive cache persistence keys must come from single-source cache key outputs",
-            replace_once_after(
+            replace_once(
                 workflow,
-                "      - name: Resolve root nextest cache keys\n",
-                "'src/**', 'tests/**') }}",
-                "'src/**', 'tests/**', 'extra/**') }}",
+                "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ needs.nextest-fingerprint.outputs.nextest_digest }}",
+                "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ github.sha }}",
             ),
         ),
         (
@@ -8235,11 +8429,15 @@ def assert_runner_contract_requires_configured_cargo_build_jobs() -> None:
         raise AssertionError(
             f"runner contract must reject compile commands before CARGO_BUILD_JOBS setup, got: {late_setup_errors}"
         )
-    invalid_config = ci_provenance_config_fixture().replace("clippy = 2", "clippy = true", 1)
+    invalid_config = replace_config_key_line_once(
+        ci_provenance_config_fixture(), "cargo_build_jobs.ci", "clippy", "clippy = true"
+    )
     error = runner_config_load_error(invalid_config, verifier=verifier)
     if "cargo_build_jobs.ci.clippy must be a positive integer" not in error:
         raise AssertionError(f"runner contract must reject invalid cargo build jobs config, got: {error!r}")
-    missing_config = ci_provenance_config_fixture().replace("clippy = 2\n", "", 1)
+    missing_config = replace_config_key_line_once(
+        ci_provenance_config_fixture(), "cargo_build_jobs.ci", "clippy", None
+    )
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
     with tempfile.TemporaryDirectory() as tmp:
         config_path = write_temp_runner_config(pathlib.Path(tmp), missing_config)
@@ -8477,6 +8675,112 @@ def assert_backtester_ci_input_set_config_covers_systematic_inputs() -> None:
         raise AssertionError(f"CI input set config must reject missing target discovery helper cache input, got: {helper_errors}")
     if not any("backtester_detect input set must include scripts/rust_test_targets.py" in error for error in helper_errors):
         raise AssertionError(f"CI input set config must reject missing target discovery helper detect input, got: {helper_errors}")
+    workflow_in_cache = config.replace(
+        '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+        '  "scripts/rust_test_targets.py",\n  ".github/workflows/backtester-ci.yml",\n]\n\n[sets.backtester_detect]\n',
+        1,
+    )
+    workflow_in_cache_errors = verifier.verify_repo_automation_texts({config_path: workflow_in_cache})
+    if not any(
+        "backtester_cache input set must not include CI governance input .github/workflows/backtester-ci.yml" in error
+        for error in workflow_in_cache_errors
+    ):
+        raise AssertionError(f"CI input set config must reject workflow governance cache input, got: {workflow_in_cache_errors}")
+    input_script_in_cache = config.replace(
+        '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+        '  "scripts/rust_test_targets.py",\n  "scripts/ci_input_sets.py",\n]\n\n[sets.backtester_detect]\n',
+        1,
+    )
+    input_script_in_cache_errors = verifier.verify_repo_automation_texts({config_path: input_script_in_cache})
+    if not any(
+        "backtester_cache input set must not include CI governance input scripts/ci_input_sets.py" in error
+        for error in input_script_in_cache_errors
+    ):
+        raise AssertionError(
+            f"CI input set config must reject input-set helper governance cache input, got: {input_script_in_cache_errors}"
+        )
+    input_config_in_cache = config.replace(
+        '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+        '  "scripts/rust_test_targets.py",\n  "ci/rust-ci-inputs.toml",\n]\n\n[sets.backtester_detect]\n',
+        1,
+    )
+    input_config_in_cache_errors = verifier.verify_repo_automation_texts({config_path: input_config_in_cache})
+    if not any(
+        "backtester_cache input set must not include CI governance input ci/rust-ci-inputs.toml" in error
+        for error in input_config_in_cache_errors
+    ):
+        raise AssertionError(
+            f"CI input set config must reject input-set config governance cache input, got: {input_config_in_cache_errors}"
+        )
+    setup_action_in_cache = config.replace(
+        '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+        '  "scripts/rust_test_targets.py",\n  ".github/actions/setup-environment/**",\n]\n\n[sets.backtester_detect]\n',
+        1,
+    )
+    setup_action_in_cache_errors = verifier.verify_repo_automation_texts({config_path: setup_action_in_cache})
+    if not any(
+        "backtester_cache input set must not include CI governance input .github/actions/setup-environment/**" in error
+        for error in setup_action_in_cache_errors
+    ):
+        raise AssertionError(
+            f"CI input set config must reject setup-environment cache input, got: {setup_action_in_cache_errors}"
+        )
+    for setup_pathspec in (
+        ".github/actions/setup-environment/action.yml",
+        ".github/actions/setup-environment",
+        ".github/actions/**",
+    ):
+        overlapping_setup_action_in_cache = config.replace(
+            '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+            f'  "scripts/rust_test_targets.py",\n  "{setup_pathspec}",\n]\n\n[sets.backtester_detect]\n',
+            1,
+        )
+        overlapping_setup_action_errors = verifier.verify_repo_automation_texts(
+            {config_path: overlapping_setup_action_in_cache}
+        )
+        if not any(
+            f"backtester_cache input set must not include CI governance input {setup_pathspec}" in error
+            for error in overlapping_setup_action_errors
+        ):
+            raise AssertionError(
+                f"CI input set config must reject setup-environment-overlapping cache input "
+                f"{setup_pathspec}, got: {overlapping_setup_action_errors}"
+            )
+    for pathspec in (
+        "./scripts/ci_input_sets.py",
+        "scripts/../scripts/ci_input_sets.py",
+        ":(top)scripts/ci_input_sets.py",
+        ":(top).github/actions/setup-environment/action.yml",
+        ":/.github/actions/setup-environment/action.yml",
+        "./.github/actions/**",
+    ):
+        normalized_governance_input_in_cache = config.replace(
+            '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+            f'  "scripts/rust_test_targets.py",\n  "{pathspec}",\n]\n\n[sets.backtester_detect]\n',
+            1,
+        )
+        normalized_governance_input_errors = verifier.verify_repo_automation_texts(
+            {config_path: normalized_governance_input_in_cache}
+        )
+        if not any(
+            f"backtester_cache input set must not include CI governance input {pathspec}" in error
+            for error in normalized_governance_input_errors
+        ):
+            raise AssertionError(
+                f"CI input set config must reject normalized governance cache input "
+                f"{pathspec}, got: {normalized_governance_input_errors}"
+            )
+    unsupported_magic_in_cache = config.replace(
+        '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+        '  "scripts/rust_test_targets.py",\n  ":(glob).github/actions/**",\n]\n\n[sets.backtester_detect]\n',
+        1,
+    )
+    unsupported_magic_errors = verifier.verify_repo_automation_texts({config_path: unsupported_magic_in_cache})
+    if not any(
+        "backtester_cache input set must not use unsupported Git pathspec magic :(glob).github/actions/**" in error
+        for error in unsupported_magic_errors
+    ):
+        raise AssertionError(f"CI input set config must reject unsupported pathspec magic, got: {unsupported_magic_errors}")
 
 
 def assert_backtester_ci_requires_pr_event_types() -> None:
@@ -9710,6 +10014,52 @@ def test_harness_manifest_rejects_quoted_retired_member_test_flag() -> None:
         f"references retired integration-test member {TEST_HARNESS_MEMBER!r}",
         justfile_text=f"ci-test:\n    cargo test '--test' {TEST_HARNESS_MEMBER}\n",
     )
+
+
+def test_shared_registry_cache_save_is_main_push_only() -> None:
+    verifier = load_verifier()
+    old_job_only_guard = "${{ github.job == 'test-archive' }}"
+    workflow = f"""jobs:
+  test-archive:
+    steps:
+      - uses: Swatinem/rust-cache@example
+        with:
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: {old_job_only_guard}
+"""
+    errors = verifier.shared_registry_cache_errors(
+        "test-archive",
+        verifier.parse_jobs(workflow)["test-archive"],
+    )
+    expected = "test-archive shared Cargo registry/git cache save must be main-only"
+    if not any(expected in error for error in errors):
+        raise AssertionError(f"expected {expected!r}, got: {errors}")
+
+    main_only = workflow.replace(old_job_only_guard, MAIN_ONLY_SHARED_REGISTRY_SAVE_IF)
+    main_only_errors = verifier.shared_registry_cache_errors(
+        "test-archive",
+        verifier.parse_jobs(main_only)["test-archive"],
+    )
+    if any(expected in error for error in main_only_errors):
+        raise AssertionError(f"main-only save guard was rejected: {main_only_errors}")
+
+
+def test_nextest_artifact_cache_doc_names_rollout_evidence() -> None:
+    doc = (REPO_ROOT / "docs" / "ci" / "nextest-artifact-cache.md").read_text(encoding="utf-8")
+    required = (
+        "## Post-Merge Acceptance Evidence",
+        "push-to-main run",
+        "restore HIT",
+        "CI Storage Tripwire",
+        "week-one metrics",
+        "Tag pushes intentionally rebuild nextest archive payloads locally",
+    )
+    missing = [fragment for fragment in required if fragment not in doc]
+    if missing:
+        raise AssertionError(f"nextest artifact cache doc is missing rollout evidence terms: {missing!r}")
 
 
 def test_nextest_config_rejects_surprise_binary_overrides() -> None:
@@ -11639,10 +11989,10 @@ def assert_v6_red_renamed_path_cargo_source_builds_are_reported() -> None:
 
 
 def workflow_with_exact_head_governance_cache_inputs(workflow: str) -> str:
-    if all(cache_input in workflow for cache_input in EXACT_HEAD_GOVERNANCE_CACHE_INPUTS):
+    if all(cache_input in workflow for cache_input in FORBIDDEN_MANAGED_TARGET_CACHE_INPUTS):
         return workflow
-    governance_inputs = ", " + ", ".join(EXACT_HEAD_GOVERNANCE_CACHE_INPUTS)
-    return workflow.replace("'justfile') }}", f"'justfile'{governance_inputs}) }}").replace(
+    governance_inputs = ", " + ", ".join(FORBIDDEN_MANAGED_TARGET_CACHE_INPUTS)
+    return workflow.replace("'.cargo/config.toml') }}", f"'.cargo/config.toml'{governance_inputs}) }}").replace(
         "'specs/**/*.md') }}",
         f"'specs/**/*.md'{governance_inputs}) }}",
     )
@@ -12938,12 +13288,7 @@ commands: { test: "cargo test" }
 
 def assert_v6_red_exact_head_governance_inputs_are_cache_keyed() -> None:
     governed_workflow = workflow_with_exact_head_governance_cache_inputs(BASE_WORKFLOW)
-    assert_clean(governed_workflow)
-    for cache_input in EXACT_HEAD_GOVERNANCE_CACHE_INPUTS:
-        assert_error(
-            "cache keys must include exact-head CI/no-mistakes governance inputs",
-            governed_workflow.replace(f", {cache_input}", ""),
-        )
+    assert_error("managed target cache keys must use Rust-relevant inputs only", governed_workflow)
 
 
 def assert_shell_logical_lines_handles_crlf_continuations() -> None:
@@ -13107,10 +13452,17 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
   test-archive:
     name: bvs-test archive
     needs: [ci-policy, detect, fmt]
+    outputs:
+      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
+      bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
     env:
       BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BVS_NEXTEST_SHARDS: "4"
+      NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+      NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+      NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
+      NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
     steps:
       - name: Compute BVS cache input hash
         id: bvs_cache_inputs
@@ -13120,33 +13472,105 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           else
             echo "digest=$(python3 scripts/ci_input_sets.py hash backtester_cache)" >> "$GITHUB_OUTPUT"
           fi
-      - name: Restore BVS nextest archive
+      - name: Resolve BVS nextest artifact cache eligibility
+        id: bvs-nextest-artifact-cache
+        continue-on-error: true
+        env:
+          ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+          ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+          REGION: ${{ vars.CI_SCCACHE_REGION }}
+          PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
+        run: |
+          cache_mode=""
+          role_arn=""
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            cache_mode="read_write"
+            role_arn="$ROLE_ARN"
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$GITHUB_EVENT_NAME" == "merge_group" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            cache_mode="read_only"
+            role_arn="$PR_READONLY_ROLE_ARN"
+          fi
+          vars_present=true
+          [[ "$ENABLED" == "true" && -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false
+          if [[ -n "$cache_mode" && "$vars_present" == "true" ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "role_arn=$role_arn" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=$cache_mode" >> "$GITHUB_OUTPUT"
+      - name: Configure AWS credentials for BVS nextest artifact cache
+        id: bvs-nextest-artifact-cache-aws
+        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true'
+        continue-on-error: true
+        with:
+          role-to-assume: ${{ steps.bvs-nextest-artifact-cache.outputs.role_arn }}
+      - name: Restore BVS nextest archive from S3
         id: bvs-nextest-archive-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
-        with:
-          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
-      - name: Restore BVS binary sidecars
+        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'
+        env:
+          CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
+          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+        run: |
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-nextest-archive/${CACHE_KEY}.tar.zst"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::BVS nextest archive S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
+            exit 1
+          fi
+          aws s3 cp "$uri" "$BVS_NEXTEST_ARCHIVE_PATH" --only-show-errors || true
+          echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Restore BVS binary sidecars from S3
         id: bvs-bin-sidecars-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
-        with:
-          key: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
+        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'
+        env:
+          CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
+          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+        run: |
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-bin-sidecars/${CACHE_KEY}.tar.gz"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::BVS binary sidecar S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
+            exit 1
+          fi
+          aws s3 cp "$uri" "$BVS_BIN_SIDECARS_PATH" --only-show-errors || true
+          echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Resolve crate managed target dir
         id: crate_target
       - uses: Swatinem/rust-cache@example
         with:
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
       - name: Restore archive build target cache
         id: test-target-cache
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}
       - name: Build BVS nextest archive
         if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
         run: |
           mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)
+          printf 'BVS archive args: %s\\n' "${archive_args[*]}"
           just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"
       - name: Save BVS nextest archive
-        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        id: bvs-nextest-archive-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        run: |
+          if [[ ! -s "$BVS_NEXTEST_ARCHIVE_PATH" ]]; then
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if aws s3 cp "$BVS_NEXTEST_ARCHIVE_PATH" "$uri" --only-show-errors; then
+            echo "save-status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
       - name: Build BVS binary sidecars
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
         run: |
@@ -13154,10 +13578,30 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- "${cargo_args[@]}"
           tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
       - name: Save BVS binary sidecars
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        id: bvs-bin-sidecars-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        run: |
+          if [[ ! -s "$BVS_BIN_SIDECARS_PATH" ]]; then
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if aws s3 cp "$BVS_BIN_SIDECARS_PATH" "$uri" --only-show-errors; then
+            echo "save-status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
       - name: Save archive build target cache
-        if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}
+      - name: Summarize BVS S3 save outcomes
+        if: always()
+        run: |
+          echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Require BVS local payload
         run: |
           test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }
@@ -13196,15 +13640,194 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
 """
-    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
+    def bvs_cache_errors(workflow: str) -> list[str]:
+        return verifier.backtester_test_shard_errors(
+            ".github/workflows/backtester-ci.yml", workflow
+        ) + verifier.backtester_managed_target_cache_errors(
+            ".github/workflows/backtester-ci.yml", workflow
+        )
+
+    good_errors = bvs_cache_errors(good)
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
+
+    missing_bvs_eligibility_fail_open = replace_once(
+        good,
+        "        continue-on-error: true\n        env:\n          ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}\n",
+        "        env:\n          ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}\n",
+    )
+    missing_bvs_eligibility_fail_open_errors = bvs_cache_errors(missing_bvs_eligibility_fail_open)
+    assert any(
+        "backtester bvs-test archive S3 artifact cache eligibility must be fail-open" in error
+        for error in missing_bvs_eligibility_fail_open_errors
+    ), missing_bvs_eligibility_fail_open_errors
+
+    weakened_bvs_role_split = replace_once(
+        good,
+        '          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$GITHUB_EVENT_NAME" == "merge_group" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then\n',
+        '          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then\n',
+    )
+    weakened_bvs_role_split_errors = bvs_cache_errors(weakened_bvs_role_split)
+    assert any(
+        "backtester bvs-test archive S3 role selection must split main writers from read-only consumers" in error
+        for error in weakened_bvs_role_split_errors
+    ), weakened_bvs_role_split_errors
+
+    missing_bvs_aws_fail_open = replace_once(
+        good,
+        "        continue-on-error: true\n        with:\n          role-to-assume: ${{ steps.bvs-nextest-artifact-cache.outputs.role_arn }}\n",
+        "        with:\n          role-to-assume: ${{ steps.bvs-nextest-artifact-cache.outputs.role_arn }}\n",
+    )
+    missing_bvs_aws_fail_open_errors = bvs_cache_errors(missing_bvs_aws_fail_open)
+    assert any(
+        "backtester bvs-test archive S3 AWS credential setup must be fail-open" in error
+        for error in missing_bvs_aws_fail_open_errors
+    ), missing_bvs_aws_fail_open_errors
+
+    github_artifact_cache = replace_once(
+        good,
+        "      - name: Restore BVS nextest archive from S3\n",
+        "      - name: Restore forbidden BVS nextest archive cache\n"
+        "        uses: actions/cache/restore@example\n"
+        "        with:\n"
+        "          path: ${{ env.BVS_NEXTEST_ARCHIVE_PATH }}\n"
+        "          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}\n"
+        "      - name: Restore BVS nextest archive from S3\n",
+    )
+    github_artifact_cache_errors = bvs_cache_errors(github_artifact_cache)
+    assert any(
+        "backtester bvs-test archive payloads must use S3 artifact cache" in error
+        for error in github_artifact_cache_errors
+    ), github_artifact_cache_errors
+
+    missing_bvs_nextest_restore_guard = replace_once(
+        good,
+        "        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'\n",
+        "",
+    )
+    missing_bvs_nextest_restore_guard_errors = bvs_cache_errors(missing_bvs_nextest_restore_guard)
+    assert any(
+        "backtester bvs-test archive must gate S3 restores on eligibility and AWS credential success" in error
+        for error in missing_bvs_nextest_restore_guard_errors
+    ), missing_bvs_nextest_restore_guard_errors
+
+    missing_bvs_sidecar_restore_guard = replace_once_after(
+        good,
+        "      - name: Restore BVS binary sidecars from S3\n",
+        "        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'\n",
+        "",
+    )
+    missing_bvs_sidecar_restore_guard_errors = bvs_cache_errors(missing_bvs_sidecar_restore_guard)
+    assert any(
+        "backtester bvs-test archive must gate S3 restores on eligibility and AWS credential success" in error
+        for error in missing_bvs_sidecar_restore_guard_errors
+    ), missing_bvs_sidecar_restore_guard_errors
+
+    missing_bvs_nextest_integrity = replace_once(
+        good,
+        """          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::BVS nextest archive S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
+            exit 1
+          fi
+""",
+        "",
+    )
+    missing_bvs_nextest_integrity_errors = bvs_cache_errors(missing_bvs_nextest_integrity)
+    assert any(
+        "backtester bvs-test archive must fail closed on nextest archive S3 digest mismatch"
+        in error
+        for error in missing_bvs_nextest_integrity_errors
+    ), missing_bvs_nextest_integrity_errors
+
+    missing_bvs_sidecar_integrity = replace_once(
+        good,
+        """          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::BVS binary sidecar S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
+            exit 1
+          fi
+""",
+        "",
+    )
+    missing_bvs_sidecar_integrity_errors = bvs_cache_errors(missing_bvs_sidecar_integrity)
+    assert any(
+        "backtester bvs-test archive must fail closed on binary sidecar S3 digest mismatch"
+        in error
+        for error in missing_bvs_sidecar_integrity_errors
+    ), missing_bvs_sidecar_integrity_errors
+
+    weakened_bvs_s3_save_credentials = replace_once(
+        good,
+        "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' }}",
+        "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' }}",
+    )
+    weakened_bvs_s3_save_credentials_errors = bvs_cache_errors(weakened_bvs_s3_save_credentials)
+    assert any(
+        "backtester bvs-test archive must save nextest archive to S3 only from push-to-main with write credentials"
+        in error
+        for error in weakened_bvs_s3_save_credentials_errors
+    ), weakened_bvs_s3_save_credentials_errors
+
+    missing_bvs_save_outcome_output = replace_once(
+        good,
+        "      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}\n",
+        "",
+    )
+    missing_bvs_save_outcome_output_errors = bvs_cache_errors(missing_bvs_save_outcome_output)
+    assert any(
+        "backtester bvs-test archive must expose BVS S3 save outcomes" in error
+        for error in missing_bvs_save_outcome_output_errors
+    ), missing_bvs_save_outcome_output_errors
+
+    missing_bvs_save_outcome_summary = replace_once(
+        good,
+        '          echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == \'skipped\' && \'skipped\' || \'failed\') }}" >> "$GITHUB_STEP_SUMMARY"\n',
+        "",
+    )
+    missing_bvs_save_outcome_summary_errors = bvs_cache_errors(missing_bvs_save_outcome_summary)
+    assert any(
+        "backtester bvs-test archive must summarize BVS S3 save outcomes" in error
+        for error in missing_bvs_save_outcome_summary_errors
+    ), missing_bvs_save_outcome_summary_errors
+
+    missing_bvs_archive_save_status = replace_once(
+        good,
+        '            echo "save-status=failed" >> "$GITHUB_OUTPUT"\n',
+        "",
+    )
+    missing_bvs_archive_save_status_errors = bvs_cache_errors(missing_bvs_archive_save_status)
+    assert any(
+        "backtester bvs-test archive must emit explicit nextest archive S3 save status" in error
+        for error in missing_bvs_archive_save_status_errors
+    ), missing_bvs_archive_save_status_errors
+
+    missing_bvs_sidecar_save_status = replace_once_after(
+        good,
+        "      - name: Save BVS binary sidecars",
+        '            echo "save-status=failed" >> "$GITHUB_OUTPUT"\n',
+        "",
+    )
+    missing_bvs_sidecar_save_status_errors = bvs_cache_errors(missing_bvs_sidecar_save_status)
+    assert any(
+        "backtester bvs-test archive must emit explicit binary sidecars S3 save status" in error
+        for error in missing_bvs_sidecar_save_status_errors
+    ), missing_bvs_sidecar_save_status_errors
+
+    weakened_target_save = replace_once(
+        good,
+        "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
+        "        if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
+    )
+    weakened_target_save_errors = bvs_cache_errors(weakened_target_save)
+    assert any(
+        "backtester managed target cache saves must be push-to-main only" in error
+        for error in weakened_target_save_errors
+    ), weakened_target_save_errors
 
     fanout = good.replace(
         "      - name: Require BVS local payload\n",
         "      - name: Upload BVS test payload\n        with:\n          name: bvs-test-payload\n      - name: Require BVS local payload\n",
         1,
     )
-    fanout_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": fanout})
+    fanout_errors = bvs_cache_errors(fanout)
     assert any("legacy fan-out payload" in error for error in fanout_errors), fanout_errors
 
     download_in_archive = good.replace(
@@ -13214,9 +13837,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "      - name: Require BVS local payload\n",
         1,
     )
-    download_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": download_in_archive}
-    )
+    download_errors = bvs_cache_errors(download_in_archive)
     assert any(
         "backtester required bvs-test path must not download a test payload artifact" in error
         for error in download_errors
@@ -13231,22 +13852,20 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "      - name: Build issue #789 lib archive\n",
         1,
     )
-    consumer_target_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": consumer_managed_target}
-    )
+    consumer_target_errors = bvs_cache_errors(consumer_managed_target)
     assert any(
         "backtester bvs-test consumers must not restore the managed target cache" in error
         for error in consumer_target_errors
     ), consumer_target_errors
 
     hardcoded_archive_targets = good.replace(
-        'mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)\n          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"',
+        "mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)\n"
+        "          printf 'BVS archive args: %s\\n' \"${archive_args[*]}\"\n"
+        '          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"',
         'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" --lib --test backtesting_vertical_slice_tests --bin backtesting-vertical-slice',
         1,
     )
-    hardcoded_archive_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": hardcoded_archive_targets}
-    )
+    hardcoded_archive_errors = bvs_cache_errors(hardcoded_archive_targets)
     assert any("archive targets must be discovered" in error for error in hardcoded_archive_errors), hardcoded_archive_errors
 
     weakened_archive_guard = good.replace(
@@ -13254,9 +13873,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || true',
         1,
     )
-    weakened_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": weakened_archive_guard}
-    )
+    weakened_errors = bvs_cache_errors(weakened_archive_guard)
     assert any("backtester bvs-test archive must fail closed on missing local payload" in error for error in weakened_errors), weakened_errors
 
     exit_one_archive_guard = good.replace(
@@ -13264,9 +13881,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1',
         1,
     )
-    exit_one_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": exit_one_archive_guard}
-    )
+    exit_one_errors = bvs_cache_errors(exit_one_archive_guard)
     assert any(
         "backtester bvs-test archive must fail closed on missing local payload" in error
         for error in exit_one_errors
@@ -13644,17 +14259,205 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     )
 
     assert_error(
-        "nextest-fingerprint-reuse must be PR-only",
-        remove_fragment_if_present(BASE_WORKFLOW, " && github.event_name == 'pull_request'"),
-    )
-    assert_error(
-        "detector must deny fingerprint reuse outside pull_request",
+        "nextest-fingerprint-reuse must admit PR, workflow_dispatch, and merge_group consumers",
         remove_fragment_if_present(
             BASE_WORKFLOW,
-            """          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            echo "value=false" >> "$GITHUB_OUTPUT"
-          elif """,
+            " && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name)",
         ),
+    )
+    assert_error(
+        "detector must determine fingerprint_reuse_allowed",
+        remove_fragment_if_present(
+            BASE_WORKFLOW,
+            """          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+""",
+        ),
+    )
+    pr_only_detector_refs = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Fetch detector base/head refs",
+        "        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'",
+        "        if: github.event_name == 'pull_request'",
+    )
+    assert_error("detector base/head refs step must match canonical envelope", pr_only_detector_refs)
+    detector_refs_without_dispatch_branch = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Fetch detector base/head refs",
+        """          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            base_branch="$DISPATCH_BASE_REF"
+            if [[ "$base_branch" == refs/* ]]; then
+              echo "unsupported workflow_dispatch default_branch: $base_branch" >&2
+              exit 1
+            fi
+            base_ref="refs/remotes/origin/dispatch-base-${GITHUB_RUN_ID}"
+            head_ref="HEAD"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+""",
+        "",
+    )
+    assert_error(
+        "detector base/head refs step must match canonical script",
+        detector_refs_without_dispatch_branch,
+    )
+    detector_refs_without_merge_group_branch = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Fetch detector base/head refs",
+        """          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_ref="refs/remotes/origin/pr-base-merge-group-${GITHUB_RUN_ID}"
+            head_ref="HEAD"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+""",
+        "",
+    )
+    assert_error(
+        "detector base/head refs step must match canonical script",
+        detector_refs_without_merge_group_branch,
+    )
+
+    verifier = load_verifier()
+
+    def detector_refs_result(merge_group_base_ref: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            output_path = tmp_path / "github-output"
+            git_calls_path = tmp_path / "git-calls"
+            script = (
+                """set -euo pipefail
+git() {
+  if [[ "$1" == "check-ref-format" ]]; then
+    command git check-ref-format "$2"
+    return $?
+  fi
+  if [[ "$1" == "fetch" ]]; then
+    printf '%s\\n' "$*" >> "$GIT_CALLS"
+    return 0
+  fi
+  echo "unexpected git invocation: $*" >&2
+  return 99
+}
+"""
+                + verifier.DETECTOR_REFS_RUN
+            )
+            env = {
+                **os.environ,
+                "EVENT_NAME": "merge_group",
+                "PR_BASE_REF": "main",
+                "PR_NUMBER": "1182",
+                "DISPATCH_BASE_REF": "main",
+                "MERGE_GROUP_BASE_REF": merge_group_base_ref,
+                "GITHUB_RUN_ID": "12345",
+                "GITHUB_OUTPUT": str(output_path),
+                "GIT_CALLS": str(git_calls_path),
+            }
+            completed = subprocess.run(
+                ["bash", "-c", script],
+                cwd=tmp_path,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            output_text = output_path.read_text(encoding="utf-8") if output_path.exists() else ""
+            git_calls = git_calls_path.read_text(encoding="utf-8") if git_calls_path.exists() else ""
+            return completed, output_text, git_calls
+
+    for valid_base_ref in ("main", "refs/heads/main"):
+        completed, output_text, git_calls = detector_refs_result(valid_base_ref)
+        if completed.returncode != 0:
+            raise AssertionError((valid_base_ref, completed.returncode, completed.stderr))
+        if "base_ref=refs/remotes/origin/pr-base-merge-group-12345" not in output_text:
+            raise AssertionError((valid_base_ref, output_text))
+        if "head_ref=HEAD" not in output_text:
+            raise AssertionError((valid_base_ref, output_text))
+        if "+refs/heads/main:refs/remotes/origin/pr-base-merge-group-12345" not in git_calls:
+            raise AssertionError((valid_base_ref, git_calls))
+
+    for invalid_base_ref in ("", "refs/tags/main", "refs/pull/1182/merge", "main..evil", "feature branch"):
+        completed, output_text, git_calls = detector_refs_result(invalid_base_ref)
+        if completed.returncode == 0:
+            raise AssertionError((invalid_base_ref, output_text, git_calls))
+
+    def dispatch_refs_result(dispatch_base_ref: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            output_path = tmp_path / "github-output"
+            git_calls_path = tmp_path / "git-calls"
+            script = (
+                """set -euo pipefail
+git() {
+  if [[ "$1" == "check-ref-format" ]]; then
+    command git check-ref-format "$2"
+    return $?
+  fi
+  if [[ "$1" == "fetch" ]]; then
+    printf '%s\\n' "$*" >> "$GIT_CALLS"
+    return 0
+  fi
+  echo "unexpected git invocation: $*" >&2
+  return 99
+}
+"""
+                + verifier.DETECTOR_REFS_RUN
+            )
+            env = {
+                **os.environ,
+                "EVENT_NAME": "workflow_dispatch",
+                "PR_BASE_REF": "main",
+                "PR_NUMBER": "1182",
+                "DISPATCH_BASE_REF": dispatch_base_ref,
+                "MERGE_GROUP_BASE_REF": "main",
+                "GITHUB_RUN_ID": "12345",
+                "GITHUB_OUTPUT": str(output_path),
+                "GIT_CALLS": str(git_calls_path),
+            }
+            completed = subprocess.run(
+                ["bash", "-c", script],
+                cwd=tmp_path,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            output_text = output_path.read_text(encoding="utf-8") if output_path.exists() else ""
+            git_calls = git_calls_path.read_text(encoding="utf-8") if git_calls_path.exists() else ""
+            return completed, output_text, git_calls
+
+    completed, output_text, git_calls = dispatch_refs_result("main")
+    if completed.returncode != 0:
+        raise AssertionError(("workflow_dispatch", completed.returncode, completed.stderr))
+    if "base_ref=refs/remotes/origin/dispatch-base-12345" not in output_text:
+        raise AssertionError(output_text)
+    if "head_ref=HEAD" not in output_text:
+        raise AssertionError(output_text)
+    if "+refs/heads/main:refs/remotes/origin/dispatch-base-12345" not in git_calls:
+        raise AssertionError(git_calls)
+
+    for invalid_base_ref in ("", "refs/tags/main", "main..evil", "feature branch"):
+        completed, output_text, git_calls = dispatch_refs_result(invalid_base_ref)
+        if completed.returncode == 0:
+            raise AssertionError((invalid_base_ref, output_text, git_calls))
+
+    pr_only_governance_detector = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Detect fingerprint-reuse governance changes",
+        "        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'",
+        "        if: github.event_name == 'pull_request'",
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        pr_only_governance_detector,
     )
 
     assert_error(
@@ -13717,7 +14520,7 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         replace_once_after(
             BASE_WORKFLOW,
             "      - name: Detect fingerprint-reuse governance changes",
-            "        if: github.event_name == 'pull_request'",
+            "        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'",
             "        if: false",
         ),
     )
@@ -13726,7 +14529,7 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         without_once_after(
             BASE_WORKFLOW,
             "      - name: Detect fingerprint-reuse governance changes",
-            "        if: github.event_name == 'pull_request'\n",
+            "        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'\n",
         ),
     )
     assert_error(
@@ -13770,8 +14573,8 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         replace_once_after(
             BASE_WORKFLOW,
             "      - name: Detect fingerprint-reuse governance changes",
-            "        if: github.event_name == 'pull_request'\n",
-            """        if: github.event_name == 'pull_request'
+            "        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'\n",
+            """        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
         if: false
 """,
         ),
@@ -13791,9 +14594,9 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     git_diff_decoy_pathspec = replace_once_after(
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
-        """          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
-        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/config_validators.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
-          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
+        """          changed="$(git diff --name-only "$diff_range" --             .github/workflows/ci.yml""",
+        """          echo "$(git diff --name-only "$diff_range" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/config_validators.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
+          changed="$(git diff --name-only "$diff_range" --             .github/workflows/ci.yml""",
     )
     git_diff_decoy_pathspec = replace_once_after(
         git_diff_decoy_pathspec,
@@ -13819,16 +14622,166 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     )
     assert_error("nextest-fingerprint-reuse must skip main branch", relocated_job_if)
     assert_error("nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed", relocated_job_if)
+    assert_error(
+        "top-level env.RUSTFLAGS must be classified as reuse-scoped or build-neutral",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            '  JUST_VERSION: "1.49.0"\n  RUSTFLAGS: "-D warnings"\n',
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION must use a same-line scalar value",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            '  JUST_VERSION:\n    "1.49.0"\n',
+        ),
+    )
+    assert_error(
+        "top-level env entry must use canonical indentation",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            '  JUST_VERSION: "1.49.0"\n    RUSTFLAGS: "-D warnings"\n',
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION is reuse-scoped but missing from ci.yml",
+        replace_once(BASE_WORKFLOW, '  JUST_VERSION: "1.49.0"\n', ""),
+    )
+    assert_error(
+        "top-level env.RUST_VERIFICATION_ROOT_BASE is reuse-scoped but missing from ci.yml",
+        replace_once(
+            BASE_WORKFLOW,
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "",
+        ),
+    )
+    assert_error(
+        "top-level defaults must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(BASE_WORKFLOW, "permissions:\n", "defaults:\n  run:\n    shell: sh\n\npermissions:\n"),
+    )
+    assert_error(
+        "top-level defaults must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(BASE_WORKFLOW, "permissions:\n", "defaults: { run: { shell: sh } }\npermissions:\n"),
+    )
+    assert_error(
+        "YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "  RUST_VERIFICATION_ROOT_BASE: &reuse_root ${{ github.workspace }}/.rust-verification\n",
+        ),
+    )
+    assert_error(
+        "YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                '  JUST_VERSION: "1.49.0"\n',
+                '  JUST_VERSION: &just_version "1.49.0"\n',
+            ),
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "  RUST_VERIFICATION_ROOT_BASE: *just_version\n",
+        ),
+    )
+    assert_error(
+        "YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "  RUST_VERIFICATION_ROOT_BASE: &reuse@root ${{ github.workspace }}/.rust-verification\n",
+        ),
+    )
+    assert_error(
+        "YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                '  JUST_VERSION: "1.49.0"\n',
+                '  JUST_VERSION: &just+version "1.49.0"\n',
+            ),
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "  RUST_VERIFICATION_ROOT_BASE: *just+version\n",
+        ),
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "        run: |\n          python3 scripts/nextest_fingerprint.py",
+            "        run: !!str |\n          python3 scripts/nextest_fingerprint.py",
+        ),
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "permissions:\n",
+            "%YAML 1.2\npermissions:\n",
+        ),
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "permissions:\n",
+            "---\npermissions:\n",
+        ),
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        BASE_WORKFLOW + "\n--- {jobs: {evil: {}}}\n",
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "permissions:\n",
+            "? |\n  explicit key probe\npermissions:\n",
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION must use a single-line scalar value",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            "  JUST_VERSION: >-\n    1.49.0\n",
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION must use a single-line scalar value",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            "  JUST_VERSION: >2\n    1.49.0\n",
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION must use a single-line scalar value",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            "  JUST_VERSION:\n",
+        ),
+    )
+    nested_env_decoy = replace_once(
+        BASE_WORKFLOW,
+        '  JUST_VERSION: "1.49.0"\n',
+        '  S3_DEPLOY_PATH: |\n    JUST_VERSION: "1.49.0"\n',
+    )
+    assert_error("top-level env.JUST_VERSION is reuse-scoped but missing from ci.yml", nested_env_decoy)
     folded_job_if = replace_once(
         BASE_WORKFLOW,
-        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
-        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main'\n      || github.event_name == 'pull_request' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main'\n      || github.event_name == 'pull_request' }}",
     )
     assert_error("nextest-fingerprint-reuse must use the canonical job if", folded_job_if)
     folded_job_if_with_canonical_first_line = replace_once(
         BASE_WORKFLOW,
-        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
-        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}\n      || github.event_name == 'pull_request'",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}\n      || github.event_name == 'pull_request'",
     )
     assert_error("nextest-fingerprint-reuse must use the canonical job if", folded_job_if_with_canonical_first_line)
 
@@ -13917,13 +14870,13 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         replace_once_after(
             BASE_WORKFLOW,
             "      - name: Determine fingerprint reuse allowance",
-            """          else
+            """          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
-          fi""",
-            """          else
+""",
+            """          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
-          fi
-          echo "value=true" >> "$GITHUB_OUTPUT\"""",
+            echo "value=true" >> "$GITHUB_OUTPUT"
+""",
         ),
     )
     assert_error(
@@ -14625,8 +15578,8 @@ def main() -> int:
         "check-aarch64 managed target cache must run only when build_required is not true",
         replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        if: needs.detector.outputs.build_required != 'true'",
-            "      - uses: actions/cache@example",
+            "      - name: Restore check-aarch64 managed target cache\n        id: check-aarch64-managed-target-cache\n        uses: actions/cache/restore@example\n        if: needs.detector.outputs.build_required != 'true'",
+            "      - name: Restore check-aarch64 managed target cache\n        id: check-aarch64-managed-target-cache\n        uses: actions/cache/restore@example",
         ),
     )
     assert_error(
@@ -14654,11 +15607,11 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, '          use-default-target: "true"', '          # use-default-target: "true"'),
     )
     assert_error(
-        "check-aarch64 must use setup.outputs.managed_target_dir",
+        "check-aarch64 must use isolated managed target cache",
         replace_once(
             BASE_WORKFLOW,
-            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}",
         ),
     )
     assert_error(
@@ -14697,7 +15650,7 @@ def main() -> int:
         "clippy must use isolated managed target cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n",
+            "      - name: Restore clippy managed target cache\n        id: clippy-managed-target-cache\n        uses: actions/cache/restore@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n",
             "",
         ),
     )
@@ -14710,19 +15663,19 @@ def main() -> int:
         ),
     )
     assert_error(
-        "deny shared Cargo registry/git cache save must be single-owner",
+        "deny shared Cargo registry/git cache save must be main-only",
         replace_once(
             BASE_WORKFLOW,
-            "          save-if: ${{ github.job == 'test-archive' }}",
+            "          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}",
             "          save-if: true",
         ),
     )
     assert_error(
-        "deny shared Cargo registry/git cache save must be single-owner",
+        "deny shared Cargo registry/git cache save must be main-only",
         replace_once(
             BASE_WORKFLOW,
-            "          save-if: ${{ github.job == 'test-archive' }}",
-            "          cache-comment: |\n            save-if: ${{ github.job == 'test-archive' }}",
+            "          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}",
+            "          cache-comment: |\n            save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}",
         ),
     )
     assert_clean(
@@ -14793,13 +15746,13 @@ def main() -> int:
         "test-archive must use only shared Cargo registry/git rust-cache blocks",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Restore nextest archive",
+            "      - name: Restore nextest archive from S3",
             "      - uses: Swatinem/rust-cache@example\n"
             "        with:\n"
             "          cache-targets: true\n"
             "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}\n"
             "          key: nextest-archive-build-v1\n"
-            "      - name: Restore nextest archive",
+            "      - name: Restore nextest archive from S3",
         ),
     )
     assert_error(
@@ -14846,7 +15799,7 @@ def main() -> int:
             BASE_WORKFLOW,
             """      - name: Save archive build target cache
         id: test-target-cache-save
-        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
@@ -14859,41 +15812,91 @@ def main() -> int:
         "test-archive must save target cache only on target cache miss",
         replace_once(
             BASE_WORKFLOW,
-            "        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}\n",
+            "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}\n",
             "",
         ),
     )
     assert_error(
-        "test-archive managed target cache key must include src/**",
-        BASE_WORKFLOW.replace("'src/**', ", ""),
-    )
-    assert_error(
-        "test-archive managed target cache key must include tests/**",
-        BASE_WORKFLOW.replace(", 'tests/**'", ""),
+        "test-archive cache persistence keys must come from single-source cache key outputs",
+        replace_once(
+            BASE_WORKFLOW,
+            "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ needs.nextest-fingerprint.outputs.nextest_digest }}",
+            "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock') }}",
+        ),
     )
     assert_error(
         "test-archive must not save a second archive-build cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Restore nextest archive",
+            "      - name: Restore nextest archive from S3",
             "      - name: Archive build cache key marker\n"
             "        run: echo nextest-archive-build-v1\n"
-            "      - name: Restore nextest archive",
+            "      - name: Restore nextest archive from S3",
         ),
     )
     assert_error(
-        "test-archive must restore nextest archive cache",
+        "test-archive must restore nextest archive from S3 fail-open",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Restore nextest archive\n        id: nextest-archive-cache\n        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
+            "      - name: Restore nextest archive from S3\n        id: nextest-archive-cache\n",
             "",
         ),
     )
     assert_error(
-        "test-archive must save nextest archive cache",
+        "test-archive must fail closed on nextest archive S3 digest mismatch",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Save nextest archive\n        id: nextest-archive-cache-save\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
+            '          if [[ "$metadata_digest" != "$DIGEST" ]]; then\n',
+            '          if [[ "$metadata_digest" == "$DIGEST" ]]; then\n',
+        ),
+    )
+    assert_error(
+        "test-archive must fail closed on root binary sidecar S3 digest mismatch",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Restore root binary sidecars from S3",
+            '          if [[ "$metadata_digest" != "$DIGEST" ]]; then\n',
+            '          if [[ "$metadata_digest" == "$DIGEST" ]]; then\n',
+        ),
+    )
+    assert_error(
+        "test-archive must save nextest archive to S3 only from push-to-main",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Save nextest archive to S3\n        id: nextest-archive-cache-save\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must save nextest archive to S3 only from push-to-main with write credentials",
+        replace_once(
+            BASE_WORKFLOW,
+            "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-artifact-cache-aws.outcome == 'success' && steps.nextest-archive-cache.outputs.cache-hit != 'true' }}\n",
+            "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-archive-cache.outputs.cache-hit != 'true' }}\n",
+        ),
+    )
+    assert_error(
+        "test-archive must save root binary sidecar to S3 only from push-to-main with write credentials",
+        replace_once(
+            BASE_WORKFLOW,
+            "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-artifact-cache-aws.outcome == 'success' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true' }}\n",
+            "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true' }}\n",
+        ),
+    )
+    assert_error(
+        "test-archive must emit explicit nextest archive S3 save status",
+        replace_once(
+            BASE_WORKFLOW,
+            '            echo "save-status=failed" >> "$GITHUB_OUTPUT"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must emit explicit root binary sidecar S3 save status",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Save root binary sidecars to S3",
+            '            echo "save-status=failed" >> "$GITHUB_OUTPUT"\n',
             "",
         ),
     )
@@ -14906,11 +15909,27 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive cache must not use restore-keys",
+        "managed target cache keys must use Rust-relevant inputs only",
         replace_once(
             BASE_WORKFLOW,
-            "          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}\n      - name: Restore root binary sidecars",
-            "          key: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}\n          restore-keys: nextest-archive-v2-\n      - name: Restore root binary sidecars",
+            "hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml')",
+            "hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'justfile')",
+        ),
+    )
+    assert_error(
+        "test-archive payloads must use S3 artifact cache, not GitHub Actions cache",
+        replace_once(
+            BASE_WORKFLOW,
+            "      NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}",
+            "      # NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}",
+        ),
+    )
+    assert_error(
+        "managed target cache saves must be push-to-main only",
+        replace_once(
+            BASE_WORKFLOW,
+            "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.clippy-managed-target-cache.outputs.cache-hit != 'true' }}",
+            "        if: ${{ steps.clippy-managed-target-cache.outputs.cache-hit != 'true' }}",
         ),
     )
     # #400: every managed-target cache must declare a restore-keys prefix fallback.
@@ -14918,8 +15937,8 @@ def main() -> int:
         "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just fmt-check\n      - run: just clippy",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n      - run: just fmt-check\n      - run: just clippy",
         ),
     )
     assert_error(
@@ -14934,24 +15953,24 @@ def main() -> int:
         "check-aarch64 managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-\n      - if: needs.detector.outputs.build_required != 'true'",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - if: needs.detector.outputs.build_required != 'true'",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-\n      - if: needs.detector.outputs.build_required != 'true'",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n      - if: needs.detector.outputs.build_required != 'true'",
         ),
     )
     assert_error(
         "source-fence managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: |",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: |",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: |",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n      - run: |",
         ),
     )
     assert_error(
         "build managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-\n      - name: Install zig",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - name: Install zig",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-\n      - name: Install zig",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n      - name: Install zig",
         ),
     )
     # #400 parser tightness: the inline-scalar form of restore-keys is a valid
@@ -15016,8 +16035,8 @@ def main() -> int:
     assert_clean(
         workflow=replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
-            "      - uses: actions/cache@example\n        name: \"Cache with restore-keys: probe\"\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
+            "      - name: Restore clippy managed target cache\n        id: clippy-managed-target-cache\n        uses: actions/cache/restore@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
+            "      - name: \"Cache with restore-keys: probe\"\n        id: clippy-managed-target-cache\n        uses: actions/cache/restore@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
         ),
     )
     assert_error(
@@ -16495,11 +17514,11 @@ def main() -> int:
         ),
     )
     assert_error(
-        "clippy must use setup.outputs.managed_target_dir",
+        "clippy must use isolated managed target cache",
         replace_once(
             BASE_WORKFLOW,
-            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}",
         ),
     )
     assert_error(

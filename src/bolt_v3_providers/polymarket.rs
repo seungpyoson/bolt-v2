@@ -120,19 +120,21 @@ pub fn normalize_base_order_quantity(quantity: Decimal) -> Option<Decimal> {
 /// used to derate the command-rate ceiling so a config cannot pass validation
 /// yet over-drive the venue's REST quota. Taken from the pinned NT adapter
 /// (`adapters/polymarket/src/execution/`): a MARKET submit issues `get_book` +
-/// `post_order` = 2 requests (`submitter.rs`); a LIMIT submit issues 1; a modify
-/// issues 0 (rejected locally). A market + quote-quantity BUY would issue a 3rd
-/// request — a pre-submit `fetch_collateral_balance_pusd` (`execution/mod.rs`, only
-/// when `side==Buy && is_quote_quantity`) — but the `binary_oracle_edge_taker`
-/// archetype forbids that entry combination (`check_entry_order_combination`) and
-/// exits are SELLs that never take the collateral path, so 2 stays the provable
-/// worst-case across allowed configs. The global submit/modify throttle does not
-/// distinguish order type, so this worst case is the only sound bound — and the
-/// production strategy fires market exits, so the path is real. Excludes transient
+/// `post_order` = 2 requests (`submitter.rs`), and a market quote-quantity BUY
+/// issues a 3rd pre-submit `fetch_collateral_balance_pusd` request
+/// (`execution/mod.rs`, only when `side==Buy && is_quote_quantity`). A LIMIT
+/// submit issues 1; a modify issues 0 (rejected locally). The global
+/// submit/modify throttle does not distinguish order type, so this worst case is
+/// the only sound bound. Excludes transient
 /// RetryManager retries and non-submit calls (cancels, status, readiness/account
 /// probes); the full shared REST budget is the venue egress-capability contract
 /// tracked in #501.
-pub const MAX_REST_REQUESTS_PER_ORDER_COMMAND: u32 = 2;
+pub const MAX_REST_REQUESTS_PER_ORDER_COMMAND: u32 = 3;
+/// Minimum quote notional accepted by the Polymarket CLOB for marketable BUYs.
+/// Provenance is the captured venue reject
+/// `invalid amount for a marketable BUY order ($0.84), min size: 1`; the pinned
+/// NT adapter source does not encode this venue floor.
+pub const MARKET_QUOTE_BUY_MIN_NOTIONAL: Decimal = Decimal::ONE;
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] =
     &[updown::KEY, outcome_group::KEY, static_binary_event::KEY];
 const URL_SAFE_BASE64_BLOCK_WIDTH: usize = 4;

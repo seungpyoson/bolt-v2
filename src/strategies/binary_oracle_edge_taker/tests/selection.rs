@@ -693,6 +693,28 @@ fn inactive_expired_market_lifecycle_is_pruned_after_selection_update() {
 }
 
 #[test]
+fn selection_rotation_prunes_entry_reject_state_to_active_instruments() {
+    let mut strategy = ready_to_trade_strategy();
+    let stale_instrument = selected_entry_instrument(&strategy);
+    let next_active_instrument = InstrumentId::from("condition-MKT-2-MKT-2-UP.POLYMARKET");
+    strategy
+        .entry_reject_state
+        .insert(stale_instrument, EntryRejectState::Malformed);
+    strategy
+        .entry_reject_state
+        .insert(next_active_instrument, EntryRejectState::Balance);
+
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 31_001));
+
+    assert!(!strategy.entry_reject_state.contains_key(&stale_instrument));
+    assert!(
+        strategy
+            .entry_reject_state
+            .contains_key(&next_active_instrument)
+    );
+}
+
+#[test]
 fn tracked_market_lifecycle_is_retained_after_cooldown_expiry() {
     let mut strategy = ready_to_trade_strategy();
     let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();

@@ -54,7 +54,6 @@ window_ms = 600000
 sampling_interval_ms = 1000
 min_ready_sources = 1
 max_source_age_ms = 30000
-max_event_receive_lag_ms = 1000
 max_inter_sample_gap_ms = 60000
 min_coverage_ratio = 0.5
 max_cross_source_dispersion = 1.0
@@ -211,9 +210,12 @@ max_daily_loss = "10.00"
 max_rolling_loss = "10.00"
 max_drawdown = "15.00"
 
+[risk.live_submit_governance]
+mode = "supervised_deposit_capped"
+
 [risk.nautilus]
-max_order_submit_rate = "40/00:01:00"
-max_order_modify_rate = "40/00:01:00"
+max_order_submit_rate = "33/00:01:00"
+max_order_modify_rate = "33/00:01:00"
 max_notional_per_order = {}
 debug = false
 qsize = 100000

@@ -198,8 +198,8 @@ fn live_node_config_maps_explicit_nt_runtime_defaults_from_v3_root() {
     assert!(!cfg.exec_engine.allow_overfills);
     assert!(!cfg.exec_engine.manage_own_order_books);
     assert!(!cfg.risk_engine.bypass);
-    assert_eq!(cfg.risk_engine.max_order_submit_rate, "40/00:01:00");
-    assert_eq!(cfg.risk_engine.max_order_modify_rate, "40/00:01:00");
+    assert_eq!(cfg.risk_engine.max_order_submit_rate, "33/00:01:00");
+    assert_eq!(cfg.risk_engine.max_order_modify_rate, "33/00:01:00");
     assert!(cfg.risk_engine.max_notional_per_order.is_empty());
     assert!(!cfg.risk_engine.debug);
     assert_eq!(cfg.risk_engine.qsize, 100_000);
@@ -271,6 +271,26 @@ fn venue_spendability_source_config_reads_configured_capital_pool_source() {
     assert_eq!(snapshot.source, "operator_venue_spendability");
     assert_eq!(snapshot.spendable_collateral, Decimal::from(20));
     assert_eq!(snapshot.collateral_allowance, Decimal::from(12));
+}
+
+#[test]
+#[should_panic(expected = "capital admission venue spendability feed lock poisoned")]
+fn venue_spendability_refresh_panics_on_poisoned_capital_admission_feed_lock() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = fixture_loaded_config();
+    write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
+    let config = capital_admission_venue_spendability_source_config_from_loaded(&loaded)
+        .expect("source config should build")
+        .expect("fixture should configure source");
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+    let feed = runtime
+        .capital_admission_runtime_feed
+        .as_ref()
+        .expect("fixture should configure capital-admission runtime feed");
+    poison_mutex(feed);
+
+    let _ = refresh_capital_admission_venue_spendability_from_source(feed, &config);
 }
 
 #[test]

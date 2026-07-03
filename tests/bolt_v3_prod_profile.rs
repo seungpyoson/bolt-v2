@@ -19,7 +19,7 @@ use crate::support;
 use std::{collections::BTreeSet, path::Path};
 
 use bolt_v2::{
-    bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_config::{LiveSubmitGovernanceMode, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_prod_profile::{
         GENERATED_MARKER_PREFIX, ProdOverlay, ProfileError, ProfileId, generate_live_config,
         live_config_path, profile_overlay_path, verify_live_config,
@@ -193,6 +193,16 @@ fn composed_prod_config_is_btc_only_with_loss_rails() {
             && governor.max_rolling_loss.is_some()
             && governor.max_drawdown.is_some(),
         "configured loss thresholds (per-trade/daily/rolling/drawdown) must all be set"
+    );
+    assert_eq!(
+        loaded
+            .root
+            .risk
+            .live_submit_governance
+            .as_ref()
+            .map(|governance| governance.mode),
+        Some(LiveSubmitGovernanceMode::SupervisedDepositCapped),
+        "the supervised pilot must explicitly declare ungoverned live-submit mode"
     );
 }
 
@@ -513,6 +523,7 @@ fn overlay_declares_only_the_allowed_delta_keys() {
             "active_clients",
             "active_rv_surfaces",
             "client_execution",
+            "live_submit_governance",
             "loss_governor",
             "rv_policy_overrides",
             "strategy_files",

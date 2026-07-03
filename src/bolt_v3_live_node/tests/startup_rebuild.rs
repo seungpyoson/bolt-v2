@@ -168,6 +168,46 @@ fn startup_rebuild_reports_missing_nt_account_cache_balance() {
 }
 
 #[test]
+#[should_panic(expected = "capital admission rebuild configuration feed lock poisoned")]
+fn startup_rebuild_panics_on_poisoned_capital_admission_config_feed_lock() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+    let feed = runtime
+        .capital_admission_runtime_feed
+        .as_ref()
+        .expect("fixture should configure capital-admission runtime feed");
+    poison_mutex(feed);
+
+    runtime.rebuild_capital_admission_from_nt_cache(2_000);
+}
+
+#[test]
+#[should_panic(expected = "capital admission rebuild cache seed feed lock poisoned")]
+fn startup_rebuild_seed_panics_on_poisoned_capital_admission_feed_lock() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+    let feed = runtime
+        .capital_admission_runtime_feed
+        .as_ref()
+        .expect("fixture should configure capital-admission runtime feed");
+    poison_mutex(feed);
+
+    seed_capital_admission_runtime_feed_from_nt_cache(
+        feed,
+        Some((Decimal::ONE, Decimal::ONE)),
+        true,
+        &[],
+        Decimal::ZERO,
+        Decimal::ZERO,
+        2_000,
+    );
+}
+
+#[test]
 fn live_node_build_does_not_apply_loss_halt_before_first_trusted_snapshot() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());

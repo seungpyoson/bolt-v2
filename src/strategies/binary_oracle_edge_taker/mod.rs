@@ -64,7 +64,10 @@ use crate::{
         BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
     },
     bolt_v3_position_contract::is_observed_open_side,
-    bolt_v3_providers::normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+    bolt_v3_providers::{
+        market_quote_buy_min_notional_for_execution_venue,
+        normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+    },
     bolt_v3_reference_price::{
         ReferencePriceSelection, ReferencePriceSelector, ReferencePriceSourceHealth,
         ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceUpdate, ReferenceQuote,
@@ -561,6 +564,8 @@ pub struct BinaryOracleEdgeTaker {
     last_recorded_entry_skip: Option<EntrySkipDedupeKey>,
     last_recorded_exit_decision: Option<ExitDecisionDedupeKey>,
     pricing: PricingState,
+    latest_signal_quote: Option<FastSpotObservation>,
+    latest_selected_reference_quote: Option<SelectedReferenceQuoteEvidence>,
     reference_price_selector: Option<ReferencePriceSelector>,
     reference_price_quotes: BTreeMap<String, ReferenceQuote>,
     reference_price_source_health: BTreeMap<String, ReferencePriceSourceHealth>,
@@ -568,6 +573,7 @@ pub struct BinaryOracleEdgeTaker {
     resolution_strike_index_subscription: Option<InstrumentId>,
     resolution_strike_custom_subscription: Option<DataType>,
     resolution_strike_fetch_sequence: u64,
+    entry_reject_state: BTreeMap<InstrumentId, EntryRejectState>,
     /// Flood guard for #885 exit-evaluation evidence: the last durable outcome key
     /// recorded per open position. A durable record is emitted only when this key
     /// changes (or on an actual submit), collapsing a per-tick exit flood (e.g. the
@@ -585,6 +591,26 @@ pub struct BinaryOracleEdgeTaker {
     reference_price_subscribe_events: Vec<ReferencePriceSubscribeEvent>,
     #[cfg(test)]
     live_input_subscription_retry_events: Vec<LiveInputSubscriptionRetryEvent>,
+}
+
+#[derive(Clone, Debug)]
+struct SelectedReferenceQuoteEvidence {
+    quote: ReferenceQuote,
+    failed_over: bool,
+}
+
+#[derive(Clone, Debug)]
+enum EntryRejectState {
+    Malformed,
+    Balance,
+    Unfillable { book: OutcomeBookState },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EntryRejectClass {
+    Malformed,
+    Balance,
+    Unfillable,
 }
 
 impl BinaryOracleEdgeTaker {
@@ -629,6 +655,8 @@ impl BinaryOracleEdgeTaker {
             last_recorded_entry_skip: None,
             last_recorded_exit_decision: None,
             pricing,
+            latest_signal_quote: None,
+            latest_selected_reference_quote: None,
             reference_price_selector,
             reference_price_quotes: BTreeMap::new(),
             reference_price_source_health,
@@ -636,6 +664,7 @@ impl BinaryOracleEdgeTaker {
             resolution_strike_index_subscription: None,
             resolution_strike_custom_subscription: None,
             resolution_strike_fetch_sequence: INITIAL_COUNTER_U64,
+            entry_reject_state: BTreeMap::new(),
             last_exit_evidence_outcome: BTreeMap::new(),
             #[cfg(test)]
             book_subscription_events: Vec::new(),
@@ -663,6 +692,8 @@ impl BinaryOracleEdgeTaker {
         self.active.books.down.instrument_id = next_selection_books.down_instrument_id;
         self.active.apply_selection_timing(&snapshot);
         if reference_current_price_boundary_changed(&previous_active, &self.active) {
+            self.latest_signal_quote = None;
+            self.latest_selected_reference_quote = None;
             self.reset_reference_current_price_runtime_state();
         }
         // Bind the live strike to the market's interval-open boundary.
@@ -728,6 +759,7 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn observe_signal_quote(&mut self, quote: &FastSpotObservation) {
+        self.latest_signal_quote = Some(quote.clone());
         self.pricing
             .observe_signal_quote(quote, &taker_pricing_config(&self.config));
         self.after_signal_quote_observed(quote.observed_ts_ms, quote.received_ts_ms);
@@ -739,6 +771,7 @@ impl BinaryOracleEdgeTaker {
         observed_ts_ms: u64,
         received_ts_ms: Option<u64>,
     ) {
+        self.latest_signal_quote = None;
         self.pricing
             .observe_invalid_signal_quote(venue, observed_ts_ms);
         self.after_signal_quote_observed(observed_ts_ms, received_ts_ms);
@@ -1130,6 +1163,10 @@ impl BinaryOracleEdgeTaker {
                 .active
                 .observe_reference_price_quote(selected_quote, selection.failed_over())
         {
+            self.latest_selected_reference_quote = Some(SelectedReferenceQuoteEvidence {
+                quote: selected_quote.clone(),
+                failed_over: selection.failed_over(),
+            });
             self.pricing
                 .observe_reference_current_price(&FastSpotObservation {
                     venue: selected_quote.source_id().to_string(),
@@ -1660,6 +1697,7 @@ impl BinaryOracleEdgeTaker {
         self.market_lifecycle.retain(|market_id, ledger| {
             retained_market_ids.contains(market_id) || ledger.in_cooldown(now_ms)
         });
+        self.prune_entry_reject_state();
     }
 
     fn retained_market_lifecycle_ids(&self) -> BTreeSet<String> {
@@ -1685,6 +1723,23 @@ impl BinaryOracleEdgeTaker {
             .and_then(|exit| exit.pending_exit.market_id.clone())
         {
             retained.insert(market_id);
+        }
+        retained
+    }
+
+    fn prune_entry_reject_state(&mut self) {
+        let retained_instruments = self.retained_entry_reject_instrument_ids();
+        self.entry_reject_state
+            .retain(|instrument_id, _| retained_instruments.contains(instrument_id));
+    }
+
+    fn retained_entry_reject_instrument_ids(&self) -> BTreeSet<InstrumentId> {
+        let mut retained = BTreeSet::new();
+        if let Some(instrument_id) = self.instrument_id_for_side(OutcomeSide::Up) {
+            retained.insert(instrument_id);
+        }
+        if let Some(instrument_id) = self.instrument_id_for_side(OutcomeSide::Down) {
+            retained.insert(instrument_id);
         }
         retained
     }
@@ -1788,6 +1843,67 @@ impl BinaryOracleEdgeTaker {
 
     fn current_realized_vol_at(&self, now_ms: u64) -> Option<f64> {
         self.pricing.current_realized_vol_at(now_ms)
+    }
+
+    fn evidence_spot_price(&self) -> Option<f64> {
+        self.pricing
+            .spot_price()
+            .filter(|value| is_positive_finite(*value))
+            .or_else(|| {
+                self.latest_signal_quote
+                    .as_ref()
+                    .map(|quote| quote.price)
+                    .filter(|value| is_positive_finite(*value))
+            })
+    }
+
+    fn evidence_spot_venue_name(&self) -> Option<String> {
+        self.pricing
+            .selected_pricing_spot()
+            .map(|spot| spot.venue.clone())
+            .or_else(|| {
+                self.latest_signal_quote
+                    .as_ref()
+                    .filter(|quote| is_positive_finite(quote.price))
+                    .map(|quote| quote.venue.clone())
+            })
+    }
+
+    fn selected_reference_quote_for_evidence(&self) -> Option<&SelectedReferenceQuoteEvidence> {
+        self.latest_selected_reference_quote.as_ref()
+    }
+
+    fn evidence_reference_current_price(&self) -> Option<f64> {
+        self.pricing
+            .last_reference_current_price()
+            .filter(|value| is_positive_finite(*value))
+            .or_else(|| {
+                self.active
+                    .reference_current_price
+                    .filter(|value| is_positive_finite(*value))
+            })
+            .or_else(|| {
+                self.selected_reference_quote_for_evidence()
+                    .map(|evidence| evidence.quote.price())
+                    .filter(|value| is_positive_finite(*value))
+            })
+    }
+
+    fn evidence_reference_current_price_source_id(&self) -> Option<String> {
+        self.active
+            .reference_current_price_source_id
+            .clone()
+            .or_else(|| {
+                self.selected_reference_quote_for_evidence()
+                    .map(|evidence| evidence.quote.source_id().to_string())
+            })
+    }
+
+    fn evidence_reference_current_price_failed_over(&self) -> Option<bool> {
+        self.active.reference_current_price_failed_over.or_else(|| {
+            self.selected_reference_quote_for_evidence()
+                .map(|evidence| evidence.failed_over)
+        })
     }
 
     fn current_seconds_to_expiry_at(&self, now_ms: u64) -> Option<u64> {
@@ -1901,11 +2017,11 @@ impl BinaryOracleEdgeTaker {
         submission: &EntrySubmissionDecision,
     ) -> EntryEvaluationLogFields {
         let evaluation = &submission.evaluation;
-        let spot_venue_name = self
-            .pricing
-            .selected_pricing_spot()
-            .map(|spot| spot.venue.clone());
-        let fast_venue_available = spot_venue_name.is_some();
+        let spot_venue_name = self.evidence_spot_venue_name();
+        let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
+        let reference_current_price = self.evidence_reference_current_price();
+        let reference_current_price_available =
+            self.pricing.last_reference_current_price().is_some();
         let (realized_vol_source_venue, realized_vol_source_ts_ms) =
             self.pricing.current_realized_vol_source_at(now_ms);
 
@@ -1914,9 +2030,9 @@ impl BinaryOracleEdgeTaker {
             phase: self.active.phase,
             gate_blocked_by: evaluation.gate.blocked_by.clone(),
             pricing_blocked_by: evaluation.pricing_blocked_by.clone(),
-            spot_price: self.pricing.spot_price(),
+            spot_price: self.evidence_spot_price(),
             spot_venue_name,
-            reference_current_price: self.pricing.last_reference_current_price(),
+            reference_current_price,
             interval_open: self.active.interval_open,
             seconds_to_expiry: self.current_seconds_to_expiry_at(now_ms),
             realized_vol: self.current_realized_vol_at(now_ms),
@@ -2023,8 +2139,9 @@ impl BinaryOracleEdgeTaker {
             sized_notional: evaluation.sized_notional,
             selected_side: evaluation.selected_side,
             fast_venue_available,
+            reference_current_price_available,
             reference_current_price_available_without_fast_venue: !fast_venue_available
-                && self.pricing.last_reference_current_price().is_some(),
+                && reference_current_price_available,
             lead_quality_policy_applied: self.pricing.lead_quality_policy_applied,
             lead_quality_reason: if self.pricing.fast_venue_incoherent {
                 EVIDENCE_REASON_NO_FAST_VENUE_CLEARED_LEAD_QUALITY_THRESHOLDS
@@ -2063,7 +2180,7 @@ impl BinaryOracleEdgeTaker {
                 );
             }
             log::warn!(
-                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
                 fields.phase,
@@ -2125,6 +2242,7 @@ impl BinaryOracleEdgeTaker {
                 fields.sized_notional,
                 fields.selected_side,
                 fields.fast_venue_available,
+                fields.reference_current_price_available,
                 fields.reference_current_price_available_without_fast_venue,
                 fields.lead_quality_policy_applied,
                 fields.lead_quality_reason,
@@ -2139,7 +2257,7 @@ impl BinaryOracleEdgeTaker {
             );
         } else {
             log::info!(
-                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
                 fields.phase,
@@ -2201,6 +2319,7 @@ impl BinaryOracleEdgeTaker {
                 fields.sized_notional,
                 fields.selected_side,
                 fields.fast_venue_available,
+                fields.reference_current_price_available,
                 fields.reference_current_price_available_without_fast_venue,
                 fields.lead_quality_policy_applied,
                 fields.lead_quality_reason,
@@ -2259,6 +2378,7 @@ impl BinaryOracleEdgeTaker {
         unclassified_context: Option<String>,
     ) -> Result<()> {
         let fields = self.entry_evaluation_log_fields_at(now_ms, decision);
+        let forced_flat_inputs = self.entry_forced_flat_evidence_inputs();
         let key = EntrySkipDedupeKey {
             reason_category,
             gate_blocked_by: fields
@@ -2273,6 +2393,9 @@ impl BinaryOracleEdgeTaker {
                 .collect(),
             market_id: fields.market_id.clone(),
             interval_open: option_evidence_number(fields.interval_open),
+            fast_venue_available: fields.fast_venue_available,
+            reference_current_price_available: fields.reference_current_price_available,
+            fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
         };
         if self.last_recorded_entry_skip.as_ref() == Some(&key) {
             return Ok(());
@@ -2283,7 +2406,7 @@ impl BinaryOracleEdgeTaker {
             reason_category,
             unclassified_context,
             &fields,
-            self.entry_forced_flat_evidence_inputs(),
+            forced_flat_inputs,
         );
         if let Err(error) = self
             .context
@@ -2445,6 +2568,60 @@ impl BinaryOracleEdgeTaker {
     fn executable_edge_order_shape_block_reason(&self) -> Option<BinaryOutcomeEdgeBlockReason> {
         (!BinaryOracleEdgeTakerBuilder::entry_order_shape_supported(&self.config.entry_order))
             .then_some(BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape)
+    }
+
+    fn entry_reject_block_reason_for(
+        &self,
+        instrument_id: InstrumentId,
+        selected_side: OutcomeSide,
+    ) -> Option<&'static str> {
+        match self.entry_reject_state.get(&instrument_id)? {
+            EntryRejectState::Malformed => Some(ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED),
+            EntryRejectState::Balance => Some(ENTRY_BLOCK_REASON_ENTRY_BALANCE_REJECTED),
+            EntryRejectState::Unfillable { book } => {
+                let current_book = self.active_book_for_outcome(selected_side);
+                (current_book == book)
+                    .then_some(ENTRY_BLOCK_REASON_ENTRY_UNFILLABLE_REJECTED_UNCHANGED_BOOK)
+            }
+        }
+    }
+
+    fn record_entry_reject(&mut self, event: &nautilus_model::events::OrderRejected) {
+        let Some(pending) = self.pending_entry().cloned() else {
+            return;
+        };
+        if pending.client_order_id != event.client_order_id
+            || pending.instrument_id != event.instrument_id
+        {
+            return;
+        }
+
+        match classify_entry_reject_reason(event.reason.as_str()) {
+            Some(EntryRejectClass::Malformed) => {
+                self.entry_reject_state
+                    .insert(event.instrument_id, EntryRejectState::Malformed);
+            }
+            Some(EntryRejectClass::Balance) => {
+                self.entry_reject_state
+                    .insert(event.instrument_id, EntryRejectState::Balance);
+            }
+            Some(EntryRejectClass::Unfillable) => {
+                self.entry_reject_state.insert(
+                    event.instrument_id,
+                    EntryRejectState::Unfillable {
+                        book: pending.book.clone(),
+                    },
+                );
+            }
+            None => {
+                self.entry_reject_state.insert(
+                    event.instrument_id,
+                    EntryRejectState::Unfillable {
+                        book: pending.book.clone(),
+                    },
+                );
+            }
+        }
     }
 
     fn preliminary_edge_pricing_notional_for_side(&self, side: OutcomeSide) -> f64 {
@@ -3669,16 +3846,21 @@ impl BinaryOracleEdgeTaker {
         } else {
             None
         };
-        let quote_quantity_last_price = if is_quote_quantity {
-            self.quote_quantity_last_price_for_order(order)
-        } else {
-            None
-        };
-        let quote_quantity_reference_price = if is_quote_quantity {
-            self.quote_quantity_reference_price_for_order(order)
-        } else {
-            None
-        };
+        let quote_quantity_uses_submitted_notional = is_quote_quantity
+            && matches!(order, OrderAny::Market(_))
+            && order.order_side() == OrderSide::Buy;
+        let quote_quantity_last_price =
+            if is_quote_quantity && !quote_quantity_uses_submitted_notional {
+                self.quote_quantity_last_price_for_order(order)
+            } else {
+                None
+            };
+        let quote_quantity_reference_price =
+            if is_quote_quantity && !quote_quantity_uses_submitted_notional {
+                self.quote_quantity_reference_price_for_order(order)
+            } else {
+                None
+            };
         let risk_reducing_exit_position_context = if matches!(
             intent.intent_kind,
             BoltV3OrderIntentKind::Exit
@@ -3880,6 +4062,10 @@ impl BinaryOracleEdgeTaker {
             Some(OutcomeSide::Down) => decision.evaluation.down_worst_case_ev_bps,
             None => None,
         };
+        let reference_current_price = self.evidence_reference_current_price();
+        let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
+        let reference_current_price_available =
+            self.pricing.last_reference_current_price().is_some();
 
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
@@ -3926,19 +4112,14 @@ impl BinaryOracleEdgeTaker {
                 .map_or_else(String::new, evidence_number),
             reference_quote_ts_event,
             spot_price: self
-                .pricing
-                .spot_price()
-                .filter(|value| is_positive_finite(*value))
+                .evidence_spot_price()
                 .map_or_else(String::new, evidence_number),
-            reference_current_price: self
-                .pricing
-                .last_reference_current_price()
-                .map(evidence_number),
-            reference_current_price_source_id: self
-                .active
-                .reference_current_price_source_id
-                .clone(),
-            reference_current_price_failed_over: self.active.reference_current_price_failed_over,
+            fast_venue_available,
+            reference_current_price: reference_current_price.map(evidence_number),
+            reference_current_price_available,
+            reference_current_price_source_id: self.evidence_reference_current_price_source_id(),
+            reference_current_price_failed_over: self
+                .evidence_reference_current_price_failed_over(),
             realized_volatility: String::new(),
             realized_volatility_surface_id: realized_volatility.surface_id,
             realized_volatility_as_of_ms: realized_volatility.as_of_ms,
@@ -4003,10 +4184,7 @@ impl BinaryOracleEdgeTaker {
                 .iter()
                 .map(entry_pricing_block_reason_to_evidence)
                 .collect(),
-            fast_venue_name: self
-                .pricing
-                .selected_pricing_spot()
-                .map(|spot| spot.venue.clone()),
+            fast_venue_name: self.evidence_spot_venue_name(),
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
             fast_venue_incoherent: self.pricing.fast_venue_incoherent,
@@ -4126,6 +4304,10 @@ impl BinaryOracleEdgeTaker {
         let order_side = decision.order_side.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires submission order side")
         })?;
+        let reference_current_price = self.evidence_reference_current_price();
+        let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
+        let reference_current_price_available =
+            self.pricing.last_reference_current_price().is_some();
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
             configured_target_id: self.config.configured_target_id.clone(),
@@ -4167,15 +4349,12 @@ impl BinaryOracleEdgeTaker {
             price_to_beat_value: evidence_number(price_to_beat),
             reference_quote_ts_event,
             spot_price: evidence_number(spot_price),
-            reference_current_price: self
-                .pricing
-                .last_reference_current_price()
-                .map(evidence_number),
-            reference_current_price_source_id: self
-                .active
-                .reference_current_price_source_id
-                .clone(),
-            reference_current_price_failed_over: self.active.reference_current_price_failed_over,
+            fast_venue_available,
+            reference_current_price: reference_current_price.map(evidence_number),
+            reference_current_price_available,
+            reference_current_price_source_id: self.evidence_reference_current_price_source_id(),
+            reference_current_price_failed_over: self
+                .evidence_reference_current_price_failed_over(),
             realized_volatility: evidence_number(realized_volatility),
             realized_volatility_surface_id: realized_volatility_fields.surface_id,
             realized_volatility_as_of_ms: realized_volatility_fields.as_of_ms,
@@ -4226,10 +4405,7 @@ impl BinaryOracleEdgeTaker {
                 .iter()
                 .map(entry_pricing_block_reason_to_evidence)
                 .collect(),
-            fast_venue_name: self
-                .pricing
-                .selected_pricing_spot()
-                .map(|spot| spot.venue.clone()),
+            fast_venue_name: self.evidence_spot_venue_name(),
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
             fast_venue_incoherent: self.pricing.fast_venue_incoherent,
@@ -4552,6 +4728,10 @@ impl BinaryOracleEdgeTaker {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE);
             return decision;
         };
+        if let Some(reason) = self.entry_reject_block_reason_for(instrument_id, selected_side) {
+            decision.blocked_reason = Some(reason);
+            return decision;
+        }
         let Some(submission_vwap) =
             executable_submission_vwap_from_evaluation(&evaluation, selected_side)
         else {
@@ -4559,31 +4739,52 @@ impl BinaryOracleEdgeTaker {
             return decision;
         };
         let price = submission_vwap.limit_price;
-        let max_quantity_at_limit = sized_notional / price;
-        if !is_positive_finite(max_quantity_at_limit) {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING);
-            return decision;
-        }
-        let shares_value = submission_vwap.vwap_quantity.min(max_quantity_at_limit);
-        let Ok(quantity) = instrument.try_make_qty(shares_value, Some(true)) else {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
-            return decision;
+        let quantity_value = if self.config.entry_order.is_quote_quantity {
+            let Some(min_notional) =
+                market_quote_buy_min_notional_for_execution_venue(self.context.execution_venue())
+            else {
+                decision.blocked_reason =
+                    Some(ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED);
+                return decision;
+            };
+            let Some(sized_notional_decimal) = Decimal::from_f64(sized_notional) else {
+                decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
+                return decision;
+            };
+            if sized_notional_decimal < min_notional {
+                decision.blocked_reason =
+                    Some(ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM);
+                return decision;
+            }
+            sized_notional
+        } else {
+            let max_quantity_at_limit = sized_notional / price;
+            if !is_positive_finite(max_quantity_at_limit) {
+                decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING);
+                return decision;
+            }
+            let shares_value = submission_vwap.vwap_quantity.min(max_quantity_at_limit);
+            let Ok(quantity) = instrument.try_make_qty(shares_value, Some(true)) else {
+                decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
+                return decision;
+            };
+            let Some(quantity) =
+                self.normalize_base_order_quantity_for_execution_venue(&instrument, quantity)
+            else {
+                decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
+                return decision;
+            };
+            let quantity_value = quantity.as_f64();
+            let limit_notional = price * quantity_value;
+            if limit_notional_exceeds_sized_notional(limit_notional, sized_notional) {
+                decision.blocked_reason =
+                    Some(ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL);
+                return decision;
+            }
+            quantity_value
         };
-        let Some(quantity) =
-            self.normalize_base_order_quantity_for_execution_venue(&instrument, quantity)
-        else {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
-            return decision;
-        };
-        let quantity_value = quantity.as_f64();
         if !is_positive_finite(quantity_value) {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE);
-            return decision;
-        }
-        let limit_notional = price * quantity_value;
-        if limit_notional_exceeds_sized_notional(limit_notional, sized_notional) {
-            decision.blocked_reason =
-                Some(ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL);
             return decision;
         }
 
@@ -4685,6 +4886,7 @@ impl BinaryOracleEdgeTaker {
             return Ok(None);
         }
 
+        self.entry_reject_state.remove(&instrument_id);
         self.last_recorded_entry_skip = None;
         let price = Price::new(price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
@@ -5446,6 +5648,7 @@ impl DataActor for BinaryOracleEdgeTaker {
 
 nautilus_strategy!(BinaryOracleEdgeTaker, {
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
+        self.record_entry_reject(&event);
         self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
         self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
@@ -5706,6 +5909,14 @@ const ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE: &str =
     "historical_entry_fee_unavailable";
 const ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION: &str =
     "one_position_invariant_violation";
+const ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED: &str = "entry_malformed_rejected";
+const ENTRY_BLOCK_REASON_ENTRY_BALANCE_REJECTED: &str = "entry_balance_rejected";
+const ENTRY_BLOCK_REASON_ENTRY_UNFILLABLE_REJECTED_UNCHANGED_BOOK: &str =
+    "entry_unfillable_rejected_unchanged_book";
+const ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM: &str =
+    "entry_quote_notional_below_venue_minimum";
+const ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED: &str =
+    "entry_quote_notional_minimum_unmodeled";
 const EXIT_BLOCK_REASON_NO_OPEN_POSITION: &str = "no_open_position";
 const EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING: &str = "exit_already_pending";
 const EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING: &str = "entry_order_still_working";
@@ -5848,6 +6059,50 @@ fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
         || reason == EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
         || reason == EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
         || reason == EXIT_BLOCK_REASON_EXIT_HOLD)
+}
+
+fn classify_entry_reject_reason(raw_reason: &str) -> Option<EntryRejectClass> {
+    let reason = raw_reason.to_lowercase();
+    if reason.contains("precision")
+        || reason.contains("accuracy")
+        || reason.contains("invalid amount")
+        || reason.contains("invalid order amount")
+        || reason.contains("min size")
+        || reason.contains("minimum size")
+        || reason.contains("minimum notional")
+        || reason.contains("too small")
+        || reason_has_ascii_token(&reason, "tick")
+    {
+        return Some(EntryRejectClass::Malformed);
+    }
+
+    if reason.contains("insufficient balance")
+        || reason.contains("not enough balance")
+        || reason.contains("balance is not enough")
+        || (reason_has_ascii_token(&reason, "balance")
+            && reason_has_ascii_token(&reason, "allowance"))
+    {
+        return Some(EntryRejectClass::Balance);
+    }
+
+    if reason_has_ascii_token(&reason, "fok")
+        && (reason.contains("no match")
+            || reason.contains("not match")
+            || reason.contains("could not be matched")
+            || reason.contains("unfillable")
+            || reason.contains("not fill")
+            || reason.contains("fill or kill"))
+    {
+        return Some(EntryRejectClass::Unfillable);
+    }
+
+    None
+}
+
+fn reason_has_ascii_token(reason: &str, token: &str) -> bool {
+    reason
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|part| part == token)
 }
 
 #[cfg(test)]

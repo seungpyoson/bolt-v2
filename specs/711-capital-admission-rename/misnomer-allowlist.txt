@@ -1,6 +1,6 @@
 # Format: path:line<TAB>exact stripped line<TAB>justification
-docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml:13951	literal = '''"position_sizer_rebuild"'''	Runtime-literal audit row for retained FR-017 legacy audit-skip literal.
-docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml:13952	context = '''| "position_sizer_rebuild"'''	Runtime-literal audit row for retained FR-017 legacy audit-skip literal.
+docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml:14087	literal = '''"position_sizer_rebuild"'''	Runtime-literal audit row for retained FR-017 legacy audit-skip literal.
+docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml:14088	context = '''| "position_sizer_rebuild"'''	Runtime-literal audit row for retained FR-017 legacy audit-skip literal.
 scripts/migrate_bolt_v3_capital_admission_config.py:23	OLD_POOL_POLICY_HEADER_PREFIX = ("risk", "capital_pools", "sizing_policy")	One-time migrator must recognize pre-migration serialized input.
 scripts/migrate_bolt_v3_capital_admission_config.py:24	OLD_POOL_POLICY_KEY_RE = re.compile(rb"^(\s*)sizing_policy(?=\s*(?:[.=]))")	One-time migrator must recognize pre-migration serialized input.
 scripts/migrate_bolt_v3_capital_admission_config.py:106	rewritten_body = body.replace(b"sizing_policy", b"capital_admission_policy", 1)	One-time migrator must recognize pre-migration serialized input.
@@ -227,9 +227,9 @@ specs/711-capital-admission-rename/spec.md:399	a payload string whose value is l
 specs/711-capital-admission-rename/spec.md:408	`position_sizer_rebuild` audit record is skipped (not failed).	Issue #711 authoritative rename spec/plan historical reference.
 specs/711-capital-admission-rename/spec.md:410	same pool policy values as the pre-rename config; an un-migrated `sizing_policy` config and an	Issue #711 authoritative rename spec/plan historical reference.
 specs/711-capital-admission-rename/spec.md:424	- **#658 is merged** (2026-06-15), so the `position_sizer` naming is on `main` and this rename is	Issue #711 authoritative rename spec/plan historical reference.
-src/bolt_v3_decision_evidence.rs:2126	| "position_sizer_rebuild"	FR-017 legacy pre-v14 audit-only discriminator retained in below-schema skip set.
-src/bolt_v3_decision_evidence.rs:3406	gate_id: "bolt_v3.position_sizer_rebuild".to_string(),	FR-017 test fixture keeps legacy v13 audit-only discriminator bytes.
-src/bolt_v3_decision_evidence.rs:3408	kind: "position_sizer_rebuild".to_string(),	FR-017 test fixture keeps legacy v13 audit-only discriminator bytes.
+src/bolt_v3_decision_evidence.rs:2364	| "position_sizer_rebuild"	FR-017 legacy pre-v14 audit-only discriminator retained in below-schema skip set.
+src/bolt_v3_decision_evidence.rs:3644	gate_id: "bolt_v3.position_sizer_rebuild".to_string(),	FR-017 test fixture keeps legacy v13 audit-only discriminator bytes.
+src/bolt_v3_decision_evidence.rs:3646	kind: "position_sizer_rebuild".to_string(),	FR-017 test fixture keeps legacy v13 audit-only discriminator bytes.
 tests/bolt_v3_capital_admission_recovery_equivalence.rs:104	"position_sizer_rebuild" => {	Recovery-equivalence test locates legacy v13 serialized fixture value.
 tests/bolt_v3_capital_admission_recovery_equivalence.rs:185	.find(|line| line.contains(r#""kind":"position_sizer_rebuild""#))	Recovery-equivalence test locates legacy v13 serialized fixture value.
 tests/fixtures/bolt_v3/capital_admission_recovery/v13/decision-evidence.jsonl:1	{"schema_version":13,"recorded_at_utc_ns":1731234567890123456,"gate_id":"bolt_v3.position_sizer_rebuild","gate_version":"0.1.0","kind":"position_sizer_rebuild","audit":{"observed_at_ns":999,"source":"startup_rebuild","observed_open_order_count":2,"all_open_orders_attributed":true,"accepted":true,"reason":null,"attempted_reservation_count":2,"recovered_reservation_count":2,"live_reserved_liability":"4.8"}}	Recovery-equivalence v13 fixture intentionally preserves pre-migration serialized input.

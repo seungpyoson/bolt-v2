@@ -687,7 +687,9 @@ pub(super) fn refresh_capital_admission_venue_spendability_from_source(
     config: &BoltV3CapitalAdmissionVenueSpendabilitySourceConfig,
 ) -> Result<Option<BoltV3SubmitCapitalAdmissionNtComponents>, BoltV3LiveNodeError> {
     let snapshot = capital_admission_venue_spendability_snapshot_from_source_config(config)?;
-    let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut feed = feed
+        .lock()
+        .expect("capital admission venue spendability feed lock poisoned");
     Ok(feed.on_venue_spendability_snapshot(snapshot))
 }
 

@@ -93,6 +93,7 @@ fn invalid_signal_quote_tick_clears_stale_pricing_state() {
         .on_quote(&quote_tick("SIGNAL.SOURCE", 100.5, 102.5, 1_200))
         .expect("signal quote should seed pricing");
     assert!(strategy.pricing.selected_pricing_spot().is_some());
+    assert_eq!(strategy.evidence_spot_price(), Some(101.5));
     assert!(!strategy.pricing.fast_venue_incoherent);
 
     strategy
@@ -100,6 +101,7 @@ fn invalid_signal_quote_tick_clears_stale_pricing_state() {
         .expect("invalid signal quote should fail closed");
 
     assert_eq!(strategy.pricing.selected_pricing_spot().cloned(), None);
+    assert_eq!(strategy.evidence_spot_price(), None);
     assert!(strategy.pricing.fast_venue_incoherent);
     assert!(strategy.active.fast_venue_incoherent);
     assert!(strategy.pricing.lead_quality_policy_applied);
@@ -918,6 +920,7 @@ fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
 #[test]
 fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
     let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
+    configure_supported_market_quote_entry_order(&mut strategy);
     strategy.config.order_notional_target = 10.0;
     strategy.config.maximum_position_notional = 100.0;
     strategy.config.risk_lambda = 1.0;
@@ -1264,6 +1267,7 @@ fn sized_acceptance_keeps_first_pass_size_when_repriced_resize_is_within_toleran
 #[test]
 fn executable_edge_fee_uses_exact_size_vwap_price_not_limit_price() {
     let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
+    configure_supported_market_quote_entry_order(&mut strategy);
     strategy.config.order_notional_target = 5.0;
     strategy.config.maximum_position_notional = 5.0;
     strategy.config.vwap_depth_limit_bps = 2_000;
@@ -1317,6 +1321,7 @@ fn executable_edge_fee_uses_exact_size_vwap_price_not_limit_price() {
 #[test]
 fn executable_edge_fee_requires_cached_instrument_in_test_builds() {
     let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
+    configure_supported_market_quote_entry_order(&mut strategy);
     strategy.config.order_notional_target = 5.0;
     strategy.config.maximum_position_notional = 5.0;
     strategy.config.vwap_depth_limit_bps = 2_000;
@@ -1390,8 +1395,9 @@ fn executable_edge_blocks_unsupported_post_only_entry_shape() {
 }
 
 #[test]
-fn entry_submission_caps_quantity_to_limit_price_liability() {
+fn entry_submission_blocks_legacy_limit_base_entry_shape_before_liability_sizing() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.order_notional_target = 5.0;
     strategy.config.maximum_position_notional = 5.0;
@@ -1418,39 +1424,26 @@ fn entry_submission_caps_quantity_to_limit_price_liability() {
 
     let decision = strategy.entry_submission_decision_at(1_200);
 
-    assert_eq!(decision.blocked_reason, None);
-    assert_eq!(decision.price, Some(0.60));
-    let price = decision.price.expect("decision should price the entry");
-    let sized_notional = decision
-        .evaluation
-        .sized_notional
-        .expect("decision should carry the sized notional");
-    let instrument = strategy
-        .current_instrument(
-            decision
-                .instrument_id
-                .expect("decision should choose an instrument"),
-        )
-        .expect("chosen instrument should stay cached");
-    let capped_quantity = instrument
-        .try_make_qty(sized_notional / price, Some(true))
-        .expect("capped liability quantity should normalize to an NT quantity");
-    let expected_quantity = strategy
-        .normalize_base_order_quantity_for_execution_venue(&instrument, capped_quantity)
-        .expect("venue quantity normalization should succeed")
-        .as_f64();
-
     assert_eq!(
-        decision.quantity_value,
-        Some(expected_quantity),
-        "submission should cap normalized quantity by limit-price liability"
+        decision.blocked_reason,
+        Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
     );
-    assert!(
-        decision
-            .quantity_value
-            .is_some_and(|quantity| price * quantity <= sized_notional),
-        "limit-price liability must not exceed sized notional, got {decision:#?}"
+    assert_eq!(
+        decision.evaluation.pricing_blocked_by,
+        vec![
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Up,
+                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
+            ),
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Down,
+                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
+            ),
+        ],
+        "legacy limit/base entry sizing must not bypass the Lane 1 supported-shape guard: {decision:#?}"
     );
+    assert_eq!(decision.price, None);
+    assert_eq!(decision.quantity_value, None);
 }
 
 #[test]

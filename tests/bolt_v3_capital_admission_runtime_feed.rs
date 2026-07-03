@@ -1,6 +1,9 @@
 use crate::support;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    panic::AssertUnwindSafe,
+    sync::{Arc, Mutex},
+};
 
 use bolt_v2::bolt_v3_capital_admission::{
     CapitalAdmissionLifecycleAction, CapitalAdmissionPolicy, FeeSlippagePolicy,
@@ -93,6 +96,54 @@ fn runtime_feed_uses_verified_nt_msgbus_symbols() {
     ] {
         assert!(source.contains(needle), "runtime feed must use `{needle}`");
     }
+}
+
+#[test]
+#[should_panic(expected = "capital admission runtime order-event feed lock poisoned")]
+fn subscribed_order_event_panics_on_poisoned_capital_admission_feed_lock() {
+    let feed = poisoned_capital_admission_runtime_feed();
+    let _subscription = subscribe_capital_admission_runtime_feed(feed);
+
+    publish_order_event(
+        switchboard::get_event_orders_topic(StrategyId::from("strategy-a")),
+        &OrderEventAny::Canceled(order_canceled_event("client-order-1", 1_100)),
+    );
+}
+
+#[test]
+#[should_panic(expected = "capital admission runtime position-event feed lock poisoned")]
+fn subscribed_position_event_panics_on_poisoned_capital_admission_feed_lock() {
+    let feed = poisoned_capital_admission_runtime_feed();
+    let _subscription = subscribe_capital_admission_runtime_feed(feed);
+
+    publish_position_event(
+        "events.position.ACCOUNT-001".into(),
+        &adjusted_position_event(AccountId::from("ACCOUNT-001"), 1_100),
+    );
+}
+
+#[test]
+#[should_panic(expected = "capital admission runtime account-state feed lock poisoned")]
+fn subscribed_account_state_panics_on_poisoned_capital_admission_feed_lock() {
+    let feed = poisoned_capital_admission_runtime_feed();
+    let _subscription = subscribe_capital_admission_runtime_feed(feed);
+
+    publish_account_state(
+        "events.account.ACCOUNT-001".into(),
+        &account_state(AccountId::from("ACCOUNT-001"), "USD", 1_100, 45.0),
+    );
+}
+
+#[test]
+#[should_panic(expected = "capital admission runtime portfolio-snapshot feed lock poisoned")]
+fn subscribed_portfolio_snapshot_panics_on_poisoned_capital_admission_feed_lock() {
+    let feed = poisoned_capital_admission_runtime_feed();
+    let _subscription = subscribe_capital_admission_runtime_feed(feed);
+
+    publish_portfolio_snapshot(
+        "events.portfolio.ACCOUNT-001".into(),
+        &portfolio_snapshot(AccountId::from("ACCOUNT-001"), "USD", 1_100, 45.0),
+    );
 }
 
 #[test]
@@ -2666,6 +2717,23 @@ fn test_currency(currency_code: &str) -> Currency {
         return Currency::new("USD", 2, 0, "Test USD", CurrencyType::Fiat);
     }
     Currency::from(currency_code)
+}
+
+fn poisoned_capital_admission_runtime_feed() -> Arc<Mutex<CapitalAdmissionRuntimeFeed>> {
+    let admission = Arc::new(capital_admission_configured_admission());
+    let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
+        runtime_feed_config(),
+        admission,
+    )));
+    poison_lock(&feed);
+    feed
+}
+
+fn poison_lock<T>(lock: &Arc<Mutex<T>>) {
+    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _g = lock.lock().unwrap();
+        panic!("seed poison");
+    }));
 }
 
 fn capital_admission_configured_admission() -> BoltV3SubmitAdmissionState {

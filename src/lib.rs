@@ -89,6 +89,7 @@ pub mod bolt_v3_strategy_registration;
 pub mod bolt_v3_submit_admission;
 pub mod bolt_v3_taker_pricing;
 pub mod bolt_v3_taker_updown_signal;
+pub mod bolt_v3_timestamp_domain;
 pub mod bolt_v3_trade_flow;
 pub mod bolt_v3_validate;
 pub mod bolt_v3_venue_truth;

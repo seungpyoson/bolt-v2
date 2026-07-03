@@ -110,6 +110,13 @@ pub(super) fn fixture_secret_value(path: &str) -> Result<String, &'static str> {
     Err("unexpected SSM path requested by bolt-v3 fake resolver")
 }
 
+pub(super) fn poison_mutex<T>(lock: &std::sync::Arc<std::sync::Mutex<T>>) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _g = lock.lock().unwrap();
+        panic!("seed poison");
+    }));
+}
+
 pub(super) fn seed_cached_account_state(
     runtime: &BoltV3LiveNodeRuntime,
     account_id: &str,
@@ -421,7 +428,6 @@ pub(super) fn test_rv_surface(
             sampling_interval_ms: 1_000,
             min_ready_sources: 1,
             max_source_age_ms: 60_000,
-            max_event_receive_lag_ms: 1_000,
             max_inter_sample_gap_ms: 60_000,
             min_coverage_ratio: 0.5,
             max_cross_source_dispersion: 1.0,

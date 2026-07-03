@@ -19,7 +19,6 @@ sampling_interval_ms = 1000
 seconds_per_annum = 31536000.0
 min_ready_sources = 2
 max_source_age_ms = 30000
-max_event_receive_lag_ms = 1000
 max_inter_sample_gap_ms = 60000
 min_coverage_ratio = 0.80
 max_cross_source_dispersion = 0.35

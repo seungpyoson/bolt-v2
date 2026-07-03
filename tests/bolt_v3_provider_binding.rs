@@ -837,6 +837,14 @@ fn provider_binding_models_hyperliquid_egress_with_official_user_fees_weight() {
 }
 
 #[test]
+fn provider_binding_models_polymarket_market_quote_buy_egress() {
+    let model = bolt_v2::bolt_v3_providers::venue_egress_model("POLYMARKET")
+        .expect("Polymarket execution must have a REST egress model before live submit");
+
+    assert_eq!(model.max_rest_requests_per_order_command, 3);
+}
+
+#[test]
 fn provider_binding_builds_hyperliquid_fee_provider_with_empty_cold_cache() {
     let client = hyperliquid_execution_client(
         "/bolt/hyperliquid/master_api_wallet/private_key",

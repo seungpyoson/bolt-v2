@@ -77,11 +77,11 @@ pub(super) fn valid_raw_config() -> Value {
         [entry_order]
         side = "buy"
         position_side = "long"
-        order_type = "limit"
+        order_type = "market"
         time_in_force = "fok"
         is_post_only = false
         is_reduce_only = false
-        is_quote_quantity = false
+        is_quote_quantity = true
 
         [forced_exit_order]
         side = "sell"
@@ -500,6 +500,18 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     ExitEvaluation(Box<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence>),
     LossGovernorHalt(crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence),
     RequoteThrottle(crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence),
+    /// Production settlement evidence (Lane 3, #1179) must map into this
+    /// variant carrying realized_pnl; until that mapping exists this variant is
+    /// intentionally unconstructed and hold_to_resolution stays red. The
+    /// harness compares with f64::EPSILON as an exact oracle-pass-through
+    /// contract: production must record the realized_pnl produced by the shared
+    /// settlement oracle, not a separately rounded recomputation.
+    Settlement(RecordedSettlementEvidenceEvent),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct RecordedSettlementEvidenceEvent {
+    pub(super) realized_pnl: f64,
 }
 
 #[derive(Debug, Default)]
@@ -513,6 +525,16 @@ impl RecordingSequencedDecisionEvidenceWriter {
             .lock()
             .expect("recording evidence writer mutex poisoned")
             .clone()
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn record_settlement(&self, realized_pnl: f64) {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::Settlement(
+                RecordedSettlementEvidenceEvent { realized_pnl },
+            ));
     }
 }
 
@@ -1015,8 +1037,39 @@ pub(super) fn submit_admission_with_provider_cap(
     )
 }
 
+pub(super) fn configure_supported_market_quote_entry_order(strategy: &mut BinaryOracleEdgeTaker) {
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.expire_time_unix_nanos = None;
+    strategy.config.entry_order.trigger_price = None;
+    strategy.config.entry_order.activation_price = None;
+    strategy.config.entry_order.trigger_type = None;
+    strategy.config.entry_order.trigger_instrument_id = None;
+    strategy.config.entry_order.trailing_offset = None;
+    strategy.config.entry_order.trailing_offset_type = None;
+    strategy.config.entry_order.is_post_only = false;
+    strategy.config.entry_order.is_reduce_only = false;
+    strategy.config.entry_order.is_quote_quantity = true;
+}
+
+pub(super) fn configure_limit_base_entry_order(strategy: &mut BinaryOracleEdgeTaker) {
+    strategy.config.entry_order.order_type = OrderType::Limit;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.expire_time_unix_nanos = None;
+    strategy.config.entry_order.trigger_price = None;
+    strategy.config.entry_order.activation_price = None;
+    strategy.config.entry_order.trigger_type = None;
+    strategy.config.entry_order.trigger_instrument_id = None;
+    strategy.config.entry_order.trailing_offset = None;
+    strategy.config.entry_order.trailing_offset_type = None;
+    strategy.config.entry_order.is_post_only = false;
+    strategy.config.entry_order.is_reduce_only = false;
+    strategy.config.entry_order.is_quote_quantity = false;
+}
+
 pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
     let mut strategy = test_strategy();
+    configure_supported_market_quote_entry_order(&mut strategy);
     strategy.config.warmup_tick_count = 2;
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
     strategy.active.price_to_beat = Some(3_100.0);
@@ -1086,6 +1139,7 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
     fee_provider.set_fee("condition-MKT-1-MKT-1-DOWN.POLYMARKET", down_fee_bps);
 
     let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
+    configure_supported_market_quote_entry_order(&mut strategy);
     strategy.config.warmup_tick_count = 2;
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
     strategy.active.price_to_beat = Some(3_100.0);
@@ -1845,13 +1899,21 @@ pub(super) fn order_rejected_event(
     client_order_id: ClientOrderId,
     instrument_id: InstrumentId,
 ) -> nautilus_model::events::OrderRejected {
+    order_rejected_event_with_reason(client_order_id, instrument_id, "rejected")
+}
+
+pub(super) fn order_rejected_event_with_reason(
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+    reason: &'static str,
+) -> nautilus_model::events::OrderRejected {
     nautilus_model::events::OrderRejected::new(
         nautilus_model::identifiers::TraderId::from("TRADER-001"),
         StrategyId::from("BINARYORACLEEDGETAKER-001"),
         instrument_id,
         client_order_id,
         nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT"),
-        "rejected".into(),
+        reason.into(),
         nautilus_core::UUID4::new(),
         nautilus_core::UnixNanos::from(1_000_u64),
         nautilus_core::UnixNanos::from(1_000_u64),

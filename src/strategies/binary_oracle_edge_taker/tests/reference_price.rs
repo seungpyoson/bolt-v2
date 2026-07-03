@@ -269,6 +269,7 @@ fn reference_price_sources_subscribe_as_custom_data_on_start_and_unsubscribe_on_
 fn selection_retry_reissues_missing_live_input_subscriptions() {
     let mut strategy = test_strategy();
     strategy.config.reference_current_price = Some(reference_price_config());
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
 
     strategy.retry_missing_live_input_subscriptions_at(1_500);
 
@@ -298,6 +299,71 @@ fn selection_retry_reissues_missing_live_input_subscriptions() {
         "chainlink_reference",
         Some("BTC-USD.CHAINLINK_REFERENCE"),
         None,
+    );
+}
+
+#[test]
+fn selection_retry_does_not_reissue_reference_subscriptions_without_active_interval() {
+    let mut strategy = test_strategy();
+    strategy.config.reference_current_price = Some(reference_price_config());
+
+    let retry_event_count = strategy.live_input_subscription_retry_events.len();
+    let subscribe_event_count = strategy.reference_price_subscribe_events.len();
+    strategy.retry_missing_live_input_subscriptions_at(1_500);
+
+    assert_eq!(
+        strategy.live_input_subscription_retry_events[retry_event_count].reference_missing, false,
+        "selection-gap states must not make reference feeds look missing"
+    );
+    assert_eq!(
+        strategy.reference_price_subscribe_events.len(),
+        subscribe_event_count,
+        "selection-gap states must not churn healthy reference subscriptions"
+    );
+}
+
+#[test]
+fn selection_retry_does_not_reissue_reference_subscriptions_for_current_valid_quote() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut(POLYRESEARCH_BACKUP_SOURCE_ID)
+        .expect("polyresearch source should exist")
+        .enabled = false;
+    reference_price.max_source_age_ms = 1_000;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_125_u64 * NANOS_PER_MILLI_U64));
+    let valid_quote = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_100,
+        1_105,
+    );
+    DataActor::on_data(&mut strategy, &valid_quote)
+        .expect("valid reference quote should be handled");
+
+    assert_eq!(strategy.active.reference_current_price, Some(100.0));
+
+    let retry_event_count = strategy.live_input_subscription_retry_events.len();
+    let subscribe_event_count = strategy.reference_price_subscribe_events.len();
+    strategy.retry_missing_live_input_subscriptions_at(1_125);
+
+    assert_eq!(
+        strategy.live_input_subscription_retry_events[retry_event_count].reference_missing, false,
+        "fresh valid reference quote must satisfy reference liveness"
+    );
+    assert_eq!(
+        strategy.reference_price_subscribe_events.len(),
+        subscribe_event_count,
+        "fresh valid reference quote must not reissue reference subscriptions"
     );
 }
 

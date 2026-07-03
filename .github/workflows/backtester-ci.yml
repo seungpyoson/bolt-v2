@@ -355,8 +355,8 @@ jobs:
     if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     outputs:
-      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}
-      bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}
+      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
+      bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
     permissions:
       contents: read
       id-token: write
@@ -695,8 +695,8 @@ jobs:
         if: always()
         run: |
           {
-            echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}"
-            echo "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}"
+            echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}"
+            echo "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Require BVS local payload

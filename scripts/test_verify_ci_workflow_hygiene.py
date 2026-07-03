@@ -631,8 +631,8 @@ jobs:
       nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outcome == 'skipped' && 'skipped' || (steps.nextest-archive-cache.outputs.cache-hit || 'false') }}
       root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outcome == 'skipped' && 'skipped' || (steps.root-bin-sidecars-cache.outputs.cache-hit || 'false') }}
       archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}
-      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || 'skipped' }}
-      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}
+      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || (steps.nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
+      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outputs.save-status || (steps.root-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
       archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
@@ -5892,7 +5892,7 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             "test-archive must expose cache persistence save outcomes",
             replace_once(
                 workflow,
-                "      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || 'skipped' }}\n",
+                "      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || (steps.nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}\n",
                 "",
             ),
         ),
@@ -13374,8 +13374,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     name: bvs-test archive
     needs: [ci-policy, detect, fmt]
     outputs:
-      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}
-      bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}
+      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
+      bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
     env:
       BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
@@ -13521,8 +13521,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: Summarize BVS S3 save outcomes
         if: always()
         run: |
-          echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Require BVS local payload
         run: |
           test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }
@@ -13689,7 +13689,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
 
     missing_bvs_save_outcome_output = replace_once(
         good,
-        "      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}\n",
+        "      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}\n",
         "",
     )
     missing_bvs_save_outcome_output_errors = bvs_cache_errors(missing_bvs_save_outcome_output)
@@ -13700,7 +13700,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
 
     missing_bvs_save_outcome_summary = replace_once(
         good,
-        '          echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || \'skipped\' }}" >> "$GITHUB_STEP_SUMMARY"\n',
+        '          echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == \'skipped\' && \'skipped\' || \'failed\') }}" >> "$GITHUB_STEP_SUMMARY"\n',
         "",
     )
     missing_bvs_save_outcome_summary_errors = bvs_cache_errors(missing_bvs_save_outcome_summary)

@@ -755,8 +755,8 @@ jobs:
       nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outcome == 'skipped' && 'skipped' || (steps.nextest-archive-cache.outputs.cache-hit || 'false') }}
       root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outcome == 'skipped' && 'skipped' || (steps.root-bin-sidecars-cache.outputs.cache-hit || 'false') }}
       archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}
-      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || 'skipped' }}
-      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}
+      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || (steps.nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
+      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outputs.save-status || (steps.root-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
       archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}
     permissions:
       contents: read

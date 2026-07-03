@@ -834,8 +834,8 @@ TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS = (
     "archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}",
 )
 TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS = (
-    "nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || 'skipped' }}",
-    "root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}",
+    "nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || (steps.nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}",
+    "root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outputs.save-status || (steps.root-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}",
     "archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}",
 )
 TEST_ARCHIVE_CACHE_SAVE_STEP_IDS = (
@@ -12827,19 +12827,19 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive must expose BVS S3 save outcomes",
-            "bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}",
+            "bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}",
         ),
         (
             "backtester bvs-test archive must expose BVS S3 save outcomes",
-            "bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}",
+            "bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}",
         ),
         (
             "backtester bvs-test archive must summarize BVS S3 save outcomes",
-            "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}",
+            "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}",
         ),
         (
             "backtester bvs-test archive must summarize BVS S3 save outcomes",
-            "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}",
+            "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}",
         ),
         (
             "backtester bvs-test archive must restore target cache only while producing caches",

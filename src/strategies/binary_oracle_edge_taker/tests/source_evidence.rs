@@ -1496,7 +1496,7 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
     assert_eq!(exit_decisions[0].rv_snapshot_blockers, Vec::new());
     assert_eq!(
         exit_decisions[0].rv_gate_result,
-        BoltV3ExitRvGateResult::Accepted
+        BoltV3ExitRvGateResult::MissingEvaluationEventTime
     );
     assert_eq!(exit_decisions[0].rv_future_dating_delta_ms, None);
     assert_eq!(
@@ -1637,8 +1637,8 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
     // forced-flat Exit: exit_evaluation_at short-circuits on
     // forced_flat_reasons before the RV gate, so the future-dated RV is
     // captured only as a diagnostic (rv_gate_result above), not as the exit
-    // cause. (The RV-driven ExitFailClosed path is covered by the pricing /
-    // exposure tests.)
+    // cause. RV-driven missing valuation input holds rather than liquidating by
+    // default; that path is covered by the pricing / exposure tests.
     assert_eq!(decision.exit_decision, BoltV3ExitDecisionOutcome::Exit);
     assert_eq!(
         decision.forced_flat_reasons,
@@ -2666,9 +2666,9 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
 #[test]
 fn exit_evaluation_evidence_records_future_dated_rv_gate_with_delta() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-    // Re-seed the realized-vol snapshot dated 800ms in the FUTURE relative to the
-    // exit-evaluation clock (the 2026-06-20 incident's root cause shape): as_of 2_000
-    // while the exit is evaluated at now 1_200.
+    // Re-seed the realized-vol snapshot in the FUTURE relative to the book-delta
+    // event clock (the 2026-06-20 incident's root cause shape): as_of 2_000
+    // while the triggering venue event is 1_190.
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 2_000);
@@ -2700,8 +2700,40 @@ fn exit_evaluation_evidence_records_future_dated_rv_gate_with_delta() {
     assert_eq!(record.rv_as_of_ms, Some(2_000));
     assert_eq!(
         record.rv_as_of_minus_now_ms,
-        Some(800),
-        "the durable record must capture the as_of-minus-now delta for RCA"
+        Some(810),
+        "the durable record must capture the as_of-minus-trigger-event delta for RCA"
+    );
+}
+
+#[test]
+fn exit_evaluation_evidence_holds_on_local_clock_trigger_without_rv_event_time() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 2_000);
+
+    strategy
+        .try_submit_exit_order_for_trigger(1_200, ExitEvaluationTriggerContext::unknown(1_200))
+        .expect("exit evaluation should not error when the trigger has no RV event clock");
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(
+        records.len(),
+        1,
+        "a local-clock exit evaluation must record exactly one durable evidence record"
+    );
+    let record = &records[0];
+    assert_eq!(
+        record.rv_gate_result,
+        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::MissingEvaluationEventTime,
+        "local-clock triggers must not compare venue RV as_of against local now"
+    );
+    assert_eq!(record.rv_as_of_ms, Some(2_000));
+    assert_eq!(record.rv_as_of_minus_now_ms, None);
+    assert_eq!(
+        record.exit_decision,
+        crate::bolt_v3_decision_evidence::BoltV3ExitDecisionOutcome::Hold,
+        "missing RV event-clock input must hold, never liquidate by default"
     );
 }
 

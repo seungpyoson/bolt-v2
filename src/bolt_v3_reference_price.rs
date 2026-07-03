@@ -14,6 +14,7 @@ use crate::{
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_providers::reference_price_provider_supports_asset,
+    bolt_v3_timestamp_domain::{NtStrategyClockMs, VenueEventMs},
 };
 
 const REFERENCE_PRICE_UPDATE_TYPE: &str = "BoltV3ReferencePriceUpdate";
@@ -604,8 +605,12 @@ impl ReferencePriceSelector {
             self.failover_used = false;
         }
 
-        let source_quorum =
-            self.source_liveness_quorum_at(interval_start_ms, interval_end_ms, now_ms, quotes);
+        let source_quorum = self.source_liveness_quorum_at(
+            VenueEventMs::new(interval_start_ms),
+            VenueEventMs::new(interval_end_ms),
+            NtStrategyClockMs::new(now_ms),
+            quotes,
+        );
         let source_quorum_satisfied = source_quorum.is_satisfied();
         let valid_quotes = source_quorum.into_valid_quotes();
         self.last_cross_source_drift_bps = Self::max_cross_source_drift_bps(&valid_quotes);
@@ -649,9 +654,9 @@ impl ReferencePriceSelector {
 
     pub(crate) fn source_liveness_quorum_at<'a>(
         &self,
-        interval_start_ms: u64,
-        interval_end_ms: u64,
-        now_ms: u64,
+        interval_start_ms: VenueEventMs,
+        interval_end_ms: VenueEventMs,
+        now_ms: NtStrategyClockMs,
         quotes: &'a [ReferenceQuote],
     ) -> ReferencePriceSourceQuorum<'a> {
         let valid_quotes =
@@ -673,9 +678,9 @@ impl ReferencePriceSelector {
 
     fn valid_quotes_by_order<'a>(
         &self,
-        interval_start_ms: u64,
-        interval_end_ms: u64,
-        now_ms: u64,
+        interval_start_ms: VenueEventMs,
+        interval_end_ms: VenueEventMs,
+        now_ms: NtStrategyClockMs,
         quotes: &'a [ReferenceQuote],
     ) -> Vec<&'a ReferenceQuote> {
         self.sources
@@ -695,20 +700,22 @@ impl ReferencePriceSelector {
     pub(crate) fn valid_quote_for_source<'a>(
         &self,
         source_id: &str,
-        interval_start_ms: u64,
-        interval_end_ms: u64,
-        now_ms: u64,
+        interval_start_ms: VenueEventMs,
+        interval_end_ms: VenueEventMs,
+        now_ms: NtStrategyClockMs,
         quotes: &'a [ReferenceQuote],
     ) -> Option<&'a ReferenceQuote> {
         quotes
             .iter()
             .filter(|quote| {
+                let observed_ts_ms = VenueEventMs::new(quote.observed_ts_ms);
                 quote.asset == self.asset
                     && quote.source_id == source_id
-                    && quote.observed_ts_ms >= interval_start_ms
-                    && quote.observed_ts_ms <= interval_end_ms
-                    && quote.observed_ts_ms <= now_ms
-                    && now_ms.saturating_sub(quote.observed_ts_ms) <= self.max_source_staleness_ms
+                    && observed_ts_ms >= interval_start_ms
+                    && observed_ts_ms <= interval_end_ms
+                    && quote.observed_ts_ms <= now_ms.value()
+                    && now_ms.value().saturating_sub(quote.observed_ts_ms)
+                        <= self.max_source_staleness_ms
             })
             .max_by_key(|quote| quote.observed_ts_ms)
     }

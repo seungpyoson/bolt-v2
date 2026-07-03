@@ -21,6 +21,7 @@ use crate::{
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
     bolt_v3_requote_budget::RequoteBudgetPair,
+    bolt_v3_timestamp_domain::VenueEventMs,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -155,11 +156,13 @@ pub fn maker_reference_current_price_fair_value_decision(
     pricing.observe_realized_vol_snapshot((*input.realized_volatility_snapshot).clone());
     let config = FairValuePricingConfig {
         realized_volatility_surface_id: input.realized_volatility_snapshot.surface_id.as_str(),
+        realized_volatility_max_source_age_ms: None,
         pricing_kurtosis: input.pricing_kurtosis,
         market_family: input.family_key,
     };
     let request = FairValuePricingRequest {
         now_ms: input.now_ms,
+        realized_vol_gate_event_ms: Some(VenueEventMs::new(selected_quote.observed_ts_ms())),
         strike_price: input.strike_price,
         seconds_to_market_end: input.seconds_to_market_end,
     };

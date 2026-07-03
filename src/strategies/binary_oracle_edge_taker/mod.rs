@@ -43,8 +43,9 @@ use crate::{
         BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker,
         BoltV3ExitTriggerSource, BoltV3ExposureOccupancy, BoltV3ForcedFlatReason,
         BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OutcomeSide,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        number_evidence as evidence_number, option_number_evidence as option_evidence_number,
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
+        BoltV3StrategyInputEvidenceSnapshot, number_evidence as evidence_number,
+        option_number_evidence as option_evidence_number,
         option_probability_evidence as option_evidence_probability, probability_evidence,
         realized_vol_blocker_to_exit_evidence, realized_volatility_aggregation_evidence_label,
         realized_volatility_block_reason_evidence_label,
@@ -88,6 +89,7 @@ use crate::{
         compute_worst_case_ev_bps, outcome_side_evidence_label, time_uncertainty_probability,
         uncertainty_band_probability,
     },
+    bolt_v3_timestamp_domain::{NtStrategyClockMs, VenueEventMs},
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError},
 };
@@ -408,6 +410,7 @@ fn executable_edge_cents_per_share(result: Option<BinaryOutcomeEdgeResult>) -> O
 fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingConfig<'_> {
     TakerPricingConfig {
         realized_volatility_surface_id: config.realized_volatility_surface_id.clone(),
+        realized_volatility_max_source_age_ms: None,
         lead_agreement_min_corr: config.lead_agreement_min_corr,
         lead_jitter_max_ms: config.lead_jitter_max_ms,
         spike_guard_return_threshold: config.spike_guard_return_threshold,
@@ -422,6 +425,33 @@ fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingCon
             .as_ref()
             .map(|reference_price| reference_price.max_source_age_ms),
     }
+}
+
+fn exit_rv_gate_result_from_shared(result: BoltV3RvGateResult) -> BoltV3ExitRvGateResult {
+    match result {
+        BoltV3RvGateResult::Accepted => BoltV3ExitRvGateResult::Accepted,
+        BoltV3RvGateResult::MissingSnapshot => BoltV3ExitRvGateResult::MissingSnapshot,
+        BoltV3RvGateResult::MissingEvaluationEventTime => {
+            BoltV3ExitRvGateResult::MissingEvaluationEventTime
+        }
+        BoltV3RvGateResult::RejectedFutureDated => BoltV3ExitRvGateResult::RejectedFutureDated,
+        BoltV3RvGateResult::RejectedStale => BoltV3ExitRvGateResult::RejectedStale,
+        BoltV3RvGateResult::RejectedNotReady => BoltV3ExitRvGateResult::RejectedNotReady,
+    }
+}
+
+fn reference_quote_outside_live_window(
+    quote: &ReferenceQuote,
+    interval_start_ms: VenueEventMs,
+    interval_end_ms: VenueEventMs,
+    now_ms: NtStrategyClockMs,
+    max_source_age_ms: u64,
+) -> bool {
+    let observed_ts_ms = VenueEventMs::new(quote.observed_ts_ms());
+    observed_ts_ms < interval_start_ms
+        || observed_ts_ms > interval_end_ms
+        || observed_ts_ms.value() > now_ms.value()
+        || now_ms.value().saturating_sub(observed_ts_ms.value()) > max_source_age_ms
 }
 
 impl PricingState {
@@ -1049,11 +1079,13 @@ impl BinaryOracleEdgeTaker {
             self.config.reference_current_price.as_ref(),
             self.active.interval_start_ms,
             self.active.interval_end_ms,
-        ) && (quote.observed_ts_ms() < interval_start_ms
-            || quote.observed_ts_ms() > interval_end_ms
-            || quote.observed_ts_ms() > now_ms
-            || now_ms.saturating_sub(quote.observed_ts_ms()) > reference_price.max_source_age_ms)
-        {
+        ) && reference_quote_outside_live_window(
+            quote,
+            VenueEventMs::new(interval_start_ms),
+            VenueEventMs::new(interval_end_ms),
+            NtStrategyClockMs::new(now_ms),
+            reference_price.max_source_age_ms,
+        ) {
             let newer_than_accepted_quote = self
                 .reference_price_quotes
                 .get(quote.source_id())
@@ -1219,11 +1251,13 @@ impl BinaryOracleEdgeTaker {
                 let (status, observed_ts_ms, received_ts_ms) =
                     match self.reference_price_quotes.get(source_id) {
                         Some(quote)
-                            if quote.observed_ts_ms() < interval_start_ms
-                                || quote.observed_ts_ms() > interval_end_ms
-                                || quote.observed_ts_ms() > now_ms
-                                || now_ms.saturating_sub(quote.observed_ts_ms())
-                                    > reference_price.max_source_age_ms =>
+                            if reference_quote_outside_live_window(
+                                quote,
+                                VenueEventMs::new(interval_start_ms),
+                                VenueEventMs::new(interval_end_ms),
+                                NtStrategyClockMs::new(now_ms),
+                                reference_price.max_source_age_ms,
+                            ) =>
                         {
                             self.reference_price_source_health
                                 .get(source_id)
@@ -1841,8 +1875,57 @@ impl BinaryOracleEdgeTaker {
         .collect()
     }
 
+    fn realized_volatility_max_source_age_ms(&self) -> Option<u64> {
+        self.context
+            .realized_volatility_max_source_age_ms_for_surface(
+                &self.config.realized_volatility_surface_id,
+            )
+    }
+
+    fn runtime_taker_pricing_config(&self) -> TakerPricingConfig<'_> {
+        let mut config = taker_pricing_config(&self.config);
+        config.realized_volatility_max_source_age_ms = self.realized_volatility_max_source_age_ms();
+        config
+    }
+
+    fn current_pricing_venue_event_ms(&self) -> Option<VenueEventMs> {
+        [
+            self.pricing
+                .selected_pricing_spot()
+                .map(|spot| VenueEventMs::new(spot.observed_ts_ms)),
+            self.pricing
+                .last_reference_current_price_ts_ms()
+                .map(VenueEventMs::new),
+            self.active.last_reference_ts_ms.map(VenueEventMs::new),
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+    }
+
+    fn current_realized_vol_for_gate_at(
+        &self,
+        realized_vol_gate_event_ms: Option<VenueEventMs>,
+    ) -> Option<f64> {
+        self.pricing.current_realized_vol_at(
+            realized_vol_gate_event_ms,
+            self.realized_volatility_max_source_age_ms(),
+        )
+    }
+
+    fn current_realized_vol_source_for_gate_at(
+        &self,
+        realized_vol_gate_event_ms: Option<VenueEventMs>,
+    ) -> (Option<String>, Option<u64>) {
+        self.pricing.current_realized_vol_source_at(
+            realized_vol_gate_event_ms,
+            self.realized_volatility_max_source_age_ms(),
+        )
+    }
+
+    #[cfg(test)]
     fn current_realized_vol_at(&self, now_ms: u64) -> Option<f64> {
-        self.pricing.current_realized_vol_at(now_ms)
+        self.current_realized_vol_for_gate_at(Some(VenueEventMs::new(now_ms)))
     }
 
     fn evidence_spot_price(&self) -> Option<f64> {
@@ -1916,9 +1999,10 @@ impl BinaryOracleEdgeTaker {
     ) -> std::result::Result<EntryPricingInputs, Vec<EntryPricingBlockReason>> {
         self.pricing
             .entry_pricing_inputs_at(
-                &taker_pricing_config(&self.config),
+                &self.runtime_taker_pricing_config(),
                 TakerPricingRequest {
                     now_ms,
+                    realized_vol_gate_event_ms: self.current_pricing_venue_event_ms(),
                     strike_price: self.active.interval_open,
                     seconds_to_market_end: self.current_seconds_to_expiry_at(now_ms),
                 },
@@ -1941,9 +2025,10 @@ impl BinaryOracleEdgeTaker {
     fn current_fair_probability_up_at(&self, now_ms: u64) -> Option<Probability> {
         self.pricing
             .entry_pricing_at(
-                &taker_pricing_config(&self.config),
+                &self.runtime_taker_pricing_config(),
                 TakerPricingRequest {
                     now_ms,
+                    realized_vol_gate_event_ms: self.current_pricing_venue_event_ms(),
                     strike_price: self.active.interval_open,
                     seconds_to_market_end: self.current_seconds_to_expiry_at(now_ms),
                 },
@@ -1968,7 +2053,7 @@ impl BinaryOracleEdgeTaker {
 
     fn current_scaled_min_edge_bps_at(&self, now_ms: u64) -> Option<f64> {
         self.pricing.theta_scaled_min_edge_bps_for(
-            &taker_pricing_config(&self.config),
+            &self.runtime_taker_pricing_config(),
             self.current_seconds_to_expiry_at(now_ms),
         )
     }
@@ -1980,7 +2065,8 @@ impl BinaryOracleEdgeTaker {
         down_fee_bps: f64,
     ) -> Option<Probability> {
         let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms)?;
-        let realized_vol = self.current_realized_vol_at(now_ms)?;
+        let realized_vol =
+            self.current_realized_vol_for_gate_at(self.current_pricing_venue_event_ms())?;
         self.uncertainty_band_probability_for_seconds(
             seconds_to_expiry,
             realized_vol,
@@ -2023,7 +2109,7 @@ impl BinaryOracleEdgeTaker {
         let reference_current_price_available =
             self.pricing.last_reference_current_price().is_some();
         let (realized_vol_source_venue, realized_vol_source_ts_ms) =
-            self.pricing.current_realized_vol_source_at(now_ms);
+            self.current_realized_vol_source_for_gate_at(self.current_pricing_venue_event_ms());
 
         EntryEvaluationLogFields {
             market_id: self.active.market_id.clone(),
@@ -2035,7 +2121,8 @@ impl BinaryOracleEdgeTaker {
             reference_current_price,
             interval_open: self.active.interval_open,
             seconds_to_expiry: self.current_seconds_to_expiry_at(now_ms),
-            realized_vol: self.current_realized_vol_at(now_ms),
+            realized_vol: self
+                .current_realized_vol_for_gate_at(self.current_pricing_venue_event_ms()),
             realized_vol_source_venue,
             realized_vol_source_ts_ms,
             pricing_kurtosis: self.config.pricing_kurtosis,
@@ -3228,14 +3315,18 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn current_position_fair_probability_up_at(&self, now_ms: u64) -> Option<Probability> {
+    fn current_position_fair_probability_up_for_gate_at(
+        &self,
+        now_ms: u64,
+        realized_vol_gate_event_ms: Option<VenueEventMs>,
+    ) -> Option<Probability> {
         let open_position = &self.managed_position()?.position;
         let spot_price = self.current_position_spot_price()?;
         let strike_price = open_position
             .interval_open
             .filter(|value| is_positive_finite(*value))?;
         let seconds_to_expiry = self.current_position_seconds_to_expiry_at(now_ms)?;
-        let realized_vol = self.current_realized_vol_at(now_ms)?;
+        let realized_vol = self.current_realized_vol_for_gate_at(realized_vol_gate_event_ms)?;
         bolt_v3_market_families::fair_probability_up_for_family(
             &self.config.rotating_market_family,
             &FairProbabilityInputs {
@@ -3248,9 +3339,21 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn current_position_uncertainty_band_probability_at(&self, now_ms: u64) -> Option<Probability> {
+    #[cfg(test)]
+    fn current_position_fair_probability_up_at(&self, now_ms: u64) -> Option<Probability> {
+        self.current_position_fair_probability_up_for_gate_at(
+            now_ms,
+            Some(VenueEventMs::new(now_ms)),
+        )
+    }
+
+    fn current_position_uncertainty_band_probability_for_gate_at(
+        &self,
+        now_ms: u64,
+        realized_vol_gate_event_ms: Option<VenueEventMs>,
+    ) -> Option<Probability> {
         let seconds_to_expiry = self.current_position_seconds_to_expiry_at(now_ms)?;
-        let realized_vol = self.current_realized_vol_at(now_ms)?;
+        let realized_vol = self.current_realized_vol_for_gate_at(realized_vol_gate_event_ms)?;
         let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
         let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
         self.uncertainty_band_probability_for_seconds(
@@ -3261,48 +3364,40 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn current_hold_ev_bps_at(&self, now_ms: u64, side: OutcomeSide) -> Option<f64> {
-        let open_position = &self.managed_position()?.position;
-        let spot_price = self.current_position_spot_price()?;
-        let strike_price = open_position
-            .interval_open
-            .filter(|value| is_positive_finite(*value))?;
-        let seconds_to_expiry = Self::seconds_to_expiry_from_selection(
-            open_position.selection_published_at_ms,
-            open_position.seconds_to_expiry_at_selection,
+    fn current_position_uncertainty_band_probability_at(&self, now_ms: u64) -> Option<Probability> {
+        self.current_position_uncertainty_band_probability_for_gate_at(
             now_ms,
-        )?;
-        let realized_vol = self.current_realized_vol_at(now_ms)?;
-        let fair_probability_up = bolt_v3_market_families::fair_probability_up_for_family(
-            &self.config.rotating_market_family,
-            &FairProbabilityInputs {
-                spot_price,
-                strike_price,
-                seconds_to_market_end: seconds_to_expiry,
-                realized_vol,
-                pricing_kurtosis: self.config.pricing_kurtosis,
-            },
-        )?;
-        let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
-        let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
-        let uncertainty_band_probability = self.uncertainty_band_probability_for_seconds(
-            seconds_to_expiry,
-            realized_vol,
-            up_fee_bps,
-            down_fee_bps,
-        )?;
+            Some(VenueEventMs::new(now_ms)),
+        )
+    }
+
+    fn current_hold_ev_bps_for_gate_at(
+        &self,
+        now_ms: u64,
+        side: OutcomeSide,
+        realized_vol_gate_event_ms: Option<VenueEventMs>,
+    ) -> Option<f64> {
+        let fair_probability_up = self
+            .current_position_fair_probability_up_for_gate_at(now_ms, realized_vol_gate_event_ms)?;
         let effective_entry_cost = self.open_position_effective_entry_cost()?;
         let fee_bps = self.open_position_historical_entry_fee_bps()?;
+        let total_entry_cost = effective_entry_cost * (UNIT_F64 + fee_bps / BPS_DENOMINATOR);
+        if !is_positive_finite(total_entry_cost) {
+            return None;
+        }
+        let success_probability = match side {
+            OutcomeSide::Up => fair_probability_up,
+            OutcomeSide::Down => fair_probability_up.complement(),
+        };
 
-        compute_worst_case_ev_bps(
-            side,
-            &WorstCaseEvInputs {
-                fair_probability: Some(fair_probability_up),
-                uncertainty_band_probability,
-                executable_entry_cost: effective_entry_cost,
-                fee_bps: Some(fee_bps),
-            },
+        Some(
+            ((success_probability.value() - total_entry_cost) / total_entry_cost) * BPS_DENOMINATOR,
         )
+    }
+
+    #[cfg(test)]
+    fn current_hold_ev_bps_at(&self, now_ms: u64, side: OutcomeSide) -> Option<f64> {
+        self.current_hold_ev_bps_for_gate_at(now_ms, side, Some(VenueEventMs::new(now_ms)))
     }
 
     fn current_exit_ev_bps_at(
@@ -3363,7 +3458,11 @@ impl BinaryOracleEdgeTaker {
         self.context.fee_provider().fee_bps(instrument_id)?.to_f64()
     }
 
-    fn exit_evaluation_at(&self, now_ms: u64) -> ExitEvaluation {
+    fn exit_evaluation_with_rv_gate_at(
+        &self,
+        now_ms: u64,
+        realized_vol_gate_event_ms: Option<VenueEventMs>,
+    ) -> ExitEvaluation {
         let mut evaluation = ExitEvaluation {
             position_outcome_side: self.open_position_outcome_side(),
             forced_flat_reasons: self.position_forced_flat_reasons_at(now_ms),
@@ -3397,7 +3496,7 @@ impl BinaryOracleEdgeTaker {
         }
 
         let Some(position_outcome_side) = evaluation.position_outcome_side else {
-            evaluation.exit_decision = Some(ExitDecision::ExitFailClosed);
+            evaluation.exit_decision = Some(ExitDecision::Hold);
             return evaluation;
         };
 
@@ -3405,7 +3504,11 @@ impl BinaryOracleEdgeTaker {
             evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID);
             return evaluation;
         };
-        evaluation.hold_ev_bps = self.current_hold_ev_bps_at(now_ms, position_outcome_side);
+        evaluation.hold_ev_bps = self.current_hold_ev_bps_for_gate_at(
+            now_ms,
+            position_outcome_side,
+            realized_vol_gate_event_ms,
+        );
         evaluation.exit_ev_bps = self.current_exit_ev_bps_at(position_outcome_side, &order_config);
         evaluation.exit_decision = Some(evaluate_exit_decision(
             evaluation.hold_ev_bps,
@@ -3415,8 +3518,38 @@ impl BinaryOracleEdgeTaker {
         evaluation
     }
 
+    #[cfg(test)]
+    fn exit_evaluation_at(&self, now_ms: u64) -> ExitEvaluation {
+        self.exit_evaluation_with_rv_gate_at(now_ms, Some(VenueEventMs::new(now_ms)))
+    }
+
+    fn exit_evaluation_for_trigger_at(
+        &self,
+        now_ms: u64,
+        trigger_context: ExitEvaluationTriggerContext,
+    ) -> ExitEvaluation {
+        self.exit_evaluation_with_rv_gate_at(now_ms, trigger_context.venue_event_ms())
+    }
+
+    #[cfg(test)]
     fn exit_submission_decision_at(&self, now_ms: u64) -> ExitSubmissionDecision {
         let evaluation = self.exit_evaluation_at(now_ms);
+        self.exit_submission_decision_from_evaluation(evaluation)
+    }
+
+    fn exit_submission_decision_for_trigger_at(
+        &self,
+        now_ms: u64,
+        trigger_context: ExitEvaluationTriggerContext,
+    ) -> ExitSubmissionDecision {
+        let evaluation = self.exit_evaluation_for_trigger_at(now_ms, trigger_context);
+        self.exit_submission_decision_from_evaluation(evaluation)
+    }
+
+    fn exit_submission_decision_from_evaluation(
+        &self,
+        evaluation: ExitEvaluation,
+    ) -> ExitSubmissionDecision {
         let mut decision = ExitSubmissionDecision {
             evaluation: evaluation.clone(),
             instrument_id: None,
@@ -3508,7 +3641,7 @@ impl BinaryOracleEdgeTaker {
 
     fn exit_realized_volatility_gate_fields_at(
         &self,
-        now_ms: u64,
+        realized_vol_gate_event_ms: Option<VenueEventMs>,
     ) -> (
         Option<u64>,
         bool,
@@ -3530,6 +3663,11 @@ impl BinaryOracleEdgeTaker {
                 None,
             );
         };
+        let gate_result = self.pricing.classify_realized_vol_gate(
+            &self.config.realized_volatility_surface_id,
+            realized_vol_gate_event_ms,
+            self.realized_volatility_max_source_age_ms(),
+        );
         let blockers = snapshot
             .blocked_reasons
             .iter()
@@ -3541,33 +3679,16 @@ impl BinaryOracleEdgeTaker {
             .iter()
             .map(BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic)
             .collect();
-        if snapshot.as_of_ms > now_ms {
-            return (
-                Some(snapshot.as_of_ms),
-                snapshot.ready,
-                blockers,
-                diagnostics,
-                BoltV3ExitRvGateResult::RejectedFutureDated,
-                Some(snapshot.as_of_ms - now_ms),
-            );
-        }
-        if snapshot.ready_realized_vol().is_none() {
-            return (
-                Some(snapshot.as_of_ms),
-                snapshot.ready,
-                blockers,
-                diagnostics,
-                BoltV3ExitRvGateResult::RejectedNotReady,
-                None,
-            );
-        }
+        let future_dating_delta_ms = realized_vol_gate_event_ms.and_then(|event_ms| {
+            (snapshot.as_of_ms > event_ms.value()).then_some(snapshot.as_of_ms - event_ms.value())
+        });
         (
             Some(snapshot.as_of_ms),
             snapshot.ready,
             blockers,
             diagnostics,
-            BoltV3ExitRvGateResult::Accepted,
-            None,
+            exit_rv_gate_result_from_shared(gate_result),
+            future_dating_delta_ms,
         )
     }
 
@@ -3580,8 +3701,9 @@ impl BinaryOracleEdgeTaker {
         let open_position = self.managed_position().map(|managed| &managed.position);
         let (historical_entry_fee_rate_known, historical_entry_fee_rate_reason) =
             self.historical_entry_fee_log_fields();
+        let realized_vol_gate_event_ms = trigger_context.venue_event_ms();
         let (realized_vol_source_venue, realized_vol_source_ts_ms) =
-            self.pricing.current_realized_vol_source_at(now_ms);
+            self.current_realized_vol_source_for_gate_at(realized_vol_gate_event_ms);
         let (
             rv_snapshot_as_of_ms,
             rv_snapshot_ready,
@@ -3589,7 +3711,7 @@ impl BinaryOracleEdgeTaker {
             rv_source_diagnostics,
             rv_gate_result,
             rv_future_dating_delta_ms,
-        ) = self.exit_realized_volatility_gate_fields_at(now_ms);
+        ) = self.exit_realized_volatility_gate_fields_at(realized_vol_gate_event_ms);
         ExitEvaluationLogFields {
             market_id: self.current_position_market_id(),
             phase: self.active.phase,
@@ -3606,7 +3728,7 @@ impl BinaryOracleEdgeTaker {
             reference_current_price: self.pricing.last_reference_current_price(),
             interval_open: open_position.and_then(|position| position.interval_open),
             seconds_to_expiry: self.current_position_seconds_to_expiry_at(now_ms),
-            realized_vol: self.current_realized_vol_at(now_ms),
+            realized_vol: self.current_realized_vol_for_gate_at(realized_vol_gate_event_ms),
             realized_vol_source_venue,
             realized_vol_source_ts_ms,
             rv_surface_id: self.config.realized_volatility_surface_id.clone(),
@@ -3623,13 +3745,22 @@ impl BinaryOracleEdgeTaker {
             pricing_kurtosis: self.config.pricing_kurtosis,
             exit_hysteresis_bps: self.config.exit_hysteresis_bps,
             fair_probability_up: self
-                .current_position_fair_probability_up_at(now_ms)
+                .current_position_fair_probability_up_for_gate_at(
+                    now_ms,
+                    realized_vol_gate_event_ms,
+                )
                 .map(Probability::value),
             fair_probability_down: self
-                .current_position_fair_probability_up_at(now_ms)
+                .current_position_fair_probability_up_for_gate_at(
+                    now_ms,
+                    realized_vol_gate_event_ms,
+                )
                 .map(|value| value.complement().value()),
             uncertainty_band_probability: self
-                .current_position_uncertainty_band_probability_at(now_ms)
+                .current_position_uncertainty_band_probability_for_gate_at(
+                    now_ms,
+                    realized_vol_gate_event_ms,
+                )
                 .map(Probability::value),
             up_fee_bps: self.position_outcome_fee_bps(OutcomeSide::Up),
             down_fee_bps: self.position_outcome_fee_bps(OutcomeSide::Down),
@@ -3650,12 +3781,13 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn log_exit_evaluation(&self, now_ms: u64, decision: &ExitSubmissionDecision) {
-        let fields = self.exit_evaluation_log_fields_at(
-            now_ms,
-            ExitEvaluationTriggerContext::unknown(now_ms),
-            decision,
-        );
+    fn log_exit_evaluation(
+        &self,
+        now_ms: u64,
+        trigger_context: ExitEvaluationTriggerContext,
+        decision: &ExitSubmissionDecision,
+    ) {
+        let fields = self.exit_evaluation_log_fields_at(now_ms, trigger_context, decision);
         let blocked = fields.submission_blocked_reason.is_some();
         if blocked {
             if should_warn_on_exit_submission_block(fields.submission_blocked_reason) {
@@ -4238,9 +4370,11 @@ impl BinaryOracleEdgeTaker {
             .spot_price()
             .filter(|value| is_positive_finite(*value))
             .ok_or_else(|| anyhow::anyhow!("entry strategy input evidence requires spot price"))?;
-        let realized_volatility = self.current_realized_vol_at(now_ms).ok_or_else(|| {
-            anyhow::anyhow!("entry strategy input evidence requires realized volatility")
-        })?;
+        let realized_volatility = self
+            .current_realized_vol_for_gate_at(self.current_pricing_venue_event_ms())
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires realized volatility")
+            })?;
         let seconds_to_market_end = self.current_seconds_to_expiry_at(now_ms).ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires seconds to market end")
         })?;
@@ -4439,9 +4573,9 @@ impl BinaryOracleEdgeTaker {
     /// Evaluate and (if admitted) submit an exit order, then record durable #885
     /// exit-evaluation evidence flood-gated by [`ExitOutcomeKey`].
     ///
-    /// `trigger_context` is a narrow, caller-supplied evidence input only — it does
-    /// not alter the trading decision, which is computed entirely from `now_ms`
-    /// inside [`Self::try_submit_exit_order_inner`].
+    /// `trigger_context` supplies the event timestamp domain for realized-volatility
+    /// consumption. Local/unknown triggers hold unless a real venue event can price
+    /// the RV freshness decision.
     fn try_submit_exit_order_for_trigger(
         &mut self,
         now_ms: u64,
@@ -4459,26 +4593,26 @@ impl BinaryOracleEdgeTaker {
     ) -> Result<(Option<ClientOrderId>, ExitSubmissionDecision)> {
         self.refresh_realized_volatility_snapshot_at(now_ms);
         self.refresh_current_reference_price_selection_at(now_ms);
-        let mut decision = self.exit_submission_decision_at(now_ms);
+        let mut decision = self.exit_submission_decision_for_trigger_at(now_ms, trigger_context);
 
         let Some(instrument_id) = decision.instrument_id else {
             self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
-            self.log_exit_evaluation(now_ms, &decision);
+            self.log_exit_evaluation(now_ms, trigger_context, &decision);
             return Ok((None, decision));
         };
         let Some(order_side) = decision.order_side else {
             self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
-            self.log_exit_evaluation(now_ms, &decision);
+            self.log_exit_evaluation(now_ms, trigger_context, &decision);
             return Ok((None, decision));
         };
         let Some(raw_price) = decision.price else {
             self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
-            self.log_exit_evaluation(now_ms, &decision);
+            self.log_exit_evaluation(now_ms, trigger_context, &decision);
             return Ok((None, decision));
         };
         let Some(mut quantity) = decision.quantity else {
             self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
-            self.log_exit_evaluation(now_ms, &decision);
+            self.log_exit_evaluation(now_ms, trigger_context, &decision);
             return Ok((None, decision));
         };
         let order_config = decision
@@ -4492,7 +4626,7 @@ impl BinaryOracleEdgeTaker {
         else {
             decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE);
             self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
-            self.log_exit_evaluation(now_ms, &decision);
+            self.log_exit_evaluation(now_ms, trigger_context, &decision);
             return Ok((None, decision));
         };
         quantity = normalized_quantity;
@@ -4501,7 +4635,7 @@ impl BinaryOracleEdgeTaker {
         let client_order_id = self.core.order_factory().generate_client_order_id();
         decision.client_order_id = Some(client_order_id);
         self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
-        self.log_exit_evaluation(now_ms, &decision);
+        self.log_exit_evaluation(now_ms, trigger_context, &decision);
         let order = self.build_exit_order_with_execution_config(
             order_config,
             instrument_id,
@@ -4590,14 +4724,19 @@ impl BinaryOracleEdgeTaker {
         let trigger_source = trigger_context.source;
         let trigger_ts_event_ms = Some(trigger_context.ts_event_ms as i64);
         let trigger_ts_init_ms = trigger_context.ts_init_ms.map(|value| value as i64);
+        let rv_gate_event_ms = trigger_context.venue_event_ms();
         let log_fields = self.exit_evaluation_log_fields_at(now_ms, trigger_context, decision);
         let rv_fields = self.realized_volatility_evidence_fields();
-        let rv_gate_result = self
-            .pricing
-            .classify_realized_vol_gate(&self.config.realized_volatility_surface_id, now_ms);
+        let rv_gate_result = self.pricing.classify_realized_vol_gate(
+            &self.config.realized_volatility_surface_id,
+            rv_gate_event_ms,
+            self.realized_volatility_max_source_age_ms(),
+        );
         let exit_eval_now_ms = now_ms as i64;
         let rv_as_of_ms = rv_fields.as_of_ms.map(|value| value as i64);
-        let rv_as_of_minus_now_ms = rv_as_of_ms.map(|as_of| as_of - exit_eval_now_ms);
+        let rv_as_of_minus_now_ms = rv_as_of_ms
+            .zip(rv_gate_event_ms)
+            .map(|(as_of, event_ms)| as_of - event_ms.value() as i64);
         let rv_ready = self
             .pricing
             .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id)

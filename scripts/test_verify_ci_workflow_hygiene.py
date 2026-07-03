@@ -630,7 +630,7 @@ jobs:
       archive_build_target_cache_key: ${{ steps.root-nextest-cache-keys.outputs.archive_build_target_cache_key }}
       nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outcome == 'skipped' && 'skipped' || (steps.nextest-archive-cache.outputs.cache-hit || 'false') }}
       root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outcome == 'skipped' && 'skipped' || (steps.root-bin-sidecars-cache.outputs.cache-hit || 'false') }}
-      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}
+      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || (steps.test-target-cache.outputs.cache-hit || 'false') }}
       nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || (steps.nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
       root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outputs.save-status || (steps.root-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
       archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}
@@ -690,7 +690,7 @@ jobs:
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/nextest-archive/${CACHE_KEY}.tar.zst"
           metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
           if [[ "$metadata_digest" != "$DIGEST" ]]; then
-            echo "::error::nextest archive S3 metadata digest mismatch"
+            echo "::error::nextest archive S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
             exit 1
           fi
           aws s3 cp "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}" "$NEXTEST_ARCHIVE_PATH"
@@ -706,7 +706,7 @@ jobs:
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/root-bin-sidecars/${CACHE_KEY}.tar.gz"
           metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
           if [[ "$metadata_digest" != "$DIGEST" ]]; then
-            echo "::error::root binary sidecar S3 metadata digest mismatch"
+            echo "::error::root binary sidecar S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
             exit 1
           fi
           aws s3 cp "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}" "$ROOT_BIN_SIDECARS_PATH"
@@ -5868,8 +5868,16 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             "test-archive archive build target cache hit output must be explicit when restore is skipped",
             replace_once(
                 workflow,
-                "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}\n",
+                "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || (steps.test-target-cache.outputs.cache-hit || 'false') }}\n",
                 "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}\n",
+            ),
+        ),
+        (
+            "test-archive archive build target cache hit output must default cache misses to false",
+            replace_once(
+                workflow,
+                "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || (steps.test-target-cache.outputs.cache-hit || 'false') }}\n",
+                "      archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}\n",
             ),
         ),
         (
@@ -9977,6 +9985,7 @@ def test_nextest_artifact_cache_doc_names_rollout_evidence() -> None:
         "restore HIT",
         "CI Storage Tripwire",
         "week-one metrics",
+        "Tag pushes intentionally rebuild nextest archive payloads locally",
     )
     missing = [fragment for fragment in required if fragment not in doc]
     if missing:
@@ -13438,7 +13447,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-nextest-archive/${CACHE_KEY}.tar.zst"
           metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
           if [[ "$metadata_digest" != "$DIGEST" ]]; then
-            echo "::error::BVS nextest archive S3 metadata digest mismatch"
+            echo "::error::BVS nextest archive S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
             exit 1
           fi
           aws s3 cp "$uri" "$BVS_NEXTEST_ARCHIVE_PATH" --only-show-errors || true
@@ -13454,7 +13463,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-bin-sidecars/${CACHE_KEY}.tar.gz"
           metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
           if [[ "$metadata_digest" != "$DIGEST" ]]; then
-            echo "::error::BVS binary sidecar S3 metadata digest mismatch"
+            echo "::error::BVS binary sidecar S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
             exit 1
           fi
           aws s3 cp "$uri" "$BVS_BIN_SIDECARS_PATH" --only-show-errors || true
@@ -13646,7 +13655,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     missing_bvs_nextest_integrity = replace_once(
         good,
         """          if [[ "$metadata_digest" != "$DIGEST" ]]; then
-            echo "::error::BVS nextest archive S3 metadata digest mismatch"
+            echo "::error::BVS nextest archive S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
             exit 1
           fi
 """,
@@ -13662,7 +13671,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     missing_bvs_sidecar_integrity = replace_once(
         good,
         """          if [[ "$metadata_digest" != "$DIGEST" ]]; then
-            echo "::error::BVS binary sidecar S3 metadata digest mismatch"
+            echo "::error::BVS binary sidecar S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
             exit 1
           fi
 """,

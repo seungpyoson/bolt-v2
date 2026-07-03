@@ -16,6 +16,10 @@ archive payloads do not write to the branch-scoped Actions cache.
 - `AWS_CI_CACHE_PR_READONLY_ROLE_ARN` is used by PR, merge queue, and manual
   dispatch restore attempts.
 
+Tag pushes intentionally rebuild nextest archive payloads locally. They do not
+receive an S3 cache role or `cache_mode`, so deploy-lane tag runs fail open to
+the local archive/sidecar build path instead of restoring or saving S3 payloads.
+
 Set `CI_NEXTEST_ARCHIVE_S3_ENABLED` to any value other than `true` to disable
 the S3 backend. A disabled backend or failed restore is fail-open: CI builds the
 archive and sidecars normally, and only the post-merge main writer may save new
@@ -26,8 +30,9 @@ entries.
 
 Every S3 restore validates the object's `nextest-digest` metadata against the
 current digest before the payload is used. A missing object or unavailable S3
-read is a cache miss; a metadata mismatch is an integrity failure and must fail
-the job.
+read is a cache miss; a missing or mismatched `nextest-digest` metadata value
+is an integrity failure and must fail the job. Delete the object or repopulate
+it from a main push.
 
 ## Post-Merge Acceptance Evidence
 

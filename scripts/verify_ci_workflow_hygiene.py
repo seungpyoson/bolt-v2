@@ -831,7 +831,7 @@ TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS = (
     f"archive_build_target_cache_key: {TEST_ARCHIVE_TARGET_CACHE_KEY_OUTPUT}",
     "nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outcome == 'skipped' && 'skipped' || (steps.nextest-archive-cache.outputs.cache-hit || 'false') }}",
     "root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outcome == 'skipped' && 'skipped' || (steps.root-bin-sidecars-cache.outputs.cache-hit || 'false') }}",
-    "archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}",
+    "archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || (steps.test-target-cache.outputs.cache-hit || 'false') }}",
 )
 TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS = (
     "nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || (steps.nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}",
@@ -11251,6 +11251,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 or "exit 1" not in text
             ):
                 errors.append(f"test-archive must fail closed on {label} S3 digest mismatch")
+            if "Delete the object or repopulate it from a main push." not in text:
+                errors.append(f"test-archive must explain recovery for {label} S3 digest mismatch")
         for block, label, key_output, path_var, object_fragment in (
             (archive_s3_save_block, "nextest archive", TEST_ARCHIVE_CACHE_KEY_OUTPUT, "$NEXTEST_ARCHIVE_PATH", "/nextest-archive/${CACHE_KEY}.tar.zst"),
             (sidecar_s3_save_block, "root binary sidecar", TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT, "$ROOT_BIN_SIDECARS_PATH", "/root-bin-sidecars/${CACHE_KEY}.tar.gz"),
@@ -11338,6 +11340,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 break
         if "archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}" in archive_text:
             errors.append("test-archive archive build target cache hit output must be explicit when restore is skipped")
+        if "archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}" in archive_text:
+            errors.append("test-archive archive build target cache hit output must default cache misses to false")
         for output in TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS:
             if output not in archive_text:
                 errors.append("test-archive must expose cache persistence save outcomes")
@@ -12739,11 +12743,11 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive must fail closed on nextest archive S3 digest mismatch",
-            "BVS nextest archive S3 metadata digest mismatch",
+            "BVS nextest archive S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push.",
         ),
         (
             "backtester bvs-test archive must fail closed on binary sidecar S3 digest mismatch",
-            "BVS binary sidecar S3 metadata digest mismatch",
+            "BVS binary sidecar S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push.",
         ),
         (
             "backtester bvs-test archive must restore caches from S3",

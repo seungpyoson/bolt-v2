@@ -455,7 +455,7 @@ jobs:
             exit 0
           fi
           if [[ "$metadata_digest" != "$DIGEST" ]]; then
-            echo "::error::BVS nextest archive S3 metadata digest mismatch for ${object_key}: expected ${DIGEST}, got ${metadata_digest:-<empty>}"
+            echo "::error::BVS nextest archive S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
             exit 1
           fi
           if aws s3 cp "$uri" "$BVS_NEXTEST_ARCHIVE_PATH" --only-show-errors; then
@@ -508,7 +508,7 @@ jobs:
             exit 0
           fi
           if [[ "$metadata_digest" != "$DIGEST" ]]; then
-            echo "::error::BVS binary sidecar S3 metadata digest mismatch for ${object_key}: expected ${DIGEST}, got ${metadata_digest:-<empty>}"
+            echo "::error::BVS binary sidecar S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
             exit 1
           fi
           if aws s3 cp "$uri" "$BVS_BIN_SIDECARS_PATH" --only-show-errors; then

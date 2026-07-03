@@ -19571,6 +19571,22 @@ classification = "decision_evidence_record_kind"
 reason = "Stable decision-evidence record kind for degraded venue REST capture authority records; it names the JSONL envelope and does not configure runtime behavior."
 
 [[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.venue_truth_divergence"'''
+context = '''pub const BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID: &str = "bolt_v3.venue_truth_divergence";'''
+classification = "decision_evidence_gate_label"
+reason = "Stable decision-evidence gate id for durable venue-truth divergence records; it names evidence schema routing and does not configure venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"venue_truth_divergence"'''
+context = '''pub const BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND: &str = "venue_truth_divergence";'''
+classification = "decision_evidence_record_kind"
+reason = "Stable decision-evidence record kind for durable venue-truth divergence records; it names the JSONL envelope and does not configure runtime behavior."
+
+[[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"venue_truth_capture_failure"'''
@@ -19637,6 +19653,110 @@ reason = "Evidence error-class label for a failed venue REST leg where transport
 [[allowed]]
 path = "src/bolt_v3_venue_truth.rs"
 kind = "string"
+literal = '''"account_id"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_FIELD_ACCOUNT_ID: &str = "account_id";'''
+classification = "venue_truth_divergence_evidence_field"
+reason = "Stable evidence field label for account-id venue-truth divergence records; it labels evidence payloads and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"collateral_allowance"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_ALLOWANCE: &str = "collateral_allowance";'''
+classification = "venue_truth_divergence_evidence_field"
+reason = "Stable evidence field label for collateral-allowance venue-truth divergence records; it labels evidence payloads and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"collateral_balance"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_BALANCE: &str = "collateral_balance";'''
+classification = "venue_truth_divergence_evidence_field"
+reason = "Stable evidence field label for collateral-balance venue-truth divergence records; it labels evidence payloads and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"open_orders"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_FIELD_OPEN_ORDERS: &str = "open_orders";'''
+classification = "venue_truth_divergence_evidence_field"
+reason = "Stable evidence field label for open-order venue-truth divergence records; it labels evidence payloads and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"order_event_observed_at_ns"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_FIELD_ORDERING: &str = "order_event_observed_at_ns";'''
+classification = "venue_truth_divergence_evidence_field"
+reason = "Stable evidence field label for order-event ordering venue-truth divergence records; it labels evidence payloads and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"positions_by_product_id"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_FIELD_POSITIONS: &str = "positions_by_product_id";'''
+classification = "venue_truth_divergence_evidence_field"
+reason = "Stable evidence field label for position venue-truth divergence records; it labels evidence payloads and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"no_prior_accepted_snapshot"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_PRIOR_ACCEPTED_VALUE_MISSING: &str = "no_prior_accepted_snapshot";'''
+classification = "venue_truth_divergence_evidence_sentinel"
+reason = "Stable evidence sentinel for the defensive case where divergence evidence is built without a prior accepted venue snapshot; it marks missing evidence context and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"account_changed"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_REASON_ACCOUNT_CHANGED: &str = "account_changed";'''
+classification = "venue_truth_divergence_evidence_reason"
+reason = "Stable evidence reason code for account-id venue-truth divergence records; it classifies evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"unexplained_collateral_allowance_delta"'''
+context = '''"unexplained_collateral_allowance_delta";'''
+classification = "venue_truth_divergence_evidence_reason"
+reason = "Stable evidence reason code for unexplained collateral-allowance venue-truth divergence records; it classifies evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"unexplained_collateral_balance_delta"'''
+context = '''"unexplained_collateral_balance_delta";'''
+classification = "venue_truth_divergence_evidence_reason"
+reason = "Stable evidence reason code for unexplained collateral-balance venue-truth divergence records; it classifies evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"unexplained_open_order_delta"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_REASON_OPEN_ORDERS: &str = "unexplained_open_order_delta";'''
+classification = "venue_truth_divergence_evidence_reason"
+reason = "Stable evidence reason code for unexplained open-order venue-truth divergence records; it classifies evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"ordering_violation"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_REASON_ORDERING: &str = "ordering_violation";'''
+classification = "venue_truth_divergence_evidence_reason"
+reason = "Stable evidence reason code for same-domain ordering violation venue-truth divergence records; it classifies evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"unexplained_position_delta"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_REASON_POSITIONS: &str = "unexplained_position_delta";'''
+classification = "venue_truth_divergence_evidence_reason"
+reason = "Stable evidence reason code for unexplained position venue-truth divergence records; it classifies evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
 literal = '''"venue_truth_snapshot"'''
 context = '''pub const VENUE_TRUTH_CAPTURE_AGGREGATE_ENDPOINT: &str = "venue_truth_snapshot";'''
 classification = "venue_truth_capture_failure_endpoint_fallback"
@@ -19653,10 +19773,42 @@ reason = "Structural identity for a fresh in-memory order-event projection befor
 [[allowed]]
 path = "src/bolt_v3_venue_truth.rs"
 kind = "number"
+literal = "0"
+context = '''venue_event_count: 0,'''
+classification = "venue_truth_event_projection_counter_identity"
+reason = "Structural identity for a fresh in-memory venue-domain order-event projection before recorded venue events are consumed; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "number"
+literal = "0"
+context = '''local_event_count: 0,'''
+classification = "venue_truth_event_projection_counter_identity"
+reason = "Structural identity for a fresh in-memory local-domain order-event projection before recorded local events are consumed; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "number"
 literal = "1"
 context = '''self.event_count += 1;'''
 classification = "venue_truth_event_projection_counter_increment"
 reason = "Structural unit increment for each consumed recorded order event in the reconciler projection; it counts evidence ordering and is not a threshold."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "number"
+literal = "1"
+context = '''self.venue_event_count += 1;'''
+classification = "venue_truth_event_projection_counter_increment"
+reason = "Structural unit increment for each consumed recorded venue-domain order event in the reconciler projection; it counts evidence ordering and is not a threshold."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "number"
+literal = "1"
+context = '''self.local_event_count += 1;'''
+classification = "venue_truth_event_projection_counter_increment"
+reason = "Structural unit increment for each consumed recorded local-domain order event in the reconciler projection; it counts evidence ordering and is not a threshold."
 
 [[allowed]]
 path = "src/bolt_v3_venue_truth.rs"
@@ -19681,6 +19833,14 @@ literal = '''b"venue_truth_divergence"'''
 context = '''KillSwitchHaltTriggerKind::VenueTruthDivergence => b"venue_truth_divergence".as_slice(),'''
 classification = "kill_switch_trigger_kind_hash_label"
 reason = "Stable trigger-kind label included in halt-id derivation for venue-truth divergence halts; not a venue, size, timeout, or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"venue truth divergence: {:?} alarm_class={:?}"'''
+context = '''"venue truth divergence: {:?} alarm_class={:?}",'''
+classification = "venue_truth_divergence_halt_reason_template"
+reason = "Static durable halt reason template for venue-truth divergence evidence; it records already-classified divergence/alarm values and does not configure halt policy."
 
 [[allowed]]
 path = "src/bolt_v3_live_node/risk_admission_loss.rs"

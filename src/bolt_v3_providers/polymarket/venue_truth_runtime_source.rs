@@ -26,8 +26,8 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_venue_truth::{
     VenueTruthCaptureEndpointError, VenueTruthOpenOrder, VenueTruthOrderEvent,
-    VenueTruthOrderEventMapper, VenueTruthSnapshot, VenueTruthSnapshotFuture,
-    VenueTruthSnapshotSource,
+    VenueTruthOrderEventMapper, VenueTruthOrderEventTimestampDomain, VenueTruthSnapshot,
+    VenueTruthSnapshotFuture, VenueTruthSnapshotSource,
 };
 
 use super::{PolymarketExecutionConfig, ResolvedBoltV3PolymarketSecrets};
@@ -217,13 +217,19 @@ impl VenueTruthOrderEventMapper for PolymarketVenueTruthOrderEventMapper {
                     observed_at_ns: fill.ts_event,
                 })
             }
-            OrderEventAny::Canceled(_)
-            | OrderEventAny::Expired(_)
-            | OrderEventAny::Rejected(_)
-            | OrderEventAny::Denied(_) => Some(VenueTruthOrderEvent::Terminal {
+            OrderEventAny::Canceled(_) | OrderEventAny::Expired(_) | OrderEventAny::Rejected(_) => {
+                Some(VenueTruthOrderEvent::Terminal {
+                    client_order_id: event.client_order_id().to_string(),
+                    venue_order_id: event.venue_order_id(),
+                    observed_at_ns: event.ts_event(),
+                    timestamp_domain: VenueTruthOrderEventTimestampDomain::Venue,
+                })
+            }
+            OrderEventAny::Denied(_) => Some(VenueTruthOrderEvent::Terminal {
                 client_order_id: event.client_order_id().to_string(),
                 venue_order_id: event.venue_order_id(),
                 observed_at_ns: event.ts_event(),
+                timestamp_domain: VenueTruthOrderEventTimestampDomain::Local,
             }),
             _ => None,
         }

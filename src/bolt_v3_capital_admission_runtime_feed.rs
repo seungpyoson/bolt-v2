@@ -272,7 +272,11 @@ impl CapitalAdmissionRuntimeFeed {
                     spendable_collateral: accepted_snapshot.collateral_balance.as_decimal(),
                     collateral_allowance: accepted_snapshot.collateral_allowance.as_decimal(),
                 };
-                published = self.on_venue_spendability_snapshot(venue_spendability);
+                self.component_builder
+                    .record_venue_spendability(&self.config, venue_spendability);
+                published = self.publish_components_if_ready_after_accepted_venue_truth_capture(
+                    accepted_snapshot.captured_at.as_u64(),
+                );
             }
         }
         Ok(published)
@@ -603,6 +607,24 @@ impl CapitalAdmissionRuntimeFeed {
         let components = self.component_builder.components(&self.config)?;
         self.submit_admission
             .update_capital_admission_nt_components(components.clone());
+        Some(components)
+    }
+
+    fn publish_components_if_ready_after_accepted_venue_truth_capture(
+        &mut self,
+        accepted_capture_observed_at_ns: u64,
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
+        let submit_admission = Arc::clone(&self.submit_admission);
+        self.component_builder
+            .refresh_live_order_attribution(|client_order_id| {
+                submit_admission.capital_admission_has_live_reservation(client_order_id)
+            });
+        let components = self.component_builder.components(&self.config)?;
+        self.submit_admission
+            .update_capital_admission_nt_components_after_accepted_venue_truth_capture(
+                components.clone(),
+                accepted_capture_observed_at_ns,
+            );
         Some(components)
     }
 }

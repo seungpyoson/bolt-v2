@@ -30,7 +30,7 @@ use crate::bolt_v3_loss_governor::{
 };
 use crate::bolt_v3_numeric::{is_positive_finite, notional_float_tolerance};
 use crate::bolt_v3_observed_dedupe::prune_observed_dedupe_entries;
-use crate::bolt_v3_venue_truth::VenueTruthCaptureFailureEvidence;
+use crate::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthDivergenceEvidence};
 use anyhow::Context;
 use nautilus_model::{
     enums::{OrderSide, PositionSide},
@@ -227,6 +227,7 @@ struct BoltV3SubmitCapitalAdmissionState {
     state: Option<NtDerivedCapitalAdmissionState>,
     latest_reservation_mutation_observed_at_ns: Option<u64>,
     venue_truth_capture_failure_source: Option<String>,
+    venue_truth_capture_failure_observed_at_ns: Option<u64>,
     gate: CapitalAdmissionGate,
     next_sequence: u64,
     client_order_reservations: BTreeMap<String, BoltV3SubmitReservationIndex>,
@@ -494,6 +495,7 @@ impl BoltV3SubmitAdmissionState {
                         state: None,
                         latest_reservation_mutation_observed_at_ns: None,
                         venue_truth_capture_failure_source: None,
+                        venue_truth_capture_failure_observed_at_ns: None,
                         gate: CapitalAdmissionGate::unreconciled(),
                         next_sequence: 0,
                         client_order_reservations: BTreeMap::new(),
@@ -557,6 +559,29 @@ impl BoltV3SubmitAdmissionState {
         }
     }
 
+    pub fn update_capital_admission_nt_components_after_accepted_venue_truth_capture(
+        &self,
+        components: BoltV3SubmitCapitalAdmissionNtComponents,
+        accepted_capture_observed_at_ns: u64,
+    ) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        if let Some(capital_admission) = inner.capital_admission.as_mut() {
+            if capital_admission
+                .venue_truth_capture_failure_observed_at_ns
+                .is_some_and(|failure_observed_at_ns| {
+                    accepted_capture_observed_at_ns > failure_observed_at_ns
+                })
+            {
+                capital_admission.venue_truth_capture_failure_source = None;
+                capital_admission.venue_truth_capture_failure_observed_at_ns = None;
+            }
+            refresh_capital_admission_state_from_components(capital_admission, components);
+        }
+    }
+
     pub fn suspend_capital_admission_for_venue_truth_capture_failure(
         &self,
         evidence: VenueTruthCaptureFailureEvidence,
@@ -573,6 +598,8 @@ impl BoltV3SubmitAdmissionState {
             .expect("submit admission state mutex should not be poisoned");
         if let Some(capital_admission) = inner.capital_admission.as_mut() {
             capital_admission.venue_truth_capture_failure_source = Some(evidence.source);
+            capital_admission.venue_truth_capture_failure_observed_at_ns =
+                Some(evidence.observed_at_ns);
             refresh_capital_admission_reservation_snapshot_with_source(
                 capital_admission,
                 evidence.observed_at_ns,
@@ -580,6 +607,14 @@ impl BoltV3SubmitAdmissionState {
                 false,
             );
         }
+    }
+
+    pub fn record_venue_truth_divergence_evidence(
+        &self,
+        evidence: &VenueTruthDivergenceEvidence,
+    ) -> anyhow::Result<()> {
+        self.decision_evidence
+            .record_venue_truth_divergence(evidence)
     }
 
     pub fn capital_admission_state_snapshot(&self) -> Option<NtDerivedCapitalAdmissionState> {
@@ -3673,13 +3708,6 @@ fn refresh_capital_admission_state_from_components(
     capital_admission: &mut BoltV3SubmitCapitalAdmissionState,
     mut components: BoltV3SubmitCapitalAdmissionNtComponents,
 ) {
-    if capital_admission
-        .venue_truth_capture_failure_source
-        .as_deref()
-        .is_some_and(|source| source == components.venue_spendability.source)
-    {
-        capital_admission.venue_truth_capture_failure_source = None;
-    }
     preserve_fresher_order_lifecycle(capital_admission.state.as_ref(), &mut components);
     if capital_admission.gate.is_reconciled()
         && components.order_lifecycle.open_order_count > 0

@@ -21,6 +21,21 @@ pub type VenueTruthSnapshotFuture<'a> =
 
 pub const VENUE_TRUTH_CAPTURE_AGGREGATE_ENDPOINT: &str = "venue_truth_snapshot";
 pub const VENUE_TRUTH_CAPTURE_ERROR_CLASS_UNKNOWN: &str = "unknown";
+pub const VENUE_TRUTH_DIVERGENCE_FIELD_ACCOUNT_ID: &str = "account_id";
+pub const VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_ALLOWANCE: &str = "collateral_allowance";
+pub const VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_BALANCE: &str = "collateral_balance";
+pub const VENUE_TRUTH_DIVERGENCE_FIELD_OPEN_ORDERS: &str = "open_orders";
+pub const VENUE_TRUTH_DIVERGENCE_FIELD_ORDERING: &str = "order_event_observed_at_ns";
+pub const VENUE_TRUTH_DIVERGENCE_FIELD_POSITIONS: &str = "positions_by_product_id";
+pub const VENUE_TRUTH_DIVERGENCE_PRIOR_ACCEPTED_VALUE_MISSING: &str = "no_prior_accepted_snapshot";
+pub const VENUE_TRUTH_DIVERGENCE_REASON_ACCOUNT_CHANGED: &str = "account_changed";
+pub const VENUE_TRUTH_DIVERGENCE_REASON_COLLATERAL_ALLOWANCE: &str =
+    "unexplained_collateral_allowance_delta";
+pub const VENUE_TRUTH_DIVERGENCE_REASON_COLLATERAL_BALANCE: &str =
+    "unexplained_collateral_balance_delta";
+pub const VENUE_TRUTH_DIVERGENCE_REASON_OPEN_ORDERS: &str = "unexplained_open_order_delta";
+pub const VENUE_TRUTH_DIVERGENCE_REASON_ORDERING: &str = "ordering_violation";
+pub const VENUE_TRUTH_DIVERGENCE_REASON_POSITIONS: &str = "unexplained_position_delta";
 
 pub trait VenueTruthSnapshotSource: std::fmt::Debug + Send + Sync {
     fn snapshot(&self, captured_at: UnixNanos) -> VenueTruthSnapshotFuture<'_>;
@@ -72,7 +87,14 @@ pub enum VenueTruthOrderEvent {
         client_order_id: String,
         venue_order_id: Option<VenueOrderId>,
         observed_at_ns: UnixNanos,
+        timestamp_domain: VenueTruthOrderEventTimestampDomain,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VenueTruthOrderEventTimestampDomain {
+    Venue,
+    Local,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,12 +107,14 @@ pub enum VenueTruthReconciliation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VenueTruthDivergenceKind {
     AccountChanged,
+    OrderingViolation,
     UnexplainedOpenOrderDelta,
     UnexplainedPositionDelta,
     UnexplainedCollateralDelta,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VenueTruthDivergenceAlarmClass {
     TrueDivergence,
     OrderingViolation,
@@ -104,6 +128,18 @@ pub struct VenueTruthCaptureFailureEvidence {
     pub endpoint: String,
     pub error_class: String,
     pub captures_missed: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VenueTruthDivergenceEvidence {
+    pub source: String,
+    pub observed_at_ns: u64,
+    pub account_id: String,
+    pub field: String,
+    pub venue_value: String,
+    pub prior_accepted_value: String,
+    pub missing_explanation: String,
+    pub alarm_class: VenueTruthDivergenceAlarmClass,
 }
 
 #[derive(Debug)]
@@ -166,6 +202,27 @@ pub struct VenueTruthDivergence {
     pub alarm_class: VenueTruthDivergenceAlarmClass,
     pub previous_captured_at: Option<UnixNanos>,
     pub current_captured_at: UnixNanos,
+    pub account_id: String,
+    pub field: String,
+    pub venue_value: String,
+    pub prior_accepted_value: String,
+    pub missing_explanation: String,
+}
+
+impl VenueTruthDivergence {
+    #[must_use]
+    pub fn evidence(&self, source: impl Into<String>) -> VenueTruthDivergenceEvidence {
+        VenueTruthDivergenceEvidence {
+            source: source.into(),
+            observed_at_ns: self.current_captured_at.as_u64(),
+            account_id: self.account_id.clone(),
+            field: self.field.clone(),
+            venue_value: self.venue_value.clone(),
+            prior_accepted_value: self.prior_accepted_value.clone(),
+            missing_explanation: self.missing_explanation.clone(),
+            alarm_class: self.alarm_class,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,21 +244,31 @@ pub struct VenueTruthReconciler {
 #[derive(Debug, Clone)]
 struct VenueTruthEventProjection {
     event_count: u64,
-    last_observed_at_ns: Option<UnixNanos>,
+    venue_event_count: u64,
+    local_event_count: u64,
+    last_venue_observed_at_ns: Option<UnixNanos>,
     ordering_violation: bool,
     accepted_venue_order_ids: BTreeSet<VenueOrderId>,
     client_to_venue_order_id: BTreeMap<String, VenueOrderId>,
     terminal_venue_order_ids: BTreeSet<VenueOrderId>,
     fill_quantity_by_venue_order_id: BTreeMap<VenueOrderId, Decimal>,
-    buy_fill_quantity_by_product_id: BTreeMap<String, Decimal>,
-    sell_fill_quantity_by_product_id: BTreeMap<String, Decimal>,
-    collateral_balance_delta: Decimal,
+    fill_collateral_lots: Vec<VenueTruthFillCollateralLot>,
+    drainable_collateral_balance_delta: Decimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VenueTruthFillCollateralLot {
+    product_id: String,
+    side: OrderSide,
+    remaining_quantity: Decimal,
+    remaining_collateral_delta: Decimal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VenueTruthCompletedCapture {
     capture_number: u64,
     event_count_at_completion: u64,
+    venue_event_count_at_completion: u64,
     snapshot: VenueTruthSnapshot,
 }
 
@@ -209,6 +276,7 @@ struct VenueTruthCompletedCapture {
 struct VenueTruthPendingCapture {
     capture: VenueTruthCompletedCapture,
     event_count_at_first_judgment: u64,
+    venue_event_count_at_first_judgment: u64,
 }
 
 // The bolt-v3 legacy-default fence forbids a `Default` impl on the production
@@ -248,6 +316,7 @@ impl VenueTruthReconciler {
         let capture = VenueTruthCompletedCapture {
             capture_number: self.next_capture_number,
             event_count_at_completion: self.event_projection.event_count,
+            venue_event_count_at_completion: self.event_projection.venue_event_count,
             snapshot,
         };
         self.next_capture_number += 1;
@@ -276,7 +345,7 @@ impl VenueTruthReconciler {
                     .pending_capture
                     .take()
                     .expect("pending capture checked");
-                match self.try_accept_capture(&pending.capture) {
+                match self.try_accept_capture(&pending.capture, true) {
                     Ok(result) => {
                         results.push(result);
                         continue;
@@ -286,6 +355,7 @@ impl VenueTruthReconciler {
                             kind,
                             &pending.capture,
                             pending.event_count_at_first_judgment,
+                            pending.venue_event_count_at_first_judgment,
                         ));
                     }
                 }
@@ -298,19 +368,26 @@ impl VenueTruthReconciler {
                 .completed_captures
                 .front()
                 .is_some_and(|next| next.capture_number > capture.capture_number);
-            match self.try_accept_capture(&capture) {
+            match self.try_accept_capture(&capture, fence_already_completed) {
                 Ok(result) => results.push(result),
-                Err(kind) if fence_already_completed => {
+                Err(kind)
+                    if fence_already_completed
+                        || kind == VenueTruthDivergenceKind::OrderingViolation =>
+                {
                     return Err(self.classified_divergence(
                         kind,
                         &capture,
                         capture.event_count_at_completion,
+                        capture.venue_event_count_at_completion,
                     ));
                 }
                 Err(_kind) => {
                     self.pending_capture = Some(VenueTruthPendingCapture {
                         capture,
                         event_count_at_first_judgment: self.event_projection.event_count,
+                        venue_event_count_at_first_judgment: self
+                            .event_projection
+                            .venue_event_count,
                     });
                     let pending = self
                         .pending_capture
@@ -342,6 +419,7 @@ impl VenueTruthReconciler {
     fn try_accept_capture(
         &mut self,
         capture: &VenueTruthCompletedCapture,
+        allow_deferred_collateral: bool,
     ) -> Result<VenueTruthReconciliationResult, VenueTruthDivergenceKind> {
         let snapshot = capture.snapshot.clone();
         let Some(previous) = &self.previous_snapshot else {
@@ -359,7 +437,15 @@ impl VenueTruthReconciler {
         let mut projection = self.event_projection.clone();
         explain_open_order_delta(previous, &snapshot, &mut projection)?;
         explain_position_delta(previous, &snapshot, &mut projection)?;
-        explain_collateral_delta(previous, &snapshot, &mut projection)?;
+        explain_collateral_delta(
+            previous,
+            &snapshot,
+            &mut projection,
+            allow_deferred_collateral,
+        )?;
+        if projection.ordering_violation {
+            return Err(VenueTruthDivergenceKind::OrderingViolation);
+        }
 
         self.event_projection = projection;
         self.previous_snapshot = Some(snapshot.clone());
@@ -374,11 +460,12 @@ impl VenueTruthReconciler {
         &self,
         kind: VenueTruthDivergenceKind,
         capture: &VenueTruthCompletedCapture,
-        earlier_event_count: u64,
+        _earlier_event_count: u64,
+        earlier_venue_event_count: u64,
     ) -> VenueTruthDivergence {
         let alarm_class = if self.event_projection.ordering_violation {
             VenueTruthDivergenceAlarmClass::OrderingViolation
-        } else if self.event_projection.event_count == earlier_event_count {
+        } else if self.event_projection.venue_event_count == earlier_venue_event_count {
             VenueTruthDivergenceAlarmClass::SilentChannel
         } else {
             VenueTruthDivergenceAlarmClass::TrueDivergence
@@ -386,10 +473,8 @@ impl VenueTruthReconciler {
         divergence(
             kind,
             alarm_class,
-            self.previous_snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.captured_at),
-            capture.snapshot.captured_at,
+            self.previous_snapshot.as_ref(),
+            &capture.snapshot,
         )
     }
 }
@@ -398,27 +483,32 @@ impl VenueTruthEventProjection {
     fn empty() -> Self {
         Self {
             event_count: 0,
-            last_observed_at_ns: None,
+            venue_event_count: 0,
+            local_event_count: 0,
+            last_venue_observed_at_ns: None,
             ordering_violation: false,
             accepted_venue_order_ids: BTreeSet::new(),
             client_to_venue_order_id: BTreeMap::new(),
             terminal_venue_order_ids: BTreeSet::new(),
             fill_quantity_by_venue_order_id: BTreeMap::new(),
-            buy_fill_quantity_by_product_id: BTreeMap::new(),
-            sell_fill_quantity_by_product_id: BTreeMap::new(),
-            collateral_balance_delta: Decimal::ZERO,
+            fill_collateral_lots: Vec::new(),
+            drainable_collateral_balance_delta: Decimal::ZERO,
         }
     }
 
     fn record_order_event(&mut self, event: VenueTruthOrderEvent) {
-        let observed_at_ns = event.observed_at_ns();
-        if self
-            .last_observed_at_ns
-            .is_some_and(|previous| observed_at_ns < previous)
-        {
-            self.ordering_violation = true;
+        if let Some(observed_at_ns) = event.venue_observed_at_ns() {
+            if self
+                .last_venue_observed_at_ns
+                .is_some_and(|previous| observed_at_ns < previous)
+            {
+                self.ordering_violation = true;
+            }
+            self.last_venue_observed_at_ns = Some(observed_at_ns);
+            self.venue_event_count += 1;
+        } else {
+            self.local_event_count += 1;
         }
-        self.last_observed_at_ns = Some(observed_at_ns);
         self.event_count += 1;
         match event {
             VenueTruthOrderEvent::Accepted {
@@ -444,21 +534,16 @@ impl VenueTruthEventProjection {
                     venue_order_id,
                     quantity,
                 );
-                match side {
-                    OrderSide::Buy => add_decimal(
-                        &mut self.buy_fill_quantity_by_product_id,
+                if matches!(side, OrderSide::Buy | OrderSide::Sell) && quantity > Decimal::ZERO {
+                    self.fill_collateral_lots.push(VenueTruthFillCollateralLot {
                         product_id,
-                        quantity,
-                    ),
-                    OrderSide::Sell => add_decimal(
-                        &mut self.sell_fill_quantity_by_product_id,
-                        product_id,
-                        quantity,
-                    ),
-                    _ => {}
+                        side,
+                        remaining_quantity: quantity,
+                        remaining_collateral_delta: collateral_balance_delta_for_fill_event(
+                            side, quantity, fill_price, fee,
+                        ),
+                    });
                 }
-                self.collateral_balance_delta +=
-                    collateral_balance_delta_for_fill_event(side, quantity, fill_price, fee);
             }
             VenueTruthOrderEvent::Terminal {
                 client_order_id,
@@ -474,24 +559,84 @@ impl VenueTruthEventProjection {
         }
     }
 
-    fn consume_collateral_balance_delta(&mut self, amount: Decimal) -> bool {
-        if amount == Decimal::ZERO {
-            return true;
+    fn consume_position_fill(
+        &mut self,
+        product_id: &str,
+        side: OrderSide,
+        amount: Decimal,
+    ) -> bool {
+        if amount <= Decimal::ZERO {
+            return amount == Decimal::ZERO;
         }
-        if self.collateral_balance_delta != amount {
+        let mut remaining = amount;
+        for lot in &mut self.fill_collateral_lots {
+            if remaining == Decimal::ZERO {
+                break;
+            }
+            if lot.product_id != product_id
+                || lot.side != side
+                || lot.remaining_quantity <= Decimal::ZERO
+            {
+                continue;
+            }
+            let consumed_quantity = if lot.remaining_quantity <= remaining {
+                lot.remaining_quantity
+            } else {
+                remaining
+            };
+            let consumed_collateral_delta = if consumed_quantity == lot.remaining_quantity {
+                lot.remaining_collateral_delta
+            } else {
+                lot.remaining_collateral_delta * consumed_quantity / lot.remaining_quantity
+            };
+            lot.remaining_quantity -= consumed_quantity;
+            lot.remaining_collateral_delta -= consumed_collateral_delta;
+            remaining -= consumed_quantity;
+            self.drainable_collateral_balance_delta += consumed_collateral_delta;
+        }
+        self.fill_collateral_lots
+            .retain(|lot| lot.remaining_quantity > Decimal::ZERO);
+        remaining == Decimal::ZERO
+    }
+
+    fn consume_collateral_balance_delta(
+        &mut self,
+        amount: Decimal,
+        allow_deferred_collateral: bool,
+    ) -> bool {
+        let available = self.drainable_collateral_balance_delta;
+        if amount == Decimal::ZERO {
+            return allow_deferred_collateral || available == Decimal::ZERO;
+        }
+        if available == Decimal::ZERO {
             return false;
         }
-        self.collateral_balance_delta = Decimal::ZERO;
+        if available > Decimal::ZERO {
+            if amount < Decimal::ZERO || amount > available {
+                return false;
+            }
+        } else if amount > Decimal::ZERO || amount < available {
+            return false;
+        }
+        self.drainable_collateral_balance_delta -= amount;
         true
     }
 }
 
 impl VenueTruthOrderEvent {
-    fn observed_at_ns(&self) -> UnixNanos {
+    fn venue_observed_at_ns(&self) -> Option<UnixNanos> {
         match self {
             Self::Accepted { observed_at_ns, .. }
             | Self::Filled { observed_at_ns, .. }
-            | Self::Terminal { observed_at_ns, .. } => *observed_at_ns,
+            | Self::Terminal {
+                observed_at_ns,
+                timestamp_domain: VenueTruthOrderEventTimestampDomain::Venue,
+                ..
+            } => Some(*observed_at_ns),
+            Self::Terminal {
+                timestamp_domain: VenueTruthOrderEventTimestampDomain::Local,
+                ..
+            } => None,
         }
     }
 }
@@ -583,20 +728,12 @@ fn explain_position_delta(
             .unwrap_or(Decimal::ZERO);
         let delta = current_size - previous_size;
         if delta > Decimal::ZERO {
-            if !consume_decimal(
-                &mut projection.buy_fill_quantity_by_product_id,
-                product_id,
-                delta,
-            ) {
+            if !projection.consume_position_fill(product_id, OrderSide::Buy, delta) {
                 return Err(VenueTruthDivergenceKind::UnexplainedPositionDelta);
             }
             explained = true;
         } else if delta < Decimal::ZERO {
-            if !consume_decimal(
-                &mut projection.sell_fill_quantity_by_product_id,
-                product_id,
-                -delta,
-            ) {
+            if !projection.consume_position_fill(product_id, OrderSide::Sell, -delta) {
                 return Err(VenueTruthDivergenceKind::UnexplainedPositionDelta);
             }
             explained = true;
@@ -609,13 +746,16 @@ fn explain_collateral_delta(
     previous: &VenueTruthSnapshot,
     current: &VenueTruthSnapshot,
     projection: &mut VenueTruthEventProjection,
+    allow_deferred_collateral: bool,
 ) -> Result<(), VenueTruthDivergenceKind> {
     if previous.collateral_allowance != current.collateral_allowance {
         return Err(VenueTruthDivergenceKind::UnexplainedCollateralDelta);
     }
     let collateral_balance_delta =
         current.collateral_balance.as_decimal() - previous.collateral_balance.as_decimal();
-    if !projection.consume_collateral_balance_delta(collateral_balance_delta) {
+    if !projection
+        .consume_collateral_balance_delta(collateral_balance_delta, allow_deferred_collateral)
+    {
         return Err(VenueTruthDivergenceKind::UnexplainedCollateralDelta);
     }
     Ok(())
@@ -637,15 +777,102 @@ fn collateral_balance_delta_for_fill_event(
 fn divergence(
     kind: VenueTruthDivergenceKind,
     alarm_class: VenueTruthDivergenceAlarmClass,
-    previous_captured_at: Option<UnixNanos>,
-    current_captured_at: UnixNanos,
+    previous: Option<&VenueTruthSnapshot>,
+    current: &VenueTruthSnapshot,
 ) -> VenueTruthDivergence {
+    let (field, venue_value, prior_accepted_value, missing_explanation) =
+        divergence_evidence_fields(kind, previous, current);
     VenueTruthDivergence {
         kind,
         alarm_class,
-        previous_captured_at,
-        current_captured_at,
+        previous_captured_at: previous.map(|snapshot| snapshot.captured_at),
+        current_captured_at: current.captured_at,
+        account_id: current.account_id.to_string(),
+        field,
+        venue_value,
+        prior_accepted_value,
+        missing_explanation,
     }
+}
+
+fn divergence_evidence_fields(
+    kind: VenueTruthDivergenceKind,
+    previous: Option<&VenueTruthSnapshot>,
+    current: &VenueTruthSnapshot,
+) -> (String, String, String, String) {
+    match kind {
+        VenueTruthDivergenceKind::AccountChanged => (
+            VENUE_TRUTH_DIVERGENCE_FIELD_ACCOUNT_ID.to_string(),
+            current.account_id.to_string(),
+            prior_accepted_value(previous, |snapshot| snapshot.account_id.to_string()),
+            VENUE_TRUTH_DIVERGENCE_REASON_ACCOUNT_CHANGED.to_string(),
+        ),
+        VenueTruthDivergenceKind::OrderingViolation => (
+            VENUE_TRUTH_DIVERGENCE_FIELD_ORDERING.to_string(),
+            current.captured_at.as_u64().to_string(),
+            prior_accepted_value(previous, |snapshot| {
+                snapshot.captured_at.as_u64().to_string()
+            }),
+            VENUE_TRUTH_DIVERGENCE_REASON_ORDERING.to_string(),
+        ),
+        VenueTruthDivergenceKind::UnexplainedOpenOrderDelta => (
+            VENUE_TRUTH_DIVERGENCE_FIELD_OPEN_ORDERS.to_string(),
+            format_open_order_ids(&current.open_orders),
+            prior_accepted_value(previous, |snapshot| {
+                format_open_order_ids(&snapshot.open_orders)
+            }),
+            VENUE_TRUTH_DIVERGENCE_REASON_OPEN_ORDERS.to_string(),
+        ),
+        VenueTruthDivergenceKind::UnexplainedPositionDelta => (
+            VENUE_TRUTH_DIVERGENCE_FIELD_POSITIONS.to_string(),
+            format!("{:?}", current.positions_by_product_id),
+            prior_accepted_value(previous, |snapshot| {
+                format!("{:?}", snapshot.positions_by_product_id)
+            }),
+            VENUE_TRUTH_DIVERGENCE_REASON_POSITIONS.to_string(),
+        ),
+        VenueTruthDivergenceKind::UnexplainedCollateralDelta => {
+            if previous.is_some_and(|snapshot| {
+                snapshot.collateral_allowance != current.collateral_allowance
+            }) {
+                (
+                    VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_ALLOWANCE.to_string(),
+                    current.collateral_allowance.as_decimal().to_string(),
+                    prior_accepted_value(previous, |snapshot| {
+                        snapshot.collateral_allowance.as_decimal().to_string()
+                    }),
+                    VENUE_TRUTH_DIVERGENCE_REASON_COLLATERAL_ALLOWANCE.to_string(),
+                )
+            } else {
+                (
+                    VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_BALANCE.to_string(),
+                    current.collateral_balance.as_decimal().to_string(),
+                    prior_accepted_value(previous, |snapshot| {
+                        snapshot.collateral_balance.as_decimal().to_string()
+                    }),
+                    VENUE_TRUTH_DIVERGENCE_REASON_COLLATERAL_BALANCE.to_string(),
+                )
+            }
+        }
+    }
+}
+
+fn prior_accepted_value(
+    previous: Option<&VenueTruthSnapshot>,
+    format_snapshot: impl FnOnce(&VenueTruthSnapshot) -> String,
+) -> String {
+    previous.map_or_else(
+        || VENUE_TRUTH_DIVERGENCE_PRIOR_ACCEPTED_VALUE_MISSING.to_string(),
+        format_snapshot,
+    )
+}
+
+fn format_open_order_ids(open_orders: &BTreeMap<VenueOrderId, VenueTruthOpenOrder>) -> String {
+    let ids = open_orders
+        .keys()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    format!("{ids:?}")
 }
 
 fn add_decimal<K>(map: &mut BTreeMap<K, Decimal>, key: K, amount: Decimal)

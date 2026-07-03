@@ -232,9 +232,11 @@ async fn run_venue_truth_runtime(
             Ok(snapshot) => snapshot,
             Err(error) => {
                 captures_missed = captures_missed.saturating_add(1);
-                log::error!("venue truth poll failed: {error:#}");
-                submit_admission.suspend_capital_admission_for_venue_truth_capture_failure(
-                    venue_truth_capture_failure_evidence(captured_at, captures_missed, &error),
+                handle_venue_truth_capture_failure(
+                    &submit_admission,
+                    captured_at,
+                    captures_missed,
+                    &error,
                 );
                 continue;
             }
@@ -245,15 +247,22 @@ async fn run_venue_truth_runtime(
             feed.on_venue_truth_snapshot(snapshot)
         };
         if let Err(divergence) = reconcile {
-            halt_for_venue_truth(
-                &submit_admission,
-                &stop_handle,
-                divergence.current_captured_at.as_u64(),
-                format!("venue truth divergence: {:?}", divergence.kind),
-            );
+            halt_for_venue_truth_divergence(&submit_admission, &stop_handle, divergence);
             break;
         }
     }
+}
+
+fn handle_venue_truth_capture_failure(
+    submit_admission: &BoltV3SubmitAdmissionState,
+    observed_at_ns: u64,
+    captures_missed: u64,
+    error: &anyhow::Error,
+) {
+    log::error!("venue truth poll failed: {error:#}");
+    submit_admission.suspend_capital_admission_for_venue_truth_capture_failure(
+        venue_truth_capture_failure_evidence(observed_at_ns, captures_missed, error),
+    );
 }
 
 fn venue_truth_capture_failure_evidence(
@@ -278,6 +287,50 @@ fn halt_for_venue_truth(
     source_timestamp_unix_nanos: u64,
     reason: String,
 ) {
+    halt_for_venue_truth_with_evidence(
+        submit_admission,
+        stop_handle,
+        source_timestamp_unix_nanos,
+        reason,
+        false,
+    );
+}
+
+fn halt_for_venue_truth_divergence(
+    submit_admission: &BoltV3SubmitAdmissionState,
+    stop_handle: &LiveNodeHandle,
+    divergence: crate::bolt_v3_venue_truth::VenueTruthDivergence,
+) {
+    let evidence = divergence.evidence(
+        crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE,
+    );
+    let evidence_recorded = match submit_admission.record_venue_truth_divergence_evidence(&evidence)
+    {
+        Ok(()) => true,
+        Err(error) => {
+            log::error!("failed to record venue truth divergence evidence: {error:#}");
+            false
+        }
+    };
+    halt_for_venue_truth_with_evidence(
+        submit_admission,
+        stop_handle,
+        divergence.current_captured_at.as_u64(),
+        format!(
+            "venue truth divergence: {:?} alarm_class={:?}",
+            divergence.kind, divergence.alarm_class
+        ),
+        evidence_recorded,
+    );
+}
+
+fn halt_for_venue_truth_with_evidence(
+    submit_admission: &BoltV3SubmitAdmissionState,
+    stop_handle: &LiveNodeHandle,
+    source_timestamp_unix_nanos: u64,
+    reason: String,
+    durable_halt_evidence_recorded: bool,
+) {
     log::error!("{reason}");
     let trigger = KillSwitchHaltTrigger::venue_truth_divergence(
         crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE,
@@ -289,7 +342,7 @@ fn halt_for_venue_truth(
         KillSwitchEvent::HaltTriggered(trigger),
         KillSwitchTransitionContext {
             state_write_succeeded: false,
-            durable_halt_evidence_recorded: false,
+            durable_halt_evidence_recorded,
             operator_authorized: false,
             manual_reset_evidence_valid: false,
             mandatory_proof_streams_fresh: false,
@@ -911,4 +964,79 @@ fn required_loss_governor_decimal(
         )));
     }
     Ok(decimal)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::{
+        bolt_v3_capital_admission::{CapitalAdmissionPolicy, ProductKind},
+        bolt_v3_capital_reservation::CapitalPoolSnapshot,
+        bolt_v3_kill_switch::KillSwitchStateKind,
+        bolt_v3_submit_admission::{
+            BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
+        },
+        bolt_v3_venue_truth::VenueTruthCaptureEndpointError,
+    };
+
+    #[test]
+    fn venue_truth_capture_failure_evidence_uses_production_endpoint_error_parts() {
+        let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
+            "clob_balance_allowance",
+            "transport_or_decode",
+            anyhow::anyhow!("transport failed"),
+        ))
+        .context("poll venue truth");
+
+        let evidence = venue_truth_capture_failure_evidence(1_100, 3, &error);
+
+        assert_eq!(
+            evidence.source,
+            crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE
+        );
+        assert_eq!(evidence.observed_at_ns, 1_100);
+        assert_eq!(evidence.endpoint, "clob_balance_allowance");
+        assert_eq!(evidence.error_class, "transport_or_decode");
+        assert_eq!(evidence.captures_missed, 3);
+    }
+
+    #[test]
+    fn venue_truth_capture_failure_handler_suspends_without_durable_halt() {
+        let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
+            Arc::new(NoStrategyDecisionEvidenceWriter),
+            BoltV3SubmitCapitalAdmissionConfig {
+                venue_id: "VENUE-A".to_string(),
+                account_id: "ACCOUNT-001".to_string(),
+                product_kind: ProductKind::PredictionMarketBinary,
+                collateral_currency: "USD".to_string(),
+                capital_pool: CapitalPoolSnapshot {
+                    source: "test".to_string(),
+                    observed_at_ns: 900,
+                    pool_id: "pool-1".to_string(),
+                    max_pool_liability: Decimal::new(10, 0),
+                    committed_liability: Decimal::ZERO,
+                    max_snapshot_age_ns: 500,
+                },
+                policy: CapitalAdmissionPolicy {
+                    min_remaining_pool_balance: None,
+                    fee_slippage_policy: None,
+                },
+                dedupe_retention_ns: 500,
+            },
+        );
+        let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
+            "clob_open_orders",
+            "transport_or_decode",
+            anyhow::anyhow!("transport failed"),
+        ));
+
+        handle_venue_truth_capture_failure(&admission, 1_200, 2, &error);
+
+        assert_eq!(
+            admission.kill_switch_state_kind(),
+            KillSwitchStateKind::Armed
+        );
+        assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    }
 }

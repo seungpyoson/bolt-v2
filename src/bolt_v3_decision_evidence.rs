@@ -20,7 +20,9 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceDiagnostic,
     RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
-use crate::bolt_v3_venue_truth::VenueTruthCaptureFailureEvidence;
+#[cfg(test)]
+use crate::bolt_v3_venue_truth::VenueTruthDivergenceAlarmClass;
+use crate::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthDivergenceEvidence};
 
 pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 14;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -33,6 +35,7 @@ pub const BOLT_V3_EXIT_DECISION_GATE_ID: &str = "bolt_v3.exit_decision";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID: &str = "bolt_v3.loss_governor_halt";
 pub const BOLT_V3_REQUOTE_THROTTLE_GATE_ID: &str = "bolt_v3.requote_throttle";
 pub const BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID: &str = "bolt_v3.venue_truth_capture_failure";
+pub const BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID: &str = "bolt_v3.venue_truth_divergence";
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";
 pub const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";
 pub const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
@@ -41,6 +44,7 @@ pub const BOLT_V3_EXIT_DECISION_RECORD_KIND: &str = "exit_decision";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";
 pub const BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND: &str = "requote_throttle";
 pub const BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND: &str = "venue_truth_capture_failure";
+pub const BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND: &str = "venue_truth_divergence";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";
 const BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND: &str = "basket_admission_decision";
 const BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND: &str = "capital_admission_rebuild";
@@ -130,6 +134,10 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
         &self,
         evidence: &VenueTruthCaptureFailureEvidence,
     ) -> Result<()> {
+        let _ = evidence;
+        Ok(())
+    }
+    fn record_venue_truth_divergence(&self, evidence: &VenueTruthDivergenceEvidence) -> Result<()> {
         let _ = evidence;
         Ok(())
     }
@@ -1371,6 +1379,11 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
         let line = encode_venue_truth_capture_failure_line(evidence)?;
         self.append_line(&line)
     }
+
+    fn record_venue_truth_divergence(&self, evidence: &VenueTruthDivergenceEvidence) -> Result<()> {
+        let line = encode_venue_truth_divergence_line(evidence)?;
+        self.append_line(&line)
+    }
 }
 
 /// Validates `persistence.decision_evidence.order_intents_relative_path` as the
@@ -1693,6 +1706,24 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
+            BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND,
+                    BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID,
+                    index,
+                )?;
+                let decoded: VenueTruthDivergenceLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 venue truth divergence line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND,
+                    BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID,
+                    index,
+                )?;
+            }
             BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND => {
                 header.validate(
                     BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND,
@@ -2000,6 +2031,24 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
+            BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND,
+                    BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID,
+                    index,
+                )?;
+                let decoded: VenueTruthDivergenceLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 venue truth divergence line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND,
+                    BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID,
+                    index,
+                )?;
+            }
             BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND => {
                 header.validate(
                     BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND,
@@ -2081,6 +2130,7 @@ fn decision_evidence_header_is_below_current_schema_non_recovery_record(
                 | BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND
                 | BOLT_V3_ORDER_REJECT_RECORD_KIND
                 | BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND
+                | BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND
                 | BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND
         )
 }
@@ -2482,6 +2532,13 @@ struct VenueTruthCaptureFailureLineOwned {
     capture_failure: VenueTruthCaptureFailureEvidence,
 }
 
+#[derive(Deserialize)]
+struct VenueTruthDivergenceLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    divergence: VenueTruthDivergenceEvidence,
+}
+
 impl AdmissionDecisionLineOwned {
     fn validate_header(
         &self,
@@ -2585,6 +2642,18 @@ impl VenueTruthCaptureFailureLineOwned {
         index: usize,
     ) -> Result<()> {
         let _ = &self.capture_failure;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl VenueTruthDivergenceLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.divergence;
         self.header.validate(expected_kind, expected_gate_id, index)
     }
 }
@@ -2697,6 +2766,16 @@ struct VenueTruthCaptureFailureLine<'a> {
     gate_version: &'static str,
     kind: &'static str,
     capture_failure: &'a VenueTruthCaptureFailureEvidence,
+}
+
+#[derive(Serialize)]
+struct VenueTruthDivergenceLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    divergence: &'a VenueTruthDivergenceEvidence,
 }
 
 fn current_utc_ns() -> i64 {
@@ -2966,6 +3045,21 @@ fn encode_venue_truth_capture_failure_line(
     };
     let mut line = serde_json::to_vec(&envelope)
         .context("failed to serialize venue truth capture failure evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+fn encode_venue_truth_divergence_line(evidence: &VenueTruthDivergenceEvidence) -> Result<Vec<u8>> {
+    let envelope = VenueTruthDivergenceLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND,
+        divergence: evidence,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize venue truth divergence evidence")?;
     line.extend_from_slice(b"\n");
     Ok(line)
 }
@@ -3836,6 +3930,19 @@ mod tests {
         }
     }
 
+    fn sample_venue_truth_divergence_evidence_encode() -> VenueTruthDivergenceEvidence {
+        VenueTruthDivergenceEvidence {
+            source: "polymarket_venue_truth_rest".to_string(),
+            observed_at_ns: 1_700_000_000_000_000_100,
+            account_id: "POLYMARKET-001".to_string(),
+            field: "collateral_balance".to_string(),
+            venue_value: "48.40".to_string(),
+            prior_accepted_value: "50.00".to_string(),
+            missing_explanation: "unexplained_collateral_delta".to_string(),
+            alarm_class: VenueTruthDivergenceAlarmClass::TrueDivergence,
+        }
+    }
+
     #[test]
     fn encode_exit_evaluation_line_round_trips_through_owned_line() {
         let evidence = sample_exit_evaluation_evidence_encode();
@@ -3941,5 +4048,42 @@ mod tests {
             BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND
         );
         assert_eq!(decoded.capture_failure, evidence);
+    }
+
+    #[test]
+    fn encode_venue_truth_divergence_line_round_trips_through_owned_line() {
+        let evidence = sample_venue_truth_divergence_evidence_encode();
+
+        let line = encode_venue_truth_divergence_line(&evidence).expect("evidence should encode");
+        assert!(line.ends_with(b"\n"), "encoded line must end with newline");
+        let encoded: serde_json::Value =
+            serde_json::from_slice(&line[..line.len() - 1]).expect("line should decode as JSON");
+        assert_eq!(
+            encoded["divergence"]["alarm_class"],
+            serde_json::Value::String("true_divergence".to_string())
+        );
+        let decoded: VenueTruthDivergenceLineOwned =
+            serde_json::from_slice(&line[..line.len() - 1]).expect("line should decode");
+        decoded
+            .validate_header(
+                BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND,
+                BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID,
+                0,
+            )
+            .expect("encoded venue-truth divergence header should validate");
+
+        assert_eq!(
+            decoded.header.schema_version,
+            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+        );
+        assert_eq!(
+            decoded.header.gate_id,
+            BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID
+        );
+        assert_eq!(
+            decoded.header.kind,
+            BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND
+        );
+        assert_eq!(decoded.divergence, evidence);
     }
 }

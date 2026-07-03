@@ -63,6 +63,7 @@ pub struct RecordingDecisionEvidenceWriter {
         Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence>>,
     venue_truth_capture_failures:
         Mutex<Vec<bolt_v2::bolt_v3_venue_truth::VenueTruthCaptureFailureEvidence>>,
+    venue_truth_divergences: Mutex<Vec<bolt_v2::bolt_v3_venue_truth::VenueTruthDivergenceEvidence>>,
 }
 
 impl RecordingDecisionEvidenceWriter {
@@ -76,6 +77,7 @@ impl RecordingDecisionEvidenceWriter {
             loss_governor_halts: Mutex::new(Vec::new()),
             requote_throttles: Mutex::new(Vec::new()),
             venue_truth_capture_failures: Mutex::new(Vec::new()),
+            venue_truth_divergences: Mutex::new(Vec::new()),
         }
     }
 
@@ -142,6 +144,15 @@ impl RecordingDecisionEvidenceWriter {
         &self,
     ) -> Vec<bolt_v2::bolt_v3_venue_truth::VenueTruthCaptureFailureEvidence> {
         self.venue_truth_capture_failures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn venue_truth_divergences(
+        &self,
+    ) -> Vec<bolt_v2::bolt_v3_venue_truth::VenueTruthDivergenceEvidence> {
+        self.venue_truth_divergences
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -275,6 +286,17 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         evidence: &bolt_v2::bolt_v3_venue_truth::VenueTruthCaptureFailureEvidence,
     ) -> anyhow::Result<()> {
         self.venue_truth_capture_failures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(evidence.clone());
+        Ok(())
+    }
+
+    fn record_venue_truth_divergence(
+        &self,
+        evidence: &bolt_v2::bolt_v3_venue_truth::VenueTruthDivergenceEvidence,
+    ) -> anyhow::Result<()> {
+        self.venue_truth_divergences
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(evidence.clone());

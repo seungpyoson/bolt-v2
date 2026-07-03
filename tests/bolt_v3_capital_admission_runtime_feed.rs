@@ -180,10 +180,31 @@ fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes()
         writer.clone(),
     ));
     arm_default(&admission);
-    admission.update_capital_admission_nt_components(fresh_components(900));
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let _ = feed.on_account_state(&account_state(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        900,
+        100.0,
+    ));
+    let _ = feed.on_portfolio_snapshot(&portfolio_snapshot(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        950,
+        100.0,
+    ));
+    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
+        1_000,
+        Decimal::new(100_000_000, 0),
+        Decimal::new(100_000_000, 0),
+    ))
+    .expect("initial venue-truth baseline should reconcile")
+    .expect("account, portfolio, and venue truth should publish components");
+    feed.seed_open_order_cache(Vec::<String>::new(), 1_025)
+        .expect("empty startup cache should publish attributed order lifecycle");
     rebuild_empty_capital_admission(&admission);
     admission
-        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_050)
         .expect("fresh sizing state should admit before degraded venue authority")
         .commit_submitted();
 
@@ -202,7 +223,11 @@ fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes()
         KillSwitchStateKind::Armed
     );
     assert_eq!(admission.capital_admission_reconciled(), Some(false));
-    assert_eq!(writer.venue_truth_capture_failures().len(), 1);
+    let capture_failures = writer.venue_truth_capture_failures();
+    assert_eq!(capture_failures.len(), 1);
+    assert_eq!(capture_failures[0].endpoint, "clob_balance_allowance");
+    assert_eq!(capture_failures[0].error_class, "transport");
+    assert_eq!(capture_failures[0].captures_missed, 1);
     assert!(
         matches!(
             admission.admit_at(&risk_reducing_exit_submit_request("client-order-2"), 1_101),
@@ -213,19 +238,17 @@ fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes()
         "degraded venue authority must suspend risk-reducing exits too"
     );
 
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
         1_150,
         100.0,
     ));
-    let _ = feed.on_portfolio_snapshot(&portfolio_snapshot(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        1_175,
-        100.0,
-    ));
+    assert_eq!(
+        admission.capital_admission_reconciled(),
+        Some(false),
+        "NT-driven publish from the long-lived feed must not clear capture-failure suspension"
+    );
     feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
         1_200,
         Decimal::new(100_000_000, 0),
@@ -235,25 +258,6 @@ fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes()
     .expect("accepted venue truth should publish components");
 
     assert_eq!(admission.capital_admission_reconciled(), Some(true));
-}
-
-#[test]
-fn venue_truth_capture_failure_path_suspends_without_halt_branch() {
-    let source = support::repo_text("src/bolt_v3_live_node/risk_admission_loss.rs");
-    let branch = source
-        .split("Err(error) => {\n                captures_missed")
-        .nth(1)
-        .and_then(|tail| tail.split("continue;\n            }\n        };").next())
-        .expect("venue truth poll error branch should be present");
-
-    assert!(
-        branch.contains("suspend_capital_admission_for_venue_truth_capture_failure"),
-        "capture failure must suspend admission through submit admission"
-    );
-    assert!(
-        !branch.contains("halt_for_venue_truth"),
-        "capture failure must not take the durable halt path"
-    );
 }
 
 #[test]

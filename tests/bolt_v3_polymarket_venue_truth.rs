@@ -12,7 +12,7 @@ use bolt_v2::bolt_v3_venue_truth::{
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     enums::{LiquiditySide, OrderSide, OrderType},
-    events::{OrderAccepted, OrderEventAny, OrderFilled},
+    events::{OrderAccepted, OrderDenied, OrderEventAny, OrderFilled},
     identifiers::{
         AccountId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId, VenueOrderId,
     },
@@ -405,6 +405,58 @@ fn pending_capture_accepts_after_interleaved_fill_at_next_capture_fence() {
 }
 
 #[test]
+fn positions_fresher_than_balance_skew_pends_then_explains_at_fence() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("baseline should be accepted");
+    for (trade_id, observed_at_ns) in [("trade-1", 1_100), ("trade-2", 1_110)] {
+        record_order_event(
+            &mut reconciler,
+            OrderEventAny::Filled(order_filled_event(
+                "client-order-1",
+                "venue-order-1",
+                trade_id,
+                "condition-token123.POLYMARKET",
+                OrderSide::Buy,
+                Quantity::from("4"),
+                observed_at_ns,
+            )),
+        );
+    }
+
+    let results = reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_200,
+            Decimal::new(50_000_000, 0),
+            4.0,
+        ))
+        .expect("position-fresher-than-balance skew should pend before its fence");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].outcome, VenueTruthReconciliation::DeltaPending);
+
+    let results = reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_300,
+            Decimal::new(46_800_000, 0),
+            8.0,
+        ))
+        .expect("balance catch-up at the fence should explain the skew without durable halt");
+
+    assert!(
+        results.iter().any(|result| result.capture_number == 2
+            && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 2 must be accepted at its fence after the balance endpoint catches up"
+    );
+    assert!(
+        results.iter().any(|result| result.capture_number == 3
+            && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 3 must drain the deferred collateral from the same consumed fills"
+    );
+}
+
+#[test]
 fn pending_capture_without_channel_event_halts_as_silent_channel_at_fence() {
     let mut reconciler = VenueTruthReconciler::new();
     reconciler
@@ -429,6 +481,91 @@ fn pending_capture_without_channel_event_halts_as_silent_channel_at_fence() {
     assert_eq!(
         divergence.alarm_class,
         VenueTruthDivergenceAlarmClass::SilentChannel
+    );
+}
+
+#[test]
+fn same_domain_ordering_violation_halts_even_when_deltas_explain() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("baseline should be accepted");
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_300,
+        )),
+    );
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-2",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_200,
+        )),
+    );
+
+    let divergence = reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_400,
+            Decimal::new(46_800_000, 0),
+            8.0,
+        ))
+        .expect_err("same-domain timestamp regression must halt even with explained deltas");
+
+    assert_eq!(
+        divergence.alarm_class,
+        VenueTruthDivergenceAlarmClass::OrderingViolation
+    );
+}
+
+#[test]
+fn local_denied_terminal_timestamp_does_not_create_venue_ordering_violation() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("baseline should be accepted");
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_300,
+        )),
+    );
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Denied(order_denied_event(
+            "client-order-2",
+            "condition-token123.POLYMARKET",
+            1_200,
+        )),
+    );
+
+    assert_eq!(
+        reconciler
+            .record_snapshot_completion(snapshot_with_position(
+                1_400,
+                Decimal::new(48_400_000, 0),
+                4.0,
+            ))
+            .expect("local terminal timestamp must not poison venue-domain ordering")[0]
+            .outcome,
+        VenueTruthReconciliation::DeltaExplained
     );
 }
 
@@ -763,5 +900,18 @@ fn order_filled_event_with_price_and_optional_fee(
         false,
         None,
         fee,
+    )
+}
+
+fn order_denied_event(client_order_id: &str, instrument_id: &str, ts_event: u64) -> OrderDenied {
+    OrderDenied::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from(instrument_id),
+        ClientOrderId::from(client_order_id),
+        Ustr::from("test-denied"),
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
     )
 }

@@ -123,6 +123,9 @@ pub fn normalize_base_order_quantity(quantity: Decimal) -> Option<Decimal> {
 /// tracked in #501.
 pub const MAX_REST_REQUESTS_PER_ORDER_COMMAND: u32 = 3;
 /// Minimum quote notional accepted by the Polymarket CLOB for marketable BUYs.
+/// Provenance is the captured venue reject
+/// `invalid amount for a marketable BUY order ($0.84), min size: 1`; the pinned
+/// NT adapter source does not encode this venue floor.
 pub const MARKET_QUOTE_BUY_MIN_NOTIONAL: Decimal = Decimal::ONE;
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] =
     &[updown::KEY, outcome_group::KEY, static_binary_event::KEY];

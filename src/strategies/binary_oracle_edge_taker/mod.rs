@@ -1697,6 +1697,7 @@ impl BinaryOracleEdgeTaker {
         self.market_lifecycle.retain(|market_id, ledger| {
             retained_market_ids.contains(market_id) || ledger.in_cooldown(now_ms)
         });
+        self.prune_entry_reject_state();
     }
 
     fn retained_market_lifecycle_ids(&self) -> BTreeSet<String> {
@@ -1722,6 +1723,23 @@ impl BinaryOracleEdgeTaker {
             .and_then(|exit| exit.pending_exit.market_id.clone())
         {
             retained.insert(market_id);
+        }
+        retained
+    }
+
+    fn prune_entry_reject_state(&mut self) {
+        let retained_instruments = self.retained_entry_reject_instrument_ids();
+        self.entry_reject_state
+            .retain(|instrument_id, _| retained_instruments.contains(instrument_id));
+    }
+
+    fn retained_entry_reject_instrument_ids(&self) -> BTreeSet<InstrumentId> {
+        let mut retained = BTreeSet::new();
+        if let Some(instrument_id) = self.instrument_id_for_side(OutcomeSide::Up) {
+            retained.insert(instrument_id);
+        }
+        if let Some(instrument_id) = self.instrument_id_for_side(OutcomeSide::Down) {
+            retained.insert(instrument_id);
         }
         retained
     }

@@ -64,13 +64,14 @@ pub(crate) fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), Stri
 ///
 /// The RiskEngine throttle counts order *commands* while the venue HTTP quota
 /// counts REST *requests*, and a single command can issue more than one request
-/// (a Polymarket market submit = `get_book` + `post_order` = 2). A submit rate at
-/// the raw per-minute cap therefore over-drives the venue's request quota by the
-/// fanout factor; the excess does not reject early with a loud `OrderDenied` — it
-/// blocks at egress (added latency, stale reference quotes), a silent failure on
-/// a live-money path. Reconciling `limit * fanout` against the cap at config load
-/// keeps the policy fail-loud regardless of the rendered deploy-time value, which
-/// is not otherwise knowable from the repo.
+/// (a Polymarket market quote-quantity BUY submit = collateral balance + book +
+/// post = 3). A submit rate at the raw per-minute cap therefore over-drives the
+/// venue's request quota by the fanout factor; the excess does not reject early
+/// with a loud `OrderDenied` — it blocks at egress (added latency, stale
+/// reference quotes), a silent failure on a live-money path. Reconciling `limit *
+/// fanout` against the cap at config load keeps the policy fail-loud regardless
+/// of the rendered deploy-time value, which is not otherwise knowable from the
+/// repo.
 ///
 /// NOTE (tier-1): this derates submit/modify against the per-bucket ceiling using
 /// the deterministic worst-case per-command fanout only. The full shared REST
@@ -146,9 +147,10 @@ pub(super) fn validate_order_rate_within_venue_egress(root: &BoltV3RootConfig) -
             errors.push(format!(
                 "{label} = `{value}` over-drives the {venue} REST egress cap of \
                  {cap_per_minute}/min (nautilus HTTP_RATE_LIMIT): a single order command issues up \
-                 to {fanout} REST requests (market submit = book + post), so the order rate must \
-                 not exceed {derated_ceiling}/min or submits block at egress with stale reference \
-                 quotes instead of failing loud — lower it to at most {derated_ceiling}/00:01:00"
+                 to {fanout} REST requests (market quote-quantity BUY submit = balance + book + \
+                 post), so the order rate must not exceed {derated_ceiling}/min or submits block \
+                 at egress with stale reference quotes instead of failing loud — lower it to at \
+                 most {derated_ceiling}/00:01:00"
             ));
         }
     }

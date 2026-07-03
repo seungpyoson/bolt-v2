@@ -1222,6 +1222,22 @@ fn unfillable_fok_entry_reject_waits_for_book_change_before_redeciding() {
 }
 
 #[test]
+fn incident_entry_reject_strings_pin_classifier_classes() {
+    assert_eq!(
+        classify_entry_reject_reason(super::adverse_path_harness::PRECISION_REJECT_REASON),
+        Some(EntryRejectClass::Malformed)
+    );
+    assert_eq!(
+        classify_entry_reject_reason(super::adverse_path_harness::BALANCE_REJECT_REASON),
+        Some(EntryRejectClass::Balance)
+    );
+    assert_eq!(
+        classify_entry_reject_reason(super::adverse_path_harness::MIN_SIZE_REJECT_REASON),
+        Some(EntryRejectClass::Malformed)
+    );
+}
+
+#[test]
 fn balance_entry_reject_stops_same_instrument_entry_decisions() {
     let entry_client_order_id = ClientOrderId::from("ENTRY-BALANCE-REJECTED");
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);

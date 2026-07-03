@@ -91,7 +91,7 @@ pub fn subscribe_capital_admission_runtime_feed(
     let order_events = TypedHandler::from(move |event: &OrderEventAny| {
         order_feed
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expect("capital admission runtime order-event feed lock poisoned")
             .on_order_event(event);
     });
     subscribe_order_events(order_events_pattern(), order_events.clone(), None);
@@ -99,7 +99,7 @@ pub fn subscribe_capital_admission_runtime_feed(
     let position_events = TypedHandler::from(move |event: &PositionEvent| {
         position_feed
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expect("capital admission runtime position-event feed lock poisoned")
             .on_position_event(event);
     });
     subscribe_position_events(position_events_pattern(), position_events.clone(), None);
@@ -107,7 +107,7 @@ pub fn subscribe_capital_admission_runtime_feed(
     let account_states = TypedHandler::from(move |event: &AccountState| {
         account_feed
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expect("capital admission runtime account-state feed lock poisoned")
             .on_account_state(event);
     });
     subscribe_account_state(account_states_pattern(), account_states.clone(), None);
@@ -115,7 +115,7 @@ pub fn subscribe_capital_admission_runtime_feed(
     let portfolio_snapshots = TypedHandler::from(move |event: &PortfolioSnapshot| {
         portfolio_feed
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expect("capital admission runtime portfolio-snapshot feed lock poisoned")
             .on_portfolio_snapshot(event);
     });
     subscribe_portfolio_snapshot(

@@ -77,7 +77,7 @@ pub fn subscribe_order_reject_observer_feed(
     let order_events = TypedHandler::from(move |event: &OrderEventAny| {
         order_feed
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expect("order reject observer order-event feed lock poisoned")
             .on_order_event(event);
     });
     subscribe_order_events(order_events_pattern(), order_events.clone(), None);

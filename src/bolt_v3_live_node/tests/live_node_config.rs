@@ -274,6 +274,26 @@ fn venue_spendability_source_config_reads_configured_capital_pool_source() {
 }
 
 #[test]
+#[should_panic(expected = "capital admission venue spendability feed lock poisoned")]
+fn venue_spendability_refresh_panics_on_poisoned_capital_admission_feed_lock() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = fixture_loaded_config();
+    write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
+    let config = capital_admission_venue_spendability_source_config_from_loaded(&loaded)
+        .expect("source config should build")
+        .expect("fixture should configure source");
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+    let feed = runtime
+        .capital_admission_runtime_feed
+        .as_ref()
+        .expect("fixture should configure capital-admission runtime feed");
+    poison_mutex(feed);
+
+    let _ = refresh_capital_admission_venue_spendability_from_source(feed, &config);
+}
+
+#[test]
 fn venue_spendability_source_config_fails_closed_on_sha_mismatch() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let mut loaded = fixture_loaded_config();

@@ -158,6 +158,9 @@ permissions:
   actions: read
   issues: read
 
+env:
+  JUST_VERSION: "1.49.0"
+
 jobs:
   merge-readiness-progress:
     name: merge-readiness-progress
@@ -13692,6 +13695,18 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     )
     assert_error("nextest-fingerprint-reuse must skip main branch", relocated_job_if)
     assert_error("nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed", relocated_job_if)
+    assert_error(
+        "top-level env.RUSTFLAGS must be classified as reuse-scoped or build-neutral",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            '  JUST_VERSION: "1.49.0"\n  RUSTFLAGS: "-D warnings"\n',
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION is reuse-scoped but missing from ci.yml",
+        replace_once(BASE_WORKFLOW, '  JUST_VERSION: "1.49.0"\n', ""),
+    )
     folded_job_if = replace_once(
         BASE_WORKFLOW,
         "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",

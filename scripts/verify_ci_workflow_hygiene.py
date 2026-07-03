@@ -25,6 +25,7 @@ from ci_provenance import (
     MERGIFY_TEMP_PR_TRANSIENT_PREFIX,
     POLICY_ROWS,
     POLICY_VALUES,
+    REUSE_RELEVANT_WORKFLOW_ENV_KEYS,
     ProvenanceError,
     check_lookback_le_retention,
     gate_name_collision_errors,
@@ -35,6 +36,8 @@ from ci_provenance import (
     ProvenanceConfig,
     load_config,
     mergify_temp_pr_matches,
+    top_level_block_lines,
+    workflow_yaml_structural_line,
 )
 
 # Keep the former verifier-local helper families module-scoped so parity tests
@@ -456,6 +459,12 @@ BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
 FINGERPRINT_REUSE_ALLOWED_EXPR = "needs.detector.outputs.fingerprint_reuse_allowed == 'true'"
 FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR = (
     "contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name)"
+)
+# A key may be listed here only if it provably cannot influence compiled Rust
+# artifacts or nextest archive contents. Build-affecting keys must instead go
+# into ci_provenance.REUSE_RELEVANT_WORKFLOW_ENV_KEYS so they invalidate reuse.
+REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS = frozenset(
+    {"CARGO_TERM_COLOR", "RUST_VERIFICATION_ROOT_BASE", "S3_DEPLOY_PATH"}
 )
 FINGERPRINT_REUSE_JOB_IF_VALUE = (
     "${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' "
@@ -9542,6 +9551,57 @@ def fingerprint_reuse_gates_on_consumer_events(job_lines: list[str]) -> bool:
     return FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR in job_if_value(job_lines)
 
 
+TOP_LEVEL_ENV_KEY_RE = re.compile(r"^['\"]?(?P<key>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*:(\s|$)")
+
+
+def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
+    errors = []
+    scoped_keys = set(REUSE_RELEVANT_WORKFLOW_ENV_KEYS)
+    overlap = sorted(scoped_keys & REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS)
+    if overlap:
+        keys = ", ".join(overlap)
+        errors.append(f"top-level env keys cannot be both reuse-scoped and build-neutral: {keys}")
+
+    try:
+        env_lines = top_level_block_lines(workflow_text, "env")
+    except ProvenanceError as exc:
+        return errors + [f"top-level env reuse scope could not parse ci.yml: {exc}"]
+
+    entry_lines = [
+        structural_line
+        for line in env_lines[1:]
+        if (structural_line := workflow_yaml_structural_line(line))
+    ]
+    key_lines: list[str] = []
+    if entry_lines:
+        minimum_indent = min(len(line) - len(line.lstrip(" \t")) for line in entry_lines)
+        key_lines = [
+            line[minimum_indent:]
+            for line in entry_lines
+            if len(line) - len(line.lstrip(" \t")) == minimum_indent
+        ]
+
+    seen_keys = set()
+    for line in key_lines:
+        match = TOP_LEVEL_ENV_KEY_RE.match(line)
+        if match is None:
+            errors.append(f"top-level env entry is unparsable for reuse classification: {line!r}")
+            continue
+        key = match.group("key")
+        seen_keys.add(key)
+        if key not in scoped_keys and key not in REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS:
+            errors.append(
+                f"top-level env.{key} must be classified as reuse-scoped or build-neutral; "
+                "add it to exactly one of ci_provenance.REUSE_RELEVANT_WORKFLOW_ENV_KEYS "
+                "or REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS"
+            )
+
+    for key in sorted(scoped_keys - seen_keys):
+        errors.append(f"top-level env.{key} is reuse-scoped but missing from ci.yml")
+
+    return errors
+
+
 def test_shards_skip_on_fingerprint_reuse(job_lines: list[str]) -> bool:
     return NEXTEST_REUSE_MISS_EXPR in uncommented_text(job_lines)
 
@@ -11384,6 +11444,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
     append_cache_persistence_audit_contract_errors(errors, jobs)
 
     if "nextest-fingerprint-reuse" in jobs:
+        errors.extend(top_level_env_reuse_scope_errors(workflow_text))
         reuse_lines = jobs["nextest-fingerprint-reuse"]
         reuse_needs = extract_needs(reuse_lines)
         if "ci-policy" not in reuse_needs:

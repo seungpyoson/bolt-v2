@@ -739,6 +739,7 @@ fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
 fn maker_entry_partial_fills_keep_entry_fill_accounting_without_overwriting_position_event_quantity()
  {
     let mut strategy = ready_to_trade_strategy();
+    configure_limit_base_entry_order(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
     let entry_client_order_id = ClientOrderId::from("ENTRY-PARTIAL");
@@ -778,6 +779,7 @@ fn managed_partial_entry_blocks_normal_exit_until_entry_order_resolves() {
     let configured_instruments = configured_outcome_instruments(&ready_to_trade_strategy());
     for instrument_id in configured_instruments {
         let mut strategy = ready_to_trade_strategy();
+        configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
         strategy.active.phase = SelectionPhase::Active;
@@ -815,6 +817,7 @@ fn forced_flat_exit_submits_despite_resting_pending_entry() {
     );
     for instrument_id in configured_instruments {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
         strategy.config.exit_order.order_type = OrderType::Limit;
@@ -897,6 +900,7 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         );
+        configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
         strategy.active.phase = SelectionPhase::Freeze;
@@ -1154,6 +1158,161 @@ fn late_entry_terminal_events_preserve_entry_reconcile_fail_closed_state() {
 }
 
 #[test]
+fn malformed_entry_reject_stops_same_instrument_entry_decisions() {
+    let entry_client_order_id = ClientOrderId::from("ENTRY-MALFORMED-AMOUNTS");
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.is_quote_quantity = true;
+    strategy.config.order_notional_target = 25.0;
+    strategy.config.maximum_position_notional = 25.0;
+    strategy.config.risk_lambda = 0.0001;
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    strategy.exposure = ExposureState::PendingEntry(pending);
+
+    strategy.on_order_rejected(order_rejected_event_with_reason(
+        entry_client_order_id,
+        instrument_id,
+        "invalid order amounts: maker amount exceeds allowed decimal precision",
+    ));
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(decision.blocked_reason, Some("entry_malformed_rejected"));
+    assert!(strategy.pending_entry().is_none());
+}
+
+#[test]
+fn unfillable_fok_entry_reject_waits_for_book_change_before_redeciding() {
+    let entry_client_order_id = ClientOrderId::from("ENTRY-FOK-NO-MATCH");
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.is_quote_quantity = true;
+    strategy.config.order_notional_target = 25.0;
+    strategy.config.maximum_position_notional = 25.0;
+    strategy.config.risk_lambda = 0.0001;
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    let rejected_book = pending.book.clone();
+    strategy.exposure = ExposureState::PendingEntry(pending);
+
+    strategy.on_order_rejected(order_rejected_event_with_reason(
+        entry_client_order_id,
+        instrument_id,
+        "FOK order could not be matched against the current book",
+    ));
+
+    let unchanged_book_decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(
+        unchanged_book_decision.blocked_reason,
+        Some("entry_unfillable_rejected_unchanged_book")
+    );
+
+    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+    assert_ne!(
+        configured_book_for_instrument(&mut strategy, instrument_id),
+        rejected_book,
+        "fixture must actually change the selected book for this replay"
+    );
+    let changed_book_decision = strategy.entry_submission_decision_at(1_201);
+    assert_eq!(changed_book_decision.blocked_reason, None);
+}
+
+#[test]
+fn incident_entry_reject_strings_pin_classifier_classes() {
+    assert_eq!(
+        classify_entry_reject_reason(super::adverse_path_harness::PRECISION_REJECT_REASON),
+        Some(EntryRejectClass::Malformed)
+    );
+    assert_eq!(
+        classify_entry_reject_reason(super::adverse_path_harness::BALANCE_REJECT_REASON),
+        Some(EntryRejectClass::Balance)
+    );
+    assert_eq!(
+        classify_entry_reject_reason(super::adverse_path_harness::MIN_SIZE_REJECT_REASON),
+        Some(EntryRejectClass::Malformed)
+    );
+}
+
+#[test]
+fn balance_entry_reject_stops_same_instrument_entry_decisions() {
+    let entry_client_order_id = ClientOrderId::from("ENTRY-BALANCE-REJECTED");
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.is_quote_quantity = true;
+    strategy.config.order_notional_target = 25.0;
+    strategy.config.maximum_position_notional = 25.0;
+    strategy.config.risk_lambda = 0.0001;
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    strategy.exposure = ExposureState::PendingEntry(pending);
+    let balance_reject_reason =
+        "not enough balance / allowance: the balance is not enough -> balance: 0";
+
+    assert!(
+        classify_entry_reject_reason(balance_reject_reason).is_some(),
+        "balance/allowance rejects must be an explicit entry reject class"
+    );
+    strategy.on_order_rejected(order_rejected_event_with_reason(
+        entry_client_order_id,
+        instrument_id,
+        balance_reject_reason,
+    ));
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(decision.blocked_reason, Some("entry_balance_rejected"));
+    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+    let changed_book_decision = strategy.entry_submission_decision_at(1_201);
+    assert_eq!(
+        changed_book_decision.blocked_reason,
+        Some("entry_balance_rejected")
+    );
+}
+
+#[test]
+fn unknown_entry_reject_waits_for_book_change_before_redeciding() {
+    let entry_client_order_id = ClientOrderId::from("ENTRY-UNKNOWN-REJECTED");
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.is_quote_quantity = true;
+    strategy.config.order_notional_target = 25.0;
+    strategy.config.maximum_position_notional = 25.0;
+    strategy.config.risk_lambda = 0.0001;
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    let rejected_book = pending.book.clone();
+    strategy.exposure = ExposureState::PendingEntry(pending);
+
+    strategy.on_order_rejected(order_rejected_event_with_reason(
+        entry_client_order_id,
+        instrument_id,
+        "venue rejected entry for an unmodeled reason",
+    ));
+
+    let unchanged_book_decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(
+        unchanged_book_decision.blocked_reason,
+        Some("entry_unfillable_rejected_unchanged_book")
+    );
+
+    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+    assert_ne!(
+        configured_book_for_instrument(&mut strategy, instrument_id),
+        rejected_book,
+        "fixture must actually change the selected book for this replay"
+    );
+    let changed_book_decision = strategy.entry_submission_decision_at(1_201);
+    assert_eq!(changed_book_decision.blocked_reason, None);
+}
+
+#[test]
 fn book_delta_entry_reconcile_pending_does_not_try_new_entry() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
@@ -1208,6 +1367,7 @@ fn position_closed_releases_entry_reconcile_pending_for_same_instrument() {
 #[test]
 fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
     let cache = register_test_strategy(&mut strategy);
@@ -1298,6 +1458,7 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         );
+        configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
         set_shadow_order_execution_policy(&mut strategy);
@@ -1381,6 +1542,7 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
 #[test]
 fn position_closed_in_shadow_mode_suppresses_resting_entry_cancel() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
     set_shadow_order_execution_policy(&mut strategy);

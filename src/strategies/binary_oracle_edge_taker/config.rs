@@ -363,7 +363,7 @@ impl BinaryOracleEdgeTakerBuilder {
     fn ensure_executable_entry_order_shape(config: &BinaryOracleEdgeTakerConfig) -> Result<()> {
         anyhow::ensure!(
             Self::entry_order_shape_supported(&config.entry_order),
-            "{ENTRY_ORDER_FIELD} must be buy/long limit FOK without post-only, reduce-only, quote-quantity, trigger, or trailing fields"
+            "{ENTRY_ORDER_FIELD} must be buy/long market FOK quote-quantity without post-only, reduce-only, trigger, or trailing fields"
         );
         Ok(())
     }
@@ -371,11 +371,11 @@ impl BinaryOracleEdgeTakerBuilder {
     pub(super) fn entry_order_shape_supported(order: &BinaryOracleEdgeTakerOrderConfig) -> bool {
         order.side == ORDER_SIDE_BUY_VALUE
             && order.position_side == POSITION_SIDE_LONG_VALUE
-            && order.order_type == OrderType::Limit
+            && order.order_type == OrderType::Market
             && order.time_in_force == TimeInForce::Fok
             && !order.is_post_only
             && !order.is_reduce_only
-            && !order.is_quote_quantity
+            && order.is_quote_quantity
             && order.trigger_price.is_none()
             && order.activation_price.is_none()
             && order.trigger_type.is_none()
@@ -626,7 +626,7 @@ impl BinaryOracleEdgeTakerBuilder {
             && order_table
                 .get(stringify!(order_type))
                 .and_then(Value::as_str)
-                .is_some_and(|value| value == stringify!(limit))
+                .is_some_and(|value| value == stringify!(market))
             && order_table
                 .get(stringify!(time_in_force))
                 .and_then(Value::as_str)
@@ -642,7 +642,7 @@ impl BinaryOracleEdgeTakerBuilder {
             && order_table
                 .get(stringify!(is_quote_quantity))
                 .and_then(Value::as_bool)
-                .is_some_and(|value| !value)
+                .is_some_and(|value| value)
             && !order_table.contains_key(ORDER_TRIGGER_PRICE_FIELD)
             && !order_table.contains_key(ORDER_ACTIVATION_PRICE_FIELD)
             && !order_table.contains_key(ORDER_TRIGGER_TYPE_FIELD)
@@ -653,7 +653,7 @@ impl BinaryOracleEdgeTakerBuilder {
             errors.push(ValidationError {
                 field: format!("{field_prefix}.{ENTRY_ORDER_FIELD}"),
                 code: UNSUPPORTED_EXECUTABLE_ENTRY_ORDER_SHAPE_CODE,
-                message: "must be buy/long limit FOK without post-only, reduce-only, quote-quantity, trigger, or trailing fields".to_string(),
+                message: "must be buy/long market FOK quote-quantity without post-only, reduce-only, trigger, or trailing fields".to_string(),
             });
         }
     }

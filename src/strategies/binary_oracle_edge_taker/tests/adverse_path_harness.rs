@@ -17,10 +17,10 @@ use nautilus_trading::Strategy;
 use serde_json::{Value, json};
 use std::{any::Any, cell::RefCell, panic, rc::Rc, sync::Arc};
 
-const PRECISION_REJECT_REASON: &str = "invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals, taker amount a max of 4 decimals";
-const BALANCE_REJECT_REASON: &str =
+pub(super) const PRECISION_REJECT_REASON: &str = "invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals, taker amount a max of 4 decimals";
+pub(super) const BALANCE_REJECT_REASON: &str =
     "not enough balance / allowance: the balance is not enough -> balance: 0";
-const MIN_SIZE_REJECT_REASON: &str =
+pub(super) const MIN_SIZE_REJECT_REASON: &str =
     "invalid amount for a marketable BUY order ($0.84), min size: 1";
 // guard matches failure CLASS, not assertion instance — never reuse a constant in a new assertion.
 const DROPPED_TERMINAL_PINNED_FAILURE: &str =

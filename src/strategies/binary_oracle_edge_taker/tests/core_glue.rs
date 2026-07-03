@@ -210,6 +210,10 @@ fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
         rejecting_submit_admission.clone(),
     );
     register_test_strategy_with_active_instruments(&mut direct);
+    configure_supported_market_quote_entry_order(&mut direct);
+    direct.config.order_notional_target = 25.0;
+    direct.config.maximum_position_notional = 25.0;
+    direct.config.risk_lambda = 0.0001;
     let direct_error = direct
         .try_submit_entry_order(1_200)
         .expect_err("test setup must reach submit-admission cap rejection");
@@ -229,6 +233,10 @@ fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
         rejecting_submit_admission,
     );
     register_test_strategy_with_active_instruments(&mut strategy);
+    configure_supported_market_quote_entry_order(&mut strategy);
+    strategy.config.order_notional_target = 25.0;
+    strategy.config.maximum_position_notional = 25.0;
+    strategy.config.risk_lambda = 0.0001;
     let instrument_id = selected_entry_instrument(&strategy);
     let decision = strategy.entry_submission_decision_at(1_200);
     assert!(

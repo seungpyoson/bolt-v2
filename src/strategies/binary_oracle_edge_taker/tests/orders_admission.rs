@@ -370,6 +370,7 @@ fn quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy()
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
+    strategy.config.entry_order.order_type = OrderType::Limit;
     strategy.config.entry_order.is_quote_quantity = true;
     let instrument_id = selected_entry_instrument(&strategy);
     set_active_books_best_prices(&mut strategy, 0.24, 0.25);
@@ -414,6 +415,7 @@ fn quote_quantity_sell_limit_submit_admission_floors_to_quote_quantity() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
+    strategy.config.entry_order.order_type = OrderType::Limit;
     strategy.config.entry_order.is_quote_quantity = true;
     let instrument_id = selected_entry_instrument(&strategy);
     set_active_books_best_prices(&mut strategy, 0.75, 0.76);
@@ -459,6 +461,7 @@ fn quote_quantity_sell_limit_submit_admission_floors_to_quote_quantity() {
 fn quote_quantity_sell_limit_missing_quote_uses_submitted_quote_quantity() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.entry_order.order_type = OrderType::Limit;
     strategy.config.entry_order.is_quote_quantity = true;
     let instrument_id = selected_entry_instrument(&strategy);
     set_active_books_best_prices(&mut strategy, 0.75, 0.76);
@@ -498,6 +501,7 @@ fn quote_quantity_sell_limit_missing_quote_uses_submitted_quote_quantity() {
 fn quote_quantity_sell_limit_missing_context_fails_closed() {
     let mut builder = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut builder);
+    builder.config.entry_order.order_type = OrderType::Limit;
     builder.config.entry_order.is_quote_quantity = true;
     let instrument_id = selected_entry_instrument(&builder);
     set_active_books_best_prices(&mut builder, 0.75, 0.76);
@@ -697,6 +701,7 @@ fn quote_quantity_sell_stop_limit_missing_context_fails_closed() {
 fn quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.entry_order.order_type = OrderType::Limit;
     strategy.config.entry_order.is_quote_quantity = true;
     let instrument_id = selected_entry_instrument(&strategy);
     set_active_books_best_prices(&mut strategy, 0.24, 0.25);
@@ -733,7 +738,7 @@ fn quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing(
 }
 
 #[test]
-fn quote_quantity_market_submit_admission_uses_nt_cache_quote_ask() {
+fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cached_quote() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
@@ -784,9 +789,9 @@ fn quote_quantity_market_submit_admission_uses_nt_cache_quote_ask() {
             ),
             &order,
         )
-        .expect("quote-quantity market admission should use NT cache quote price");
+        .expect("quote-quantity market admission should use submitted quote quantity");
 
-    assert_eq!(admission.notional, expected_notional);
+    assert_eq!(admission.notional, raw_quote_quantity);
 }
 
 #[test]
@@ -847,7 +852,7 @@ fn base_quantity_market_entry_admission_values_at_instrument_price_ceiling() {
 }
 
 #[test]
-fn quote_quantity_market_submit_admission_uses_nt_cache_trade_when_quote_missing() {
+fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cached_trade() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
@@ -898,9 +903,9 @@ fn quote_quantity_market_submit_admission_uses_nt_cache_trade_when_quote_missing
             ),
             &order,
         )
-        .expect("quote-quantity market admission should use NT cache trade fallback");
+        .expect("quote-quantity market admission should use submitted quote quantity");
 
-    assert_eq!(admission.notional, expected_notional);
+    assert_eq!(admission.notional, raw_quote_quantity);
 }
 
 #[test]
@@ -1311,9 +1316,12 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
 }
 
 #[test]
-fn quote_quantity_entry_submission_is_unsupported_executable_shape() {
+fn market_quote_quantity_entry_submission_sizes_from_current_book_notional() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
+    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
     strategy.config.entry_order.is_quote_quantity = true;
     strategy.config.order_notional_target = 25.0;
     strategy.config.maximum_position_notional = 25.0;
@@ -1321,22 +1329,65 @@ fn quote_quantity_entry_submission_is_unsupported_executable_shape() {
 
     let decision = strategy.entry_submission_decision_at(1_200);
 
+    assert_eq!(decision.blocked_reason, None);
+    assert_eq!(decision.price, Some(0.41));
+    assert_eq!(decision.quantity_value, Some(25.0));
+
+    let instrument_id = decision
+        .instrument_id
+        .expect("decision should select an entry instrument");
+    let instrument = strategy
+        .current_instrument(instrument_id)
+        .expect("selected entry instrument should be cached");
+    let quantity = instrument
+        .try_make_qty(
+            decision
+                .quantity_value
+                .expect("quote quantity notional should be present"),
+            Some(true),
+        )
+        .expect("quote quantity should convert to an NT quantity");
+    let order = strategy
+        .build_configured_entry_order(
+            instrument_id,
+            decision.order_side.expect("order side should be selected"),
+            quantity,
+            Price::new(
+                decision.price.expect("fallback price should be selected"),
+                instrument.price_precision(),
+            ),
+            ClientOrderId::from("O-19700101-000000-001-025-1"),
+        )
+        .expect("market/FOK quote-quantity entry order should build");
+    assert!(matches!(order, nautilus_model::orders::OrderAny::Market(_)));
+    assert!(order.is_quote_quantity());
+}
+
+#[test]
+fn market_quote_quantity_entry_submission_blocks_below_venue_minimum() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.is_quote_quantity = true;
+    let venue_minimum =
+        crate::bolt_v3_providers::market_quote_buy_min_notional_for_execution_venue(
+            strategy.context.execution_venue(),
+        )
+        .expect("Polymarket market quote BUY minimum must be modeled");
+    let below_minimum = venue_minimum / Decimal::from(2_u32);
+    strategy.config.order_notional_target = below_minimum
+        .to_f64()
+        .expect("fixture below-minimum notional should convert");
+    strategy.config.maximum_position_notional = strategy.config.order_notional_target;
+    strategy.config.risk_lambda = 0.0001;
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+
     assert_eq!(
         decision.blocked_reason,
-        Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
-    );
-    assert_eq!(
-        decision.evaluation.pricing_blocked_by,
-        vec![
-            EntryPricingBlockReason::ExecutableEdgeUnavailable(
-                OutcomeSide::Up,
-                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
-            ),
-            EntryPricingBlockReason::ExecutableEdgeUnavailable(
-                OutcomeSide::Down,
-                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
-            ),
-        ]
+        Some("entry_quote_notional_below_venue_minimum")
     );
     assert_eq!(decision.quantity_value, None);
 }
@@ -1344,6 +1395,7 @@ fn quote_quantity_entry_submission_is_unsupported_executable_shape() {
 #[test]
 fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::MarketIfTouched;
@@ -1398,6 +1450,7 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
 #[test]
 fn submit_admission_test_helper_uses_explicit_execution_client_id() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let instrument_id = selected_entry_instrument(&strategy);
     let quantity = Quantity::new(2.0, 2);
@@ -1736,6 +1789,7 @@ fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
 #[test]
 fn post_only_maker_order_objects_preserve_nt_limit_gtc_fields() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
@@ -1773,6 +1827,7 @@ fn post_only_maker_order_objects_preserve_nt_limit_gtc_fields() {
 #[test]
 fn gtd_limit_order_objects_preserve_nt_expire_time() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
@@ -1801,6 +1856,7 @@ fn gtd_limit_order_objects_preserve_nt_expire_time() {
 #[test]
 fn non_gtd_limit_order_objects_preserve_nt_expire_time() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -1827,6 +1883,7 @@ fn non_gtd_limit_order_objects_preserve_nt_expire_time() {
 #[test]
 fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::StopMarket;
@@ -1983,6 +2040,7 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
 #[test]
 fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.order_type = OrderType::StopLimit;
@@ -2069,6 +2127,7 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
 #[test]
 fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.order_type = OrderType::LimitIfTouched;
@@ -2156,6 +2215,7 @@ fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
 #[test]
 fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
@@ -2443,6 +2503,7 @@ fn trailing_stop_market_rejects_required_nt_fields_before_factory() {
 #[test]
 fn configured_order_build_rejects_nt_model_invalid_tif_before_factory() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let instrument_id = selected_entry_instrument(&strategy);
     let quantity = Quantity::new(1.0, 2);

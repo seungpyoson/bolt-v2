@@ -219,6 +219,25 @@ fn with_captured_error_log<R>(
     result
 }
 
+fn with_captured_strategy_logs<R>(
+    strategy_id: &str,
+    action: impl FnOnce() -> R,
+) -> (R, Vec<(log::Level, String)>) {
+    let logger = install_capturing_logger();
+    let _observer_guard = CAPTURING_LOGGER_OBSERVERS
+        .lock()
+        .expect("capturing logger observer mutex poisoned");
+    logger.reset();
+
+    let result = action();
+    let matching = logger
+        .records()
+        .into_iter()
+        .filter(|(_, message)| message.contains(strategy_id))
+        .collect::<Vec<_>>();
+    (result, matching)
+}
+
 fn test_realized_volatility_engine_config()
 -> crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
     crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
@@ -924,17 +943,57 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
         evidence.clone(),
         submit_admission,
     );
+    let strategy_id = unique_log_capture_strategy_id("entry-admitted");
+    strategy.config.strategy_id = strategy_id.clone();
     strategy.pricing.last_fast_venue_age_ms = Some(17);
     strategy.pricing.last_fast_venue_jitter_ms = Some(3);
     strategy.pricing.last_lead_agreement_corr = Some(probability(0.99));
     register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.observe_reference_snapshot(&ReferenceSnapshot {
+        ts_ms: 1_200,
+        topic: "platform.reference.test.spot".to_string(),
+        fair_value: Some(3_100.5),
+        confidence: 1.0,
+        venues: vec![
+            oracle_venue("reference", 1.0, 3_100.5, 1_200),
+            orderbook_venue("bybit", 0.9, 3_100.5, 1_200),
+        ],
+    });
+    strategy.pricing.last_fast_venue_age_ms = Some(17);
+    strategy.pricing.last_fast_venue_jitter_ms = Some(3);
+    strategy.pricing.last_lead_agreement_corr = Some(probability(0.99));
 
-    let error = strategy
-        .try_submit_entry_order(1_200)
-        .expect_err("submit admission should reject after evidence capture");
+    let (submit_result, logs) =
+        with_captured_strategy_logs(&strategy_id, || strategy.try_submit_entry_order(1_200));
+    let error = submit_result.expect_err("submit admission should reject after evidence capture");
     assert!(
         error.to_string().contains("notional cap is exceeded"),
         "{error:#}"
+    );
+    let entry_evaluation_logs = logs
+        .iter()
+        .filter(|(_, message)| {
+            message.contains("binary_oracle_edge_taker entry evaluation:")
+                && message.contains(&strategy_id)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entry_evaluation_logs.len(),
+        1,
+        "admitted entry should emit one entry-evaluation log for {strategy_id}: {logs:?}"
+    );
+    let entry_evaluation_log = &entry_evaluation_logs[0].1;
+    assert!(
+        entry_evaluation_log.contains("fast_venue_available=true"),
+        "entry-evaluation log must expose admitted spot state: {entry_evaluation_log}"
+    );
+    assert!(
+        entry_evaluation_log.contains("reference_current_price_available=true"),
+        "entry-evaluation log must expose standalone admitted reference state: {entry_evaluation_log}"
+    );
+    assert!(
+        entry_evaluation_log.contains("reference_current_price_available_without_fast_venue=false"),
+        "entry-evaluation log must keep the conjunction marker separate: {entry_evaluation_log}"
     );
 
     let events = evidence.events();
@@ -994,6 +1053,14 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
     assert!(snapshot.gate_blocked_by.is_empty());
     assert!(snapshot.pricing_blocked_by.is_empty());
     assert_eq!(snapshot.fast_venue_name.as_deref(), Some("bybit"));
+    assert!(
+        snapshot.fast_venue_available,
+        "admitted entry snapshot must expose admitted spot state"
+    );
+    assert!(
+        snapshot.reference_current_price_available,
+        "admitted entry snapshot must expose admitted reference state"
+    );
     assert_eq!(snapshot.fast_venue_age_ms, Some(17));
     assert_eq!(snapshot.fast_venue_jitter_ms, Some(3));
     assert!(!snapshot.fast_venue_incoherent);
@@ -1027,6 +1094,8 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
         evidence.clone(),
         submit_admission,
     );
+    let strategy_id = unique_log_capture_strategy_id("entry-fallback");
+    strategy.config.strategy_id = strategy_id.clone();
     strategy.config.reference_current_price = Some(replay_reference_price_config(&replay));
     strategy.config.forced_flat_stale_reference_ms = replay.forced_flat_stale_reference_ms;
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", replay.market_start_ms));
@@ -1153,6 +1222,34 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     assert!(
         !log_fields.reference_current_price_available_without_fast_venue,
         "without-fast-venue marker should only track admitted reference state"
+    );
+    let ((), logs) = with_captured_strategy_logs(&strategy_id, || {
+        strategy.log_entry_evaluation(replay.evaluation_now_ms, &replay_decision);
+    });
+    let entry_evaluation_logs = logs
+        .iter()
+        .filter(|(_, message)| {
+            message.contains("binary_oracle_edge_taker entry evaluation:")
+                && message.contains(&strategy_id)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entry_evaluation_logs.len(),
+        1,
+        "fallback replay should emit one entry-evaluation log for {strategy_id}: {logs:?}"
+    );
+    let entry_evaluation_log = &entry_evaluation_logs[0].1;
+    assert!(
+        entry_evaluation_log.contains("fast_venue_available=false"),
+        "entry-evaluation log must expose fallback spot as not admitted: {entry_evaluation_log}"
+    );
+    assert!(
+        entry_evaluation_log.contains("reference_current_price_available=false"),
+        "entry-evaluation log must expose standalone fallback reference as not admitted: {entry_evaluation_log}"
+    );
+    assert!(
+        entry_evaluation_log.contains("reference_current_price_available_without_fast_venue=false"),
+        "entry-evaluation log must retain the without-fast-venue conjunction: {entry_evaluation_log}"
     );
 
     let submitted = strategy

@@ -967,12 +967,10 @@ reason = "This labels open-order reservation evidence rebuilt from NT cache stat
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
-literal = '''"submit-capable live node has no capital admission, no live-submit approval limits, \
-             and no loss policy; declare risk.live_submit_governance.mode = \
-             \"supervised_deposit_capped\" for supervised deposit-capped operation"'''
-context = '''"submit-capable live node has no capital admission, no live-submit approval limits, \'''
+literal = '''", "'''
+context = '''uncovered_execution_client_ids.join(", ")'''
 classification = "live_node_fail_closed_diagnostic_template"
-reason = "Fail-closed boot diagnostic for an undeclared ungoverned submit-capable live node; it names the required config declaration and does not configure runtime behavior."
+reason = "Diagnostic separator for listing TOML-owned submit-capable execution client identifiers that lack per-client live-submit governance coverage."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/mod.rs"

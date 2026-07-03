@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use std::collections::BTreeMap;
 
 #[test]
 fn submit_capable_live_node_rejects_ungoverned_boot_without_declaration() {
@@ -52,6 +53,41 @@ fn supervised_deposit_capped_declaration_allows_ungoverned_submit_capable_boot()
     );
 }
 
+#[test]
+fn approval_limits_govern_only_the_execution_client_they_cover() {
+    let mut loaded = ungoverned_submit_capable_loaded_config();
+    add_submit_capable_client_and_strategy(&mut loaded, "polymarket_secondary");
+    let live_submit_approval_limits = BTreeMap::from([(
+        "polymarket_main".to_string(),
+        governance_mode_test_approval_limits(),
+    )]);
+
+    let error = validate_live_submit_governance(&loaded, &live_submit_approval_limits, false, None)
+        .expect_err("covered plus uncovered execution clients must reject boot");
+
+    match error {
+        BoltV3LiveNodeError::RiskPolicy(error) => {
+            let message = error.to_string();
+            assert!(
+                message.contains("polymarket_secondary"),
+                "error must name the uncovered execution client: {message}"
+            );
+            assert!(
+                message.contains("execution_client_id"),
+                "error must identify per-client governance: {message}"
+            );
+        }
+        other => panic!("expected risk-policy rejection, got {other:?}"),
+    }
+}
+
+fn governance_mode_test_approval_limits() -> BoltV3LiveSubmitApprovalLimits {
+    BoltV3LiveSubmitApprovalLimits {
+        max_order_count: 1,
+        max_order_notional: Decimal::new(1, 0),
+    }
+}
+
 fn ungoverned_submit_capable_loaded_config() -> LoadedBoltV3Config {
     let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
         "tests/fixtures/bolt_v3/root.toml",
@@ -76,4 +112,27 @@ fn ungoverned_submit_capable_loaded_config() -> LoadedBoltV3Config {
         }
     }
     loaded
+}
+
+fn add_submit_capable_client_and_strategy(loaded: &mut LoadedBoltV3Config, client_id: &str) {
+    let base_client = loaded
+        .root
+        .clients
+        .get("polymarket_main")
+        .expect("fixture must define polymarket_main")
+        .clone();
+    loaded
+        .root
+        .clients
+        .insert(client_id.to_string(), base_client);
+
+    let mut strategy = loaded
+        .strategies
+        .first()
+        .expect("fixture must include a strategy")
+        .clone();
+    strategy.config.strategy_instance_id = format!("{client_id}-strategy");
+    strategy.config.order_id_tag = format!("{client_id}-tag");
+    strategy.config.execution_client_id = ClientId::from(client_id);
+    loaded.strategies.push(strategy);
 }

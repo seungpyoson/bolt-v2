@@ -5,6 +5,10 @@ use std::sync::{
 
 use tokio::sync::Notify;
 
+use crate::bolt_v3_venue_truth::{
+    VenueTruthCaptureFailureEvidence, venue_truth_capture_failure_parts,
+};
+
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -196,6 +200,7 @@ async fn run_venue_truth_runtime(
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(config.poll_interval_ms));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut captures_missed = 0_u64;
     loop {
         if shutdown_requested.load(Ordering::SeqCst) {
             break;
@@ -226,15 +231,15 @@ async fn run_venue_truth_runtime(
         let snapshot = match snapshot {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                halt_for_venue_truth(
-                    &submit_admission,
-                    &stop_handle,
-                    captured_at,
-                    format!("venue truth poll failed: {error:#}"),
+                captures_missed = captures_missed.saturating_add(1);
+                log::error!("venue truth poll failed: {error:#}");
+                submit_admission.suspend_capital_admission_for_venue_truth_capture_failure(
+                    venue_truth_capture_failure_evidence(captured_at, captures_missed, &error),
                 );
-                break;
+                continue;
             }
         };
+        captures_missed = 0;
         let reconcile = {
             let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             feed.on_venue_truth_snapshot(snapshot)
@@ -248,6 +253,22 @@ async fn run_venue_truth_runtime(
             );
             break;
         }
+    }
+}
+
+fn venue_truth_capture_failure_evidence(
+    observed_at_ns: u64,
+    captures_missed: u64,
+    error: &anyhow::Error,
+) -> VenueTruthCaptureFailureEvidence {
+    let (endpoint, error_class) = venue_truth_capture_failure_parts(error);
+    VenueTruthCaptureFailureEvidence {
+        source: crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE
+            .to_string(),
+        observed_at_ns,
+        endpoint: endpoint.to_string(),
+        error_class: error_class.to_string(),
+        captures_missed,
     }
 }
 

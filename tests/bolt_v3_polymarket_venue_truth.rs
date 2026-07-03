@@ -5,8 +5,9 @@ use bolt_v2::bolt_v3_providers::polymarket::{
     build_polymarket_venue_truth_snapshot, extract_polymarket_token_id,
 };
 use bolt_v2::bolt_v3_venue_truth::{
-    VenueTruthDivergenceKind, VenueTruthOpenOrder, VenueTruthOrderEventMapper,
-    VenueTruthReconciler, VenueTruthReconciliation, VenueTruthSnapshot,
+    VenueTruthCaptureEndpointError, VenueTruthDivergenceAlarmClass, VenueTruthDivergenceKind,
+    VenueTruthOpenOrder, VenueTruthOrderEventMapper, VenueTruthReconciler,
+    VenueTruthReconciliation, VenueTruthSnapshot, venue_truth_capture_failure_parts,
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
@@ -110,6 +111,21 @@ fn builds_snapshot_from_balance_orders_and_positions() {
 }
 
 #[test]
+fn capture_failure_parts_survive_anyhow_context() {
+    let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
+        "clob_balance_allowance",
+        "transport_or_decode",
+        anyhow::anyhow!("synthetic endpoint failure"),
+    ))
+    .context("poll Polymarket venue-truth endpoints");
+
+    assert_eq!(
+        venue_truth_capture_failure_parts(&error),
+        ("clob_balance_allowance", "transport_or_decode")
+    );
+}
+
+#[test]
 fn accepted_order_event_explains_new_venue_open_order() {
     let mut reconciler = VenueTruthReconciler::new();
 
@@ -159,14 +175,26 @@ fn accepted_order_event_does_not_explain_collateral_delta_without_fill() {
         )),
     );
 
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(snapshot_with_order(
+                1_200,
+                Decimal::new(51_000_000, 0),
+                Decimal::ZERO,
+                0.0,
+            ))
+            .expect("unexplained collateral movement should pend until its capture fence"),
+        VenueTruthReconciliation::DeltaPending
+    );
+
     let divergence = reconciler
         .reconcile_snapshot(snapshot_with_order(
-            1_200,
+            1_300,
             Decimal::new(51_000_000, 0),
             Decimal::ZERO,
             0.0,
         ))
-        .expect_err("accepted order alone must not explain collateral movement");
+        .expect_err("accepted order alone must not explain collateral movement at fence");
 
     assert_eq!(
         divergence.kind,
@@ -215,12 +243,232 @@ fn filled_order_event_explains_open_order_and_position_delta() {
         reconciler
             .reconcile_snapshot(snapshot_with_order(
                 1_400,
-                Decimal::new(48_320_000, 0),
+                Decimal::new(48_400_000, 0),
                 Decimal::new(4, 0),
                 4.0,
             ))
             .expect("fill should explain position and open-order matched deltas"),
         VenueTruthReconciliation::DeltaExplained
+    );
+}
+
+#[test]
+fn filled_order_event_uses_actual_fill_price_and_fee_for_collateral() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .reconcile_snapshot(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("initial venue truth establishes the baseline");
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Accepted(order_accepted_event(
+            "client-order-1",
+            "venue-order-1",
+            "condition-token123.POLYMARKET",
+            1_100,
+        )),
+    );
+    reconciler
+        .reconcile_snapshot(snapshot_with_order(
+            1_200,
+            Decimal::new(50_000_000, 0),
+            Decimal::ZERO,
+            0.0,
+        ))
+        .expect("accepted order should explain the venue order appearance");
+
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event_with_price_and_fee(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            Price::from("0.40"),
+            Money::from_decimal(Decimal::new(1, 2), Currency::pUSD())
+                .expect("fee money should construct"),
+            1_300,
+        )),
+    );
+
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(snapshot_with_order(
+                1_400,
+                Decimal::new(48_390_000, 0),
+                Decimal::new(4, 0),
+                4.0,
+            ))
+            .expect("actual fill price plus explicit fee should explain collateral"),
+        VenueTruthReconciliation::DeltaExplained
+    );
+}
+
+#[test]
+fn taker_fill_without_resting_open_order_explains_position_and_collateral() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .reconcile_snapshot(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("initial venue truth establishes the baseline");
+
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_100,
+        )),
+    );
+
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(snapshot_with_position(
+                1_200,
+                Decimal::new(48_400_000, 0),
+                4.0,
+            ))
+            .expect("recorded taker fill should explain venue truth without an open-order row"),
+        VenueTruthReconciliation::DeltaExplained
+    );
+}
+
+#[test]
+fn unexplained_capture_is_pending_until_next_capture_fence() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("baseline should be accepted");
+
+    let results = reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_100,
+            Decimal::new(48_400_000, 0),
+            4.0,
+        ))
+        .expect("unexplained delta before fence should be pending, not divergent");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].outcome, VenueTruthReconciliation::DeltaPending);
+    assert_eq!(
+        reconciler
+            .latest_accepted_snapshot()
+            .expect("baseline remains accepted")
+            .captured_at,
+        UnixNanos::from(1_000)
+    );
+}
+
+#[test]
+fn pending_capture_accepts_after_interleaved_fill_at_next_capture_fence() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("baseline should be accepted");
+    reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_100,
+            Decimal::new(48_400_000, 0),
+            4.0,
+        ))
+        .expect("unexplained delta before fence should be pending");
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_150,
+        )),
+    );
+
+    let results = reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_200,
+            Decimal::new(48_400_000, 0),
+            4.0,
+        ))
+        .expect("interleaved fill should explain the pending delta at fence");
+
+    assert!(
+        results.iter().any(|result| result.capture_number == 2
+            && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 2 must be accepted when its fence completes"
+    );
+}
+
+#[test]
+fn pending_capture_without_channel_event_halts_as_silent_channel_at_fence() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("baseline should be accepted");
+    reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_100,
+            Decimal::new(48_400_000, 0),
+            4.0,
+        ))
+        .expect("unexplained delta before fence should be pending");
+
+    let divergence = reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_200,
+            Decimal::new(48_400_000, 0),
+            4.0,
+        ))
+        .expect_err("still-unexplained pending delta should halt at its fence");
+
+    assert_eq!(
+        divergence.alarm_class,
+        VenueTruthDivergenceAlarmClass::SilentChannel
+    );
+}
+
+#[test]
+fn slow_reconcile_consumes_interleaved_events_when_fence_already_completed() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("baseline should be accepted");
+    reconciler.record_snapshot_completion_without_processing(snapshot_with_position(
+        1_100,
+        Decimal::new(48_400_000, 0),
+        4.0,
+    ));
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_150,
+        )),
+    );
+    reconciler.record_snapshot_completion_without_processing(snapshot_with_position(
+        1_200,
+        Decimal::new(48_400_000, 0),
+        4.0,
+    ));
+
+    let results = reconciler
+        .process_completed_captures()
+        .expect("fence already complete should re-judge once after interleaved events");
+
+    assert!(
+        results.iter().any(|result| result.capture_number == 2
+            && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 2 must consume the fill recorded between capture completions"
     );
 }
 
@@ -261,14 +509,26 @@ fn filled_order_event_does_not_explain_unrelated_collateral_delta() {
         )),
     );
 
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(snapshot_with_order(
+                1_400,
+                Decimal::new(51_000_000, 0),
+                Decimal::new(4, 0),
+                4.0,
+            ))
+            .expect("unrelated collateral movement should pend until its capture fence"),
+        VenueTruthReconciliation::DeltaPending
+    );
+
     let divergence = reconciler
         .reconcile_snapshot(snapshot_with_order(
-            1_400,
+            1_500,
             Decimal::new(51_000_000, 0),
             Decimal::new(4, 0),
             4.0,
         ))
-        .expect_err("unrelated collateral movement must not be explained by a valid fill");
+        .expect_err("unrelated collateral movement must not be explained by a valid fill at fence");
 
     assert_eq!(
         divergence.kind,
@@ -283,9 +543,16 @@ fn collateral_only_operator_transfer_is_unexplainable() {
         .reconcile_snapshot(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
         .expect("initial venue truth establishes the baseline");
 
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(empty_snapshot(1_100, Decimal::new(51_000_000, 0)))
+            .expect("manual transfer should pend until its capture fence"),
+        VenueTruthReconciliation::DeltaPending
+    );
+
     let divergence = reconciler
-        .reconcile_snapshot(empty_snapshot(1_100, Decimal::new(51_000_000, 0)))
-        .expect_err("manual transfer should not be explainable by order events");
+        .reconcile_snapshot(empty_snapshot(1_200, Decimal::new(51_000_000, 0)))
+        .expect_err("manual transfer should not be explainable by order events at fence");
 
     assert_eq!(
         divergence.kind,
@@ -373,6 +640,30 @@ fn snapshot_with_order(
     .expect("test snapshot should be valid")
 }
 
+fn snapshot_with_position(
+    captured_at: u64,
+    collateral_balance: Decimal,
+    venue_position_quantity: f64,
+) -> VenueTruthSnapshot {
+    build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
+        captured_at: UnixNanos::from(captured_at),
+        account_id: AccountId::from("POLYMARKET-001"),
+        collateral_currency: Currency::pUSD(),
+        collateral: BalanceAllowance {
+            balance: collateral_balance,
+            allowance: Some(Decimal::new(40_000_000, 0)),
+        },
+        open_orders: Vec::new(),
+        positions: vec![DataApiPosition {
+            asset: "token123".to_string(),
+            condition_id: "condition".to_string(),
+            size: venue_position_quantity,
+            avg_price: Some(0.42),
+        }],
+    })
+    .expect("test snapshot should be valid")
+}
+
 fn order_accepted_event(
     client_order_id: &str,
     venue_order_id: &str,
@@ -402,6 +693,56 @@ fn order_filled_event(
     quantity: Quantity,
     ts_event: u64,
 ) -> OrderFilled {
+    order_filled_event_with_price_and_optional_fee(
+        client_order_id,
+        venue_order_id,
+        trade_id,
+        instrument_id,
+        order_side,
+        quantity,
+        Price::from("0.40"),
+        None,
+        ts_event,
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
+fn order_filled_event_with_price_and_fee(
+    client_order_id: &str,
+    venue_order_id: &str,
+    trade_id: &str,
+    instrument_id: &str,
+    order_side: OrderSide,
+    quantity: Quantity,
+    price: Price,
+    fee: Money,
+    ts_event: u64,
+) -> OrderFilled {
+    order_filled_event_with_price_and_optional_fee(
+        client_order_id,
+        venue_order_id,
+        trade_id,
+        instrument_id,
+        order_side,
+        quantity,
+        price,
+        Some(fee),
+        ts_event,
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
+fn order_filled_event_with_price_and_optional_fee(
+    client_order_id: &str,
+    venue_order_id: &str,
+    trade_id: &str,
+    instrument_id: &str,
+    order_side: OrderSide,
+    quantity: Quantity,
+    price: Price,
+    fee: Option<Money>,
+    ts_event: u64,
+) -> OrderFilled {
     OrderFilled::new(
         TraderId::from("TRADER-001"),
         StrategyId::from("strategy-a"),
@@ -413,7 +754,7 @@ fn order_filled_event(
         order_side,
         OrderType::Limit,
         quantity,
-        Price::from("0.40"),
+        price,
         Currency::pUSD(),
         LiquiditySide::Taker,
         UUID4::default(),
@@ -421,6 +762,6 @@ fn order_filled_event(
         UnixNanos::from(ts_event),
         false,
         None,
-        None,
+        fee,
     )
 }

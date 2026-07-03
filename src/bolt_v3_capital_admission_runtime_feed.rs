@@ -41,7 +41,7 @@ const CAPITAL_ADMISSION_ORDER_TERMINAL_SOURCE: &str = stringify!(nt_order_termin
 const NT_ACCOUNT_STATE_PORTFOLIO_SOURCE: &str = stringify!(nt_account_state);
 const NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE: &str = "nt_account_cache";
 const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";
-pub(crate) const POLYMARKET_VENUE_TRUTH_REST_SOURCE: &str = "polymarket_venue_truth_rest";
+pub const POLYMARKET_VENUE_TRUTH_REST_SOURCE: &str = "polymarket_venue_truth_rest";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct PositionFillTradeKey {
@@ -257,21 +257,25 @@ impl CapitalAdmissionRuntimeFeed {
         &mut self,
         snapshot: VenueTruthSnapshot,
     ) -> Result<Option<BoltV3SubmitCapitalAdmissionNtComponents>, VenueTruthDivergence> {
-        let observed_at_ns = snapshot.captured_at.as_u64();
-        let account_id = snapshot.account_id.to_string();
-        let spendable_collateral = snapshot.collateral_balance.as_decimal();
-        let collateral_allowance = snapshot.collateral_allowance.as_decimal();
-        self.venue_truth_reconciler.reconcile_snapshot(snapshot)?;
-        let venue_spendability = VenueSpendabilitySnapshot {
-            source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
-            observed_at_ns,
-            venue_id: self.config.venue_id.clone(),
-            account_id,
-            collateral_currency: self.config.collateral_currency.clone(),
-            spendable_collateral,
-            collateral_allowance,
-        };
-        Ok(self.on_venue_spendability_snapshot(venue_spendability))
+        let results = self
+            .venue_truth_reconciler
+            .record_snapshot_completion(snapshot)?;
+        let mut published = None;
+        for result in results {
+            if let Some(accepted_snapshot) = result.accepted_snapshot {
+                let venue_spendability = VenueSpendabilitySnapshot {
+                    source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
+                    observed_at_ns: accepted_snapshot.captured_at.as_u64(),
+                    venue_id: self.config.venue_id.clone(),
+                    account_id: accepted_snapshot.account_id.to_string(),
+                    collateral_currency: self.config.collateral_currency.clone(),
+                    spendable_collateral: accepted_snapshot.collateral_balance.as_decimal(),
+                    collateral_allowance: accepted_snapshot.collateral_allowance.as_decimal(),
+                };
+                published = self.on_venue_spendability_snapshot(venue_spendability);
+            }
+        }
+        Ok(published)
     }
 
     pub fn on_position_event(&mut self, _event: &PositionEvent) -> Option<()> {

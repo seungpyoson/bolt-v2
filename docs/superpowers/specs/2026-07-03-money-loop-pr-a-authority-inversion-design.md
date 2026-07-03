@@ -200,6 +200,16 @@ or position state.
 
 The live node owns the poller lifecycle. The poll cadence is configured in TOML under the Polymarket execution config; it is not hardcoded. Missing or zero cadence is invalid whenever capital admission is enforced for Polymarket live execution.
 
+Per owner decision in PR #1185 comment 4874494874, a venue REST capture
+failure is degraded authority, not divergence. Capture failure must not write a
+durable halt and must not enter the venue-truth divergence path. Runtime records
+loud degraded-authority evidence containing source, endpoint, error class, and
+consecutive captures missed; suspends all admission classes, including
+risk-reducing exits, until the next successful reconciled capture; and then
+automatically resumes without operator recovery. Durable halt remains reserved
+for still-unexplained deltas at the completed capture fence and for failure to
+persist required divergence evidence.
+
 ## Out Of Scope
 
 - PR-B governance mode.
@@ -221,6 +231,10 @@ PR-D acceptance must include a hold-to-resolution replay test proving a resoluti
   capture N+1 completes, continue trading on the last accepted snapshot while
   pending, then accept if explained or durable-halt if still unexplained at the
   fence.
+- Runtime/poller tests proving venue REST capture failure records degraded
+  authority evidence, suspends all submission classes, automatically resumes
+  after the next accepted venue-truth capture, and does not write a durable
+  halt.
 - Startup tests proving a venue-truth halt survives restart and first-snapshot
   dirty baselines cannot be blindly accepted.
 - Admission readiness tests proving accepted Polymarket venue truth is sufficient

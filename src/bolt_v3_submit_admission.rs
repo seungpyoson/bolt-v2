@@ -30,6 +30,7 @@ use crate::bolt_v3_loss_governor::{
 };
 use crate::bolt_v3_numeric::{is_positive_finite, notional_float_tolerance};
 use crate::bolt_v3_observed_dedupe::prune_observed_dedupe_entries;
+use crate::bolt_v3_venue_truth::VenueTruthCaptureFailureEvidence;
 use anyhow::Context;
 use nautilus_model::{
     enums::{OrderSide, PositionSide},
@@ -48,6 +49,7 @@ use std::{
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
 
 const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
+const VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE: &str = "venue_truth_capture_failure";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct BoltV3ExchangeMutationCounts {
@@ -224,6 +226,7 @@ struct BoltV3SubmitCapitalAdmissionState {
     dedupe_retention_ns: u64,
     state: Option<NtDerivedCapitalAdmissionState>,
     latest_reservation_mutation_observed_at_ns: Option<u64>,
+    venue_truth_capture_failure_source: Option<String>,
     gate: CapitalAdmissionGate,
     next_sequence: u64,
     client_order_reservations: BTreeMap<String, BoltV3SubmitReservationIndex>,
@@ -490,6 +493,7 @@ impl BoltV3SubmitAdmissionState {
                         dedupe_retention_ns: config.dedupe_retention_ns,
                         state: None,
                         latest_reservation_mutation_observed_at_ns: None,
+                        venue_truth_capture_failure_source: None,
                         gate: CapitalAdmissionGate::unreconciled(),
                         next_sequence: 0,
                         client_order_reservations: BTreeMap::new(),
@@ -550,6 +554,31 @@ impl BoltV3SubmitAdmissionState {
             .expect("submit admission state mutex should not be poisoned");
         if let Some(capital_admission) = inner.capital_admission.as_mut() {
             refresh_capital_admission_state_from_components(capital_admission, components);
+        }
+    }
+
+    pub fn suspend_capital_admission_for_venue_truth_capture_failure(
+        &self,
+        evidence: VenueTruthCaptureFailureEvidence,
+    ) {
+        if let Err(error) = self
+            .decision_evidence
+            .record_venue_truth_capture_failure(&evidence)
+        {
+            log::error!("failed to record venue truth capture failure evidence: {error:#}");
+        }
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        if let Some(capital_admission) = inner.capital_admission.as_mut() {
+            capital_admission.venue_truth_capture_failure_source = Some(evidence.source);
+            refresh_capital_admission_reservation_snapshot_with_source(
+                capital_admission,
+                evidence.observed_at_ns,
+                VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE.to_string(),
+                false,
+            );
         }
     }
 
@@ -624,7 +653,12 @@ impl BoltV3SubmitAdmissionState {
             .lock()
             .expect("submit admission state mutex should not be poisoned");
         let capital_admission = inner.capital_admission.as_ref()?;
-        Some(capital_admission.gate.is_reconciled())
+        Some(
+            capital_admission.gate.is_reconciled()
+                && capital_admission
+                    .venue_truth_capture_failure_source
+                    .is_none(),
+        )
     }
 
     pub fn capital_admission_open_order_reservation_from_evidence(
@@ -3436,6 +3470,14 @@ fn evaluate_capital_admission_submit(
             BoltV3CapitalAdmissionRejectReason::DuplicateClientOrderId,
         );
     }
+    if capital_admission
+        .venue_truth_capture_failure_source
+        .is_some()
+    {
+        return rejected_capital_admission(
+            BoltV3CapitalAdmissionRejectReason::ReconciliationRequired,
+        );
+    }
     let Some(state) = capital_admission.state.as_ref() else {
         return rejected_capital_admission(BoltV3CapitalAdmissionRejectReason::MissingNtState);
     };
@@ -3631,6 +3673,13 @@ fn refresh_capital_admission_state_from_components(
     capital_admission: &mut BoltV3SubmitCapitalAdmissionState,
     mut components: BoltV3SubmitCapitalAdmissionNtComponents,
 ) {
+    if capital_admission
+        .venue_truth_capture_failure_source
+        .as_deref()
+        .is_some_and(|source| source == components.venue_spendability.source)
+    {
+        capital_admission.venue_truth_capture_failure_source = None;
+    }
     preserve_fresher_order_lifecycle(capital_admission.state.as_ref(), &mut components);
     if capital_admission.gate.is_reconciled()
         && components.order_lifecycle.open_order_count > 0
@@ -3647,7 +3696,10 @@ fn refresh_capital_admission_state_from_components(
     }
     let state = compose_capital_admission_state_from_components(
         components,
-        capital_admission.gate.is_reconciled(),
+        capital_admission.gate.is_reconciled()
+            && capital_admission
+                .venue_truth_capture_failure_source
+                .is_none(),
         capital_admission.latest_reservation_mutation_observed_at_ns,
     );
     capital_admission.capital_pool.source = state.portfolio.source.clone();

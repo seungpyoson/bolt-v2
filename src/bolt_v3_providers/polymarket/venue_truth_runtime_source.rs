@@ -25,8 +25,9 @@ use nautilus_polymarket::{
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_venue_truth::{
-    VenueTruthOpenOrder, VenueTruthOrderEvent, VenueTruthOrderEventMapper, VenueTruthSnapshot,
-    VenueTruthSnapshotFuture, VenueTruthSnapshotSource,
+    VenueTruthCaptureEndpointError, VenueTruthOpenOrder, VenueTruthOrderEvent,
+    VenueTruthOrderEventMapper, VenueTruthSnapshot, VenueTruthSnapshotFuture,
+    VenueTruthSnapshotSource,
 };
 
 use super::{PolymarketExecutionConfig, ResolvedBoltV3PolymarketSecrets};
@@ -56,6 +57,11 @@ pub enum PolymarketVenueTruthBuildError {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PolymarketVenueTruthOrderEventMapper;
+
+pub const POLYMARKET_VENUE_TRUTH_BALANCE_ALLOWANCE_ENDPOINT: &str = "clob_balance_allowance";
+pub const POLYMARKET_VENUE_TRUTH_OPEN_ORDERS_ENDPOINT: &str = "clob_open_orders";
+pub const POLYMARKET_VENUE_TRUTH_POSITIONS_ENDPOINT: &str = "data_api_positions";
+pub const POLYMARKET_VENUE_TRUTH_TRANSPORT_OR_DECODE_ERROR_CLASS: &str = "transport_or_decode";
 
 #[derive(Clone)]
 pub struct PolymarketVenueTruthRuntimeSource {
@@ -123,15 +129,47 @@ pub fn build_polymarket_venue_truth_runtime_source(
 impl PolymarketVenueTruthRuntimeSource {
     async fn snapshot_inner(&self, captured_at: UnixNanos) -> Result<VenueTruthSnapshot> {
         let (collateral, open_orders, positions) = tokio::try_join!(
-            self.clob_client
-                .get_balance_allowance(self.balance_allowance_params.clone()),
-            self.clob_client.get_orders(GetOrdersParams {
-                id: None,
-                market: None,
-                asset_id: None,
-                next_cursor: None,
-            }),
-            self.data_api_client.get_positions(&self.user_address),
+            async {
+                self.clob_client
+                    .get_balance_allowance(self.balance_allowance_params.clone())
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
+                            POLYMARKET_VENUE_TRUTH_BALANCE_ALLOWANCE_ENDPOINT,
+                            POLYMARKET_VENUE_TRUTH_TRANSPORT_OR_DECODE_ERROR_CLASS,
+                            error.into(),
+                        ))
+                    })
+            },
+            async {
+                self.clob_client
+                    .get_orders(GetOrdersParams {
+                        id: None,
+                        market: None,
+                        asset_id: None,
+                        next_cursor: None,
+                    })
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
+                            POLYMARKET_VENUE_TRUTH_OPEN_ORDERS_ENDPOINT,
+                            POLYMARKET_VENUE_TRUTH_TRANSPORT_OR_DECODE_ERROR_CLASS,
+                            error.into(),
+                        ))
+                    })
+            },
+            async {
+                self.data_api_client
+                    .get_positions(&self.user_address)
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
+                            POLYMARKET_VENUE_TRUTH_POSITIONS_ENDPOINT,
+                            POLYMARKET_VENUE_TRUTH_TRANSPORT_OR_DECODE_ERROR_CLASS,
+                            error.into(),
+                        ))
+                    })
+            },
         )
         .context("poll Polymarket venue-truth endpoints")?;
 
@@ -162,6 +200,7 @@ impl VenueTruthOrderEventMapper for PolymarketVenueTruthOrderEventMapper {
             OrderEventAny::Accepted(accepted) => Some(VenueTruthOrderEvent::Accepted {
                 client_order_id: accepted.client_order_id.to_string(),
                 venue_order_id: accepted.venue_order_id,
+                observed_at_ns: accepted.ts_event,
             }),
             OrderEventAny::Filled(fill) => {
                 let product_id = extract_polymarket_token_id(&fill.instrument_id)?;
@@ -170,6 +209,12 @@ impl VenueTruthOrderEventMapper for PolymarketVenueTruthOrderEventMapper {
                     product_id,
                     side: fill.order_side,
                     quantity: fill.last_qty.as_decimal(),
+                    fill_price: fill.last_px.as_decimal(),
+                    fee: fill
+                        .commission
+                        .as_ref()
+                        .map_or(Decimal::ZERO, Money::as_decimal),
+                    observed_at_ns: fill.ts_event,
                 })
             }
             OrderEventAny::Canceled(_)
@@ -178,6 +223,7 @@ impl VenueTruthOrderEventMapper for PolymarketVenueTruthOrderEventMapper {
             | OrderEventAny::Denied(_) => Some(VenueTruthOrderEvent::Terminal {
                 client_order_id: event.client_order_id().to_string(),
                 venue_order_id: event.venue_order_id(),
+                observed_at_ns: event.ts_event(),
             }),
             _ => None,
         }

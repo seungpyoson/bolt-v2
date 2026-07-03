@@ -20,6 +20,7 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceDiagnostic,
     RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
+use crate::bolt_v3_venue_truth::VenueTruthCaptureFailureEvidence;
 
 pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 14;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -31,6 +32,7 @@ pub const BOLT_V3_ENTRY_SKIP_GATE_ID: &str = "bolt_v3.entry_skip";
 pub const BOLT_V3_EXIT_DECISION_GATE_ID: &str = "bolt_v3.exit_decision";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID: &str = "bolt_v3.loss_governor_halt";
 pub const BOLT_V3_REQUOTE_THROTTLE_GATE_ID: &str = "bolt_v3.requote_throttle";
+pub const BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID: &str = "bolt_v3.venue_truth_capture_failure";
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";
 pub const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";
 pub const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
@@ -38,6 +40,7 @@ pub const BOLT_V3_ENTRY_SKIP_RECORD_KIND: &str = "entry_skip";
 pub const BOLT_V3_EXIT_DECISION_RECORD_KIND: &str = "exit_decision";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";
 pub const BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND: &str = "requote_throttle";
+pub const BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND: &str = "venue_truth_capture_failure";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";
 const BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND: &str = "basket_admission_decision";
 const BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND: &str = "capital_admission_rebuild";
@@ -123,6 +126,13 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
     fn record_loss_governor_halt(&self, evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()>;
     fn record_order_reject(&self, evidence: &BoltV3OrderRejectEvidence) -> Result<()>;
     fn record_requote_throttle(&self, throttle: &BoltV3RequoteThrottleEvidence) -> Result<()>;
+    fn record_venue_truth_capture_failure(
+        &self,
+        evidence: &VenueTruthCaptureFailureEvidence,
+    ) -> Result<()> {
+        let _ = evidence;
+        Ok(())
+    }
 }
 
 /// Risk direction of a runtime trading decision, used by [`commit_decision`]
@@ -1353,6 +1363,14 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
         let line = encode_requote_throttle_line(throttle)?;
         self.append_line(&line)
     }
+
+    fn record_venue_truth_capture_failure(
+        &self,
+        evidence: &VenueTruthCaptureFailureEvidence,
+    ) -> Result<()> {
+        let line = encode_venue_truth_capture_failure_line(evidence)?;
+        self.append_line(&line)
+    }
 }
 
 /// Validates `persistence.decision_evidence.order_intents_relative_path` as the
@@ -1657,6 +1675,24 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
+            BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND,
+                    BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID,
+                    index,
+                )?;
+                let decoded: VenueTruthCaptureFailureLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 venue truth capture failure line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND,
+                    BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID,
+                    index,
+                )?;
+            }
             BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND => {
                 header.validate(
                     BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND,
@@ -1946,6 +1982,24 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
+            BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND,
+                    BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID,
+                    index,
+                )?;
+                let decoded: VenueTruthCaptureFailureLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 venue truth capture failure line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND,
+                    BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID,
+                    index,
+                )?;
+            }
             BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND => {
                 header.validate(
                     BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND,
@@ -2026,6 +2080,7 @@ fn decision_evidence_header_is_below_current_schema_non_recovery_record(
                 | BOLT_V3_EXIT_EVALUATION_RECORD_KIND
                 | BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND
                 | BOLT_V3_ORDER_REJECT_RECORD_KIND
+                | BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND
                 | BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND
         )
 }
@@ -2420,6 +2475,13 @@ struct RequoteThrottleLineOwned {
     requote_throttle: BoltV3RequoteThrottleEvidence,
 }
 
+#[derive(Deserialize)]
+struct VenueTruthCaptureFailureLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    capture_failure: VenueTruthCaptureFailureEvidence,
+}
+
 impl AdmissionDecisionLineOwned {
     fn validate_header(
         &self,
@@ -2511,6 +2573,18 @@ impl RequoteThrottleLineOwned {
         index: usize,
     ) -> Result<()> {
         let _ = &self.requote_throttle;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl VenueTruthCaptureFailureLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.capture_failure;
         self.header.validate(expected_kind, expected_gate_id, index)
     }
 }
@@ -2613,6 +2687,16 @@ struct RequoteThrottleLine<'a> {
     gate_version: &'static str,
     kind: &'static str,
     requote_throttle: &'a BoltV3RequoteThrottleEvidence,
+}
+
+#[derive(Serialize)]
+struct VenueTruthCaptureFailureLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    capture_failure: &'a VenueTruthCaptureFailureEvidence,
 }
 
 fn current_utc_ns() -> i64 {
@@ -2865,6 +2949,23 @@ fn encode_requote_throttle_line(throttle: &BoltV3RequoteThrottleEvidence) -> Res
     };
     let mut line =
         serde_json::to_vec(&envelope).context("failed to serialize requote throttle evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+fn encode_venue_truth_capture_failure_line(
+    evidence: &VenueTruthCaptureFailureEvidence,
+) -> Result<Vec<u8>> {
+    let envelope = VenueTruthCaptureFailureLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND,
+        capture_failure: evidence,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize venue truth capture failure evidence")?;
     line.extend_from_slice(b"\n");
     Ok(line)
 }
@@ -3725,6 +3826,16 @@ mod tests {
         }
     }
 
+    fn sample_venue_truth_capture_failure_evidence_encode() -> VenueTruthCaptureFailureEvidence {
+        VenueTruthCaptureFailureEvidence {
+            source: "polymarket_venue_truth_rest".to_string(),
+            observed_at_ns: 1_700_000_000_000_000_000,
+            endpoint: "clob_balance_allowance".to_string(),
+            error_class: "transport_or_decode".to_string(),
+            captures_missed: 2,
+        }
+    }
+
     #[test]
     fn encode_exit_evaluation_line_round_trips_through_owned_line() {
         let evidence = sample_exit_evaluation_evidence_encode();
@@ -3798,5 +3909,37 @@ mod tests {
         assert_eq!(decoded.header.gate_id, BOLT_V3_ORDER_REJECT_GATE_ID);
         assert_eq!(decoded.header.kind, BOLT_V3_ORDER_REJECT_RECORD_KIND);
         assert_eq!(decoded.evidence, evidence);
+    }
+
+    #[test]
+    fn encode_venue_truth_capture_failure_line_round_trips_through_owned_line() {
+        let evidence = sample_venue_truth_capture_failure_evidence_encode();
+
+        let line =
+            encode_venue_truth_capture_failure_line(&evidence).expect("evidence should encode");
+        assert!(line.ends_with(b"\n"), "encoded line must end with newline");
+        let decoded: VenueTruthCaptureFailureLineOwned =
+            serde_json::from_slice(&line[..line.len() - 1]).expect("line should decode");
+        decoded
+            .validate_header(
+                BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND,
+                BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID,
+                0,
+            )
+            .expect("encoded venue-truth capture-failure header should validate");
+
+        assert_eq!(
+            decoded.header.schema_version,
+            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+        );
+        assert_eq!(
+            decoded.header.gate_id,
+            BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID
+        );
+        assert_eq!(
+            decoded.header.kind,
+            BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND
+        );
+        assert_eq!(decoded.capture_failure, evidence);
     }
 }

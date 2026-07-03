@@ -8,26 +8,27 @@ use bolt_v2::bolt_v3_capital_admission::{
 };
 use bolt_v2::bolt_v3_capital_admission_runtime_feed::{
     CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
-    subscribe_capital_admission_runtime_feed,
+    POLYMARKET_VENUE_TRUTH_REST_SOURCE, subscribe_capital_admission_runtime_feed,
 };
 use bolt_v2::bolt_v3_capital_admission_state::{
     NtDerivedCapitalAdmissionState, OrderLifecycleCapitalAdmissionSnapshot,
     PortfolioCapitalAdmissionSnapshot, ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
 };
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
+use bolt_v2::bolt_v3_kill_switch::KillSwitchStateKind;
 use bolt_v2::bolt_v3_providers::polymarket::{
     PolymarketVenueTruthInput, build_polymarket_venue_truth_snapshot,
 };
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CapitalAdmissionRejectReason, BoltV3CompiledOrderAdmissionEvidence,
     BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
-    BoltV3CompiledProductKind, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
-    BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
+    BoltV3CompiledProductKind, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
+    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
     BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
     BoltV3SubmitCapitalAdmissionOpenOrderReservation, BoltV3SubmitIntentKind,
     BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
 };
-use bolt_v2::bolt_v3_venue_truth::VenueTruthSnapshot;
+use bolt_v2::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthSnapshot};
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
     publish_position_event, subscribe_account_state, subscribe_order_events,
@@ -39,6 +40,7 @@ use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     enums::{
         AccountType, CurrencyType, LiquiditySide, OrderSide, OrderType, PositionAdjustmentType,
+        PositionSide,
     },
     events::{
         AccountState, OrderAccepted, OrderCanceled, OrderDenied, OrderEventAny, OrderExpired,
@@ -168,6 +170,89 @@ fn polymarket_venue_truth_snapshot_promotes_rest_spendability() {
             .venue_spendability
             .source,
         "polymarket_venue_truth_rest"
+    );
+}
+
+#[test]
+fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let admission = Arc::new(capital_admission_configured_admission_with_writer(
+        writer.clone(),
+    ));
+    arm_default(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    admission
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state should admit before degraded venue authority")
+        .commit_submitted();
+
+    admission.suspend_capital_admission_for_venue_truth_capture_failure(
+        VenueTruthCaptureFailureEvidence {
+            source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
+            observed_at_ns: 1_100,
+            endpoint: "clob_balance_allowance".to_string(),
+            error_class: "transport".to_string(),
+            captures_missed: 1,
+        },
+    );
+
+    assert_eq!(
+        admission.kill_switch_state_kind(),
+        KillSwitchStateKind::Armed
+    );
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    assert_eq!(writer.venue_truth_capture_failures().len(), 1);
+    assert!(
+        matches!(
+            admission.admit_at(&risk_reducing_exit_submit_request("client-order-2"), 1_101),
+            Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+                reason: BoltV3CapitalAdmissionRejectReason::ReconciliationRequired
+            })
+        ),
+        "degraded venue authority must suspend risk-reducing exits too"
+    );
+
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let _ = feed.on_account_state(&account_state(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        1_150,
+        100.0,
+    ));
+    let _ = feed.on_portfolio_snapshot(&portfolio_snapshot(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        1_175,
+        100.0,
+    ));
+    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
+        1_200,
+        Decimal::new(100_000_000, 0),
+        Decimal::new(100_000_000, 0),
+    ))
+    .expect("successful venue-truth capture should reconcile")
+    .expect("accepted venue truth should publish components");
+
+    assert_eq!(admission.capital_admission_reconciled(), Some(true));
+}
+
+#[test]
+fn venue_truth_capture_failure_path_suspends_without_halt_branch() {
+    let source = support::repo_text("src/bolt_v3_live_node/risk_admission_loss.rs");
+    let branch = source
+        .split("Err(error) => {\n                captures_missed")
+        .nth(1)
+        .and_then(|tail| tail.split("continue;\n            }\n        };").next())
+        .expect("venue truth poll error branch should be present");
+
+    assert!(
+        branch.contains("suspend_capital_admission_for_venue_truth_capture_failure"),
+        "capture failure must suspend admission through submit admission"
+    );
+    assert!(
+        !branch.contains("halt_for_venue_truth"),
+        "capture failure must not take the durable halt path"
     );
 }
 
@@ -2406,8 +2491,16 @@ fn test_currency(currency_code: &str) -> Currency {
 }
 
 fn capital_admission_configured_admission() -> BoltV3SubmitAdmissionState {
+    capital_admission_configured_admission_with_writer(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ))
+}
+
+fn capital_admission_configured_admission_with_writer(
+    writer: Arc<dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+) -> BoltV3SubmitAdmissionState {
     BoltV3SubmitAdmissionState::new_with_capital_admission(
-        Arc::new(support::RecordingDecisionEvidenceWriter::default()),
+        writer,
         BoltV3SubmitCapitalAdmissionConfig {
             venue_id: "VENUE-A".to_string(),
             account_id: "ACCOUNT-001".to_string(),
@@ -2536,6 +2629,20 @@ fn capital_admission_sell_submit_request(client_order_id: &str) -> BoltV3SubmitA
         .as_mut()
         .expect("capital admission request should carry evidence")
         .side = BoltV3CompiledOrderSide::Sell;
+    request
+}
+
+fn risk_reducing_exit_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
+    let mut request = capital_admission_sell_submit_request(client_order_id);
+    request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
+    request.risk_reducing_exit_proof = Some(BoltV3RiskReducingExitProof {
+        position_id: "position-1".to_string(),
+        instrument_id: request.instrument_id.clone(),
+        position_side: PositionSide::Long,
+        exit_order_side: request.order_side,
+        position_quantity: request.order_quantity,
+        exit_quantity: request.order_quantity,
+    });
     request
 }
 

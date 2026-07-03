@@ -500,6 +500,18 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     ExitEvaluation(Box<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence>),
     LossGovernorHalt(crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence),
     RequoteThrottle(crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence),
+    /// Production settlement evidence (Lane 3, #1179) must map into this
+    /// variant carrying realized_pnl; until that mapping exists this variant is
+    /// intentionally unconstructed and hold_to_resolution stays red. The
+    /// harness compares with f64::EPSILON as an exact oracle-pass-through
+    /// contract: production must record the realized_pnl produced by the shared
+    /// settlement oracle, not a separately rounded recomputation.
+    Settlement(RecordedSettlementEvidenceEvent),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct RecordedSettlementEvidenceEvent {
+    pub(super) realized_pnl: f64,
 }
 
 #[derive(Debug, Default)]
@@ -513,6 +525,16 @@ impl RecordingSequencedDecisionEvidenceWriter {
             .lock()
             .expect("recording evidence writer mutex poisoned")
             .clone()
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn record_settlement(&self, realized_pnl: f64) {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::Settlement(
+                RecordedSettlementEvidenceEvent { realized_pnl },
+            ));
     }
 }
 

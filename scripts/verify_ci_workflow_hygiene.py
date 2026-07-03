@@ -25,6 +25,7 @@ from ci_provenance import (
     MERGIFY_TEMP_PR_TRANSIENT_PREFIX,
     POLICY_ROWS,
     POLICY_VALUES,
+    REUSE_RELEVANT_WORKFLOW_ENV_KEYS,
     ProvenanceError,
     check_lookback_le_retention,
     gate_name_collision_errors,
@@ -35,6 +36,14 @@ from ci_provenance import (
     ProvenanceConfig,
     load_config,
     mergify_temp_pr_matches,
+    reuse_scoped_env_value_uses_single_line_scalar,
+    top_level_block_lines,
+    top_level_env_entry_key_value,
+    top_level_env_immediate_entry_lines,
+    workflow_line_starts_block_scalar,
+    workflow_structural_mapping_value,
+    workflow_structural_sequence_value,
+    workflow_yaml_structural_line,
 )
 
 # Keep the former verifier-local helper families module-scoped so parity tests
@@ -455,22 +464,45 @@ NEXTEST_REUSE_MISS_EXPR = "needs.nextest-fingerprint-reuse.outputs.reuse_found !
 MAIN_BRANCH_SKIP_EXPR = "github.ref != 'refs/heads/main'"
 BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
 FINGERPRINT_REUSE_ALLOWED_EXPR = "needs.detector.outputs.fingerprint_reuse_allowed == 'true'"
-FINGERPRINT_REUSE_PR_EVENT_EXPR = "github.event_name == 'pull_request'"
+FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR = (
+    "contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name)"
+)
+# A key may be listed here only if it provably cannot influence compiled Rust
+# artifacts or nextest archive contents. Build-affecting keys must instead go
+# into ci_provenance.REUSE_RELEVANT_WORKFLOW_ENV_KEYS so they invalidate reuse.
+REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS = frozenset(
+    {"CARGO_TERM_COLOR", "S3_DEPLOY_PATH"}
+)
 FINGERPRINT_REUSE_JOB_IF_VALUE = (
     "${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' "
-    "&& github.event_name == 'pull_request' "
+    "&& contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) "
     "&& needs.detector.outputs.fingerprint_reuse_allowed == 'true' "
     "&& github.ref != 'refs/heads/main' }}"
 )
 FINGERPRINT_REUSE_ALLOWED_OUTPUT = (
     "fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}"
 )
+DETECTOR_REFS_STEP_ALLOWED_KEYS = frozenset(("name", "id", "if", "shell", "env", "run"))
+DETECTOR_REFS_STEP_SCALARS = {
+    "id": "pr_refs",
+    "if": "github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'",
+    "shell": "bash",
+    "env": "",
+    "run": "|",
+}
+DETECTOR_REFS_STEP_ENV = {
+    "EVENT_NAME": "${{ github.event_name }}",
+    "PR_NUMBER": "${{ github.event.pull_request.number || github.run_id }}",
+    "PR_BASE_REF": "${{ github.event.pull_request.base.ref || '' }}",
+    "DISPATCH_BASE_REF": "${{ github.event.repository.default_branch }}",
+    "MERGE_GROUP_BASE_REF": "${{ github.event.merge_group.base_ref || '' }}",
+}
 FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ALLOWED_KEYS = frozenset(
     ("name", "id", "if", "shell", "run")
 )
 FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_SCALARS = {
     "id": "fingerprint_reuse_inputs_changed",
-    "if": "github.event_name == 'pull_request'",
+    "if": "github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'",
     "shell": "bash",
     "run": "|",
 }
@@ -499,9 +531,52 @@ NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_SCALARS = {
     "run": ">",
 }
 NEXTEST_FINGERPRINT_REUSE_RESOLVER_ENV = {"GITHUB_TOKEN": "${{ github.token }}"}
+DETECTOR_REFS_RUN = '''if [[ "$EVENT_NAME" == "pull_request" ]]; then
+  base_branch="$PR_BASE_REF"
+  base_ref="refs/remotes/origin/pr-base-${PR_NUMBER}"
+  head_ref="refs/remotes/origin/pr-head-${PR_NUMBER}"
+  git check-ref-format "refs/heads/$base_branch"
+  git fetch --no-tags origin \\
+    "+refs/heads/${base_branch}:${base_ref}" \\
+    "+refs/pull/${PR_NUMBER}/head:${head_ref}"
+elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+  base_branch="$DISPATCH_BASE_REF"
+  if [[ "$base_branch" == refs/* ]]; then
+    echo "unsupported workflow_dispatch default_branch: $base_branch" >&2
+    exit 1
+  fi
+  base_ref="refs/remotes/origin/dispatch-base-${GITHUB_RUN_ID}"
+  head_ref="HEAD"
+  git check-ref-format "refs/heads/$base_branch"
+  git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+  merge_group_base="$MERGE_GROUP_BASE_REF"
+  if [[ "$merge_group_base" == refs/heads/* ]]; then
+    base_branch="${merge_group_base#refs/heads/}"
+  elif [[ "$merge_group_base" == refs/* ]]; then
+    echo "unsupported merge_group base_ref: $merge_group_base" >&2
+    exit 1
+  else
+    base_branch="$merge_group_base"
+  fi
+  base_ref="refs/remotes/origin/pr-base-merge-group-${GITHUB_RUN_ID}"
+  head_ref="HEAD"
+  git check-ref-format "refs/heads/$base_branch"
+  git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+else
+  echo "unsupported detector refs event: $EVENT_NAME" >&2
+  exit 1
+fi
+echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
+echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"'''
 FINGERPRINT_REUSE_INPUTS_CHANGED_RUN = """base_ref="${{ steps.pr_refs.outputs.base_ref }}"
 head_ref="${{ steps.pr_refs.outputs.head_ref }}"
-changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
+if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+  diff_range="${base_ref}..${head_ref}"
+else
+  diff_range="${base_ref}...${head_ref}"
+fi
+changed="$(git diff --name-only "$diff_range" -- \\
   .github/workflows/ci.yml \\
   .github/actions/setup-environment/action.yml \\
   ci/nextest-fingerprint.toml \\
@@ -520,12 +595,12 @@ if [[ -n "$changed" ]]; then
 else
   echo "any_changed=false" >> "$GITHUB_OUTPUT"
 fi"""
-FINGERPRINT_REUSE_ALLOWED_RUN = """if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+FINGERPRINT_REUSE_ALLOWED_RUN = """if [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
   echo "value=false" >> "$GITHUB_OUTPUT"
-elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
-  echo "value=false" >> "$GITHUB_OUTPUT"
-else
+elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
   echo "value=true" >> "$GITHUB_OUTPUT"
+else
+  echo "value=false" >> "$GITHUB_OUTPUT"
 fi"""
 SELF_AUTHORIZING_GOVERNANCE_RUN = """set -euo pipefail
 base_ref="${{ steps.pr_refs.outputs.base_ref }}"
@@ -9569,8 +9644,182 @@ def fingerprint_reuse_gates_on_detector_allowed(job_lines: list[str]) -> bool:
     return FINGERPRINT_REUSE_ALLOWED_EXPR in job_if_value(job_lines)
 
 
-def fingerprint_reuse_gates_on_pull_request(job_lines: list[str]) -> bool:
-    return FINGERPRINT_REUSE_PR_EVENT_EXPR in job_if_value(job_lines)
+def fingerprint_reuse_gates_on_consumer_events(job_lines: list[str]) -> bool:
+    return FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR in job_if_value(job_lines)
+
+
+def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
+    errors = []
+    scoped_keys = set(REUSE_RELEVANT_WORKFLOW_ENV_KEYS)
+    overlap = sorted(scoped_keys & REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS)
+    if overlap:
+        keys = ", ".join(overlap)
+        errors.append(f"top-level env keys cannot be both reuse-scoped and build-neutral: {keys}")
+
+    try:
+        env_lines = top_level_block_lines(workflow_text, "env")
+    except ProvenanceError as exc:
+        return errors + [f"top-level env reuse scope could not parse ci.yml: {exc}"]
+
+    entry_lines = [
+        structural_line
+        for line in env_lines[1:]
+        if (structural_line := workflow_yaml_structural_line(line))
+    ]
+    if entry_lines:
+        minimum_indent = min(len(line) - len(line.lstrip(" \t")) for line in entry_lines)
+        for line in entry_lines:
+            indent = len(line) - len(line.lstrip(" \t"))
+            if indent != minimum_indent:
+                errors.append(f"top-level env entry must use canonical indentation: {line!r}")
+
+    seen_keys = set()
+    for line in top_level_env_immediate_entry_lines(workflow_text):
+        entry = top_level_env_entry_key_value(line)
+        if entry is None:
+            errors.append(f"top-level env entry is unparsable for reuse classification: {line!r}")
+            continue
+        key, value = entry
+        seen_keys.add(key)
+        if key in scoped_keys and not reuse_scoped_env_value_uses_single_line_scalar(value):
+            errors.append(
+                f"top-level env.{key} must use a same-line scalar value; "
+                f"top-level env.{key} must use a single-line scalar value without YAML anchors "
+                "or aliases or YAML tags for nextest reuse scope"
+            )
+        if key not in scoped_keys and key not in REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS:
+            errors.append(
+                f"top-level env.{key} must be classified as reuse-scoped or build-neutral; "
+                "add it to exactly one of ci_provenance.REUSE_RELEVANT_WORKFLOW_ENV_KEYS "
+                "or REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS"
+            )
+
+    for key in sorted(scoped_keys - seen_keys):
+        errors.append(f"top-level env.{key} is reuse-scoped but missing from ci.yml")
+
+    return errors
+
+
+def top_level_defaults_reuse_scope_errors(workflow_text: str) -> list[str]:
+    for line in workflow_text.splitlines():
+        if line.startswith((" ", "\t")):
+            continue
+        key, separator, _value = workflow_yaml_structural_line(line).partition(":")
+        if separator and key.strip().strip("'\"") == "defaults":
+            return ["top-level defaults must not be used in ci.yml while nextest reuse is enabled"]
+    return []
+
+
+def workflow_structural_line_has_yaml_anchor_or_alias(line: str) -> bool:
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote == '"':
+            if char == "\\":
+                index += 2
+                continue
+            if char == '"':
+                quote = None
+        elif quote == "'":
+            if char == "'":
+                if index + 1 < len(line) and line[index + 1] == "'":
+                    index += 2
+                    continue
+                quote = None
+        else:
+            if char in ("'", '"'):
+                quote = char
+            elif char == "#" and (index == 0 or line[index - 1].isspace()):
+                break
+            elif char in ("&", "*"):
+                previous = line[index - 1] if index > 0 else ""
+                next_char = line[index + 1] if index + 1 < len(line) else ""
+                if (
+                    (index == 0 or previous.isspace() or previous in "[{,:-")
+                    and next_char
+                    and not next_char.isspace()
+                    and next_char not in "&*[]{}:,#"
+                ):
+                    return True
+        index += 1
+    return False
+
+
+def workflow_yaml_anchor_alias_errors(workflow_text: str) -> list[str]:
+    block_scalar_parent_indent: int | None = None
+    for line in workflow_text.splitlines():
+        if block_scalar_parent_indent is not None:
+            indent = len(line) - len(line.lstrip(" \t"))
+            if not line.strip() or indent > block_scalar_parent_indent:
+                continue
+            block_scalar_parent_indent = None
+
+        structural_line = workflow_yaml_structural_line(line)
+        if not structural_line.strip():
+            continue
+        if workflow_structural_line_has_yaml_anchor_or_alias(structural_line):
+            return ["YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled"]
+        if workflow_line_starts_block_scalar(structural_line):
+            block_scalar_parent_indent = len(line) - len(line.lstrip(" \t"))
+    return []
+
+
+UNSUPPORTED_YAML_REUSE_FEATURE_ERROR = (
+    "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml "
+    "while nextest reuse is enabled"
+)
+
+
+def workflow_structural_line_has_yaml_tag(line: str) -> bool:
+    stripped = workflow_yaml_structural_line(line).lstrip()
+    if stripped.startswith("!"):
+        return True
+
+    mapping_value = workflow_structural_mapping_value(line)
+    if mapping_value is not None and mapping_value.startswith("!"):
+        return True
+
+    sequence_value = workflow_structural_sequence_value(line)
+    return sequence_value is not None and sequence_value.startswith("!")
+
+
+def workflow_structural_line_has_explicit_key(line: str) -> bool:
+    sequence_value = workflow_structural_sequence_value(line)
+    stripped = (
+        sequence_value
+        if sequence_value is not None
+        else workflow_yaml_structural_line(line).lstrip()
+    )
+    return stripped == "?" or stripped.startswith("? ")
+
+
+def workflow_yaml_unsupported_feature_errors(workflow_text: str) -> list[str]:
+    block_scalar_parent_indent: int | None = None
+    for line in workflow_text.splitlines():
+        if block_scalar_parent_indent is not None:
+            indent = len(line) - len(line.lstrip(" \t"))
+            if not line.strip() or indent > block_scalar_parent_indent:
+                continue
+            block_scalar_parent_indent = None
+
+        structural_line = workflow_yaml_structural_line(line)
+        stripped = structural_line.strip()
+        if not stripped:
+            continue
+
+        if not line.startswith((" ", "\t")) and (
+            stripped.startswith(("%", "---", "..."))
+        ):
+            return [UNSUPPORTED_YAML_REUSE_FEATURE_ERROR]
+        if workflow_structural_line_has_yaml_tag(structural_line):
+            return [UNSUPPORTED_YAML_REUSE_FEATURE_ERROR]
+        if workflow_structural_line_has_explicit_key(structural_line):
+            return [UNSUPPORTED_YAML_REUSE_FEATURE_ERROR]
+        if workflow_line_starts_block_scalar(structural_line):
+            block_scalar_parent_indent = len(line) - len(line.lstrip(" \t"))
+
+    return []
 
 
 def test_shards_skip_on_fingerprint_reuse(job_lines: list[str]) -> bool:
@@ -10559,6 +10808,7 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
     text = uncommented_text(job_lines)
     fingerprint_inputs_text = ""
     allowance_text = ""
+    detector_refs_block = unique_step_with_id(job_lines, "pr_refs")
     fingerprint_inputs_block = unique_step_with_id(job_lines, "fingerprint_reuse_inputs_changed")
     allowance_block = unique_step_with_id(job_lines, "fingerprint_reuse_allowed")
     for block in step_blocks(job_lines):
@@ -10569,6 +10819,18 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
             allowance_text = block_text
     if FINGERPRINT_REUSE_ALLOWED_OUTPUT not in text:
         errors.append("detector must expose fingerprint_reuse_allowed")
+    if detector_refs_block is None or not block_has_canonical_step_envelope(
+        detector_refs_block,
+        DETECTOR_REFS_STEP_ALLOWED_KEYS,
+        DETECTOR_REFS_STEP_SCALARS,
+        {"env": DETECTOR_REFS_STEP_ENV},
+    ):
+        errors.append("detector base/head refs step must match canonical envelope")
+    if detector_refs_block is None or not block_run_body_matches(
+        detector_refs_block,
+        DETECTOR_REFS_RUN,
+    ):
+        errors.append("detector base/head refs step must match canonical script")
     if fingerprint_inputs_block is None or not block_has_canonical_step_envelope(
         fingerprint_inputs_block,
         FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ALLOWED_KEYS,
@@ -10596,21 +10858,30 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
         FINGERPRINT_REUSE_ALLOWED_RUN,
     ):
         errors.append("detector fingerprint-reuse allowance step must match canonical script")
-    allowance_chain = if_chain_bodies(allowance_text, '"${{ github.event_name }}" != "pull_request"')
+    allowance_chain = if_chain_bodies(
+        allowance_text,
+        '"${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true"',
+    )
     if allowance_chain is None:
-        errors.append("detector must deny fingerprint reuse outside pull_request")
+        errors.append("detector must determine fingerprint_reuse_allowed")
     elif (
         'echo "value=false" >> "$GITHUB_OUTPUT"'
-        not in allowance_chain.get(("if", '"${{ github.event_name }}" != "pull_request"'), "")
-        or 'echo "value=false" >> "$GITHUB_OUTPUT"'
         not in allowance_chain.get(
             (
-                "elif",
+                "if",
                 '"${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true"',
             ),
             "",
         )
-        or 'echo "value=true" >> "$GITHUB_OUTPUT"' not in allowance_chain.get(("else", ""), "")
+        or 'echo "value=true" >> "$GITHUB_OUTPUT"'
+        not in allowance_chain.get(
+            (
+                "elif",
+                '"${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group"',
+            ),
+            "",
+        )
+        or 'echo "value=false" >> "$GITHUB_OUTPUT"' not in allowance_chain.get(("else", ""), "")
         or allowance_text.count('echo "value=false" >> "$GITHUB_OUTPUT"') != 2
         or allowance_text.count('echo "value=true" >> "$GITHUB_OUTPUT"') != 1
     ):
@@ -11448,6 +11719,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
     append_cache_persistence_audit_contract_errors(errors, jobs)
 
     if "nextest-fingerprint-reuse" in jobs:
+        errors.extend(top_level_env_reuse_scope_errors(workflow_text))
+        errors.extend(top_level_defaults_reuse_scope_errors(workflow_text))
+        errors.extend(workflow_yaml_anchor_alias_errors(workflow_text))
+        errors.extend(workflow_yaml_unsupported_feature_errors(workflow_text))
         reuse_lines = jobs["nextest-fingerprint-reuse"]
         reuse_needs = extract_needs(reuse_lines)
         if "ci-policy" not in reuse_needs:
@@ -11462,8 +11737,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest-fingerprint-reuse must gate on full_ci_required")
         if not fingerprint_reuse_uses_canonical_job_if(reuse_lines):
             errors.append("nextest-fingerprint-reuse must use the canonical job if")
-        if not fingerprint_reuse_gates_on_pull_request(reuse_lines):
-            errors.append("nextest-fingerprint-reuse must be PR-only")
+        if not fingerprint_reuse_gates_on_consumer_events(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must admit PR, workflow_dispatch, and merge_group consumers")
         if not fingerprint_reuse_skips_main_branch(reuse_lines):
             errors.append("nextest-fingerprint-reuse must skip main branch")
         if not fingerprint_reuse_gates_on_detector_allowed(reuse_lines):

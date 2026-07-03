@@ -120,6 +120,13 @@ NEXTEST_FINGERPRINT_RE = re.compile(
     r"(?P<shards>[1-9][0-9]*)-"
     r"(?P<digest>[0-9a-f]{64})$"
 )
+REUSE_RELEVANT_WORKFLOW_JOBS = (
+    "nextest-fingerprint",
+    "test-archive",
+    "test",
+    "build",
+)
+REUSE_RELEVANT_WORKFLOW_ENV_KEYS = ("JUST_VERSION", "RUST_VERIFICATION_ROOT_BASE")
 GITHUB_API_HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
@@ -1583,6 +1590,226 @@ def workflow_file_digest(config: ProvenanceConfig, workflow_file: pathlib.Path |
     return sha256_file(workflow_file)
 
 
+def workflow_text_from_bytes(workflow_bytes: bytes) -> str:
+    try:
+        return workflow_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProvenanceError("workflow bytes must be UTF-8") from exc
+
+
+def workflow_yaml_structural_line(line: str) -> str:
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote == '"':
+            if char == "\\":
+                index += 2
+                continue
+            if char == '"':
+                quote = None
+        elif quote == "'":
+            if char == "'":
+                if index + 1 < len(line) and line[index + 1] == "'":
+                    index += 2
+                    continue
+                quote = None
+        else:
+            if char in ("'", '"'):
+                quote = char
+            elif char == "#" and (index == 0 or line[index - 1].isspace()):
+                return line[:index].rstrip()
+        index += 1
+    return line.rstrip()
+
+
+def workflow_structural_mapping_value(line: str) -> str | None:
+    _key, separator, value = workflow_yaml_structural_line(line).partition(":")
+    if not separator:
+        return None
+    return value.lstrip()
+
+
+def workflow_structural_sequence_value(line: str) -> str | None:
+    structural_line = workflow_yaml_structural_line(line)
+    stripped = structural_line.lstrip()
+    had_sequence = False
+    while stripped.startswith("- "):
+        had_sequence = True
+        stripped = stripped[2:].lstrip()
+    return stripped if had_sequence else None
+
+
+def workflow_line_starts_block_scalar(line: str) -> bool:
+    value = workflow_structural_mapping_value(line)
+    if value is not None and value.startswith(("|", ">")):
+        return True
+    sequence_value = workflow_structural_sequence_value(line)
+    return sequence_value is not None and sequence_value.startswith(("|", ">"))
+
+
+def is_top_level_workflow_key(line: str, key: str) -> bool:
+    if line.startswith((" ", "\t")):
+        return False
+    return re.fullmatch(rf"['\"]?{re.escape(key)}['\"]?\s*:\s*", workflow_yaml_structural_line(line)) is not None
+
+
+def top_level_block_lines(workflow_text: str, block_name: str) -> list[str]:
+    lines = workflow_text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if is_top_level_workflow_key(line, block_name):
+            start = index
+            break
+    if start is None:
+        raise ProvenanceError(f"workflow reuse scope missing top-level {block_name} block")
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if not workflow_yaml_structural_line(line) or line.startswith((" ", "\t")):
+            continue
+        end = index
+        break
+    return lines[start:end]
+
+
+TOP_LEVEL_ENV_ENTRY_RE = re.compile(
+    r"^['\"]?(?P<key>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*:\s*(?P<value>.*?)\s*$"
+)
+
+
+def top_level_env_immediate_entry_lines(workflow_text: str) -> list[str]:
+    entry_lines = [
+        structural_line
+        for line in top_level_block_lines(workflow_text, "env")[1:]
+        if (structural_line := workflow_yaml_structural_line(line))
+    ]
+    if not entry_lines:
+        return []
+
+    minimum_indent = min(len(line) - len(line.lstrip(" \t")) for line in entry_lines)
+    return [
+        line[minimum_indent:]
+        for line in entry_lines
+        if len(line) - len(line.lstrip(" \t")) == minimum_indent
+    ]
+
+
+def top_level_env_entry_key_value(line: str) -> tuple[str, str] | None:
+    match = TOP_LEVEL_ENV_ENTRY_RE.match(line)
+    if match is None:
+        return None
+    return match.group("key"), match.group("value")
+
+
+def reuse_scoped_env_value_uses_single_line_scalar(value: str) -> bool:
+    stripped_value = value.strip()
+    return bool(stripped_value) and not stripped_value.startswith(("|", ">", "&", "*", "!"))
+
+
+def top_level_env_entry_line(workflow_text: str, key: str) -> str:
+    for line in top_level_env_immediate_entry_lines(workflow_text):
+        entry = top_level_env_entry_key_value(line)
+        if entry is None:
+            continue
+        entry_key, value = entry
+        if entry_key == key:
+            if not reuse_scoped_env_value_uses_single_line_scalar(value):
+                raise ProvenanceError(
+                    f"workflow reuse scope env.{key} must use a same-line scalar value; "
+                    "reuse-scoped env keys must use single-line scalar values "
+                    "without YAML anchors or aliases or YAML tags"
+                )
+            return f"  {key}: {value}"
+    raise ProvenanceError(f"workflow reuse scope missing env.{key}")
+
+
+def workflow_job_block_lines(workflow_text: str, job_name: str) -> list[str]:
+    lines = workflow_text.splitlines()
+    jobs_start = None
+    for index, line in enumerate(lines):
+        if is_top_level_workflow_key(line, "jobs"):
+            jobs_start = index
+            break
+    if jobs_start is None:
+        raise ProvenanceError("workflow reuse scope missing jobs block")
+
+    start = None
+    job_header_re = re.compile(r"^  ['\"]?([A-Za-z0-9_-]+)['\"]?:\s*$")
+    for index in range(jobs_start + 1, len(lines)):
+        line = lines[index]
+        active_line = workflow_yaml_structural_line(line)
+        if active_line and not line.startswith((" ", "\t")):
+            break
+        match = job_header_re.match(active_line)
+        if match is not None and match.group(1) == job_name:
+            start = index
+            break
+    if start is None:
+        raise ProvenanceError(f"workflow reuse scope missing job {job_name}")
+
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        active_line = workflow_yaml_structural_line(line)
+        if active_line and not line.startswith((" ", "\t")):
+            end = index
+            break
+        match = job_header_re.match(active_line)
+        if match is not None:
+            end = index
+            break
+    return lines[start:end]
+
+
+def normalize_workflow_scope_lines(lines: list[str]) -> list[str]:
+    job_header_re = re.compile(r"^  ['\"]?([A-Za-z0-9_-]+)['\"]?:\s*$")
+    normalized: list[str] = []
+    block_scalar_parent_indent: int | None = None
+    for line in lines:
+        if block_scalar_parent_indent is not None:
+            indent = len(line) - len(line.lstrip(" \t"))
+            if not line.strip() or indent > block_scalar_parent_indent:
+                normalized.append(line)
+                continue
+            block_scalar_parent_indent = None
+
+        active_line = workflow_yaml_structural_line(line)
+        stripped = active_line.strip()
+        if not stripped:
+            continue
+        job_header = job_header_re.match(active_line)
+        if job_header is not None:
+            normalized.append(f"  {job_header.group(1)}:")
+        else:
+            normalized.append(line.rstrip())
+            if workflow_line_starts_block_scalar(active_line):
+                block_scalar_parent_indent = len(line) - len(line.lstrip(" \t"))
+    return normalized
+
+
+def workflow_reuse_scope_digest_from_bytes(config: ProvenanceConfig, workflow_bytes: bytes) -> str:
+    workflow_text = workflow_text_from_bytes(workflow_bytes)
+    scope_lines = [f"workflow_path={config.workflow_path}"]
+    for key in REUSE_RELEVANT_WORKFLOW_ENV_KEYS:
+        scope_lines.append(f"[env:{key}]")
+        scope_lines.append(top_level_env_entry_line(workflow_text, key))
+    for job_name in REUSE_RELEVANT_WORKFLOW_JOBS:
+        scope_lines.append(f"[job:{job_name}]")
+        scope_lines.extend(normalize_workflow_scope_lines(workflow_job_block_lines(workflow_text, job_name)))
+    payload = "\n".join(scope_lines).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def workflow_reuse_scope_digest(
+    config: ProvenanceConfig,
+    workflow_file: pathlib.Path | None = None,
+) -> str:
+    if workflow_file is None:
+        workflow_file = REPO_ROOT / config.workflow_path
+    return workflow_reuse_scope_digest_from_bytes(config, workflow_file.read_bytes())
+
+
 def require_record_string(record: dict[str, object], key: str) -> str:
     value = record.get(key)
     if not isinstance(value, str) or not value:
@@ -1804,8 +2031,20 @@ def workflow_digest_from_github(
     tested_sha: str,
     api_bytes,
 ) -> str:
+    return hashlib.sha256(
+        workflow_bytes_from_github(repo, token, config, tested_sha, api_bytes)
+    ).hexdigest()
+
+
+def workflow_bytes_from_github(
+    repo: str,
+    token: str,
+    config: ProvenanceConfig,
+    tested_sha: str,
+    api_bytes,
+) -> bytes:
     url = f"https://raw.githubusercontent.com/{repo}/{tested_sha}/{config.workflow_path}"
-    return hashlib.sha256(api_bytes(repo, token, url)).hexdigest()
+    return api_bytes(repo, token, url)
 
 
 def validate_artifact_run_metadata(
@@ -2502,17 +2741,22 @@ def validate_fingerprint_candidate(
         if positive_int_value(record.get("run_attempt"), "record run_attempt") != run_attempt:
             return no_fingerprint_reuse("record run_attempt does not match source run attempt")
         tested_sha = require_record_sha(record, "tested_sha")
-        expected_workflow_digest = workflow_digest_from_github(
+        source_workflow_bytes = workflow_bytes_from_github(
             repo, token, config, tested_sha, api_bytes
         )
+        expected_workflow_digest = hashlib.sha256(source_workflow_bytes).hexdigest()
         validate_record_schema(
             record,
             config,
             config_path=config_path,
             expected_workflow_digest=expected_workflow_digest,
         )
-        if require_record_digest(record, "workflow_digest") != workflow_file_digest(config):
-            return no_fingerprint_reuse(f"source run {run_id} workflow digest does not match current workflow")
+        if workflow_reuse_scope_digest_from_bytes(
+            config, source_workflow_bytes
+        ) != workflow_reuse_scope_digest(config):
+            return no_fingerprint_reuse(
+                f"source run {run_id} workflow reuse scope does not match current workflow"
+            )
         validate_record_matches_run(record, run)
         record_fingerprint = parse_nextest_fingerprint(
             record.get("nextest_fingerprint"), label="source record"

@@ -37,9 +37,9 @@ Fingerprint evidence is provenance-based. Runs before this instrumentation have 
 - Lookback reports issue one or more GitHub API requests per included run for jobs, artifacts, PR metadata, and draft events. Keep lookback windows bounded when using the meter interactively.
 - Runner-minutes for labels absent from `ci/github-actions-runners.toml` are reported under `unknown` so reconciliation gaps stay visible.
 
-The nextest cache/fingerprint expression remains inline in `.github/workflows/ci.yml` because GitHub Actions evaluates `hashFiles(...)` inside workflow YAML. The hygiene verifier enforces structural identity across the cache restore key, cache save key, fingerprint file, and fingerprint artifact name so version, shard, or input drift fails CI.
+The nextest cache/fingerprint producer lives in `scripts/nextest_fingerprint.py`, with tracked inputs declared in `ci/nextest-fingerprint.toml` and the workflow consuming the producer outputs for cache keys, fingerprint file names, and artifact names. The hygiene verifier enforces structural identity across the cache restore key, cache save key, fingerprint file, and fingerprint artifact name so version, shard, or input drift fails CI.
 
-Fingerprint reuse is available only on pull request runs. It is disabled on pull requests that change the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests. Those PRs, plus branch `workflow_dispatch` runs dispatched with `full_ci=true`, must run the normal nextest archive lane so PR-controlled reuse logic cannot decide to skip test execution outside the diff guard. `workflow_dispatch` runs are feedback only and are not merge proof.
+Fingerprint reuse is available on full-CI `pull_request`, `workflow_dispatch`, and `merge_group` consumers when the Rust-only nextest fingerprint matches a trusted archived `push` run on `main`. It is disabled for any of those consumer events when the branch changes the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests, so branch-controlled reuse logic cannot decide to skip test execution outside the diff guard. `workflow_dispatch` runs are feedback only and are not merge proof.
 
 ## Baseline Evidence
 

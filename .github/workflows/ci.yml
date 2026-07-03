@@ -294,16 +294,53 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Fetch PR base/head refs
+      - name: Fetch detector base/head refs
         id: pr_refs
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          DISPATCH_BASE_REF: ${{ github.event.repository.default_branch }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
         run: |
-          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
-          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
-          git fetch --no-tags origin \
-            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
-            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_ref="refs/remotes/origin/pr-base-${PR_NUMBER}"
+            head_ref="refs/remotes/origin/pr-head-${PR_NUMBER}"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin \
+              "+refs/heads/${base_branch}:${base_ref}" \
+              "+refs/pull/${PR_NUMBER}/head:${head_ref}"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            base_branch="$DISPATCH_BASE_REF"
+            if [[ "$base_branch" == refs/* ]]; then
+              echo "unsupported workflow_dispatch default_branch: $base_branch" >&2
+              exit 1
+            fi
+            base_ref="refs/remotes/origin/dispatch-base-${GITHUB_RUN_ID}"
+            head_ref="HEAD"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_ref="refs/remotes/origin/pr-base-merge-group-${GITHUB_RUN_ID}"
+            head_ref="HEAD"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          else
+            echo "unsupported detector refs event: $EVENT_NAME" >&2
+            exit 1
+          fi
           echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
           echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"
 
@@ -349,12 +386,17 @@ jobs:
 
       - name: Detect fingerprint-reuse governance changes
         id: fingerprint_reuse_inputs_changed
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
         shell: bash
         run: |
           base_ref="${{ steps.pr_refs.outputs.base_ref }}"
           head_ref="${{ steps.pr_refs.outputs.head_ref }}"
-          changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            diff_range="${base_ref}..${head_ref}"
+          else
+            diff_range="${base_ref}...${head_ref}"
+          fi
+          changed="$(git diff --name-only "$diff_range" -- \
             .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
             ci/nextest-fingerprint.toml \
@@ -438,12 +480,12 @@ jobs:
         id: fingerprint_reuse_allowed
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          if [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=false" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
-            echo "value=false" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
           fi
 
   deny:
@@ -717,7 +759,7 @@ jobs:
   nextest-fingerprint-reuse:
     name: nextest fingerprint reuse
     needs: [ci-policy, detector, nextest-fingerprint]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('["pull_request","workflow_dispatch","merge_group"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     outputs:
       reuse_found: ${{ steps.reuse.outputs.reuse_found }}

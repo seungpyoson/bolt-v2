@@ -162,6 +162,10 @@ permissions:
   actions: read
   issues: read
 
+env:
+  JUST_VERSION: "1.49.0"
+  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
+
 jobs:
   merge-readiness-progress:
     name: merge-readiness-progress
@@ -277,16 +281,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # detector probe insertion point
-      - name: Fetch PR base/head refs
+      - name: Fetch detector base/head refs
         id: pr_refs
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          DISPATCH_BASE_REF: ${{ github.event.repository.default_branch }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
         run: |
-          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
-          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
-          git fetch --no-tags origin \
-            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
-            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_ref="refs/remotes/origin/pr-base-${PR_NUMBER}"
+            head_ref="refs/remotes/origin/pr-head-${PR_NUMBER}"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin \
+              "+refs/heads/${base_branch}:${base_ref}" \
+              "+refs/pull/${PR_NUMBER}/head:${head_ref}"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            base_branch="$DISPATCH_BASE_REF"
+            if [[ "$base_branch" == refs/* ]]; then
+              echo "unsupported workflow_dispatch default_branch: $base_branch" >&2
+              exit 1
+            fi
+            base_ref="refs/remotes/origin/dispatch-base-${GITHUB_RUN_ID}"
+            head_ref="HEAD"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_ref="refs/remotes/origin/pr-base-merge-group-${GITHUB_RUN_ID}"
+            head_ref="HEAD"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          else
+            echo "unsupported detector refs event: $EVENT_NAME" >&2
+            exit 1
+          fi
           echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
           echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"
 
@@ -314,12 +355,17 @@ jobs:
 
       - name: Detect fingerprint-reuse governance changes
         id: fingerprint_reuse_inputs_changed
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
         shell: bash
         run: |
           base_ref="${{ steps.pr_refs.outputs.base_ref }}"
           head_ref="${{ steps.pr_refs.outputs.head_ref }}"
-          changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            diff_range="${base_ref}..${head_ref}"
+          else
+            diff_range="${base_ref}...${head_ref}"
+          fi
+          changed="$(git diff --name-only "$diff_range" -- \
             .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
             ci/nextest-fingerprint.toml \
@@ -398,12 +444,12 @@ jobs:
         id: fingerprint_reuse_allowed
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          if [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=false" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
-            echo "value=false" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
           fi
 
   deny:
@@ -599,7 +645,7 @@ jobs:
   nextest-fingerprint-reuse:
     name: nextest fingerprint reuse
     needs: [ci-policy, detector, nextest-fingerprint]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('["pull_request","workflow_dispatch","merge_group"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
     outputs:
       reuse_found: ${{ steps.reuse.outputs.reuse_found }}
@@ -14212,17 +14258,205 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     )
 
     assert_error(
-        "nextest-fingerprint-reuse must be PR-only",
-        remove_fragment_if_present(BASE_WORKFLOW, " && github.event_name == 'pull_request'"),
-    )
-    assert_error(
-        "detector must deny fingerprint reuse outside pull_request",
+        "nextest-fingerprint-reuse must admit PR, workflow_dispatch, and merge_group consumers",
         remove_fragment_if_present(
             BASE_WORKFLOW,
-            """          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            echo "value=false" >> "$GITHUB_OUTPUT"
-          elif """,
+            " && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name)",
         ),
+    )
+    assert_error(
+        "detector must determine fingerprint_reuse_allowed",
+        remove_fragment_if_present(
+            BASE_WORKFLOW,
+            """          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+""",
+        ),
+    )
+    pr_only_detector_refs = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Fetch detector base/head refs",
+        "        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'",
+        "        if: github.event_name == 'pull_request'",
+    )
+    assert_error("detector base/head refs step must match canonical envelope", pr_only_detector_refs)
+    detector_refs_without_dispatch_branch = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Fetch detector base/head refs",
+        """          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            base_branch="$DISPATCH_BASE_REF"
+            if [[ "$base_branch" == refs/* ]]; then
+              echo "unsupported workflow_dispatch default_branch: $base_branch" >&2
+              exit 1
+            fi
+            base_ref="refs/remotes/origin/dispatch-base-${GITHUB_RUN_ID}"
+            head_ref="HEAD"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+""",
+        "",
+    )
+    assert_error(
+        "detector base/head refs step must match canonical script",
+        detector_refs_without_dispatch_branch,
+    )
+    detector_refs_without_merge_group_branch = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Fetch detector base/head refs",
+        """          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_ref="refs/remotes/origin/pr-base-merge-group-${GITHUB_RUN_ID}"
+            head_ref="HEAD"
+            git check-ref-format "refs/heads/$base_branch"
+            git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+""",
+        "",
+    )
+    assert_error(
+        "detector base/head refs step must match canonical script",
+        detector_refs_without_merge_group_branch,
+    )
+
+    verifier = load_verifier()
+
+    def detector_refs_result(merge_group_base_ref: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            output_path = tmp_path / "github-output"
+            git_calls_path = tmp_path / "git-calls"
+            script = (
+                """set -euo pipefail
+git() {
+  if [[ "$1" == "check-ref-format" ]]; then
+    command git check-ref-format "$2"
+    return $?
+  fi
+  if [[ "$1" == "fetch" ]]; then
+    printf '%s\\n' "$*" >> "$GIT_CALLS"
+    return 0
+  fi
+  echo "unexpected git invocation: $*" >&2
+  return 99
+}
+"""
+                + verifier.DETECTOR_REFS_RUN
+            )
+            env = {
+                **os.environ,
+                "EVENT_NAME": "merge_group",
+                "PR_BASE_REF": "main",
+                "PR_NUMBER": "1182",
+                "DISPATCH_BASE_REF": "main",
+                "MERGE_GROUP_BASE_REF": merge_group_base_ref,
+                "GITHUB_RUN_ID": "12345",
+                "GITHUB_OUTPUT": str(output_path),
+                "GIT_CALLS": str(git_calls_path),
+            }
+            completed = subprocess.run(
+                ["bash", "-c", script],
+                cwd=tmp_path,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            output_text = output_path.read_text(encoding="utf-8") if output_path.exists() else ""
+            git_calls = git_calls_path.read_text(encoding="utf-8") if git_calls_path.exists() else ""
+            return completed, output_text, git_calls
+
+    for valid_base_ref in ("main", "refs/heads/main"):
+        completed, output_text, git_calls = detector_refs_result(valid_base_ref)
+        if completed.returncode != 0:
+            raise AssertionError((valid_base_ref, completed.returncode, completed.stderr))
+        if "base_ref=refs/remotes/origin/pr-base-merge-group-12345" not in output_text:
+            raise AssertionError((valid_base_ref, output_text))
+        if "head_ref=HEAD" not in output_text:
+            raise AssertionError((valid_base_ref, output_text))
+        if "+refs/heads/main:refs/remotes/origin/pr-base-merge-group-12345" not in git_calls:
+            raise AssertionError((valid_base_ref, git_calls))
+
+    for invalid_base_ref in ("", "refs/tags/main", "refs/pull/1182/merge", "main..evil", "feature branch"):
+        completed, output_text, git_calls = detector_refs_result(invalid_base_ref)
+        if completed.returncode == 0:
+            raise AssertionError((invalid_base_ref, output_text, git_calls))
+
+    def dispatch_refs_result(dispatch_base_ref: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            output_path = tmp_path / "github-output"
+            git_calls_path = tmp_path / "git-calls"
+            script = (
+                """set -euo pipefail
+git() {
+  if [[ "$1" == "check-ref-format" ]]; then
+    command git check-ref-format "$2"
+    return $?
+  fi
+  if [[ "$1" == "fetch" ]]; then
+    printf '%s\\n' "$*" >> "$GIT_CALLS"
+    return 0
+  fi
+  echo "unexpected git invocation: $*" >&2
+  return 99
+}
+"""
+                + verifier.DETECTOR_REFS_RUN
+            )
+            env = {
+                **os.environ,
+                "EVENT_NAME": "workflow_dispatch",
+                "PR_BASE_REF": "main",
+                "PR_NUMBER": "1182",
+                "DISPATCH_BASE_REF": dispatch_base_ref,
+                "MERGE_GROUP_BASE_REF": "main",
+                "GITHUB_RUN_ID": "12345",
+                "GITHUB_OUTPUT": str(output_path),
+                "GIT_CALLS": str(git_calls_path),
+            }
+            completed = subprocess.run(
+                ["bash", "-c", script],
+                cwd=tmp_path,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            output_text = output_path.read_text(encoding="utf-8") if output_path.exists() else ""
+            git_calls = git_calls_path.read_text(encoding="utf-8") if git_calls_path.exists() else ""
+            return completed, output_text, git_calls
+
+    completed, output_text, git_calls = dispatch_refs_result("main")
+    if completed.returncode != 0:
+        raise AssertionError(("workflow_dispatch", completed.returncode, completed.stderr))
+    if "base_ref=refs/remotes/origin/dispatch-base-12345" not in output_text:
+        raise AssertionError(output_text)
+    if "head_ref=HEAD" not in output_text:
+        raise AssertionError(output_text)
+    if "+refs/heads/main:refs/remotes/origin/dispatch-base-12345" not in git_calls:
+        raise AssertionError(git_calls)
+
+    for invalid_base_ref in ("", "refs/tags/main", "main..evil", "feature branch"):
+        completed, output_text, git_calls = dispatch_refs_result(invalid_base_ref)
+        if completed.returncode == 0:
+            raise AssertionError((invalid_base_ref, output_text, git_calls))
+
+    pr_only_governance_detector = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Detect fingerprint-reuse governance changes",
+        "        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'",
+        "        if: github.event_name == 'pull_request'",
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        pr_only_governance_detector,
     )
 
     assert_error(
@@ -14285,7 +14519,7 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         replace_once_after(
             BASE_WORKFLOW,
             "      - name: Detect fingerprint-reuse governance changes",
-            "        if: github.event_name == 'pull_request'",
+            "        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'",
             "        if: false",
         ),
     )
@@ -14294,7 +14528,7 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         without_once_after(
             BASE_WORKFLOW,
             "      - name: Detect fingerprint-reuse governance changes",
-            "        if: github.event_name == 'pull_request'\n",
+            "        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'\n",
         ),
     )
     assert_error(
@@ -14338,8 +14572,8 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         replace_once_after(
             BASE_WORKFLOW,
             "      - name: Detect fingerprint-reuse governance changes",
-            "        if: github.event_name == 'pull_request'\n",
-            """        if: github.event_name == 'pull_request'
+            "        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'\n",
+            """        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
         if: false
 """,
         ),
@@ -14359,9 +14593,9 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     git_diff_decoy_pathspec = replace_once_after(
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
-        """          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
-        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/config_validators.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
-          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
+        """          changed="$(git diff --name-only "$diff_range" --             .github/workflows/ci.yml""",
+        """          echo "$(git diff --name-only "$diff_range" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/config_validators.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
+          changed="$(git diff --name-only "$diff_range" --             .github/workflows/ci.yml""",
     )
     git_diff_decoy_pathspec = replace_once_after(
         git_diff_decoy_pathspec,
@@ -14387,16 +14621,166 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     )
     assert_error("nextest-fingerprint-reuse must skip main branch", relocated_job_if)
     assert_error("nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed", relocated_job_if)
+    assert_error(
+        "top-level env.RUSTFLAGS must be classified as reuse-scoped or build-neutral",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            '  JUST_VERSION: "1.49.0"\n  RUSTFLAGS: "-D warnings"\n',
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION must use a same-line scalar value",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            '  JUST_VERSION:\n    "1.49.0"\n',
+        ),
+    )
+    assert_error(
+        "top-level env entry must use canonical indentation",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            '  JUST_VERSION: "1.49.0"\n    RUSTFLAGS: "-D warnings"\n',
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION is reuse-scoped but missing from ci.yml",
+        replace_once(BASE_WORKFLOW, '  JUST_VERSION: "1.49.0"\n', ""),
+    )
+    assert_error(
+        "top-level env.RUST_VERIFICATION_ROOT_BASE is reuse-scoped but missing from ci.yml",
+        replace_once(
+            BASE_WORKFLOW,
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "",
+        ),
+    )
+    assert_error(
+        "top-level defaults must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(BASE_WORKFLOW, "permissions:\n", "defaults:\n  run:\n    shell: sh\n\npermissions:\n"),
+    )
+    assert_error(
+        "top-level defaults must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(BASE_WORKFLOW, "permissions:\n", "defaults: { run: { shell: sh } }\npermissions:\n"),
+    )
+    assert_error(
+        "YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "  RUST_VERIFICATION_ROOT_BASE: &reuse_root ${{ github.workspace }}/.rust-verification\n",
+        ),
+    )
+    assert_error(
+        "YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                '  JUST_VERSION: "1.49.0"\n',
+                '  JUST_VERSION: &just_version "1.49.0"\n',
+            ),
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "  RUST_VERIFICATION_ROOT_BASE: *just_version\n",
+        ),
+    )
+    assert_error(
+        "YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "  RUST_VERIFICATION_ROOT_BASE: &reuse@root ${{ github.workspace }}/.rust-verification\n",
+        ),
+    )
+    assert_error(
+        "YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                '  JUST_VERSION: "1.49.0"\n',
+                '  JUST_VERSION: &just+version "1.49.0"\n',
+            ),
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "  RUST_VERIFICATION_ROOT_BASE: *just+version\n",
+        ),
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "        run: |\n          python3 scripts/nextest_fingerprint.py",
+            "        run: !!str |\n          python3 scripts/nextest_fingerprint.py",
+        ),
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "permissions:\n",
+            "%YAML 1.2\npermissions:\n",
+        ),
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "permissions:\n",
+            "---\npermissions:\n",
+        ),
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        BASE_WORKFLOW + "\n--- {jobs: {evil: {}}}\n",
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "permissions:\n",
+            "? |\n  explicit key probe\npermissions:\n",
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION must use a single-line scalar value",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            "  JUST_VERSION: >-\n    1.49.0\n",
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION must use a single-line scalar value",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            "  JUST_VERSION: >2\n    1.49.0\n",
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION must use a single-line scalar value",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            "  JUST_VERSION:\n",
+        ),
+    )
+    nested_env_decoy = replace_once(
+        BASE_WORKFLOW,
+        '  JUST_VERSION: "1.49.0"\n',
+        '  S3_DEPLOY_PATH: |\n    JUST_VERSION: "1.49.0"\n',
+    )
+    assert_error("top-level env.JUST_VERSION is reuse-scoped but missing from ci.yml", nested_env_decoy)
     folded_job_if = replace_once(
         BASE_WORKFLOW,
-        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
-        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main'\n      || github.event_name == 'pull_request' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main'\n      || github.event_name == 'pull_request' }}",
     )
     assert_error("nextest-fingerprint-reuse must use the canonical job if", folded_job_if)
     folded_job_if_with_canonical_first_line = replace_once(
         BASE_WORKFLOW,
-        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
-        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}\n      || github.event_name == 'pull_request'",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}\n      || github.event_name == 'pull_request'",
     )
     assert_error("nextest-fingerprint-reuse must use the canonical job if", folded_job_if_with_canonical_first_line)
 
@@ -14485,13 +14869,13 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         replace_once_after(
             BASE_WORKFLOW,
             "      - name: Determine fingerprint reuse allowance",
-            """          else
+            """          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
-          fi""",
-            """          else
+""",
+            """          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
-          fi
-          echo "value=true" >> "$GITHUB_OUTPUT\"""",
+            echo "value=true" >> "$GITHUB_OUTPUT"
+""",
         ),
     )
     assert_error(

@@ -1222,6 +1222,81 @@ fn unfillable_fok_entry_reject_waits_for_book_change_before_redeciding() {
 }
 
 #[test]
+fn balance_entry_reject_stops_same_instrument_entry_decisions() {
+    let entry_client_order_id = ClientOrderId::from("ENTRY-BALANCE-REJECTED");
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.is_quote_quantity = true;
+    strategy.config.order_notional_target = 25.0;
+    strategy.config.maximum_position_notional = 25.0;
+    strategy.config.risk_lambda = 0.0001;
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    strategy.exposure = ExposureState::PendingEntry(pending);
+    let balance_reject_reason =
+        "not enough balance / allowance: the balance is not enough -> balance: 0";
+
+    assert!(
+        classify_entry_reject_reason(balance_reject_reason).is_some(),
+        "balance/allowance rejects must be an explicit entry reject class"
+    );
+    strategy.on_order_rejected(order_rejected_event_with_reason(
+        entry_client_order_id,
+        instrument_id,
+        balance_reject_reason,
+    ));
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(decision.blocked_reason, Some("entry_balance_rejected"));
+    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+    let changed_book_decision = strategy.entry_submission_decision_at(1_201);
+    assert_eq!(
+        changed_book_decision.blocked_reason,
+        Some("entry_balance_rejected")
+    );
+}
+
+#[test]
+fn unknown_entry_reject_waits_for_book_change_before_redeciding() {
+    let entry_client_order_id = ClientOrderId::from("ENTRY-UNKNOWN-REJECTED");
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.is_quote_quantity = true;
+    strategy.config.order_notional_target = 25.0;
+    strategy.config.maximum_position_notional = 25.0;
+    strategy.config.risk_lambda = 0.0001;
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    let rejected_book = pending.book.clone();
+    strategy.exposure = ExposureState::PendingEntry(pending);
+
+    strategy.on_order_rejected(order_rejected_event_with_reason(
+        entry_client_order_id,
+        instrument_id,
+        "venue rejected entry for an unmodeled reason",
+    ));
+
+    let unchanged_book_decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(
+        unchanged_book_decision.blocked_reason,
+        Some("entry_unfillable_rejected_unchanged_book")
+    );
+
+    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+    assert_ne!(
+        configured_book_for_instrument(&mut strategy, instrument_id),
+        rejected_book,
+        "fixture must actually change the selected book for this replay"
+    );
+    let changed_book_decision = strategy.entry_submission_decision_at(1_201);
+    assert_eq!(changed_book_decision.blocked_reason, None);
+}
+
+#[test]
 fn book_delta_entry_reconcile_pending_does_not_try_new_entry() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);

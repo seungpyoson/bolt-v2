@@ -7951,6 +7951,14 @@ reason = "This is a stable decision-evidence reason code for fail-closing entry 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
+literal = '''"entry_balance_rejected"'''
+context = '''const ENTRY_BLOCK_REASON_ENTRY_BALANCE_REJECTED: &str = "entry_balance_rejected";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code for fail-closing entry resubmission after a balance/allowance venue reject."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
 literal = '''"entry_unfillable_rejected_unchanged_book"'''
 context = '''"entry_unfillable_rejected_unchanged_book";'''
 classification = "strategy_entry_block_reason_code"
@@ -8371,6 +8379,30 @@ literal = '''"tick"'''
 context = '''|| reason_has_ascii_token(&reason, "tick")'''
 classification = "strategy_entry_reject_reason_classifier_needle"
 reason = "Best-effort substring used only to classify delivered venue/NT reject text as malformed for fail-closed entry resubmission behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"insufficient balance"'''
+context = '''if reason.contains("insufficient balance")'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort substring used only to classify delivered venue/NT reject text as balance/allowance-related for fail-closed entry resubmission behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"balance"'''
+context = '''|| (reason_has_ascii_token(&reason, "balance")'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort token used only to classify delivered venue/NT reject text as balance/allowance-related for fail-closed entry resubmission behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"allowance"'''
+context = '''&& reason_has_ascii_token(&reason, "allowance"))'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort token used only to classify delivered venue/NT reject text as balance/allowance-related for fail-closed entry resubmission behavior."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"

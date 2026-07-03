@@ -602,12 +602,14 @@ struct SelectedReferenceQuoteEvidence {
 #[derive(Clone, Debug)]
 enum EntryRejectState {
     Malformed,
+    Balance,
     Unfillable { book: OutcomeBookState },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EntryRejectClass {
     Malformed,
+    Balance,
     Unfillable,
 }
 
@@ -2557,6 +2559,7 @@ impl BinaryOracleEdgeTaker {
     ) -> Option<&'static str> {
         match self.entry_reject_state.get(&instrument_id)? {
             EntryRejectState::Malformed => Some(ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED),
+            EntryRejectState::Balance => Some(ENTRY_BLOCK_REASON_ENTRY_BALANCE_REJECTED),
             EntryRejectState::Unfillable { book } => {
                 let current_book = self.active_book_for_outcome(selected_side);
                 (current_book == book)
@@ -2580,6 +2583,10 @@ impl BinaryOracleEdgeTaker {
                 self.entry_reject_state
                     .insert(event.instrument_id, EntryRejectState::Malformed);
             }
+            Some(EntryRejectClass::Balance) => {
+                self.entry_reject_state
+                    .insert(event.instrument_id, EntryRejectState::Balance);
+            }
             Some(EntryRejectClass::Unfillable) => {
                 self.entry_reject_state.insert(
                     event.instrument_id,
@@ -2588,7 +2595,14 @@ impl BinaryOracleEdgeTaker {
                     },
                 );
             }
-            None => {}
+            None => {
+                self.entry_reject_state.insert(
+                    event.instrument_id,
+                    EntryRejectState::Unfillable {
+                        book: pending.book.clone(),
+                    },
+                );
+            }
         }
     }
 
@@ -5878,6 +5892,7 @@ const ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE: &str =
 const ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION: &str =
     "one_position_invariant_violation";
 const ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED: &str = "entry_malformed_rejected";
+const ENTRY_BLOCK_REASON_ENTRY_BALANCE_REJECTED: &str = "entry_balance_rejected";
 const ENTRY_BLOCK_REASON_ENTRY_UNFILLABLE_REJECTED_UNCHANGED_BOOK: &str =
     "entry_unfillable_rejected_unchanged_book";
 const ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM: &str =
@@ -6041,6 +6056,15 @@ fn classify_entry_reject_reason(raw_reason: &str) -> Option<EntryRejectClass> {
         || reason_has_ascii_token(&reason, "tick")
     {
         return Some(EntryRejectClass::Malformed);
+    }
+
+    if reason.contains("insufficient balance")
+        || reason.contains("not enough balance")
+        || reason.contains("balance is not enough")
+        || (reason_has_ascii_token(&reason, "balance")
+            && reason_has_ascii_token(&reason, "allowance"))
+    {
+        return Some(EntryRejectClass::Balance);
     }
 
     if reason_has_ascii_token(&reason, "fok")

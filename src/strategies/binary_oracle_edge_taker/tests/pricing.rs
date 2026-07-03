@@ -93,6 +93,7 @@ fn invalid_signal_quote_tick_clears_stale_pricing_state() {
         .on_quote(&quote_tick("SIGNAL.SOURCE", 100.5, 102.5, 1_200))
         .expect("signal quote should seed pricing");
     assert!(strategy.pricing.selected_pricing_spot().is_some());
+    assert_eq!(strategy.evidence_spot_price(), Some(101.5));
     assert!(!strategy.pricing.fast_venue_incoherent);
 
     strategy
@@ -100,6 +101,7 @@ fn invalid_signal_quote_tick_clears_stale_pricing_state() {
         .expect("invalid signal quote should fail closed");
 
     assert_eq!(strategy.pricing.selected_pricing_spot().cloned(), None);
+    assert_eq!(strategy.evidence_spot_price(), None);
     assert!(strategy.pricing.fast_venue_incoherent);
     assert!(strategy.active.fast_venue_incoherent);
     assert!(strategy.pricing.lead_quality_policy_applied);

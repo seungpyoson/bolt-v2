@@ -500,6 +500,9 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     ExitEvaluation(Box<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence>),
     LossGovernorHalt(crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence),
     RequoteThrottle(crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence),
+    /// Production settlement evidence (Lane 3, #1179) must map into this
+    /// variant carrying realized_pnl; until that mapping exists this variant is
+    /// intentionally unconstructed and hold_to_resolution stays red.
     Settlement(RecordedSettlementEvidenceEvent),
 }
 
@@ -519,6 +522,16 @@ impl RecordingSequencedDecisionEvidenceWriter {
             .lock()
             .expect("recording evidence writer mutex poisoned")
             .clone()
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn record_settlement(&self, realized_pnl: f64) {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::Settlement(
+                RecordedSettlementEvidenceEvent { realized_pnl },
+            ));
     }
 }
 

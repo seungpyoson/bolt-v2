@@ -7,7 +7,7 @@ use nautilus_model::{
 };
 use nautilus_trading::Strategy;
 use serde_json::{Value, json};
-use std::{panic, sync::Arc};
+use std::{any::Any, panic, sync::Arc};
 
 const PRECISION_REJECT_REASON: &str = "invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals, taker amount a max of 4 decimals";
 const BALANCE_REJECT_REASON: &str =
@@ -101,14 +101,19 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_halted_loud() {
         .expect("partial exit fill bookkeeping should not error");
     strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
 
-    assert_managed_or_halted_loud(
-        &strategy,
-        "partial exit fill followed by Expired without a position update left residual exposure unmanaged",
-    );
+    // halt-loudly is deliberately NOT an acceptable terminal for partial-fill
+    // residuals — the residual is known, so it must be re-managed; spec
+    // decision recorded on #1179.
+    let managed_position = managed_position_ref(&strategy).unwrap_or_else(|| {
+        panic!(
+            "partial-fill residual must be re-managed with the exact unfilled quantity; expected Managed residual exposure, got {:?}",
+            strategy.exposure,
+        )
+    });
     assert_eq!(
-        managed_position_ref(&strategy).map(|position| position.quantity),
-        Some(Quantity::new(6.0, 2)),
-        "the unfilled residual must be the managed position quantity after a 4/10 partial exit"
+        managed_position.quantity,
+        Quantity::new(6.0, 2),
+        "partial-fill residual must be re-managed with the exact unfilled quantity after a 4/10 exit fill"
     );
 }
 
@@ -253,13 +258,17 @@ fn hold_to_resolution_books_realized_cash_and_settlement_evidence() {
         .result
         .expect("fixture payout should settle the held YES lot");
 
+    let close_report_ts_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure the interval close boundary");
     let resolution_update = IndexPriceUpdate::new(
         strategy
             .resolution_instrument_id()
             .expect("fixture should configure the resolution instrument"),
         Price::new(3_101.0, 1),
-        UnixNanos::from(1_000_u64 * NANOS_PER_MILLI_U64),
-        UnixNanos::from(1_300_u64 * NANOS_PER_MILLI_U64),
+        UnixNanos::from(close_report_ts_ms * NANOS_PER_MILLI_U64),
+        UnixNanos::from(close_report_ts_ms * NANOS_PER_MILLI_U64),
     );
     DataActor::on_index_price(&mut strategy, &resolution_update)
         .expect("resolution index price should route through the strategy handler");
@@ -286,32 +295,50 @@ fn ignored_adverse_path_harness_tests_still_fail_red() {
     let mut previous_hook = Some(panic::take_hook());
     panic::set_hook(Box::new(|_| {}));
 
-    for (name, test) in [
+    for (name, test, expected_failure) in [
         (
             "dropped_terminal_event_after_accepted_entry_is_not_left_pending",
             dropped_terminal_event_after_accepted_entry_is_not_left_pending as fn(),
+            "accepted-with-no-terminal entry replay reached the boundary with no terminal event",
         ),
         (
             "partial_fill_then_expire_exit_residual_is_remanaged_or_halted_loud",
             partial_fill_then_expire_exit_residual_is_remanaged_or_halted_loud as fn(),
+            "partial-fill residual must be re-managed with the exact unfilled quantity",
         ),
         (
             "restart_with_open_exit_order_and_position_adopts_order_before_fill_replay",
             restart_with_open_exit_order_and_position_adopts_order_before_fill_replay as fn(),
+            "bootstrap must adopt the open exit order before a subsequent fill can be attributed",
         ),
         (
             "hold_to_resolution_books_realized_cash_and_settlement_evidence",
             hold_to_resolution_books_realized_cash_and_settlement_evidence as fn(),
+            "hold-to-resolution must close exposure, book realized cash",
         ),
     ] {
-        if panic::catch_unwind(test).is_ok() {
+        let payload = match panic::catch_unwind(test) {
+            Ok(()) => {
+                panic::set_hook(
+                    previous_hook
+                        .take()
+                        .expect("panic hook should still be available for restore"),
+                );
+                panic!(
+                    "{name} unexpectedly passed; remove the ignore and land the corresponding production fix"
+                );
+            }
+            Err(payload) => payload,
+        };
+        let message = panic_payload_message(payload.as_ref());
+        if !message.contains(expected_failure) {
             panic::set_hook(
                 previous_hook
                     .take()
                     .expect("panic hook should still be available for restore"),
             );
             panic!(
-                "{name} unexpectedly passed; remove the ignore and land the corresponding production fix"
+                "{name} failed red for the wrong reason; expected panic to contain {expected_failure:?}, got {message:?}"
             );
         }
     }
@@ -321,6 +348,16 @@ fn ignored_adverse_path_harness_tests_still_fail_red() {
             .take()
             .expect("panic hook should still be available for restore"),
     );
+}
+
+fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        return (*message).to_string();
+    }
+    "<non-string panic payload>".to_string()
 }
 
 fn assert_incident_lifecycle_counts() {

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import subprocess
 import sys
@@ -13,6 +14,41 @@ from typing import Iterable, TextIO
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = Path("ci/rust-ci-inputs.toml")
 GLOB_CHARS = frozenset("*?[")
+
+
+def normalize_repo_pathspec(pathspec: str) -> str | None:
+    if pathspec.startswith(":(top)"):
+        pathspec = pathspec[len(":(top)") :]
+    elif pathspec.startswith(":/"):
+        pathspec = pathspec[len(":/") :]
+    elif pathspec.startswith(":"):
+        return None
+
+    parts: list[str] = []
+    for part in pathspec.split("/"):
+        if part == "" or part == ".":
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts) if parts else "."
+
+
+def pathspec_may_cover(pathspec: str, path: str) -> bool:
+    normalized_pathspec = normalize_repo_pathspec(pathspec)
+    normalized_path = normalize_repo_pathspec(path)
+    if normalized_pathspec is None or normalized_path is None:
+        return False
+    if normalized_pathspec == ".":
+        return True
+    if normalized_pathspec == normalized_path:
+        return True
+    if not any(char in normalized_pathspec for char in GLOB_CHARS):
+        return normalized_path.startswith(normalized_pathspec + "/")
+    return fnmatch.fnmatchcase(normalized_path, normalized_pathspec)
 
 
 def read_text(path: Path) -> str:

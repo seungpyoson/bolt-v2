@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import fnmatch
 import importlib.util
 import subprocess
 import sys
@@ -168,6 +167,26 @@ def assert_changed_uses_named_input_set() -> None:
         raise AssertionError(f"changed paths must come from the named input set, got {changed!r}")
 
 
+def assert_pathspec_policy_normalizes_git_spellings() -> None:
+    module = load_module()
+    cases = {
+        "./scripts/ci_input_sets.py": "scripts/ci_input_sets.py",
+        "scripts/../scripts/ci_input_sets.py": "scripts/ci_input_sets.py",
+        ":(top)scripts/ci_input_sets.py": "scripts/ci_input_sets.py",
+        ":(top).github/actions/setup-environment/action.yml": ".github/actions/setup-environment/action.yml",
+        "./.github/actions/**": ".github/actions/**",
+    }
+    for raw, expected in cases.items():
+        actual = module.normalize_repo_pathspec(raw)
+        if actual != expected:
+            raise AssertionError(f"pathspec normalization drifted for {raw!r}: expected={expected!r} actual={actual!r}")
+    unsupported = ":(glob).github/actions/**"
+    if module.normalize_repo_pathspec(unsupported) is not None:
+        raise AssertionError(f"unsupported pathspec magic must be rejected: {unsupported}")
+    if not module.pathspec_may_cover(".github/actions/**", ".github/actions/setup-environment/action.yml"):
+        raise AssertionError("broad action pathspec must cover setup-environment action")
+
+
 def assert_backtester_sets_cover_cache_and_detector_inputs() -> None:
     module = load_module()
     config = module.load_config(REPO_ROOT / "ci" / "rust-ci-inputs.toml")
@@ -190,15 +209,6 @@ def assert_backtester_sets_cover_cache_and_detector_inputs() -> None:
     }:
         if required not in cache:
             raise AssertionError(f"backtester_cache missing {required}")
-    def pathspec_may_cover(pathspec: str, path: str) -> bool:
-        pathspec = pathspec.rstrip("/")
-        path = path.rstrip("/")
-        if pathspec == path:
-            return True
-        if not any(char in pathspec for char in "*?["):
-            return path.startswith(pathspec + "/")
-        return fnmatch.fnmatchcase(path, pathspec)
-
     forbidden_cache_targets = {
         ".github/workflows/backtester-ci.yml",
         "scripts/ci_input_sets.py",
@@ -206,7 +216,7 @@ def assert_backtester_sets_cover_cache_and_detector_inputs() -> None:
         ".github/actions/setup-environment/action.yml",
     }
     for pathspec in sorted(cache):
-        if any(pathspec_may_cover(pathspec, forbidden) for forbidden in forbidden_cache_targets):
+        if any(module.pathspec_may_cover(pathspec, forbidden) for forbidden in forbidden_cache_targets):
             raise AssertionError(f"backtester_cache must not include CI governance input {pathspec}")
     for required in {
         "scripts/ci_input_sets.py",
@@ -229,6 +239,7 @@ def main() -> int:
     assert_validate_rejects_never_valid_exact_inputs()
     assert_changed_reports_deleted_exact_inputs()
     assert_changed_uses_named_input_set()
+    assert_pathspec_policy_normalizes_git_spellings()
     assert_backtester_sets_cover_cache_and_detector_inputs()
     print("OK: CI input set self-tests passed.")
     return 0

@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Iterable, Mapping
 import difflib
-import fnmatch
 import functools
 import json
 import pathlib
@@ -55,6 +54,7 @@ from command_understanding import (
 from ci_test_manifest import CiTestManifest, _mask_rust_non_code, build_test_manifest
 from rust_verification import CARGO_ALIAS_SUBCOMMANDS, CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 import ci_storage_tripwire
+import ci_input_sets
 
 
 COMMAND_UNDERSTANDING_PARITY_EXPORTS = (
@@ -13287,15 +13287,6 @@ def ci_input_set_config_errors(file_name: str, text: str) -> list[str]:
     except ValueError as exc:
         return [str(exc)]
 
-    def pathspec_may_cover(pathspec: str, path: str) -> bool:
-        pathspec = pathspec.rstrip("/")
-        path = path.rstrip("/")
-        if pathspec == path:
-            return True
-        if not any(char in pathspec for char in "*?["):
-            return path.startswith(pathspec + "/")
-        return fnmatch.fnmatchcase(path, pathspec)
-
     errors: list[str] = []
     for required in [
         "Cargo.lock",
@@ -13321,7 +13312,10 @@ def ci_input_set_config_errors(file_name: str, text: str) -> list[str]:
         ".github/actions/setup-environment/action.yml",
     ]
     for pathspec in sorted(cache):
-        if any(pathspec_may_cover(pathspec, forbidden) for forbidden in forbidden_cache_targets):
+        if ci_input_sets.normalize_repo_pathspec(pathspec) is None:
+            errors.append(f"backtester_cache input set must not use unsupported Git pathspec magic {pathspec}")
+            continue
+        if any(ci_input_sets.pathspec_may_cover(pathspec, forbidden) for forbidden in forbidden_cache_targets):
             errors.append(f"backtester_cache input set must not include CI governance input {pathspec}")
     for required in [
         "scripts/ci_input_sets.py",

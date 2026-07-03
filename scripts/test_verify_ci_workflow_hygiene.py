@@ -8650,6 +8650,40 @@ def assert_backtester_ci_input_set_config_covers_systematic_inputs() -> None:
                 f"CI input set config must reject setup-environment-overlapping cache input "
                 f"{setup_pathspec}, got: {overlapping_setup_action_errors}"
             )
+    for pathspec in (
+        "./scripts/ci_input_sets.py",
+        "scripts/../scripts/ci_input_sets.py",
+        ":(top)scripts/ci_input_sets.py",
+        ":(top).github/actions/setup-environment/action.yml",
+        "./.github/actions/**",
+    ):
+        normalized_governance_input_in_cache = config.replace(
+            '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+            f'  "scripts/rust_test_targets.py",\n  "{pathspec}",\n]\n\n[sets.backtester_detect]\n',
+            1,
+        )
+        normalized_governance_input_errors = verifier.verify_repo_automation_texts(
+            {config_path: normalized_governance_input_in_cache}
+        )
+        if not any(
+            f"backtester_cache input set must not include CI governance input {pathspec}" in error
+            for error in normalized_governance_input_errors
+        ):
+            raise AssertionError(
+                f"CI input set config must reject normalized governance cache input "
+                f"{pathspec}, got: {normalized_governance_input_errors}"
+            )
+    unsupported_magic_in_cache = config.replace(
+        '  "scripts/rust_test_targets.py",\n]\n\n[sets.backtester_detect]\n',
+        '  "scripts/rust_test_targets.py",\n  ":(glob).github/actions/**",\n]\n\n[sets.backtester_detect]\n',
+        1,
+    )
+    unsupported_magic_errors = verifier.verify_repo_automation_texts({config_path: unsupported_magic_in_cache})
+    if not any(
+        "backtester_cache input set must not use unsupported Git pathspec magic :(glob).github/actions/**" in error
+        for error in unsupported_magic_errors
+    ):
+        raise AssertionError(f"CI input set config must reject unsupported pathspec magic, got: {unsupported_magic_errors}")
 
 
 def assert_backtester_ci_requires_pr_event_types() -> None:

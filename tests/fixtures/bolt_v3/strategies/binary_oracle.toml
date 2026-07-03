@@ -109,11 +109,11 @@ lead_jitter_max_ms = 250
 [parameters.entry_order]
 side = "buy"
 position_side = "long"
-order_type = "limit"
+order_type = "market"
 time_in_force = "fok"
 is_post_only = false
 is_reduce_only = false
-is_quote_quantity = false
+is_quote_quantity = true
 
 [parameters.exit_order]
 side = "sell"

@@ -3,9 +3,7 @@ use crate::support;
 use std::fs;
 
 use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::{
-    BINARY_ORACLE_ENTRY_ORDER_MARKET_QUOTE_QUANTITY_CODE,
-    BINARY_ORACLE_ENTRY_ORDER_QUOTE_QUANTITY_CODE, BINARY_ORACLE_ENTRY_ORDER_REDUCE_ONLY_CODE,
-    BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE,
+    BINARY_ORACLE_ENTRY_ORDER_REDUCE_ONLY_CODE, BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE,
 };
 
 const OLD_CHAINLINK_FIXTURE_FEED_ID: &str =
@@ -1297,7 +1295,7 @@ fn bolt_v3_logging_levels_accept_nt_warning_uppercase_spelling() {
 fn bolt_v3_archetype_order_params_use_nt_canonical_enums() {
     // FINDING-1: archetype `[parameters.*_order]` rows are typed with NT's
     // canonical `OrderType` and `TimeInForce` (not bolt shadow enums).
-    // NT serde is case-insensitive, so the fixture's `order_type = "limit"`
+    // NT serde is case-insensitive, so the fixture's `order_type = "market"`
     // and `time_in_force = "fok"` continue to parse unchanged.
     use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock;
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
@@ -1314,7 +1312,7 @@ fn bolt_v3_archetype_order_params_use_nt_canonical_enums() {
 
     let entry_order_type: OrderType = parameters.entry_order.order_type;
     let entry_tif: TimeInForce = parameters.entry_order.time_in_force;
-    assert_eq!(entry_order_type, OrderType::Limit);
+    assert_eq!(entry_order_type, OrderType::Market);
     assert_eq!(entry_tif, TimeInForce::Fok);
 
     let exit_order_type: OrderType = parameters.exit_order.order_type;
@@ -2196,7 +2194,7 @@ fn bolt_v3_archetype_rejects_negative_or_non_finite_risk_lambda() {
 }
 
 #[test]
-fn bolt_v3_archetype_rejects_market_quote_quantity_entry_order() {
+fn bolt_v3_archetype_accepts_market_quote_quantity_entry_order() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -2218,10 +2216,9 @@ fn bolt_v3_archetype_rejects_market_quote_quantity_entry_order() {
         .parameters
         .as_table_mut()
         .expect("strategy parameters should be a table");
-    // Build a valid MARKET entry by cloning the fixture's market exit_order, then set
-    // is_quote_quantity=true (and is_reduce_only=false, since entries open the position). A
-    // market quote-quantity BUY entry costs an extra venue collateral-balance REST request, so
-    // it must fail closed at load for the modeled egress fanout (2) to stay the worst-case.
+    // Build the Lane 1 entry shape by cloning the fixture's market exit_order, then set
+    // is_quote_quantity=true, is_reduce_only=false, and FOK because entries open the position
+    // and must submit as venue-conformant market/FOK dollar-sized BUYs.
     let mut entry_order = parameters
         .get("exit_order")
         .cloned()
@@ -2229,8 +2226,17 @@ fn bolt_v3_archetype_rejects_market_quote_quantity_entry_order() {
     let entry_table = entry_order
         .as_table_mut()
         .expect("exit_order fixture should be an order table");
+    entry_table.insert("side".to_string(), toml::Value::String("buy".to_string()));
+    entry_table.insert(
+        "position_side".to_string(),
+        toml::Value::String("long".to_string()),
+    );
     entry_table.insert("is_quote_quantity".to_string(), toml::Value::Boolean(true));
     entry_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(false));
+    entry_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("fok".to_string()),
+    );
     parameters.insert("entry_order".to_string(), entry_order);
 
     let loaded = vec![LoadedStrategy {
@@ -2241,14 +2247,10 @@ fn bolt_v3_archetype_rejects_market_quote_quantity_entry_order() {
 
     let messages = validate_strategies(&stable_root, &loaded);
     assert!(
-        messages.iter().any(|message| {
-            message.contains("parameters.entry_order")
-                && validation_message_has_code(
-                    message,
-                    BINARY_ORACLE_ENTRY_ORDER_MARKET_QUOTE_QUANTITY_CODE,
-                )
-        }),
-        "market quote-quantity entry must fail closed at load: {messages:#?}"
+        !messages
+            .iter()
+            .any(|message| message.contains("parameters.entry_order")),
+        "market quote-quantity FOK entry must be accepted at load: {messages:#?}"
     );
 }
 
@@ -2275,21 +2277,16 @@ fn bolt_v3_archetype_rejects_quote_quantity_limit_entry_order() {
         .parameters
         .as_table_mut()
         .expect("strategy parameters should be a table");
-    // The fixture entry_order is a LIMIT order. A limit quote-quantity entry skips the extra
-    // collateral REST fetch (so it is not the market-fanout case above), but quote-quantity sizing
-    // converts quote->base off an unguarded top-of-book cache tick, so it must also fail closed at
-    // load via the base-quantity guard.
+    // Lane 1 only enables market/FOK dollar-sized BUYs; non-market quote-quantity entries
+    // still fail closed through the executable-shape rule.
     let entry_order = parameters
         .get_mut("entry_order")
-        .expect("fixture parameters should include a limit entry_order")
+        .expect("fixture parameters should include an entry_order")
         .as_table_mut()
         .expect("entry_order fixture should be an order table");
-    assert_eq!(
-        entry_order
-            .get("order_type")
-            .and_then(|value| value.as_str()),
-        Some("limit"),
-        "fixture entry_order must be a limit order for this test"
+    entry_order.insert(
+        "order_type".to_string(),
+        toml::Value::String("limit".to_string()),
     );
     entry_order.insert("is_quote_quantity".to_string(), toml::Value::Boolean(true));
 
@@ -2305,18 +2302,10 @@ fn bolt_v3_archetype_rejects_quote_quantity_limit_entry_order() {
             message.contains("parameters.entry_order")
                 && validation_message_has_code(
                     message,
-                    BINARY_ORACLE_ENTRY_ORDER_QUOTE_QUANTITY_CODE,
+                    BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE,
                 )
-                && !message.contains("order_type=market")
         }),
-        "limit quote-quantity entry must fail closed at load via the base-quantity guard code: {messages:#?}"
-    );
-    assert!(
-        !messages.iter().any(|message| validation_message_has_code(
-            message,
-            BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE
-        )),
-        "limit quote-quantity entry should use the specific quote-quantity error, not the broad executable-shape error: {messages:#?}"
+        "limit quote-quantity entry must fail closed at load via executable shape: {messages:#?}"
     );
 }
 
@@ -2395,16 +2384,19 @@ fn bolt_v3_archetype_rejects_entry_limit_gtc_and_accepts_exit_limit_fok() {
         );
     };
 
-    let entry_limit_gtc = fixture.replace("time_in_force = \"fok\"", "time_in_force = \"gtc\"");
-    let strategy: BoltV3StrategyConfig = toml::from_str(&entry_limit_gtc)
-        .expect("entry limit GTC without post-only should parse via NT order enums");
+    let entry_market_gtc = fixture.replace("time_in_force = \"fok\"", "time_in_force = \"gtc\"");
+    let strategy: BoltV3StrategyConfig = toml::from_str(&entry_market_gtc)
+        .expect("entry market GTC without post-only should parse via NT order enums");
     let loaded = vec![LoadedStrategy {
         config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
         relative_path: "strategies/binary_oracle.toml".to_string(),
         config: strategy,
     }];
     let messages = validate_strategies(&stable_root, &loaded);
-    assert_binary_oracle_entry_order_shape_rejected(&messages, "entry limit GTC without post-only");
+    assert_binary_oracle_entry_order_shape_rejected(
+        &messages,
+        "entry market GTC without post-only",
+    );
 
     let exit_limit_fok = mutate_parameters_exit_order(&fixture, |exit_block| {
         exit_block
@@ -2538,7 +2530,7 @@ fn bolt_v3_archetype_rejects_unsupported_nt_order_type_variants() {
         ("trailing_stop_limit", "TRAILING_STOP_LIMIT"),
     ] {
         let mutated_strategy = strategy_fixture.replace(
-            "order_type = \"limit\"",
+            "order_type = \"market\"",
             &format!("order_type = \"{toml_order_type}\""),
         );
         let strategy: BoltV3StrategyConfig =
@@ -2577,9 +2569,14 @@ fn bolt_v3_archetype_rejects_gtd_limit_without_expiry() {
     ))
     .expect("strategy fixture should be readable");
 
+    let entry_gtd_source = mutate_parameters_entry_order(&fixture, |entry_block| {
+        entry_block
+            .replace("order_type = \"market\"", "order_type = \"limit\"")
+            .replace("time_in_force = \"fok\"", "time_in_force = \"gtd\"")
+            .replace("is_quote_quantity = true", "is_quote_quantity = false")
+    });
     let entry_gtd_strategy: BoltV3StrategyConfig =
-        toml::from_str(&fixture.replace("time_in_force = \"fok\"", "time_in_force = \"gtd\""))
-            .expect("gtd should parse via NT TimeInForce");
+        toml::from_str(&entry_gtd_source).expect("gtd should parse via NT TimeInForce");
     let loaded = vec![LoadedStrategy {
         config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
         relative_path: "strategies/binary_oracle.toml".to_string(),
@@ -2627,10 +2624,12 @@ fn bolt_v3_archetype_rejects_market_order_expiry() {
     ))
     .expect("strategy fixture should be readable");
 
-    let entry_market_with_expiry = fixture.replace(
-        "order_type = \"limit\"\ntime_in_force = \"fok\"",
-        "order_type = \"market\"\ntime_in_force = \"fok\"\nexpire_time_unix_nanos = 4102444800000000000",
-    );
+    let entry_market_with_expiry = mutate_parameters_entry_order(&fixture, |entry_block| {
+        entry_block.replace(
+            "time_in_force = \"fok\"",
+            "time_in_force = \"fok\"\nexpire_time_unix_nanos = 4102444800000000000",
+        )
+    });
     let entry_strategy: BoltV3StrategyConfig = toml::from_str(&entry_market_with_expiry)
         .expect("market entry expiry should parse through typed order config");
     let loaded = vec![LoadedStrategy {
@@ -2700,7 +2699,10 @@ fn bolt_v3_archetype_rejects_entry_gtd_limit_order_with_expiry() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
-    assert_binary_oracle_entry_order_shape_rejected(&messages, "entry GTD limit order with expiry");
+    assert_binary_oracle_entry_order_shape_rejected(
+        &messages,
+        "entry GTD market order with expiry",
+    );
 }
 
 #[test]
@@ -2719,13 +2721,18 @@ fn bolt_v3_archetype_accepts_non_gtd_limit_expiry_as_nt_pass_through() {
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
-    let strategy_source = fixture.replace(
-        "time_in_force = \"fok\"\nis_post_only = false",
-        "time_in_force = \"fok\"\nexpire_time_unix_nanos = 4102444800000000000\nis_post_only = false",
-    );
+    let strategy_source = mutate_parameters_exit_order(&fixture, |exit_block| {
+        exit_block
+            .replace("order_type = \"market\"", "order_type = \"limit\"")
+            .replace("time_in_force = \"ioc\"", "time_in_force = \"fok\"")
+            .replace(
+                "time_in_force = \"fok\"\nis_post_only = false",
+                "time_in_force = \"fok\"\nexpire_time_unix_nanos = 4102444800000000000\nis_post_only = false",
+            )
+    });
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
-        .expect("non-GTD limit expiry should parse through typed order config");
+        .expect("non-GTD exit limit expiry should parse through typed order config");
     let loaded = vec![LoadedStrategy {
         config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
         relative_path: "strategies/binary_oracle.toml".to_string(),
@@ -2735,7 +2742,7 @@ fn bolt_v3_archetype_accepts_non_gtd_limit_expiry_as_nt_pass_through() {
 
     assert!(
         messages.is_empty(),
-        "non-GTD limit expiry should stay valid because pinned NT preserves it: {messages:#?}"
+        "non-GTD exit limit expiry should stay valid because pinned NT preserves it: {messages:#?}"
     );
 }
 
@@ -2948,7 +2955,7 @@ fn bolt_v3_archetype_rejects_market_if_touched_entry_with_trigger_price() {
     .expect("strategy fixture should be readable");
     let market_if_touched_strategy_source = fixture
         .replace(
-            "order_type = \"limit\"",
+            "order_type = \"market\"",
             "order_type = \"market_if_touched\"",
         )
         .replace(
@@ -2984,15 +2991,17 @@ fn bolt_v3_archetype_rejects_market_if_touched_entry_without_trigger_price() {
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
-    let strategy_source = fixture
-        .replace(
-            "order_type = \"limit\"",
-            "order_type = \"market_if_touched\"",
-        )
-        .replace(
-            "time_in_force = \"fok\"\nis_post_only = false",
-            "time_in_force = \"gtc\"\nis_post_only = false",
-        );
+    let strategy_source = mutate_parameters_entry_order(&fixture, |entry_block| {
+        entry_block
+            .replace(
+                "order_type = \"market\"",
+                "order_type = \"market_if_touched\"",
+            )
+            .replace(
+                "time_in_force = \"fok\"\nis_post_only = false",
+                "time_in_force = \"gtc\"\nis_post_only = false",
+            )
+    });
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
         .expect("MarketIfTouched entry without trigger price should parse typed order config");
@@ -3030,7 +3039,7 @@ fn bolt_v3_archetype_rejects_market_if_touched_entry_with_non_positive_trigger_p
     for trigger_price in ["0.0", "-0.01"] {
         let strategy_source = fixture
             .replace(
-                "order_type = \"limit\"",
+                "order_type = \"market\"",
                 "order_type = \"market_if_touched\"",
             )
             .replace(
@@ -3077,7 +3086,7 @@ fn bolt_v3_archetype_rejects_market_if_touched_gtd_entry_without_expiry() {
     .expect("strategy fixture should be readable");
     let strategy_source = fixture
         .replace(
-            "order_type = \"limit\"",
+            "order_type = \"market\"",
             "order_type = \"market_if_touched\"",
         )
         .replace(
@@ -3365,7 +3374,7 @@ fn bolt_v3_archetype_rejects_trailing_stop_market_invalid_combinations() {
     ] {
         let strategy_source = fixture
             .replace(
-                "order_type = \"limit\"",
+                "order_type = \"market\"",
                 "order_type = \"trailing_stop_market\"",
             )
             .replace(
@@ -3393,7 +3402,7 @@ fn bolt_v3_archetype_rejects_trailing_stop_market_invalid_combinations() {
     for trailing_offset in ["0.0", "-0.01"] {
         let strategy_source = fixture
             .replace(
-                "order_type = \"limit\"",
+                "order_type = \"market\"",
                 "order_type = \"trailing_stop_market\"",
             )
             .replace(
@@ -3514,7 +3523,7 @@ fn bolt_v3_archetype_rejects_limit_if_touched_entry_with_trigger_price() {
     .expect("strategy fixture should be readable");
     let strategy_source = fixture
         .replace(
-            "order_type = \"limit\"",
+            "order_type = \"market\"",
             "order_type = \"limit_if_touched\"",
         )
         .replace(
@@ -3593,15 +3602,17 @@ fn bolt_v3_archetype_rejects_limit_if_touched_entry_without_trigger_price() {
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
-    let strategy_source = fixture
-        .replace(
-            "order_type = \"limit\"",
-            "order_type = \"limit_if_touched\"",
-        )
-        .replace(
-            "time_in_force = \"fok\"\nis_post_only = false",
-            "time_in_force = \"gtc\"\nis_post_only = false",
-        );
+    let strategy_source = mutate_parameters_entry_order(&fixture, |entry_block| {
+        entry_block
+            .replace(
+                "order_type = \"market\"",
+                "order_type = \"limit_if_touched\"",
+            )
+            .replace(
+                "time_in_force = \"fok\"\nis_post_only = false",
+                "time_in_force = \"gtc\"\nis_post_only = false",
+            )
+    });
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
         .expect("LimitIfTouched entry without trigger price should parse typed order config");
@@ -3639,7 +3650,7 @@ fn bolt_v3_archetype_rejects_limit_if_touched_entry_with_non_positive_trigger_pr
     for trigger_price in ["0.0", "-0.01"] {
         let strategy_source = fixture
             .replace(
-                "order_type = \"limit\"",
+                "order_type = \"market\"",
                 "order_type = \"limit_if_touched\"",
             )
             .replace(
@@ -3686,7 +3697,7 @@ fn bolt_v3_archetype_rejects_limit_if_touched_gtd_entry_without_expiry() {
     .expect("strategy fixture should be readable");
     let strategy_source = fixture
         .replace(
-            "order_type = \"limit\"",
+            "order_type = \"market\"",
             "order_type = \"limit_if_touched\"",
         )
         .replace(
@@ -3728,16 +3739,17 @@ fn bolt_v3_archetype_rejects_limit_if_touched_entry_quote_quantity() {
     ))
     .expect("strategy fixture should be readable");
 
-    let strategy_source = fixture
-        .replace(
-            "order_type = \"limit\"",
-            "order_type = \"limit_if_touched\"",
-        )
-        .replace(
-            "time_in_force = \"fok\"\nis_post_only = false",
-            "time_in_force = \"gtc\"\ntrigger_price = 0.39\nis_post_only = false",
-        )
-        .replacen("is_quote_quantity = false", "is_quote_quantity = true", 1);
+    let strategy_source = mutate_parameters_entry_order(&fixture, |entry_block| {
+        entry_block
+            .replace(
+                "order_type = \"market\"",
+                "order_type = \"limit_if_touched\"",
+            )
+            .replace(
+                "time_in_force = \"fok\"\nis_post_only = false",
+                "time_in_force = \"gtc\"\ntrigger_price = 0.39\nis_post_only = false",
+            )
+    });
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
         .expect("LimitIfTouched boolean flag case should parse typed order config");
@@ -3748,19 +3760,17 @@ fn bolt_v3_archetype_rejects_limit_if_touched_entry_quote_quantity() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
-    // The LimitIfTouched order template (trigger_price + gtc) parses as a valid NT order
-    // field set (the toml::from_str above succeeds), but a non-market quote-quantity
-    // ENTRY is forbidden by R12: quote->base sizing reads an unguarded top-of-book cache
-    // tick with no submit-time freshness bound. Re-enable is tracked in #506. Assert the
-    // base-quantity guard fails closed via the same non-market branch as the limit and
-    // stop_limit cases (message excludes the market-fanout variant).
+    // Lane 1 only enables market/FOK quote-quantity entries; non-market quote-quantity
+    // templates remain outside the executable entry shape.
     assert!(
         messages.iter().any(|message| {
             message.contains("parameters.entry_order")
-                && message.contains("is_quote_quantity")
-                && !message.contains("order_type=market")
+                && validation_message_has_code(
+                    message,
+                    BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE,
+                )
         }),
-        "LimitIfTouched (non-market) quote-quantity entry must fail closed at load via the base-quantity guard (R12, #506): {messages:#?}"
+        "LimitIfTouched quote-quantity entry must fail closed at load via executable shape: {messages:#?}"
     );
 }
 
@@ -3906,7 +3916,7 @@ fn bolt_v3_archetype_rejects_stop_limit_entry_without_trigger_price() {
     ))
     .expect("strategy fixture should be readable");
     let stop_limit_strategy_source = fixture
-        .replace("order_type = \"limit\"", "order_type = \"stop_limit\"")
+        .replace("order_type = \"market\"", "order_type = \"stop_limit\"")
         .replace(
             "time_in_force = \"fok\"\nis_post_only = false",
             "time_in_force = \"gtc\"\nis_post_only = false",
@@ -3947,7 +3957,7 @@ fn bolt_v3_archetype_rejects_stop_limit_entry_with_non_positive_trigger_price() 
     .expect("strategy fixture should be readable");
     for trigger_price in ["0.0", "-0.01"] {
         let stop_limit_strategy_source = fixture
-            .replace("order_type = \"limit\"", "order_type = \"stop_limit\"")
+            .replace("order_type = \"market\"", "order_type = \"stop_limit\"")
             .replace(
                 "time_in_force = \"fok\"\nis_post_only = false",
                 &format!(
@@ -3991,7 +4001,7 @@ fn bolt_v3_archetype_rejects_stop_limit_gtd_entry_without_expiry() {
     ))
     .expect("strategy fixture should be readable");
     let stop_limit_strategy_source = fixture
-        .replace("order_type = \"limit\"", "order_type = \"stop_limit\"")
+        .replace("order_type = \"market\"", "order_type = \"stop_limit\"")
         .replace(
             "time_in_force = \"fok\"\nis_post_only = false",
             "time_in_force = \"gtd\"\ntrigger_price = 0.52\nis_post_only = false",
@@ -4031,13 +4041,14 @@ fn bolt_v3_archetype_rejects_stop_limit_entry_quote_quantity() {
     ))
     .expect("strategy fixture should be readable");
 
-    let stop_limit_strategy_source = fixture
-        .replace("order_type = \"limit\"", "order_type = \"stop_limit\"")
-        .replace(
-            "time_in_force = \"fok\"\nis_post_only = false",
-            "time_in_force = \"gtc\"\ntrigger_price = 0.52\nis_post_only = false",
-        )
-        .replacen("is_quote_quantity = false", "is_quote_quantity = true", 1);
+    let stop_limit_strategy_source = mutate_parameters_entry_order(&fixture, |entry_block| {
+        entry_block
+            .replace("order_type = \"market\"", "order_type = \"stop_limit\"")
+            .replace(
+                "time_in_force = \"fok\"\nis_post_only = false",
+                "time_in_force = \"gtc\"\ntrigger_price = 0.52\nis_post_only = false",
+            )
+    });
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&stop_limit_strategy_source)
         .expect("StopLimit boolean flag case should parse typed order config");
@@ -4048,19 +4059,17 @@ fn bolt_v3_archetype_rejects_stop_limit_entry_quote_quantity() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
-    // The StopLimit order template (trigger_price + gtc) parses as a valid NT order
-    // field set (the toml::from_str above succeeds), but a non-market quote-quantity
-    // ENTRY is forbidden by R12: quote->base sizing reads an unguarded top-of-book
-    // cache tick with no submit-time freshness bound. Re-enable is tracked in #506.
-    // Assert the base-quantity guard fails closed via the same non-market branch as
-    // the limit case (message excludes the market-fanout variant).
+    // Lane 1 only enables market/FOK quote-quantity entries; non-market quote-quantity
+    // templates remain outside the executable entry shape.
     assert!(
         messages.iter().any(|message| {
             message.contains("parameters.entry_order")
-                && message.contains("is_quote_quantity")
-                && !message.contains("order_type=market")
+                && validation_message_has_code(
+                    message,
+                    BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE,
+                )
         }),
-        "StopLimit (non-market) quote-quantity entry must fail closed at load via the base-quantity guard (R12, #506): {messages:#?}"
+        "StopLimit quote-quantity entry must fail closed at load via executable shape: {messages:#?}"
     );
 }
 
@@ -4106,8 +4115,9 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
         .clone()
         .try_into()
         .expect("fixture parameters block should deserialize as binary_oracle_edge_taker");
-    assert_eq!(parameters.entry_order.order_type, OrderType::Limit);
+    assert_eq!(parameters.entry_order.order_type, OrderType::Market);
     assert_eq!(parameters.entry_order.time_in_force, TimeInForce::Fok);
+    assert!(parameters.entry_order.is_quote_quantity);
     assert_eq!(parameters.exit_order.order_type, OrderType::Market);
     assert_eq!(parameters.exit_order.time_in_force, TimeInForce::Ioc);
     assert!(!strategy.signal_data.is_empty());
@@ -5553,8 +5563,8 @@ manage_own_order_books = false
 default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
-max_order_submit_rate = "40/00:01:00"
-max_order_modify_rate = "40/00:01:00"
+max_order_submit_rate = "33/00:01:00"
+max_order_modify_rate = "33/00:01:00"
 max_notional_per_order = {}
 debug = false
 qsize = 100000
@@ -5980,8 +5990,8 @@ manage_own_order_books = false
 default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
-max_order_submit_rate = "40/00:01:00"
-max_order_modify_rate = "40/00:01:00"
+max_order_submit_rate = "33/00:01:00"
+max_order_modify_rate = "33/00:01:00"
 max_notional_per_order = {}
 debug = false
 qsize = 100000
@@ -8006,6 +8016,19 @@ fn mutate_parameters_exit_order(fixture: &str, mutate: impl FnOnce(&str) -> Stri
     )
 }
 
+fn mutate_parameters_entry_order(fixture: &str, mutate: impl FnOnce(&str) -> String) -> String {
+    let (before_entry, entry_and_after) = fixture
+        .split_once("[parameters.entry_order]")
+        .expect("fixture should include entry_order table");
+    let (entry_block, after_exit_marker) = entry_and_after
+        .split_once("\n[parameters.exit_order]")
+        .expect("fixture should include exit_order table after entry_order");
+    format!(
+        "{before_entry}[parameters.entry_order]{}\n[parameters.exit_order]{after_exit_marker}",
+        mutate(entry_block)
+    )
+}
+
 #[test]
 fn rejects_zero_explicit_nt_exec_runtime_values() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
@@ -8247,8 +8270,8 @@ fn rejects_nt_risk_bypass_key_at_parse_time() {
     // line still lands inside the `[risk.nautilus]` block, immediately above the
     // rate assignment, producing a byte-identical mutation.
     let mutated = replace_in_fixture_root(
-        "max_order_submit_rate = \"40/00:01:00\"",
-        "bypass = true\nmax_order_submit_rate = \"40/00:01:00\"",
+        "max_order_submit_rate = \"33/00:01:00\"",
+        "bypass = true\nmax_order_submit_rate = \"33/00:01:00\"",
     );
     let error = toml::from_str::<BoltV3RootConfig>(&mutated)
         .expect_err("risk.nautilus.bypass must not be part of the TOML schema");
@@ -8328,15 +8351,15 @@ fn rejects_invalid_nt_risk_rate_limit_strings() {
 
     for (submit_rate, modify_rate) in [
         ("0/00:00:01", "100/00:00:00"),
-        ("100", "40/00:01:00"),
-        ("abc/00:00:01", "40/00:01:00"),
-        ("100/00:01", "40/00:01:00"),
-        ("100/00:00:01:00", "40/00:01:00"),
-        ("100/00:60:00", "40/00:01:00"),
-        ("100/00:00:60", "40/00:01:00"),
+        ("100", "33/00:01:00"),
+        ("abc/00:00:01", "33/00:01:00"),
+        ("100/00:01", "33/00:01:00"),
+        ("100/00:00:01:00", "33/00:01:00"),
+        ("100/00:60:00", "33/00:01:00"),
+        ("100/00:00:60", "33/00:01:00"),
     ] {
         let mutated = replace_in_binance_reference_fixture(
-            "max_order_submit_rate = \"40/00:01:00\"\nmax_order_modify_rate = \"40/00:01:00\"",
+            "max_order_submit_rate = \"33/00:01:00\"\nmax_order_modify_rate = \"33/00:01:00\"",
             &format!(
                 "max_order_submit_rate = \"{submit_rate}\"\nmax_order_modify_rate = \"{modify_rate}\""
             ),
@@ -8375,14 +8398,14 @@ fn rejects_nt_submit_rate_above_polymarket_egress_cap() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     // The Polymarket REST egress ceiling is 100/min (NT HTTP_RATE_LIMIT), and a
-    // single order command issues up to 2 REST requests (market submit =
-    // get_book + post_order), so the order-rate ceiling is 50/min (50 * 2 = 100
-    // = the cap). A submit rate of 51/min over-drives egress (51 * 2 = 102 >
-    // 100) and would block at egress (stale quotes) instead of emitting a loud
-    // OrderDenied, so it must fail closed at config load.
+    // market quote-quantity BUY command issues up to 3 REST requests (market
+    // submit get_book + collateral balance + post_order), so the integer
+    // order-rate ceiling is 33/min. A submit rate of 34/min over-drives egress
+    // (34 * 3 = 102 > 100) and would block at egress (stale quotes) instead of
+    // emitting a loud OrderDenied, so it must fail closed at config load.
     let mutated = replace_in_fixture_root(
-        "max_order_submit_rate = \"40/00:01:00\"",
-        "max_order_submit_rate = \"51/00:01:00\"",
+        "max_order_submit_rate = \"33/00:01:00\"",
+        "max_order_submit_rate = \"34/00:01:00\"",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("over-cap submit-rate fixture should parse");
@@ -8400,12 +8423,12 @@ fn rejects_nt_modify_rate_above_polymarket_egress_cap() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     // The Polymarket REST egress ceiling is 100/min (NT HTTP_RATE_LIMIT), and a
-    // single order command issues up to 2 REST requests, so the order-rate
-    // ceiling is 50/min (50 * 2 = 100 = the cap). A modify rate of 51/min
-    // over-drives egress (51 * 2 = 102 > 100), so it must fail closed.
+    // market quote-quantity BUY command issues up to 3 REST requests, so the
+    // integer order-rate ceiling is 33/min. A modify rate of 34/min over-drives
+    // egress (34 * 3 = 102 > 100), so it must fail closed.
     let mutated = replace_in_fixture_root(
-        "max_order_modify_rate = \"40/00:01:00\"",
-        "max_order_modify_rate = \"51/00:01:00\"",
+        "max_order_modify_rate = \"33/00:01:00\"",
+        "max_order_modify_rate = \"34/00:01:00\"",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("over-cap modify-rate fixture should parse");
@@ -8419,23 +8442,22 @@ fn rejects_nt_modify_rate_above_polymarket_egress_cap() {
 }
 
 #[test]
-fn accepts_nt_order_rates_at_polymarket_egress_cap() {
+fn accepts_nt_order_rates_at_polymarket_integer_command_ceiling() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     // The Polymarket REST egress ceiling is 100/min (NT HTTP_RATE_LIMIT), and a
-    // single order command issues up to 2 REST requests (market submit =
-    // get_book + post_order), so the order-rate ceiling is 50/min: 50/min * 2
-    // REST = 100 = the cap. The boundary value is accepted because the ceiling
-    // check is inclusive.
+    // market quote-quantity BUY command issues up to 3 REST requests, so the
+    // integer command-rate ceiling is 33/min. The boundary value is accepted
+    // because 33 * 3 = 99 remains within the REST cap.
     let source = replace_in_fixture_root(
-        "max_order_submit_rate = \"40/00:01:00\"",
-        "max_order_submit_rate = \"50/00:01:00\"",
+        "max_order_submit_rate = \"33/00:01:00\"",
+        "max_order_submit_rate = \"33/00:01:00\"",
     );
     let root: BoltV3RootConfig = toml::from_str(&source).expect("at-cap fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
         !messages.iter().any(|m| m.contains("REST egress cap")),
-        "order rates at exactly the venue egress cap must be accepted: {messages:#?}"
+        "order rates at the derived venue egress command ceiling must be accepted: {messages:#?}"
     );
 }
 
@@ -8445,12 +8467,12 @@ fn rejects_old_100_per_min_rate_now_overdrives_polymarket_fanout() {
 
     // Regression guard for the per-order-command REST fanout the reconciliation
     // now applies. The old order-rate ceiling was the raw 100/min REST cap, but
-    // a single Polymarket order command issues up to 2 REST requests (market
-    // submit = get_book + post_order), so 100/min order commands = 200 REST/min
-    // = 2x the 100/min cap. The order-rate ceiling is therefore 50/min, and the
+    // a single Polymarket order command issues up to 3 REST requests, so
+    // 100/min order commands = 300 REST/min = 3x the 100/min cap. The
+    // order-rate ceiling is therefore 33/min, and the
     // previously-accepted 100/00:01:00 value must now fail closed.
     let mutated = replace_in_fixture_root(
-        "max_order_submit_rate = \"40/00:01:00\"",
+        "max_order_submit_rate = \"33/00:01:00\"",
         "max_order_submit_rate = \"100/00:01:00\"",
     );
     let root: BoltV3RootConfig =
@@ -8460,7 +8482,7 @@ fn rejects_old_100_per_min_rate_now_overdrives_polymarket_fanout() {
         messages.iter().any(|m| m.contains("max_order_submit_rate")
             && m.contains("POLYMARKET")
             && m.contains("REST egress cap")),
-        "the legacy 100/min order rate now over-drives the 2x Polymarket REST fanout (100 * 2 = 200 > 100) and must fail closed: {messages:#?}"
+        "the legacy 100/min order rate now over-drives the 3x Polymarket REST fanout (100 * 3 = 300 > 100) and must fail closed: {messages:#?}"
     );
 }
 
@@ -8472,7 +8494,7 @@ fn rejects_nt_rate_limit_string_whose_interval_overflows_u64() {
     // computation is checked, so this must surface a loud validation message
     // instead of panicking (debug) or wrapping to a bogus interval (release).
     let mutated = replace_in_fixture_root(
-        "max_order_submit_rate = \"40/00:01:00\"",
+        "max_order_submit_rate = \"33/00:01:00\"",
         "max_order_submit_rate = \"1/9999999999999999999:00:00\"",
     );
     let root: BoltV3RootConfig =
@@ -8495,13 +8517,13 @@ fn rejects_nt_submit_rate_above_egress_cap_under_dual_u64_saturation() {
     // a u128-overflow regression vector, not a boundary value, so the fanout
     // derate is irrelevant: the raw rate already saturates the REST cap. The
     // true rate is 5e17 * 60 / 1.85e17 ≈ 162/min, far above the 100/min
-    // POLYMARKET REST egress cap regardless of the 2x order-command fanout.
+    // POLYMARKET REST egress cap regardless of the order-command fanout.
     // Under the old u64-saturating comparison both sides saturate to u64::MAX
     // (5e17*60 = 3e19 and 100*1.85e17 = 1.85e19 both exceed u64::MAX), so
     // MAX > MAX is false and the over-cap rate was wrongly accepted. The u128
     // comparison computes the true products (3e19 > 1.85e19) and rejects it.
     let mutated = replace_in_fixture_root(
-        "max_order_submit_rate = \"40/00:01:00\"",
+        "max_order_submit_rate = \"33/00:01:00\"",
         "max_order_submit_rate = \"500000000000000000/51388888888889:00:00\"",
     );
     let root: BoltV3RootConfig =

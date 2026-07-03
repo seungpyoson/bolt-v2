@@ -178,8 +178,8 @@ account_ids = ["POLYMARKET-001"]
 instrument_ids = []
 
 [risk.nautilus]
-max_order_submit_rate = "40/00:01:00"
-max_order_modify_rate = "40/00:01:00"
+max_order_submit_rate = "33/00:01:00"
+max_order_modify_rate = "33/00:01:00"
 max_notional_per_order = {}
 debug = false
 qsize = 100000
@@ -1767,8 +1767,8 @@ account_ids = ["POLYMARKET-001"]
 instrument_ids = []
 
 [risk.nautilus]
-max_order_submit_rate = "40/00:01:00"
-max_order_modify_rate = "40/00:01:00"
+max_order_submit_rate = "33/00:01:00"
+max_order_modify_rate = "33/00:01:00"
 max_notional_per_order = {}
 debug = false
 qsize = 100000

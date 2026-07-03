@@ -1407,8 +1407,8 @@ manage_own_order_books = false
 default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
-max_order_submit_rate = "40/00:01:00"
-max_order_modify_rate = "40/00:01:00"
+max_order_submit_rate = "33/00:01:00"
+max_order_modify_rate = "33/00:01:00"
 max_notional_per_order = {}
 debug = false
 qsize = 100000

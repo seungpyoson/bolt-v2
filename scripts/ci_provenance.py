@@ -1636,9 +1636,9 @@ def workflow_line_starts_block_scalar(line: str) -> bool:
     if value is not None and value.startswith(("|", ">")):
         return True
     stripped = structural_line.lstrip()
-    if not stripped.startswith("- "):
-        return False
-    return stripped[2:].lstrip().startswith(("|", ">"))
+    while stripped.startswith("- "):
+        stripped = stripped[2:].lstrip()
+    return stripped.startswith(("|", ">"))
 
 
 def is_top_level_workflow_key(line: str, key: str) -> bool:

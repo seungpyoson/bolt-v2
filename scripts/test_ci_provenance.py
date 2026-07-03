@@ -1566,6 +1566,33 @@ def assert_workflow_reuse_scope_digest_preserves_sequence_block_scalar_content()
             "sequence block scalar content must remain part of the reuse-scope digest"
         )
 
+    nested_source_lines = [
+        "  test-archive:",
+        "    steps:",
+        "      - name: Nested sequence scalar probe",
+        "        with:",
+        "          args:",
+        "            - - |",
+        "                # source nested sequence block-scalar content",
+        "                echo ok",
+    ]
+    nested_current_lines = [
+        "  test-archive:",
+        "    steps:",
+        "      - name: Nested sequence scalar probe",
+        "        with:",
+        "          args:",
+        "            - - |",
+        "                # current nested sequence block-scalar content",
+        "                echo ok",
+    ]
+    nested_source_normalized = module.normalize_workflow_scope_lines(nested_source_lines)
+    nested_current_normalized = module.normalize_workflow_scope_lines(nested_current_lines)
+    if nested_source_normalized == nested_current_normalized:
+        raise AssertionError(
+            "nested sequence block scalar content must remain part of the reuse-scope digest"
+        )
+
 
 def assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift() -> None:
     module = load_script()

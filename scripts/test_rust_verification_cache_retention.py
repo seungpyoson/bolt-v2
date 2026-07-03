@@ -679,6 +679,54 @@ printf '123 cargo build\\n'
             raise AssertionError("multi-repo prune did not continue to BTE cache")
 
 
+def assert_cache_prune_multiple_repos_attempts_all_after_unexpected_exception() -> None:
+    module = load_owner_module()
+    original = module.cache_prune_payload
+
+    def fake_cache_prune_payload(repo: pathlib.Path, *, dry_run: bool, age_only: bool) -> dict[str, object]:
+        if repo.name == "bad":
+            raise RuntimeError("synthetic cache failure")
+        return {
+            "age_only": age_only,
+            "candidates": [],
+            "dry_run": dry_run,
+            "pressure": False,
+            "pressure_reasons": [],
+            "reclaimable_bytes": 0,
+            "refused": False,
+            "removed": [],
+            "target_dir": str(repo / "target"),
+        }
+
+    module.cache_prune_payload = fake_cache_prune_payload
+    try:
+        args = types.SimpleNamespace(
+            age_only=True,
+            apply=False,
+            json=True,
+            repo=["/tmp/bad", "/tmp/good"],
+        )
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = module.cmd_cache_prune(args)
+    finally:
+        module.cache_prune_payload = original
+
+    if exit_code != 2:
+        raise AssertionError((exit_code, stdout.getvalue()))
+    payload = json.loads(stdout.getvalue())
+    results = payload.get("results", [])
+    if len(results) != 2:
+        raise AssertionError(payload)
+    first, second = results
+    if first["exit_code"] != 2 or first["payload"].get("refusal_code") != "operation_failed":
+        raise AssertionError(payload)
+    if "RuntimeError: synthetic cache failure" not in first["payload"].get("refusal_reason", ""):
+        raise AssertionError(payload)
+    if second["exit_code"] != 0 or second["payload"].get("refused") is not False:
+        raise AssertionError(payload)
+
+
 def assert_cache_status_classifies_subtrees_and_skips_special_files() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -3424,6 +3472,7 @@ def main() -> int:
     assert_cache_prune_age_only_apply_refuses_active_related_process()
     assert_cache_prune_age_only_error_refusals_report_age_only()
     assert_cache_prune_multiple_repos_attempts_all_namespaces_after_refusal()
+    assert_cache_prune_multiple_repos_attempts_all_after_unexpected_exception()
     assert_cache_prune_apply_refuses_active_related_process()
     assert_cache_prune_apply_refuses_active_related_process_by_cwd()
     assert_cache_prune_active_process_scan_uses_portable_ps_columns()

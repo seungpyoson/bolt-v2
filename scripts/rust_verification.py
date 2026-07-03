@@ -4483,6 +4483,14 @@ def cache_prune_command_result(repo: pathlib.Path, *, dry_run: bool, age_only: b
     except OSError as exc:
         payload = refusal_payload(code="operation_failed", reason=str(exc), dry_run=dry_run, age_only=age_only)
         return payload, 2
+    except Exception as exc:
+        payload = refusal_payload(
+            code="operation_failed",
+            reason=f"{type(exc).__name__}: {exc}",
+            dry_run=dry_run,
+            age_only=age_only,
+        )
+        return payload, 2
     if payload.get("refused"):
         return payload, 2
     return payload, 0

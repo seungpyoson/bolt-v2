@@ -1,9 +1,15 @@
 use crate::support;
 
-use std::sync::Arc;
+use std::{
+    panic::AssertUnwindSafe,
+    sync::{Arc, Mutex},
+};
 
 use bolt_v2::bolt_v3_decision_evidence::{BoltV3OrderRejectReason, BoltV3RejectSource};
-use bolt_v2::bolt_v3_order_reject_observer_feed::BoltV3OrderRejectObserverFeed;
+use bolt_v2::bolt_v3_order_reject_observer_feed::{
+    BoltV3OrderRejectObserverFeed, subscribe_order_reject_observer_feed,
+};
+use nautilus_common::msgbus::{publish_order_event, switchboard};
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     enums::{LiquiditySide, OrderSide, OrderType},
@@ -17,6 +23,29 @@ use nautilus_model::{
     types::{Currency, Price, Quantity},
 };
 use ustr::Ustr;
+
+#[test]
+#[should_panic(expected = "order reject observer order-event feed lock poisoned")]
+fn subscribed_order_reject_event_panics_on_poisoned_feed_lock() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let feed = Arc::new(Mutex::new(BoltV3OrderRejectObserverFeed::new(
+        writer,
+        AccountId::from("ACCOUNT-001"),
+    )));
+    poison_lock(&feed);
+    let _subscription = subscribe_order_reject_observer_feed(feed);
+
+    publish_order_event(
+        switchboard::get_event_orders_topic(StrategyId::from("strategy-a")),
+        &OrderEventAny::Rejected(order_rejected_event(
+            "client-order-1",
+            "instrument-yes.VENUE-A",
+            AccountId::from("ACCOUNT-001"),
+            "maker amount precision exceeds venue precision",
+            1_000,
+        )),
+    );
+}
 
 #[test]
 fn rejected_event_for_configured_account_records_venue_precision_reject_evidence() {
@@ -298,6 +327,13 @@ fn order_rejected_event(
         false,
         false,
     )
+}
+
+fn poison_lock<T>(lock: &Arc<Mutex<T>>) {
+    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _g = lock.lock().unwrap();
+        panic!("seed poison");
+    }));
 }
 
 fn order_denied_event(

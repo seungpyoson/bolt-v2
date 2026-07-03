@@ -1016,7 +1016,9 @@ impl BoltV3LiveNodeRuntime {
         let (account_id, binary_instrument_ids, collateral_currency) =
             match self.capital_admission_runtime_feed.as_ref() {
                 Some(feed) => {
-                    let feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let feed = feed
+                        .lock()
+                        .expect("capital admission rebuild configuration feed lock poisoned");
                     (
                         Some(feed.configured_account_id()),
                         feed.configured_binary_instrument_ids(),
@@ -1095,18 +1097,15 @@ impl BoltV3LiveNodeRuntime {
         let account_cache_is_authoritative = cached_account_balances.is_some();
         // Seed live NT order and position state before rebuilding reservations from the same snapshot.
         if let Some(feed) = self.capital_admission_runtime_feed.as_ref() {
-            let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some((free_collateral, total_equity)) = cached_account_balances {
-                feed.seed_account_portfolio_snapshot(free_collateral, total_equity, now_ns);
-            }
-            if account_cache_is_authoritative || !open_client_order_ids.is_empty() {
-                feed.seed_cache_snapshot(
-                    open_client_order_ids.clone(),
-                    yes_position,
-                    no_position,
-                    now_ns,
-                );
-            }
+            seed_capital_admission_runtime_feed_from_nt_cache(
+                feed,
+                cached_account_balances,
+                account_cache_is_authoritative,
+                &open_client_order_ids,
+                yes_position,
+                no_position,
+                now_ns,
+            );
         }
 
         let recovered_reservations = if open_order_snapshots.is_empty() {
@@ -1178,6 +1177,31 @@ impl BoltV3LiveNodeRuntime {
             );
         }
         rebuild
+    }
+}
+
+fn seed_capital_admission_runtime_feed_from_nt_cache(
+    feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
+    cached_account_balances: Option<(Decimal, Decimal)>,
+    account_cache_is_authoritative: bool,
+    open_client_order_ids: &[String],
+    yes_position: Decimal,
+    no_position: Decimal,
+    now_ns: u64,
+) {
+    let mut feed = feed
+        .lock()
+        .expect("capital admission rebuild cache seed feed lock poisoned");
+    if let Some((free_collateral, total_equity)) = cached_account_balances {
+        feed.seed_account_portfolio_snapshot(free_collateral, total_equity, now_ns);
+    }
+    if account_cache_is_authoritative || !open_client_order_ids.is_empty() {
+        feed.seed_cache_snapshot(
+            open_client_order_ids.to_vec(),
+            yes_position,
+            no_position,
+            now_ns,
+        );
     }
 }
 

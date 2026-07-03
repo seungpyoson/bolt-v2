@@ -242,15 +242,25 @@ async fn run_venue_truth_runtime(
             }
         };
         captures_missed = 0;
-        let reconcile = {
-            let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            feed.on_venue_truth_snapshot(snapshot)
-        };
+        let reconcile = reconcile_venue_truth_snapshot(&feed, snapshot);
         if let Err(divergence) = reconcile {
             halt_for_venue_truth_divergence(&submit_admission, &stop_handle, divergence);
             break;
         }
     }
+}
+
+fn reconcile_venue_truth_snapshot(
+    feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
+    snapshot: crate::bolt_v3_venue_truth::VenueTruthSnapshot,
+) -> Result<
+    Option<BoltV3SubmitCapitalAdmissionNtComponents>,
+    crate::bolt_v3_venue_truth::VenueTruthDivergence,
+> {
+    let mut feed = feed
+        .lock()
+        .expect("venue truth reconcile feed lock poisoned");
+    feed.on_venue_truth_snapshot(snapshot)
 }
 
 fn handle_venue_truth_capture_failure(
@@ -968,16 +978,33 @@ fn required_loss_governor_decimal(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::BTreeMap,
+        panic::{AssertUnwindSafe, catch_unwind},
+        sync::Mutex,
+    };
+
     use super::*;
 
     use crate::{
-        bolt_v3_capital_admission::{CapitalAdmissionPolicy, ProductKind},
+        bolt_v3_capital_admission::{
+            CapitalAdmissionPolicy, PredictionMarketAdmissionSnapshot, ProductAdmissionSnapshot,
+            ProductKind,
+        },
+        bolt_v3_capital_admission_runtime_feed::{
+            CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
+        },
         bolt_v3_capital_reservation::CapitalPoolSnapshot,
         bolt_v3_kill_switch::KillSwitchStateKind,
         bolt_v3_submit_admission::{
             BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
         },
-        bolt_v3_venue_truth::VenueTruthCaptureEndpointError,
+        bolt_v3_venue_truth::{VenueTruthCaptureEndpointError, VenueTruthSnapshot},
+    };
+    use nautilus_core::UnixNanos;
+    use nautilus_model::{
+        identifiers::AccountId,
+        types::{Currency, Money},
     };
 
     #[test]
@@ -1038,5 +1065,79 @@ mod tests {
             KillSwitchStateKind::Armed
         );
         assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    }
+
+    #[test]
+    #[should_panic(expected = "venue truth reconcile feed lock poisoned")]
+    fn venue_truth_reconcile_feed_lock_poison_panics() {
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
+            Arc::new(NoStrategyDecisionEvidenceWriter),
+            BoltV3SubmitCapitalAdmissionConfig {
+                venue_id: "VENUE-A".to_string(),
+                account_id: "ACCOUNT-001".to_string(),
+                product_kind: ProductKind::PredictionMarketBinary,
+                collateral_currency: "USD".to_string(),
+                capital_pool: CapitalPoolSnapshot {
+                    source: "test".to_string(),
+                    observed_at_ns: 900,
+                    pool_id: "pool-1".to_string(),
+                    max_pool_liability: Decimal::new(10, 0),
+                    committed_liability: Decimal::ZERO,
+                    max_snapshot_age_ns: 500,
+                },
+                policy: CapitalAdmissionPolicy {
+                    min_remaining_pool_balance: None,
+                    fee_slippage_policy: None,
+                },
+                dedupe_retention_ns: 500,
+            },
+        ));
+        let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
+            test_capital_admission_runtime_feed_config(),
+            admission,
+        )));
+        let poisoned = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = feed.lock().unwrap();
+            panic!("poison venue truth reconcile feed lock");
+        }));
+        assert!(poisoned.is_err());
+        assert!(feed.lock().is_err());
+
+        let _ = reconcile_venue_truth_snapshot(&feed, test_venue_truth_snapshot());
+    }
+
+    fn test_capital_admission_runtime_feed_config() -> CapitalAdmissionRuntimeFeedConfig {
+        CapitalAdmissionRuntimeFeedConfig {
+            venue_id: "VENUE-A".to_string(),
+            account_id: AccountId::from("ACCOUNT-001"),
+            collateral_currency: "USD".to_string(),
+            product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
+                PredictionMarketAdmissionSnapshot {
+                    source: "bolt_configured_binary_product".to_string(),
+                    observed_at_ns: 900,
+                    yes_instrument_id: "instrument-yes.VENUE-A".to_string(),
+                    no_instrument_id: "instrument-no.VENUE-A".to_string(),
+                    yes_position: Decimal::ZERO,
+                    no_position: Decimal::ZERO,
+                    collateral_allowance: Decimal::ZERO,
+                    conditional_token_allowance: Decimal::ZERO,
+                    collateral_coupled_group_id: "group-1".to_string(),
+                },
+            ),
+            startup_observed_at_ns: 900,
+            dedupe_retention_ns: 500,
+        }
+    }
+
+    fn test_venue_truth_snapshot() -> VenueTruthSnapshot {
+        let currency = Currency::from("USD");
+        VenueTruthSnapshot {
+            captured_at: UnixNanos::from(1_200),
+            account_id: AccountId::from("ACCOUNT-001"),
+            collateral_balance: Money::new(50.0, currency),
+            collateral_allowance: Money::new(50.0, currency),
+            open_orders: BTreeMap::new(),
+            positions_by_product_id: BTreeMap::new(),
+        }
     }
 }

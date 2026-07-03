@@ -1648,7 +1648,7 @@ def top_level_block_lines(workflow_text: str, block_name: str) -> list[str]:
     return lines[start:end]
 
 
-REUSE_SCOPED_ENV_BLOCK_SCALAR_RE = re.compile(r"^[>|][+-0-9]*$")
+REUSE_SCOPED_ENV_BLOCK_SCALAR_RE = re.compile(r"^[>|][-+0-9]*$")
 
 
 def top_level_env_entry_line(workflow_text: str, key: str) -> str:
@@ -1706,7 +1706,7 @@ def workflow_job_block_lines(workflow_text: str, job_name: str) -> list[str]:
 
 def normalize_workflow_scope_lines(lines: list[str]) -> list[str]:
     job_header_re = re.compile(r"^  ['\"]?([A-Za-z0-9_-]+)['\"]?:\s*$")
-    block_scalar_re = re.compile(r":\s*[|>][-+]?\s*$")
+    block_scalar_re = re.compile(r":\s*[|>][-+0-9]*\s*$")
     normalized: list[str] = []
     block_scalar_parent_indent: int | None = None
     for line in lines:

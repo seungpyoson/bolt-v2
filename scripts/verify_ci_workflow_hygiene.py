@@ -9570,7 +9570,8 @@ def fingerprint_reuse_gates_on_consumer_events(job_lines: list[str]) -> bool:
 TOP_LEVEL_ENV_ENTRY_RE = re.compile(
     r"^['\"]?(?P<key>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*:(?P<value>.*)$"
 )
-REUSE_SCOPED_ENV_BLOCK_SCALAR_RE = re.compile(r"^[>|][+-0-9]*$")
+REUSE_SCOPED_ENV_BLOCK_SCALAR_RE = re.compile(r"^[>|][-+0-9]*$")
+WORKFLOW_BLOCK_SCALAR_HEADER_RE = re.compile(r":\s*[|>][-+0-9]*\s*$")
 
 
 def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
@@ -9637,8 +9638,65 @@ def top_level_defaults_reuse_scope_errors(workflow_text: str) -> list[str]:
     for line in workflow_text.splitlines():
         if line.startswith((" ", "\t")):
             continue
-        if re.fullmatch(r"['\"]?defaults['\"]?\s*:\s*", workflow_yaml_structural_line(line)):
+        if re.fullmatch(r"['\"]?defaults['\"]?\s*:.*", workflow_yaml_structural_line(line)):
             return ["top-level defaults must not be used in ci.yml while nextest reuse is enabled"]
+    return []
+
+
+def workflow_structural_line_has_yaml_anchor_or_alias(line: str) -> bool:
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote == '"':
+            if char == "\\":
+                index += 2
+                continue
+            if char == '"':
+                quote = None
+        elif quote == "'":
+            if char == "'":
+                if index + 1 < len(line) and line[index + 1] == "'":
+                    index += 2
+                    continue
+                quote = None
+        else:
+            if char in ("'", '"'):
+                quote = char
+            elif char == "#" and (index == 0 or line[index - 1].isspace()):
+                break
+            elif char in ("&", "*"):
+                previous = line[index - 1] if index > 0 else ""
+                next_char = line[index + 1] if index + 1 < len(line) else ""
+                if (index == 0 or previous.isspace() or previous in "[{,:-") and re.match(
+                    r"[A-Za-z0-9_-]", next_char
+                ):
+                    cursor = index + 2
+                    while cursor < len(line) and re.match(r"[A-Za-z0-9_.-]", line[cursor]):
+                        cursor += 1
+                    following = line[cursor] if cursor < len(line) else ""
+                    if not following or following.isspace() or following in "]},:":
+                        return True
+        index += 1
+    return False
+
+
+def workflow_yaml_anchor_alias_errors(workflow_text: str) -> list[str]:
+    block_scalar_parent_indent: int | None = None
+    for line in workflow_text.splitlines():
+        if block_scalar_parent_indent is not None:
+            indent = len(line) - len(line.lstrip(" \t"))
+            if not line.strip() or indent > block_scalar_parent_indent:
+                continue
+            block_scalar_parent_indent = None
+
+        structural_line = workflow_yaml_structural_line(line)
+        if not structural_line.strip():
+            continue
+        if workflow_structural_line_has_yaml_anchor_or_alias(structural_line):
+            return ["YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled"]
+        if WORKFLOW_BLOCK_SCALAR_HEADER_RE.search(structural_line):
+            block_scalar_parent_indent = len(line) - len(line.lstrip(" \t"))
     return []
 
 
@@ -11486,6 +11544,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "nextest-fingerprint-reuse" in jobs:
         errors.extend(top_level_env_reuse_scope_errors(workflow_text))
         errors.extend(top_level_defaults_reuse_scope_errors(workflow_text))
+        errors.extend(workflow_yaml_anchor_alias_errors(workflow_text))
         reuse_lines = jobs["nextest-fingerprint-reuse"]
         reuse_needs = extract_needs(reuse_lines)
         if "ci-policy" not in reuse_needs:

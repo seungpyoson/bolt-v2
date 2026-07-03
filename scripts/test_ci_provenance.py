@@ -1426,6 +1426,37 @@ def assert_workflow_reuse_scope_digest_preserves_block_scalar_content() -> None:
             raise AssertionError("block scalar comment content must remain part of the reuse-scope digest")
 
 
+def assert_workflow_reuse_scope_digest_preserves_indicated_block_scalar_content() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        source_text = workflow_text.replace(
+            "        run: |\n          python3 scripts/nextest_fingerprint.py",
+            "        run: |2\n          # source indicated block-scalar content\n          python3 scripts/nextest_fingerprint.py",
+            1,
+        )
+        current_text = workflow_text.replace(
+            "        run: |\n          python3 scripts/nextest_fingerprint.py",
+            "        run: |2\n          # current indicated block-scalar content\n          python3 scripts/nextest_fingerprint.py",
+            1,
+        )
+        source_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            source_text.encode("utf-8"),
+        )
+        current_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            current_text.encode("utf-8"),
+        )
+        if source_digest == current_digest:
+            raise AssertionError(
+                "indicated block scalar comment content must remain part of the reuse-scope digest"
+            )
+
+
 def assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -4932,6 +4963,7 @@ def main() -> int:
     assert_workflow_reuse_scope_digest_rejects_multiline_scoped_env()
     assert_workflow_reuse_scope_digest_rejects_folded_scoped_env()
     assert_workflow_reuse_scope_digest_preserves_block_scalar_content()
+    assert_workflow_reuse_scope_digest_preserves_indicated_block_scalar_content()
     assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
     assert_fingerprint_reuse_rejects_failed_source_archive_through_resolver()

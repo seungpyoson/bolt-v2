@@ -1175,7 +1175,7 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
             .and_then(|value| value.as_table())
             .and_then(|order| order.get("order_type"))
             .and_then(|value| value.as_str()),
-        Some("limit")
+        Some("market")
     );
     assert_eq!(
         table
@@ -1184,6 +1184,14 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
             .and_then(|order| order.get("time_in_force"))
             .and_then(|value| value.as_str()),
         Some("fok")
+    );
+    assert_eq!(
+        table
+            .get("entry_order")
+            .and_then(|value| value.as_table())
+            .and_then(|order| order.get("is_quote_quantity"))
+            .and_then(|value| value.as_bool()),
+        Some(true)
     );
     assert_eq!(
         table
@@ -1344,10 +1352,15 @@ fn binary_oracle_runtime_mapping_rejects_post_only_gtc_entry_order_runtime_shape
         .and_then(toml::Value::as_table_mut)
         .expect("fixture parameters should include entry_order table");
     entry_order.insert(
+        "order_type".to_string(),
+        toml::Value::String("limit".to_string()),
+    );
+    entry_order.insert(
         "time_in_force".to_string(),
         toml::Value::String("gtc".to_string()),
     );
     entry_order.insert("is_post_only".to_string(), toml::Value::Boolean(true));
+    entry_order.insert("is_quote_quantity".to_string(), toml::Value::Boolean(false));
 
     let raw =
         binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)

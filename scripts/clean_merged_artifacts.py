@@ -1956,8 +1956,37 @@ def clean_merged_process_cwd_from_proc(pid: int) -> pathlib.Path | None:
         return None
 
 
-def clean_merged_process_cwd(pid: int) -> pathlib.Path | None:
-    return clean_merged_process_cwd_from_proc(pid)
+def clean_merged_process_cwd_from_lsof(pid: int) -> tuple[pathlib.Path | None, str | None]:
+    if shutil.which("lsof") is None:
+        return None, f"process cwd visibility unavailable for pid {pid}: lsof not found"
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=1,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return None, f"process cwd visibility unavailable for pid {pid}: {exc}"
+    if result.returncode != 0:
+        reason = result.stderr.strip() or result.stdout.strip() or str(result.returncode)
+        return None, f"process cwd visibility unavailable for pid {pid}: lsof failed: {reason}"
+    for line in result.stdout.splitlines():
+        if line.startswith("n") and line[1:]:
+            try:
+                return pathlib.Path(line[1:]).resolve(strict=False), None
+            except (OSError, RuntimeError) as exc:
+                return None, f"process cwd visibility unavailable for pid {pid}: {exc}"
+    return None, f"process cwd visibility unavailable for pid {pid}: lsof did not report cwd"
+
+
+def clean_merged_process_cwd(pid: int) -> tuple[pathlib.Path | None, str | None]:
+    proc_cwd = clean_merged_process_cwd_from_proc(pid)
+    if proc_cwd is not None:
+        return proc_cwd, None
+    return clean_merged_process_cwd_from_lsof(pid)
 
 
 def path_is_or_inside(path: pathlib.Path, parent: pathlib.Path) -> bool:
@@ -1993,6 +2022,7 @@ def active_target_dir_processes(
     active: list[dict[str, Any]] = []
     worktree_resolved = worktree.resolve()
     target_resolved = target.resolve()
+    matching_processes: list[tuple[int, str]] = []
     for line in ps.stdout.splitlines():
         stripped = line.strip()
         if not stripped:
@@ -2004,7 +2034,9 @@ def active_target_dir_processes(
             continue
         if not command_matches_patterns(command, config.active_process_patterns):
             continue
-        cwd = clean_merged_process_cwd(pid)
+        matching_processes.append((pid, command))
+    for pid, command in matching_processes:
+        cwd, cwd_error = clean_merged_process_cwd(pid)
         command_mentions_target = str(target_resolved) in command
         cwd_related = cwd is not None and (
             path_is_or_inside(cwd, worktree_resolved) or path_is_or_inside(cwd, target_resolved)
@@ -2015,8 +2047,8 @@ def active_target_dir_processes(
                 "command": command,
                 **({"cwd": str(cwd)} if cwd is not None else {}),
             })
-        elif cwd is None and command_mentions_target:
-            active.append({"pid": pid, "command": command})
+        elif cwd_error is not None:
+            return [], cwd_error
     return active, None
 
 

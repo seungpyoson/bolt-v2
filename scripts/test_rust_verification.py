@@ -1477,6 +1477,36 @@ def assert_global_cargo_target_dir_config_refuses_conflict() -> None:
             raise AssertionError("conflicting global Cargo config was rewritten")
 
 
+def assert_global_cargo_target_dir_config_accepts_resolved_equivalent_path() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        home = tmp_path / "home"
+        config = home / ".cargo" / "config.toml"
+        config.parent.mkdir(parents=True)
+        actual_root = tmp_path / "actual-rust-root"
+        alias_root = tmp_path / "alias-rust-root"
+        actual_root.mkdir()
+        alias_root.symlink_to(actual_root, target_is_directory=True)
+        original = textwrap.dedent(
+            f"""\
+            [build]
+            target-dir = "{alias_root / "bolt-v2" / "target"}"
+            """
+        )
+        config.write_text(original, encoding="utf-8")
+
+        result = run_global_cargo_config_assertion(repo, home=home, root_base=actual_root)
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        if "already-configured" not in result.stdout:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        if config.read_text(encoding="utf-8") != original:
+            raise AssertionError("resolved-equivalent global Cargo config was rewritten")
+
+
 def assert_setup_recipe_asserts_global_cargo_target_dir() -> None:
     source = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     if "assert-global-cargo-target-dir" not in source:
@@ -1516,6 +1546,7 @@ def main() -> int:
     assert_global_cargo_target_dir_config_is_created_and_idempotent()
     assert_global_cargo_target_dir_config_preserves_existing_content()
     assert_global_cargo_target_dir_config_refuses_conflict()
+    assert_global_cargo_target_dir_config_accepts_resolved_equivalent_path()
     assert_setup_recipe_asserts_global_cargo_target_dir()
     print("OK: Rust verification owner self-tests passed.")
     return 0

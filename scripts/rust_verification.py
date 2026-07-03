@@ -707,17 +707,25 @@ def insert_cargo_target_dir(content: str, target_dir_value: str) -> str:
     return f"{prefix}[build]\n{target_line}"
 
 
+def resolved_cargo_target_dir_value(value: str) -> pathlib.Path | None:
+    try:
+        return pathlib.Path(value).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def assert_global_cargo_target_dir(repo: pathlib.Path) -> dict[str, str]:
-    expected = str(target_dir(repo).expanduser().resolve())
+    expected_path = target_dir(repo).expanduser().resolve(strict=False)
+    expected = str(expected_path)
     config_path = global_cargo_config_path()
     try:
         content = config_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         content = ""
     existing = cargo_config_target_dir_value(content, config_path)
-    if existing == expected:
-        return {"config_path": str(config_path), "status": "already-configured", "target_dir": expected}
     if existing is not None:
+        if resolved_cargo_target_dir_value(existing) == expected_path:
+            return {"config_path": str(config_path), "status": "already-configured", "target_dir": expected}
         raise PolicyError(
             "global Cargo build.target-dir already set to "
             f"{existing!r}; expected {expected!r}; refusing to rewrite"

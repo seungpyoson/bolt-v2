@@ -2330,12 +2330,16 @@ class LaneTTargetDirReaperTests(unittest.TestCase):
         _run(["git", "branch", branch], cwd=self.work)
         return add_worktree(self.work, branch, self.tmp / branch.replace("/", "-"))
 
-    def _fake_ps_env(self, body: str = "exit 0\n") -> dict[str, str]:
+    def _fake_ps_env(self, body: str = "exit 0\n", *, lsof_body: str | None = None) -> dict[str, str]:
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir(exist_ok=True)
         ps = bin_dir / "ps"
         ps.write_text(f"#!/usr/bin/env bash\n{body}", encoding="utf-8")
         ps.chmod(0o755)
+        if lsof_body is not None:
+            lsof = bin_dir / "lsof"
+            lsof.write_text(f"#!/usr/bin/env bash\n{lsof_body}", encoding="utf-8")
+            lsof.chmod(0o755)
         return {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
 
     @staticmethod
@@ -2401,6 +2405,46 @@ class LaneTTargetDirReaperTests(unittest.TestCase):
         self.assertEqual(applied.returncode, 0, applied.stderr)
         self.assertTrue(target.exists(), "active target dir must not be removed")
         self.assertIn("target-dir-refused-active-process", applied.stdout)
+
+    def test_target_dir_reaper_uses_lsof_when_proc_cwd_is_unavailable(self) -> None:
+        append_lane_t_config(self.work, active_process_patterns=("cargo",))
+        wt = self._linked_worktree("feat/lsof-target-dir")
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        env = self._fake_ps_env(
+            "printf '123 cargo build\\n'\n",
+            lsof_body=f"printf 'p123\\nfcwd\\nn{target}\\n'\n",
+        )
+        env["CLEAN_MERGED_PROCESS_CWD_BASE"] = str(self.tmp / "missing-proc")
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "lsof-visible active target dir must not be removed")
+        self.assertIn("target-dir-refused-active-process", applied.stdout)
+
+    def test_target_dir_reaper_refuses_when_matching_process_cwd_visibility_fails(self) -> None:
+        append_lane_t_config(self.work, active_process_patterns=("cargo",))
+        wt = self._linked_worktree("feat/no-process-visibility")
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        env = self._fake_ps_env(
+            "printf '123 cargo build\\n'\n",
+            lsof_body="printf 'permission denied\\n' >&2\nexit 1\n",
+        )
+        env["CLEAN_MERGED_PROCESS_CWD_BASE"] = str(self.tmp / "missing-proc")
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "unknown process cwd must fail closed")
+        self.assertIn("target-dir-refused-process-visibility", applied.stdout)
 
     def test_target_dir_reaper_without_config_table_is_noop(self) -> None:
         wt = self._linked_worktree("feat/no-lane-t")

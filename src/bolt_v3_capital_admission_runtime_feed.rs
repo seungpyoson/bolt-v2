@@ -256,7 +256,7 @@ impl CapitalAdmissionRuntimeFeed {
     pub fn on_venue_truth_snapshot(
         &mut self,
         snapshot: VenueTruthSnapshot,
-    ) -> Result<Option<BoltV3SubmitCapitalAdmissionNtComponents>, VenueTruthDivergence> {
+    ) -> Result<Option<BoltV3SubmitCapitalAdmissionNtComponents>, Box<VenueTruthDivergence>> {
         let results = self
             .venue_truth_reconciler
             .record_snapshot_completion(snapshot)?;

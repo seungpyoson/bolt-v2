@@ -307,7 +307,7 @@ impl VenueTruthReconciler {
     pub fn record_snapshot_completion(
         &mut self,
         snapshot: VenueTruthSnapshot,
-    ) -> Result<Vec<VenueTruthReconciliationResult>, VenueTruthDivergence> {
+    ) -> Result<Vec<VenueTruthReconciliationResult>, Box<VenueTruthDivergence>> {
         self.record_snapshot_completion_without_processing(snapshot);
         self.process_completed_captures()
     }
@@ -325,7 +325,7 @@ impl VenueTruthReconciler {
 
     pub fn process_completed_captures(
         &mut self,
-    ) -> Result<Vec<VenueTruthReconciliationResult>, VenueTruthDivergence> {
+    ) -> Result<Vec<VenueTruthReconciliationResult>, Box<VenueTruthDivergence>> {
         let mut results = Vec::new();
         loop {
             if self.pending_capture.is_some() {
@@ -351,12 +351,12 @@ impl VenueTruthReconciler {
                         continue;
                     }
                     Err(kind) => {
-                        return Err(self.classified_divergence(
+                        return Err(Box::new(self.classified_divergence(
                             kind,
                             &pending.capture,
                             pending.event_count_at_first_judgment,
                             pending.venue_event_count_at_first_judgment,
-                        ));
+                        )));
                     }
                 }
             }
@@ -374,12 +374,12 @@ impl VenueTruthReconciler {
                     if fence_already_completed
                         || kind == VenueTruthDivergenceKind::OrderingViolation =>
                 {
-                    return Err(self.classified_divergence(
+                    return Err(Box::new(self.classified_divergence(
                         kind,
                         &capture,
                         capture.event_count_at_completion,
                         capture.venue_event_count_at_completion,
-                    ));
+                    )));
                 }
                 Err(_kind) => {
                     self.pending_capture = Some(VenueTruthPendingCapture {
@@ -408,7 +408,7 @@ impl VenueTruthReconciler {
     pub fn reconcile_snapshot(
         &mut self,
         snapshot: VenueTruthSnapshot,
-    ) -> Result<VenueTruthReconciliation, VenueTruthDivergence> {
+    ) -> Result<VenueTruthReconciliation, Box<VenueTruthDivergence>> {
         let results = self.record_snapshot_completion(snapshot)?;
         let Some(result) = results.last() else {
             return Ok(VenueTruthReconciliation::DeltaPending);
@@ -674,14 +674,14 @@ fn explain_open_order_delta(
                     return Err(VenueTruthDivergenceKind::UnexplainedOpenOrderDelta);
                 }
                 let matched_delta = current_order.size_matched - previous_order.size_matched;
-                if matched_delta > Decimal::ZERO {
-                    if !consume_decimal(
+                if matched_delta > Decimal::ZERO
+                    && !consume_decimal(
                         &mut projection.fill_quantity_by_venue_order_id,
                         venue_order_id,
                         matched_delta,
-                    ) {
-                        return Err(VenueTruthDivergenceKind::UnexplainedOpenOrderDelta);
-                    }
+                    )
+                {
+                    return Err(VenueTruthDivergenceKind::UnexplainedOpenOrderDelta);
                 }
             }
         }

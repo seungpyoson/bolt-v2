@@ -244,7 +244,7 @@ async fn run_venue_truth_runtime(
         captures_missed = 0;
         let reconcile = reconcile_venue_truth_snapshot(&feed, snapshot);
         if let Err(divergence) = reconcile {
-            halt_for_venue_truth_divergence(&submit_admission, &stop_handle, divergence);
+            halt_for_venue_truth_divergence(&submit_admission, &stop_handle, *divergence);
             break;
         }
     }
@@ -255,7 +255,7 @@ fn reconcile_venue_truth_snapshot(
     snapshot: crate::bolt_v3_venue_truth::VenueTruthSnapshot,
 ) -> Result<
     Option<BoltV3SubmitCapitalAdmissionNtComponents>,
-    crate::bolt_v3_venue_truth::VenueTruthDivergence,
+    Box<crate::bolt_v3_venue_truth::VenueTruthDivergence>,
 > {
     let mut feed = feed
         .lock()

@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn startup_rebuild_recovers_known_submit_reservation_from_nt_cache() {
+fn startup_rebuild_does_not_recover_known_submit_reservation_from_nt_cache_without_venue_truth() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
     let metadata = fixture_submit_reservation_metadata(
@@ -38,26 +38,26 @@ fn startup_rebuild_recovers_known_submit_reservation_from_nt_cache() {
     assert_eq!(
         rebuild,
         BoltV3SubmitCapitalAdmissionRebuildDecision {
-            accepted: true,
-            reason: None,
+            accepted: false,
+            reason: Some(ReservationRejectionReason::MissingEvidence),
             attempted_reservation_count: 1,
-            rebuilt_reservation_count: 1,
-            live_reserved_liability: Decimal::new(27, 1),
+            rebuilt_reservation_count: 0,
+            live_reserved_liability: Decimal::ZERO,
             missing_nt_account_cache_balance: None,
         }
     );
-    assert_eq!(runtime.capital_admission_reconciled(), Some(true));
+    assert_eq!(runtime.capital_admission_reconciled(), Some(false));
     assert_eq!(
         runtime
             .submit_admission
             .capital_admission_live_reserved_liability(),
-        Some(Decimal::new(27, 1))
+        Some(Decimal::ZERO)
     );
     assert!(
-        runtime
+        !runtime
             .submit_admission
             .capital_admission_has_live_reservation("startup-known-client-order"),
-        "startup rebuild must install the recovered reservation for later fill/cancel release"
+        "NT cache alone must not install recovered reservations without accepted venue truth"
     );
 }
 
@@ -150,20 +150,21 @@ fn startup_rebuild_reports_missing_nt_account_cache_balance() {
         feed.lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .on_account_state(&account_state)
-            .is_some(),
-        "account state should still publish sizing components once collateral facts arrive"
+            .is_none(),
+        "NT account state is advisory-only and cannot publish money readiness without venue truth"
     );
     assert_eq!(
         runtime.capital_admission_reconciled(),
         Some(false),
-        "missing startup account cache means the pre-run empty order cache is not authoritative"
+        "NT account state cannot convert missing startup venue truth into readiness"
     );
-    let state = runtime
-        .submit_admission
-        .capital_admission_state_snapshot()
-        .expect("account state should publish an unreconciled sizing state");
-    assert_eq!(state.order_lifecycle.source, "nt_order_lifecycle_seed");
-    assert!(!state.order_lifecycle.all_open_orders_attributed);
+    assert!(
+        runtime
+            .submit_admission
+            .capital_admission_state_snapshot()
+            .is_none(),
+        "NT account state must not publish capital admission state before accepted venue truth"
+    );
 }
 
 #[test]
@@ -281,7 +282,7 @@ fn manual_recovery_evidence_clears_live_reducing_state_after_fresh_snapshot() {
 }
 
 #[test]
-fn startup_rebuild_seeds_nt_cached_free_collateral_when_balance_has_locked_amount() {
+fn startup_rebuild_nt_cached_balance_is_advisory_without_venue_truth() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
     let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
@@ -308,23 +309,25 @@ fn startup_rebuild_seeds_nt_cached_free_collateral_when_balance_has_locked_amoun
 
     let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
 
-    assert_eq!(rebuild.missing_nt_account_cache_balance, None);
-    assert_eq!(runtime.capital_admission_reconciled(), Some(true));
-    let state = runtime
-        .submit_admission
-        .capital_admission_state_snapshot()
-        .expect("startup rebuild should seed capital admission state");
-    assert_eq!(state.portfolio.free_collateral, Decimal::new(60, 0));
-    assert_eq!(state.portfolio.total_equity, Decimal::new(100, 0));
-    assert_ne!(
-        state.portfolio.free_collateral, state.portfolio.total_equity,
-        "fixture must prove locked collateral is not treated as spendable"
-    );
-    match state.product_state {
-        ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
-            assert_eq!(snapshot.collateral_allowance, Decimal::new(60, 0));
+    assert_eq!(
+        rebuild,
+        BoltV3SubmitCapitalAdmissionRebuildDecision {
+            accepted: false,
+            reason: Some(ReservationRejectionReason::MissingEvidence),
+            attempted_reservation_count: 0,
+            rebuilt_reservation_count: 0,
+            live_reserved_liability: Decimal::ZERO,
+            missing_nt_account_cache_balance: None,
         }
-    }
+    );
+    assert_eq!(runtime.capital_admission_reconciled(), Some(false));
+    assert!(
+        runtime
+            .submit_admission
+            .capital_admission_state_snapshot()
+            .is_none(),
+        "cached NT balance is advisory and cannot seed capital admission without accepted venue truth"
+    );
 }
 
 #[test]

@@ -19539,7 +19539,7 @@ classification = "policy_epoch_envelope_zero_bound_reject"
 reason = "A safety-policy envelope with zero quantity-policy versions cannot approve any prepared quantity-policy bundle; the bound is envelope-owned, while zero is the structural empty-bound rejection sentinel."
 
 [[allowed]]
-path = "src/bolt_v3_capital_admission_runtime_feed.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"polymarket_venue_truth_rest"'''
 context = '''pub const POLYMARKET_VENUE_TRUTH_REST_SOURCE: &str = "polymarket_venue_truth_rest";'''

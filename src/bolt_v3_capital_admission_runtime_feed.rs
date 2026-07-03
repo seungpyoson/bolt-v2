@@ -42,7 +42,7 @@ const CAPITAL_ADMISSION_ORDER_TERMINAL_SOURCE: &str = stringify!(nt_order_termin
 const NT_ACCOUNT_STATE_PORTFOLIO_SOURCE: &str = stringify!(nt_account_state);
 const NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE: &str = "nt_account_cache";
 const NT_PORTFOLIO_SNAPSHOT_SOURCE: &str = "nt_portfolio_snapshot";
-pub const POLYMARKET_VENUE_TRUTH_REST_SOURCE: &str = "polymarket_venue_truth_rest";
+pub use crate::bolt_v3_capital_admission_state::POLYMARKET_VENUE_TRUTH_REST_SOURCE;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct PositionFillTradeKey {
@@ -671,18 +671,22 @@ impl CapitalAdmissionRuntimeComponentBuilder {
                 (client_order_id.clone(), attributed)
             })
             .collect();
-        self.order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
-            source: "nt_open_order_cache".to_string(),
-            observed_at_ns,
-            open_order_count: self.live_order_attribution.len(),
-            all_open_orders_attributed: self.all_live_orders_attributed(),
-        };
+        if !source_is_accepted_venue_truth(&self.order_lifecycle.source) {
+            self.order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
+                source: "nt_open_order_cache".to_string(),
+                observed_at_ns,
+                open_order_count: self.live_order_attribution.len(),
+                all_open_orders_attributed: self.all_live_orders_attributed(),
+            };
+        }
         match &mut self.product_state {
             ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
-                snapshot.source = "nt_position_cache".to_string();
-                snapshot.observed_at_ns = observed_at_ns;
-                snapshot.yes_position = yes_position;
-                snapshot.no_position = no_position;
+                if !source_is_accepted_venue_truth(&snapshot.source) {
+                    snapshot.source = "nt_position_cache".to_string();
+                    snapshot.observed_at_ns = observed_at_ns;
+                    snapshot.yes_position = yes_position;
+                    snapshot.no_position = no_position;
+                }
             }
         }
     }
@@ -979,6 +983,10 @@ fn portfolio_accepts_nt_free_collateral(source: &str) -> bool {
             | NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE
             | NT_PORTFOLIO_SNAPSHOT_SOURCE
     )
+}
+
+fn source_is_accepted_venue_truth(source: &str) -> bool {
+    source == POLYMARKET_VENUE_TRUTH_REST_SOURCE
 }
 
 fn venue_truth_position_for_instrument(

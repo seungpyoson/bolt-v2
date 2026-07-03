@@ -230,6 +230,68 @@ fn accepted_venue_truth_open_orders_override_stale_nt_live_order_attribution() {
 }
 
 #[test]
+fn accepted_venue_truth_survives_later_nt_cache_seed_and_reservation_rebuild() {
+    let admission = Arc::new(polymarket_capital_admission_configured_admission());
+    arm_default(&admission);
+    let mut feed =
+        CapitalAdmissionRuntimeFeed::new(polymarket_runtime_feed_config(), admission.clone());
+
+    let components = feed
+        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot_with_orders_and_positions(
+            1_200,
+            Decimal::new(100_000_000, 0),
+            Decimal::new(100_000_000, 0),
+        ))
+        .expect("initial venue truth baseline should be explainable")
+        .expect("accepted venue truth should publish components");
+    assert_eq!(
+        components.order_lifecycle.source,
+        POLYMARKET_VENUE_TRUTH_REST_SOURCE
+    );
+
+    let seeded_components = feed
+        .seed_cache_snapshot(
+            vec!["stale-nt-cache-order".to_string()],
+            Decimal::new(99, 0),
+            Decimal::new(88, 0),
+            1_300,
+        )
+        .expect("accepted venue truth remains sufficient after advisory NT cache seed");
+    assert_eq!(
+        seeded_components.order_lifecycle.source,
+        POLYMARKET_VENUE_TRUTH_REST_SOURCE
+    );
+    assert_eq!(seeded_components.order_lifecycle.open_order_count, 1);
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = seeded_components.product_state;
+    assert_eq!(product.source, POLYMARKET_VENUE_TRUTH_REST_SOURCE);
+    assert_eq!(product.yes_position, Decimal::new(7, 0));
+    assert_eq!(product.no_position, Decimal::new(2, 0));
+
+    let mut recovered_reservation = open_order_reservation(
+        "client-order-1",
+        "client-order-1#rebuilt",
+        Decimal::new(43, 1),
+    );
+    recovered_reservation.observed_at_ns = 1_350;
+    let rebuild = admission
+        .rebuild_capital_admission_open_order_reservations(vec![recovered_reservation], 1_350);
+    assert!(rebuild.accepted, "rebuild should accept: {rebuild:?}");
+    let state = admission
+        .capital_admission_state_snapshot()
+        .expect("accepted venue truth should remain capital admission state");
+    assert_eq!(
+        state.order_lifecycle.source,
+        POLYMARKET_VENUE_TRUTH_REST_SOURCE
+    );
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+}
+
+#[test]
 fn polymarket_venue_truth_allowance_is_not_min_clamped_by_nt_account_free_collateral() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission);

@@ -7,6 +7,7 @@ use crate::bolt_v3_capital_admission::{
 use crate::bolt_v3_capital_admission_state::{
     NtDerivedCapitalAdmissionState, OrderLifecycleCapitalAdmissionSnapshot,
     PortfolioCapitalAdmissionSnapshot, ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
+    capital_admission_source_is_accepted_venue_truth,
 };
 use crate::bolt_v3_capital_reservation::{
     CapitalPoolSnapshot, ReservationRejectionReason, ReservationRequest,
@@ -901,7 +902,9 @@ impl BoltV3SubmitAdmissionState {
                 && let Some(state) = capital_admission.state.as_mut()
             {
                 state.observed_at_ns = state.observed_at_ns.max(snapshot.observed_at_ns);
-                state.order_lifecycle = rebuilt_order_lifecycle;
+                if !order_lifecycle_is_accepted_venue_truth(&state.order_lifecycle) {
+                    state.order_lifecycle = rebuilt_order_lifecycle;
+                }
             }
             capital_admission.gate = CapitalAdmissionGate::unreconciled();
             capital_admission.client_order_reservations.clear();
@@ -1030,7 +1033,9 @@ impl BoltV3SubmitAdmissionState {
                 && let Some(state) = capital_admission.state.as_mut()
             {
                 state.observed_at_ns = state.observed_at_ns.max(now_ns);
-                state.order_lifecycle = rebuilt_order_lifecycle;
+                if !order_lifecycle_is_accepted_venue_truth(&state.order_lifecycle) {
+                    state.order_lifecycle = rebuilt_order_lifecycle;
+                }
             }
             refresh_capital_admission_reservation_snapshot(capital_admission, now_ns);
         }
@@ -3752,6 +3757,12 @@ fn preserve_fresher_order_lifecycle(
     if current_is_newer || incoming_is_same_open_set_downgrade {
         components.order_lifecycle = current.clone();
     }
+}
+
+fn order_lifecycle_is_accepted_venue_truth(
+    order_lifecycle: &OrderLifecycleCapitalAdmissionSnapshot,
+) -> bool {
+    capital_admission_source_is_accepted_venue_truth(&order_lifecycle.source)
 }
 
 fn refresh_capital_admission_reservation_snapshot(

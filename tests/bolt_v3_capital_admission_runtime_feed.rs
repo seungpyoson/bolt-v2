@@ -53,7 +53,15 @@ use nautilus_model::{
     },
     types::{AccountBalance, Currency, Money, Price, Quantity},
 };
-use nautilus_polymarket::http::query::BalanceAllowance;
+use nautilus_polymarket::{
+    common::enums::{
+        PolymarketOrderSide, PolymarketOrderStatus, PolymarketOrderType, PolymarketOutcome,
+    },
+    http::{
+        models::{DataApiPosition, PolymarketOpenOrder},
+        query::BalanceAllowance,
+    },
+};
 use rust_decimal::Decimal;
 use ustr::Ustr;
 
@@ -88,7 +96,7 @@ fn runtime_feed_uses_verified_nt_msgbus_symbols() {
 }
 
 #[test]
-fn subscribed_account_and_portfolio_events_publish_account_spendability() {
+fn subscribed_account_and_portfolio_events_remain_advisory_without_venue_truth() {
     let admission = Arc::new(capital_admission_configured_admission());
     let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
         runtime_feed_config(),
@@ -106,41 +114,17 @@ fn subscribed_account_and_portfolio_events_publish_account_spendability() {
     );
     subscription.unsubscribe_all();
 
-    let snapshot = admission
-        .capital_admission_state_snapshot()
-        .expect("account and portfolio events should publish account-derived spendability");
-    assert_eq!(snapshot.observed_at_ns, 1_100);
     assert_eq!(
-        snapshot.venue_spendability.source,
-        "nt_account_free_collateral"
-    );
-    assert_eq!(
-        snapshot.venue_spendability.spendable_collateral,
-        Decimal::new(4500, 2)
-    );
-    assert_eq!(
-        admission.capital_admission_state_observed_at_ns(),
-        Some(1_100)
+        admission.capital_admission_state_snapshot(),
+        None,
+        "NT account and portfolio events are advisory and must not satisfy Polymarket money readiness"
     );
 }
 
 #[test]
-fn polymarket_venue_truth_snapshot_promotes_rest_spendability() {
+fn polymarket_venue_truth_snapshot_alone_promotes_money_readiness() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        1_000,
-        100.0,
-    ));
-    let _ = feed.on_portfolio_snapshot(&portfolio_snapshot(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        1_100,
-        100.0,
-    ));
 
     let components = feed
         .on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
@@ -149,7 +133,7 @@ fn polymarket_venue_truth_snapshot_promotes_rest_spendability() {
             Decimal::new(40_000_000, 0),
         ))
         .expect("initial venue truth baseline should be explainable")
-        .expect("account, portfolio, and venue truth should publish components");
+        .expect("accepted venue truth alone should publish money components");
 
     assert_eq!(
         components.venue_spendability.source,
@@ -163,6 +147,9 @@ fn polymarket_venue_truth_snapshot_promotes_rest_spendability() {
         components.venue_spendability.collateral_allowance,
         Decimal::new(40, 0)
     );
+    assert_eq!(components.portfolio.source, "polymarket_venue_truth_rest");
+    assert_eq!(components.portfolio.free_collateral, Decimal::new(45, 0));
+    assert_eq!(components.portfolio.total_equity, Decimal::new(45, 0));
     assert_eq!(
         admission
             .capital_admission_state_snapshot()
@@ -170,6 +157,110 @@ fn polymarket_venue_truth_snapshot_promotes_rest_spendability() {
             .venue_spendability
             .source,
         "polymarket_venue_truth_rest"
+    );
+}
+
+#[test]
+fn polymarket_venue_truth_snapshot_promotes_open_orders_and_positions() {
+    let admission = Arc::new(polymarket_capital_admission_configured_admission());
+    let mut feed =
+        CapitalAdmissionRuntimeFeed::new(polymarket_runtime_feed_config(), admission.clone());
+
+    let components = feed
+        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot_with_orders_and_positions(
+            1_200,
+            Decimal::new(45_000_000, 0),
+            Decimal::new(40_000_000, 0),
+        ))
+        .expect("initial venue truth baseline should be explainable")
+        .expect("accepted venue truth alone should publish full money components");
+
+    assert_eq!(
+        components.order_lifecycle.source,
+        POLYMARKET_VENUE_TRUTH_REST_SOURCE
+    );
+    assert_eq!(components.order_lifecycle.open_order_count, 1);
+    assert!(components.order_lifecycle.all_open_orders_attributed);
+
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.source, POLYMARKET_VENUE_TRUTH_REST_SOURCE);
+    assert_eq!(product.observed_at_ns, 1_200);
+    assert_eq!(product.yes_position, Decimal::new(7, 0));
+    assert_eq!(product.no_position, Decimal::new(2, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(9, 0));
+    assert_eq!(product.collateral_allowance, Decimal::new(40, 0));
+}
+
+#[test]
+fn accepted_venue_truth_open_orders_override_stale_nt_live_order_attribution() {
+    let admission = Arc::new(capital_admission_configured_admission());
+    arm_default(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    let _ = feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-1",
+        1_025,
+        AccountId::from("ACCOUNT-001"),
+    )));
+    admission
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_050)
+        .expect("test reservation should be admitted after rebuilding the startup gate")
+        .commit_submitted();
+
+    let components = feed
+        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
+            1_200,
+            Decimal::new(100_000_000, 0),
+            Decimal::new(100_000_000, 0),
+        ))
+        .expect("initial venue truth baseline should be explainable")
+        .expect("accepted venue truth should publish components");
+
+    assert_eq!(
+        components.order_lifecycle.source,
+        POLYMARKET_VENUE_TRUTH_REST_SOURCE
+    );
+    assert_eq!(
+        components.order_lifecycle.open_order_count, 0,
+        "accepted venue truth open-order count must not be overwritten by stale NT attribution memory"
+    );
+    assert!(components.order_lifecycle.all_open_orders_attributed);
+}
+
+#[test]
+fn polymarket_venue_truth_allowance_is_not_min_clamped_by_nt_account_free_collateral() {
+    let admission = Arc::new(capital_admission_configured_admission());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission);
+
+    let _ = feed.on_account_state(&account_state(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        1_000,
+        10.0,
+    ));
+    let _ = feed.on_portfolio_snapshot(&portfolio_snapshot(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        1_050,
+        10.0,
+    ));
+
+    let components = feed
+        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
+            1_200,
+            Decimal::new(45_000_000, 0),
+            Decimal::new(40_000_000, 0),
+        ))
+        .expect("initial venue truth baseline should be explainable")
+        .expect("accepted venue truth should publish components");
+
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(
+        product.collateral_allowance,
+        Decimal::new(40, 0),
+        "accepted venue truth allowance must not be min-clamped by stale NT free collateral"
     );
 }
 
@@ -317,15 +408,35 @@ fn feed_waits_for_matching_account_identity_before_publish() {
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
-        feed.on_account_state(&account_state(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
+        feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
             1_000,
-            45.0
+            Decimal::new(45_000_000, 0),
+            Decimal::new(40_000_000, 0),
         ))
+        .expect("matching venue truth snapshot should reconcile")
         .is_some()
     );
     assert!(admission.capital_admission_state_snapshot().is_some());
+
+    let admission = Arc::new(capital_admission_configured_admission());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut wrong_account_venue_truth = polymarket_venue_truth_snapshot(
+        1_025,
+        Decimal::new(45_000_000, 0),
+        Decimal::new(40_000_000, 0),
+    );
+    wrong_account_venue_truth.account_id = AccountId::from("OTHER-ACCOUNT");
+    assert!(
+        feed.on_venue_truth_snapshot(wrong_account_venue_truth)
+            .expect("wrong-account initial venue truth should not be a reconciliation divergence")
+            .is_none()
+    );
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(1_050, 45, 40))
+            .is_none(),
+        "wrong-account venue truth must not seed portfolio/product state for a later matching spendability snapshot"
+    );
+    assert_eq!(admission.capital_admission_state_snapshot(), None);
 
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
@@ -362,9 +473,9 @@ fn feed_waits_for_matching_account_identity_before_publish() {
             1_300,
             45.0
         ))
-        .is_some()
+        .is_none()
     );
-    assert!(admission.capital_admission_state_snapshot().is_some());
+    assert_eq!(admission.capital_admission_state_snapshot(), None);
 
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
@@ -381,37 +492,25 @@ fn feed_waits_for_matching_account_identity_before_publish() {
 }
 
 #[test]
-fn feed_derives_default_venue_spendability_from_nt_account_free_collateral() {
+fn feed_does_not_derive_default_venue_spendability_from_nt_account_free_collateral() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
-    let components = feed
-        .on_account_state(&account_state(
+    assert!(
+        feed.on_account_state(&account_state(
             AccountId::from("ACCOUNT-001"),
             "USD",
             1_000,
             45.0,
         ))
-        .expect("NT account state should publish default spendability");
-
-    assert_eq!(
-        components.venue_spendability.source,
-        "nt_account_free_collateral"
+        .is_none(),
+        "NT AccountState is advisory-only and must not create venue spendability"
     );
-    assert_eq!(
-        components.venue_spendability.spendable_collateral,
-        Decimal::new(45, 0)
-    );
-    assert_eq!(
-        components.venue_spendability.collateral_allowance,
-        Decimal::new(45, 0)
-    );
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
-    assert_eq!(product.collateral_allowance, Decimal::new(45, 0));
+    assert_eq!(admission.capital_admission_state_snapshot(), None);
 }
 
 #[test]
-fn feed_derives_collateral_allowance_from_venue_spendability_minimum() {
+fn feed_derives_collateral_allowance_from_venue_allowance() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
@@ -499,7 +598,7 @@ fn recomputed_product_allowance_carries_fresh_component_timestamp() {
 }
 
 #[test]
-fn feed_uses_spendable_collateral_when_it_binds_before_allowance() {
+fn feed_does_not_use_spendable_collateral_as_product_allowance() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
@@ -517,7 +616,11 @@ fn feed_uses_spendable_collateral_when_it_binds_before_allowance() {
         .expect("complete spendability/account state should publish");
 
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
-    assert_eq!(product.collateral_allowance, Decimal::new(25, 0));
+    assert_eq!(
+        product.collateral_allowance,
+        Decimal::new(30, 0),
+        "product allowance comes from venue allowance and is not min-clamped by spendable collateral"
+    );
 }
 
 #[test]
@@ -2424,6 +2527,15 @@ fn runtime_feed_config() -> CapitalAdmissionRuntimeFeedConfig {
     }
 }
 
+fn polymarket_runtime_feed_config() -> CapitalAdmissionRuntimeFeedConfig {
+    let mut config = runtime_feed_config();
+    config.venue_id = "POLYMARKET".to_string();
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
+    product.yes_instrument_id = "condition-yes123.POLYMARKET".to_string();
+    product.no_instrument_id = "condition-no456.POLYMARKET".to_string();
+    config
+}
+
 fn account_state(
     account_id: AccountId,
     currency_code: &str,
@@ -2503,10 +2615,24 @@ fn capital_admission_configured_admission() -> BoltV3SubmitAdmissionState {
 fn capital_admission_configured_admission_with_writer(
     writer: Arc<dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
 ) -> BoltV3SubmitAdmissionState {
+    capital_admission_configured_admission_with_writer_and_venue(writer, "VENUE-A")
+}
+
+fn polymarket_capital_admission_configured_admission() -> BoltV3SubmitAdmissionState {
+    capital_admission_configured_admission_with_writer_and_venue(
+        Arc::new(support::RecordingDecisionEvidenceWriter::default()),
+        "POLYMARKET",
+    )
+}
+
+fn capital_admission_configured_admission_with_writer_and_venue(
+    writer: Arc<dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    venue_id: &str,
+) -> BoltV3SubmitAdmissionState {
     BoltV3SubmitAdmissionState::new_with_capital_admission(
         writer,
         BoltV3SubmitCapitalAdmissionConfig {
-            venue_id: "VENUE-A".to_string(),
+            venue_id: venue_id.to_string(),
             account_id: "ACCOUNT-001".to_string(),
             product_kind: ProductKind::PredictionMarketBinary,
             collateral_currency: "USD".to_string(),
@@ -2743,6 +2869,70 @@ fn polymarket_venue_truth_snapshot(
         positions: Vec::new(),
     })
     .expect("test venue truth snapshot should be valid")
+}
+
+fn polymarket_venue_truth_snapshot_with_orders_and_positions(
+    captured_at: u64,
+    balance: Decimal,
+    allowance: Decimal,
+) -> VenueTruthSnapshot {
+    build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
+        captured_at: UnixNanos::from(captured_at),
+        account_id: AccountId::from("ACCOUNT-001"),
+        collateral_currency: Currency::from("USD"),
+        collateral: BalanceAllowance {
+            balance,
+            allowance: Some(allowance),
+        },
+        open_orders: vec![polymarket_open_order(
+            "venue-order-1",
+            "condition",
+            "yes123",
+            Decimal::new(10, 0),
+            Decimal::new(4, 0),
+        )],
+        positions: vec![
+            DataApiPosition {
+                asset: "yes123".to_string(),
+                condition_id: "condition".to_string(),
+                size: 7.0,
+                avg_price: Some(0.42),
+            },
+            DataApiPosition {
+                asset: "no456".to_string(),
+                condition_id: "condition".to_string(),
+                size: 2.0,
+                avg_price: Some(0.58),
+            },
+        ],
+    })
+    .expect("test venue truth snapshot should be valid")
+}
+
+fn polymarket_open_order(
+    id: &str,
+    market: &str,
+    asset_id: &str,
+    original_size: Decimal,
+    size_matched: Decimal,
+) -> PolymarketOpenOrder {
+    PolymarketOpenOrder {
+        associate_trades: None,
+        id: id.to_string(),
+        status: PolymarketOrderStatus::Live,
+        market: Ustr::from(market),
+        original_size,
+        outcome: PolymarketOutcome::yes(),
+        maker_address: "maker".to_string(),
+        owner: "owner".to_string(),
+        price: Decimal::new(42, 2),
+        side: PolymarketOrderSide::Buy,
+        size_matched,
+        asset_id: Ustr::from(asset_id),
+        expiration: None,
+        order_type: PolymarketOrderType::GTC,
+        created_at: 1_000,
+    }
 }
 
 fn order_canceled_event(client_order_id: &str, ts_event: u64) -> OrderCanceled {

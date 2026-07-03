@@ -14244,14 +14244,6 @@ reason = "Evidence source label for startup account sizing components seeded fro
 [[allowed]]
 path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
-literal = '''"nt_account_free_collateral"'''
-context = '''const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";'''
-classification = "capital_admission_evidence_source_label"
-reason = "Evidence source label for spendable collateral derived from NT account free collateral; the value remains NT-owned."
-
-[[allowed]]
-path = "src/bolt_v3_capital_admission_runtime_feed.rs"
-kind = "string"
 literal = '''"nt_open_order_cache"'''
 context = '''source: "nt_open_order_cache".to_string(),'''
 classification = "capital_admission_evidence_source_label"
@@ -14293,7 +14285,7 @@ reason = "Evidence source label for the empty startup lifecycle seed before NT c
 path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_portfolio_snapshot"'''
-context = '''source: "nt_portfolio_snapshot".to_string(),'''
+context = '''const NT_PORTFOLIO_SNAPSHOT_SOURCE: &str = "nt_portfolio_snapshot";'''
 classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for portfolio/account sizing components derived from NT account and portfolio events."
 

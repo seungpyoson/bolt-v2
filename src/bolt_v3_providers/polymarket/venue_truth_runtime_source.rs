@@ -24,6 +24,7 @@ use nautilus_polymarket::{
 };
 use rust_decimal::Decimal;
 
+use crate::bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id;
 use crate::bolt_v3_venue_truth::{
     VenueTruthCaptureEndpointError, VenueTruthOpenOrder, VenueTruthOrderEvent,
     VenueTruthOrderEventMapper, VenueTruthOrderEventTimestampDomain, VenueTruthSnapshot,
@@ -240,11 +241,7 @@ pub fn extract_polymarket_token_id(instrument_id: &InstrumentId) -> Option<Strin
     if instrument_id.venue.as_str() != POLYMARKET {
         return None;
     }
-    instrument_id
-        .symbol
-        .as_str()
-        .rsplit_once('-')
-        .and_then(|(_, token_id)| (!token_id.is_empty()).then(|| token_id.to_string()))
+    prediction_market_product_id_from_instrument_id(instrument_id)
 }
 
 pub fn build_polymarket_venue_truth_snapshot(

@@ -770,12 +770,86 @@ fn exit_decision_evidence_writes_one_durable_line_and_readers_skip_it() {
         vec![BoltV3ForcedFlatReason::StaleReference]
     );
     assert_eq!(decoded.exit_ev_bps.as_deref(), Some("3.5"));
+    assert_eq!(
+        lines[0]["exit_decision"]["spot_price"],
+        serde_json::json!("3100.5")
+    );
+    assert_eq!(
+        lines[0]["exit_decision"]["reference_current_price"],
+        serde_json::json!("3099.75")
+    );
+    assert_eq!(
+        lines[0]["exit_decision"]["fast_venue_available"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        lines[0]["exit_decision"]["reference_current_price_available"],
+        serde_json::json!(true)
+    );
+    assert_eq!(decoded.spot_venue_name.as_deref(), Some("venue-one"));
+    assert_eq!(decoded.interval_open.as_deref(), Some("3100"));
+    assert_eq!(decoded.fair_probability_up.as_deref(), Some("0.55"));
+    assert_eq!(decoded.fair_probability_down.as_deref(), Some("0.45"));
+    assert_eq!(
+        decoded.uncertainty_band_probability.as_deref(),
+        Some("0.02")
+    );
+    assert_eq!(decoded.up_fee_bps.as_deref(), Some("1.25"));
+    assert_eq!(decoded.down_fee_bps.as_deref(), Some("2.5"));
+    assert_eq!(decoded.submission_order_side.as_deref(), Some("Sell"));
+    assert_eq!(decoded.submission_price.as_deref(), Some("0.49"));
+    assert_eq!(decoded.submission_quantity.as_deref(), Some("1"));
 
     append_decision_evidence_lines(&evidence_path, &sample_entry_decision_evidence_lines());
     read_latest_entry_decision_evidence_chain(&evidence_path, 100_000)
         .expect("exit decision record must not block entry-chain recovery");
     read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
         .expect("exit decision record must not block submit-reservation recovery");
+}
+
+#[test]
+fn exit_decision_observed_inputs_default_absent_for_predeploy_lines() {
+    let mut value = serde_json::to_value(sample_exit_decision_evidence())
+        .expect("exit decision evidence should encode as json");
+    let object = value
+        .as_object_mut()
+        .expect("exit decision should encode as an object");
+    for field in [
+        "spot_price",
+        "spot_venue_name",
+        "fast_venue_available",
+        "reference_current_price",
+        "reference_current_price_available",
+        "interval_open",
+        "fair_probability_up",
+        "fair_probability_down",
+        "uncertainty_band_probability",
+        "up_fee_bps",
+        "down_fee_bps",
+        "submission_order_side",
+        "submission_price",
+        "submission_quantity",
+    ] {
+        object.remove(field);
+    }
+
+    let decoded: BoltV3ExitDecisionEvidence =
+        serde_json::from_value(value).expect("predeploy exit decision should decode");
+
+    assert_eq!(decoded.spot_price, None);
+    assert_eq!(decoded.spot_venue_name, None);
+    assert!(!decoded.fast_venue_available);
+    assert_eq!(decoded.reference_current_price, None);
+    assert!(!decoded.reference_current_price_available);
+    assert_eq!(decoded.interval_open, None);
+    assert_eq!(decoded.fair_probability_up, None);
+    assert_eq!(decoded.fair_probability_down, None);
+    assert_eq!(decoded.uncertainty_band_probability, None);
+    assert_eq!(decoded.up_fee_bps, None);
+    assert_eq!(decoded.down_fee_bps, None);
+    assert_eq!(decoded.submission_order_side, None);
+    assert_eq!(decoded.submission_price, None);
+    assert_eq!(decoded.submission_quantity, None);
 }
 
 #[test]
@@ -938,6 +1012,17 @@ fn sample_exit_decision_evidence() -> BoltV3ExitDecisionEvidence {
         position_instrument_id: Some("instrument-up".to_string()),
         position_outcome_side: Some(BoltV3OutcomeSide::Up),
         forced_flat_reasons: vec![BoltV3ForcedFlatReason::StaleReference],
+        spot_price: Some("3100.5".to_string()),
+        spot_venue_name: Some("venue-one".to_string()),
+        fast_venue_available: true,
+        reference_current_price: Some("3099.75".to_string()),
+        reference_current_price_available: true,
+        interval_open: Some("3100".to_string()),
+        fair_probability_up: Some("0.55".to_string()),
+        fair_probability_down: Some("0.45".to_string()),
+        uncertainty_band_probability: Some("0.02".to_string()),
+        up_fee_bps: Some("1.25".to_string()),
+        down_fee_bps: Some("2.5".to_string()),
         hold_ev_bps: Some("2.5".to_string()),
         exit_ev_bps: Some("3.5".to_string()),
         realized_vol: None,
@@ -958,6 +1043,9 @@ fn sample_exit_decision_evidence() -> BoltV3ExitDecisionEvidence {
         exit_decision: BoltV3ExitDecisionOutcome::ExitFailClosed,
         blocked_reason: None,
         client_order_id: Some("client-order-exit".to_string()),
+        submission_order_side: Some("Sell".to_string()),
+        submission_price: Some("0.49".to_string()),
+        submission_quantity: Some("1".to_string()),
         seconds_to_market_end: Some(240),
         ts_ms: 1_200,
         stale_reference_after_ms: Some(1_500),
@@ -1222,6 +1310,17 @@ fn sample_exit_evaluation_evidence(populated: bool) -> BoltV3ExitEvaluationEvide
             rv_source_diagnostics: vec!["source-a:ready".to_string()],
             rv_gate_result: BoltV3RvGateResult::RejectedFutureDated,
             rv_as_of_minus_now_ms: Some(-5_000),
+            spot_price: Some("3100.5".to_string()),
+            spot_venue_name: Some("venue-one".to_string()),
+            fast_venue_available: true,
+            reference_current_price: Some("3099.75".to_string()),
+            reference_current_price_available: true,
+            interval_open: Some("3100".to_string()),
+            fair_probability_up: Some("0.55".to_string()),
+            fair_probability_down: Some("0.45".to_string()),
+            uncertainty_band_probability: Some("0.02".to_string()),
+            up_fee_bps: Some("1.25".to_string()),
+            down_fee_bps: Some("2.5".to_string()),
             hold_ev_bps: Some("12.5".to_string()),
             exit_ev_bps: Some("-3.0".to_string()),
             exit_decision: BoltV3ExitDecisionOutcome::ExitFailClosed,
@@ -1248,6 +1347,17 @@ fn sample_exit_evaluation_evidence(populated: bool) -> BoltV3ExitEvaluationEvide
             rv_source_diagnostics: Vec::new(),
             rv_gate_result: BoltV3RvGateResult::MissingSnapshot,
             rv_as_of_minus_now_ms: None,
+            spot_price: None,
+            spot_venue_name: None,
+            fast_venue_available: false,
+            reference_current_price: None,
+            reference_current_price_available: false,
+            interval_open: None,
+            fair_probability_up: None,
+            fair_probability_down: None,
+            uncertainty_band_probability: None,
+            up_fee_bps: None,
+            down_fee_bps: None,
             hold_ev_bps: None,
             exit_ev_bps: None,
             exit_decision: BoltV3ExitDecisionOutcome::Hold,
@@ -1418,6 +1528,45 @@ fn exit_evaluation_evidence_round_trips_populated_and_sparse_records() {
         .expect("exit-evaluation evidence should read back");
 
     assert_eq!(read_back, records);
+}
+
+#[test]
+fn exit_evaluation_observed_inputs_default_absent_for_predeploy_lines() {
+    let mut value = serde_json::to_value(sample_exit_evaluation_evidence(true))
+        .expect("exit evaluation evidence should encode as json");
+    let object = value
+        .as_object_mut()
+        .expect("exit evaluation should encode as an object");
+    for field in [
+        "spot_price",
+        "spot_venue_name",
+        "fast_venue_available",
+        "reference_current_price",
+        "reference_current_price_available",
+        "interval_open",
+        "fair_probability_up",
+        "fair_probability_down",
+        "uncertainty_band_probability",
+        "up_fee_bps",
+        "down_fee_bps",
+    ] {
+        object.remove(field);
+    }
+
+    let decoded: BoltV3ExitEvaluationEvidence =
+        serde_json::from_value(value).expect("predeploy exit evaluation should decode");
+
+    assert_eq!(decoded.spot_price, None);
+    assert_eq!(decoded.spot_venue_name, None);
+    assert!(!decoded.fast_venue_available);
+    assert_eq!(decoded.reference_current_price, None);
+    assert!(!decoded.reference_current_price_available);
+    assert_eq!(decoded.interval_open, None);
+    assert_eq!(decoded.fair_probability_up, None);
+    assert_eq!(decoded.fair_probability_down, None);
+    assert_eq!(decoded.uncertainty_band_probability, None);
+    assert_eq!(decoded.up_fee_bps, None);
+    assert_eq!(decoded.down_fee_bps, None);
 }
 
 #[test]

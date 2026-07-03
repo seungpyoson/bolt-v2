@@ -1645,6 +1645,47 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
         vec![BoltV3ForcedFlatReason::Freeze]
     );
     assert_eq!(decision.blocked_reason, None);
+    assert_eq!(decision.spot_price.as_deref(), Some("3100.5"));
+    assert_eq!(decision.spot_venue_name.as_deref(), Some("bybit"));
+    assert!(decision.fast_venue_available);
+    assert_eq!(
+        decision.reference_current_price.as_deref(),
+        Some("3100.5")
+    );
+    assert!(decision.reference_current_price_available);
+    assert_eq!(decision.interval_open.as_deref(), Some("3100"));
+    assert!(
+        decision.fair_probability_up.is_some(),
+        "exit decision evidence must preserve the computed fair probability"
+    );
+    assert!(
+        decision.fair_probability_down.is_some(),
+        "exit decision evidence must preserve the computed complement probability"
+    );
+    assert!(
+        decision.uncertainty_band_probability.is_some(),
+        "exit decision evidence must preserve the computed uncertainty band"
+    );
+    assert!(
+        decision.up_fee_bps.is_some(),
+        "exit decision evidence must preserve the up-side fee input"
+    );
+    assert!(
+        decision.down_fee_bps.is_some(),
+        "exit decision evidence must preserve the down-side fee input"
+    );
+    assert!(
+        decision.submission_order_side.is_some(),
+        "exit decision evidence must preserve the submitted order side"
+    );
+    assert!(
+        decision.submission_price.is_some(),
+        "exit decision evidence must preserve the submitted order price"
+    );
+    assert!(
+        decision.submission_quantity.is_some(),
+        "exit decision evidence must preserve the submitted order quantity"
+    );
     assert_eq!(
         decision.exit_trigger_source,
         BoltV3ExitTriggerSource::SignalQuote
@@ -2624,6 +2665,9 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+    strategy
+        .pricing
+        .observe_reference_current_price(&fast_spot("bybit", 3_099.75, 1_200));
 
     strategy
         .try_submit_exit_order_for_trigger(
@@ -2661,6 +2705,35 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
     );
     assert_eq!(record.trigger_ts_event_ms, Some(1_200));
     assert_eq!(record.trigger_ts_init_ms, Some(1_180));
+    assert_eq!(record.spot_price.as_deref(), Some("3100.5"));
+    assert_eq!(record.spot_venue_name.as_deref(), Some("bybit"));
+    assert!(record.fast_venue_available);
+    assert_eq!(
+        record.reference_current_price.as_deref(),
+        Some("3099.75")
+    );
+    assert!(record.reference_current_price_available);
+    assert_eq!(record.interval_open.as_deref(), Some("3100"));
+    assert!(
+        record.fair_probability_up.is_some(),
+        "exit evaluation evidence must preserve the computed fair probability"
+    );
+    assert!(
+        record.fair_probability_down.is_some(),
+        "exit evaluation evidence must preserve the computed complement probability"
+    );
+    assert!(
+        record.uncertainty_band_probability.is_some(),
+        "exit evaluation evidence must preserve the computed uncertainty band"
+    );
+    assert!(
+        record.up_fee_bps.is_some(),
+        "exit evaluation evidence must preserve the up-side fee input"
+    );
+    assert!(
+        record.down_fee_bps.is_some(),
+        "exit evaluation evidence must preserve the down-side fee input"
+    );
 }
 
 #[test]

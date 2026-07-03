@@ -199,6 +199,7 @@ pub struct NautilusExecEngineBlock {
 #[serde(deny_unknown_fields)]
 pub struct RiskBlock {
     pub default_max_notional_per_order: String,
+    pub live_submit_governance: Option<LiveSubmitGovernanceBlock>,
     pub loss_governor: Option<LossGovernorBlock>,
     pub capital_pools: Option<Vec<CapitalPoolBlock>>,
     pub risk_reservation_substrate: Option<
@@ -207,6 +208,18 @@ pub struct RiskBlock {
     pub nautilus: NautilusRiskBlock,
     pub kill_switch: Option<KillSwitchConfigBlock>,
     pub basket_execution: Option<BasketExecutionRiskBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LiveSubmitGovernanceBlock {
+    pub mode: LiveSubmitGovernanceMode,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveSubmitGovernanceMode {
+    SupervisedDepositCapped,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

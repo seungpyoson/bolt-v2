@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use bolt_v2::{
-    bolt_v3_config::{KillSwitchConfigBlock, load_bolt_v3_config},
+    bolt_v3_config::{
+        KillSwitchConfigBlock, LiveSubmitGovernanceBlock, LiveSubmitGovernanceMode,
+        load_bolt_v3_config,
+    },
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState, KillSwitchStateKind},
     bolt_v3_kill_switch_store::{
         KillSwitchLossProtectionSnapshot, KillSwitchRecoveryReason, KillSwitchStore,
@@ -56,6 +59,9 @@ fn loaded_with_enabled_kill_switch(
     // an Armed (healthy) recovery that must stay Active. The loss governor's own
     // startup behavior is covered by its #658 tests.
     loaded.root.risk.loss_governor = None;
+    loaded.root.risk.live_submit_governance = Some(LiveSubmitGovernanceBlock {
+        mode: LiveSubmitGovernanceMode::SupervisedDepositCapped,
+    });
     (loaded, temp)
 }
 

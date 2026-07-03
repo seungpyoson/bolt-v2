@@ -73,7 +73,8 @@ use std::{
 use serde::Deserialize;
 
 use crate::bolt_v3_config::{
-    BoltV3ConfigError, GENERATED_LIVE_CONFIG_MARKER_PREFIX, LoadedBoltV3Config, load_bolt_v3_config,
+    BoltV3ConfigError, GENERATED_LIVE_CONFIG_MARKER_PREFIX, LiveSubmitGovernanceMode,
+    LoadedBoltV3Config, load_bolt_v3_config,
 };
 
 /// Bump when the provenance header format changes in a way that alters the
@@ -137,6 +138,10 @@ pub struct ProdOverlay {
     /// the composed config. Absent from the base; the overlay owns the explicit
     /// loss-governor policy state.
     pub loss_governor: toml::Table,
+    /// The full `[risk.live_submit_governance]` block, inserted at
+    /// `risk.live_submit_governance` in the composed config. Required because the
+    /// supervised pilot intentionally disables the loss-governor policy.
+    pub live_submit_governance: toml::Table,
     /// Per-client FULL replacement of `[clients.<name>.execution]`. Each key MUST
     /// appear in `active_clients`. A full replace lets the overlay both override
     /// values (funder, signature_type) and DROP placeholder sub-tables
@@ -191,6 +196,7 @@ pub struct ProductionInvariants {
     pub max_daily_loss: String,
     pub max_rolling_loss: String,
     pub max_drawdown: String,
+    pub live_submit_governance_mode: LiveSubmitGovernanceMode,
     pub default_max_notional_per_order: String,
 }
 
@@ -571,7 +577,7 @@ fn compose_config_text(config_root: &Path, overlay: &ProdOverlay) -> Result<Stri
         toml::Value::Table(retained_surfaces),
     );
 
-    // (e) risk.loss_governor: insert the overlay's full block.
+    // (e) risk owned overlay blocks: insert the full declarations.
     let risk = root
         .get_mut("risk")
         .and_then(toml::Value::as_table_mut)
@@ -581,6 +587,10 @@ fn compose_config_text(config_root: &Path, overlay: &ProdOverlay) -> Result<Stri
     risk.insert(
         "loss_governor".to_string(),
         toml::Value::Table(overlay.loss_governor.clone()),
+    );
+    risk.insert(
+        "live_submit_governance".to_string(),
+        toml::Value::Table(overlay.live_submit_governance.clone()),
     );
 
     // (f) serialize deterministically: rebuild every table with keys inserted in
@@ -739,7 +749,17 @@ pub fn confirm_production_invariants(
             "[risk.loss_governor].max_drawdown must be set before live deploy".to_string(),
         )
     })?;
-
+    let live_submit_governance = loaded
+        .root
+        .risk
+        .live_submit_governance
+        .as_ref()
+        .ok_or_else(|| {
+            ProfileError::Invariant(
+                "production profile must declare [risk.live_submit_governance] before live deploy"
+                    .to_string(),
+            )
+        })?;
     Ok(ProductionInvariants {
         strategy_files: loaded.root.strategy_files.clone(),
         loss_governor_present: true,
@@ -748,6 +768,7 @@ pub fn confirm_production_invariants(
         max_daily_loss,
         max_rolling_loss,
         max_drawdown,
+        live_submit_governance_mode: live_submit_governance.mode,
         default_max_notional_per_order: loaded.root.risk.default_max_notional_per_order.clone(),
     })
 }

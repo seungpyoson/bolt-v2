@@ -2708,6 +2708,7 @@ fn exit_evaluation_evidence_records_future_dated_rv_gate_with_delta() {
 #[test]
 fn exit_evaluation_evidence_holds_on_local_clock_trigger_without_rv_event_time() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    strategy.active.phase = SelectionPhase::Active;
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 2_000);

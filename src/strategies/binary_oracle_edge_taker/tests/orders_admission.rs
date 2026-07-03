@@ -1549,7 +1549,6 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
 fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.config.exit_order.is_quote_quantity = true;
-    strategy.config.exit_hysteresis_bps = 1_000_000;
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));

@@ -323,7 +323,7 @@ fn require_clean_reconciliation(
     Ok(())
 }
 
-fn halt_id_for_trigger(trigger: &KillSwitchHaltTrigger) -> String {
+pub(crate) fn halt_id_for_trigger(trigger: &KillSwitchHaltTrigger) -> String {
     let mut hasher = Sha256::new();
     hasher.update(HALT_ID_DOMAIN);
     hasher.update([0]);

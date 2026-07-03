@@ -1443,6 +1443,14 @@ impl BoltV3SubmitAdmissionState {
             .kind()
     }
 
+    pub fn kill_switch_state(&self) -> KillSwitchState {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .kill_switch_state
+            .clone()
+    }
+
     pub fn configure_kill_switch_forced_reduction_policy(
         &self,
         policy: BoltV3KillSwitchForcedReductionPolicy,
@@ -2202,7 +2210,9 @@ impl BoltV3SubmitAdmissionState {
         }
         if matches!(
             request.intent_kind,
-            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
+            BoltV3SubmitIntentKind::Entry
+                | BoltV3SubmitIntentKind::RiskReducingExit
+                | BoltV3SubmitIntentKind::ReplaceSubmit
         ) && inner.kill_switch_state.kind() != KillSwitchStateKind::Armed
         {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(

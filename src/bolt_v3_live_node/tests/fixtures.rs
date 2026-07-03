@@ -10,6 +10,22 @@ pub(super) fn loaded_config_with_submit_sizer_recovery(
     ))
     .expect("fixture config should load");
     loaded.strategies.clear();
+    loaded.root_path = temp_path.join("root.toml");
+    let kill_switch = loaded
+        .root
+        .risk
+        .kill_switch
+        .as_mut()
+        .expect("fixture should configure kill switch");
+    kill_switch.enabled = true;
+    std::fs::create_dir_all(temp_path.join("state")).expect("kill switch state dir should create");
+    let store = crate::bolt_v3_kill_switch_store::KillSwitchStore::from_root_config_path(
+        &loaded.root_path,
+        kill_switch,
+    );
+    store
+        .bootstrap_initial_armed_loss_snapshot()
+        .expect("fixture kill switch state should bootstrap armed");
     loaded
         .root
         .risk

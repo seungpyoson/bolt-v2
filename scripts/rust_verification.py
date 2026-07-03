@@ -2448,7 +2448,7 @@ def active_process_refusal_payload(repo: pathlib.Path, target: pathlib.Path, pol
     return None
 
 
-def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
+def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool, age_only: bool = False) -> dict[str, Any]:
     policy = load_policy(repo)
     validate_cache_policy(policy)
     lock_context = cache_lock(policy, exclusive=True) if not dry_run else contextlib.nullcontext()
@@ -2467,7 +2467,12 @@ def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
         reclaimable_bytes = 0
         now = time.time()
         for subtree in status["subtrees"]:
-            candidate, reason = is_prune_candidate(subtree, policy, now=now, pressure=bool(status["pressure"]))
+            candidate, reason = is_prune_candidate(
+                subtree,
+                policy,
+                now=now,
+                pressure=age_only or bool(status["pressure"]),
+            )
             if not candidate:
                 continue
             entry = dict(subtree)
@@ -2484,6 +2489,7 @@ def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
                 remove_cache_candidate(entry, target)
                 removed.append(entry)
         return {
+            "age_only": age_only,
             "candidates": candidates,
             "dry_run": dry_run,
             "pressure": status["pressure"],
@@ -4424,7 +4430,7 @@ def cmd_cache_prune(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
     dry_run = not args.apply
     try:
-        payload = cache_prune_payload(repo, dry_run=dry_run)
+        payload = cache_prune_payload(repo, dry_run=dry_run, age_only=args.age_only)
         print(json.dumps(payload, sort_keys=True))
     except FileNotFoundError as exc:
         expected_policy = policy_path(repo)
@@ -4528,6 +4534,11 @@ def build_parser() -> argparse.ArgumentParser:
     cache_prune_mode = cache_prune.add_mutually_exclusive_group()
     cache_prune_mode.add_argument("--dry-run", action="store_true")
     cache_prune_mode.add_argument("--apply", action="store_true")
+    cache_prune.add_argument(
+        "--age-only",
+        action="store_true",
+        help="run retention by age without requiring cache or filesystem pressure",
+    )
     cache_prune.add_argument("--json", action="store_true", required=True, help="required; emit JSON output")
     cache_prune.set_defaults(func=cmd_cache_prune)
 

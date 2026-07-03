@@ -470,6 +470,110 @@ def assert_cache_prune_dry_run_preserves_stale_cache_below_thresholds() -> None:
             raise AssertionError(payload)
 
 
+def assert_cache_prune_age_only_apply_prunes_stale_candidates_without_pressure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, min_free_bytes=1, soft_limit_bytes=10**12)
+
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        old_debug_file = target / "debug" / "old.bin"
+        recent_release_file = target / "release" / "recent.bin"
+        old_debug_file.parent.mkdir(parents=True)
+        recent_release_file.parent.mkdir()
+        old_debug_file.write_bytes(b"old")
+        recent_release_file.write_bytes(b"recent")
+        old_time = time.time() - (15 * 24 * 60 * 60)
+        os.utime(old_debug_file, (old_time, old_time))
+        os.utime(old_debug_file.parent, (old_time, old_time))
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+
+        dry_run = run_owner(["cache-prune", "--repo", str(repo), "--age-only", "--dry-run", "--json"], env=env)
+        if dry_run.returncode != 0:
+            raise AssertionError((dry_run.returncode, dry_run.stdout, dry_run.stderr))
+        dry_payload = json.loads(dry_run.stdout)
+        if dry_payload["dry_run"] is not True or dry_payload.get("age_only") is not True:
+            raise AssertionError(dry_payload)
+        if dry_payload.get("pressure") is not False:
+            raise AssertionError(dry_payload)
+        dry_candidates = {entry["relative_path"] for entry in dry_payload["candidates"]}
+        if dry_candidates != {"debug"}:
+            raise AssertionError(dry_payload)
+        if not old_debug_file.exists() or not recent_release_file.exists():
+            raise AssertionError("age-only dry-run deleted files")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+        apply = run_owner(["cache-prune", "--repo", str(repo), "--age-only", "--apply", "--json"], env=env)
+        if apply.returncode != 0:
+            raise AssertionError((apply.returncode, apply.stdout, apply.stderr))
+        payload = json.loads(apply.stdout)
+        if payload["dry_run"] is not False or payload.get("age_only") is not True:
+            raise AssertionError(payload)
+        removed = {entry["relative_path"] for entry in payload["removed"]}
+        if removed != {"debug"}:
+            raise AssertionError(payload)
+        if old_debug_file.parent.exists():
+            raise AssertionError("age-only apply kept stale debug subtree")
+        if not recent_release_file.exists():
+            raise AssertionError("age-only apply removed recent release subtree")
+
+
+def assert_cache_prune_age_only_apply_refuses_active_related_process() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=1, soft_limit_bytes=10**12)
+
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "old.bin"
+        debug_file.parent.mkdir(parents=True)
+        debug_file.write_bytes(b"abc")
+        old_time = time.time() - (15 * 24 * 60 * 60)
+        os.utime(debug_file, (old_time, old_time))
+        os.utime(debug_file.parent, (old_time, old_time))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+printf '123 cargo build\\n'
+""",
+        )
+        proc_dir = tmp_path / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(target)
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+        result = run_owner(["cache-prune", "--repo", str(repo), "--age-only", "--apply", "--json"], env=env)
+        if result.returncode != 2:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        if payload["refused"] is not True or payload["refusal_code"] != "active_process":
+            raise AssertionError(payload)
+        if not debug_file.exists():
+            raise AssertionError("refused age-only apply deleted files")
+
+
 def assert_cache_status_classifies_subtrees_and_skips_special_files() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -3181,6 +3285,8 @@ def main() -> int:
     assert_cache_prune_dry_run_lists_stale_candidates_without_deleting()
     assert_cache_prune_dry_run_lists_stale_cross_target_candidates()
     assert_cache_prune_dry_run_preserves_stale_cache_below_thresholds()
+    assert_cache_prune_age_only_apply_prunes_stale_candidates_without_pressure()
+    assert_cache_prune_age_only_apply_refuses_active_related_process()
     assert_cache_prune_apply_refuses_active_related_process()
     assert_cache_prune_apply_refuses_active_related_process_by_cwd()
     assert_cache_prune_active_process_scan_uses_portable_ps_columns()

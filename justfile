@@ -642,6 +642,10 @@ worktree-remove branch:
 clean-merged *args:
     python3 scripts/clean_merged_artifacts.py {{args}}
 
+# cache-prune: age-only managed Rust target sweep. Default = dry-run; pass --apply to execute.
+cache-prune *args:
+    python3 "{{rust_verification_owner}}" cache-prune --repo "{{repo_root}}" --age-only --json {{args}}
+
 # clean-merged: print install/heartbeat/quarantine/gh health.
 clean-merged-doctor:
     python3 scripts/clean_merged_artifacts.py --doctor

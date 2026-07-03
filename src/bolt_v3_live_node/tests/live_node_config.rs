@@ -198,8 +198,8 @@ fn live_node_config_maps_explicit_nt_runtime_defaults_from_v3_root() {
     assert!(!cfg.exec_engine.allow_overfills);
     assert!(!cfg.exec_engine.manage_own_order_books);
     assert!(!cfg.risk_engine.bypass);
-    assert_eq!(cfg.risk_engine.max_order_submit_rate, "40/00:01:00");
-    assert_eq!(cfg.risk_engine.max_order_modify_rate, "40/00:01:00");
+    assert_eq!(cfg.risk_engine.max_order_submit_rate, "33/00:01:00");
+    assert_eq!(cfg.risk_engine.max_order_modify_rate, "33/00:01:00");
     assert!(cfg.risk_engine.max_notional_per_order.is_empty());
     assert!(!cfg.risk_engine.debug);
     assert_eq!(cfg.risk_engine.qsize, 100_000);

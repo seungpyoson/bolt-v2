@@ -77,11 +77,11 @@ pub(super) fn valid_raw_config() -> Value {
         [entry_order]
         side = "buy"
         position_side = "long"
-        order_type = "limit"
+        order_type = "market"
         time_in_force = "fok"
         is_post_only = false
         is_reduce_only = false
-        is_quote_quantity = false
+        is_quote_quantity = true
 
         [forced_exit_order]
         side = "sell"
@@ -1845,13 +1845,21 @@ pub(super) fn order_rejected_event(
     client_order_id: ClientOrderId,
     instrument_id: InstrumentId,
 ) -> nautilus_model::events::OrderRejected {
+    order_rejected_event_with_reason(client_order_id, instrument_id, "rejected")
+}
+
+pub(super) fn order_rejected_event_with_reason(
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+    reason: &'static str,
+) -> nautilus_model::events::OrderRejected {
     nautilus_model::events::OrderRejected::new(
         nautilus_model::identifiers::TraderId::from("TRADER-001"),
         StrategyId::from("BINARYORACLEEDGETAKER-001"),
         instrument_id,
         client_order_id,
         nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT"),
-        "rejected".into(),
+        reason.into(),
         nautilus_core::UUID4::new(),
         nautilus_core::UnixNanos::from(1_000_u64),
         nautilus_core::UnixNanos::from(1_000_u64),

@@ -64,7 +64,10 @@ use crate::{
         BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
     },
     bolt_v3_position_contract::is_observed_open_side,
-    bolt_v3_providers::normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+    bolt_v3_providers::{
+        market_quote_buy_min_notional_for_execution_venue,
+        normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+    },
     bolt_v3_reference_price::{
         ReferencePriceSelection, ReferencePriceSelector, ReferencePriceSourceHealth,
         ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceUpdate, ReferenceQuote,
@@ -570,6 +573,7 @@ pub struct BinaryOracleEdgeTaker {
     resolution_strike_index_subscription: Option<InstrumentId>,
     resolution_strike_custom_subscription: Option<DataType>,
     resolution_strike_fetch_sequence: u64,
+    entry_reject_state: BTreeMap<InstrumentId, EntryRejectState>,
     /// Flood guard for #885 exit-evaluation evidence: the last durable outcome key
     /// recorded per open position. A durable record is emitted only when this key
     /// changes (or on an actual submit), collapsing a per-tick exit flood (e.g. the
@@ -593,6 +597,18 @@ pub struct BinaryOracleEdgeTaker {
 struct SelectedReferenceQuoteEvidence {
     quote: ReferenceQuote,
     failed_over: bool,
+}
+
+#[derive(Clone, Debug)]
+enum EntryRejectState {
+    Malformed,
+    Unfillable { book: OutcomeBookState },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EntryRejectClass {
+    Malformed,
+    Unfillable,
 }
 
 impl BinaryOracleEdgeTaker {
@@ -646,6 +662,7 @@ impl BinaryOracleEdgeTaker {
             resolution_strike_index_subscription: None,
             resolution_strike_custom_subscription: None,
             resolution_strike_fetch_sequence: INITIAL_COUNTER_U64,
+            entry_reject_state: BTreeMap::new(),
             last_exit_evidence_outcome: BTreeMap::new(),
             #[cfg(test)]
             book_subscription_events: Vec::new(),
@@ -2533,6 +2550,48 @@ impl BinaryOracleEdgeTaker {
             .then_some(BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape)
     }
 
+    fn entry_reject_block_reason_for(
+        &self,
+        instrument_id: InstrumentId,
+        selected_side: OutcomeSide,
+    ) -> Option<&'static str> {
+        match self.entry_reject_state.get(&instrument_id)? {
+            EntryRejectState::Malformed => Some(ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED),
+            EntryRejectState::Unfillable { book } => {
+                let current_book = self.active_book_for_outcome(selected_side);
+                (current_book == book)
+                    .then_some(ENTRY_BLOCK_REASON_ENTRY_UNFILLABLE_REJECTED_UNCHANGED_BOOK)
+            }
+        }
+    }
+
+    fn record_entry_reject(&mut self, event: &nautilus_model::events::OrderRejected) {
+        let Some(pending) = self.pending_entry().cloned() else {
+            return;
+        };
+        if pending.client_order_id != event.client_order_id
+            || pending.instrument_id != event.instrument_id
+        {
+            return;
+        }
+
+        match classify_entry_reject_reason(event.reason.as_str()) {
+            Some(EntryRejectClass::Malformed) => {
+                self.entry_reject_state
+                    .insert(event.instrument_id, EntryRejectState::Malformed);
+            }
+            Some(EntryRejectClass::Unfillable) => {
+                self.entry_reject_state.insert(
+                    event.instrument_id,
+                    EntryRejectState::Unfillable {
+                        book: pending.book.clone(),
+                    },
+                );
+            }
+            None => {}
+        }
+    }
+
     fn preliminary_edge_pricing_notional_for_side(&self, side: OutcomeSide) -> f64 {
         let mut notional = self.config.order_notional_target;
         if is_positive_finite(self.config.maximum_position_notional) {
@@ -3755,16 +3814,21 @@ impl BinaryOracleEdgeTaker {
         } else {
             None
         };
-        let quote_quantity_last_price = if is_quote_quantity {
-            self.quote_quantity_last_price_for_order(order)
-        } else {
-            None
-        };
-        let quote_quantity_reference_price = if is_quote_quantity {
-            self.quote_quantity_reference_price_for_order(order)
-        } else {
-            None
-        };
+        let quote_quantity_uses_submitted_notional = is_quote_quantity
+            && matches!(order, OrderAny::Market(_))
+            && order.order_side() == OrderSide::Buy;
+        let quote_quantity_last_price =
+            if is_quote_quantity && !quote_quantity_uses_submitted_notional {
+                self.quote_quantity_last_price_for_order(order)
+            } else {
+                None
+            };
+        let quote_quantity_reference_price =
+            if is_quote_quantity && !quote_quantity_uses_submitted_notional {
+                self.quote_quantity_reference_price_for_order(order)
+            } else {
+                None
+            };
         let risk_reducing_exit_position_context = if matches!(
             intent.intent_kind,
             BoltV3OrderIntentKind::Exit
@@ -4632,6 +4696,10 @@ impl BinaryOracleEdgeTaker {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE);
             return decision;
         };
+        if let Some(reason) = self.entry_reject_block_reason_for(instrument_id, selected_side) {
+            decision.blocked_reason = Some(reason);
+            return decision;
+        }
         let Some(submission_vwap) =
             executable_submission_vwap_from_evaluation(&evaluation, selected_side)
         else {
@@ -4639,31 +4707,52 @@ impl BinaryOracleEdgeTaker {
             return decision;
         };
         let price = submission_vwap.limit_price;
-        let max_quantity_at_limit = sized_notional / price;
-        if !is_positive_finite(max_quantity_at_limit) {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING);
-            return decision;
-        }
-        let shares_value = submission_vwap.vwap_quantity.min(max_quantity_at_limit);
-        let Ok(quantity) = instrument.try_make_qty(shares_value, Some(true)) else {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
-            return decision;
+        let quantity_value = if self.config.entry_order.is_quote_quantity {
+            let Some(min_notional) =
+                market_quote_buy_min_notional_for_execution_venue(self.context.execution_venue())
+            else {
+                decision.blocked_reason =
+                    Some(ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED);
+                return decision;
+            };
+            let Some(sized_notional_decimal) = Decimal::from_f64(sized_notional) else {
+                decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
+                return decision;
+            };
+            if sized_notional_decimal < min_notional {
+                decision.blocked_reason =
+                    Some(ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM);
+                return decision;
+            }
+            sized_notional
+        } else {
+            let max_quantity_at_limit = sized_notional / price;
+            if !is_positive_finite(max_quantity_at_limit) {
+                decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING);
+                return decision;
+            }
+            let shares_value = submission_vwap.vwap_quantity.min(max_quantity_at_limit);
+            let Ok(quantity) = instrument.try_make_qty(shares_value, Some(true)) else {
+                decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
+                return decision;
+            };
+            let Some(quantity) =
+                self.normalize_base_order_quantity_for_execution_venue(&instrument, quantity)
+            else {
+                decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
+                return decision;
+            };
+            let quantity_value = quantity.as_f64();
+            let limit_notional = price * quantity_value;
+            if limit_notional_exceeds_sized_notional(limit_notional, sized_notional) {
+                decision.blocked_reason =
+                    Some(ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL);
+                return decision;
+            }
+            quantity_value
         };
-        let Some(quantity) =
-            self.normalize_base_order_quantity_for_execution_venue(&instrument, quantity)
-        else {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
-            return decision;
-        };
-        let quantity_value = quantity.as_f64();
         if !is_positive_finite(quantity_value) {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE);
-            return decision;
-        }
-        let limit_notional = price * quantity_value;
-        if limit_notional_exceeds_sized_notional(limit_notional, sized_notional) {
-            decision.blocked_reason =
-                Some(ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL);
             return decision;
         }
 
@@ -4765,6 +4854,7 @@ impl BinaryOracleEdgeTaker {
             return Ok(None);
         }
 
+        self.entry_reject_state.remove(&instrument_id);
         self.last_recorded_entry_skip = None;
         let price = Price::new(price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
@@ -5526,6 +5616,7 @@ impl DataActor for BinaryOracleEdgeTaker {
 
 nautilus_strategy!(BinaryOracleEdgeTaker, {
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
+        self.record_entry_reject(&event);
         self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
         self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
@@ -5786,6 +5877,13 @@ const ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE: &str =
     "historical_entry_fee_unavailable";
 const ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION: &str =
     "one_position_invariant_violation";
+const ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED: &str = "entry_malformed_rejected";
+const ENTRY_BLOCK_REASON_ENTRY_UNFILLABLE_REJECTED_UNCHANGED_BOOK: &str =
+    "entry_unfillable_rejected_unchanged_book";
+const ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM: &str =
+    "entry_quote_notional_below_venue_minimum";
+const ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED: &str =
+    "entry_quote_notional_minimum_unmodeled";
 const EXIT_BLOCK_REASON_NO_OPEN_POSITION: &str = "no_open_position";
 const EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING: &str = "exit_already_pending";
 const EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING: &str = "entry_order_still_working";
@@ -5928,6 +6026,41 @@ fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
         || reason == EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
         || reason == EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
         || reason == EXIT_BLOCK_REASON_EXIT_HOLD)
+}
+
+fn classify_entry_reject_reason(raw_reason: &str) -> Option<EntryRejectClass> {
+    let reason = raw_reason.to_lowercase();
+    if reason.contains("precision")
+        || reason.contains("accuracy")
+        || reason.contains("invalid amount")
+        || reason.contains("invalid order amount")
+        || reason.contains("min size")
+        || reason.contains("minimum size")
+        || reason.contains("minimum notional")
+        || reason.contains("too small")
+        || reason_has_ascii_token(&reason, "tick")
+    {
+        return Some(EntryRejectClass::Malformed);
+    }
+
+    if reason_has_ascii_token(&reason, "fok")
+        && (reason.contains("no match")
+            || reason.contains("not match")
+            || reason.contains("could not be matched")
+            || reason.contains("unfillable")
+            || reason.contains("not fill")
+            || reason.contains("fill or kill"))
+    {
+        return Some(EntryRejectClass::Unfillable);
+    }
+
+    None
+}
+
+fn reason_has_ascii_token(reason: &str, token: &str) -> bool {
+    reason
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|part| part == token)
 }
 
 #[cfg(test)]

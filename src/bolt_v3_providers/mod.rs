@@ -992,6 +992,13 @@ pub fn normalize_base_order_quantity_for_execution_venue(
     Some(quantity)
 }
 
+pub fn market_quote_buy_min_notional_for_execution_venue(
+    execution_venue: Venue,
+) -> Option<Decimal> {
+    (execution_venue.as_str() == polymarket::KEY)
+        .then_some(polymarket::MARKET_QUOTE_BUY_MIN_NOTIONAL)
+}
+
 pub fn materialize_clob_v2_adapter_signing_source_from_nt_signing_source(
     request: ClobV2AdapterSigningSourceMaterializationRequest<'_>,
 ) -> Result<ClobV2AdapterSigningSourceMaterialization, BoltV3OperatorArtifactError> {

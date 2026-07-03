@@ -1154,6 +1154,70 @@ fn late_entry_terminal_events_preserve_entry_reconcile_fail_closed_state() {
 }
 
 #[test]
+fn malformed_entry_reject_stops_same_instrument_entry_decisions() {
+    let entry_client_order_id = ClientOrderId::from("ENTRY-MALFORMED-AMOUNTS");
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.is_quote_quantity = true;
+    strategy.config.order_notional_target = 25.0;
+    strategy.config.maximum_position_notional = 25.0;
+    strategy.config.risk_lambda = 0.0001;
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    strategy.exposure = ExposureState::PendingEntry(pending);
+
+    strategy.on_order_rejected(order_rejected_event_with_reason(
+        entry_client_order_id,
+        instrument_id,
+        "invalid order amounts: maker amount exceeds allowed decimal precision",
+    ));
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(decision.blocked_reason, Some("entry_malformed_rejected"));
+    assert!(strategy.pending_entry().is_none());
+}
+
+#[test]
+fn unfillable_fok_entry_reject_waits_for_book_change_before_redeciding() {
+    let entry_client_order_id = ClientOrderId::from("ENTRY-FOK-NO-MATCH");
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.is_quote_quantity = true;
+    strategy.config.order_notional_target = 25.0;
+    strategy.config.maximum_position_notional = 25.0;
+    strategy.config.risk_lambda = 0.0001;
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    let rejected_book = pending.book.clone();
+    strategy.exposure = ExposureState::PendingEntry(pending);
+
+    strategy.on_order_rejected(order_rejected_event_with_reason(
+        entry_client_order_id,
+        instrument_id,
+        "FOK order could not be matched against the current book",
+    ));
+
+    let unchanged_book_decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(
+        unchanged_book_decision.blocked_reason,
+        Some("entry_unfillable_rejected_unchanged_book")
+    );
+
+    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+    assert_ne!(
+        configured_book_for_instrument(&mut strategy, instrument_id),
+        rejected_book,
+        "fixture must actually change the selected book for this replay"
+    );
+    let changed_book_decision = strategy.entry_submission_decision_at(1_201);
+    assert_eq!(changed_book_decision.blocked_reason, None);
+}
+
+#[test]
 fn book_delta_entry_reconcile_pending_does_not_try_new_entry() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);

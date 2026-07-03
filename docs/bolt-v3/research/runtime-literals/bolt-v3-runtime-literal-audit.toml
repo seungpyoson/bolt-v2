@@ -63,22 +63,6 @@ reason = "Stable machine-readable validation code for reduce-only binary-oracle 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"binary_oracle_entry_order_market_quote_quantity"'''
-context = '''"binary_oracle_entry_order_market_quote_quantity";'''
-classification = "strategy_archetype_validation_error_code"
-reason = "Stable machine-readable validation code for market quote-quantity binary-oracle entry order rejection; it identifies the diagnostic class and does not configure trading behavior."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"binary_oracle_entry_order_quote_quantity"'''
-context = '''"binary_oracle_entry_order_quote_quantity";'''
-classification = "strategy_archetype_validation_error_code"
-reason = "Stable machine-readable validation code for quote-quantity binary-oracle entry order rejection; it identifies the diagnostic class and does not configure trading behavior."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
 literal = '''"blocked_after_seconds"'''
 context = '''"blocked_after_seconds",'''
 classification = "strategy_runtime_schema_field"
@@ -2047,10 +2031,10 @@ reason = "Zero is the invalid lower-bound sentinel for the TOML-owned live stora
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "number"
-literal = '''2'''
-context = '''pub const MAX_REST_REQUESTS_PER_ORDER_COMMAND: u32 = 2;'''
+literal = '''3'''
+context = '''pub const MAX_REST_REQUESTS_PER_ORDER_COMMAND: u32 = 3;'''
 classification = "venue_capability_constant"
-reason = "Worst-case REST requests a single NT order command issues against Polymarket (market submit = get_book + post_order = 2), sourced from the pinned NT adapter submitter; a fixed venue-capability constant that derates the egress reconciliation, not an operator runtime value."
+reason = "Worst-case REST requests a single NT market BUY command issues against Polymarket (market submit = get_book + fetch_collateral_balance_pusd + post_order = 3), sourced from the pinned NT adapter submitter; a fixed venue-capability constant that derates the egress reconciliation, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
@@ -7959,6 +7943,38 @@ reason = "This is a stable decision-evidence reason code, not an operator runtim
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
+literal = '''"entry_malformed_rejected"'''
+context = '''const ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED: &str = "entry_malformed_rejected";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code for fail-closing entry resubmission after a malformed venue/NT reject."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"entry_unfillable_rejected_unchanged_book"'''
+context = '''"entry_unfillable_rejected_unchanged_book";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code for debouncing FOK entry resubmission until the selected book changes."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"entry_quote_notional_below_venue_minimum"'''
+context = '''"entry_quote_notional_below_venue_minimum";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code for blocking market quote-quantity BUYs below the provider-owned venue minimum."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"entry_quote_notional_minimum_unmodeled"'''
+context = '''"entry_quote_notional_minimum_unmodeled";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code for fail-closing quote-quantity entry sizing when the execution venue has no modeled market-BUY minimum."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
 literal = '''"exit"'''
 context = '''const ORDER_CONFIGURATION_PREFIX_EXIT: &str = "exit";'''
 classification = "strategy_order_configuration_prefix"
@@ -8299,6 +8315,94 @@ literal = '''"uncertainty_band_unavailable"'''
 context = '''const EVIDENCE_REASON_UNCERTAINTY_BAND_UNAVAILABLE: &str = "uncertainty_band_unavailable";'''
 classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code for missing uncertainty-band inputs, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"precision"'''
+context = '''if reason.contains("precision")'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort substring used only to classify delivered venue/NT reject text as malformed for fail-closed entry resubmission behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"accuracy"'''
+context = '''|| reason.contains("accuracy")'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort substring used only to classify delivered venue/NT reject text as malformed for fail-closed entry resubmission behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"min size"'''
+context = '''|| reason.contains("min size")'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort substring used only to classify delivered venue/NT reject text as malformed for fail-closed entry resubmission behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"minimum size"'''
+context = '''|| reason.contains("minimum size")'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort substring used only to classify delivered venue/NT reject text as malformed for fail-closed entry resubmission behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"minimum notional"'''
+context = '''|| reason.contains("minimum notional")'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort substring used only to classify delivered venue/NT reject text as malformed for fail-closed entry resubmission behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"too small"'''
+context = '''|| reason.contains("too small")'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort substring used only to classify delivered venue/NT reject text as malformed for fail-closed entry resubmission behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"tick"'''
+context = '''|| reason_has_ascii_token(&reason, "tick")'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort substring used only to classify delivered venue/NT reject text as malformed for fail-closed entry resubmission behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"fok"'''
+context = '''if reason_has_ascii_token(&reason, "fok")'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort substring used only to classify delivered venue/NT reject text as unfillable so unchanged-book FOK entry resubmission is debounced."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"no match"'''
+context = '''&& (reason.contains("no match")'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort substring used only to classify delivered venue/NT reject text as unfillable so unchanged-book FOK entry resubmission is debounced."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"unfillable"'''
+context = '''|| reason.contains("unfillable")'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort substring used only to classify delivered venue/NT reject text as unfillable so unchanged-book FOK entry resubmission is debounced."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"fill or kill"'''
+context = '''|| reason.contains("fill or kill"))'''
+classification = "strategy_entry_reject_reason_classifier_needle"
+reason = "Best-effort substring used only to classify delivered venue/NT reject text as unfillable so unchanged-book FOK entry resubmission is debounced."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"

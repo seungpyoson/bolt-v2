@@ -33,7 +33,7 @@ fn unsupported_executable_entry_order_shape_cases() -> Vec<(&'static str, Value)
         ),
         (
             stringify!(order_type),
-            Value::String(stringify!(market).to_string()),
+            Value::String(stringify!(limit).to_string()),
         ),
         (
             stringify!(time_in_force),
@@ -41,7 +41,7 @@ fn unsupported_executable_entry_order_shape_cases() -> Vec<(&'static str, Value)
         ),
         (stringify!(is_post_only), Value::Boolean(true)),
         (stringify!(is_reduce_only), Value::Boolean(true)),
-        (stringify!(is_quote_quantity), Value::Boolean(true)),
+        (stringify!(is_quote_quantity), Value::Boolean(false)),
         (stringify!(trigger_price), Value::Float(1.0)),
         (stringify!(activation_price), Value::Float(1.0)),
         (
@@ -60,6 +60,30 @@ fn unsupported_executable_entry_order_shape_cases() -> Vec<(&'static str, Value)
     ]
 }
 
+fn raw_with_market_quote_quantity_entry_order() -> Value {
+    let mut raw = valid_raw_config();
+    let entry_order = raw
+        .as_table_mut()
+        .expect("valid config must be a table")
+        .get_mut(stringify!(entry_order))
+        .expect("valid config must include entry_order")
+        .as_table_mut()
+        .expect("entry_order must be a table");
+    entry_order.insert(
+        stringify!(order_type).to_string(),
+        Value::String(stringify!(market).to_string()),
+    );
+    entry_order.insert(
+        stringify!(time_in_force).to_string(),
+        Value::String(stringify!(fok).to_string()),
+    );
+    entry_order.insert(
+        stringify!(is_quote_quantity).to_string(),
+        Value::Boolean(true),
+    );
+    raw
+}
+
 fn raw_with_entry_order_field(field: &'static str, value: Value) -> Value {
     let mut raw = valid_raw_config();
     raw.as_table_mut()
@@ -70,6 +94,17 @@ fn raw_with_entry_order_field(field: &'static str, value: Value) -> Value {
         .expect("entry_order must be a table")
         .insert(field.to_string(), value);
     raw
+}
+
+#[test]
+fn parse_config_accepts_market_fok_quote_quantity_entry_order() {
+    let parsed =
+        BinaryOracleEdgeTakerBuilder::parse_config(&raw_with_market_quote_quantity_entry_order())
+            .expect("market/FOK quote-quantity entry order should parse");
+
+    assert_eq!(parsed.entry_order.order_type, OrderType::Market);
+    assert_eq!(parsed.entry_order.time_in_force, TimeInForce::Fok);
+    assert!(parsed.entry_order.is_quote_quantity);
 }
 
 #[test]
@@ -386,7 +421,7 @@ fn parse_config_rejects_unsupported_executable_entry_order_shapes() {
             .expect_err("unsupported executable entry shape must fail at parse-time");
         assert!(
             err.to_string()
-                .contains("entry_order must be buy/long limit FOK"),
+                .contains("entry_order must be buy/long market FOK quote-quantity"),
             "parse error for `{field}` should name executable entry shape: {err}"
         );
     }
@@ -404,7 +439,9 @@ fn validate_config_rejects_unsupported_executable_entry_order_shapes() {
             errors.iter().any(|error| {
                 error.field == "strategies[0].config.entry_order"
                     && error.code == "unsupported_executable_entry_order_shape"
-                    && error.message.contains("must be buy/long limit FOK without")
+                    && error
+                        .message
+                        .contains("must be buy/long market FOK quote-quantity without")
             }),
             "`{field}` must reject unsupported executable entry shape: {errors:#?}"
         );
@@ -1061,11 +1098,11 @@ fn builder_requires_pricing_model_fields() {
         [entry_order]
         side = "buy"
         position_side = "long"
-        order_type = "limit"
+        order_type = "market"
         time_in_force = "fok"
         is_post_only = false
         is_reduce_only = false
-        is_quote_quantity = false
+        is_quote_quantity = true
 
         [exit_order]
         side = "sell"

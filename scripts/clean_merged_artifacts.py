@@ -116,6 +116,8 @@ class LaneTConfig:
     target_dir_name: str
     idle_after_days: int
     active_process_patterns: tuple[str, ...]
+    process_list_timeout_s: float
+    cwd_visibility_timeout_s: float
 
 
 @dataclasses.dataclass(frozen=True)
@@ -235,6 +237,8 @@ CONFIG_KEYS = frozenset({
     "clean-merged.lane_t.target_dir_name",
     "clean-merged.lane_t.idle_after_days",
     "clean-merged.lane_t.active_process_patterns",
+    "clean-merged.lane_t.process_list_timeout_s",
+    "clean-merged.lane_t.cwd_visibility_timeout_s",
     "clean-merged.logging.audit_format",
     "clean-merged.logging.audit_path",
     "clean-merged.logging.max_log_bytes",
@@ -359,6 +363,8 @@ def load_config(repo_root: pathlib.Path) -> Config:
         "clean-merged.lane_t.target_dir_name",
         "clean-merged.lane_t.idle_after_days",
         "clean-merged.lane_t.active_process_patterns",
+        "clean-merged.lane_t.process_list_timeout_s",
+        "clean-merged.lane_t.cwd_visibility_timeout_s",
     }
     present_lane_t_keys = lane_t_keys & set(flat)
     if present_lane_t_keys and present_lane_t_keys != lane_t_keys:
@@ -371,6 +377,10 @@ def load_config(repo_root: pathlib.Path) -> Config:
             idle_after_days=_config_positive_int(flat, "clean-merged.lane_t.idle_after_days"),
             active_process_patterns=_config_string_array(
                 flat, "clean-merged.lane_t.active_process_patterns"),
+            process_list_timeout_s=_config_positive_float(
+                flat, "clean-merged.lane_t.process_list_timeout_s"),
+            cwd_visibility_timeout_s=_config_positive_float(
+                flat, "clean-merged.lane_t.cwd_visibility_timeout_s"),
         )
     logging_cfg = LoggingConfig(
         audit_format=_config_str(flat, "clean-merged.logging.audit_format"),
@@ -1957,7 +1967,7 @@ def clean_merged_process_cwd_from_proc(pid: int) -> pathlib.Path | None:
         return None
 
 
-def clean_merged_process_cwd_from_lsof(pid: int) -> tuple[pathlib.Path | None, str | None]:
+def clean_merged_process_cwd_from_lsof(pid: int, *, timeout_s: float) -> tuple[pathlib.Path | None, str | None]:
     if shutil.which("lsof") is None:
         return None, f"process cwd visibility unavailable for pid {pid}: lsof not found"
     try:
@@ -1967,7 +1977,7 @@ def clean_merged_process_cwd_from_lsof(pid: int) -> tuple[pathlib.Path | None, s
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
-            timeout=1,
+            timeout=timeout_s,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return None, f"process cwd visibility unavailable for pid {pid}: {exc}"
@@ -1983,11 +1993,11 @@ def clean_merged_process_cwd_from_lsof(pid: int) -> tuple[pathlib.Path | None, s
     return None, f"process cwd visibility unavailable for pid {pid}: lsof did not report cwd"
 
 
-def clean_merged_process_cwd(pid: int) -> tuple[pathlib.Path | None, str | None]:
+def clean_merged_process_cwd(pid: int, *, timeout_s: float) -> tuple[pathlib.Path | None, str | None]:
     proc_cwd = clean_merged_process_cwd_from_proc(pid)
     if proc_cwd is not None:
         return proc_cwd, None
-    return clean_merged_process_cwd_from_lsof(pid)
+    return clean_merged_process_cwd_from_lsof(pid, timeout_s=timeout_s)
 
 
 def path_is_or_inside(path: pathlib.Path, parent: pathlib.Path) -> bool:
@@ -1999,9 +2009,31 @@ def path_is_or_inside(path: pathlib.Path, parent: pathlib.Path) -> bool:
 
 
 def command_matches_patterns(command: str, patterns: tuple[str, ...]) -> bool:
-    tokens = command.split()
-    basenames = {pathlib.Path(token).name for token in tokens}
-    return any(pattern in basenames or pattern in command for pattern in patterns)
+    try:
+        from rust_verification import matching_process_pattern
+    except Exception:
+        tokens = command.split()
+        basenames = {pathlib.Path(token).name for token in tokens}
+        return any(pattern in basenames for pattern in patterns)
+    return matching_process_pattern(command, list(patterns)) is not None
+
+
+def command_may_reference_rust_target(command: str, patterns: tuple[str, ...]) -> bool:
+    if command_matches_patterns(command, patterns):
+        return True
+    try:
+        from rust_verification import (
+            command_may_be_renamed_cargo,
+            command_may_launch_build,
+            command_may_launch_rust,
+        )
+    except Exception:
+        return True
+    return (
+        command_may_launch_rust(command)
+        or command_may_be_renamed_cargo(command)
+        or command_may_launch_build(command)
+    )
 
 
 def active_target_dir_processes(
@@ -2014,7 +2046,7 @@ def active_target_dir_processes(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
-            timeout=2,
+            timeout=config.process_list_timeout_s,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         return [], f"process visibility unavailable: {exc}"
@@ -2033,11 +2065,17 @@ def active_target_dir_processes(
             pid = int(pid_text)
         except ValueError:
             continue
-        if not command_matches_patterns(command, config.active_process_patterns):
+        command_mentions_target = str(target_resolved) in command
+        command_mentions_worktree = str(worktree_resolved) in command
+        if (
+            not command_mentions_target
+            and not command_mentions_worktree
+            and not command_may_reference_rust_target(command, config.active_process_patterns)
+        ):
             continue
         matching_processes.append((pid, command))
     for pid, command in matching_processes:
-        cwd, cwd_error = clean_merged_process_cwd(pid)
+        cwd, cwd_error = clean_merged_process_cwd(pid, timeout_s=config.cwd_visibility_timeout_s)
         command_mentions_target = str(target_resolved) in command
         cwd_related = cwd is not None and (
             path_is_or_inside(cwd, worktree_resolved) or path_is_or_inside(cwd, target_resolved)

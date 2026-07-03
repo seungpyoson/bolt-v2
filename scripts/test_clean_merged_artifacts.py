@@ -149,6 +149,8 @@ def append_lane_t_config(
     *,
     idle_after_days: int = 7,
     active_process_patterns: tuple[str, ...] = ("cargo", "rustc"),
+    process_list_timeout_s: float = 2,
+    cwd_visibility_timeout_s: float = 1,
 ) -> None:
     cfg = work / "config" / "clean-merged.toml"
     patterns = ", ".join(json.dumps(pattern) for pattern in active_process_patterns)
@@ -161,6 +163,8 @@ def append_lane_t_config(
                 target_dir_name = "target"
                 idle_after_days = {idle_after_days}
                 active_process_patterns = [{patterns}]
+                process_list_timeout_s = {process_list_timeout_s}
+                cwd_visibility_timeout_s = {cwd_visibility_timeout_s}
                 """
             )
         )
@@ -2423,6 +2427,63 @@ class LaneTTargetDirReaperTests(unittest.TestCase):
         self.assertEqual(applied.returncode, 0, applied.stderr)
         self.assertTrue(target.exists(), "active target dir must not be removed")
         self.assertIn("target-dir-refused-active-process", applied.stdout)
+
+    def test_target_dir_reaper_refuses_renamed_rust_build_process(self) -> None:
+        append_lane_t_config(self.work, active_process_patterns=("cargo",))
+        wt = self._linked_worktree("feat/renamed-rust-target-dir")
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        proc_dir = self.tmp / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(target)
+        env = self._fake_ps_env("printf '123 build-wrapper build --manifest-path Cargo.toml\\n'\n")
+        env["CLEAN_MERGED_PROCESS_CWD_BASE"] = str(self.tmp / "proc")
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "renamed Rust build process must block target dir removal")
+        self.assertIn("target-dir-refused-active-process", applied.stdout)
+
+    def test_target_dir_process_timeouts_come_from_config(self) -> None:
+        append_lane_t_config(
+            self.work,
+            active_process_patterns=("cargo",),
+            process_list_timeout_s=12,
+            cwd_visibility_timeout_s=3,
+        )
+        config = cm.load_config(self.work)
+        self.assertIsNotNone(config.lane_t)
+        target = self.work / "target"
+        target.mkdir()
+        calls: list[float] = []
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            calls.append(kwargs["timeout"])
+            if cmd[0] == "ps":
+                return subprocess.CompletedProcess(cmd, 0, "123 cargo build\n", "")
+            if cmd[0] == "lsof":
+                return subprocess.CompletedProcess(cmd, 0, f"n{target}\n", "")
+            raise AssertionError(cmd)
+
+        old_base = os.environ.get("CLEAN_MERGED_PROCESS_CWD_BASE")
+        os.environ["CLEAN_MERGED_PROCESS_CWD_BASE"] = str(self.tmp / "missing-proc")
+        try:
+            with mock.patch.object(cm.shutil, "which", return_value="/usr/bin/lsof"):
+                with mock.patch.object(cm.subprocess, "run", fake_run):
+                    active, error = cm.active_target_dir_processes(self.work, target, config.lane_t)
+        finally:
+            if old_base is None:
+                os.environ.pop("CLEAN_MERGED_PROCESS_CWD_BASE", None)
+            else:
+                os.environ["CLEAN_MERGED_PROCESS_CWD_BASE"] = old_base
+
+        self.assertIsNone(error)
+        self.assertEqual(calls, [12, 3])
+        self.assertEqual(len(active), 1)
 
     def test_target_dir_reaper_refuses_if_tree_changes_before_delete(self) -> None:
         append_lane_t_config(self.work)

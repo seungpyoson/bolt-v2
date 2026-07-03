@@ -143,15 +143,21 @@ worktrees that survive normal branch cleanup. It is explicit only:
 Hooks do not run Lane T.
 
 Candidates are `<worktree>/<cfg target_dir_name>` for linked worktrees other
-than the main worktree. A candidate is eligible only when the latest mtime
-anywhere inside the subtree is older than `<cfg idle_after_days>`. The top-level
-directory mtime is not enough; a fresh build artifact inside an old `target/`
-keeps the subtree.
+than the main worktree, the invoking worktree, and branches named by `--keep`.
+These protected worktrees are silently skipped so normal dry-run output remains
+focused on actionable candidates. A candidate is eligible only when the latest
+mtime anywhere inside the subtree is older than `<cfg idle_after_days>`. The
+top-level directory mtime is not enough; a fresh build artifact inside an old
+`target/` keeps the subtree.
 
-Apply mode refuses rather than deleting when a configured Cargo/Rust process is
-visible from `ps` with cwd in the worktree/target tree or command text that
-mentions the target dir. If process visibility is unavailable, apply also
-refuses. Dry-run reports `target-dir-reap-candidate` records and never deletes.
+Apply mode refuses rather than deleting when a configured or classifier-visible
+Cargo/Rust build process is visible from `ps` with cwd in the worktree/target
+tree or command text that mentions the target dir. Process listing and cwd
+fallbacks use Lane T timeout config. If process visibility is unavailable,
+apply also refuses. Immediately before deletion, Lane T scans the subtree again
+and refuses if any entry was skipped, the latest mtime changed, or the subtree
+became recent. Dry-run reports `target-dir-reap-candidate` records and never
+deletes.
 
 If `[clean-merged.lane_t]` is absent, Lane T is a no-op. If the table is
 present, all Lane T keys are required and validated like the other runtime

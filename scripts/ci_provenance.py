@@ -1631,8 +1631,14 @@ def workflow_structural_mapping_value(line: str) -> str | None:
 
 
 def workflow_line_starts_block_scalar(line: str) -> bool:
+    structural_line = workflow_yaml_structural_line(line)
     value = workflow_structural_mapping_value(line)
-    return value is not None and value.startswith(("|", ">"))
+    if value is not None and value.startswith(("|", ">")):
+        return True
+    stripped = structural_line.lstrip()
+    if not stripped.startswith("- "):
+        return False
+    return stripped[2:].lstrip().startswith(("|", ">"))
 
 
 def is_top_level_workflow_key(line: str, key: str) -> bool:

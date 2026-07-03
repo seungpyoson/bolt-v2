@@ -1390,10 +1390,6 @@ def assert_workflow_reuse_scope_digest_rejects_folded_scoped_env() -> None:
                     if "env.JUST_VERSION" not in message or "single-line scalar" not in message:
                         raise AssertionError(message) from exc
 
-        if len(returned_digests) == 2 and returned_digests[0] == returned_digests[1]:
-            raise AssertionError(
-                "different folded JUST_VERSION values produced identical reuse-scope digest"
-            )
         if returned_digests:
             raise AssertionError(f"folded JUST_VERSION values must be rejected: {returned_digests}")
 
@@ -1539,6 +1535,36 @@ def assert_workflow_reuse_scope_digest_preserves_block_scalar_trailing_spaces() 
             raise AssertionError(
                 "block scalar trailing spaces must remain part of the reuse-scope digest"
             )
+
+
+def assert_workflow_reuse_scope_digest_preserves_sequence_block_scalar_content() -> None:
+    module = load_script()
+    source_lines = [
+        "  test-archive:",
+        "    steps:",
+        "      - name: Sequence scalar probe",
+        "        with:",
+        "          args:",
+        "            - |",
+        "              # source sequence block-scalar content",
+        "              echo ok",
+    ]
+    current_lines = [
+        "  test-archive:",
+        "    steps:",
+        "      - name: Sequence scalar probe",
+        "        with:",
+        "          args:",
+        "            - |",
+        "              # current sequence block-scalar content",
+        "              echo ok",
+    ]
+    source_normalized = module.normalize_workflow_scope_lines(source_lines)
+    current_normalized = module.normalize_workflow_scope_lines(current_lines)
+    if source_normalized == current_normalized:
+        raise AssertionError(
+            "sequence block scalar content must remain part of the reuse-scope digest"
+        )
 
 
 def assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift() -> None:
@@ -5051,6 +5077,7 @@ def main() -> int:
     assert_workflow_reuse_scope_digest_preserves_block_scalar_content()
     assert_workflow_reuse_scope_digest_preserves_indicated_block_scalar_content()
     assert_workflow_reuse_scope_digest_preserves_block_scalar_trailing_spaces()
+    assert_workflow_reuse_scope_digest_preserves_sequence_block_scalar_content()
     assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
     assert_fingerprint_reuse_rejects_failed_source_archive_through_resolver()

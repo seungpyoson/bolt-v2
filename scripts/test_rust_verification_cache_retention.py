@@ -489,8 +489,17 @@ def assert_cache_prune_age_only_apply_prunes_stale_candidates_without_pressure()
         os.utime(old_debug_file, (old_time, old_time))
         os.utime(old_debug_file.parent, (old_time, old_time))
 
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
         env = os.environ.copy()
         env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
 
         dry_run = run_owner(["cache-prune", "--repo", str(repo), "--age-only", "--dry-run", "--json"], env=env)
         if dry_run.returncode != 0:
@@ -505,16 +514,6 @@ def assert_cache_prune_age_only_apply_prunes_stale_candidates_without_pressure()
             raise AssertionError(dry_payload)
         if not old_debug_file.exists() or not recent_release_file.exists():
             raise AssertionError("age-only dry-run deleted files")
-
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        write_executable(
-            bin_dir / "ps",
-            """#!/usr/bin/env bash
-exit 0
-""",
-        )
-        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
 
         apply = run_owner(["cache-prune", "--repo", str(repo), "--age-only", "--apply", "--json"], env=env)
         if apply.returncode != 0:

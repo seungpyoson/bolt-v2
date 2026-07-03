@@ -478,7 +478,7 @@ FINGERPRINT_REUSE_ALLOWED_OUTPUT = (
 DETECTOR_REFS_STEP_ALLOWED_KEYS = frozenset(("name", "id", "if", "shell", "env", "run"))
 DETECTOR_REFS_STEP_SCALARS = {
     "id": "pr_refs",
-    "if": "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+    "if": "github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'",
     "shell": "bash",
     "env": "",
     "run": "|",
@@ -487,6 +487,7 @@ DETECTOR_REFS_STEP_ENV = {
     "EVENT_NAME": "${{ github.event_name }}",
     "PR_NUMBER": "${{ github.event.pull_request.number || github.run_id }}",
     "PR_BASE_REF": "${{ github.event.pull_request.base.ref || '' }}",
+    "DISPATCH_BASE_REF": "${{ github.event.repository.default_branch }}",
     "MERGE_GROUP_BASE_REF": "${{ github.event.merge_group.base_ref || '' }}",
 }
 FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ALLOWED_KEYS = frozenset(
@@ -494,7 +495,7 @@ FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ALLOWED_KEYS = frozenset(
 )
 FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_SCALARS = {
     "id": "fingerprint_reuse_inputs_changed",
-    "if": "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+    "if": "github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'",
     "shell": "bash",
     "run": "|",
 }
@@ -531,6 +532,12 @@ DETECTOR_REFS_RUN = '''if [[ "$EVENT_NAME" == "pull_request" ]]; then
   git fetch --no-tags origin \\
     "+refs/heads/${base_branch}:${base_ref}" \\
     "+refs/pull/${PR_NUMBER}/head:${head_ref}"
+elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+  base_branch="$DISPATCH_BASE_REF"
+  base_ref="refs/remotes/origin/dispatch-base-${GITHUB_RUN_ID}"
+  head_ref="HEAD"
+  git check-ref-format "refs/heads/$base_branch"
+  git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
 elif [[ "$EVENT_NAME" == "merge_group" ]]; then
   merge_group_base="$MERGE_GROUP_BASE_REF"
   if [[ "$merge_group_base" == refs/heads/* ]]; then
@@ -553,7 +560,12 @@ echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
 echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"'''
 FINGERPRINT_REUSE_INPUTS_CHANGED_RUN = """base_ref="${{ steps.pr_refs.outputs.base_ref }}"
 head_ref="${{ steps.pr_refs.outputs.head_ref }}"
-changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
+if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+  diff_range="${base_ref}..${head_ref}"
+else
+  diff_range="${base_ref}...${head_ref}"
+fi
+changed="$(git diff --name-only "$diff_range" -- \\
   .github/workflows/ci.yml \\
   .github/actions/setup-environment/action.yml \\
   ci/nextest-fingerprint.toml \\

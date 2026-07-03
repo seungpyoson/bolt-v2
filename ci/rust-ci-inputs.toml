@@ -19,15 +19,15 @@ paths = [
   "scripts/rust_verification.py",
   "scripts/command_understanding.py",
   "scripts/rust_test_targets.py",
-  "scripts/ci_input_sets.py",
-  "ci/rust-ci-inputs.toml",
-  ".github/actions/setup-environment/**",
-  ".github/workflows/backtester-ci.yml",
 ]
 
 [sets.backtester_detect]
 include_sets = ["backtester_cache"]
 paths = [
+  "scripts/ci_input_sets.py",
+  "ci/rust-ci-inputs.toml",
+  ".github/actions/setup-environment/**",
+  ".github/workflows/backtester-ci.yml",
   "scripts/ci_provenance.py",
   "ci/github-actions-runners.toml",
 ]

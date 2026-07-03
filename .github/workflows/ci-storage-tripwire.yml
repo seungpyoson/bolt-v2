@@ -3,6 +3,7 @@ name: CI Storage Tripwire
 on:
   schedule:
     - cron: "17 9 * * 1"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -16,7 +17,7 @@ concurrency:
 jobs:
   storage-tripwire:
     name: storage-tripwire
-    if: ${{ github.event_name == 'schedule' }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

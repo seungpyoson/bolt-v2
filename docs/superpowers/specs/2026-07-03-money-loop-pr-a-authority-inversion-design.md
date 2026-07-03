@@ -37,10 +37,15 @@ class.
 
 - Venue REST observations are authoritative for balance, allowance, open orders, and positions only after causal reconciliation succeeds.
 - The causal ledger has one source: the already-captured NT order-event stream. Accepted events provide `client_order_id` and `venue_order_id`; Filled events provide executed quantities. The reconciler consumes the same recorded events the evidence/capture system writes and must not create a parallel durable bookkeeping store.
-- The reconciler may use the order-event stream cursor and explicit
-  reconciliation fence records as causal watermarks. These watermarks prove how
-  far the shared event projection has advanced; they are not a second ledger and
-  they do not explain money movement by themselves.
+- The reconciler may use completed venue REST captures as causal watermarks.
+  For venue capture N, `fence(N) := completion of capture N+1`: a
+  venue-issued, monotonic, parameter-free happens-after anchor. These
+  watermarks prove how far the shared event/snapshot processing context has
+  advanced; they are not a second ledger and they do not explain money movement
+  by themselves.
+- Named invariant: the per-account user event channel is ordered. Violations are
+  detectable through recorded event evidence timestamps and are themselves
+  divergence.
 - NT account states and portfolio snapshots are advisory and do not determine money authority for Polymarket live execution.
 - Existing pre-run REST fetchers in `src/bolt_v3_providers/polymarket/venue_account_state_source.rs` and `src/bolt_v3_providers/polymarket/collateral_accounting_source.rs` prove the venue reads are available but are insufficient because they do not update during runtime.
 - Pinned NT adapter source is under `~/.cargo/git/checkouts/nautilus_trader-3c6af4345b4d438b/6be5a50/crates/adapters/polymarket/`. PR-A should use the adapter HTTP clients where they support the required query shape.
@@ -83,32 +88,49 @@ The reconciler compares the previous accepted venue snapshot to the next venue s
 
 The reconciler must not decide divergence from instantaneous inequality between venue and NT beliefs. Normal in-flight fills can make cached beliefs and venue observations differ. That is not divergence when the delta is causally explained by recorded actions.
 
-## Cursor-Gated Pending Deltas
+## Capture-Fenced Pending Deltas
 
 Venue REST can expose a fill before the local NT event projection has consumed
 the corresponding Filled event, and the balance, open-order, and position REST
 reads are not an atomic venue cut. PR-A v2 therefore uses defer-until-explained
-semantics with an event cursor, not a time window.
+semantics with completed venue captures, not a time window.
+
+The reconciler consumes recorded user events and completed venue snapshot
+results in one ordered processing context. That single context is what makes
+"the projection advanced since capture N" well-defined without a separate
+bookkeeping store or time approximation.
 
 For every venue snapshot:
 
-1. Capture the venue REST snapshot and its capture metadata.
-2. Record or obtain a monotonic order-event-stream fence after the snapshot
-   capture point.
+1. Capture the venue REST snapshot and assign it the next per-account capture
+   number N when all REST reads for that snapshot have completed.
+2. Define `fence(N)` as completion of capture N+1 for the same account. This is
+   a venue-issued, monotonic, parameter-free happens-after anchor.
 3. Reconcile against the order-event projection consumed so far.
 4. If every delta is explainable, accept and promote the snapshot.
-5. If any delta is unexplained and the consumed order-event cursor is still
-   behind the snapshot fence, hold the snapshot as pending. Pending snapshots
-   are not promoted and do not halt the node yet.
-6. When the event projection reaches or passes the snapshot fence, re-run
-   reconciliation for the pending snapshot. If the delta is then explained,
-   accept and promote it. If it is still unexplained, durable-halt the node.
+5. If any delta is unexplained and capture N+1 has not completed yet, hold the
+   snapshot as pending. Pending snapshots are not promoted and do not halt the
+   node yet. Admission continues on the last accepted snapshot while the
+   pending snapshot waits for its fence.
+6. When capture N+1 completes, re-run reconciliation for the pending capture N
+   after consuming the recorded user events that arrived in the same ordered
+   processing context between captures N and N+1. If the delta is then
+   explained, accept and promote it. If it is still unexplained, durable-halt
+   the node.
 
 This is causal, parameter-free, and window-free. No elapsed-time tolerance,
-poll-count tolerance, or numeric equality gate may substitute for cursor proof.
-If the existing captured event stream cannot expose a monotonic cursor/fence
-that proves the projection reached the snapshot capture point, PR-A v2 must stop
-and report the design dependency instead of approximating it with time.
+poll-count tolerance, timestamp comparison, or numeric equality gate may
+substitute for the completed-capture fence.
+
+Still-unexplained deltas at fence completion halt for one of three
+alarm-classified branches:
+
+- True divergence: venue state changed without any recorded order, fill,
+  terminal, or booked settlement cause.
+- Ordering violation: recorded per-account user-event evidence contradicts the
+  ordered-channel invariant.
+- Silent channel while venue state moved: venue state changed across captures,
+  but no corresponding per-account user event appeared before `fence(N)`.
 
 A later venue snapshot that returns to the prior value does not erase a pending
 unexplained delta. The original pending delta must become explained by recorded
@@ -195,9 +217,10 @@ PR-D acceptance must include a hold-to-resolution replay test proving a resoluti
 - Unit tests for event-derived causal reconciliation: accepted-order mapping, fills, terminal events, and unexplainable deltas.
 - Runtime feed tests proving only explainable venue truth is promoted into capital admission.
 - Runtime feed tests proving unexplainable venue deltas latch whole-node submit admission halt.
-- Runtime feed tests proving cursor-gated pending deltas do not halt before the
-  event projection reaches the snapshot fence, then accept if explained or
-  durable-halt if still unexplained.
+- Runtime feed tests proving capture-fenced pending deltas do not halt before
+  capture N+1 completes, continue trading on the last accepted snapshot while
+  pending, then accept if explained or durable-halt if still unexplained at the
+  fence.
 - Startup tests proving a venue-truth halt survives restart and first-snapshot
   dirty baselines cannot be blindly accepted.
 - Admission readiness tests proving accepted Polymarket venue truth is sufficient

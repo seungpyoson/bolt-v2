@@ -502,7 +502,10 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     RequoteThrottle(crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence),
     /// Production settlement evidence (Lane 3, #1179) must map into this
     /// variant carrying realized_pnl; until that mapping exists this variant is
-    /// intentionally unconstructed and hold_to_resolution stays red.
+    /// intentionally unconstructed and hold_to_resolution stays red. The
+    /// harness compares with f64::EPSILON as an exact oracle-pass-through
+    /// contract: production must record the realized_pnl produced by the shared
+    /// settlement oracle, not a separately rounded recomputation.
     Settlement(RecordedSettlementEvidenceEvent),
 }
 

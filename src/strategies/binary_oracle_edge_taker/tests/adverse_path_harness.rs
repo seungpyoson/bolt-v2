@@ -1,6 +1,14 @@
 #![cfg(test)]
 
 use super::*;
+use crate::{
+    bolt_v3_maker_runtime_settlement::{
+        MakerRuntimeSettlementInput, settle_maker_runtime_reference_prices,
+    },
+    bolt_v3_maker_settlement::{BinarySettlementLot, BinarySettlementResult},
+    bolt_v3_quote_lifecycle::Leg,
+    bolt_v3_quoting::QuoteSide,
+};
 use nautilus_model::{
     events::{OrderAccepted, OrderEventAny, OrderSubmitted},
     identifiers::{AccountId, VenueOrderId},
@@ -14,6 +22,13 @@ const BALANCE_REJECT_REASON: &str =
     "not enough balance / allowance: the balance is not enough -> balance: 0";
 const MIN_SIZE_REJECT_REASON: &str =
     "invalid amount for a marketable BUY order ($0.84), min size: 1";
+const DROPPED_TERMINAL_PINNED_FAILURE: &str =
+    "accepted-with-no-terminal entry replay reached the boundary with no terminal event";
+const PARTIAL_FILL_PINNED_FAILURE: &str =
+    "partial-fill residual must be re-managed with the exact unfilled quantity";
+const RESTART_OPEN_EXIT_PINNED_FAILURE: &str =
+    "restart replay must adopt the recovered exit before attributing fills";
+const SETTLEMENT_PINNED_FAILURE: &str = "hold-to-resolution must close exposure to Flat, book realized cash, and record settlement evidence";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct IncidentLifecycleCounts {
@@ -56,15 +71,12 @@ fn dropped_terminal_event_after_accepted_entry_is_not_left_pending() {
     set_pending_entry(&mut strategy, pending);
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-NEXT", 2_000));
 
-    assert_managed_or_halted_loud(
-        &strategy,
-        "accepted-with-no-terminal entry replay reached the boundary with no terminal event",
-    );
+    assert_managed_or_halted_loud(&strategy, DROPPED_TERMINAL_PINNED_FAILURE);
 }
 
 #[test]
 #[ignore = "red until #1179 Lane 4 acceptance bar 1: partial-fill-then-expire exit"]
-fn partial_fill_then_expire_exit_residual_is_remanaged_or_halted_loud() {
+fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
     assert_reality_fixtures();
 
     let mut strategy = ready_to_trade_strategy();
@@ -104,16 +116,14 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_halted_loud() {
     // halt-loudly is deliberately NOT an acceptable terminal for partial-fill
     // residuals — the residual is known, so it must be re-managed; spec
     // decision recorded on #1179.
-    let managed_position = managed_position_ref(&strategy).unwrap_or_else(|| {
-        panic!(
-            "partial-fill residual must be re-managed with the exact unfilled quantity; expected Managed residual exposure, got {:?}",
-            strategy.exposure,
-        )
-    });
-    assert_eq!(
-        managed_position.quantity,
-        Quantity::new(6.0, 2),
-        "partial-fill residual must be re-managed with the exact unfilled quantity after a 4/10 exit fill"
+    assert!(
+        partial_fill_residual_is_managed_or_fresh_reexit(
+            &strategy,
+            exit_client_order_id,
+            Quantity::new(6.0, 2),
+        ),
+        "{PARTIAL_FILL_PINNED_FAILURE}; expected Managed residual quantity 6.00 or a fresh non-terminal re-exit with a new client_order_id, got {:?}",
+        strategy.exposure,
     );
 }
 
@@ -200,7 +210,7 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
     assert_eq!(
         pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
         Some(exit_client_order_id),
-        "bootstrap must adopt the open exit order before a subsequent fill can be attributed"
+        "{RESTART_OPEN_EXIT_PINNED_FAILURE}: bootstrap must adopt the open exit order before a subsequent fill can be attributed"
     );
 
     strategy
@@ -214,7 +224,7 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
     assert_eq!(
         pending_exit_ref(&strategy).map(|pending| pending.fill_received),
         Some(true),
-        "replayed fill must mark the recovered exit order as filled"
+        "{RESTART_OPEN_EXIT_PINNED_FAILURE}: replayed fill must mark the recovered exit order as filled"
     );
 }
 
@@ -223,6 +233,57 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
 fn hold_to_resolution_books_realized_cash_and_settlement_evidence() {
     assert_reality_fixtures();
 
+    let winning_yes = hold_to_resolution_case(
+        "winning YES",
+        Leg::Yes,
+        0.45,
+        3_101.0,
+        5.5,
+        PositionId::from("P-HOLD-TO-RESOLUTION-WIN"),
+    );
+    let losing_no = hold_to_resolution_case(
+        "losing NO",
+        Leg::No,
+        0.50,
+        3_101.0,
+        -5.0,
+        PositionId::from("P-HOLD-TO-RESOLUTION-LOSS"),
+    );
+    let observations = [winning_yes, losing_no];
+    let failed_cases = observations
+        .iter()
+        .filter(|case| !(case.exposure_is_flat && case.settlement_evidence_matches_expected))
+        .map(|case| {
+            format!(
+                "{} expected_realized_pnl={} exposure={:?} evidence_events={:?}",
+                case.name, case.expected_realized_pnl, case.exposure, case.evidence_events,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        failed_cases.is_empty(),
+        "{SETTLEMENT_PINNED_FAILURE}; failed_cases={failed_cases:?}"
+    );
+}
+
+#[derive(Debug)]
+struct SettlementCaseObservation {
+    name: &'static str,
+    expected_realized_pnl: f64,
+    exposure_is_flat: bool,
+    settlement_evidence_matches_expected: bool,
+    exposure: ExposureState,
+    evidence_events: Vec<RecordedDecisionEvidenceEvent>,
+}
+
+fn hold_to_resolution_case(
+    name: &'static str,
+    held_leg: Leg,
+    entry_price: f64,
+    reference_close_price: f64,
+    expected_realized_pnl: f64,
+    position_id: PositionId,
+) -> SettlementCaseObservation {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
@@ -232,31 +293,22 @@ fn hold_to_resolution_books_realized_cash_and_settlement_evidence() {
         submit_admission,
     );
     let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
-    let instrument_id = selected_entry_instrument(&strategy);
+    let instrument_id = held_instrument_id(&strategy, held_leg);
     materialize_configured_position(
         &mut strategy,
         instrument_id,
-        PositionId::from("P-HOLD-TO-RESOLUTION"),
+        position_id,
         Quantity::new(10.0, 2),
-        0.45,
+        entry_price,
     );
-    let lot = crate::bolt_v3_maker_settlement::BinarySettlementLot {
-        leg: crate::bolt_v3_quote_lifecycle::Leg::Yes,
-        side: crate::bolt_v3_quoting::QuoteSide::Buy,
-        quantity: 10.0,
-        entry_price: 0.45,
-    };
-    let settlement = crate::bolt_v3_maker_runtime_settlement::settle_maker_runtime_reference_prices(
-        crate::bolt_v3_maker_runtime_settlement::MakerRuntimeSettlementInput {
-            family_key: crate::bolt_v3_market_families::updown::KEY,
-            reference_close_price: 3_101.0,
-            strike_price: 3_100.0,
-            lots: &[lot],
-        },
+    let expected =
+        expected_hold_to_resolution_settlement(held_leg, entry_price, reference_close_price);
+    assert!(
+        (expected.realized_pnl - expected_realized_pnl).abs() <= f64::EPSILON,
+        "hold-to-resolution fixture {name} must pin expected realized_pnl numerically; expected {}, got {}",
+        expected_realized_pnl,
+        expected.realized_pnl,
     );
-    let expected = settlement
-        .result
-        .expect("fixture payout should settle the held YES lot");
 
     let close_report_ts_ms = strategy
         .active
@@ -266,7 +318,7 @@ fn hold_to_resolution_books_realized_cash_and_settlement_evidence() {
         strategy
             .resolution_instrument_id()
             .expect("fixture should configure the resolution instrument"),
-        Price::new(3_101.0, 1),
+        Price::new(reference_close_price, 1),
         UnixNanos::from(close_report_ts_ms * NANOS_PER_MILLI_U64),
         UnixNanos::from(close_report_ts_ms * NANOS_PER_MILLI_U64),
     );
@@ -274,47 +326,50 @@ fn hold_to_resolution_books_realized_cash_and_settlement_evidence() {
         .expect("resolution index price should route through the strategy handler");
 
     let evidence_events = evidence.events();
-    let settlement_evidence_matches_expected = evidence_events.iter().any(|event| {
-        matches!(
-            event,
-            RecordedDecisionEvidenceEvent::Settlement(evidence)
-                if (evidence.realized_pnl - expected.realized_pnl).abs() <= f64::EPSILON
-        )
-    });
-    assert!(
-        strategy.managed_position().is_none() && settlement_evidence_matches_expected,
-        "hold-to-resolution must close exposure, book realized cash {}, and record settlement evidence; exposure={:?} evidence_events={:?}",
-        expected.realized_pnl,
-        strategy.exposure,
+    // For this harness, the Settlement evidence record is the booking record
+    // being asserted. The durable cash-surface pin (loss-governor accumulator /
+    // venue-truth balance) is owned by PR-D acceptance on #1179.
+    let settlement_evidence_matches_expected =
+        settlement_evidence_matches(&evidence_events, expected.realized_pnl);
+
+    SettlementCaseObservation {
+        name,
+        expected_realized_pnl: expected.realized_pnl,
+        exposure_is_flat: matches!(strategy.exposure, ExposureState::Flat),
+        settlement_evidence_matches_expected,
+        exposure: strategy.exposure.clone(),
         evidence_events,
-    );
+    }
 }
 
 #[test]
 fn ignored_adverse_path_harness_tests_still_fail_red() {
     let mut previous_hook = Some(panic::take_hook());
+    // The hook is suppressed only around intentionally red ignored tests; the
+    // meta-test restores it before panicking so wrong-reason failures print.
+    // This guard relies on the test profile using panic=unwind.
     panic::set_hook(Box::new(|_| {}));
 
     for (name, test, expected_failure) in [
         (
             "dropped_terminal_event_after_accepted_entry_is_not_left_pending",
             dropped_terminal_event_after_accepted_entry_is_not_left_pending as fn(),
-            "accepted-with-no-terminal entry replay reached the boundary with no terminal event",
+            DROPPED_TERMINAL_PINNED_FAILURE,
         ),
         (
-            "partial_fill_then_expire_exit_residual_is_remanaged_or_halted_loud",
-            partial_fill_then_expire_exit_residual_is_remanaged_or_halted_loud as fn(),
-            "partial-fill residual must be re-managed with the exact unfilled quantity",
+            "partial_fill_then_expire_exit_residual_is_remanaged_or_reexited",
+            partial_fill_then_expire_exit_residual_is_remanaged_or_reexited as fn(),
+            PARTIAL_FILL_PINNED_FAILURE,
         ),
         (
             "restart_with_open_exit_order_and_position_adopts_order_before_fill_replay",
             restart_with_open_exit_order_and_position_adopts_order_before_fill_replay as fn(),
-            "bootstrap must adopt the open exit order before a subsequent fill can be attributed",
+            RESTART_OPEN_EXIT_PINNED_FAILURE,
         ),
         (
             "hold_to_resolution_books_realized_cash_and_settlement_evidence",
             hold_to_resolution_books_realized_cash_and_settlement_evidence as fn(),
-            "hold-to-resolution must close exposure, book realized cash",
+            SETTLEMENT_PINNED_FAILURE,
         ),
     ] {
         let payload = match panic::catch_unwind(test) {
@@ -325,7 +380,7 @@ fn ignored_adverse_path_harness_tests_still_fail_red() {
                         .expect("panic hook should still be available for restore"),
                 );
                 panic!(
-                    "{name} unexpectedly passed; remove the ignore and land the corresponding production fix"
+                    "{name} unexpectedly passed; verify the pass is caused by the intended #1179 production fix before removing the ignore"
                 );
             }
             Err(payload) => payload,
@@ -358,6 +413,79 @@ fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
         return (*message).to_string();
     }
     "<non-string panic payload>".to_string()
+}
+
+fn partial_fill_residual_is_managed_or_fresh_reexit(
+    strategy: &BinaryOracleEdgeTaker,
+    expired_client_order_id: ClientOrderId,
+    expected_residual_quantity: Quantity,
+) -> bool {
+    match &strategy.exposure {
+        ExposureState::Managed(managed) => managed.position.quantity == expected_residual_quantity,
+        ExposureState::ExitPending(exit) => {
+            let Some(managed) = &exit.position else {
+                return false;
+            };
+            managed.position.quantity == expected_residual_quantity
+                && exit.pending_exit.client_order_id != expired_client_order_id
+                && !exit.pending_exit.fill_received
+                && !exit.pending_exit.close_received
+                && !exit.pending_exit.terminal_received
+                && !exit.pending_exit.residual_position_observed_after_fill
+        }
+        _ => false,
+    }
+}
+
+fn held_instrument_id(strategy: &BinaryOracleEdgeTaker, held_leg: Leg) -> InstrumentId {
+    match held_leg {
+        Leg::Yes => strategy
+            .active
+            .books
+            .up
+            .instrument_id
+            .expect("ready-to-trade fixture should configure the YES instrument"),
+        Leg::No => strategy
+            .active
+            .books
+            .down
+            .instrument_id
+            .expect("ready-to-trade fixture should configure the NO instrument"),
+    }
+}
+
+fn expected_hold_to_resolution_settlement(
+    held_leg: Leg,
+    entry_price: f64,
+    reference_close_price: f64,
+) -> BinarySettlementResult {
+    let lot = BinarySettlementLot {
+        leg: held_leg,
+        side: QuoteSide::Buy,
+        quantity: 10.0,
+        entry_price,
+    };
+    settle_maker_runtime_reference_prices(MakerRuntimeSettlementInput {
+        family_key: crate::bolt_v3_market_families::updown::KEY,
+        reference_close_price,
+        strike_price: 3_100.0,
+        lots: &[lot],
+    })
+    .result
+    .expect("fixture payout should settle the held lot")
+}
+
+fn settlement_evidence_matches(
+    events: &[RecordedDecisionEvidenceEvent],
+    expected_realized_pnl: f64,
+) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event,
+            RecordedDecisionEvidenceEvent::Settlement(evidence)
+                if (evidence.realized_pnl - expected_realized_pnl).abs() <= f64::EPSILON
+        )
+    })
 }
 
 fn assert_incident_lifecycle_counts() {

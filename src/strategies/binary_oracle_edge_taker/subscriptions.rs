@@ -30,8 +30,7 @@ impl BinaryOracleEdgeTaker {
     pub(super) fn retry_missing_live_input_subscriptions_at(&mut self, now_ms: u64) {
         self.refresh_realized_volatility_snapshot_at(now_ms);
         let signal_missing = self.pricing.spot_price().is_none();
-        let reference_missing =
-            self.config.reference_current_price.is_some() && self.reference_price_quotes.is_empty();
+        let reference_missing = self.reference_current_price_live_input_missing_at(now_ms);
         let realized_volatility_missing = self
             .pricing
             .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id)
@@ -66,6 +65,32 @@ impl BinaryOracleEdgeTaker {
             self.unsubscribe_realized_volatility_sources();
             self.subscribe_realized_volatility_sources();
         }
+    }
+
+    fn reference_current_price_live_input_missing_at(&mut self, now_ms: u64) -> bool {
+        if self.config.reference_current_price.is_none() {
+            return false;
+        }
+        let Some((interval_start_ms, interval_end_ms)) = self
+            .active
+            .interval_start_ms
+            .zip(self.active.interval_end_ms)
+        else {
+            return false;
+        };
+        self.ensure_reference_price_runtime_state();
+        let Some(reference_price_selector) = self.reference_price_selector.as_ref() else {
+            return false;
+        };
+        let quotes = self
+            .reference_price_quotes
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        !reference_price_selector
+            .source_liveness_quorum_at(interval_start_ms, interval_end_ms, now_ms, &quotes)
+            .is_satisfied()
     }
 
     pub(super) fn signal_instrument_id(&self) -> Option<InstrumentId> {

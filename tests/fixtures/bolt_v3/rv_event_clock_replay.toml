@@ -1,0 +1,26 @@
+# Minimized Lane 0 replay shape: venue event timestamps are ahead of local receive
+# timestamps, so RV windows must publish in the venue-event domain.
+
+[[quotes]]
+bid = "99.00"
+ask = "101.00"
+event_ts_ms = 1000
+recv_ts_ms = 250
+
+[[quotes]]
+bid = "100.00"
+ask = "102.00"
+event_ts_ms = 2000
+recv_ts_ms = 1250
+
+[[quotes]]
+bid = "101.00"
+ask = "103.00"
+event_ts_ms = 3000
+recv_ts_ms = 2250
+
+[[quotes]]
+bid = "102.00"
+ask = "104.00"
+event_ts_ms = 4000
+recv_ts_ms = 3250

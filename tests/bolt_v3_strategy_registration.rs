@@ -115,7 +115,6 @@ fn valid_realized_volatility_surface() -> RealizedVolatilitySurfaceBlock {
             sampling_interval_ms: 1_000,
             min_ready_sources: 1,
             max_source_age_ms: 500,
-            max_event_receive_lag_ms: 250,
             max_inter_sample_gap_ms: 2_000,
             min_coverage_ratio: 0.75,
             max_cross_source_dispersion: 0.50,

@@ -10717,14 +10717,6 @@ reason = "Stable canonical field label used only inside the realized-volatility 
 [[allowed]]
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "string"
-literal = '''"max_event_receive_lag_ms={}"'''
-context = '''"max_event_receive_lag_ms={}",'''
-classification = "realized_volatility_config_fingerprint_field_label"
-reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
-
-[[allowed]]
-path = "src/bolt_v3_realized_volatility.rs"
-kind = "string"
 literal = '''"max_inter_sample_gap_ms={}"'''
 context = '''"max_inter_sample_gap_ms={}",'''
 classification = "realized_volatility_config_fingerprint_field_label"

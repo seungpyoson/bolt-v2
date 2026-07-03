@@ -62,14 +62,14 @@ def write_executable(path: pathlib.Path, body: str) -> None:
     path.chmod(0o755)
 
 
-def write_policy(repo: pathlib.Path) -> None:
+def write_policy(repo: pathlib.Path, *, target_namespace: str = "bolt-v2") -> None:
     (repo / "ci").mkdir()
     (repo / "ci" / "rust-verification.toml").write_text(
         textwrap.dedent(
-            """\
+            f"""\
             schema_version = 2
             project_id = "bolt-v2"
-            target_namespace = "bolt-v2"
+            target_namespace = "{target_namespace}"
 
             [local_compile_policy]
             enabled = true
@@ -111,8 +111,9 @@ def write_policy_with_cache(
     *,
     min_free_bytes: int = 10,
     soft_limit_bytes: int = 100,
+    target_namespace: str = "bolt-v2",
 ) -> None:
-    write_policy(repo)
+    write_policy(repo, target_namespace=target_namespace)
     patterns = active_process_patterns or ["cargo", "rustc", "rust_verification.py"]
     with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
         handle.write(
@@ -573,6 +574,109 @@ printf '123 cargo build\\n'
             raise AssertionError(payload)
         if not debug_file.exists():
             raise AssertionError("refused age-only apply deleted files")
+
+
+def assert_cache_prune_age_only_error_refusals_report_age_only() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        result = run_owner(
+            ["cache-prune", "--repo", str(repo), "--age-only", "--json"],
+            env=os.environ.copy(),
+        )
+        if result.returncode != 2:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        if payload["refused"] is not True or payload["refusal_code"] != "missing_policy":
+            raise AssertionError(payload)
+        if payload.get("age_only") is not True:
+            raise AssertionError(payload)
+
+
+def assert_cache_prune_multiple_repos_attempts_all_namespaces_after_refusal() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        root_repo = tmp_path / "repo"
+        bte_repo = tmp_path / "bte"
+        root_repo.mkdir()
+        bte_repo.mkdir()
+        write_policy_with_cache(
+            root_repo,
+            active_process_patterns=["cargo"],
+            min_free_bytes=1,
+            soft_limit_bytes=10**12,
+            target_namespace="bolt-v2",
+        )
+        write_policy_with_cache(
+            bte_repo,
+            active_process_patterns=["cargo"],
+            min_free_bytes=1,
+            soft_limit_bytes=10**12,
+            target_namespace="backtesting-vertical-slice",
+        )
+
+        root_base = tmp_path / "rust-root"
+        root_target = root_base / "bolt-v2" / "target"
+        bte_target = root_base / "backtesting-vertical-slice" / "target"
+        root_file = root_target / "debug" / "old.bin"
+        bte_file = bte_target / "debug" / "old.bin"
+        for path in (root_file, bte_file):
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"abc")
+            old_time = time.time() - (15 * 24 * 60 * 60)
+            os.utime(path, (old_time, old_time))
+            os.utime(path.parent, (old_time, old_time))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+printf '123 cargo build\\n'
+""",
+        )
+        proc_dir = tmp_path / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(root_target)
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+        result = run_owner(
+            [
+                "cache-prune",
+                "--repo",
+                str(root_repo),
+                "--repo",
+                str(bte_repo),
+                "--age-only",
+                "--apply",
+                "--json",
+            ],
+            env=env,
+        )
+        if result.returncode != 2:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        if payload.get("age_only") is not True or payload.get("dry_run") is not False:
+            raise AssertionError(payload)
+        results = payload.get("results", [])
+        if len(results) != 2:
+            raise AssertionError(payload)
+        root_result, bte_result = results
+        if root_result["exit_code"] != 2 or root_result["payload"].get("refusal_code") != "active_process":
+            raise AssertionError(payload)
+        if bte_result["exit_code"] != 0:
+            raise AssertionError(payload)
+        removed = {entry["relative_path"] for entry in bte_result["payload"]["removed"]}
+        if removed != {"debug"}:
+            raise AssertionError(payload)
+        if not root_file.exists():
+            raise AssertionError("root refusal still deleted root cache")
+        if bte_file.exists():
+            raise AssertionError("multi-repo prune did not continue to BTE cache")
 
 
 def assert_cache_status_classifies_subtrees_and_skips_special_files() -> None:
@@ -1812,6 +1916,9 @@ def assert_cache_prune_recipe_sweeps_all_managed_cache_namespaces() -> None:
     missing = [item for item in required if item not in recipe]
     if missing:
         raise AssertionError(f"cache-prune recipe missing {missing}: {recipe}")
+    command_lines = [line for line in recipe.splitlines() if "cache-prune" in line and "--repo" in line]
+    if len(command_lines) != 1:
+        raise AssertionError(f"cache-prune recipe must sweep all namespaces in one command: {recipe}")
 
 
 def cache_prune_for_visible_command(command: str, *, expose_cwd: bool = True) -> tuple[subprocess.CompletedProcess[str], bool]:
@@ -3315,6 +3422,8 @@ def main() -> int:
     assert_cache_prune_dry_run_preserves_stale_cache_below_thresholds()
     assert_cache_prune_age_only_apply_prunes_stale_candidates_without_pressure()
     assert_cache_prune_age_only_apply_refuses_active_related_process()
+    assert_cache_prune_age_only_error_refusals_report_age_only()
+    assert_cache_prune_multiple_repos_attempts_all_namespaces_after_refusal()
     assert_cache_prune_apply_refuses_active_related_process()
     assert_cache_prune_apply_refuses_active_related_process_by_cwd()
     assert_cache_prune_active_process_scan_uses_portable_ps_columns()

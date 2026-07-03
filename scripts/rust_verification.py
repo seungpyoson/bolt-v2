@@ -2507,8 +2507,11 @@ def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool, age_only: bool = F
         }
 
 
-def refusal_payload(*, code: str, reason: str, dry_run: bool, target: str | None = None) -> dict[str, Any]:
+def refusal_payload(
+    *, code: str, reason: str, dry_run: bool, target: str | None = None, age_only: bool = False,
+) -> dict[str, Any]:
     return {
+        "age_only": age_only,
         "candidates": [],
         "dry_run": dry_run,
         "reclaimable_bytes": 0,
@@ -4433,29 +4436,56 @@ def cmd_cache_prune(args: argparse.Namespace) -> int:
     if not args.json:
         print("--json is required for cache-prune", file=sys.stderr)
         return 2
-    repo = repo_path(args.repo)
+    repos = [repo_path(item) for item in args.repo]
     dry_run = not args.apply
-    try:
-        payload = cache_prune_payload(repo, dry_run=dry_run, age_only=args.age_only)
+    if len(repos) == 1:
+        payload, exit_code = cache_prune_command_result(repos[0], dry_run=dry_run, age_only=args.age_only)
         print(json.dumps(payload, sort_keys=True))
+        return exit_code
+    results: list[dict[str, Any]] = []
+    exit_code = 0
+    for repo in repos:
+        payload, repo_exit_code = cache_prune_command_result(repo, dry_run=dry_run, age_only=args.age_only)
+        results.append(
+            {
+                "exit_code": repo_exit_code,
+                "payload": payload,
+                "repo": str(repo),
+            }
+        )
+        exit_code = max(exit_code, repo_exit_code)
+    print(
+        json.dumps(
+            {
+                "age_only": args.age_only,
+                "dry_run": dry_run,
+                "refused": any(result["payload"].get("refused") for result in results),
+                "results": results,
+            },
+            sort_keys=True,
+        )
+    )
+    return exit_code
+
+
+def cache_prune_command_result(repo: pathlib.Path, *, dry_run: bool, age_only: bool) -> tuple[dict[str, Any], int]:
+    try:
+        payload = cache_prune_payload(repo, dry_run=dry_run, age_only=age_only)
     except FileNotFoundError as exc:
         expected_policy = policy_path(repo)
         missing = pathlib.Path(getattr(exc, "filename", "") or exc.args[0])
         code = "missing_policy" if missing == expected_policy else "operation_failed"
-        payload = refusal_payload(code=code, reason=str(exc), dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-        return 2
+        payload = refusal_payload(code=code, reason=str(exc), dry_run=dry_run, age_only=age_only)
+        return payload, 2
     except PolicyError as exc:
-        payload = refusal_payload(code="invalid_policy", reason=str(exc), dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-        return 2
+        payload = refusal_payload(code="invalid_policy", reason=str(exc), dry_run=dry_run, age_only=age_only)
+        return payload, 2
     except OSError as exc:
-        payload = refusal_payload(code="operation_failed", reason=str(exc), dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-        return 2
+        payload = refusal_payload(code="operation_failed", reason=str(exc), dry_run=dry_run, age_only=age_only)
+        return payload, 2
     if payload.get("refused"):
-        return 2
-    return 0
+        return payload, 2
+    return payload, 0
 
 
 def cmd_cleanup(_args: argparse.Namespace) -> int:
@@ -4536,7 +4566,7 @@ def build_parser() -> argparse.ArgumentParser:
     cache_status.set_defaults(func=cmd_cache_status)
 
     cache_prune = subparsers.add_parser("cache-prune")
-    cache_prune.add_argument("--repo", required=True)
+    cache_prune.add_argument("--repo", action="append", required=True)
     cache_prune_mode = cache_prune.add_mutually_exclusive_group()
     cache_prune_mode.add_argument("--dry-run", action="store_true")
     cache_prune_mode.add_argument("--apply", action="store_true")

@@ -2699,6 +2699,25 @@ def replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new, 1)
 
 
+def replace_config_key_line_once(config: str, section: str, key: str, new_line: str | None) -> str:
+    # Tunable config values (e.g. cargo_build_jobs caps) change over time; anchor
+    # fixture mutations on section+key so the mutation fails loud instead of
+    # silently no-oping when the live value drifts.
+    header = f"[{section}]\n"
+    start = config.find(header)
+    if start == -1:
+        raise AssertionError(f"config section not found: {section!r}")
+    body_start = start + len(header)
+    next_section = config.find("\n[", body_start)
+    body_end = len(config) if next_section == -1 else next_section + 1
+    body = config[body_start:body_end]
+    match = re.search(rf"(?m)^{re.escape(key)} = .+\n", body)
+    if match is None:
+        raise AssertionError(f"config key not found in section {section!r}: {key!r}")
+    replacement = "" if new_line is None else new_line + "\n"
+    return config[:body_start] + body[: match.start()] + replacement + body[match.end() :] + config[body_end:]
+
+
 def base_upload_artifact_action_line() -> str:
     return next(
         line.strip()
@@ -8363,11 +8382,15 @@ def assert_runner_contract_requires_configured_cargo_build_jobs() -> None:
         raise AssertionError(
             f"runner contract must reject compile commands before CARGO_BUILD_JOBS setup, got: {late_setup_errors}"
         )
-    invalid_config = ci_provenance_config_fixture().replace("clippy = 2", "clippy = true", 1)
+    invalid_config = replace_config_key_line_once(
+        ci_provenance_config_fixture(), "cargo_build_jobs.ci", "clippy", "clippy = true"
+    )
     error = runner_config_load_error(invalid_config, verifier=verifier)
     if "cargo_build_jobs.ci.clippy must be a positive integer" not in error:
         raise AssertionError(f"runner contract must reject invalid cargo build jobs config, got: {error!r}")
-    missing_config = ci_provenance_config_fixture().replace("clippy = 2\n", "", 1)
+    missing_config = replace_config_key_line_once(
+        ci_provenance_config_fixture(), "cargo_build_jobs.ci", "clippy", None
+    )
     original_config = verifier.DEFAULT_RUNNERS_CONFIG
     with tempfile.TemporaryDirectory() as tmp:
         config_path = write_temp_runner_config(pathlib.Path(tmp), missing_config)

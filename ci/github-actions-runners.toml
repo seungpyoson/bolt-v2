@@ -76,24 +76,24 @@ probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
 [cargo_build_jobs.ci]
-clippy = 2
-check-aarch64 = 2
-source-fence = 2
-test-archive = 2
+clippy = 3
+check-aarch64 = 3
+source-fence = 3
+test-archive = 3
 
 [cargo_build_jobs.backtester_ci]
-clippy = 2
-test-archive = 2
+clippy = 3
+test-archive = 3
 
 [cargo_build_jobs.flaky_test_detection]
-flaky-detection-rust-root = 2
-flaky-detection-rust-backtester = 2
-flaky-detection-rust-backtester-issue-789 = 2
+flaky-detection-rust-root = 3
+flaky-detection-rust-backtester = 3
+flaky-detection-rust-backtester-issue-789 = 3
 
 [cargo_build_jobs.flaky_test_smoke]
-flaky-smoke-rust-root = 2
-flaky-smoke-rust-backtester = 2
-flaky-smoke-rust-backtester-issue-789 = 2
+flaky-smoke-rust-root = 3
+flaky-smoke-rust-backtester = 3
+flaky-smoke-rust-backtester-issue-789 = 3
 
 [workflows.actionlint]
 actionlint = "github_hosted"

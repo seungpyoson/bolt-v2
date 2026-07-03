@@ -123,10 +123,10 @@ use crate::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
     bolt_v3_config::{
-        BoltV3RootConfig, CapitalPoolBlock, DataClientReadinessProbeBlock,
+        BoltV3RootConfig, CapitalPoolBlock, ClientBlock, DataClientReadinessProbeBlock,
         DataClientReadinessProbeBookType, DataClientReadinessProbeMarketDataKind,
-        DataClientReadinessProbeQuoteTargetSource, LoadedBoltV3Config, LoadedStrategy,
-        resolve_root_relative_path,
+        DataClientReadinessProbeQuoteTargetSource, LiveSubmitGovernanceMode, LoadedBoltV3Config,
+        LoadedStrategy, resolve_root_relative_path,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
@@ -1815,6 +1815,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let loss_policy = loss_governor_policy_from_loaded(loaded)?;
     let loss_halt_action_policy = loss_governor_halt_action_policy_from_loaded(loaded)?;
     let capital_admission = capital_admission_config_from_loaded(loaded)?;
+    validate_live_submit_governance(
+        loaded,
+        &live_submit_approval_limits,
+        loss_policy.is_some(),
+        capital_admission.as_ref(),
+    )?;
     let iv_client_errors = crate::bolt_v3_validate::validate_iv_source_clients(&loaded.root);
     if !iv_client_errors.is_empty() {
         return Err(BoltV3LiveNodeError::StrategyRegistration(
@@ -2050,6 +2056,128 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     );
     runtime.refresh_capital_admission_venue_spendability_from_configured_source()?;
     Ok((runtime, summary))
+}
+
+fn validate_live_submit_governance(
+    loaded: &LoadedBoltV3Config,
+    live_submit_approval_limits: &BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
+    loss_policy_present: bool,
+    capital_admission: Option<&BoltV3SubmitCapitalAdmissionConfig>,
+) -> Result<(), BoltV3LiveNodeError> {
+    if loaded.strategies.is_empty() || explicit_live_submit_governance_declaration(loaded) {
+        return Ok(());
+    }
+
+    let uncovered_execution_client_ids = submit_capable_execution_client_ids(loaded)
+        .into_iter()
+        .filter(|execution_client_id| {
+            !live_submit_approval_limits.contains_key(execution_client_id.as_str())
+                && !loss_governor_covers_execution_client(
+                    loaded,
+                    execution_client_id,
+                    loss_policy_present,
+                )
+                && !capital_admission_covers_execution_client(
+                    loaded,
+                    execution_client_id,
+                    capital_admission,
+                )
+        })
+        .collect::<Vec<_>>();
+
+    if uncovered_execution_client_ids.is_empty() {
+        return Ok(());
+    }
+
+    Err(BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+        "submit-capable live node has uncovered execution_client_id(s) {}; each submit-capable \
+         execution client must be covered by capital admission, a live-submit approval limits entry \
+         keyed to that execution_client_id, or a loss policy; otherwise declare \
+         risk.live_submit_governance.mode = \"supervised_deposit_capped\" for supervised \
+         deposit-capped operation",
+        uncovered_execution_client_ids.join(", ")
+    )))
+}
+
+fn explicit_live_submit_governance_declaration(loaded: &LoadedBoltV3Config) -> bool {
+    matches!(
+        loaded
+            .root
+            .risk
+            .live_submit_governance
+            .as_ref()
+            .map(|governance| governance.mode),
+        Some(LiveSubmitGovernanceMode::SupervisedDepositCapped)
+    )
+}
+
+fn submit_capable_execution_client_ids(loaded: &LoadedBoltV3Config) -> BTreeSet<String> {
+    loaded
+        .strategies
+        .iter()
+        .filter_map(|strategy| {
+            let execution_client_id = strategy.config.execution_client_id.as_str();
+            let client = loaded.root.clients.get(execution_client_id)?;
+            client
+                .execution
+                .is_some()
+                .then(|| execution_client_id.to_string())
+        })
+        .collect()
+}
+
+fn loss_governor_covers_execution_client(
+    loaded: &LoadedBoltV3Config,
+    execution_client_id: &str,
+    loss_policy_present: bool,
+) -> bool {
+    if !loss_policy_present {
+        return false;
+    }
+    let Some(loss_governor) = loaded.root.risk.loss_governor.as_ref() else {
+        return false;
+    };
+    if !loss_governor.enabled {
+        return false;
+    }
+    let loss_governor_account_id = loss_governor.account_id.to_string();
+    execution_client_account_id(loaded, execution_client_id)
+        .is_some_and(|account_id| account_id == loss_governor_account_id)
+}
+
+fn capital_admission_covers_execution_client(
+    loaded: &LoadedBoltV3Config,
+    execution_client_id: &str,
+    capital_admission: Option<&BoltV3SubmitCapitalAdmissionConfig>,
+) -> bool {
+    let Some(capital_admission) = capital_admission else {
+        return false;
+    };
+    let Some(client) = loaded.root.clients.get(execution_client_id) else {
+        return false;
+    };
+    if client.venue.as_str() != capital_admission.venue_id.as_str() {
+        return false;
+    }
+    execution_account_id(client)
+        .is_some_and(|account_id| account_id == capital_admission.account_id.as_str())
+}
+
+fn execution_client_account_id<'a>(
+    loaded: &'a LoadedBoltV3Config,
+    execution_client_id: &str,
+) -> Option<&'a str> {
+    let client = loaded.root.clients.get(execution_client_id)?;
+    execution_account_id(client)
+}
+
+fn execution_account_id(client: &ClientBlock) -> Option<&str> {
+    client
+        .execution
+        .as_ref()?
+        .as_table()?
+        .get(stringify!(account_id))?
+        .as_str()
 }
 
 #[cfg(test)]

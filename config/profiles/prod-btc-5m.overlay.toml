@@ -73,6 +73,13 @@ max_daily_loss = "10.00"
 max_rolling_loss = "10.00"
 max_drawdown = "15.00"
 
+# Explicit ungoverned-live declaration for the supervised deposit-capped pilot.
+# This is not a cap or threshold; it records operator intent when capital
+# admission, provider live-submit approval limits, and an enabled loss policy are
+# all absent.
+[live_submit_governance]
+mode = "supervised_deposit_capped"
+
 # Per-client FULL replacement of [clients.<name>.execution]. Keyed by a client name
 # that MUST appear in active_clients. For polymarket_main this carries the live
 # Gnosis-Safe signature type and the public funder Safe address, and OMITS the

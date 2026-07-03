@@ -1201,14 +1201,14 @@ def assert_fingerprint_reuse_requires_exact_fingerprint_components() -> None:
                 raise AssertionError((fingerprint, result))
 
 
-def assert_fingerprint_reuse_rejects_source_workflow_digest_drift() -> None:
+def assert_fingerprint_reuse_rejects_source_record_workflow_digest_mismatch() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         config = write_config(tmp_path)
-        source_workflow_bytes = b"name: CI\n# source workflow bytes differ from current checkout\n"
+        source_workflow_bytes = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_bytes()
         record = record_with_fingerprint(module, config)
-        record["workflow_digest"] = hashlib.sha256(source_workflow_bytes).hexdigest()
+        record["workflow_digest"] = "0" * 64
         fake = FakeGitHub(
             runs_pages=[[run_payload()]],
             artifacts_by_run_id={
@@ -1220,8 +1220,442 @@ def assert_fingerprint_reuse_rejects_source_workflow_digest_drift() -> None:
         result = resolve_fingerprint_with_fake(module, config, fake)
         if result.reuse_found is not False:
             raise AssertionError(result)
-        if "workflow digest" not in result.reason:
+        if "workflow_digest" not in result.reason:
             raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_allows_unrelated_workflow_drift() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        source_workflow_bytes = (
+            (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_bytes()
+            + b"\n# governance-only comment outside nextest archive reuse scope\n"
+        )
+        record = record_with_fingerprint(module, config)
+        record["workflow_digest"] = hashlib.sha256(source_workflow_bytes).hexdigest()
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+            },
+            records_by_artifact_id={2: record},
+            workflow_bytes=source_workflow_bytes,
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not True:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_allows_deploy_only_env_drift() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        source_workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        source_workflow_text = source_workflow_text.replace(
+            'S3_DEPLOY_PATH: "s3://bolt-deploy-artifacts/artifacts/bolt-v2"',
+            'S3_DEPLOY_PATH: "s3://bolt-deploy-artifacts/artifacts/bolt-v2-previous"',
+            1,
+        )
+        source_workflow_bytes = source_workflow_text.encode("utf-8")
+        record = record_with_fingerprint(module, config)
+        record["workflow_digest"] = hashlib.sha256(source_workflow_bytes).hexdigest()
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+            },
+            records_by_artifact_id={2: record},
+            workflow_bytes=source_workflow_bytes,
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not True:
+            raise AssertionError(result)
+
+
+def assert_workflow_reuse_scope_digest_accepts_yaml_header_formatting() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        formatted_text = workflow_text.replace("env:\n", "env: # top-level env\n", 1)
+        formatted_text = formatted_text.replace(
+            '  JUST_VERSION: "1.49.0"',
+            '  "JUST_VERSION": "1.49.0" # tool version',
+            1,
+        )
+        formatted_text = formatted_text.replace("jobs:\n", "jobs: # workflow jobs\n", 1)
+        for job_name in module.REUSE_RELEVANT_WORKFLOW_JOBS:
+            formatted_text = formatted_text.replace(
+                f"  {job_name}:",
+                f'  "{job_name}": # reuse-relevant job',
+                1,
+            )
+
+        expected = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            workflow_text.encode("utf-8"),
+        )
+        actual = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            formatted_text.encode("utf-8"),
+        )
+        if actual != expected:
+            raise AssertionError((expected, actual))
+
+
+def assert_workflow_reuse_scope_digest_distinguishes_quoted_hash_values() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        source_text = workflow_text.replace(
+            '  JUST_VERSION: "1.49.0"',
+            '  JUST_VERSION: "1.49.0#source"',
+            1,
+        )
+        current_text = workflow_text.replace(
+            '  JUST_VERSION: "1.49.0"',
+            '  JUST_VERSION: "1.49.0#current"',
+            1,
+        )
+        source_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            source_text.encode("utf-8"),
+        )
+        current_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            current_text.encode("utf-8"),
+        )
+        if source_digest == current_digest:
+            raise AssertionError("quoted # content must remain part of the reuse-scope digest")
+
+
+def assert_workflow_reuse_scope_digest_rejects_multiline_scoped_env() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        multiline_text = workflow_text.replace(
+            '  JUST_VERSION: "1.49.0"',
+            '  JUST_VERSION:\n    "1.49.0"',
+            1,
+        )
+        try:
+            module.workflow_reuse_scope_digest_from_bytes(
+                config,
+                multiline_text.encode("utf-8"),
+            )
+        except module.ProvenanceError as exc:
+            if "env.JUST_VERSION" not in str(exc) or "same-line scalar" not in str(exc):
+                raise AssertionError(exc)
+        else:
+            raise AssertionError("multiline scoped env value must fail closed")
+
+
+def assert_workflow_reuse_scope_digest_rejects_folded_scoped_env() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        returned_digests = []
+        for indicator in (">-", ">2", "|2"):
+            for value in ("1.49.0", "9.9.9"):
+                folded_text = replace_once(
+                    workflow_text,
+                    '  JUST_VERSION: "1.49.0"',
+                    f"  JUST_VERSION: {indicator}\n    {value}",
+                )
+                try:
+                    returned_digests.append(
+                        module.workflow_reuse_scope_digest_from_bytes(
+                            config,
+                            folded_text.encode("utf-8"),
+                        )
+                    )
+                except module.ProvenanceError as exc:
+                    message = str(exc)
+                    if "env.JUST_VERSION" not in message or "single-line scalar" not in message:
+                        raise AssertionError(message) from exc
+
+        if returned_digests:
+            raise AssertionError(f"folded JUST_VERSION values must be rejected: {returned_digests}")
+
+
+def assert_workflow_reuse_scope_digest_rejects_alias_scoped_env() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        for alias_value in ("&just_version \"1.49.0\"", "*just_version"):
+            alias_text = replace_once(
+                workflow_text,
+                '  JUST_VERSION: "1.49.0"',
+                f"  JUST_VERSION: {alias_value}",
+            )
+            try:
+                module.workflow_reuse_scope_digest_from_bytes(
+                    config,
+                    alias_text.encode("utf-8"),
+                )
+            except module.ProvenanceError as exc:
+                message = str(exc)
+                if "env.JUST_VERSION" not in message or "YAML anchors or aliases" not in message:
+                    raise AssertionError(message) from exc
+            else:
+                raise AssertionError(f"alias scoped env value must fail closed: {alias_value}")
+
+
+def assert_workflow_reuse_scope_digest_rejects_tagged_scoped_env() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        tagged_text = replace_once(
+            workflow_text,
+            '  JUST_VERSION: "1.49.0"',
+            '  JUST_VERSION: !!str "1.49.0"',
+        )
+        try:
+            module.workflow_reuse_scope_digest_from_bytes(
+                config,
+                tagged_text.encode("utf-8"),
+            )
+        except module.ProvenanceError as exc:
+            message = str(exc)
+            if "env.JUST_VERSION" not in message or "YAML tags" not in message:
+                raise AssertionError(message) from exc
+        else:
+            raise AssertionError("tagged scoped env value must fail closed")
+
+
+def assert_workflow_reuse_scope_digest_ignores_nested_env_decoys() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        decoy_text = replace_once(workflow_text, '  JUST_VERSION: "1.49.0"\n', "")
+        decoy_text = replace_once(
+            decoy_text,
+            "  CARGO_TERM_COLOR: always\n",
+            '  CARGO_TERM_COLOR: |\n    JUST_VERSION: "1.49.0"\n',
+        )
+        try:
+            module.workflow_reuse_scope_digest_from_bytes(
+                config,
+                decoy_text.encode("utf-8"),
+            )
+        except module.ProvenanceError as exc:
+            if "missing env.JUST_VERSION" not in str(exc):
+                raise AssertionError(exc)
+        else:
+            raise AssertionError("nested env decoy must not satisfy top-level JUST_VERSION")
+
+
+def assert_workflow_reuse_scope_digest_preserves_block_scalar_content() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        source_text = workflow_text.replace(
+            "          python3 scripts/nextest_fingerprint.py",
+            "          # source block-scalar content\n          python3 scripts/nextest_fingerprint.py",
+            1,
+        )
+        current_text = workflow_text.replace(
+            "          python3 scripts/nextest_fingerprint.py",
+            "          # current block-scalar content\n          python3 scripts/nextest_fingerprint.py",
+            1,
+        )
+        source_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            source_text.encode("utf-8"),
+        )
+        current_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            current_text.encode("utf-8"),
+        )
+        if source_digest == current_digest:
+            raise AssertionError("block scalar comment content must remain part of the reuse-scope digest")
+
+
+def assert_workflow_reuse_scope_digest_preserves_indicated_block_scalar_content() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        source_text = workflow_text.replace(
+            "        run: |\n          python3 scripts/nextest_fingerprint.py",
+            "        run: |2\n          # source indicated block-scalar content\n          python3 scripts/nextest_fingerprint.py",
+            1,
+        )
+        current_text = workflow_text.replace(
+            "        run: |\n          python3 scripts/nextest_fingerprint.py",
+            "        run: |2\n          # current indicated block-scalar content\n          python3 scripts/nextest_fingerprint.py",
+            1,
+        )
+        source_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            source_text.encode("utf-8"),
+        )
+        current_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            current_text.encode("utf-8"),
+        )
+        if source_digest == current_digest:
+            raise AssertionError(
+                "indicated block scalar comment content must remain part of the reuse-scope digest"
+            )
+
+
+def assert_workflow_reuse_scope_digest_preserves_block_scalar_trailing_spaces() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        line_without_trailing_spaces = (
+            '          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \\\n'
+        )
+        line_with_trailing_spaces = (
+            '          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \\   \n'
+        )
+        current_text = replace_once(
+            workflow_text,
+            line_without_trailing_spaces,
+            line_with_trailing_spaces,
+        )
+        source_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            workflow_text.encode("utf-8"),
+        )
+        current_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            current_text.encode("utf-8"),
+        )
+        if source_digest == current_digest:
+            raise AssertionError(
+                "block scalar trailing spaces must remain part of the reuse-scope digest"
+            )
+
+
+def assert_workflow_reuse_scope_digest_preserves_sequence_block_scalar_content() -> None:
+    module = load_script()
+    source_lines = [
+        "  test-archive:",
+        "    steps:",
+        "      - name: Sequence scalar probe",
+        "        with:",
+        "          args:",
+        "            - |",
+        "              # source sequence block-scalar content",
+        "              echo ok",
+    ]
+    current_lines = [
+        "  test-archive:",
+        "    steps:",
+        "      - name: Sequence scalar probe",
+        "        with:",
+        "          args:",
+        "            - |",
+        "              # current sequence block-scalar content",
+        "              echo ok",
+    ]
+    source_normalized = module.normalize_workflow_scope_lines(source_lines)
+    current_normalized = module.normalize_workflow_scope_lines(current_lines)
+    if source_normalized == current_normalized:
+        raise AssertionError(
+            "sequence block scalar content must remain part of the reuse-scope digest"
+        )
+
+    nested_source_lines = [
+        "  test-archive:",
+        "    steps:",
+        "      - name: Nested sequence scalar probe",
+        "        with:",
+        "          args:",
+        "            - - |",
+        "                # source nested sequence block-scalar content",
+        "                echo ok",
+    ]
+    nested_current_lines = [
+        "  test-archive:",
+        "    steps:",
+        "      - name: Nested sequence scalar probe",
+        "        with:",
+        "          args:",
+        "            - - |",
+        "                # current nested sequence block-scalar content",
+        "                echo ok",
+    ]
+    nested_source_normalized = module.normalize_workflow_scope_lines(nested_source_lines)
+    nested_current_normalized = module.normalize_workflow_scope_lines(nested_current_lines)
+    if nested_source_normalized == nested_current_normalized:
+        raise AssertionError(
+            "nested sequence block scalar content must remain part of the reuse-scope digest"
+        )
+
+
+def assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        display_names = {
+            "nextest-fingerprint": "nextest fingerprint",
+            "test-archive": "nextest archive",
+            "test": "test",
+            "build": "build",
+        }
+        for job_name in module.REUSE_RELEVANT_WORKFLOW_JOBS:
+            display_name = display_names[job_name]
+            source_workflow_text = replace_once(
+                workflow_text,
+                f"    name: {display_name}",
+                f"    name: {display_name} drift",
+            )
+            source_workflow_bytes = source_workflow_text.encode("utf-8")
+            record = record_with_fingerprint(module, config)
+            record["workflow_digest"] = hashlib.sha256(source_workflow_bytes).hexdigest()
+            fake = FakeGitHub(
+                runs_pages=[[run_payload()]],
+                artifacts_by_run_id={
+                    RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+                },
+                records_by_artifact_id={2: record},
+                workflow_bytes=source_workflow_bytes,
+            )
+            result = resolve_fingerprint_with_fake(module, config, fake)
+            if result.reuse_found is not False:
+                raise AssertionError((job_name, result))
+            if "workflow reuse scope" not in result.reason:
+                raise AssertionError((job_name, result))
 
 
 def assert_fingerprint_reuse_malformed_fingerprint_fails_closed() -> None:
@@ -4683,7 +5117,21 @@ def main() -> int:
     assert_fingerprint_reuse_rejects_failed_cancelled_and_wrong_workflow_runs()
     assert_fingerprint_reuse_rejects_ambiguous_and_expired_artifacts()
     assert_fingerprint_reuse_requires_exact_fingerprint_components()
-    assert_fingerprint_reuse_rejects_source_workflow_digest_drift()
+    assert_fingerprint_reuse_rejects_source_record_workflow_digest_mismatch()
+    assert_fingerprint_reuse_allows_unrelated_workflow_drift()
+    assert_fingerprint_reuse_allows_deploy_only_env_drift()
+    assert_workflow_reuse_scope_digest_accepts_yaml_header_formatting()
+    assert_workflow_reuse_scope_digest_distinguishes_quoted_hash_values()
+    assert_workflow_reuse_scope_digest_rejects_multiline_scoped_env()
+    assert_workflow_reuse_scope_digest_rejects_folded_scoped_env()
+    assert_workflow_reuse_scope_digest_rejects_alias_scoped_env()
+    assert_workflow_reuse_scope_digest_rejects_tagged_scoped_env()
+    assert_workflow_reuse_scope_digest_ignores_nested_env_decoys()
+    assert_workflow_reuse_scope_digest_preserves_block_scalar_content()
+    assert_workflow_reuse_scope_digest_preserves_indicated_block_scalar_content()
+    assert_workflow_reuse_scope_digest_preserves_block_scalar_trailing_spaces()
+    assert_workflow_reuse_scope_digest_preserves_sequence_block_scalar_content()
+    assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
     assert_fingerprint_reuse_rejects_failed_source_archive_through_resolver()
     assert_fingerprint_reuse_source_run_must_be_trusted_main_push()

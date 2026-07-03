@@ -370,6 +370,47 @@ fn live_submit_approval_limits_bound_provider_submit_before_nt_submit() {
 }
 
 #[test]
+fn enabled_but_unfed_loss_governor_rejects_where_unconfigured_governor_admits() {
+    let request = submit_request(Decimal::new(1, 0));
+    BoltV3SubmitAdmissionState::new(Arc::new(support::RecordingDecisionEvidenceWriter::default()))
+        .admit_at(&request, 5_000)
+        .expect("without a loss governor, admission is decided by the remaining gates")
+        .commit_submitted();
+
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer.clone(),
+        LossGovernorPolicy {
+            max_snapshot_age_ns: 1_000,
+            max_per_trade_loss: Some(Decimal::new(10, 0)),
+            max_daily_loss: Some(Decimal::new(25, 0)),
+            max_rolling_loss: Some(Decimal::new(30, 0)),
+            max_drawdown: Some(Decimal::new(40, 0)),
+        },
+    );
+
+    let error = admission
+        .admit_at(&request, 5_000)
+        .expect_err("enabled but unfed loss governor must fail closed");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
+            if reasons == vec![LossHaltReason::StaleLossSnapshot]
+    ));
+    assert_eq!(
+        writer.admission_decisions()[0].outcome,
+        BoltV3AdmissionOutcome::RejectedLossGovernorHalted
+    );
+    let halts = writer.loss_governor_halts();
+    assert_eq!(halts.len(), 1);
+    assert!(!halts[0].snapshot_present);
+    assert_eq!(
+        halts[0].stale_reason,
+        BoltV3StaleLossReason::MissingSnapshot
+    );
+}
+
+#[test]
 fn over_notional_cap_rejects_before_nt_submit_without_consuming_count() {
     let admission = limited_admission(1, Decimal::new(1, 0));
 

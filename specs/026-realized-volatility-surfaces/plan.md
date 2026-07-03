@@ -70,7 +70,6 @@ fn config(source_ids: &[&str]) -> RealizedVolEngineConfig {
         sampling_interval_ms: 1_000,
         min_ready_sources: source_ids.len(),
         max_source_age_ms: 500,
-        max_event_receive_lag_ms: 250,
         max_inter_sample_gap_ms: 2_000,
         min_coverage_ratio: 0.75,
         max_cross_source_dispersion: 0.50,
@@ -177,7 +176,7 @@ fn unknown_source_rejections_are_audited_without_mutating_configured_sources() {
 }
 
 #[test]
-fn observation_validation_rejects_timestamp_and_lag_violations() {
+fn observation_validation_uses_only_same_domain_timestamp_ordering() {
     let mut engine = RealizedVolEngine::from_config(config(&[SOURCE_A])).unwrap();
     assert!(engine.observe(observation(SOURCE_A, 100.0, 1_000)));
 
@@ -190,14 +189,6 @@ fn observation_validation_rejects_timestamp_and_lag_violations() {
             observation(SOURCE_A, 100.0, 1_000),
             RealizedVolSourceRejectReason::DuplicateTimestamp,
         ),
-        (
-            RealizedVolObservation { event_ts_ms: 2_000, recv_ts_ms: 1_999, ..observation(SOURCE_A, 101.0, 2_000) },
-            RealizedVolSourceRejectReason::ReceiveBeforeEvent,
-        ),
-        (
-            RealizedVolObservation { event_ts_ms: 2_000, recv_ts_ms: 2_500, ..observation(SOURCE_A, 101.0, 2_000) },
-            RealizedVolSourceRejectReason::EventReceiveLagExceeded,
-        ),
     ];
 
     for (observation, reason) in cases {
@@ -205,6 +196,17 @@ fn observation_validation_rejects_timestamp_and_lag_violations() {
         let snapshot = engine.snapshot_at(2_000);
         assert_eq!(snapshot.source_diagnostics[0].last_rejected_reason, Some(reason));
     }
+
+    assert!(engine.observe(RealizedVolObservation {
+        event_ts_ms: 2_000,
+        recv_ts_ms: 1_999,
+        ..observation(SOURCE_A, 101.0, 2_000)
+    }));
+    assert!(engine.observe(RealizedVolObservation {
+        event_ts_ms: 3_000,
+        recv_ts_ms: 4_500,
+        ..observation(SOURCE_A, 102.0, 3_000)
+    }));
 }
 
 #[test]
@@ -330,7 +332,6 @@ pub struct RealizedVolEngineConfig {
     pub sampling_interval_ms: u64,
     pub min_ready_sources: usize,
     pub max_source_age_ms: u64,
-    pub max_event_receive_lag_ms: u64,
     pub max_inter_sample_gap_ms: u64,
     pub min_coverage_ratio: f64,
     pub max_cross_source_dispersion: f64,
@@ -452,8 +453,6 @@ pub enum RealizedVolSourceRejectReason {
     EventTimeRegression,
     DuplicateTimestamp,
     StaleSameEventUpdate,
-    ReceiveBeforeEvent,
-    EventReceiveLagExceeded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -522,7 +521,7 @@ impl RealizedVolEngine {
             *self.unknown_source_rejections.entry(observation.source_id).or_default() += 1;
             return false;
         };
-        let rejected = reject_observation(&source.config, &source.samples, &observation, self.config.max_event_receive_lag_ms);
+        let rejected = reject_observation(&source.config, &source.samples, &observation);
         if let Some(reason) = rejected {
             source.last_rejected_reason = Some(reason);
             *source.rejection_counters.entry(reason).or_default() += 1;
@@ -643,7 +642,6 @@ fn reject_observation(
     config: &RealizedVolSourceConfig,
     samples: &VecDeque<RealizedVolObservation>,
     observation: &RealizedVolObservation,
-    max_lag_ms: u64,
 ) -> Option<RealizedVolSourceRejectReason> {
     if !config.enabled {
         return Some(RealizedVolSourceRejectReason::DisabledSource);
@@ -656,12 +654,6 @@ fn reject_observation(
     }
     if !is_positive_finite(observation.price) {
         return Some(RealizedVolSourceRejectReason::InvalidPrice);
-    }
-    if observation.recv_ts_ms < observation.event_ts_ms {
-        return Some(RealizedVolSourceRejectReason::ReceiveBeforeEvent);
-    }
-    if observation.recv_ts_ms.saturating_sub(observation.event_ts_ms) > max_lag_ms {
-        return Some(RealizedVolSourceRejectReason::EventReceiveLagExceeded);
     }
     if samples.back().is_some_and(|sample| observation.event_ts_ms < sample.event_ts_ms) {
         return Some(RealizedVolSourceRejectReason::EventTimeRegression);
@@ -986,7 +978,6 @@ window_ms = 4000
 sampling_interval_ms = 1000
 min_ready_sources = 1
 max_source_age_ms = 500
-max_event_receive_lag_ms = 250
 max_inter_sample_gap_ms = 2000
 min_coverage_ratio = 0.75
 max_cross_source_dispersion = 0.50
@@ -1050,7 +1041,6 @@ pub struct RealizedVolatilityPolicyBlock {
     pub sampling_interval_ms: u64,
     pub min_ready_sources: usize,
     pub max_source_age_ms: u64,
-    pub max_event_receive_lag_ms: u64,
     pub max_inter_sample_gap_ms: u64,
     pub min_coverage_ratio: f64,
     pub max_cross_source_dispersion: f64,

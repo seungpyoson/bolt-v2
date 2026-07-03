@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import subprocess
 import sys
@@ -13,6 +14,58 @@ from typing import Iterable, TextIO
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = Path("ci/rust-ci-inputs.toml")
 GLOB_CHARS = frozenset("*?[")
+FORBIDDEN_BACKTESTER_CACHE_TARGETS = (
+    ".github/workflows/backtester-ci.yml",
+    "scripts/ci_input_sets.py",
+    "ci/rust-ci-inputs.toml",
+    ".github/actions/setup-environment/action.yml",
+)
+
+
+def normalize_repo_pathspec(pathspec: str) -> str | None:
+    if pathspec.startswith(":(top)"):
+        pathspec = pathspec[len(":(top)") :]
+    elif pathspec.startswith(":/"):
+        pathspec = pathspec[len(":/") :]
+    elif pathspec.startswith(":"):
+        return None
+
+    parts: list[str] = []
+    for part in pathspec.split("/"):
+        if part == "" or part == ".":
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts) if parts else "."
+
+
+def pathspec_may_cover(pathspec: str, path: str) -> bool:
+    normalized_pathspec = normalize_repo_pathspec(pathspec)
+    normalized_path = normalize_repo_pathspec(path)
+    if normalized_pathspec is None or normalized_path is None:
+        return False
+    if normalized_pathspec == ".":
+        return True
+    if normalized_pathspec == normalized_path:
+        return True
+    if not any(char in normalized_pathspec for char in GLOB_CHARS):
+        return normalized_path.startswith(normalized_pathspec + "/")
+    return fnmatch.fnmatchcase(normalized_path, normalized_pathspec)
+
+
+def backtester_cache_pathspec_policy_errors(pathspecs: Iterable[str]) -> list[str]:
+    errors: list[str] = []
+    for pathspec in sorted(pathspecs):
+        if normalize_repo_pathspec(pathspec) is None:
+            errors.append(f"backtester_cache input set must not use unsupported Git pathspec magic {pathspec}")
+            continue
+        if any(pathspec_may_cover(pathspec, forbidden) for forbidden in FORBIDDEN_BACKTESTER_CACHE_TARGETS):
+            errors.append(f"backtester_cache input set must not include CI governance input {pathspec}")
+    return errors
 
 
 def read_text(path: Path) -> str:

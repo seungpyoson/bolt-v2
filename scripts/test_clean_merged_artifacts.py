@@ -55,6 +55,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import unittest
 from typing import Any, Callable
@@ -141,6 +142,32 @@ prune_after_days = 30
 """
     cfg.write_text(base, encoding="utf-8")
     return cfg
+
+
+def append_lane_t_config(
+    work: pathlib.Path,
+    *,
+    idle_after_days: int = 7,
+    active_process_patterns: tuple[str, ...] = ("cargo", "rustc"),
+    process_list_timeout_s: float = 2,
+    cwd_visibility_timeout_s: float = 1,
+) -> None:
+    cfg = work / "config" / "clean-merged.toml"
+    patterns = ", ".join(json.dumps(pattern) for pattern in active_process_patterns)
+    with cfg.open("a", encoding="utf-8") as handle:
+        handle.write(
+            textwrap.dedent(
+                f"""\
+
+                [clean-merged.lane_t]
+                target_dir_name = "target"
+                idle_after_days = {idle_after_days}
+                active_process_patterns = [{patterns}]
+                process_list_timeout_s = {process_list_timeout_s}
+                cwd_visibility_timeout_s = {cwd_visibility_timeout_s}
+                """
+            )
+        )
 
 
 def run_clean(work: pathlib.Path, *args: str, env: dict[str, str] | None = None) -> int:
@@ -1633,6 +1660,29 @@ class HookEndToEndTests(unittest.TestCase):
         hb = pathlib.Path(common) / "clean-merged.heartbeat"
         return hb if hb.is_file() else None
 
+    def test_hooks_exit_zero_within_three_seconds_when_script_fails(self) -> None:
+        script = self.work / "scripts" / "clean_merged_artifacts.py"
+        script.write_text("raise RuntimeError('synthetic clean-merged failure')\n", encoding="utf-8")
+        hooks_dir = self.work / ".githooks"
+        cases = (
+            ("post-merge", ()),
+            ("post-checkout", ("0" * 40, "1" * 40, "1")),
+            ("post-rewrite", ()),
+        )
+        for hook_name, args in cases:
+            start = time.monotonic()
+            proc = subprocess.run(
+                [str(hooks_dir / hook_name), *args],
+                cwd=self.work,
+                env={**os.environ, **GIT_ENV},
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            elapsed = time.monotonic() - start
+            self.assertEqual(proc.returncode, 0, f"{hook_name} must fail open: {proc.stderr}")
+            self.assertLess(elapsed, 3, f"{hook_name} blocked for {elapsed:.3f}s")
+
     def _advance_remote(self) -> None:
         other = self.tmp / "other"
         _run(["git", "clone", "-q", "-b", "main", str(self.remote), str(other)], cwd=self.tmp)
@@ -2269,6 +2319,258 @@ class LaneWOptInInvariantTests(unittest.TestCase):
         for r in records:
             self.assertNotIn("__REFUSED_DETACHED", r.get("reason", ""),
                              f"internal sentinel must not leak into the reason: {r}")
+
+
+class LaneTTargetDirReaperTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="cm-lane-t-"))
+        self.work = make_repo(self.tmp)
+        make_config(self.work)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _linked_worktree(self, branch: str = "feat/target-dir") -> pathlib.Path:
+        _run(["git", "branch", branch], cwd=self.work)
+        return add_worktree(self.work, branch, self.tmp / branch.replace("/", "-"))
+
+    def _fake_ps_env(self, body: str = "exit 0\n", *, lsof_body: str | None = None) -> dict[str, str]:
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        ps = bin_dir / "ps"
+        ps.write_text(f"#!/usr/bin/env bash\n{body}", encoding="utf-8")
+        ps.chmod(0o755)
+        if lsof_body is not None:
+            lsof = bin_dir / "lsof"
+            lsof.write_text(f"#!/usr/bin/env bash\n{lsof_body}", encoding="utf-8")
+            lsof.chmod(0o755)
+        return {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+
+    @staticmethod
+    def _age_subtree(path: pathlib.Path, *, days: int) -> None:
+        old_time = time.time() - (days * 24 * 60 * 60)
+        for child in sorted(path.rglob("*"), reverse=True):
+            os.utime(child, (old_time, old_time))
+        os.utime(path, (old_time, old_time))
+
+    def test_target_dir_reaper_dry_run_then_apply_reaps_idle_candidate(self) -> None:
+        append_lane_t_config(self.work)
+        wt = self._linked_worktree()
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        env = self._fake_ps_env()
+
+        dry = run_clean_proc(self.work, "--include-target-dirs", env=env)
+
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        self.assertTrue(target.exists(), "dry-run must not remove target dirs")
+        self.assertIn("target-dir-reap-candidate", dry.stdout)
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", "--quiet", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertFalse(target.exists(), "apply must remove eligible idle target dir")
+
+    def test_target_dir_reaper_honors_keep_branch_in_single_lane_mode(self) -> None:
+        append_lane_t_config(self.work)
+        branch = "feat/keep-target-dir"
+        wt = self._linked_worktree(branch)
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        env = self._fake_ps_env()
+
+        applied = run_clean_proc(
+            self.work, "--lane", "t", "--apply", "--quiet", "--keep", branch, env=env,
+        )
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "Lane T must honor --keep for worktree target dirs")
+
+    def test_target_dir_reaper_spares_recent_inner_mtime(self) -> None:
+        append_lane_t_config(self.work)
+        wt = self._linked_worktree("feat/recent-target-dir")
+        target = wt / "target"
+        artifact = target / "debug" / "fresh-artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("fresh", encoding="utf-8")
+        old_time = time.time() - (30 * 24 * 60 * 60)
+        os.utime(target, (old_time, old_time))
+        env = self._fake_ps_env()
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", "--quiet", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "fresh inner file must keep a stale top-level target dir")
+
+    def test_target_dir_reaper_refuses_active_process_reference(self) -> None:
+        append_lane_t_config(self.work, active_process_patterns=("cargo",))
+        wt = self._linked_worktree("feat/active-target-dir")
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        proc_dir = self.tmp / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(target)
+        env = self._fake_ps_env("printf '123 cargo build\\n'\n")
+        env["CLEAN_MERGED_PROCESS_CWD_BASE"] = str(self.tmp / "proc")
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "active target dir must not be removed")
+        self.assertIn("target-dir-refused-active-process", applied.stdout)
+
+    def test_target_dir_reaper_refuses_renamed_rust_build_process(self) -> None:
+        append_lane_t_config(self.work, active_process_patterns=("cargo",))
+        wt = self._linked_worktree("feat/renamed-rust-target-dir")
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        proc_dir = self.tmp / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(target)
+        env = self._fake_ps_env("printf '123 build-wrapper build --manifest-path Cargo.toml\\n'\n")
+        env["CLEAN_MERGED_PROCESS_CWD_BASE"] = str(self.tmp / "proc")
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "renamed Rust build process must block target dir removal")
+        self.assertIn("target-dir-refused-active-process", applied.stdout)
+
+    def test_target_dir_process_timeouts_come_from_config(self) -> None:
+        append_lane_t_config(
+            self.work,
+            active_process_patterns=("cargo",),
+            process_list_timeout_s=12,
+            cwd_visibility_timeout_s=3,
+        )
+        config = cm.load_config(self.work)
+        self.assertIsNotNone(config.lane_t)
+        target = self.work / "target"
+        target.mkdir()
+        calls: list[float] = []
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            calls.append(kwargs["timeout"])
+            if cmd[0] == "ps":
+                return subprocess.CompletedProcess(cmd, 0, "123 cargo build\n", "")
+            if cmd[0] == "lsof":
+                return subprocess.CompletedProcess(cmd, 0, f"n{target}\n", "")
+            raise AssertionError(cmd)
+
+        old_base = os.environ.get("CLEAN_MERGED_PROCESS_CWD_BASE")
+        os.environ["CLEAN_MERGED_PROCESS_CWD_BASE"] = str(self.tmp / "missing-proc")
+        try:
+            with mock.patch.object(cm.shutil, "which", return_value="/usr/bin/lsof"):
+                with mock.patch.object(cm.subprocess, "run", fake_run):
+                    active, error = cm.active_target_dir_processes(self.work, target, config.lane_t)
+        finally:
+            if old_base is None:
+                os.environ.pop("CLEAN_MERGED_PROCESS_CWD_BASE", None)
+            else:
+                os.environ["CLEAN_MERGED_PROCESS_CWD_BASE"] = old_base
+
+        self.assertIsNone(error)
+        self.assertEqual(calls, [12, 3])
+        self.assertEqual(len(active), 1)
+
+    def test_target_dir_reaper_refuses_if_tree_changes_before_delete(self) -> None:
+        append_lane_t_config(self.work)
+        wt = self._linked_worktree("feat/racy-target-dir")
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        env = self._fake_ps_env(f"touch {target / 'debug' / 'new-artifact'}\nexit 0\n")
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "target dir changed before delete must not be removed")
+        self.assertIn("target-dir-refused-changed-before-delete", applied.stdout)
+
+    def test_target_dir_reaper_uses_lsof_when_proc_cwd_is_unavailable(self) -> None:
+        append_lane_t_config(self.work, active_process_patterns=("cargo",))
+        wt = self._linked_worktree("feat/lsof-target-dir")
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        env = self._fake_ps_env(
+            "printf '123 cargo build\\n'\n",
+            lsof_body=f"printf 'p123\\nfcwd\\nn{target}\\n'\n",
+        )
+        env["CLEAN_MERGED_PROCESS_CWD_BASE"] = str(self.tmp / "missing-proc")
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "lsof-visible active target dir must not be removed")
+        self.assertIn("target-dir-refused-active-process", applied.stdout)
+
+    def test_target_dir_reaper_refuses_when_matching_process_cwd_visibility_fails(self) -> None:
+        append_lane_t_config(self.work, active_process_patterns=("cargo",))
+        wt = self._linked_worktree("feat/no-process-visibility")
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        env = self._fake_ps_env(
+            "printf '123 cargo build\\n'\n",
+            lsof_body="printf 'permission denied\\n' >&2\nexit 1\n",
+        )
+        env["CLEAN_MERGED_PROCESS_CWD_BASE"] = str(self.tmp / "missing-proc")
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "unknown process cwd must fail closed")
+        self.assertIn("target-dir-refused-process-visibility", applied.stdout)
+
+    def test_target_dir_reaper_without_config_table_is_noop(self) -> None:
+        wt = self._linked_worktree("feat/no-lane-t")
+        target = wt / "target"
+        (target / "debug").mkdir(parents=True)
+        self._age_subtree(target, days=30)
+        env = self._fake_ps_env()
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", "--quiet", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "missing lane_t config table must no-op")
+
+
+class CleanMergedDegradedStateTests(unittest.TestCase):
+    def test_help_works_from_bare_non_git_directory(self) -> None:
+        nongit = pathlib.Path(tempfile.mkdtemp(prefix="cm-help-nongit-"))
+        self.addCleanup(shutil.rmtree, nongit, ignore_errors=True)
+        env = os.environ.copy()
+        env.update(GIT_ENV)
+        if subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=nongit,
+                          env=env, capture_output=True, text=True).returncode == 0:
+            self.skipTest(f"{nongit} is inside a git repo")
+
+        proc = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "scripts" / "clean_merged_artifacts.py"), "--help"],
+            cwd=nongit, env=env, capture_output=True, text=True, timeout=3,
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("usage:", proc.stdout)
 
 
 if __name__ == "__main__":

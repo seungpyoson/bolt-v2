@@ -120,7 +120,7 @@ cancel-obsolete-dispatch = "github_hosted"
 mark-stalled = "github_hosted"
 
 [workflows.coverage_enforcer]
-coverage-enforcer = "github_hosted"
+coverage-enforcer = "managed_light"
 
 [workflows.ci_storage_tripwire]
 storage-tripwire = "github_hosted"
@@ -166,6 +166,7 @@ debug_workflow = "ci_runner_debug"
 included_workflows = [
   "ci",
   "backtester_ci",
+  "coverage_enforcer",
   "flaky_test_detection",
   "flaky_test_smoke",
   "ci_runner_debug",

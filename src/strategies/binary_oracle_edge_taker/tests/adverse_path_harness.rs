@@ -62,6 +62,8 @@ fn dropped_terminal_event_after_accepted_entry_is_not_left_pending() {
     assert_reality_fixtures();
 
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
     let entry_client_order_id = ClientOrderId::from("ENTRY-ACCEPTED-NO-TERMINAL");
     let pending = pending_entry_state(&mut strategy, entry_client_order_id);
     let instrument_id = pending.instrument_id;
@@ -432,11 +434,13 @@ fn partial_fill_residual_is_managed_or_fresh_reexit(
     expected_residual_quantity: Quantity,
 ) -> bool {
     match &strategy.exposure {
-        ExposureState::Managed(managed) => position_matches_expected_residual(
-            &managed.position,
-            original_position,
-            expected_residual_quantity,
-        ),
+        ExposureState::Managed(managed) => {
+            position_matches_expected_residual(
+                &managed.position,
+                original_position,
+                expected_residual_quantity,
+            ) && open_sell_exit_order_count(cache, original_position) == 0
+        }
         ExposureState::ExitPending(exit) => {
             let Some(managed) = &exit.position else {
                 return false;
@@ -446,6 +450,7 @@ fn partial_fill_residual_is_managed_or_fresh_reexit(
                 original_position,
                 expected_residual_quantity,
             ) && exit.pending_exit.client_order_id != expired_client_order_id
+                && exit.pending_exit.position_id == Some(original_position.position_id)
                 && !exit.pending_exit.fill_received
                 && !exit.pending_exit.close_received
                 && !exit.pending_exit.terminal_received
@@ -455,6 +460,9 @@ fn partial_fill_residual_is_managed_or_fresh_reexit(
                     &exit.pending_exit,
                     original_position,
                     expected_residual_quantity,
+                    strategy.config.exit_order.order_type,
+                    strategy.config.exit_order.time_in_force,
+                    strategy.config.exit_order.is_reduce_only,
                 )
         }
         _ => false,
@@ -471,6 +479,7 @@ fn position_matches_expected_residual(
             &actual.instrument_id,
             &actual.position_id,
             actual.side,
+            // avg_px_open is invariant under partial close; on this single-entry fixture the pin is convention-independent.
             actual.avg_px_open.to_bits(),
         ) == (
             &original.instrument_id,
@@ -485,11 +494,39 @@ fn fresh_exit_order_matches_residual(
     pending_exit: &PendingExitState,
     original_position: &OpenPositionState,
     expected_residual_quantity: Quantity,
+    expected_order_type: OrderType,
+    expected_time_in_force: TimeInForce,
+    expected_is_reduce_only: bool,
 ) -> bool {
     let cache = cache.borrow();
     let cache_position_id_matches =
         cache.position_id(&pending_exit.client_order_id) == Some(&original_position.position_id);
+    let open_sell_orders = cache.orders_open(
+        Some(&fixture_execution_venue()),
+        Some(&original_position.instrument_id),
+        Some(&StrategyId::from("BINARYORACLEEDGETAKER-001")),
+        None,
+        Some(OrderSide::Sell),
+    );
+    open_sell_orders.len() == 1
+        && open_sell_orders.first().is_some_and(|order| {
+            order.client_order_id() == pending_exit.client_order_id
+                && order.instrument_id() == original_position.instrument_id
+                && order.position_id().as_ref() == Some(&original_position.position_id)
+                && order.quantity() == expected_residual_quantity
+                && order.order_type() == expected_order_type
+                && order.time_in_force() == expected_time_in_force
+                && order.is_reduce_only() == expected_is_reduce_only
+                && cache_position_id_matches
+        })
+}
+
+fn open_sell_exit_order_count(
+    cache: &Rc<RefCell<Cache>>,
+    original_position: &OpenPositionState,
+) -> usize {
     cache
+        .borrow()
         .orders_open(
             Some(&fixture_execution_venue()),
             Some(&original_position.instrument_id),
@@ -497,14 +534,7 @@ fn fresh_exit_order_matches_residual(
             None,
             Some(OrderSide::Sell),
         )
-        .iter()
-        .any(|order| {
-            order.client_order_id() == pending_exit.client_order_id
-                && order.instrument_id() == original_position.instrument_id
-                && order.position_id().as_ref() == Some(&original_position.position_id)
-                && order.quantity() == expected_residual_quantity
-                && cache_position_id_matches
-        })
+        .len()
 }
 
 fn held_instrument_id(strategy: &BinaryOracleEdgeTaker, held_leg: Leg) -> InstrumentId {

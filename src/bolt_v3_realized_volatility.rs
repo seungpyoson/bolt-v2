@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::bolt_v3_numeric::{
     HALF_F64, MILLIS_PER_SECOND_F64, POWER_OF_TWO, UNIT_F64, ZERO_F64, is_positive_finite,
 };
+use crate::bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs};
 
 const ZERO_MILLIS_U64: u64 = u64::MIN;
 const ZERO_COUNT_USIZE: usize = usize::MIN;
@@ -24,7 +25,6 @@ pub struct RealizedVolEngineConfig {
     pub sampling_interval_ms: u64,
     pub min_ready_sources: usize,
     pub max_source_age_ms: u64,
-    pub max_event_receive_lag_ms: u64,
     pub max_inter_sample_gap_ms: u64,
     pub min_coverage_ratio: f64,
     pub max_cross_source_dispersion: f64,
@@ -374,6 +374,8 @@ pub enum RealizedVolSourceRejectReason {
     EventTimeRegression,
     DuplicateTimestamp,
     StaleSameEventUpdate,
+    // Retained for historical evidence deserialization. Live ingest no longer rejects
+    // observations solely because receive time precedes or lags venue event time.
     ReceiveBeforeEvent,
     EventReceiveLagExceeded,
 }
@@ -456,17 +458,28 @@ impl RealizedVolEngine {
         &self.config
     }
 
+    pub fn latest_event_ts(&self) -> Option<VenueEventMs> {
+        self.sources
+            .values()
+            .flat_map(|state| {
+                [
+                    state
+                        .samples
+                        .back()
+                        .map(|sample| VenueEventMs::new(sample.event_ts_ms)),
+                    state.last_rejected_event_ts_ms.map(VenueEventMs::new),
+                ]
+            })
+            .flatten()
+            .max()
+    }
+
     pub fn observe(&mut self, observation: RealizedVolObservation) -> bool {
         let Some(source) = self.sources.get_mut(&observation.source_id) else {
             increment_counter(&mut self.unknown_source_rejections, observation.source_id);
             return false;
         };
-        let rejected = reject_observation(
-            &source.config,
-            &source.samples,
-            &observation,
-            self.config.max_event_receive_lag_ms,
-        );
+        let rejected = reject_observation(&source.config, &source.samples, &observation);
         if let Some(reason) = rejected {
             source.last_rejected_reason = Some(reason);
             source.last_rejected_event_ts_ms = Some(observation.event_ts_ms);
@@ -746,7 +759,6 @@ fn reject_observation(
     config: &RealizedVolSourceConfig,
     samples: &VecDeque<RealizedVolObservation>,
     observation: &RealizedVolObservation,
-    max_lag_ms: u64,
 ) -> Option<RealizedVolSourceRejectReason> {
     if !config.enabled {
         return Some(RealizedVolSourceRejectReason::DisabledSource);
@@ -760,30 +772,23 @@ fn reject_observation(
     if !is_positive_finite(observation.price) {
         return Some(RealizedVolSourceRejectReason::InvalidPrice);
     }
-    if observation.recv_ts_ms < observation.event_ts_ms {
-        return Some(RealizedVolSourceRejectReason::ReceiveBeforeEvent);
-    }
-    if observation
-        .recv_ts_ms
-        .saturating_sub(observation.event_ts_ms)
-        > max_lag_ms
-    {
-        return Some(RealizedVolSourceRejectReason::EventReceiveLagExceeded);
-    }
+    let observed_event_ts = VenueEventMs::new(observation.event_ts_ms);
     if samples
         .back()
-        .is_some_and(|sample| observation.event_ts_ms < sample.event_ts_ms)
+        .is_some_and(|sample| observed_event_ts < VenueEventMs::new(sample.event_ts_ms))
     {
         return Some(RealizedVolSourceRejectReason::EventTimeRegression);
     }
     if let Some(sample) = samples
         .back()
-        .filter(|sample| observation.event_ts_ms == sample.event_ts_ms)
+        .filter(|sample| observed_event_ts == VenueEventMs::new(sample.event_ts_ms))
     {
-        if observation.recv_ts_ms == sample.recv_ts_ms {
+        let observed_receive_ts = LocalReceiveMs::new(observation.recv_ts_ms);
+        let prior_receive_ts = LocalReceiveMs::new(sample.recv_ts_ms);
+        if observed_receive_ts == prior_receive_ts {
             return Some(RealizedVolSourceRejectReason::DuplicateTimestamp);
         }
-        if observation.recv_ts_ms < sample.recv_ts_ms {
+        if observed_receive_ts < prior_receive_ts {
             return Some(RealizedVolSourceRejectReason::StaleSameEventUpdate);
         }
     }
@@ -1330,12 +1335,6 @@ fn config_fingerprint(config: &RealizedVolEngineConfig) -> String {
     .expect("canonical fingerprint write should not fail");
     writeln!(
         &mut canonical,
-        "max_event_receive_lag_ms={}",
-        config.max_event_receive_lag_ms
-    )
-    .expect("canonical fingerprint write should not fail");
-    writeln!(
-        &mut canonical,
         "max_inter_sample_gap_ms={}",
         config.max_inter_sample_gap_ms
     )
@@ -1723,7 +1722,6 @@ mod tests {
             sampling_interval_ms: 1_000,
             min_ready_sources: 1,
             max_source_age_ms: 500,
-            max_event_receive_lag_ms: 250,
             max_inter_sample_gap_ms: 2_000,
             min_coverage_ratio: 0.75,
             max_cross_source_dispersion: 0.50,

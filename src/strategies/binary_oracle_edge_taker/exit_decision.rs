@@ -211,6 +211,19 @@ impl BoltV3ExitDecisionEvidence {
                 .iter()
                 .map(forced_flat_reason_to_evidence)
                 .collect(),
+            spot_price: option_evidence_number(fields.spot_price),
+            spot_venue_name: fields.spot_venue_name.clone(),
+            fast_venue_available: fields.spot_price.is_some(),
+            reference_current_price: option_evidence_number(fields.reference_current_price),
+            reference_current_price_available: fields.reference_current_price.is_some(),
+            interval_open: option_evidence_number(fields.interval_open),
+            fair_probability_up: option_evidence_number(fields.fair_probability_up),
+            fair_probability_down: option_evidence_number(fields.fair_probability_down),
+            uncertainty_band_probability: option_evidence_number(
+                fields.uncertainty_band_probability,
+            ),
+            up_fee_bps: option_evidence_number(fields.up_fee_bps),
+            down_fee_bps: option_evidence_number(fields.down_fee_bps),
             hold_ev_bps: option_evidence_number(fields.hold_ev_bps),
             exit_ev_bps: option_evidence_number(fields.exit_ev_bps),
             realized_vol: option_evidence_number(fields.realized_vol),
@@ -233,6 +246,13 @@ impl BoltV3ExitDecisionEvidence {
             client_order_id: fields
                 .submission_client_order_id
                 .map(|client_order_id| client_order_id.to_string()),
+            submission_order_side: fields
+                .submission_order_side
+                .map(|order_side| order_side.to_string()),
+            submission_price: option_evidence_number(fields.submission_price),
+            submission_quantity: fields
+                .submission_quantity
+                .map(|quantity| quantity.to_string()),
             seconds_to_market_end: fields.seconds_to_expiry,
             ts_ms,
             stale_reference_after_ms: forced_flat_inputs.stale_reference_after_ms,
@@ -394,10 +414,7 @@ mod tests {
         assert_eq!(evidence.spot_price.as_deref(), Some("3100.5"));
         assert_eq!(evidence.spot_venue_name.as_deref(), Some("venue-one"));
         assert!(evidence.fast_venue_available);
-        assert_eq!(
-            evidence.reference_current_price.as_deref(),
-            Some("3099.75")
-        );
+        assert_eq!(evidence.reference_current_price.as_deref(), Some("3099.75"));
         assert!(evidence.reference_current_price_available);
         assert_eq!(evidence.interval_open.as_deref(), Some("3100"));
         assert_eq!(evidence.fair_probability_up.as_deref(), Some("0.55"));

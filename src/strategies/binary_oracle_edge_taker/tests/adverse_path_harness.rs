@@ -15,13 +15,14 @@ use nautilus_model::{
 };
 use nautilus_trading::Strategy;
 use serde_json::{Value, json};
-use std::{any::Any, panic, sync::Arc};
+use std::{any::Any, cell::RefCell, panic, rc::Rc, sync::Arc};
 
 const PRECISION_REJECT_REASON: &str = "invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals, taker amount a max of 4 decimals";
 const BALANCE_REJECT_REASON: &str =
     "not enough balance / allowance: the balance is not enough -> balance: 0";
 const MIN_SIZE_REJECT_REASON: &str =
     "invalid amount for a marketable BUY order ($0.84), min size: 1";
+// guard matches failure CLASS, not assertion instance — never reuse a constant in a new assertion.
 const DROPPED_TERMINAL_PINNED_FAILURE: &str =
     "accepted-with-no-terminal entry replay reached the boundary with no terminal event";
 const PARTIAL_FILL_PINNED_FAILURE: &str =
@@ -80,6 +81,8 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
     assert_reality_fixtures();
 
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
     let instrument_id = selected_entry_instrument(&strategy);
     let position_id = PositionId::from("P-PARTIAL-FILL-EXPIRE-NO-POSITION-UPDATE");
     let exit_client_order_id = ClientOrderId::from("EXIT-PARTIAL-FILL-EXPIRE");
@@ -92,7 +95,7 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
     );
     set_exit_pending(
         &mut strategy,
-        open_position,
+        open_position.clone(),
         exit_client_order_id,
         false,
         false,
@@ -119,7 +122,9 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
     assert!(
         partial_fill_residual_is_managed_or_fresh_reexit(
             &strategy,
+            &cache,
             exit_client_order_id,
+            &open_position,
             Quantity::new(6.0, 2),
         ),
         "{PARTIAL_FILL_PINNED_FAILURE}; expected Managed residual quantity 6.00 or a fresh non-terminal re-exit with a new client_order_id, got {:?}",
@@ -220,7 +225,11 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
             Some(position_id),
             OrderSide::Sell,
         ))
-        .expect("replayed exit fill should be attributable after bootstrap");
+        .unwrap_or_else(|error| {
+            panic!(
+                "{RESTART_OPEN_EXIT_PINNED_FAILURE}: replayed exit fill should be attributable after bootstrap: {error:?}"
+            )
+        });
     assert_eq!(
         pending_exit_ref(&strategy).map(|pending| pending.fill_received),
         Some(true),
@@ -417,24 +426,85 @@ fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
 
 fn partial_fill_residual_is_managed_or_fresh_reexit(
     strategy: &BinaryOracleEdgeTaker,
+    cache: &Rc<RefCell<Cache>>,
     expired_client_order_id: ClientOrderId,
+    original_position: &OpenPositionState,
     expected_residual_quantity: Quantity,
 ) -> bool {
     match &strategy.exposure {
-        ExposureState::Managed(managed) => managed.position.quantity == expected_residual_quantity,
+        ExposureState::Managed(managed) => position_matches_expected_residual(
+            &managed.position,
+            original_position,
+            expected_residual_quantity,
+        ),
         ExposureState::ExitPending(exit) => {
             let Some(managed) = &exit.position else {
                 return false;
             };
-            managed.position.quantity == expected_residual_quantity
-                && exit.pending_exit.client_order_id != expired_client_order_id
+            position_matches_expected_residual(
+                &managed.position,
+                original_position,
+                expected_residual_quantity,
+            ) && exit.pending_exit.client_order_id != expired_client_order_id
                 && !exit.pending_exit.fill_received
                 && !exit.pending_exit.close_received
                 && !exit.pending_exit.terminal_received
                 && !exit.pending_exit.residual_position_observed_after_fill
+                && fresh_exit_order_matches_residual(
+                    cache,
+                    &exit.pending_exit,
+                    original_position,
+                    expected_residual_quantity,
+                )
         }
         _ => false,
     }
+}
+
+fn position_matches_expected_residual(
+    actual: &OpenPositionState,
+    original: &OpenPositionState,
+    expected_residual_quantity: Quantity,
+) -> bool {
+    actual.quantity == expected_residual_quantity
+        && (
+            &actual.instrument_id,
+            &actual.position_id,
+            actual.side,
+            actual.avg_px_open.to_bits(),
+        ) == (
+            &original.instrument_id,
+            &original.position_id,
+            original.side,
+            original.avg_px_open.to_bits(),
+        )
+}
+
+fn fresh_exit_order_matches_residual(
+    cache: &Rc<RefCell<Cache>>,
+    pending_exit: &PendingExitState,
+    original_position: &OpenPositionState,
+    expected_residual_quantity: Quantity,
+) -> bool {
+    let cache = cache.borrow();
+    let cache_position_id_matches =
+        cache.position_id(&pending_exit.client_order_id) == Some(&original_position.position_id);
+    cache
+        .orders_open(
+            Some(&fixture_execution_venue()),
+            Some(&original_position.instrument_id),
+            Some(&StrategyId::from("BINARYORACLEEDGETAKER-001")),
+            None,
+            Some(OrderSide::Sell),
+        )
+        .iter()
+        .any(|order| {
+            order.client_order_id() == pending_exit.client_order_id
+                && order.instrument_id() == original_position.instrument_id
+                && order.position_id().as_ref() == Some(&original_position.position_id)
+                && order.quantity() == expected_residual_quantity
+                && cache_position_id_matches
+        })
 }
 
 fn held_instrument_id(strategy: &BinaryOracleEdgeTaker, held_leg: Leg) -> InstrumentId {

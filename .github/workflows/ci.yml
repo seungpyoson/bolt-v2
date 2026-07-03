@@ -755,8 +755,8 @@ jobs:
       nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outcome == 'skipped' && 'skipped' || (steps.nextest-archive-cache.outputs.cache-hit || 'false') }}
       root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outcome == 'skipped' && 'skipped' || (steps.root-bin-sidecars-cache.outputs.cache-hit || 'false') }}
       archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}
-      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}
-      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}
+      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || 'skipped' }}
+      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}
       archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}
     permissions:
       contents: read
@@ -1101,6 +1101,7 @@ jobs:
           set +e
           if [[ ! -s "$NEXTEST_ARCHIVE_PATH" ]]; then
             echo "::warning::nextest archive was not produced; skipping S3 save"
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           start_epoch="$(date +%s)"
@@ -1110,6 +1111,7 @@ jobs:
           if aws s3 cp "$NEXTEST_ARCHIVE_PATH" "$uri" --only-show-errors --metadata "nextest-digest=${DIGEST},artifact-kind=nextest-archive,github-sha=${GITHUB_SHA}"; then
             elapsed="$(( $(date +%s) - start_epoch ))"
             {
+              echo "save-status=success"
               echo "save-bytes=$bytes"
               echo "save-seconds=$elapsed"
             } >> "$GITHUB_OUTPUT"
@@ -1120,6 +1122,8 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning::nextest archive S3 save failed; continuing because cache save is fail-open"
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
           exit 0
 
@@ -1165,6 +1169,7 @@ jobs:
           set +e
           if [[ ! -s "$ROOT_BIN_SIDECARS_PATH" ]]; then
             echo "::warning::root binary sidecars were not produced; skipping S3 save"
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           start_epoch="$(date +%s)"
@@ -1174,6 +1179,7 @@ jobs:
           if aws s3 cp "$ROOT_BIN_SIDECARS_PATH" "$uri" --only-show-errors --metadata "nextest-digest=${DIGEST},artifact-kind=root-bin-sidecars,github-sha=${GITHUB_SHA}"; then
             elapsed="$(( $(date +%s) - start_epoch ))"
             {
+              echo "save-status=success"
               echo "save-bytes=$bytes"
               echo "save-seconds=$elapsed"
             } >> "$GITHUB_OUTPUT"
@@ -1184,6 +1190,8 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning::root binary sidecars S3 save failed; continuing because cache save is fail-open"
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
           exit 0
 

@@ -355,8 +355,8 @@ jobs:
     if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     outputs:
-      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}
-      bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outcome }}
+      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}
+      bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}
     permissions:
       contents: read
       id-token: write
@@ -587,6 +587,7 @@ jobs:
           set +e
           if [[ ! -s "$BVS_NEXTEST_ARCHIVE_PATH" ]]; then
             echo "::warning::BVS nextest archive was not produced; skipping S3 save"
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           start_epoch="$(date +%s)"
@@ -596,6 +597,7 @@ jobs:
           if aws s3 cp "$BVS_NEXTEST_ARCHIVE_PATH" "$uri" --only-show-errors --metadata "nextest-digest=${DIGEST},artifact-kind=bvs-nextest-archive,github-sha=${GITHUB_SHA}"; then
             elapsed="$(( $(date +%s) - start_epoch ))"
             {
+              echo "save-status=success"
               echo "save-bytes=$bytes"
               echo "save-seconds=$elapsed"
             } >> "$GITHUB_OUTPUT"
@@ -606,6 +608,8 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning::BVS nextest archive S3 save failed; continuing because cache save is fail-open"
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
           exit 0
 
@@ -654,6 +658,7 @@ jobs:
           set +e
           if [[ ! -s "$BVS_BIN_SIDECARS_PATH" ]]; then
             echo "::warning::BVS binary sidecars were not produced; skipping S3 save"
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           start_epoch="$(date +%s)"
@@ -663,6 +668,7 @@ jobs:
           if aws s3 cp "$BVS_BIN_SIDECARS_PATH" "$uri" --only-show-errors --metadata "nextest-digest=${DIGEST},artifact-kind=bvs-bin-sidecars,github-sha=${GITHUB_SHA}"; then
             elapsed="$(( $(date +%s) - start_epoch ))"
             {
+              echo "save-status=success"
               echo "save-bytes=$bytes"
               echo "save-seconds=$elapsed"
             } >> "$GITHUB_OUTPUT"
@@ -673,6 +679,8 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning::BVS binary sidecars S3 save failed; continuing because cache save is fail-open"
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
           exit 0
 
@@ -687,8 +695,8 @@ jobs:
         if: always()
         run: |
           {
-            echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}"
-            echo "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outcome }}"
+            echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}"
+            echo "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Require BVS local payload

@@ -631,8 +631,8 @@ jobs:
       nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outcome == 'skipped' && 'skipped' || (steps.nextest-archive-cache.outputs.cache-hit || 'false') }}
       root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outcome == 'skipped' && 'skipped' || (steps.root-bin-sidecars-cache.outputs.cache-hit || 'false') }}
       archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}
-      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}
-      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}
+      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || 'skipped' }}
+      root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}
       archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
@@ -741,8 +741,17 @@ jobs:
         env:
           CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
         run: |
+          if [[ ! -s "$NEXTEST_ARCHIVE_PATH" ]]; then
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/nextest-archive/${CACHE_KEY}.tar.zst"
-          aws s3 cp "$NEXTEST_ARCHIVE_PATH" "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
+          if aws s3 cp "$NEXTEST_ARCHIVE_PATH" "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"; then
+            echo "save-status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
       - name: Extract root binary sidecars
         if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
         run: |
@@ -774,8 +783,17 @@ jobs:
         env:
           CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.root_bin_sidecars_cache_key }}
         run: |
+          if [[ ! -s "$ROOT_BIN_SIDECARS_PATH" ]]; then
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/root-bin-sidecars/${CACHE_KEY}.tar.gz"
-          aws s3 cp "$ROOT_BIN_SIDECARS_PATH" "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
+          if aws s3 cp "$ROOT_BIN_SIDECARS_PATH" "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"; then
+            echo "save-status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
       - name: Save archive build target cache
         id: test-target-cache-save
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
@@ -5874,7 +5892,7 @@ def assert_cache_persistence_audit_gaps_are_reported() -> None:
             "test-archive must expose cache persistence save outcomes",
             replace_once(
                 workflow,
-                "      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}\n",
+                "      nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || 'skipped' }}\n",
                 "",
             ),
         ),
@@ -8655,6 +8673,7 @@ def assert_backtester_ci_input_set_config_covers_systematic_inputs() -> None:
         "scripts/../scripts/ci_input_sets.py",
         ":(top)scripts/ci_input_sets.py",
         ":(top).github/actions/setup-environment/action.yml",
+        ":/.github/actions/setup-environment/action.yml",
         "./.github/actions/**",
     ):
         normalized_governance_input_in_cache = config.replace(
@@ -13355,8 +13374,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     name: bvs-test archive
     needs: [ci-policy, detect, fmt]
     outputs:
-      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}
-      bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outcome }}
+      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}
+      bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}
     env:
       BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
@@ -13462,7 +13481,17 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         id: bvs-nextest-archive-cache-save
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' }}
         continue-on-error: true
-        run: aws s3 cp "$BVS_NEXTEST_ARCHIVE_PATH" "$uri" --only-show-errors
+        run: |
+          if [[ ! -s "$BVS_NEXTEST_ARCHIVE_PATH" ]]; then
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if aws s3 cp "$BVS_NEXTEST_ARCHIVE_PATH" "$uri" --only-show-errors; then
+            echo "save-status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
       - name: Build BVS binary sidecars
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
         run: |
@@ -13473,7 +13502,17 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         id: bvs-bin-sidecars-cache-save
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true' }}
         continue-on-error: true
-        run: aws s3 cp "$BVS_BIN_SIDECARS_PATH" "$uri" --only-show-errors
+        run: |
+          if [[ ! -s "$BVS_BIN_SIDECARS_PATH" ]]; then
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if aws s3 cp "$BVS_BIN_SIDECARS_PATH" "$uri" --only-show-errors; then
+            echo "save-status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
       - name: Save archive build target cache
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
@@ -13482,8 +13521,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: Summarize BVS S3 save outcomes
         if: always()
         run: |
-          echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Require BVS local payload
         run: |
           test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty"; exit 1; }
@@ -13650,7 +13689,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
 
     missing_bvs_save_outcome_output = replace_once(
         good,
-        "      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}\n",
+        "      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}\n",
         "",
     )
     missing_bvs_save_outcome_output_errors = bvs_cache_errors(missing_bvs_save_outcome_output)
@@ -13661,7 +13700,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
 
     missing_bvs_save_outcome_summary = replace_once(
         good,
-        '          echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}" >> "$GITHUB_STEP_SUMMARY"\n',
+        '          echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || \'skipped\' }}" >> "$GITHUB_STEP_SUMMARY"\n',
         "",
     )
     missing_bvs_save_outcome_summary_errors = bvs_cache_errors(missing_bvs_save_outcome_summary)
@@ -13669,6 +13708,29 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "backtester bvs-test archive must summarize BVS S3 save outcomes" in error
         for error in missing_bvs_save_outcome_summary_errors
     ), missing_bvs_save_outcome_summary_errors
+
+    missing_bvs_archive_save_status = replace_once(
+        good,
+        '            echo "save-status=failed" >> "$GITHUB_OUTPUT"\n',
+        "",
+    )
+    missing_bvs_archive_save_status_errors = bvs_cache_errors(missing_bvs_archive_save_status)
+    assert any(
+        "backtester bvs-test archive must emit explicit nextest archive S3 save status" in error
+        for error in missing_bvs_archive_save_status_errors
+    ), missing_bvs_archive_save_status_errors
+
+    missing_bvs_sidecar_save_status = replace_once_after(
+        good,
+        "      - name: Save BVS binary sidecars",
+        '            echo "save-status=failed" >> "$GITHUB_OUTPUT"\n',
+        "",
+    )
+    missing_bvs_sidecar_save_status_errors = bvs_cache_errors(missing_bvs_sidecar_save_status)
+    assert any(
+        "backtester bvs-test archive must emit explicit binary sidecars S3 save status" in error
+        for error in missing_bvs_sidecar_save_status_errors
+    ), missing_bvs_sidecar_save_status_errors
 
     weakened_target_save = replace_once(
         good,
@@ -15402,6 +15464,23 @@ def main() -> int:
             BASE_WORKFLOW,
             "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.nextest-artifact-cache-aws.outcome == 'success' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true' }}\n",
             "        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true' }}\n",
+        ),
+    )
+    assert_error(
+        "test-archive must emit explicit nextest archive S3 save status",
+        replace_once(
+            BASE_WORKFLOW,
+            '            echo "save-status=failed" >> "$GITHUB_OUTPUT"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must emit explicit root binary sidecar S3 save status",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Save root binary sidecars to S3",
+            '            echo "save-status=failed" >> "$GITHUB_OUTPUT"\n',
+            "",
         ),
     )
     assert_error(

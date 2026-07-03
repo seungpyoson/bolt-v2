@@ -834,8 +834,8 @@ TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS = (
     "archive_build_target_cache_hit: ${{ steps.test-target-cache.outcome == 'skipped' && 'skipped' || steps.test-target-cache.outputs.cache-hit }}",
 )
 TEST_ARCHIVE_CACHE_AUDIT_SAVE_OUTCOME_OUTPUTS = (
-    "nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outcome }}",
-    "root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outcome }}",
+    "nextest_archive_cache_save_outcome: ${{ steps.nextest-archive-cache-save.outputs.save-status || 'skipped' }}",
+    "root_bin_sidecars_cache_save_outcome: ${{ steps.root-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}",
     "archive_build_target_cache_save_outcome: ${{ steps.test-target-cache-save.outcome }}",
 )
 TEST_ARCHIVE_CACHE_SAVE_STEP_IDS = (
@@ -11266,6 +11266,13 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"test-archive must save {label} to S3 only from push-to-main with write credentials")
             if key_output not in text or path_var not in text or object_fragment not in text or "aws s3 cp" not in text:
                 errors.append(f"test-archive must save {label} to S3 only from push-to-main")
+            if (
+                'save-status=skipped' not in text
+                or 'save-status=success' not in text
+                or 'save-status=failed' not in text
+                or "exit 1" not in text
+            ):
+                errors.append(f"test-archive must emit explicit {label} S3 save status")
         if not job_has_setup_input(archive_lines, "include-managed-target-dir", '"true"'):
             errors.append("test-archive must opt into managed target dir")
         if not target_restore_blocks:
@@ -12681,6 +12688,13 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             or "steps.bvs-nextest-artifact-cache-aws.outcome == 'success'" not in block_text
         ):
             errors.append(f"backtester bvs-test archive must save {label} to S3 only from push-to-main with write credentials")
+        if (
+            'save-status=skipped' not in block_text
+            or 'save-status=success' not in block_text
+            or 'save-status=failed' not in block_text
+            or "exit 1" not in block_text
+        ):
+            errors.append(f"backtester bvs-test archive must emit explicit {label} S3 save status")
 
     archive_fragments = [
         ("backtester bvs-test archive must use archive job name", "name: bvs-test archive"),
@@ -12813,19 +12827,19 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive must expose BVS S3 save outcomes",
-            "bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}",
+            "bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}",
         ),
         (
             "backtester bvs-test archive must expose BVS S3 save outcomes",
-            "bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outcome }}",
+            "bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}",
         ),
         (
             "backtester bvs-test archive must summarize BVS S3 save outcomes",
-            "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outcome }}",
+            "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || 'skipped' }}",
         ),
         (
             "backtester bvs-test archive must summarize BVS S3 save outcomes",
-            "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outcome }}",
+            "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || 'skipped' }}",
         ),
         (
             "backtester bvs-test archive must restore target cache only while producing caches",
@@ -13305,18 +13319,7 @@ def ci_input_set_config_errors(file_name: str, text: str) -> list[str]:
     ]:
         if required not in cache:
             errors.append(f"backtester_cache input set must include {required}")
-    forbidden_cache_targets = [
-        ".github/workflows/backtester-ci.yml",
-        "scripts/ci_input_sets.py",
-        "ci/rust-ci-inputs.toml",
-        ".github/actions/setup-environment/action.yml",
-    ]
-    for pathspec in sorted(cache):
-        if ci_input_sets.normalize_repo_pathspec(pathspec) is None:
-            errors.append(f"backtester_cache input set must not use unsupported Git pathspec magic {pathspec}")
-            continue
-        if any(ci_input_sets.pathspec_may_cover(pathspec, forbidden) for forbidden in forbidden_cache_targets):
-            errors.append(f"backtester_cache input set must not include CI governance input {pathspec}")
+    errors.extend(ci_input_sets.backtester_cache_pathspec_policy_errors(cache))
     for required in [
         "scripts/ci_input_sets.py",
         "ci/rust-ci-inputs.toml",

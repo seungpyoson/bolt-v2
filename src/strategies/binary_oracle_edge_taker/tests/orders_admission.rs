@@ -2663,6 +2663,9 @@ fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
         position,
         ManagedPositionOrigin::StrategyEntry,
     );
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 2_000.0, 1_200)));
 
     let decision = strategy.exit_submission_decision_at(1_200);
 

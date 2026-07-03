@@ -664,6 +664,9 @@ setup:
     # Ensure managed hooks are executable (git warns + skips otherwise).
     chmod +x .githooks/post-merge .githooks/post-checkout .githooks/post-rewrite 2>/dev/null || true
 
+    echo "Asserting machine-global Cargo target dir..."
+    python3 "{{rust_verification_owner}}" assert-global-cargo-target-dir --repo "{{repo_root}}"
+
     clean_merged_remote="$(python3 scripts/clean_merged_artifacts.py --print-remote-name)"
     echo "Enabling remote.${clean_merged_remote}.prune (auto-prune deleted upstreams on fetch)..."
     git config "remote.${clean_merged_remote}.prune" true

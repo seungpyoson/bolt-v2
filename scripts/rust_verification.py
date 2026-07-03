@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import fcntl
 import functools
 import json
@@ -48,6 +49,8 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback.
         import tomli as _toml  # type: ignore[no-redef]
     except ModuleNotFoundError:  # pragma: no cover - exercised by system Python on macOS.
         _toml = None
+
+_TOML_DECODE_ERROR = _toml.TOMLDecodeError if _toml is not None else ValueError
 
 
 POLICY_RELATIVE_PATH = pathlib.Path("ci/rust-verification.toml")
@@ -661,6 +664,146 @@ def target_dir(repo: pathlib.Path, policy: dict[str, Any] | None = None) -> path
     data = policy if policy is not None else load_policy(repo)
     namespace = data["target_namespace"]
     return root_base() / namespace / "target"
+
+
+def global_cargo_home_path() -> pathlib.Path:
+    env_cargo_home = os.environ.get("CARGO_HOME")
+    if env_cargo_home:
+        return pathlib.Path(env_cargo_home).expanduser()
+    return pathlib.Path.home() / ".cargo"
+
+
+def global_cargo_config_path() -> pathlib.Path:
+    cargo_home = global_cargo_home_path()
+    legacy_path = cargo_home / "config"
+    if legacy_path.exists():
+        return legacy_path
+    return cargo_home / "config.toml"
+
+
+def cargo_config_data(content: str, path: pathlib.Path) -> dict[str, Any]:
+    if not content.strip():
+        return {}
+    if _toml is None:
+        raise PolicyError("Python 3.11+ tomllib or tomli is required to parse Cargo config")
+    try:
+        data = _toml.loads(content)
+    except _TOML_DECODE_ERROR as exc:
+        raise PolicyError(f"invalid TOML in {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise PolicyError(f"invalid TOML in {path}: root must be a table")
+    build = data.get("build", {})
+    if build is None:
+        return data
+    if not isinstance(build, dict):
+        raise PolicyError(f"invalid TOML in {path}: build must be a table")
+    return data
+
+
+def cargo_config_target_dir_value(content: str, path: pathlib.Path) -> str | None:
+    data = cargo_config_data(content, path)
+    build = data.get("build", {})
+    if not isinstance(build, dict):
+        raise PolicyError(f"invalid TOML in {path}: build must be a table")
+    value = build.get("target-dir")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise PolicyError(f"invalid TOML in {path}: build.target-dir must be a non-empty string")
+    return value
+
+
+def insert_cargo_target_dir(content: str, target_dir_value: str) -> str:
+    line_ending = "\r\n" if "\r\n" in content else "\n"
+    target_line = f"target-dir = {json.dumps(target_dir_value)}{line_ending}"
+    dotted_target_line = f"build.target-dir = {json.dumps(target_dir_value)}{line_ending}"
+    build_header = re.compile(r"^\s*\[\s*(?:build|['\"]build['\"])\s*\]\s*(?:#.*)?$")
+    table_header = re.compile(r"^\s*\[")
+    build_dotted_key = re.compile(r"^\s*(?:build|['\"]build['\"])\s*\.")
+    lines = content.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if build_header.match(line.rstrip("\r\n")):
+            lines.insert(index + 1, target_line)
+            return "".join(lines)
+    in_root = True
+    last_root_build_dotted_index: int | None = None
+    for index, line in enumerate(lines):
+        stripped = line.rstrip("\r\n")
+        if table_header.match(stripped):
+            in_root = False
+        if in_root and build_dotted_key.match(stripped):
+            last_root_build_dotted_index = index
+    if last_root_build_dotted_index is not None:
+        lines.insert(last_root_build_dotted_index + 1, dotted_target_line)
+        return "".join(lines)
+    parsed = cargo_config_data(content, pathlib.Path("<cargo-config>"))
+    if "build" in parsed:
+        raise PolicyError(
+            "global Cargo config has a build table that cannot be safely edited; "
+            "convert it to a [build] table or build.* dotted keys"
+        )
+    prefix = content
+    if prefix and not prefix.endswith(("\n", "\r")):
+        prefix += line_ending
+    if prefix and not prefix.endswith(f"{line_ending}{line_ending}"):
+        prefix += line_ending
+    return f"{prefix}[build]{line_ending}{target_line}"
+
+
+def cargo_config_with_target_dir(content: str, path: pathlib.Path, target_dir_value: str) -> str:
+    before = cargo_config_data(content, path)
+    next_content = insert_cargo_target_dir(content, target_dir_value)
+    after = cargo_config_data(next_content, path)
+    expected = copy.deepcopy(before)
+    build = expected.setdefault("build", {})
+    if not isinstance(build, dict):
+        raise PolicyError(f"invalid TOML in {path}: build must be a table")
+    build["target-dir"] = target_dir_value
+    if after != expected:
+        raise PolicyError(f"refusing to rewrite {path}: existing Cargo config values would not be preserved")
+    return next_content
+
+
+def write_cargo_config_atomic(path: pathlib.Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_path = path
+    if path.is_symlink():
+        try:
+            write_path = path.resolve(strict=True)
+        except OSError as exc:
+            raise PolicyError(f"refusing to rewrite dangling symlink {path}") from exc
+    tmp_path = write_path.with_name(f".{write_path.name}.{os.getpid()}.tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    os.replace(tmp_path, write_path)
+
+
+def resolved_cargo_target_dir_value(value: str) -> pathlib.Path | None:
+    try:
+        return pathlib.Path(value).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def assert_global_cargo_target_dir(repo: pathlib.Path) -> dict[str, str]:
+    expected_path = target_dir(repo).expanduser().resolve(strict=False)
+    expected = str(expected_path)
+    config_path = global_cargo_config_path()
+    try:
+        content = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        content = ""
+    existing = cargo_config_target_dir_value(content, config_path)
+    if existing is not None:
+        if resolved_cargo_target_dir_value(existing) == expected_path:
+            return {"config_path": str(config_path), "status": "already-configured", "target_dir": expected}
+        raise PolicyError(
+            "global Cargo build.target-dir already set to "
+            f"{existing!r}; expected {expected!r}; refusing to rewrite"
+        )
+    next_content = cargo_config_with_target_dir(content, config_path, expected)
+    write_cargo_config_atomic(config_path, next_content)
+    status = "created" if not content else "updated"
+    return {"config_path": str(config_path), "status": status, "target_dir": expected}
 
 
 def cache_lock_path(policy: dict[str, Any]) -> pathlib.Path:
@@ -4446,6 +4589,20 @@ def cmd_cache_prune(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_assert_global_cargo_target_dir(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    try:
+        payload = assert_global_cargo_target_dir(repo)
+    except (OSError, PolicyError, RuntimeError, UnicodeDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(
+        "global Cargo build.target-dir "
+        f"{payload['status']}: {payload['config_path']} -> {payload['target_dir']}"
+    )
+    return 0
+
+
 def cmd_cleanup(_args: argparse.Namespace) -> int:
     print(json.dumps({"status": "ok", "removed": []}, sort_keys=True))
     return 0
@@ -4530,6 +4687,10 @@ def build_parser() -> argparse.ArgumentParser:
     cache_prune_mode.add_argument("--apply", action="store_true")
     cache_prune.add_argument("--json", action="store_true", required=True, help="required; emit JSON output")
     cache_prune.set_defaults(func=cmd_cache_prune)
+
+    global_cargo_target = subparsers.add_parser("assert-global-cargo-target-dir")
+    global_cargo_target.add_argument("--repo", required=True)
+    global_cargo_target.set_defaults(func=cmd_assert_global_cargo_target_dir)
 
     cleanup = subparsers.add_parser("cleanup")
     cleanup.set_defaults(func=cmd_cleanup)

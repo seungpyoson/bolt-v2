@@ -50,6 +50,18 @@ archive_timeout_s = 120
 # Hard timeout for verifying the quarantine tar archive (seconds).
 archive_verify_timeout_s = 30
 
+[clean-merged.lane_t]
+# Worktree-local raw Cargo output directory to reap when idle.
+target_dir_name = "target"
+# Latest mtime anywhere inside the target dir must be older than this threshold.
+idle_after_days = 7
+# Matching processes with cwd in the worktree/target tree make apply refuse.
+active_process_patterns = ["cargo", "cargo-clippy", "cargo-fmt", "cargo-nextest", "rustc", "nextest", "rust_verification.py"]
+# Hard timeout for listing active processes before deleting a target dir (seconds).
+process_list_timeout_s = 2
+# Hard timeout for the lsof cwd fallback when /proc cwd is unavailable (seconds).
+cwd_visibility_timeout_s = 1
+
 [clean-merged.logging]
 # Audit log format. jsonl ensures escaped fields survive shell-sensitive
 # branch names; never use literal shell commands as recovery hints.

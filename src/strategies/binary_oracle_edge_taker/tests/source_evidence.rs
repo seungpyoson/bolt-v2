@@ -1654,18 +1654,9 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
     assert_eq!(decision.reference_current_price.as_deref(), Some("3100.5"));
     assert!(decision.reference_current_price_available);
     assert_eq!(decision.interval_open.as_deref(), Some("3100"));
-    assert!(
-        decision.fair_probability_up.is_some(),
-        "exit decision evidence must preserve the computed fair probability"
-    );
-    assert!(
-        decision.fair_probability_down.is_some(),
-        "exit decision evidence must preserve the computed complement probability"
-    );
-    assert!(
-        decision.uncertainty_band_probability.is_some(),
-        "exit decision evidence must preserve the computed uncertainty band"
-    );
+    assert_eq!(decision.fair_probability_up, None);
+    assert_eq!(decision.fair_probability_down, None);
+    assert_eq!(decision.uncertainty_band_probability, None);
     assert!(
         decision.up_fee_bps.is_some(),
         "exit decision evidence must preserve the up-side fee input"

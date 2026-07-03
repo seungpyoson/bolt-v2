@@ -9570,6 +9570,7 @@ def fingerprint_reuse_gates_on_consumer_events(job_lines: list[str]) -> bool:
 TOP_LEVEL_ENV_ENTRY_RE = re.compile(
     r"^['\"]?(?P<key>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*:(?P<value>.*)$"
 )
+REUSE_SCOPED_ENV_BLOCK_SCALAR_RE = re.compile(r"^[>|][+-0-9]*$")
 
 
 def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
@@ -9610,9 +9611,15 @@ def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
             errors.append(f"top-level env entry is unparsable for reuse classification: {line!r}")
             continue
         key = match.group("key")
+        value = match.group("value").strip()
         seen_keys.add(key)
-        if not match.group("value").strip():
-            errors.append(f"top-level env.{key} must use a same-line scalar value")
+        if key in scoped_keys and (
+            not value or REUSE_SCOPED_ENV_BLOCK_SCALAR_RE.fullmatch(value)
+        ):
+            errors.append(
+                f"top-level env.{key} must use a same-line scalar value; "
+                f"top-level env.{key} must use a single-line scalar value for nextest reuse scope"
+            )
         if key not in scoped_keys and key not in REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS:
             errors.append(
                 f"top-level env.{key} must be classified as reuse-scoped or build-neutral; "

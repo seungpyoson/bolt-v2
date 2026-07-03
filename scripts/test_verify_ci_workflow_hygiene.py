@@ -13896,6 +13896,22 @@ git() {
         "top-level defaults must not be used in ci.yml while nextest reuse is enabled",
         replace_once(BASE_WORKFLOW, "permissions:\n", "defaults:\n  run:\n    shell: sh\n\npermissions:\n"),
     )
+    assert_error(
+        "top-level env.JUST_VERSION must use a single-line scalar value",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            "  JUST_VERSION: >-\n    1.49.0\n",
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION must use a single-line scalar value",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            "  JUST_VERSION:\n",
+        ),
+    )
     folded_job_if = replace_once(
         BASE_WORKFLOW,
         "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",

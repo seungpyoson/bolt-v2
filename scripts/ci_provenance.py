@@ -1648,15 +1648,19 @@ def top_level_block_lines(workflow_text: str, block_name: str) -> list[str]:
     return lines[start:end]
 
 
+REUSE_SCOPED_ENV_BLOCK_SCALAR_RE = re.compile(r"^[>|][+-0-9]*$")
+
+
 def top_level_env_entry_line(workflow_text: str, key: str) -> str:
     env_entry_re = re.compile(rf"^\s+['\"]?{re.escape(key)}['\"]?\s*:\s*(?P<value>.*?)\s*$")
     for line in top_level_block_lines(workflow_text, "env"):
         match = env_entry_re.match(workflow_yaml_structural_line(line))
         if match is not None:
             value = match.group("value").rstrip()
-            if not value:
+            if not value or REUSE_SCOPED_ENV_BLOCK_SCALAR_RE.fullmatch(value):
                 raise ProvenanceError(
-                    f"workflow reuse scope env.{key} must use a same-line scalar value"
+                    f"workflow reuse scope env.{key} must use a same-line scalar value; "
+                    "reuse-scoped env keys must use single-line scalar values"
                 )
             return f"  {key}: {value}"
     raise ProvenanceError(f"workflow reuse scope missing env.{key}")

@@ -1363,6 +1363,40 @@ def assert_workflow_reuse_scope_digest_rejects_multiline_scoped_env() -> None:
             raise AssertionError("multiline scoped env value must fail closed")
 
 
+def assert_workflow_reuse_scope_digest_rejects_folded_scoped_env() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        returned_digests = []
+        for value in ("1.49.0", "9.9.9"):
+            folded_text = workflow_text.replace(
+                '  JUST_VERSION: "1.49.0"',
+                f"  JUST_VERSION: >-\n    {value}",
+                1,
+            )
+            try:
+                returned_digests.append(
+                    module.workflow_reuse_scope_digest_from_bytes(
+                        config,
+                        folded_text.encode("utf-8"),
+                    )
+                )
+            except module.ProvenanceError as exc:
+                message = str(exc)
+                if "env.JUST_VERSION" not in message or "single-line scalar" not in message:
+                    raise AssertionError(message) from exc
+
+        if len(returned_digests) == 2 and returned_digests[0] == returned_digests[1]:
+            raise AssertionError(
+                "different folded JUST_VERSION values produced identical reuse-scope digest"
+            )
+        if returned_digests:
+            raise AssertionError(f"folded JUST_VERSION values must be rejected: {returned_digests}")
+
+
 def assert_workflow_reuse_scope_digest_preserves_block_scalar_content() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -4896,6 +4930,7 @@ def main() -> int:
     assert_workflow_reuse_scope_digest_accepts_yaml_header_formatting()
     assert_workflow_reuse_scope_digest_distinguishes_quoted_hash_values()
     assert_workflow_reuse_scope_digest_rejects_multiline_scoped_env()
+    assert_workflow_reuse_scope_digest_rejects_folded_scoped_env()
     assert_workflow_reuse_scope_digest_preserves_block_scalar_content()
     assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()

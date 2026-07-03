@@ -34,7 +34,6 @@ fn config(source_ids: &[&str]) -> RealizedVolEngineConfig {
         sampling_interval_ms: 1_000,
         min_ready_sources: source_ids.len(),
         max_source_age_ms: 500,
-        max_event_receive_lag_ms: 250,
         max_inter_sample_gap_ms: 2_000,
         min_coverage_ratio: 0.75,
         max_cross_source_dispersion: 0.50,
@@ -610,7 +609,7 @@ fn enabled_non_quorum_source_with_live_observations_remains_diagnostic_only() {
 }
 
 #[test]
-fn observation_validation_rejects_timestamp_and_lag_violations() {
+fn observation_validation_uses_only_same_domain_timestamp_ordering() {
     let mut engine = RealizedVolEngine::from_config(config(&[SOURCE_A])).unwrap();
     assert!(engine.observe(observation(SOURCE_A, 100.0, 1_000)));
 
@@ -627,22 +626,6 @@ fn observation_validation_rejects_timestamp_and_lag_violations() {
             observation(SOURCE_A, 100.0, 1_000),
             RealizedVolSourceRejectReason::DuplicateTimestamp,
         ),
-        (
-            RealizedVolObservation {
-                event_ts_ms: 2_000,
-                recv_ts_ms: 1_999,
-                ..observation(SOURCE_A, 101.0, 2_000)
-            },
-            RealizedVolSourceRejectReason::ReceiveBeforeEvent,
-        ),
-        (
-            RealizedVolObservation {
-                event_ts_ms: 2_000,
-                recv_ts_ms: 2_500,
-                ..observation(SOURCE_A, 101.0, 2_000)
-            },
-            RealizedVolSourceRejectReason::EventReceiveLagExceeded,
-        ),
     ];
 
     for (observation, reason) in cases {
@@ -653,6 +636,17 @@ fn observation_validation_rejects_timestamp_and_lag_violations() {
             Some(reason)
         );
     }
+
+    assert!(engine.observe(RealizedVolObservation {
+        event_ts_ms: 2_000,
+        recv_ts_ms: 1_999,
+        ..observation(SOURCE_A, 101.0, 2_000)
+    }));
+    assert!(engine.observe(RealizedVolObservation {
+        event_ts_ms: 3_000,
+        recv_ts_ms: 4_500,
+        ..observation(SOURCE_A, 102.0, 3_000)
+    }));
 }
 
 #[test]

@@ -210,6 +210,9 @@ max_daily_loss = "10.00"
 max_rolling_loss = "10.00"
 max_drawdown = "15.00"
 
+[risk.live_submit_governance]
+mode = "supervised_deposit_capped"
+
 [risk.nautilus]
 max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"

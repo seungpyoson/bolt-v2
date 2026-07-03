@@ -965,6 +965,14 @@ classification = "capital_admission_evidence_source_label"
 reason = "This labels open-order reservation evidence rebuilt from NT cache state; the open orders and account facts come from NT."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''", "'''
+context = '''uncovered_execution_client_ids.join(", ")'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "Diagnostic separator for listing TOML-owned submit-capable execution client identifiers that lack per-client live-submit governance coverage."
+
+[[allowed]]
 path = "src/bolt_v3_market_families/mod.rs"
 kind = "string"
 literal = '''"strategy `{}`"'''
@@ -18208,6 +18216,14 @@ literal = '''"loss_governor"'''
 context = '''"loss_governor".to_string(),'''
 classification = "prod_profile_compose_root_key"
 reason = "TOML risk-block key the composition inserts the overlay's explicit loss-governor policy block at (mirrors RiskBlock.loss_governor); a structural schema key navigating the config tree, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"live_submit_governance"'''
+context = '''"live_submit_governance".to_string(),'''
+classification = "prod_profile_compose_root_key"
+reason = "TOML risk-block key the composition inserts the overlay's explicit live-submit governance declaration at (mirrors RiskBlock.live_submit_governance); a structural schema key navigating the config tree, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_prod_profile.rs"

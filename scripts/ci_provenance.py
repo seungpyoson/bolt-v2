@@ -1598,7 +1598,29 @@ def workflow_text_from_bytes(workflow_bytes: bytes) -> str:
 
 
 def workflow_yaml_structural_line(line: str) -> str:
-    return line.split("#", 1)[0].rstrip()
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote == '"':
+            if char == "\\":
+                index += 2
+                continue
+            if char == '"':
+                quote = None
+        elif quote == "'":
+            if char == "'":
+                if index + 1 < len(line) and line[index + 1] == "'":
+                    index += 2
+                    continue
+                quote = None
+        else:
+            if char in ("'", '"'):
+                quote = char
+            elif char == "#" and (index == 0 or line[index - 1].isspace()):
+                return line[:index].rstrip()
+        index += 1
+    return line.rstrip()
 
 
 def is_top_level_workflow_key(line: str, key: str) -> bool:

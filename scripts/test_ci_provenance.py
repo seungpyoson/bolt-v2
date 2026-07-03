@@ -1310,35 +1310,72 @@ def assert_workflow_reuse_scope_digest_accepts_yaml_header_formatting() -> None:
             raise AssertionError((expected, actual))
 
 
+def assert_workflow_reuse_scope_digest_distinguishes_quoted_hash_values() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        source_text = workflow_text.replace(
+            '  JUST_VERSION: "1.49.0"',
+            '  JUST_VERSION: "1.49.0#source"',
+            1,
+        )
+        current_text = workflow_text.replace(
+            '  JUST_VERSION: "1.49.0"',
+            '  JUST_VERSION: "1.49.0#current"',
+            1,
+        )
+        source_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            source_text.encode("utf-8"),
+        )
+        current_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            current_text.encode("utf-8"),
+        )
+        if source_digest == current_digest:
+            raise AssertionError("quoted # content must remain part of the reuse-scope digest")
+
+
 def assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         config = write_config(tmp_path)
-        source_workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
-        source_workflow_text = source_workflow_text.replace(
-            "name: nextest archive",
-            "name: nextest archive drift",
-            1,
-        )
-        source_workflow_bytes = source_workflow_text.encode("utf-8")
-        record = record_with_fingerprint(module, config)
-        record["workflow_digest"] = hashlib.sha256(source_workflow_bytes).hexdigest()
-        fake = FakeGitHub(
-            runs_pages=[[run_payload()]],
-            artifacts_by_run_id={
-                RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
-            },
-            records_by_artifact_id={2: record},
-            workflow_bytes=source_workflow_bytes,
-        )
-        result = resolve_fingerprint_with_fake(module, config, fake)
-        if result.reuse_found is not False:
-            raise AssertionError(result)
-        if "workflow reuse scope" not in result.reason:
-            raise AssertionError(result)
+        display_names = {
+            "nextest-fingerprint": "nextest fingerprint",
+            "test-archive": "nextest archive",
+            "test": "test",
+            "build": "build",
+        }
+        for job_name in module.REUSE_RELEVANT_WORKFLOW_JOBS:
+            display_name = display_names[job_name]
+            source_workflow_text = replace_once(
+                workflow_text,
+                f"    name: {display_name}",
+                f"    name: {display_name} drift",
+            )
+            source_workflow_bytes = source_workflow_text.encode("utf-8")
+            record = record_with_fingerprint(module, config)
+            record["workflow_digest"] = hashlib.sha256(source_workflow_bytes).hexdigest()
+            fake = FakeGitHub(
+                runs_pages=[[run_payload()]],
+                artifacts_by_run_id={
+                    RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+                },
+                records_by_artifact_id={2: record},
+                workflow_bytes=source_workflow_bytes,
+            )
+            result = resolve_fingerprint_with_fake(module, config, fake)
+            if result.reuse_found is not False:
+                raise AssertionError((job_name, result))
+            if "workflow reuse scope" not in result.reason:
+                raise AssertionError((job_name, result))
 
 
 def assert_fingerprint_reuse_malformed_fingerprint_fails_closed() -> None:
@@ -4804,6 +4841,7 @@ def main() -> int:
     assert_fingerprint_reuse_allows_unrelated_workflow_drift()
     assert_fingerprint_reuse_allows_deploy_only_env_drift()
     assert_workflow_reuse_scope_digest_accepts_yaml_header_formatting()
+    assert_workflow_reuse_scope_digest_distinguishes_quoted_hash_values()
     assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
     assert_fingerprint_reuse_rejects_failed_source_archive_through_resolver()

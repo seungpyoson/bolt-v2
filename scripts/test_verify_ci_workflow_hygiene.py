@@ -13550,6 +13550,70 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         "detector base/head refs step must match canonical script",
         detector_refs_without_merge_group_branch,
     )
+
+    verifier = load_verifier()
+
+    def detector_refs_result(merge_group_base_ref: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            output_path = tmp_path / "github-output"
+            git_calls_path = tmp_path / "git-calls"
+            script = (
+                """set -euo pipefail
+git() {
+  if [[ "$1" == "check-ref-format" ]]; then
+    command git check-ref-format "$2"
+    return $?
+  fi
+  if [[ "$1" == "fetch" ]]; then
+    printf '%s\\n' "$*" >> "$GIT_CALLS"
+    return 0
+  fi
+  echo "unexpected git invocation: $*" >&2
+  return 99
+}
+"""
+                + verifier.DETECTOR_REFS_RUN
+            )
+            env = {
+                **os.environ,
+                "EVENT_NAME": "merge_group",
+                "PR_BASE_REF": "main",
+                "PR_NUMBER": "1182",
+                "DISPATCH_BASE_REF": "main",
+                "MERGE_GROUP_BASE_REF": merge_group_base_ref,
+                "GITHUB_RUN_ID": "12345",
+                "GITHUB_OUTPUT": str(output_path),
+                "GIT_CALLS": str(git_calls_path),
+            }
+            completed = subprocess.run(
+                ["bash", "-c", script],
+                cwd=tmp_path,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            output_text = output_path.read_text(encoding="utf-8") if output_path.exists() else ""
+            git_calls = git_calls_path.read_text(encoding="utf-8") if git_calls_path.exists() else ""
+            return completed, output_text, git_calls
+
+    for valid_base_ref in ("main", "refs/heads/main"):
+        completed, output_text, git_calls = detector_refs_result(valid_base_ref)
+        if completed.returncode != 0:
+            raise AssertionError((valid_base_ref, completed.returncode, completed.stderr))
+        if "base_ref=refs/remotes/origin/pr-base-merge-group-12345" not in output_text:
+            raise AssertionError((valid_base_ref, output_text))
+        if "head_ref=HEAD" not in output_text:
+            raise AssertionError((valid_base_ref, output_text))
+        if "+refs/heads/main:refs/remotes/origin/pr-base-merge-group-12345" not in git_calls:
+            raise AssertionError((valid_base_ref, git_calls))
+
+    for invalid_base_ref in ("", "refs/tags/main", "refs/pull/1182/merge", "main..evil", "feature branch"):
+        completed, output_text, git_calls = detector_refs_result(invalid_base_ref)
+        if completed.returncode == 0:
+            raise AssertionError((invalid_base_ref, output_text, git_calls))
+
     pr_only_governance_detector = replace_once_after(
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",

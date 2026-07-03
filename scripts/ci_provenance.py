@@ -1648,16 +1648,48 @@ def top_level_block_lines(workflow_text: str, block_name: str) -> list[str]:
     return lines[start:end]
 
 
-REUSE_SCOPED_ENV_BLOCK_SCALAR_RE = re.compile(r"^[>|][-+0-9]*$")
+TOP_LEVEL_ENV_ENTRY_RE = re.compile(
+    r"^['\"]?(?P<key>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*:\s*(?P<value>.*?)\s*$"
+)
+
+
+def top_level_env_immediate_entry_lines(workflow_text: str) -> list[str]:
+    entry_lines = [
+        structural_line
+        for line in top_level_block_lines(workflow_text, "env")[1:]
+        if (structural_line := workflow_yaml_structural_line(line))
+    ]
+    if not entry_lines:
+        return []
+
+    minimum_indent = min(len(line) - len(line.lstrip(" \t")) for line in entry_lines)
+    return [
+        line[minimum_indent:]
+        for line in entry_lines
+        if len(line) - len(line.lstrip(" \t")) == minimum_indent
+    ]
+
+
+def top_level_env_entry_key_value(line: str) -> tuple[str, str] | None:
+    match = TOP_LEVEL_ENV_ENTRY_RE.match(line)
+    if match is None:
+        return None
+    return match.group("key"), match.group("value")
+
+
+def reuse_scoped_env_value_uses_single_line_scalar(value: str) -> bool:
+    stripped_value = value.strip()
+    return bool(stripped_value) and not stripped_value.startswith(("|", ">"))
 
 
 def top_level_env_entry_line(workflow_text: str, key: str) -> str:
-    env_entry_re = re.compile(rf"^\s+['\"]?{re.escape(key)}['\"]?\s*:\s*(?P<value>.*?)\s*$")
-    for line in top_level_block_lines(workflow_text, "env"):
-        match = env_entry_re.match(workflow_yaml_structural_line(line))
-        if match is not None:
-            value = match.group("value").rstrip()
-            if not value or REUSE_SCOPED_ENV_BLOCK_SCALAR_RE.fullmatch(value):
+    for line in top_level_env_immediate_entry_lines(workflow_text):
+        entry = top_level_env_entry_key_value(line)
+        if entry is None:
+            continue
+        entry_key, value = entry
+        if entry_key == key:
+            if not reuse_scoped_env_value_uses_single_line_scalar(value):
                 raise ProvenanceError(
                     f"workflow reuse scope env.{key} must use a same-line scalar value; "
                     "reuse-scoped env keys must use single-line scalar values"

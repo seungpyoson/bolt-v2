@@ -36,7 +36,10 @@ from ci_provenance import (
     ProvenanceConfig,
     load_config,
     mergify_temp_pr_matches,
+    reuse_scoped_env_value_uses_single_line_scalar,
     top_level_block_lines,
+    top_level_env_entry_key_value,
+    top_level_env_immediate_entry_lines,
     workflow_yaml_structural_line,
 )
 
@@ -9567,10 +9570,6 @@ def fingerprint_reuse_gates_on_consumer_events(job_lines: list[str]) -> bool:
     return FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR in job_if_value(job_lines)
 
 
-TOP_LEVEL_ENV_ENTRY_RE = re.compile(
-    r"^['\"]?(?P<key>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*:(?P<value>.*)$"
-)
-REUSE_SCOPED_ENV_BLOCK_SCALAR_RE = re.compile(r"^[>|][-+0-9]*$")
 WORKFLOW_BLOCK_SCALAR_HEADER_RE = re.compile(r":\s*[|>][-+0-9]*\s*$")
 
 
@@ -9592,31 +9591,22 @@ def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
         for line in env_lines[1:]
         if (structural_line := workflow_yaml_structural_line(line))
     ]
-    key_lines: list[str] = []
     if entry_lines:
         minimum_indent = min(len(line) - len(line.lstrip(" \t")) for line in entry_lines)
-        key_lines = [
-            line[minimum_indent:]
-            for line in entry_lines
-            if len(line) - len(line.lstrip(" \t")) == minimum_indent
-        ]
         for line in entry_lines:
             indent = len(line) - len(line.lstrip(" \t"))
             if indent != minimum_indent:
                 errors.append(f"top-level env entry must use canonical indentation: {line!r}")
 
     seen_keys = set()
-    for line in key_lines:
-        match = TOP_LEVEL_ENV_ENTRY_RE.match(line)
-        if match is None:
+    for line in top_level_env_immediate_entry_lines(workflow_text):
+        entry = top_level_env_entry_key_value(line)
+        if entry is None:
             errors.append(f"top-level env entry is unparsable for reuse classification: {line!r}")
             continue
-        key = match.group("key")
-        value = match.group("value").strip()
+        key, value = entry
         seen_keys.add(key)
-        if key in scoped_keys and (
-            not value or REUSE_SCOPED_ENV_BLOCK_SCALAR_RE.fullmatch(value)
-        ):
+        if key in scoped_keys and not reuse_scoped_env_value_uses_single_line_scalar(value):
             errors.append(
                 f"top-level env.{key} must use a same-line scalar value; "
                 f"top-level env.{key} must use a single-line scalar value for nextest reuse scope"

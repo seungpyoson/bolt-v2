@@ -13933,9 +13933,23 @@ git() {
         replace_once(
             BASE_WORKFLOW,
             '  JUST_VERSION: "1.49.0"\n',
+            "  JUST_VERSION: >2\n    1.49.0\n",
+        ),
+    )
+    assert_error(
+        "top-level env.JUST_VERSION must use a single-line scalar value",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
             "  JUST_VERSION:\n",
         ),
     )
+    nested_env_decoy = replace_once(
+        BASE_WORKFLOW,
+        '  JUST_VERSION: "1.49.0"\n',
+        '  S3_DEPLOY_PATH: |\n    JUST_VERSION: "1.49.0"\n',
+    )
+    assert_error("top-level env.JUST_VERSION is reuse-scoped but missing from ci.yml", nested_env_decoy)
     folded_job_if = replace_once(
         BASE_WORKFLOW,
         "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && contains(fromJSON('[\"pull_request\",\"workflow_dispatch\",\"merge_group\"]'), github.event_name) && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",

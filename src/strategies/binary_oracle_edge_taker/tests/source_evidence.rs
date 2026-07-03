@@ -2702,7 +2702,7 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
     );
     assert_eq!(record.trigger_ts_event_ms, Some(1_200));
     assert_eq!(record.trigger_ts_init_ms, Some(1_180));
-    assert_eq!(record.spot_price.as_deref(), Some("3100.5"));
+    assert_eq!(record.spot_price.as_deref(), Some("3099.75"));
     assert_eq!(record.spot_venue_name.as_deref(), Some("bybit"));
     assert!(record.fast_venue_available);
     assert_eq!(record.reference_current_price.as_deref(), Some("3099.75"));

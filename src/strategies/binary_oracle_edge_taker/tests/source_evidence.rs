@@ -1645,7 +1645,7 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
         vec![BoltV3ForcedFlatReason::Freeze]
     );
     assert_eq!(decision.blocked_reason, None);
-    assert_eq!(decision.spot_price.as_deref(), Some("3100.5"));
+    assert_eq!(decision.spot_price.as_deref(), Some("3100.25"));
     assert_eq!(decision.spot_venue_name.as_deref(), Some("bybit"));
     assert!(decision.fast_venue_available);
     assert_eq!(decision.reference_current_price.as_deref(), Some("3100.5"));

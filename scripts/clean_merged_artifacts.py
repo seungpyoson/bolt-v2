@@ -20,6 +20,10 @@ Execution lanes split by trust/speed profile:
     re-read tip. Fail-closed on ignored content, assume-unchanged/skip-worktree
     bits (BOTH lowercase ls-files -v flags AND uppercase `S`), nested `.git`,
     dirty. Re-validates hidden-bits + ignored at the TOCTOU point too.
+- Lane T (target-dir reaper, explicit):
+    Removes idle worktree-local raw Cargo `target/` directories from surviving
+    linked worktrees. Recency is the latest mtime anywhere inside the subtree.
+    Apply refuses on active Cargo/Rust processes or missing process visibility.
 
 See docs/ops/clean-merged-design.md for the full design and accepted risks.
 Config lives in config/clean-merged.toml (single source of truth).
@@ -38,6 +42,7 @@ import os
 import pathlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -107,6 +112,13 @@ class LaneWConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class LaneTConfig:
+    target_dir_name: str
+    idle_after_days: int
+    active_process_patterns: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True)
 class LoggingConfig:
     audit_format: str
     audit_path: str
@@ -130,6 +142,7 @@ class Config:
     remote_name: str
     lane_r: LaneRConfig
     lane_w: LaneWConfig
+    lane_t: LaneTConfig | None
     logging: LoggingConfig
     backups: BackupsConfig
     origin_owner: str
@@ -219,6 +232,9 @@ CONFIG_KEYS = frozenset({
     "clean-merged.lane_w.discard_hidden_index_bits",
     "clean-merged.lane_w.archive_timeout_s",
     "clean-merged.lane_w.archive_verify_timeout_s",
+    "clean-merged.lane_t.target_dir_name",
+    "clean-merged.lane_t.idle_after_days",
+    "clean-merged.lane_t.active_process_patterns",
     "clean-merged.logging.audit_format",
     "clean-merged.logging.audit_path",
     "clean-merged.logging.max_log_bytes",
@@ -229,6 +245,7 @@ CONFIG_KEYS = frozenset({
     "clean-merged.logging.lane_r_log_path",
     "clean-merged.backups.prune_after_days",
 })
+REQUIRED_CONFIG_KEYS = frozenset(key for key in CONFIG_KEYS if not key.startswith("clean-merged.lane_t."))
 
 
 def _flatten_config(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
@@ -273,6 +290,20 @@ def _config_positive_int(flat: dict[str, Any], key: str) -> int:
     return value
 
 
+def _config_string_array(flat: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = flat[key]
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
+        raise ConfigError(f"invalid config: {key} must be a non-empty string array")
+    return tuple(value)
+
+
+def _config_single_path_name(flat: dict[str, Any], key: str) -> str:
+    value = _config_str(flat, key)
+    if value in {".", ".."} or "/" in value or "\\" in value:
+        raise ConfigError(f"invalid config: {key} must be a single relative path name")
+    return value
+
+
 def load_config(repo_root: pathlib.Path) -> Config:
     """Load config from the MAIN worktree path (not the current worktree,
     which may be on a feature branch predating config/clean-merged.toml).
@@ -293,7 +324,7 @@ def load_config(repo_root: pathlib.Path) -> Config:
         raise ConfigError(f"invalid TOML in {cfg_path}: {exc}") from exc
 
     flat = _flatten_config(data)
-    missing = sorted(CONFIG_KEYS - set(flat))
+    missing = sorted(REQUIRED_CONFIG_KEYS - set(flat))
     if missing:
         raise ConfigError(f"missing required config: {missing[0]}")
     unknown = sorted(set(flat) - CONFIG_KEYS)
@@ -324,6 +355,23 @@ def load_config(repo_root: pathlib.Path) -> Config:
         archive_verify_timeout_s=_config_positive_float(
             flat, "clean-merged.lane_w.archive_verify_timeout_s"),
     )
+    lane_t_keys = {
+        "clean-merged.lane_t.target_dir_name",
+        "clean-merged.lane_t.idle_after_days",
+        "clean-merged.lane_t.active_process_patterns",
+    }
+    present_lane_t_keys = lane_t_keys & set(flat)
+    if present_lane_t_keys and present_lane_t_keys != lane_t_keys:
+        missing_lane_t = sorted(lane_t_keys - present_lane_t_keys)[0]
+        raise ConfigError(f"missing required config: {missing_lane_t}")
+    lane_t = None
+    if present_lane_t_keys:
+        lane_t = LaneTConfig(
+            target_dir_name=_config_single_path_name(flat, "clean-merged.lane_t.target_dir_name"),
+            idle_after_days=_config_positive_int(flat, "clean-merged.lane_t.idle_after_days"),
+            active_process_patterns=_config_string_array(
+                flat, "clean-merged.lane_t.active_process_patterns"),
+        )
     logging_cfg = LoggingConfig(
         audit_format=_config_str(flat, "clean-merged.logging.audit_format"),
         audit_path=_config_str(flat, "clean-merged.logging.audit_path"),
@@ -343,7 +391,7 @@ def load_config(repo_root: pathlib.Path) -> Config:
 
     return Config(
         enabled=enabled, trunk_branch=trunk_branch, remote_name=remote_name,
-        lane_r=lane_r, lane_w=lane_w,
+        lane_r=lane_r, lane_w=lane_w, lane_t=lane_t,
         logging=logging_cfg, backups=backups, origin_owner=origin_owner,
     )
 
@@ -1870,6 +1918,191 @@ def run_lane_w(
     return records
 
 
+def scan_subtree_latest_mtime(path: pathlib.Path) -> tuple[float, int]:
+    try:
+        root_info = path.lstat()
+    except OSError:
+        return 0.0, 1
+    latest_mtime = float(root_info.st_mtime)
+    skipped = 0
+    stack = [(path, root_info)]
+    while stack:
+        current_path, info = stack.pop()
+        latest_mtime = max(latest_mtime, float(info.st_mtime))
+        if not stat.S_ISDIR(info.st_mode):
+            continue
+        try:
+            with os.scandir(current_path) as entries:
+                for entry in entries:
+                    child_path = current_path / entry.name
+                    try:
+                        child_info = child_path.lstat()
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        skipped += 1
+                        continue
+                    stack.append((child_path, child_info))
+        except OSError:
+            skipped += 1
+    return latest_mtime, skipped
+
+
+def clean_merged_process_cwd_from_proc(pid: int) -> pathlib.Path | None:
+    base = pathlib.Path(os.environ.get("CLEAN_MERGED_PROCESS_CWD_BASE", "/proc"))
+    try:
+        return (base / str(pid) / "cwd").resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+
+def clean_merged_process_cwd(pid: int) -> pathlib.Path | None:
+    return clean_merged_process_cwd_from_proc(pid)
+
+
+def path_is_or_inside(path: pathlib.Path, parent: pathlib.Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def command_matches_patterns(command: str, patterns: tuple[str, ...]) -> bool:
+    tokens = command.split()
+    basenames = {pathlib.Path(token).name for token in tokens}
+    return any(pattern in basenames or pattern in command for pattern in patterns)
+
+
+def active_target_dir_processes(
+    worktree: pathlib.Path, target: pathlib.Path, config: LaneTConfig,
+) -> tuple[list[dict[str, Any]], str | None]:
+    try:
+        ps = subprocess.run(
+            ["ps", "-axo", "pid=,command="],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        return [], f"process visibility unavailable: {exc}"
+    if ps.returncode != 0:
+        return [], f"process visibility unavailable: {ps.stderr.strip() or ps.returncode}"
+    active: list[dict[str, Any]] = []
+    worktree_resolved = worktree.resolve()
+    target_resolved = target.resolve()
+    for line in ps.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        pid_text, _, command = stripped.partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if not command_matches_patterns(command, config.active_process_patterns):
+            continue
+        cwd = clean_merged_process_cwd(pid)
+        command_mentions_target = str(target_resolved) in command
+        cwd_related = cwd is not None and (
+            path_is_or_inside(cwd, worktree_resolved) or path_is_or_inside(cwd, target_resolved)
+        )
+        if cwd_related or command_mentions_target:
+            active.append({
+                "pid": pid,
+                "command": command,
+                **({"cwd": str(cwd)} if cwd is not None else {}),
+            })
+        elif cwd is None and command_mentions_target:
+            active.append({"pid": pid, "command": command})
+    return active, None
+
+
+def run_lane_t(repo_root: pathlib.Path, config: Config, *, apply: bool, quiet: bool) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    lane_config = config.lane_t
+    if lane_config is None:
+        return records
+    now = time.time()
+    cutoff = now - (lane_config.idle_after_days * 24 * 60 * 60)
+    for wt in list_worktrees(repo_root):
+        if wt.path.resolve() == repo_root.resolve():
+            continue
+        target = wt.path / lane_config.target_dir_name
+        if not target.exists():
+            continue
+        label = wt.branch or "<detached>"
+        if not target.is_dir() or target.is_symlink():
+            records.append({
+                "lane": "T", "branch": label, "tip_sha": wt.head,
+                "worktree": str(wt.path), "target_dir": str(target),
+                "action": "target-dir-refused-not-directory",
+                "reason": "configured target-dir path is not a real directory",
+            })
+            continue
+        latest_mtime, skipped = scan_subtree_latest_mtime(target)
+        if skipped:
+            records.append({
+                "lane": "T", "branch": label, "tip_sha": wt.head,
+                "worktree": str(wt.path), "target_dir": str(target),
+                "action": "target-dir-refused-scan-incomplete",
+                "reason": "target-dir scan skipped entries",
+                "skipped_entries": skipped,
+            })
+            continue
+        if latest_mtime > cutoff:
+            continue
+        if not apply:
+            records.append({
+                "lane": "T", "branch": label, "tip_sha": wt.head,
+                "worktree": str(wt.path), "target_dir": str(target),
+                "action": "target-dir-reap-candidate",
+                "reason": f"target dir idle for at least {lane_config.idle_after_days} days",
+                "latest_mtime": latest_mtime,
+            })
+            continue
+        active, visibility_error = active_target_dir_processes(wt.path, target, lane_config)
+        if visibility_error:
+            records.append({
+                "lane": "T", "branch": label, "tip_sha": wt.head,
+                "worktree": str(wt.path), "target_dir": str(target),
+                "action": "target-dir-refused-process-visibility",
+                "reason": visibility_error,
+            })
+            continue
+        if active:
+            records.append({
+                "lane": "T", "branch": label, "tip_sha": wt.head,
+                "worktree": str(wt.path), "target_dir": str(target),
+                "action": "target-dir-refused-active-process",
+                "reason": "active Cargo/Rust process references target dir",
+                "active_processes": active,
+            })
+            continue
+        try:
+            shutil.rmtree(target)
+        except OSError as exc:
+            records.append({
+                "lane": "T", "branch": label, "tip_sha": wt.head,
+                "worktree": str(wt.path), "target_dir": str(target),
+                "action": "target-dir-reap-failed",
+                "reason": _safe_report_error(str(exc), limit=config.logging.report_error_max_chars),
+            })
+            continue
+        records.append({
+            "lane": "T", "branch": label, "tip_sha": wt.head,
+            "worktree": str(wt.path), "target_dir": str(target),
+            "action": "target-dir-reaped",
+            "reason": f"target dir idle for at least {lane_config.idle_after_days} days",
+            "latest_mtime": latest_mtime,
+        })
+    if not quiet:
+        _print_lane_summary("T", records, apply)
+    return records
+
+
 # ---------------------------------------------------------------------------
 # Purge / prune / doctor
 
@@ -2323,11 +2556,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--keep", action="append", default=[], metavar="BRANCH",
                    help="never delete this branch (repeatable)")
-    p.add_argument("--lane", choices=("s", "h", "r", "w"), help="run a single lane")
+    p.add_argument("--lane", choices=("s", "h", "r", "w", "t"), help="run a single lane")
     p.add_argument("--sync-main", action="store_true",
                    help="run Lane S before cleanup (dry-run reports; --apply fetches/prunes and ff-only syncs trunk)")
     p.add_argument("--reconcile", action="store_true", help="run Lane R (gh)")
     p.add_argument("--include-worktrees", action="store_true", help="run Lane W")
+    p.add_argument("--include-target-dirs", action="store_true", help="run Lane T")
     p.add_argument("--discard-ignored", action="store_true",
                    help="Lane W: override ignored-content refusal")
     p.add_argument("--remove-nested-repos", action="store_true",
@@ -2394,11 +2628,15 @@ def _lane_steps(
             trunk_sha_override=trunk_authority.get("sha"),
         ), True
 
+    def t() -> tuple[list[dict[str, Any]], bool]:
+        return run_lane_t(repo_root, config, apply=apply, quiet=args.quiet), True
+
     steps = {
         "s": LaneStep("S", sync, stop_on_failure=True),
         "h": LaneStep("H", h),
         "r": LaneStep("R", r),
         "w": LaneStep("W", w),
+        "t": LaneStep("T", t),
     }
     if args.lane:
         plan = [steps[args.lane]]
@@ -2408,6 +2646,8 @@ def _lane_steps(
             plan.append(steps["r"])
         if args.include_worktrees:
             plan.append(steps["w"])
+        if args.include_target_dirs:
+            plan.append(steps["t"])
     if args.sync_main:
         plan = [step for step in plan if step.name != "S"]
         plan.insert(0, steps["s"])
@@ -2499,6 +2739,9 @@ def main(argv: list[str] | None = None) -> int:
     # and are audited here at the end.
     for r in all_records:
         if r.get("lane") == "W":
+            continue
+        if r.get("lane") == "T" and apply:
+            write_audit(repo_root, config, r)
             continue
         if r.get("lane") == "S" and apply:
             write_audit(repo_root, config, r)

@@ -49,6 +49,8 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback.
     except ModuleNotFoundError:  # pragma: no cover - exercised by system Python on macOS.
         _toml = None
 
+_TOML_DECODE_ERROR = _toml.TOMLDecodeError if _toml is not None else ValueError
+
 
 POLICY_RELATIVE_PATH = pathlib.Path("ci/rust-verification.toml")
 CI_RUNNERS_RELATIVE_PATH = pathlib.Path("ci/github-actions-runners.toml")
@@ -661,6 +663,73 @@ def target_dir(repo: pathlib.Path, policy: dict[str, Any] | None = None) -> path
     data = policy if policy is not None else load_policy(repo)
     namespace = data["target_namespace"]
     return root_base() / namespace / "target"
+
+
+def global_cargo_config_path() -> pathlib.Path:
+    return pathlib.Path.home() / ".cargo" / "config.toml"
+
+
+def cargo_config_target_dir_value(content: str, path: pathlib.Path) -> str | None:
+    if not content.strip():
+        return None
+    if _toml is None:
+        raise PolicyError("Python 3.11+ tomllib or tomli is required to parse Cargo config")
+    try:
+        data = _toml.loads(content)
+    except _TOML_DECODE_ERROR as exc:
+        raise PolicyError(f"invalid TOML in {path}: {exc}") from exc
+    build = data.get("build", {})
+    if build is None:
+        return None
+    if not isinstance(build, dict):
+        raise PolicyError(f"invalid TOML in {path}: build must be a table")
+    value = build.get("target-dir")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise PolicyError(f"invalid TOML in {path}: build.target-dir must be a non-empty string")
+    return value
+
+
+def insert_cargo_target_dir(content: str, target_dir_value: str) -> str:
+    target_line = f"target-dir = {json.dumps(target_dir_value)}\n"
+    build_header = re.compile(r"^\s*\[build\]\s*(?:#.*)?$")
+    lines = content.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if build_header.match(line.rstrip("\r\n")):
+            lines.insert(index + 1, target_line)
+            return "".join(lines)
+    prefix = content
+    if prefix and not prefix.endswith(("\n", "\r")):
+        prefix += "\n"
+    if prefix and not prefix.endswith("\n\n"):
+        prefix += "\n"
+    return f"{prefix}[build]\n{target_line}"
+
+
+def assert_global_cargo_target_dir(repo: pathlib.Path) -> dict[str, str]:
+    expected = str(target_dir(repo).expanduser().resolve())
+    config_path = global_cargo_config_path()
+    try:
+        content = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        content = ""
+    existing = cargo_config_target_dir_value(content, config_path)
+    if existing == expected:
+        return {"config_path": str(config_path), "status": "already-configured", "target_dir": expected}
+    if existing is not None:
+        raise PolicyError(
+            "global Cargo build.target-dir already set to "
+            f"{existing!r}; expected {expected!r}; refusing to rewrite"
+        )
+    next_content = insert_cargo_target_dir(content, expected)
+    cargo_config_target_dir_value(next_content, config_path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
+    tmp_path.write_text(next_content, encoding="utf-8")
+    os.replace(tmp_path, config_path)
+    status = "created" if not content else "updated"
+    return {"config_path": str(config_path), "status": status, "target_dir": expected}
 
 
 def cache_lock_path(policy: dict[str, Any]) -> pathlib.Path:
@@ -4446,6 +4515,20 @@ def cmd_cache_prune(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_assert_global_cargo_target_dir(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    try:
+        payload = assert_global_cargo_target_dir(repo)
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(
+        "global Cargo build.target-dir "
+        f"{payload['status']}: {payload['config_path']} -> {payload['target_dir']}"
+    )
+    return 0
+
+
 def cmd_cleanup(_args: argparse.Namespace) -> int:
     print(json.dumps({"status": "ok", "removed": []}, sort_keys=True))
     return 0
@@ -4530,6 +4613,10 @@ def build_parser() -> argparse.ArgumentParser:
     cache_prune_mode.add_argument("--apply", action="store_true")
     cache_prune.add_argument("--json", action="store_true", required=True, help="required; emit JSON output")
     cache_prune.set_defaults(func=cmd_cache_prune)
+
+    global_cargo_target = subparsers.add_parser("assert-global-cargo-target-dir")
+    global_cargo_target.add_argument("--repo", required=True)
+    global_cargo_target.set_defaults(func=cmd_assert_global_cargo_target_dir)
 
     cleanup = subparsers.add_parser("cleanup")
     cleanup.set_defaults(func=cmd_cleanup)

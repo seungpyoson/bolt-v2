@@ -1373,6 +1373,116 @@ def assert_managed_env_scrubs_then_reinjects_wrapper() -> None:
         raise AssertionError("managed_env must not inject a wrapper outside CI (GITHUB_ACTIONS unset)")
 
 
+def run_global_cargo_config_assertion(
+    repo: pathlib.Path, *, home: pathlib.Path, root_base: pathlib.Path,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+    return run_owner(["assert-global-cargo-target-dir", "--repo", str(repo)], env=env)
+
+
+def assert_global_cargo_target_dir_config_is_created_and_idempotent() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        home = tmp_path / "home"
+        root_base = tmp_path / "rust-root"
+        expected_target = (root_base / "bolt-v2" / "target").resolve()
+
+        first = run_global_cargo_config_assertion(repo, home=home, root_base=root_base)
+        if first.returncode != 0:
+            raise AssertionError((first.returncode, first.stdout, first.stderr))
+        config = home / ".cargo" / "config.toml"
+        first_content = config.read_text(encoding="utf-8")
+        if "[build]" not in first_content or f'target-dir = "{expected_target}"' not in first_content:
+            raise AssertionError(first_content)
+
+        second = run_global_cargo_config_assertion(repo, home=home, root_base=root_base)
+        if second.returncode != 0:
+            raise AssertionError((second.returncode, second.stdout, second.stderr))
+        if config.read_text(encoding="utf-8") != first_content:
+            raise AssertionError("global Cargo config assertion is not idempotent")
+
+
+def assert_global_cargo_target_dir_config_preserves_existing_content() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        home = tmp_path / "home"
+        config = home / ".cargo" / "config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            textwrap.dedent(
+                """\
+                [net]
+                git-fetch-with-cli = true
+
+                [build]
+                rustflags = ["-Dwarnings"]
+                """
+            ),
+            encoding="utf-8",
+        )
+        root_base = tmp_path / "rust-root"
+        expected_target = (root_base / "bolt-v2" / "target").resolve()
+
+        result = run_global_cargo_config_assertion(repo, home=home, root_base=root_base)
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        content = config.read_text(encoding="utf-8")
+        for preserved in ("[net]", "git-fetch-with-cli = true", 'rustflags = ["-Dwarnings"]'):
+            if preserved not in content:
+                raise AssertionError(content)
+        if f'target-dir = "{expected_target}"' not in content:
+            raise AssertionError(content)
+        second = run_global_cargo_config_assertion(repo, home=home, root_base=root_base)
+        if second.returncode != 0:
+            raise AssertionError((second.returncode, second.stdout, second.stderr))
+        if config.read_text(encoding="utf-8") != content:
+            raise AssertionError("assertion rewrote existing config on second run")
+
+
+def assert_global_cargo_target_dir_config_refuses_conflict() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        home = tmp_path / "home"
+        config = home / ".cargo" / "config.toml"
+        config.parent.mkdir(parents=True)
+        original = textwrap.dedent(
+            """\
+            [build]
+            target-dir = "/tmp/raw-target"
+            """
+        )
+        config.write_text(original, encoding="utf-8")
+
+        result = run_global_cargo_config_assertion(
+            repo,
+            home=home,
+            root_base=tmp_path / "rust-root",
+        )
+        if result.returncode != 2:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        if "build.target-dir" not in result.stderr or "/tmp/raw-target" not in result.stderr:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        if config.read_text(encoding="utf-8") != original:
+            raise AssertionError("conflicting global Cargo config was rewritten")
+
+
+def assert_setup_recipe_asserts_global_cargo_target_dir() -> None:
+    source = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    if "assert-global-cargo-target-dir" not in source:
+        raise AssertionError("just setup must assert the machine-global Cargo target-dir")
+
+
 def main() -> int:
     assert_repo_local_owner_contract()
     assert_validate_remote_compile_cache_policy_contract()
@@ -1403,6 +1513,10 @@ def main() -> int:
     assert_ci_logs_command_uses_draft_aware_events()
     assert_ci_logs_command_uses_draft_workflow_dispatch_events()
     assert_ci_logs_command_fails_when_diagnostics_unavailable()
+    assert_global_cargo_target_dir_config_is_created_and_idempotent()
+    assert_global_cargo_target_dir_config_preserves_existing_content()
+    assert_global_cargo_target_dir_config_refuses_conflict()
+    assert_setup_recipe_asserts_global_cargo_target_dir()
     print("OK: Rust verification owner self-tests passed.")
     return 0
 

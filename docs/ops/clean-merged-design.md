@@ -135,12 +135,34 @@ Purge: `just clean-merged --purge-quarantine` removes quarantine dirs older
 than `<cfg grace_days>` (default 30). **Purge only dirs whose manifest records
 `worktree_remove_ok`.**
 
+### Lane T — Target Dirs (explicit; raw-Cargo straggler reaper)
+
+Lane T removes stale worktree-local raw Cargo output directories from linked
+worktrees that survive normal branch cleanup. It is explicit only:
+`just clean-merged --include-target-dirs` or `clean_merged_artifacts.py --lane t`.
+Hooks do not run Lane T.
+
+Candidates are `<worktree>/<cfg target_dir_name>` for linked worktrees other
+than the main worktree. A candidate is eligible only when the latest mtime
+anywhere inside the subtree is older than `<cfg idle_after_days>`. The top-level
+directory mtime is not enough; a fresh build artifact inside an old `target/`
+keeps the subtree.
+
+Apply mode refuses rather than deleting when a configured Cargo/Rust process is
+visible from `ps` with cwd in the worktree/target tree or command text that
+mentions the target dir. If process visibility is unavailable, apply also
+refuses. Dry-run reports `target-dir-reap-candidate` records and never deletes.
+
+If `[clean-merged.lane_t]` is absent, Lane T is a no-op. If the table is
+present, all Lane T keys are required and validated like the other runtime
+config.
+
 ## Config — `config/clean-merged.toml` (single source of truth)
 
 Read from the **main worktree** path (not the current worktree, which may be
 on a branch predating the config). Missing or unknown runtime keys fail loud;
-every runtime value lives in `config/clean-merged.toml`. See the file for the
-schema.
+every enabled lane's runtime value lives in `config/clean-merged.toml`. See the
+file for the schema.
 
 ## Backup refs
 
@@ -191,6 +213,10 @@ The "always-on" contract has two precise limits:
   deliberately. This is the cost of the design's foundational invariant:
   never do irreversible work in a hook. The operator must periodically run
   `just clean-merged-backlog` (dry-run first) to reclaim the worktree backlog.
+- **NOT always-on for target-dir reaping (Lane T).** Lane T is opt-in
+  (`--include-target-dirs` / `--lane t`) because it removes ignored build
+  output from still-surviving worktrees. Run dry-run first, then pass
+  `--apply` only after reviewing candidates.
 - **NOT always-on for remote fetch/prune or local trunk sync.** Lane S is
   manual because fetching/pruning and moving local trunk are network/ref
   mutations. After Mergify merge waves, `just clean-merged-backlog` is the

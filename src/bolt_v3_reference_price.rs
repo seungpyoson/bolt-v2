@@ -461,6 +461,21 @@ pub struct ReferencePriceSelector {
     failover_used: bool,
 }
 
+pub(crate) struct ReferencePriceSourceQuorum<'a> {
+    valid_quotes: Vec<&'a ReferenceQuote>,
+    is_satisfied: bool,
+}
+
+impl<'a> ReferencePriceSourceQuorum<'a> {
+    pub(crate) const fn is_satisfied(&self) -> bool {
+        self.is_satisfied
+    }
+
+    fn into_valid_quotes(self) -> Vec<&'a ReferenceQuote> {
+        self.valid_quotes
+    }
+}
+
 impl ReferencePriceSelector {
     pub fn new(
         asset: impl Into<String>,
@@ -589,17 +604,12 @@ impl ReferencePriceSelector {
             self.failover_used = false;
         }
 
-        let valid_quotes =
-            self.valid_quotes_by_order(interval_start_ms, interval_end_ms, now_ms, quotes);
+        let source_quorum =
+            self.source_liveness_quorum_at(interval_start_ms, interval_end_ms, now_ms, quotes);
+        let source_quorum_satisfied = source_quorum.is_satisfied();
+        let valid_quotes = source_quorum.into_valid_quotes();
         self.last_cross_source_drift_bps = Self::max_cross_source_drift_bps(&valid_quotes);
-        if valid_quotes.len() < self.min_valid_sources {
-            return None;
-        }
-        if self.required_sources.iter().any(|required| {
-            !valid_quotes
-                .iter()
-                .any(|quote| quote.source_id == *required)
-        }) {
+        if !source_quorum_satisfied {
             return None;
         }
         if self.drift_policy == ReferencePriceDriftPolicy::Block
@@ -637,6 +647,30 @@ impl ReferencePriceSelector {
         ))
     }
 
+    pub(crate) fn source_liveness_quorum_at<'a>(
+        &self,
+        interval_start_ms: u64,
+        interval_end_ms: u64,
+        now_ms: u64,
+        quotes: &'a [ReferenceQuote],
+    ) -> ReferencePriceSourceQuorum<'a> {
+        let valid_quotes =
+            self.valid_quotes_by_order(interval_start_ms, interval_end_ms, now_ms, quotes);
+        let has_min_valid_sources = valid_quotes.len() >= self.min_valid_sources;
+        let has_required_sources = self.required_sources.iter().all(|required| {
+            valid_quotes
+                .iter()
+                .any(|quote| quote.source_id == *required)
+        });
+        // Source liveness quorum deliberately excludes drift blocking: cross-source
+        // disagreement is a selection/admission decision, not evidence that a
+        // configured source subscription is dead and needs recovery.
+        ReferencePriceSourceQuorum {
+            valid_quotes,
+            is_satisfied: has_min_valid_sources && has_required_sources,
+        }
+    }
+
     fn valid_quotes_by_order<'a>(
         &self,
         interval_start_ms: u64,
@@ -658,7 +692,7 @@ impl ReferencePriceSelector {
             .collect()
     }
 
-    fn valid_quote_for_source<'a>(
+    pub(crate) fn valid_quote_for_source<'a>(
         &self,
         source_id: &str,
         interval_start_ms: u64,

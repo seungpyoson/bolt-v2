@@ -10,9 +10,11 @@
 //! lives in [`crate::bolt_v3_sizing`], not here.
 
 use crate::bolt_v3_market_families::OutcomeSide;
+#[cfg(test)]
+use crate::bolt_v3_numeric::BPS_DENOMINATOR;
 use crate::bolt_v3_numeric::{
-    BPS_DENOMINATOR, POWER_OF_TWO, Probability, UNIT_F64, ZERO_F64, clamp_probability,
-    is_non_negative_finite, is_positive_finite,
+    POWER_OF_TWO, Probability, UNIT_F64, ZERO_F64, clamp_probability, is_non_negative_finite,
+    is_positive_finite,
 };
 
 pub(crate) fn price_agreement_corr(observed_price: f64, anchor_price: f64) -> Option<Probability> {

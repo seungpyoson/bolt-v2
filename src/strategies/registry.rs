@@ -24,6 +24,7 @@ use crate::{
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    bolt_v3_timestamp_domain::NtStrategyClockMs,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -222,7 +223,7 @@ impl StrategyBuildContext {
         self.realized_volatility_runtime
             .lock()
             .expect("realized-volatility runtime lock should not be poisoned")
-            .refresh_surface_at(surface_id, now_ms)
+            .refresh_surface_at(surface_id, NtStrategyClockMs::new(now_ms))
     }
 }
 

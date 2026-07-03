@@ -326,7 +326,7 @@ fn invalid_realized_volatility_runtime_config_rejects_subscriptions() {
 }
 
 #[test]
-fn surfaced_realized_volatility_refresh_blocks_when_source_goes_stale() {
+fn surfaced_realized_volatility_refresh_preserves_event_domain_as_of() {
     let mut strategy =
         test_strategy_with_realized_volatility_surface(test_realized_volatility_engine_config());
 
@@ -344,30 +344,21 @@ fn surfaced_realized_volatility_refresh_blocks_when_source_goes_stale() {
 
     strategy.refresh_realized_volatility_snapshot_at(4_501);
 
-    assert_eq!(strategy.current_realized_vol_at(4_501), None);
+    assert!(strategy.current_realized_vol_at(4_501).is_some());
     let snapshot = strategy
         .pricing
         .latest_realized_vol_snapshot_for_surface(TEST_SURFACE_ID)
         .expect("RV refresh should publish a pricing snapshot");
-    assert_eq!(snapshot.as_of_ms, 4_501);
-    assert_eq!(
-        snapshot.blocked_reasons,
-        vec![crate::bolt_v3_realized_volatility::RealizedVolBlockReason::QuorumNotReady]
-    );
+    assert_eq!(snapshot.as_of_ms, 4_000);
+    assert!(snapshot.ready);
+    assert!(snapshot.blocked_reasons.is_empty());
     let diagnostic = snapshot
         .source_diagnostics
         .iter()
         .find(|diagnostic| diagnostic.source_id == TEST_SOURCE_ID)
         .expect("stale source diagnostic should exist");
-    assert!(
-        matches!(
-            diagnostic.block_reason,
-            Some(crate::bolt_v3_realized_volatility::RealizedVolBlockReason::SourceStale)
-                | Some(crate::bolt_v3_realized_volatility::RealizedVolBlockReason::NotWarm)
-        ),
-        "expected stale-source diagnostic blocker, got {:?}",
-        diagnostic.block_reason
-    );
+    assert_eq!(diagnostic.last_sample_ts_ms, Some(4_000));
+    assert_eq!(diagnostic.block_reason, None);
 }
 
 #[test]

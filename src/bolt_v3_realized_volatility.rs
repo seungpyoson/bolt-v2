@@ -374,6 +374,8 @@ pub enum RealizedVolSourceRejectReason {
     EventTimeRegression,
     DuplicateTimestamp,
     StaleSameEventUpdate,
+    // Retained for historical evidence deserialization. Live ingest no longer rejects
+    // observations solely because receive time precedes or lags venue event time.
     ReceiveBeforeEvent,
     EventReceiveLagExceeded,
 }
@@ -454,6 +456,22 @@ impl RealizedVolEngine {
 
     pub fn config(&self) -> &RealizedVolEngineConfig {
         &self.config
+    }
+
+    pub fn latest_event_ts(&self) -> Option<VenueEventMs> {
+        self.sources
+            .values()
+            .flat_map(|state| {
+                [
+                    state
+                        .samples
+                        .back()
+                        .map(|sample| VenueEventMs::new(sample.event_ts_ms)),
+                    state.last_rejected_event_ts_ms.map(VenueEventMs::new),
+                ]
+            })
+            .flatten()
+            .max()
     }
 
     pub fn observe(&mut self, observation: RealizedVolObservation) -> bool {

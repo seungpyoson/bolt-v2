@@ -7,6 +7,7 @@ use bolt_v2::{
         RealizedVolSourceRejectReason,
     },
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
+    bolt_v3_timestamp_domain::NtStrategyClockMs,
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
@@ -62,6 +63,10 @@ fn observation(source_id: &str, price: f64, ts_ms: u64) -> RealizedVolObservatio
         event_ts_ms: ts_ms,
         recv_ts_ms: ts_ms,
     }
+}
+
+fn strategy_clock_ms(value: u64) -> NtStrategyClockMs {
+    NtStrategyClockMs::new(value)
 }
 
 fn quote_tick_with_receive_ms(
@@ -143,7 +148,7 @@ fn runtime_publishes_snapshot_by_surface_id_for_multiple_consumers() {
         assert!(runtime.observe(observation(SOURCE_A, *price, (index as u64 + 1) * 1_000)));
     }
     let snapshot = runtime
-        .refresh_surface_at(SURFACE_A, 4_000)
+        .refresh_surface_at(SURFACE_A, strategy_clock_ms(4_000))
         .expect("configured surface should publish a snapshot");
 
     let pricing_consumer = runtime
@@ -194,6 +199,66 @@ fn routed_quote_replay_uses_event_clock_for_rv_windows() {
     assert!(
         snapshot.annualized_realized_vol_decimal.is_some(),
         "event-clock quote sequence should populate realized volatility"
+    );
+}
+
+#[test]
+fn strategy_clock_refresh_does_not_contaminate_event_domain_publication() {
+    let instrument_id = "<INSTRUMENT_A>.<DATA_CLIENT_ID>";
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(
+        SURFACE_A.to_string(),
+        config(SURFACE_A, SOURCE_A, instrument_id),
+    )]))
+    .expect("runtime should build");
+
+    for (index, (bid, ask)) in [
+        (99.0, 101.0),
+        (100.0, 102.0),
+        (101.0, 103.0),
+        (102.0, 104.0),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let event_ts_ms = (index as u64 + 1) * 1_000;
+        let snapshots = runtime.observe_quote(&quote_tick_with_receive_ms(
+            instrument_id,
+            *bid,
+            *ask,
+            event_ts_ms,
+            event_ts_ms,
+        ));
+        assert_eq!(
+            snapshots
+                .last()
+                .expect("routed quote should publish a surface snapshot")
+                .as_of_ms,
+            event_ts_ms
+        );
+    }
+
+    let refreshed = runtime
+        .refresh_surface_at(SURFACE_A, strategy_clock_ms(4_501))
+        .expect("strategy-clock refresh should publish diagnostics");
+    assert_eq!(
+        refreshed.as_of_ms, 4_000,
+        "strategy-clock refresh must not become event-domain as_of evidence"
+    );
+
+    let later_event_snapshots = runtime.observe_quote(&quote_tick_with_receive_ms(
+        instrument_id,
+        103.0,
+        105.0,
+        4_250,
+        4_501,
+    ));
+    assert_eq!(
+        later_event_snapshots
+            .last()
+            .expect("later event-domain quote should publish")
+            .as_of_ms,
+        4_250,
+        "later event-domain publish must not max against the prior strategy-clock refresh"
     );
 }
 
@@ -348,13 +413,13 @@ fn runtime_refresh_ignores_stale_and_equal_explicit_refresh_timestamps() {
         assert!(runtime.observe(observation(SOURCE_A, *price, (index as u64 + 1) * 1_000)));
     }
     let first = runtime
-        .refresh_surface_at(SURFACE_A, 4_000)
+        .refresh_surface_at(SURFACE_A, strategy_clock_ms(4_000))
         .expect("first refresh should publish");
     let equal = runtime
-        .refresh_surface_at(SURFACE_A, 4_000)
+        .refresh_surface_at(SURFACE_A, strategy_clock_ms(4_000))
         .expect("equal refresh should return current snapshot");
     let stale = runtime
-        .refresh_surface_at(SURFACE_A, 3_000)
+        .refresh_surface_at(SURFACE_A, strategy_clock_ms(3_000))
         .expect("stale refresh should return current snapshot");
 
     assert_eq!(first.as_of_ms, 4_000);
@@ -375,7 +440,7 @@ fn runtime_direct_observe_wrong_sample_kind_rejects_without_republishing_snapsho
         assert!(runtime.observe(observation(SOURCE_A, *price, (index as u64 + 1) * 1_000)));
     }
     let published = runtime
-        .refresh_surface_at(SURFACE_A, 4_000)
+        .refresh_surface_at(SURFACE_A, strategy_clock_ms(4_000))
         .expect("ready snapshot should publish");
 
     assert!(!runtime.observe(RealizedVolObservation {
@@ -392,7 +457,7 @@ fn runtime_direct_observe_wrong_sample_kind_rejects_without_republishing_snapsho
     );
 
     let refreshed = runtime
-        .refresh_surface_at(SURFACE_A, 5_000)
+        .refresh_surface_at(SURFACE_A, strategy_clock_ms(5_000))
         .expect("explicit refresh should expose rejection diagnostics");
     let diagnostic = refreshed
         .source_diagnostics
@@ -429,7 +494,7 @@ fn runtime_direct_observe_unknown_source_drops_at_boundary_without_polluting_sur
 
     for surface_id in [SURFACE_A, SURFACE_B] {
         let snapshot = runtime
-            .refresh_surface_at(surface_id, 1_000)
+            .refresh_surface_at(surface_id, strategy_clock_ms(1_000))
             .expect("configured surface should publish diagnostics");
         assert!(
             snapshot.unknown_source_rejections.is_empty(),
@@ -457,10 +522,10 @@ fn runtime_generic_observe_fans_out_duplicate_source_ids_across_surfaces() {
     }
 
     let surface_a = runtime
-        .refresh_surface_at(SURFACE_A, 4_000)
+        .refresh_surface_at(SURFACE_A, strategy_clock_ms(4_000))
         .expect("surface A should publish");
     let surface_b = runtime
-        .refresh_surface_at(SURFACE_B, 4_000)
+        .refresh_surface_at(SURFACE_B, strategy_clock_ms(4_000))
         .expect("surface B should publish");
 
     assert!(surface_a.ready);

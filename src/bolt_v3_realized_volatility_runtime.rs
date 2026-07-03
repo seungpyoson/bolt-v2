@@ -17,6 +17,7 @@ use crate::{
         RealizedVolEngine, RealizedVolEngineConfig, RealizedVolObservation, RealizedVolSampleKind,
         RealizedVolSnapshot, RealizedVolSourceClass,
     },
+    bolt_v3_timestamp_domain::{NtStrategyClockMs, VenueEventMs},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -51,7 +52,8 @@ struct RealizedVolSourceRoute {
 struct RealizedVolSurfaceState {
     engine: RealizedVolEngine,
     latest_snapshot: Option<RealizedVolSnapshot>,
-    last_refresh_ms: Option<u64>,
+    last_refresh_ms: Option<VenueEventMs>,
+    last_strategy_refresh_ms: Option<NtStrategyClockMs>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +151,7 @@ impl RealizedVolSurfaceRuntime {
                     engine,
                     latest_snapshot: None,
                     last_refresh_ms: None,
+                    last_strategy_refresh_ms: None,
                 },
             );
         }
@@ -330,15 +333,36 @@ impl RealizedVolSurfaceRuntime {
     pub fn refresh_surface_at(
         &mut self,
         surface_id: &str,
-        as_of_ms: u64,
+        now_ms: NtStrategyClockMs,
     ) -> Option<RealizedVolSnapshot> {
-        self.publish_surface_at(surface_id, as_of_ms, false)
+        let as_of_ms = {
+            let state = self.surfaces.get_mut(surface_id)?;
+            let latest_event_ms = state
+                .engine
+                .latest_event_ts()
+                .or(state.last_refresh_ms)
+                .unwrap_or_else(|| VenueEventMs::new(u64::MIN));
+            if state
+                .last_strategy_refresh_ms
+                .is_some_and(|last_refresh_ms| {
+                    now_ms <= last_refresh_ms
+                        && state
+                            .last_refresh_ms
+                            .is_some_and(|last_event_ms| latest_event_ms <= last_event_ms)
+                })
+            {
+                return state.latest_snapshot.clone();
+            }
+            state.last_strategy_refresh_ms = Some(now_ms);
+            latest_event_ms
+        };
+        self.publish_surface_at(surface_id, as_of_ms, true)
     }
 
     fn publish_surface_at(
         &mut self,
         surface_id: &str,
-        as_of_ms: u64,
+        as_of_ms: VenueEventMs,
         allow_equal_timestamp: bool,
     ) -> Option<RealizedVolSnapshot> {
         let state = self.surfaces.get_mut(surface_id)?;
@@ -347,7 +371,7 @@ impl RealizedVolSurfaceRuntime {
         }) {
             return state.latest_snapshot.clone();
         }
-        let snapshot = state.engine.snapshot_at(as_of_ms);
+        let snapshot = state.engine.snapshot_at(as_of_ms.value());
         state.last_refresh_ms = Some(as_of_ms);
         state.latest_snapshot = Some(snapshot.clone());
         Some(snapshot)
@@ -358,13 +382,12 @@ impl RealizedVolSurfaceRuntime {
         surface_id: &str,
         event_ts_ms: u64,
     ) -> Option<RealizedVolSnapshot> {
+        let event_ts_ms = VenueEventMs::new(event_ts_ms);
         let as_of_ms = {
             let state = self.surfaces.get(surface_id)?;
             state
                 .last_refresh_ms
-                .map_or(event_ts_ms, |last_refresh_ms| {
-                    last_refresh_ms.max(event_ts_ms)
-                })
+                .map_or(event_ts_ms, |last_event_ms| last_event_ms.max(event_ts_ms))
         };
         self.publish_surface_at(surface_id, as_of_ms, true)
     }

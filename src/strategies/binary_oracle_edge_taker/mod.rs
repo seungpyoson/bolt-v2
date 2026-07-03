@@ -3672,7 +3672,7 @@ impl BinaryOracleEdgeTaker {
             .map(BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic)
             .collect();
         let future_dating_delta_ms = realized_vol_gate_event_ms.and_then(|event_ms| {
-            (snapshot.as_of_ms > event_ms.value()).then_some(snapshot.as_of_ms - event_ms.value())
+            (snapshot.as_of_ms > event_ms.value()).then(|| snapshot.as_of_ms - event_ms.value())
         });
         (
             Some(snapshot.as_of_ms),

@@ -85,9 +85,8 @@ use crate::{
         TakerPricingState as PricingState,
     },
     bolt_v3_taker_updown_signal::{
-        SideSelectionInputs, UncertaintyBandInputs, WorstCaseEvInputs, choose_entry_side,
-        compute_worst_case_ev_bps, outcome_side_evidence_label, time_uncertainty_probability,
-        uncertainty_band_probability,
+        SideSelectionInputs, UncertaintyBandInputs, choose_entry_side, outcome_side_evidence_label,
+        time_uncertainty_probability, uncertainty_band_probability,
     },
     bolt_v3_timestamp_domain::{NtStrategyClockMs, VenueEventMs},
     bolt_v3_trade_flow::SignedTradeFlowConfig,
@@ -1080,7 +1079,7 @@ impl BinaryOracleEdgeTaker {
             self.active.interval_start_ms,
             self.active.interval_end_ms,
         ) && reference_quote_outside_live_window(
-            quote,
+            &quote,
             VenueEventMs::new(interval_start_ms),
             VenueEventMs::new(interval_end_ms),
             NtStrategyClockMs::new(now_ms),

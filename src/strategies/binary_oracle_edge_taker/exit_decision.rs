@@ -91,7 +91,9 @@ impl ExitEvaluationTriggerContext {
             BoltV3ExitTriggerSource::SignalQuote
             | BoltV3ExitTriggerSource::ReferenceUpdate
             | BoltV3ExitTriggerSource::BookDelta => Some(VenueEventMs::new(self.ts_event_ms)),
-            BoltV3ExitTriggerSource::SelectionUpdate | BoltV3ExitTriggerSource::Unknown => None,
+            BoltV3ExitTriggerSource::SelectionUpdate
+            | BoltV3ExitTriggerSource::Unknown
+            | BoltV3ExitTriggerSource::Other => None,
         }
     }
 }

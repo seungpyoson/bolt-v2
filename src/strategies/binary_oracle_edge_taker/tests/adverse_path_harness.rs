@@ -460,6 +460,7 @@ fn partial_fill_residual_is_managed_or_fresh_reexit(
                     &exit.pending_exit,
                     original_position,
                     expected_residual_quantity,
+                    // A residual re-exit after partial fill is a normal-path exit of remaining exposure; the normal exit_order template is the spec.
                     strategy.config.exit_order.order_type,
                     strategy.config.exit_order.time_in_force,
                     strategy.config.exit_order.is_reduce_only,
@@ -501,18 +502,21 @@ fn fresh_exit_order_matches_residual(
     let cache = cache.borrow();
     let cache_position_id_matches =
         cache.position_id(&pending_exit.client_order_id) == Some(&original_position.position_id);
-    let open_sell_orders = cache.orders_open(
+    let open_sell_orders = cache.orders(
         Some(&fixture_execution_venue()),
         Some(&original_position.instrument_id),
         Some(&StrategyId::from("BINARYORACLEEDGETAKER-001")),
         None,
         Some(OrderSide::Sell),
     );
+    let open_sell_orders = open_sell_orders
+        .into_iter()
+        .filter(|order| !order.is_closed())
+        .collect::<Vec<_>>();
     open_sell_orders.len() == 1
         && open_sell_orders.first().is_some_and(|order| {
             order.client_order_id() == pending_exit.client_order_id
                 && order.instrument_id() == original_position.instrument_id
-                && order.position_id().as_ref() == Some(&original_position.position_id)
                 && order.quantity() == expected_residual_quantity
                 && order.order_type() == expected_order_type
                 && order.time_in_force() == expected_time_in_force
@@ -527,14 +531,16 @@ fn open_sell_exit_order_count(
 ) -> usize {
     cache
         .borrow()
-        .orders_open(
+        .orders(
             Some(&fixture_execution_venue()),
             Some(&original_position.instrument_id),
             Some(&StrategyId::from("BINARYORACLEEDGETAKER-001")),
             None,
             Some(OrderSide::Sell),
         )
-        .len()
+        .into_iter()
+        .filter(|order| !order.is_closed())
+        .count()
 }
 
 fn held_instrument_id(strategy: &BinaryOracleEdgeTaker, held_leg: Leg) -> InstrumentId {

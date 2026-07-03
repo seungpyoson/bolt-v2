@@ -17,6 +17,9 @@ The settled PR-A decision is:
 - Causal explainability, not numeric equality.
 - No time-tolerance windows.
 
+This PR-A v2 amendment is design-first. Implementation must not resume until the
+owner approves this amended design on PR #1185.
+
 ## Incident Context
 
 On 2026-07-02 the live bot admitted USD 1,045 cumulative orders against a USD 50 account and submitted 40 sell orders for unheld shares. Admission records also lacked account, PnL, and equity evidence. The failure mode is structural: money beliefs have no single owner anchored to venue reality. Runtime currently binds to NT AccountState pushes that the Polymarket adapter does not emit, while REST truth sources run only before startup and are discarded.
@@ -25,10 +28,19 @@ On 2026-07-02 the live bot admitted USD 1,045 cumulative orders against a USD 50
 
 Whole-node halt is approved for unexplainable venue truth. If a venue snapshot changes collateral, open orders, or positions in a way that cannot be explained by the recorded order-event stream or already-booked settlement evidence, runtime must latch submit admission into a non-armed kill-switch state and report the unexplainable observation loudly. PR-A does not add strategy-side gates, size caps, thresholds, tolerance bands, time windows, or fallback money paths.
 
+The whole-node halt covers every new submission class, including
+risk-reducing exits. A venue-truth divergence means the node no longer trusts the
+beliefs that size exits; allowing exits through the latch repeats the incident
+class.
+
 ## Source Of Truth
 
 - Venue REST observations are authoritative for balance, allowance, open orders, and positions only after causal reconciliation succeeds.
 - The causal ledger has one source: the already-captured NT order-event stream. Accepted events provide `client_order_id` and `venue_order_id`; Filled events provide executed quantities. The reconciler consumes the same recorded events the evidence/capture system writes and must not create a parallel durable bookkeeping store.
+- The reconciler may use the order-event stream cursor and explicit
+  reconciliation fence records as causal watermarks. These watermarks prove how
+  far the shared event projection has advanced; they are not a second ledger and
+  they do not explain money movement by themselves.
 - NT account states and portfolio snapshots are advisory and do not determine money authority for Polymarket live execution.
 - Existing pre-run REST fetchers in `src/bolt_v3_providers/polymarket/venue_account_state_source.rs` and `src/bolt_v3_providers/polymarket/collateral_accounting_source.rs` prove the venue reads are available but are insufficient because they do not update during runtime.
 - Pinned NT adapter source is under `~/.cargo/git/checkouts/nautilus_trader-3c6af4345b4d438b/6be5a50/crates/adapters/polymarket/`. PR-A should use the adapter HTTP clients where they support the required query shape.
@@ -63,10 +75,44 @@ The reconciler compares the previous accepted venue snapshot to the next venue s
 - New venue open order: explained by an Accepted event that maps the venue order id to a known submitted client order id.
 - Open order removal or reduced open quantity: explained by terminal order events, Filled events, or both, for the mapped client order id.
 - Position increase or decrease: explained by Filled events for mapped orders on the corresponding token id.
-- Collateral decrease or release: explained by the liability/cash effects of mapped accepted, filled, terminal, or booked settlement evidence.
+- Collateral decrease or release: explained by recorded Filled events at the
+  actual fill price and fill quantity, plus an explicit fee term carried in the
+  event evidence, and by terminal release or booked settlement evidence. Open
+  order limit price is not sufficient collateral evidence for a fill.
 - Settlement-driven position or cash deltas: explained only after PR-D books settlement evidence.
 
 The reconciler must not decide divergence from instantaneous inequality between venue and NT beliefs. Normal in-flight fills can make cached beliefs and venue observations differ. That is not divergence when the delta is causally explained by recorded actions.
+
+## Cursor-Gated Pending Deltas
+
+Venue REST can expose a fill before the local NT event projection has consumed
+the corresponding Filled event, and the balance, open-order, and position REST
+reads are not an atomic venue cut. PR-A v2 therefore uses defer-until-explained
+semantics with an event cursor, not a time window.
+
+For every venue snapshot:
+
+1. Capture the venue REST snapshot and its capture metadata.
+2. Record or obtain a monotonic order-event-stream fence after the snapshot
+   capture point.
+3. Reconcile against the order-event projection consumed so far.
+4. If every delta is explainable, accept and promote the snapshot.
+5. If any delta is unexplained and the consumed order-event cursor is still
+   behind the snapshot fence, hold the snapshot as pending. Pending snapshots
+   are not promoted and do not halt the node yet.
+6. When the event projection reaches or passes the snapshot fence, re-run
+   reconciliation for the pending snapshot. If the delta is then explained,
+   accept and promote it. If it is still unexplained, durable-halt the node.
+
+This is causal, parameter-free, and window-free. No elapsed-time tolerance,
+poll-count tolerance, or numeric equality gate may substitute for cursor proof.
+If the existing captured event stream cannot expose a monotonic cursor/fence
+that proves the projection reached the snapshot capture point, PR-A v2 must stop
+and report the design dependency instead of approximating it with time.
+
+A later venue snapshot that returns to the prior value does not erase a pending
+unexplained delta. The original pending delta must become explained by recorded
+events or become a durable divergence halt once its fence is reached.
 
 ## Unexplainable Deltas
 
@@ -81,6 +127,39 @@ Manual transfers intentionally halt the node. Operators must transfer while the 
 
 On an unexplainable delta, runtime records a `VenueTruthDivergence` kill-switch trigger and replaces submit admission kill-switch state with a non-armed state. The alarm includes account id, field, venue value, prior accepted venue value, and the missing causal explanation.
 
+The divergence evidence is written through the fail-closed decision-evidence
+writer. A log-only alarm is insufficient. If divergence evidence or kill-switch
+state cannot be persisted, the node remains fail-closed and must not promote the
+snapshot.
+
+## Durable Halt And Baseline Semantics
+
+Venue-truth divergence halts are durable. Runtime writes the halt through
+`KillSwitchStore` and transitions from the recovered current kill-switch state,
+not from a hardcoded assumed `Armed` state. If the store already contains a
+more-restrictive or later halt state, PR-A v2 must not downgrade or overwrite it
+with a weaker in-memory replacement.
+
+Restart must not launder a divergence. On startup:
+
+- Load recovered kill-switch state before any live submit path can become ready.
+- If recovered state is non-armed because of venue-truth divergence, submit
+  admission stays non-armed until the existing operator recovery path clears it.
+- The first post-start venue snapshot is not blindly accepted for a dirty
+  baseline. Dirty means recovered reservations, recovered open orders, recovered
+  positions, recovered pending orders, or a recovered non-armed kill-switch
+  state.
+- A clean baseline may be accepted only when recovered submit state has no
+  outstanding money exposure and the kill-switch store is armed.
+- A dirty baseline must be reconciled against recovered reservations,
+  positions, open orders, and the durable order-event stream. If that evidence
+  cannot explain the baseline, the node requires explicit operator
+  reconciliation while stopped; it must not convert the dirty first snapshot
+  into an accepted venue-truth baseline during live boot.
+
+The baseline rule is deliberately not a time gate. It is a recovered-state and
+evidence rule.
+
 ## Runtime Authority
 
 After reconciliation succeeds, runtime promotes the accepted venue snapshot into capital admission:
@@ -89,6 +168,13 @@ After reconciliation succeeds, runtime promotes the accepted venue snapshot into
 - Venue open orders own open-order lifecycle state.
 - Venue positions own prediction-market inventory state.
 - NT events remain useful as the causal event stream and advisory latency hints, but not as money authority.
+
+For Polymarket, accepted venue truth alone satisfies money readiness for capital
+admission. NT `AccountState` absence must not keep admission unready, and no
+Polymarket readiness path may `min` venue spendability with an NT account value.
+If an NT `AccountState` arrives, it is diagnostic/advisory only and cannot
+increase, decrease, or veto the accepted venue-truth spendability, open-order,
+or position state.
 
 The live node owns the poller lifecycle. The poll cadence is configured in TOML under the Polymarket execution config; it is not hardcoded. Missing or zero cadence is invalid whenever capital admission is enforced for Polymarket live execution.
 
@@ -109,5 +195,12 @@ PR-D acceptance must include a hold-to-resolution replay test proving a resoluti
 - Unit tests for event-derived causal reconciliation: accepted-order mapping, fills, terminal events, and unexplainable deltas.
 - Runtime feed tests proving only explainable venue truth is promoted into capital admission.
 - Runtime feed tests proving unexplainable venue deltas latch whole-node submit admission halt.
+- Runtime feed tests proving cursor-gated pending deltas do not halt before the
+  event projection reaches the snapshot fence, then accept if explained or
+  durable-halt if still unexplained.
+- Startup tests proving a venue-truth halt survives restart and first-snapshot
+  dirty baselines cannot be blindly accepted.
+- Admission readiness tests proving accepted Polymarket venue truth is sufficient
+  when NT `AccountState` is absent and that NT account values remain advisory.
 - Config tests proving missing or zero venue-truth poll cadence fails closed when Polymarket capital admission is enforced.
 - Allowed static checks and exact-head remote CI before completion.

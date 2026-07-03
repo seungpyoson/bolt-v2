@@ -2643,6 +2643,8 @@ fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
     strategy.config.exit_order.trigger_price = Some(0.40);
     strategy.config.exit_order.trigger_type = Some(TriggerType::LastPrice);
     strategy.config.exit_order.is_post_only = false;
+    strategy.config.forced_exit_order = strategy.config.exit_order.clone();
+    strategy.active.phase = SelectionPhase::Freeze;
     let instrument_id = selected_entry_instrument(&strategy);
     let mut book = configured_book_for_instrument(&mut strategy, instrument_id);
     book.bid_levels.clear();
@@ -2663,13 +2665,11 @@ fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
         position,
         ManagedPositionOrigin::StrategyEntry,
     );
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 2_000.0, 1_200)));
 
     let decision = strategy.exit_submission_decision_at(1_200);
 
     assert_eq!(decision.blocked_reason, None);
+    assert_eq!(decision.forced_flat_reasons, vec![ForcedFlatReason::Freeze]);
     assert_eq!(decision.order_type, Some(OrderType::StopMarket));
     assert_eq!(decision.order_side, Some(OrderSide::Sell));
     assert_eq!(decision.price, Some(0.40));

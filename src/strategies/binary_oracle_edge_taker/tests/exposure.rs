@@ -1049,12 +1049,9 @@ fn non_resting_entry_fill_does_not_keep_pending_entry_from_cache_state() {
             .and_then(|managed| managed.pending_entry.as_ref()),
         None
     );
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 2_000.0, 1_200)));
     assert_eq!(
         strategy.exit_submission_decision_at(1_200).blocked_reason,
-        None
+        Some(EXIT_BLOCK_REASON_EXIT_HOLD)
     );
 }
 

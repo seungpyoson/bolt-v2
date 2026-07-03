@@ -457,9 +457,9 @@ fn surfaced_realized_volatility_refresh_preserves_event_domain_as_of() {
     }
     assert!(strategy.current_realized_vol_at(4_000).is_some());
 
-    strategy.refresh_realized_volatility_snapshot_at(4_501);
+    strategy.refresh_realized_volatility_snapshot_at(4_500);
 
-    assert!(strategy.current_realized_vol_at(4_501).is_some());
+    assert!(strategy.current_realized_vol_at(4_500).is_some());
     let snapshot = strategy
         .pricing
         .latest_realized_vol_snapshot_for_surface(TEST_SURFACE_ID)

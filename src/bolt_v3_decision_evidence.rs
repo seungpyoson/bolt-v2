@@ -641,7 +641,7 @@ pub enum BoltV3EntrySkipReasonCategory {
     Unclassified,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3EntrySkipEvidence {
     pub strategy_id: String,
     pub now_ms: u64,
@@ -654,6 +654,8 @@ pub struct BoltV3EntrySkipEvidence {
     pub seconds_to_market_end: Option<u64>,
     pub spot_price: Option<String>,
     pub reference_current_price: Option<String>,
+    pub fast_venue_available: bool,
+    pub reference_current_price_available: bool,
     pub realized_vol: Option<String>,
     pub realized_vol_source_venue: Option<String>,
     pub realized_vol_source_ts_ms: Option<u64>,
@@ -674,6 +676,89 @@ pub struct BoltV3EntrySkipEvidence {
     pub frozen: bool,
     pub metadata_matches_selection: bool,
     pub fast_venue_incoherent: bool,
+}
+
+#[derive(Deserialize)]
+struct BoltV3EntrySkipEvidenceWire {
+    strategy_id: String,
+    now_ms: u64,
+    reason_category: BoltV3EntrySkipReasonCategory,
+    unclassified_context: Option<String>,
+    gate_blocked_by: Vec<BoltV3EntryBlockReason>,
+    pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
+    market_id: Option<String>,
+    phase: String,
+    seconds_to_market_end: Option<u64>,
+    spot_price: Option<String>,
+    reference_current_price: Option<String>,
+    fast_venue_available: Option<bool>,
+    reference_current_price_available: Option<bool>,
+    realized_vol: Option<String>,
+    realized_vol_source_venue: Option<String>,
+    realized_vol_source_ts_ms: Option<u64>,
+    fair_probability_up: Option<String>,
+    fair_probability_down: Option<String>,
+    selected_side: Option<BoltV3OutcomeSide>,
+    sized_notional: Option<String>,
+    sized_worst_case_ev_bps: Option<String>,
+    sized_edge_cents_per_share: Option<String>,
+    theta_scaled_min_edge_bps: Option<String>,
+    up_fee_bps: Option<String>,
+    down_fee_bps: Option<String>,
+    submission_blocked_reason: Option<BoltV3EntrySkipReasonCategory>,
+    stale_reference_after_ms: Option<u64>,
+    last_reference_ts_ms: Option<u64>,
+    min_liquidity_required: Option<String>,
+    liquidity_available: Option<String>,
+    frozen: bool,
+    metadata_matches_selection: bool,
+    fast_venue_incoherent: bool,
+}
+
+impl<'de> Deserialize<'de> for BoltV3EntrySkipEvidence {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = BoltV3EntrySkipEvidenceWire::deserialize(deserializer)?;
+        Ok(Self {
+            strategy_id: wire.strategy_id,
+            now_ms: wire.now_ms,
+            reason_category: wire.reason_category,
+            unclassified_context: wire.unclassified_context,
+            gate_blocked_by: wire.gate_blocked_by,
+            pricing_blocked_by: wire.pricing_blocked_by,
+            market_id: wire.market_id,
+            phase: wire.phase,
+            seconds_to_market_end: wire.seconds_to_market_end,
+            spot_price: wire.spot_price,
+            reference_current_price: wire.reference_current_price,
+            fast_venue_available: wire.fast_venue_available.unwrap_or(false),
+            reference_current_price_available: wire
+                .reference_current_price_available
+                .unwrap_or(false),
+            realized_vol: wire.realized_vol,
+            realized_vol_source_venue: wire.realized_vol_source_venue,
+            realized_vol_source_ts_ms: wire.realized_vol_source_ts_ms,
+            fair_probability_up: wire.fair_probability_up,
+            fair_probability_down: wire.fair_probability_down,
+            selected_side: wire.selected_side,
+            sized_notional: wire.sized_notional,
+            sized_worst_case_ev_bps: wire.sized_worst_case_ev_bps,
+            sized_edge_cents_per_share: wire.sized_edge_cents_per_share,
+            theta_scaled_min_edge_bps: wire.theta_scaled_min_edge_bps,
+            up_fee_bps: wire.up_fee_bps,
+            down_fee_bps: wire.down_fee_bps,
+            submission_blocked_reason: wire.submission_blocked_reason,
+            stale_reference_after_ms: wire.stale_reference_after_ms,
+            last_reference_ts_ms: wire.last_reference_ts_ms,
+            min_liquidity_required: wire.min_liquidity_required,
+            liquidity_available: wire.liquidity_available,
+            frozen: wire.frozen,
+            metadata_matches_selection: wire.metadata_matches_selection,
+            fast_venue_incoherent: wire.fast_venue_incoherent,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -906,7 +991,7 @@ pub struct BoltV3RequoteThrottleEvidence {
     pub min_interval_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub strategy_id: String,
     pub configured_target_id: String,
@@ -926,6 +1011,7 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub price_to_beat_value: String,
     pub reference_quote_ts_event: u64,
     pub spot_price: String,
+    pub fast_venue_available: bool,
     pub reference_current_price: Option<String>,
     pub reference_current_price_available: bool,
     pub reference_current_price_source_id: Option<String>,
@@ -972,6 +1058,157 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub submission_price: String,
     pub submission_quantity: String,
     pub client_order_id: String,
+}
+
+#[derive(Deserialize)]
+struct BoltV3StrategyInputEvidenceSnapshotWire {
+    strategy_id: String,
+    configured_target_id: String,
+    market_selection_ruleset_id: String,
+    market_selection_outcome: String,
+    market_id: Option<String>,
+    polymarket_condition_id: Option<String>,
+    polymarket_market_slug: Option<String>,
+    polymarket_question_id: Option<String>,
+    up_instrument_id: Option<String>,
+    down_instrument_id: Option<String>,
+    market_selection_timestamp_ms: Option<u64>,
+    selected_market_observed_timestamp_ms: Option<u64>,
+    polymarket_market_start_timestamp_ms: Option<u64>,
+    polymarket_market_end_timestamp_ms: Option<u64>,
+    price_to_beat_source: String,
+    price_to_beat_value: String,
+    reference_quote_ts_event: u64,
+    spot_price: String,
+    fast_venue_available: Option<bool>,
+    reference_current_price: Option<String>,
+    reference_current_price_available: Option<bool>,
+    reference_current_price_source_id: Option<String>,
+    reference_current_price_failed_over: Option<bool>,
+    realized_volatility: String,
+    realized_volatility_surface_id: String,
+    realized_volatility_as_of_ms: Option<u64>,
+    realized_volatility_annualized_decimal: String,
+    realized_volatility_measured_annualized_decimal: String,
+    realized_volatility_noise_robust_annualized_decimal: String,
+    realized_volatility_continuous_annualized_decimal: String,
+    realized_volatility_jump_annualized_decimal: String,
+    realized_volatility_forecast_annualized_decimal: String,
+    realized_volatility_pricing_component: String,
+    realized_volatility_seconds_per_annum: String,
+    realized_volatility_aggregation: String,
+    realized_volatility_sources_used: Vec<String>,
+    realized_volatility_source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
+    realized_volatility_unknown_source_rejections: BTreeMap<String, u64>,
+    realized_volatility_blockers: Vec<String>,
+    realized_volatility_config_fingerprint: String,
+    seconds_to_market_end: u64,
+    pricing_kurtosis: String,
+    theta_decay_factor: String,
+    theta_scaled_min_edge_bps: String,
+    fair_probability_up: String,
+    uncertainty_band_probability: String,
+    expected_edge_basis_points: String,
+    worst_case_edge_basis_points: String,
+    up_worst_case_edge_basis_points: Option<String>,
+    down_worst_case_edge_basis_points: Option<String>,
+    gate_blocked_by: Vec<BoltV3EntryBlockReason>,
+    pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
+    fast_venue_name: Option<String>,
+    fast_venue_age_ms: Option<u64>,
+    fast_venue_jitter_ms: Option<u64>,
+    fast_venue_incoherent: bool,
+    lead_agreement_corr: Option<String>,
+    fee_rate_basis_points: String,
+    selected_side: Option<String>,
+    submission_instrument_id: String,
+    submission_order_side: String,
+    submission_price: String,
+    submission_quantity: String,
+    client_order_id: String,
+}
+
+impl<'de> Deserialize<'de> for BoltV3StrategyInputEvidenceSnapshot {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = BoltV3StrategyInputEvidenceSnapshotWire::deserialize(deserializer)?;
+        Ok(Self {
+            strategy_id: wire.strategy_id,
+            configured_target_id: wire.configured_target_id,
+            market_selection_ruleset_id: wire.market_selection_ruleset_id,
+            market_selection_outcome: wire.market_selection_outcome,
+            market_id: wire.market_id,
+            polymarket_condition_id: wire.polymarket_condition_id,
+            polymarket_market_slug: wire.polymarket_market_slug,
+            polymarket_question_id: wire.polymarket_question_id,
+            up_instrument_id: wire.up_instrument_id,
+            down_instrument_id: wire.down_instrument_id,
+            market_selection_timestamp_ms: wire.market_selection_timestamp_ms,
+            selected_market_observed_timestamp_ms: wire.selected_market_observed_timestamp_ms,
+            polymarket_market_start_timestamp_ms: wire.polymarket_market_start_timestamp_ms,
+            polymarket_market_end_timestamp_ms: wire.polymarket_market_end_timestamp_ms,
+            price_to_beat_source: wire.price_to_beat_source,
+            price_to_beat_value: wire.price_to_beat_value,
+            reference_quote_ts_event: wire.reference_quote_ts_event,
+            spot_price: wire.spot_price,
+            fast_venue_available: wire.fast_venue_available.unwrap_or(false),
+            reference_current_price: wire.reference_current_price,
+            reference_current_price_available: wire
+                .reference_current_price_available
+                .unwrap_or(false),
+            reference_current_price_source_id: wire.reference_current_price_source_id,
+            reference_current_price_failed_over: wire.reference_current_price_failed_over,
+            realized_volatility: wire.realized_volatility,
+            realized_volatility_surface_id: wire.realized_volatility_surface_id,
+            realized_volatility_as_of_ms: wire.realized_volatility_as_of_ms,
+            realized_volatility_annualized_decimal: wire.realized_volatility_annualized_decimal,
+            realized_volatility_measured_annualized_decimal: wire
+                .realized_volatility_measured_annualized_decimal,
+            realized_volatility_noise_robust_annualized_decimal: wire
+                .realized_volatility_noise_robust_annualized_decimal,
+            realized_volatility_continuous_annualized_decimal: wire
+                .realized_volatility_continuous_annualized_decimal,
+            realized_volatility_jump_annualized_decimal: wire
+                .realized_volatility_jump_annualized_decimal,
+            realized_volatility_forecast_annualized_decimal: wire
+                .realized_volatility_forecast_annualized_decimal,
+            realized_volatility_pricing_component: wire.realized_volatility_pricing_component,
+            realized_volatility_seconds_per_annum: wire.realized_volatility_seconds_per_annum,
+            realized_volatility_aggregation: wire.realized_volatility_aggregation,
+            realized_volatility_sources_used: wire.realized_volatility_sources_used,
+            realized_volatility_source_diagnostics: wire.realized_volatility_source_diagnostics,
+            realized_volatility_unknown_source_rejections: wire
+                .realized_volatility_unknown_source_rejections,
+            realized_volatility_blockers: wire.realized_volatility_blockers,
+            realized_volatility_config_fingerprint: wire.realized_volatility_config_fingerprint,
+            seconds_to_market_end: wire.seconds_to_market_end,
+            pricing_kurtosis: wire.pricing_kurtosis,
+            theta_decay_factor: wire.theta_decay_factor,
+            theta_scaled_min_edge_bps: wire.theta_scaled_min_edge_bps,
+            fair_probability_up: wire.fair_probability_up,
+            uncertainty_band_probability: wire.uncertainty_band_probability,
+            expected_edge_basis_points: wire.expected_edge_basis_points,
+            worst_case_edge_basis_points: wire.worst_case_edge_basis_points,
+            up_worst_case_edge_basis_points: wire.up_worst_case_edge_basis_points,
+            down_worst_case_edge_basis_points: wire.down_worst_case_edge_basis_points,
+            gate_blocked_by: wire.gate_blocked_by,
+            pricing_blocked_by: wire.pricing_blocked_by,
+            fast_venue_name: wire.fast_venue_name,
+            fast_venue_age_ms: wire.fast_venue_age_ms,
+            fast_venue_jitter_ms: wire.fast_venue_jitter_ms,
+            fast_venue_incoherent: wire.fast_venue_incoherent,
+            lead_agreement_corr: wire.lead_agreement_corr,
+            fee_rate_basis_points: wire.fee_rate_basis_points,
+            selected_side: wire.selected_side,
+            submission_instrument_id: wire.submission_instrument_id,
+            submission_order_side: wire.submission_order_side,
+            submission_price: wire.submission_price,
+            submission_quantity: wire.submission_quantity,
+            client_order_id: wire.client_order_id,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3425,6 +3662,7 @@ mod tests {
             price_to_beat_value: "3100".to_string(),
             reference_quote_ts_event: 1200,
             spot_price: "3100.5".to_string(),
+            fast_venue_available: true,
             reference_current_price: Some("3100.5".to_string()),
             reference_current_price_available: true,
             reference_current_price_source_id: Some("chainlink_primary".to_string()),
@@ -3500,7 +3738,7 @@ mod tests {
                 .as_object()
                 .expect("snapshot should encode as an object")
                 .len(),
-            63
+            64
         );
         assert_eq!(snapshot_field["price_to_beat_source"], "source-one");
         assert_eq!(snapshot_field["up_worst_case_edge_basis_points"], "11");
@@ -3510,6 +3748,7 @@ mod tests {
             serde_json::json!(["realized_vol_not_ready"])
         );
         assert_eq!(snapshot_field["fast_venue_name"], "fast-source");
+        assert_eq!(snapshot_field["fast_venue_available"], true);
         assert_eq!(snapshot_field["fast_venue_age_ms"], 20);
         assert_eq!(snapshot_field["fast_venue_jitter_ms"], 3);
         assert_eq!(snapshot_field["fast_venue_incoherent"], false);

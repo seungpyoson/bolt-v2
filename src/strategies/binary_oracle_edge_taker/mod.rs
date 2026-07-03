@@ -1983,6 +1983,8 @@ impl BinaryOracleEdgeTaker {
         let spot_venue_name = self.evidence_spot_venue_name();
         let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
         let reference_current_price = self.evidence_reference_current_price();
+        let reference_current_price_available =
+            self.pricing.last_reference_current_price().is_some();
         let (realized_vol_source_venue, realized_vol_source_ts_ms) =
             self.pricing.current_realized_vol_source_at(now_ms);
 
@@ -2100,9 +2102,9 @@ impl BinaryOracleEdgeTaker {
             sized_notional: evaluation.sized_notional,
             selected_side: evaluation.selected_side,
             fast_venue_available,
-            reference_current_price_available: reference_current_price.is_some(),
+            reference_current_price_available,
             reference_current_price_available_without_fast_venue: !fast_venue_available
-                && reference_current_price.is_some(),
+                && reference_current_price_available,
             lead_quality_policy_applied: self.pricing.lead_quality_policy_applied,
             lead_quality_reason: if self.pricing.fast_venue_incoherent {
                 EVIDENCE_REASON_NO_FAST_VENUE_CLEARED_LEAD_QUALITY_THRESHOLDS
@@ -2352,7 +2354,8 @@ impl BinaryOracleEdgeTaker {
                 .collect(),
             market_id: fields.market_id.clone(),
             interval_open: option_evidence_number(fields.interval_open),
-            last_reference_ts_ms: forced_flat_inputs.last_reference_ts_ms,
+            fast_venue_available: fields.fast_venue_available,
+            reference_current_price_available: fields.reference_current_price_available,
             fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
         };
         if self.last_recorded_entry_skip.as_ref() == Some(&key) {
@@ -3962,6 +3965,9 @@ impl BinaryOracleEdgeTaker {
             None => None,
         };
         let reference_current_price = self.evidence_reference_current_price();
+        let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
+        let reference_current_price_available =
+            self.pricing.last_reference_current_price().is_some();
 
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
@@ -4010,8 +4016,9 @@ impl BinaryOracleEdgeTaker {
             spot_price: self
                 .evidence_spot_price()
                 .map_or_else(String::new, evidence_number),
+            fast_venue_available,
             reference_current_price: reference_current_price.map(evidence_number),
-            reference_current_price_available: reference_current_price.is_some(),
+            reference_current_price_available,
             reference_current_price_source_id: self.evidence_reference_current_price_source_id(),
             reference_current_price_failed_over: self
                 .evidence_reference_current_price_failed_over(),
@@ -4200,6 +4207,9 @@ impl BinaryOracleEdgeTaker {
             anyhow::anyhow!("entry strategy input evidence requires submission order side")
         })?;
         let reference_current_price = self.evidence_reference_current_price();
+        let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
+        let reference_current_price_available =
+            self.pricing.last_reference_current_price().is_some();
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
             configured_target_id: self.config.configured_target_id.clone(),
@@ -4241,8 +4251,9 @@ impl BinaryOracleEdgeTaker {
             price_to_beat_value: evidence_number(price_to_beat),
             reference_quote_ts_event,
             spot_price: evidence_number(spot_price),
+            fast_venue_available,
             reference_current_price: reference_current_price.map(evidence_number),
-            reference_current_price_available: reference_current_price.is_some(),
+            reference_current_price_available,
             reference_current_price_source_id: self.evidence_reference_current_price_source_id(),
             reference_current_price_failed_over: self
                 .evidence_reference_current_price_failed_over(),

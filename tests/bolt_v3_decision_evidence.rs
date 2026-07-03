@@ -156,6 +156,7 @@ fn strategy_input_snapshot_with_realized_volatility_snapshot() -> BoltV3Strategy
         price_to_beat_value: "3100".to_string(),
         reference_quote_ts_event: 1200,
         spot_price: "3100.5".to_string(),
+        fast_venue_available: true,
         reference_current_price: Some("3100.5".to_string()),
         reference_current_price_available: true,
         reference_current_price_source_id: Some("chainlink_primary".to_string()),
@@ -660,6 +661,47 @@ fn entry_skip_evidence_writes_one_durable_line_and_readers_skip_it() {
 }
 
 #[test]
+fn entry_skip_admitted_markers_default_false_for_predeploy_lines() {
+    let mut value = serde_json::to_value(sample_entry_skip_evidence())
+        .expect("entry skip evidence should encode as json");
+    value
+        .as_object_mut()
+        .expect("entry skip should encode as an object")
+        .remove("fast_venue_available");
+    value
+        .as_object_mut()
+        .expect("entry skip should encode as an object")
+        .remove("reference_current_price_available");
+
+    let decoded: BoltV3EntrySkipEvidence =
+        serde_json::from_value(value).expect("predeploy entry skip should decode");
+
+    assert!(!decoded.fast_venue_available);
+    assert!(!decoded.reference_current_price_available);
+}
+
+#[test]
+fn strategy_input_snapshot_admitted_markers_default_false_for_predeploy_lines() {
+    let mut value =
+        serde_json::to_value(strategy_input_snapshot_with_realized_volatility_snapshot())
+            .expect("strategy input snapshot should encode as json");
+    value
+        .as_object_mut()
+        .expect("strategy input snapshot should encode as an object")
+        .remove("fast_venue_available");
+    value
+        .as_object_mut()
+        .expect("strategy input snapshot should encode as an object")
+        .remove("reference_current_price_available");
+
+    let decoded: BoltV3StrategyInputEvidenceSnapshot =
+        serde_json::from_value(value).expect("predeploy strategy input snapshot should decode");
+
+    assert!(!decoded.fast_venue_available);
+    assert!(!decoded.reference_current_price_available);
+}
+
+#[test]
 fn probability_wire_fields_remain_string_payload_bytes() {
     let entry_skip = sample_entry_skip_evidence();
     let entry_skip_bytes =
@@ -672,7 +714,8 @@ fn probability_wire_fields_remain_string_payload_bytes() {
             r#""unclassified_context":null,"gate_blocked_by":[{"forced_flat":"stale_reference"}],"#,
             r#""pricing_blocked_by":["realized_vol_not_ready"],"market_id":"market-one","#,
             r#""phase":"Active","seconds_to_market_end":300,"spot_price":"3100.5","#,
-            r#""reference_current_price":"3100.5","realized_vol":"2.5","#,
+            r#""reference_current_price":"3100.5","fast_venue_available":true,"#,
+            r#""reference_current_price_available":true,"realized_vol":"2.5","#,
             r#""realized_vol_source_venue":"fast-source","realized_vol_source_ts_ms":1100,"#,
             r#""fair_probability_up":"0.6","fair_probability_down":"0.4","selected_side":"up","#,
             r#""sized_notional":"25","sized_worst_case_ev_bps":"12.5","#,
@@ -862,6 +905,8 @@ fn sample_entry_skip_evidence() -> BoltV3EntrySkipEvidence {
         seconds_to_market_end: Some(300),
         spot_price: Some("3100.5".to_string()),
         reference_current_price: Some("3100.5".to_string()),
+        fast_venue_available: true,
+        reference_current_price_available: true,
         realized_vol: Some("2.5".to_string()),
         realized_vol_source_venue: Some("fast-source".to_string()),
         realized_vol_source_ts_ms: Some(1_100),
@@ -966,6 +1011,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         price_to_beat_value: "3100".to_string(),
         reference_quote_ts_event: 1200,
         spot_price: "3100.5".to_string(),
+        fast_venue_available: true,
         reference_current_price: Some("3100.5".to_string()),
         reference_current_price_available: true,
         reference_current_price_source_id: Some("chainlink_primary".to_string()),

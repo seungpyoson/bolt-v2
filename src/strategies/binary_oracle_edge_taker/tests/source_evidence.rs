@@ -75,16 +75,30 @@ fn replay_reference_price_config(
 }
 
 fn replay_reference_update(replay: &StrategyInputQuoteReplay) -> nautilus_model::data::CustomData {
+    replay_reference_update_at(
+        replay,
+        replay.reference.price,
+        replay.reference.observed_ts_ms,
+        replay.reference.received_ts_ms,
+    )
+}
+
+fn replay_reference_update_at(
+    replay: &StrategyInputQuoteReplay,
+    price: f64,
+    observed_ts_ms: u64,
+    received_ts_ms: u64,
+) -> nautilus_model::data::CustomData {
     crate::bolt_v3_reference_price::ReferencePriceUpdate::try_new(
         "BTC",
         replay.reference.source_id.as_str(),
         replay.reference.provider.as_str(),
         replay.reference.provider_instrument.as_str(),
-        replay.reference.price,
+        price,
         None,
         None,
-        replay.reference.observed_ts_ms,
-        replay.reference.received_ts_ms,
+        observed_ts_ms,
+        received_ts_ms,
     )
     .expect("replay reference quote should construct")
     .to_custom_data()
@@ -1116,7 +1130,14 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
         Some(replay.reference.source_id.as_str())
     );
     assert_eq!(snapshot.reference_current_price_failed_over, Some(false));
-    assert!(snapshot.reference_current_price_available);
+    assert!(
+        !snapshot.fast_venue_available,
+        "fallback spot evidence must not be reported as admitted"
+    );
+    assert!(
+        !snapshot.reference_current_price_available,
+        "fallback reference evidence must not be reported as admitted"
+    );
     let log_fields =
         strategy.entry_evaluation_log_fields_at(replay.evaluation_now_ms, &replay_decision);
     assert_eq!(log_fields.spot_price, Some(108642.25));
@@ -1125,8 +1146,14 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
         !log_fields.fast_venue_available,
         "raw signal observation should not change admitted fast-venue diagnostics"
     );
-    assert!(log_fields.reference_current_price_available);
-    assert!(log_fields.reference_current_price_available_without_fast_venue);
+    assert!(
+        !log_fields.reference_current_price_available,
+        "fallback reference evidence must not be reported as admitted"
+    );
+    assert!(
+        !log_fields.reference_current_price_available_without_fast_venue,
+        "without-fast-venue marker should only track admitted reference state"
+    );
 
     let submitted = strategy
         .try_submit_entry_order(replay.evaluation_now_ms)
@@ -1162,6 +1189,14 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     assert!(skip.fast_venue_incoherent);
     assert_eq!(skip.spot_price.as_deref(), Some("108642.25"));
     assert_eq!(skip.reference_current_price.as_deref(), Some("108500.25"));
+    assert!(
+        !skip.fast_venue_available,
+        "fallback spot evidence must not be reported as admitted"
+    );
+    assert!(
+        !skip.reference_current_price_available,
+        "fallback reference evidence must not be reported as admitted"
+    );
 }
 
 #[test]
@@ -1930,6 +1965,92 @@ fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
     assert_eq!(
         entry_skips[1].last_reference_ts_ms,
         Some(liveness_transition_ts_ms)
+    );
+}
+
+#[test]
+fn entry_skip_dedupe_does_not_record_every_reference_tick_while_blocked() {
+    let replay = strategy_input_quote_replay();
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    strategy.config.reference_current_price = Some(replay_reference_price_config(&replay));
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", replay.market_start_ms));
+    strategy.active.price_to_beat = Some(replay.reference.price);
+    strategy.active.interval_open = Some(replay.reference.price);
+    strategy.pricing.set_selected_pricing_spot(None);
+    strategy.latest_signal_quote = None;
+    let (cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+
+    let mut spot_missing = minimal_entry_submission_decision();
+    spot_missing.evaluation.pricing_blocked_by = vec![EntryPricingBlockReason::SpotPriceMissing];
+
+    let first_reference_ts_ms = replay.reference.observed_ts_ms;
+    let first_received_ts_ms = replay.reference.received_ts_ms;
+    for (index, (price, observed_ts_ms, received_ts_ms)) in [
+        (108_500.25, first_reference_ts_ms, first_received_ts_ms),
+        (
+            108_501.25,
+            first_reference_ts_ms.saturating_add(20),
+            first_received_ts_ms.saturating_add(20),
+        ),
+        (
+            108_502.25,
+            first_reference_ts_ms.saturating_add(40),
+            first_received_ts_ms.saturating_add(40),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        clock.borrow_mut().set_time(UnixNanos::from(
+            received_ts_ms.saturating_mul(NANOS_PER_MILLI_U64),
+        ));
+        let update = replay_reference_update_at(&replay, price, observed_ts_ms, received_ts_ms);
+        DataActor::on_data(&mut strategy, &update)
+            .expect("reference quote update should be accepted");
+        assert_eq!(
+            strategy.active.reference_current_price,
+            Some(price),
+            "precondition: reference update {index} should be admitted"
+        );
+        assert_eq!(
+            strategy.active.last_reference_ts_ms,
+            Some(observed_ts_ms),
+            "precondition: reference update {index} should advance the accepted quote timestamp"
+        );
+
+        strategy
+            .record_entry_skip_once(
+                received_ts_ms,
+                &spot_missing,
+                BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+                None,
+            )
+            .expect("blocked entry skip should record or dedupe without error");
+    }
+
+    let entry_skips = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entry_skips.len(),
+        1,
+        "accepted reference ticks in one blocked interval must not re-record every tick"
+    );
+    assert_eq!(
+        entry_skips[0].last_reference_ts_ms,
+        Some(first_reference_ts_ms),
+        "bounded dedupe should keep the first skip evidence for an unchanged liveness state"
     );
 }
 

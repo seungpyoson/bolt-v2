@@ -263,7 +263,8 @@ pub(super) struct EntrySkipDedupeKey {
     pub(super) pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
     pub(super) market_id: Option<String>,
     pub(super) interval_open: Option<String>,
-    pub(super) last_reference_ts_ms: Option<u64>,
+    pub(super) fast_venue_available: bool,
+    pub(super) reference_current_price_available: bool,
     pub(super) fast_venue_incoherent: bool,
 }
 
@@ -307,6 +308,8 @@ impl BoltV3EntrySkipEvidence {
             seconds_to_market_end: fields.seconds_to_expiry,
             spot_price: option_evidence_number(fields.spot_price),
             reference_current_price: option_evidence_number(fields.reference_current_price),
+            fast_venue_available: fields.fast_venue_available,
+            reference_current_price_available: fields.reference_current_price_available,
             realized_vol: option_evidence_number(fields.realized_vol),
             realized_vol_source_venue: fields.realized_vol_source_venue.clone(),
             realized_vol_source_ts_ms: fields.realized_vol_source_ts_ms,

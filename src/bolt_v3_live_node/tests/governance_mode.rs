@@ -106,6 +106,7 @@ fn ungoverned_submit_capable_loaded_config() -> LoadedBoltV3Config {
         .to_string_lossy()
         .to_string();
     loaded.root.risk.loss_governor = None;
+    loaded.root.risk.live_submit_governance = None;
     if let Some(pools) = loaded.root.risk.capital_pools.as_mut() {
         for pool in pools {
             pool.enforce_submit_admission = false;

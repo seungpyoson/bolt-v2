@@ -18,7 +18,7 @@ use crate::{
         resolution_strike_fetch_request_data_type,
     },
     bolt_v3_reference_price::{
-        ReferencePriceSubscriptionRequest,
+        ReferencePriceSubscriptionRequest, reference_price_source_is_runtime_available,
         reference_price_subscription_requests as build_reference_price_subscription_requests,
     },
     bolt_v3_trade_flow::SignedTradeFlow,
@@ -30,8 +30,7 @@ impl BinaryOracleEdgeTaker {
     pub(super) fn retry_missing_live_input_subscriptions_at(&mut self, now_ms: u64) {
         self.refresh_realized_volatility_snapshot_at(now_ms);
         let signal_missing = self.pricing.spot_price().is_none();
-        let reference_missing =
-            self.config.reference_current_price.is_some() && self.reference_price_quotes.is_empty();
+        let reference_missing = self.reference_current_price_live_input_missing_at(now_ms);
         let realized_volatility_missing = self
             .pricing
             .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id)
@@ -66,6 +65,64 @@ impl BinaryOracleEdgeTaker {
             self.unsubscribe_realized_volatility_sources();
             self.subscribe_realized_volatility_sources();
         }
+    }
+
+    fn reference_current_price_live_input_missing_at(&self, now_ms: u64) -> bool {
+        let Some(reference_price) = &self.config.reference_current_price else {
+            return false;
+        };
+
+        let mut runtime_source_count = usize::MIN;
+        let mut current_source_count = usize::MIN;
+        let mut required_source_missing = false;
+
+        for source_id in &reference_price.source_order {
+            let Some(source) = reference_price.sources.get(source_id) else {
+                continue;
+            };
+            if !reference_price_source_is_runtime_available(reference_price, source) {
+                continue;
+            }
+            runtime_source_count =
+                runtime_source_count.saturating_add(COUNTER_INCREMENT_U64 as usize);
+            let source_current = self
+                .reference_price_quotes
+                .get(source_id)
+                .is_some_and(|quote| {
+                    if quote.observed_ts_ms() > now_ms {
+                        return false;
+                    }
+                    if now_ms.saturating_sub(quote.observed_ts_ms())
+                        > reference_price.max_source_age_ms
+                    {
+                        return false;
+                    }
+                    if self
+                        .active
+                        .interval_start_ms
+                        .is_some_and(|interval_start_ms| quote.observed_ts_ms() < interval_start_ms)
+                    {
+                        return false;
+                    }
+                    if self
+                        .active
+                        .interval_end_ms
+                        .is_some_and(|interval_end_ms| quote.observed_ts_ms() > interval_end_ms)
+                    {
+                        return false;
+                    }
+                    true
+                });
+            if source_current {
+                current_source_count =
+                    current_source_count.saturating_add(COUNTER_INCREMENT_U64 as usize);
+            } else if source.required {
+                required_source_missing = true;
+            }
+        }
+
+        runtime_source_count != usize::MIN
+            && (required_source_missing || current_source_count < reference_price.min_valid_sources)
     }
 
     pub(super) fn signal_instrument_id(&self) -> Option<InstrumentId> {

@@ -167,6 +167,35 @@ def assert_changed_uses_named_input_set() -> None:
         raise AssertionError(f"changed paths must come from the named input set, got {changed!r}")
 
 
+def assert_pathspec_policy_normalizes_git_spellings() -> None:
+    module = load_module()
+    cases = {
+        "./scripts/ci_input_sets.py": "scripts/ci_input_sets.py",
+        "scripts/../scripts/ci_input_sets.py": "scripts/ci_input_sets.py",
+        ":(top)scripts/ci_input_sets.py": "scripts/ci_input_sets.py",
+        ":(top).github/actions/setup-environment/action.yml": ".github/actions/setup-environment/action.yml",
+        ":/.github/actions/setup-environment/action.yml": ".github/actions/setup-environment/action.yml",
+        "./.github/actions/**": ".github/actions/**",
+    }
+    for raw, expected in cases.items():
+        actual = module.normalize_repo_pathspec(raw)
+        if actual != expected:
+            raise AssertionError(f"pathspec normalization drifted for {raw!r}: expected={expected!r} actual={actual!r}")
+    unsupported = ":(glob).github/actions/**"
+    if module.normalize_repo_pathspec(unsupported) is not None:
+        raise AssertionError(f"unsupported pathspec magic must be rejected: {unsupported}")
+    if not module.pathspec_may_cover(".github/actions/**", ".github/actions/setup-environment/action.yml"):
+        raise AssertionError("broad action pathspec must cover setup-environment action")
+
+
+def assert_backtester_cache_policy_rejects_unsupported_magic() -> None:
+    module = load_module()
+    errors = module.backtester_cache_pathspec_policy_errors([":(glob).github/actions/**"])
+    expected = "backtester_cache input set must not use unsupported Git pathspec magic :(glob).github/actions/**"
+    if expected not in errors:
+        raise AssertionError(f"backtester_cache policy must reject unsupported pathspec magic, got {errors!r}")
+
+
 def assert_backtester_sets_cover_cache_and_detector_inputs() -> None:
     module = load_module()
     config = module.load_config(REPO_ROOT / "ci" / "rust-ci-inputs.toml")
@@ -189,7 +218,13 @@ def assert_backtester_sets_cover_cache_and_detector_inputs() -> None:
     }:
         if required not in cache:
             raise AssertionError(f"backtester_cache missing {required}")
+    cache_policy_errors = module.backtester_cache_pathspec_policy_errors(cache)
+    if cache_policy_errors:
+        raise AssertionError(cache_policy_errors[0])
     for required in {
+        "scripts/ci_input_sets.py",
+        "ci/rust-ci-inputs.toml",
+        ".github/actions/setup-environment/**",
         "scripts/ci_provenance.py",
         "ci/github-actions-runners.toml",
         ".github/workflows/backtester-ci.yml",
@@ -207,6 +242,8 @@ def main() -> int:
     assert_validate_rejects_never_valid_exact_inputs()
     assert_changed_reports_deleted_exact_inputs()
     assert_changed_uses_named_input_set()
+    assert_pathspec_policy_normalizes_git_spellings()
+    assert_backtester_cache_policy_rejects_unsupported_magic()
     assert_backtester_sets_cover_cache_and_detector_inputs()
     print("OK: CI input set self-tests passed.")
     return 0

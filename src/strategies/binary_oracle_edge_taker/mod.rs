@@ -561,6 +561,8 @@ pub struct BinaryOracleEdgeTaker {
     last_recorded_entry_skip: Option<EntrySkipDedupeKey>,
     last_recorded_exit_decision: Option<ExitDecisionDedupeKey>,
     pricing: PricingState,
+    latest_signal_quote: Option<FastSpotObservation>,
+    latest_selected_reference_quote: Option<SelectedReferenceQuoteEvidence>,
     reference_price_selector: Option<ReferencePriceSelector>,
     reference_price_quotes: BTreeMap<String, ReferenceQuote>,
     reference_price_source_health: BTreeMap<String, ReferencePriceSourceHealth>,
@@ -585,6 +587,12 @@ pub struct BinaryOracleEdgeTaker {
     reference_price_subscribe_events: Vec<ReferencePriceSubscribeEvent>,
     #[cfg(test)]
     live_input_subscription_retry_events: Vec<LiveInputSubscriptionRetryEvent>,
+}
+
+#[derive(Clone, Debug)]
+struct SelectedReferenceQuoteEvidence {
+    quote: ReferenceQuote,
+    failed_over: bool,
 }
 
 impl BinaryOracleEdgeTaker {
@@ -629,6 +637,8 @@ impl BinaryOracleEdgeTaker {
             last_recorded_entry_skip: None,
             last_recorded_exit_decision: None,
             pricing,
+            latest_signal_quote: None,
+            latest_selected_reference_quote: None,
             reference_price_selector,
             reference_price_quotes: BTreeMap::new(),
             reference_price_source_health,
@@ -663,6 +673,8 @@ impl BinaryOracleEdgeTaker {
         self.active.books.down.instrument_id = next_selection_books.down_instrument_id;
         self.active.apply_selection_timing(&snapshot);
         if reference_current_price_boundary_changed(&previous_active, &self.active) {
+            self.latest_signal_quote = None;
+            self.latest_selected_reference_quote = None;
             self.reset_reference_current_price_runtime_state();
         }
         // Bind the live strike to the market's interval-open boundary.
@@ -728,6 +740,7 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn observe_signal_quote(&mut self, quote: &FastSpotObservation) {
+        self.latest_signal_quote = Some(quote.clone());
         self.pricing
             .observe_signal_quote(quote, &taker_pricing_config(&self.config));
         self.after_signal_quote_observed(quote.observed_ts_ms, quote.received_ts_ms);
@@ -739,6 +752,7 @@ impl BinaryOracleEdgeTaker {
         observed_ts_ms: u64,
         received_ts_ms: Option<u64>,
     ) {
+        self.latest_signal_quote = None;
         self.pricing
             .observe_invalid_signal_quote(venue, observed_ts_ms);
         self.after_signal_quote_observed(observed_ts_ms, received_ts_ms);
@@ -1130,6 +1144,10 @@ impl BinaryOracleEdgeTaker {
                 .active
                 .observe_reference_price_quote(selected_quote, selection.failed_over())
         {
+            self.latest_selected_reference_quote = Some(SelectedReferenceQuoteEvidence {
+                quote: selected_quote.clone(),
+                failed_over: selection.failed_over(),
+            });
             self.pricing
                 .observe_reference_current_price(&FastSpotObservation {
                     venue: selected_quote.source_id().to_string(),
@@ -1790,6 +1808,67 @@ impl BinaryOracleEdgeTaker {
         self.pricing.current_realized_vol_at(now_ms)
     }
 
+    fn evidence_spot_price(&self) -> Option<f64> {
+        self.pricing
+            .spot_price()
+            .filter(|value| is_positive_finite(*value))
+            .or_else(|| {
+                self.latest_signal_quote
+                    .as_ref()
+                    .map(|quote| quote.price)
+                    .filter(|value| is_positive_finite(*value))
+            })
+    }
+
+    fn evidence_spot_venue_name(&self) -> Option<String> {
+        self.pricing
+            .selected_pricing_spot()
+            .map(|spot| spot.venue.clone())
+            .or_else(|| {
+                self.latest_signal_quote
+                    .as_ref()
+                    .filter(|quote| is_positive_finite(quote.price))
+                    .map(|quote| quote.venue.clone())
+            })
+    }
+
+    fn selected_reference_quote_for_evidence(&self) -> Option<&SelectedReferenceQuoteEvidence> {
+        self.latest_selected_reference_quote.as_ref()
+    }
+
+    fn evidence_reference_current_price(&self) -> Option<f64> {
+        self.pricing
+            .last_reference_current_price()
+            .filter(|value| is_positive_finite(*value))
+            .or_else(|| {
+                self.active
+                    .reference_current_price
+                    .filter(|value| is_positive_finite(*value))
+            })
+            .or_else(|| {
+                self.selected_reference_quote_for_evidence()
+                    .map(|evidence| evidence.quote.price())
+                    .filter(|value| is_positive_finite(*value))
+            })
+    }
+
+    fn evidence_reference_current_price_source_id(&self) -> Option<String> {
+        self.active
+            .reference_current_price_source_id
+            .clone()
+            .or_else(|| {
+                self.selected_reference_quote_for_evidence()
+                    .map(|evidence| evidence.quote.source_id().to_string())
+            })
+    }
+
+    fn evidence_reference_current_price_failed_over(&self) -> Option<bool> {
+        self.active.reference_current_price_failed_over.or_else(|| {
+            self.selected_reference_quote_for_evidence()
+                .map(|evidence| evidence.failed_over)
+        })
+    }
+
     fn current_seconds_to_expiry_at(&self, now_ms: u64) -> Option<u64> {
         self.active.seconds_to_expiry_at(now_ms)
     }
@@ -1901,11 +1980,11 @@ impl BinaryOracleEdgeTaker {
         submission: &EntrySubmissionDecision,
     ) -> EntryEvaluationLogFields {
         let evaluation = &submission.evaluation;
-        let spot_venue_name = self
-            .pricing
-            .selected_pricing_spot()
-            .map(|spot| spot.venue.clone());
-        let fast_venue_available = spot_venue_name.is_some();
+        let spot_venue_name = self.evidence_spot_venue_name();
+        let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
+        let reference_current_price = self.evidence_reference_current_price();
+        let reference_current_price_available =
+            self.pricing.last_reference_current_price().is_some();
         let (realized_vol_source_venue, realized_vol_source_ts_ms) =
             self.pricing.current_realized_vol_source_at(now_ms);
 
@@ -1914,9 +1993,9 @@ impl BinaryOracleEdgeTaker {
             phase: self.active.phase,
             gate_blocked_by: evaluation.gate.blocked_by.clone(),
             pricing_blocked_by: evaluation.pricing_blocked_by.clone(),
-            spot_price: self.pricing.spot_price(),
+            spot_price: self.evidence_spot_price(),
             spot_venue_name,
-            reference_current_price: self.pricing.last_reference_current_price(),
+            reference_current_price,
             interval_open: self.active.interval_open,
             seconds_to_expiry: self.current_seconds_to_expiry_at(now_ms),
             realized_vol: self.current_realized_vol_at(now_ms),
@@ -2023,8 +2102,9 @@ impl BinaryOracleEdgeTaker {
             sized_notional: evaluation.sized_notional,
             selected_side: evaluation.selected_side,
             fast_venue_available,
+            reference_current_price_available,
             reference_current_price_available_without_fast_venue: !fast_venue_available
-                && self.pricing.last_reference_current_price().is_some(),
+                && reference_current_price_available,
             lead_quality_policy_applied: self.pricing.lead_quality_policy_applied,
             lead_quality_reason: if self.pricing.fast_venue_incoherent {
                 EVIDENCE_REASON_NO_FAST_VENUE_CLEARED_LEAD_QUALITY_THRESHOLDS
@@ -2063,7 +2143,7 @@ impl BinaryOracleEdgeTaker {
                 );
             }
             log::warn!(
-                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
                 fields.phase,
@@ -2125,6 +2205,7 @@ impl BinaryOracleEdgeTaker {
                 fields.sized_notional,
                 fields.selected_side,
                 fields.fast_venue_available,
+                fields.reference_current_price_available,
                 fields.reference_current_price_available_without_fast_venue,
                 fields.lead_quality_policy_applied,
                 fields.lead_quality_reason,
@@ -2139,7 +2220,7 @@ impl BinaryOracleEdgeTaker {
             );
         } else {
             log::info!(
-                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
                 fields.phase,
@@ -2201,6 +2282,7 @@ impl BinaryOracleEdgeTaker {
                 fields.sized_notional,
                 fields.selected_side,
                 fields.fast_venue_available,
+                fields.reference_current_price_available,
                 fields.reference_current_price_available_without_fast_venue,
                 fields.lead_quality_policy_applied,
                 fields.lead_quality_reason,
@@ -2259,6 +2341,7 @@ impl BinaryOracleEdgeTaker {
         unclassified_context: Option<String>,
     ) -> Result<()> {
         let fields = self.entry_evaluation_log_fields_at(now_ms, decision);
+        let forced_flat_inputs = self.entry_forced_flat_evidence_inputs();
         let key = EntrySkipDedupeKey {
             reason_category,
             gate_blocked_by: fields
@@ -2273,6 +2356,9 @@ impl BinaryOracleEdgeTaker {
                 .collect(),
             market_id: fields.market_id.clone(),
             interval_open: option_evidence_number(fields.interval_open),
+            fast_venue_available: fields.fast_venue_available,
+            reference_current_price_available: fields.reference_current_price_available,
+            fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
         };
         if self.last_recorded_entry_skip.as_ref() == Some(&key) {
             return Ok(());
@@ -2283,7 +2369,7 @@ impl BinaryOracleEdgeTaker {
             reason_category,
             unclassified_context,
             &fields,
-            self.entry_forced_flat_evidence_inputs(),
+            forced_flat_inputs,
         );
         if let Err(error) = self
             .context
@@ -3880,6 +3966,10 @@ impl BinaryOracleEdgeTaker {
             Some(OutcomeSide::Down) => decision.evaluation.down_worst_case_ev_bps,
             None => None,
         };
+        let reference_current_price = self.evidence_reference_current_price();
+        let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
+        let reference_current_price_available =
+            self.pricing.last_reference_current_price().is_some();
 
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
@@ -3926,19 +4016,14 @@ impl BinaryOracleEdgeTaker {
                 .map_or_else(String::new, evidence_number),
             reference_quote_ts_event,
             spot_price: self
-                .pricing
-                .spot_price()
-                .filter(|value| is_positive_finite(*value))
+                .evidence_spot_price()
                 .map_or_else(String::new, evidence_number),
-            reference_current_price: self
-                .pricing
-                .last_reference_current_price()
-                .map(evidence_number),
-            reference_current_price_source_id: self
-                .active
-                .reference_current_price_source_id
-                .clone(),
-            reference_current_price_failed_over: self.active.reference_current_price_failed_over,
+            fast_venue_available,
+            reference_current_price: reference_current_price.map(evidence_number),
+            reference_current_price_available,
+            reference_current_price_source_id: self.evidence_reference_current_price_source_id(),
+            reference_current_price_failed_over: self
+                .evidence_reference_current_price_failed_over(),
             realized_volatility: String::new(),
             realized_volatility_surface_id: realized_volatility.surface_id,
             realized_volatility_as_of_ms: realized_volatility.as_of_ms,
@@ -4003,10 +4088,7 @@ impl BinaryOracleEdgeTaker {
                 .iter()
                 .map(entry_pricing_block_reason_to_evidence)
                 .collect(),
-            fast_venue_name: self
-                .pricing
-                .selected_pricing_spot()
-                .map(|spot| spot.venue.clone()),
+            fast_venue_name: self.evidence_spot_venue_name(),
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
             fast_venue_incoherent: self.pricing.fast_venue_incoherent,
@@ -4126,6 +4208,10 @@ impl BinaryOracleEdgeTaker {
         let order_side = decision.order_side.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires submission order side")
         })?;
+        let reference_current_price = self.evidence_reference_current_price();
+        let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
+        let reference_current_price_available =
+            self.pricing.last_reference_current_price().is_some();
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
             configured_target_id: self.config.configured_target_id.clone(),
@@ -4167,15 +4253,12 @@ impl BinaryOracleEdgeTaker {
             price_to_beat_value: evidence_number(price_to_beat),
             reference_quote_ts_event,
             spot_price: evidence_number(spot_price),
-            reference_current_price: self
-                .pricing
-                .last_reference_current_price()
-                .map(evidence_number),
-            reference_current_price_source_id: self
-                .active
-                .reference_current_price_source_id
-                .clone(),
-            reference_current_price_failed_over: self.active.reference_current_price_failed_over,
+            fast_venue_available,
+            reference_current_price: reference_current_price.map(evidence_number),
+            reference_current_price_available,
+            reference_current_price_source_id: self.evidence_reference_current_price_source_id(),
+            reference_current_price_failed_over: self
+                .evidence_reference_current_price_failed_over(),
             realized_volatility: evidence_number(realized_volatility),
             realized_volatility_surface_id: realized_volatility_fields.surface_id,
             realized_volatility_as_of_ms: realized_volatility_fields.as_of_ms,
@@ -4226,10 +4309,7 @@ impl BinaryOracleEdgeTaker {
                 .iter()
                 .map(entry_pricing_block_reason_to_evidence)
                 .collect(),
-            fast_venue_name: self
-                .pricing
-                .selected_pricing_spot()
-                .map(|spot| spot.venue.clone()),
+            fast_venue_name: self.evidence_spot_venue_name(),
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
             fast_venue_incoherent: self.pricing.fast_venue_incoherent,

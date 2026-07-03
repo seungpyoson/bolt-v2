@@ -642,6 +642,10 @@ worktree-remove branch:
 clean-merged *args:
     python3 scripts/clean_merged_artifacts.py {{args}}
 
+# cache-prune: age-only managed Rust target sweep across root + BTE caches. Default = dry-run; pass --apply to execute.
+cache-prune *args:
+    python3 "{{rust_verification_owner}}" cache-prune --repo "{{repo_root}}" --repo "{{repo_root}}/crates/backtesting-vertical-slice" --age-only --json {{args}}
+
 # clean-merged: print install/heartbeat/quarantine/gh health.
 clean-merged-doctor:
     python3 scripts/clean_merged_artifacts.py --doctor
@@ -663,6 +667,9 @@ setup:
     git config core.hooksPath .githooks
     # Ensure managed hooks are executable (git warns + skips otherwise).
     chmod +x .githooks/post-merge .githooks/post-checkout .githooks/post-rewrite 2>/dev/null || true
+
+    echo "Asserting machine-global Cargo target dir..."
+    python3 "{{rust_verification_owner}}" assert-global-cargo-target-dir --repo "{{repo_root}}"
 
     clean_merged_remote="$(python3 scripts/clean_merged_artifacts.py --print-remote-name)"
     echo "Enabling remote.${clean_merged_remote}.prune (auto-prune deleted upstreams on fetch)..."

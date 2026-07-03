@@ -47,7 +47,7 @@ cheap_lane_max_concurrent = 0
 
 [cache]
 min_free_bytes = 10737418240
-soft_limit_bytes = 53687091200
+soft_limit_bytes = 32212254720
 active_process_patterns = ["cargo", "cargo-clippy", "cargo-fmt", "cargo-nextest", "rustc", "nextest", "rust_verification.py"]
 
 [cache.retention.debug]

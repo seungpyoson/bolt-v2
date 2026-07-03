@@ -106,10 +106,6 @@ pub(super) fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> 
             ),
             (stringify!(max_source_age_ms), policy.max_source_age_ms),
             (
-                stringify!(max_event_receive_lag_ms),
-                policy.max_event_receive_lag_ms,
-            ),
-            (
                 stringify!(max_inter_sample_gap_ms),
                 policy.max_inter_sample_gap_ms,
             ),

@@ -8351,15 +8351,15 @@ fn rejects_invalid_nt_risk_rate_limit_strings() {
 
     for (submit_rate, modify_rate) in [
         ("0/00:00:01", "100/00:00:00"),
-        ("100", "40/00:01:00"),
-        ("abc/00:00:01", "40/00:01:00"),
-        ("100/00:01", "40/00:01:00"),
-        ("100/00:00:01:00", "40/00:01:00"),
-        ("100/00:60:00", "40/00:01:00"),
-        ("100/00:00:60", "40/00:01:00"),
+        ("100", "33/00:01:00"),
+        ("abc/00:00:01", "33/00:01:00"),
+        ("100/00:01", "33/00:01:00"),
+        ("100/00:00:01:00", "33/00:01:00"),
+        ("100/00:60:00", "33/00:01:00"),
+        ("100/00:00:60", "33/00:01:00"),
     ] {
         let mutated = replace_in_binance_reference_fixture(
-            "max_order_submit_rate = \"40/00:01:00\"\nmax_order_modify_rate = \"40/00:01:00\"",
+            "max_order_submit_rate = \"33/00:01:00\"\nmax_order_modify_rate = \"33/00:01:00\"",
             &format!(
                 "max_order_submit_rate = \"{submit_rate}\"\nmax_order_modify_rate = \"{modify_rate}\""
             ),

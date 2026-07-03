@@ -13966,6 +13966,10 @@ git() {
     )
     assert_error(
         "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        BASE_WORKFLOW + "\n--- {jobs: {evil: {}}}\n",
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
         replace_once(
             BASE_WORKFLOW,
             "permissions:\n",

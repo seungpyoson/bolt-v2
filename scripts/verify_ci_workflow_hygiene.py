@@ -9734,7 +9734,7 @@ def workflow_yaml_unsupported_feature_errors(workflow_text: str) -> list[str]:
             continue
 
         if not line.startswith((" ", "\t")) and (
-            stripped.startswith("%") or stripped in ("---", "...")
+            stripped.startswith(("%", "---", "..."))
         ):
             return [UNSUPPORTED_YAML_REUSE_FEATURE_ERROR]
         if workflow_structural_line_has_yaml_tag(structural_line):

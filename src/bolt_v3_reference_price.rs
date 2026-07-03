@@ -658,7 +658,7 @@ impl ReferencePriceSelector {
             .collect()
     }
 
-    fn valid_quote_for_source<'a>(
+    pub(crate) fn valid_quote_for_source<'a>(
         &self,
         source_id: &str,
         interval_start_ms: u64,

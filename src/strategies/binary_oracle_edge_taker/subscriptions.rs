@@ -67,10 +67,26 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn reference_current_price_live_input_missing_at(&self, now_ms: u64) -> bool {
+    fn reference_current_price_live_input_missing_at(&mut self, now_ms: u64) -> bool {
+        if self.config.reference_current_price.is_none() {
+            return false;
+        }
+        self.ensure_reference_price_runtime_state();
         let Some(reference_price) = &self.config.reference_current_price else {
             return false;
         };
+        let Some(reference_price_selector) = self.reference_price_selector.as_ref() else {
+            return false;
+        };
+        let active_interval = self
+            .active
+            .interval_start_ms
+            .zip(self.active.interval_end_ms);
+        let quotes = self
+            .reference_price_quotes
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
 
         let mut runtime_source_count = usize::MIN;
         let mut current_source_count = usize::MIN;
@@ -85,33 +101,17 @@ impl BinaryOracleEdgeTaker {
             }
             runtime_source_count =
                 runtime_source_count.saturating_add(COUNTER_INCREMENT_U64 as usize);
-            let source_current = self
-                .reference_price_quotes
-                .get(source_id)
-                .is_some_and(|quote| {
-                    if quote.observed_ts_ms() > now_ms {
-                        return false;
-                    }
-                    if now_ms.saturating_sub(quote.observed_ts_ms())
-                        > reference_price.max_source_age_ms
-                    {
-                        return false;
-                    }
-                    if self
-                        .active
-                        .interval_start_ms
-                        .is_some_and(|interval_start_ms| quote.observed_ts_ms() < interval_start_ms)
-                    {
-                        return false;
-                    }
-                    if self
-                        .active
-                        .interval_end_ms
-                        .is_some_and(|interval_end_ms| quote.observed_ts_ms() > interval_end_ms)
-                    {
-                        return false;
-                    }
-                    true
+            let source_current =
+                active_interval.is_some_and(|(interval_start_ms, interval_end_ms)| {
+                    reference_price_selector
+                        .valid_quote_for_source(
+                            source_id,
+                            interval_start_ms,
+                            interval_end_ms,
+                            now_ms,
+                            &quotes,
+                        )
+                        .is_some()
                 });
             if source_current {
                 current_source_count =

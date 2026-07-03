@@ -165,7 +165,7 @@ impl CaptureFailureState {
     fn error_message(&self) -> Option<String> {
         self.first_error
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expect("NT runtime capture first error lock poisoned")
             .clone()
     }
 
@@ -180,7 +180,7 @@ impl CaptureFailureState {
             let mut slot = self
                 .first_error
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .expect("NT runtime capture first error lock poisoned");
             if slot.is_none() {
                 *slot = Some(message.clone());
             }
@@ -188,7 +188,7 @@ impl CaptureFailureState {
             if let Some(notifier) = self
                 .notifier
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .expect("NT runtime capture notifier lock poisoned")
                 .take()
             {
                 let _ = notifier.send(());
@@ -1013,6 +1013,7 @@ mod tests {
         identifiers::InstrumentId,
         types::{Price, Quantity},
     };
+    use std::panic::AssertUnwindSafe;
 
     #[test]
     fn failure_state_latches_first_error_and_sets_stop_flag() {
@@ -1025,6 +1026,36 @@ mod tests {
         assert!(state.is_unhealthy());
         assert!(handle.should_stop());
         assert_eq!(state.error_message().as_deref(), Some("first failure"));
+    }
+
+    #[test]
+    #[should_panic(expected = "NT runtime capture first error lock poisoned")]
+    fn failure_state_error_message_panics_on_poisoned_first_error_lock() {
+        let handle = LiveNodeHandle::new();
+        let (state, _receiver) = CaptureFailureState::new(handle);
+        poison_lock(&state.first_error);
+
+        let _ = state.error_message();
+    }
+
+    #[test]
+    #[should_panic(expected = "NT runtime capture first error lock poisoned")]
+    fn failure_state_record_failure_panics_on_poisoned_first_error_lock() {
+        let handle = LiveNodeHandle::new();
+        let (state, _receiver) = CaptureFailureState::new(handle);
+        poison_lock(&state.first_error);
+
+        state.record_failure("failure");
+    }
+
+    #[test]
+    #[should_panic(expected = "NT runtime capture notifier lock poisoned")]
+    fn failure_state_record_failure_panics_on_poisoned_notifier_lock() {
+        let handle = LiveNodeHandle::new();
+        let (state, _receiver) = CaptureFailureState::new(handle);
+        poison_lock(&state.notifier);
+
+        state.record_failure("failure");
     }
 
     #[test]
@@ -1076,6 +1107,13 @@ mod tests {
             "capture shutdown must not silently return Ok when failure_state has a recorded error",
         );
         assert_eq!(error.to_string(), "worker recorded failure mid-run");
+    }
+
+    fn poison_lock<T>(lock: &Arc<Mutex<T>>) {
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _g = lock.lock().unwrap();
+            panic!("seed poison");
+        }));
     }
 
     #[test]

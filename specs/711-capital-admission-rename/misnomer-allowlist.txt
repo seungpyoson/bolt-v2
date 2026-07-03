@@ -1,6 +1,6 @@
 # Format: path:line<TAB>exact stripped line<TAB>justification
-docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml:13951	literal = '''"position_sizer_rebuild"'''	Runtime-literal audit row for retained FR-017 legacy audit-skip literal.
-docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml:13952	context = '''| "position_sizer_rebuild"'''	Runtime-literal audit row for retained FR-017 legacy audit-skip literal.
+docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml:13943	literal = '''"position_sizer_rebuild"'''	Runtime-literal audit row for retained FR-017 legacy audit-skip literal.
+docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml:13944	context = '''| "position_sizer_rebuild"'''	Runtime-literal audit row for retained FR-017 legacy audit-skip literal.
 scripts/migrate_bolt_v3_capital_admission_config.py:23	OLD_POOL_POLICY_HEADER_PREFIX = ("risk", "capital_pools", "sizing_policy")	One-time migrator must recognize pre-migration serialized input.
 scripts/migrate_bolt_v3_capital_admission_config.py:24	OLD_POOL_POLICY_KEY_RE = re.compile(rb"^(\s*)sizing_policy(?=\s*(?:[.=]))")	One-time migrator must recognize pre-migration serialized input.
 scripts/migrate_bolt_v3_capital_admission_config.py:106	rewritten_body = body.replace(b"sizing_policy", b"capital_admission_policy", 1)	One-time migrator must recognize pre-migration serialized input.

@@ -328,7 +328,9 @@ jobs:
           shared-key: cargo-registry-git-bvs-v1
           save-if: false
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Restore BVS clippy managed target cache
+        id: bvs-clippy-managed-target-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ steps.crate_target.outputs.dir }}
           # BVS depends on the root crate, so root inputs are part of the cache identity.
@@ -339,15 +341,33 @@ jobs:
       - name: clippy
         run: just bte-clippy
 
+      - name: Save BVS clippy managed target cache
+        id: bvs-clippy-managed-target-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-clippy-managed-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.crate_target.outputs.dir }}
+          key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-clippy-${{ steps.bvs_cache_inputs.outputs.digest }}
+
   test-archive:
     name: bvs-test archive
     needs: [ci-policy, detect, fmt]
     if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    outputs:
+      bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
+      bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
+    permissions:
+      contents: read
+      id-token: write
     env:
       BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BVS_NEXTEST_SHARDS: "4"
+      NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+      NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+      NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
+      NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -370,19 +390,151 @@ jobs:
           include-nextest-version: "true"
           build-jobs-key: backtester_ci.test-archive
 
-      - name: Restore BVS nextest archive
-        id: bvs-nextest-archive-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ env.BVS_NEXTEST_ARCHIVE_PATH }}
-          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
+      - name: Resolve BVS nextest artifact cache eligibility
+        id: bvs-nextest-artifact-cache
+        continue-on-error: true
+        env:
+          ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+          ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+          REGION: ${{ vars.CI_SCCACHE_REGION }}
+          PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
+        run: |
+          cache_mode=""
+          role_arn=""
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            cache_mode="read_write"
+            role_arn="$ROLE_ARN"
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$GITHUB_EVENT_NAME" == "merge_group" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            cache_mode="read_only"
+            role_arn="$PR_READONLY_ROLE_ARN"
+          fi
+          vars_present=true
+          [[ "$ENABLED" == "true" && -n "$role_arn" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false
+          if [[ -n "$cache_mode" && "$vars_present" == "true" ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "role_arn=$role_arn" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=$cache_mode" >> "$GITHUB_OUTPUT"
+          echo "enabled=$ENABLED cache_mode=$cache_mode vars_present=$vars_present"
 
-      - name: Restore BVS binary sidecars
-        id: bvs-bin-sidecars-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Configure AWS credentials for BVS nextest artifact cache
+        id: bvs-nextest-artifact-cache-aws
+        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
         with:
-          path: ${{ env.BVS_BIN_SIDECARS_PATH }}
-          key: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
+          role-to-assume: ${{ steps.bvs-nextest-artifact-cache.outputs.role_arn }}
+          aws-region: ${{ vars.CI_SCCACHE_REGION }}
+
+      - name: Restore BVS nextest archive from S3
+        id: bvs-nextest-archive-cache
+        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'
+        env:
+          CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
+          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+        run: |
+          set +e
+          start_epoch="$(date +%s)"
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-nextest-archive/${CACHE_KEY}.tar.zst"
+          uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
+          mkdir -p "$(dirname "$BVS_NEXTEST_ARCHIVE_PATH")"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          head_rc=$?
+          if [[ "$head_rc" -ne 0 ]]; then
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=false"
+              echo "restore-bytes=0"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::BVS nextest archive S3 cache miss or metadata unavailable for digest ${DIGEST}; building locally"
+            exit 0
+          fi
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::BVS nextest archive S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
+            exit 1
+          fi
+          if aws s3 cp "$uri" "$BVS_NEXTEST_ARCHIVE_PATH" --only-show-errors; then
+            bytes="$(wc -c < "$BVS_NEXTEST_ARCHIVE_PATH" | tr -d ' ')"
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=true"
+              echo "restore-bytes=$bytes"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "BVS nextest archive S3 restore: hit"
+              echo "BVS nextest archive S3 egress bytes: $bytes"
+              echo "BVS nextest archive S3 restore seconds: $elapsed"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            rm -f "$BVS_NEXTEST_ARCHIVE_PATH"
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=false"
+              echo "restore-bytes=0"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::BVS nextest archive S3 cache miss or restore unavailable for digest ${DIGEST}; building locally"
+          fi
+          exit 0
+
+      - name: Restore BVS binary sidecars from S3
+        id: bvs-bin-sidecars-cache
+        if: steps.bvs-nextest-artifact-cache.outputs.eligible == 'true' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success'
+        env:
+          CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
+          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+        run: |
+          set +e
+          start_epoch="$(date +%s)"
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-bin-sidecars/${CACHE_KEY}.tar.gz"
+          uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
+          mkdir -p "$(dirname "$BVS_BIN_SIDECARS_PATH")"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          head_rc=$?
+          if [[ "$head_rc" -ne 0 ]]; then
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=false"
+              echo "restore-bytes=0"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::BVS binary sidecar S3 cache miss or metadata unavailable for digest ${DIGEST}; rebuilding sidecars"
+            exit 0
+          fi
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            echo "::error::BVS binary sidecar S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
+            exit 1
+          fi
+          if aws s3 cp "$uri" "$BVS_BIN_SIDECARS_PATH" --only-show-errors; then
+            bytes="$(wc -c < "$BVS_BIN_SIDECARS_PATH" | tr -d ' ')"
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=true"
+              echo "restore-bytes=$bytes"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "BVS binary sidecars S3 restore: hit"
+              echo "BVS binary sidecars S3 egress bytes: $bytes"
+              echo "BVS binary sidecars S3 restore seconds: $elapsed"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            rm -f "$BVS_BIN_SIDECARS_PATH"
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "cache-hit=false"
+              echo "restore-bytes=0"
+              echo "restore-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::BVS binary sidecar S3 cache miss or restore unavailable for digest ${DIGEST}; rebuilding sidecars"
+          fi
+          exit 0
 
       - name: Resolve crate managed target dir
         id: crate_target
@@ -396,7 +548,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-bvs-v1
-          save-if: ${{ github.job == 'test-archive' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}
 
       - name: Restore archive build target cache
         id: test-target-cache
@@ -425,11 +577,41 @@ jobs:
           just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"
 
       - name: Save BVS nextest archive
-        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ env.BVS_NEXTEST_ARCHIVE_PATH }}
-          key: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
+        id: bvs-nextest-archive-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        env:
+          CACHE_KEY: bvs-nextest-archive-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-targets-shards-4-${{ steps.bvs_cache_inputs.outputs.digest }}
+          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+        run: |
+          set +e
+          if [[ ! -s "$BVS_NEXTEST_ARCHIVE_PATH" ]]; then
+            echo "::warning::BVS nextest archive was not produced; skipping S3 save"
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          start_epoch="$(date +%s)"
+          bytes="$(wc -c < "$BVS_NEXTEST_ARCHIVE_PATH" | tr -d ' ')"
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-nextest-archive/${CACHE_KEY}.tar.zst"
+          uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
+          if aws s3 cp "$BVS_NEXTEST_ARCHIVE_PATH" "$uri" --only-show-errors --metadata "nextest-digest=${DIGEST},artifact-kind=bvs-nextest-archive,github-sha=${GITHUB_SHA}"; then
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "save-status=success"
+              echo "save-bytes=$bytes"
+              echo "save-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "BVS nextest archive S3 save: success"
+              echo "BVS nextest archive S3 saved bytes: $bytes"
+              echo "BVS nextest archive S3 save seconds: $elapsed"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::BVS nextest archive S3 save failed; continuing because cache save is fail-open"
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          exit 0
 
       - name: Build BVS binary sidecars
         if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
@@ -466,18 +648,56 @@ jobs:
           )
 
       - name: Save BVS binary sidecars
-        if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ env.BVS_BIN_SIDECARS_PATH }}
-          key: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
+        id: bvs-bin-sidecars-cache-save
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bvs-nextest-artifact-cache.outputs.cache_mode == 'read_write' && steps.bvs-nextest-artifact-cache-aws.outcome == 'success' && steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        env:
+          CACHE_KEY: bvs-bin-sidecars-v4-${{ runner.os }}-${{ runner.arch }}-test-profile-discovered-cargo-bin-exe-${{ steps.bvs_cache_inputs.outputs.digest }}
+          DIGEST: ${{ steps.bvs_cache_inputs.outputs.digest }}
+        run: |
+          set +e
+          if [[ ! -s "$BVS_BIN_SIDECARS_PATH" ]]; then
+            echo "::warning::BVS binary sidecars were not produced; skipping S3 save"
+            echo "save-status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          start_epoch="$(date +%s)"
+          bytes="$(wc -c < "$BVS_BIN_SIDECARS_PATH" | tr -d ' ')"
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/bvs-bin-sidecars/${CACHE_KEY}.tar.gz"
+          uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
+          if aws s3 cp "$BVS_BIN_SIDECARS_PATH" "$uri" --only-show-errors --metadata "nextest-digest=${DIGEST},artifact-kind=bvs-bin-sidecars,github-sha=${GITHUB_SHA}"; then
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            {
+              echo "save-status=success"
+              echo "save-bytes=$bytes"
+              echo "save-seconds=$elapsed"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "BVS binary sidecars S3 save: success"
+              echo "BVS binary sidecars S3 saved bytes: $bytes"
+              echo "BVS binary sidecars S3 save seconds: $elapsed"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::BVS binary sidecars S3 save failed; continuing because cache save is fail-open"
+            echo "save-status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          exit 0
 
       - name: Save archive build target cache
-        if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ steps.crate_target.outputs.dir }}
           key: managed-target-bvs-v3-${{ runner.os }}-${{ runner.arch }}-test-${{ steps.bvs_cache_inputs.outputs.digest }}
+
+      - name: Summarize BVS S3 save outcomes
+        if: always()
+        run: |
+          {
+            echo "BVS nextest archive S3 save outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}"
+            echo "BVS binary sidecars S3 save outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Require BVS local payload
         run: |

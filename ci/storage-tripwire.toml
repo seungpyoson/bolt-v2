@@ -21,7 +21,7 @@ suffix = " -->"
 [storage_tripwire.workflow]
 path = ".github/workflows/ci-storage-tripwire.yml"
 job_id = "storage-tripwire"
-job_if = "${{ github.event_name == 'schedule' }}"
+job_if = "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
 top_level_keys = ["name", "on", "permissions", "concurrency", "jobs"]
 job_keys = ["name", "if", "runs-on", "steps"]
 runner_var = "CI_RUNNER_GITHUB_HOSTED"
@@ -29,7 +29,7 @@ schedule_cron = "17 9 * * 1"
 concurrency_group = "ci-storage-tripwire"
 cancel_in_progress = false
 run_command = "python3 scripts/ci_storage_tripwire.py apply-live --repo \"$GITHUB_REPOSITORY\" --branch \"$GITHUB_REF_NAME\""
-triggers = ["schedule"]
+triggers = ["schedule", "workflow_dispatch"]
 permissions = { contents = "read", actions = "read", issues = "write" }
 required_fragments = [
   "uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",

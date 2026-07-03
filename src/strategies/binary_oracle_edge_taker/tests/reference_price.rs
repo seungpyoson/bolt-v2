@@ -64,8 +64,28 @@ fn reference_price_update(
     observed_ts_ms: u64,
     received_ts_ms: u64,
 ) -> nautilus_model::data::CustomData {
-    ReferencePriceUpdate::try_new_with_provenance(
+    reference_price_update_for_asset(
         "BTC",
+        source_id,
+        provider,
+        provider_instrument,
+        price,
+        observed_ts_ms,
+        received_ts_ms,
+    )
+}
+
+fn reference_price_update_for_asset(
+    asset: &str,
+    source_id: &str,
+    provider: &str,
+    provider_instrument: &str,
+    price: f64,
+    observed_ts_ms: u64,
+    received_ts_ms: u64,
+) -> nautilus_model::data::CustomData {
+    ReferencePriceUpdate::try_new_with_provenance(
+        asset,
         source_id,
         provider,
         provider_instrument,
@@ -249,6 +269,7 @@ fn reference_price_sources_subscribe_as_custom_data_on_start_and_unsubscribe_on_
 fn selection_retry_reissues_missing_live_input_subscriptions() {
     let mut strategy = test_strategy();
     strategy.config.reference_current_price = Some(reference_price_config());
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
 
     strategy.retry_missing_live_input_subscriptions_at(1_500);
 
@@ -272,6 +293,253 @@ fn selection_retry_reissues_missing_live_input_subscriptions() {
     );
     assert_reference_price_subscription(
         &strategy.reference_price_subscribe_events[2],
+        REFERENCE_PRICE_SUBSCRIBE_ACTION,
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        "chainlink_reference",
+        Some("BTC-USD.CHAINLINK_REFERENCE"),
+        None,
+    );
+}
+
+#[test]
+fn selection_retry_does_not_reissue_reference_subscriptions_without_active_interval() {
+    let mut strategy = test_strategy();
+    strategy.config.reference_current_price = Some(reference_price_config());
+
+    let retry_event_count = strategy.live_input_subscription_retry_events.len();
+    let subscribe_event_count = strategy.reference_price_subscribe_events.len();
+    strategy.retry_missing_live_input_subscriptions_at(1_500);
+
+    assert_eq!(
+        strategy.live_input_subscription_retry_events[retry_event_count].reference_missing, false,
+        "selection-gap states must not make reference feeds look missing"
+    );
+    assert_eq!(
+        strategy.reference_price_subscribe_events.len(),
+        subscribe_event_count,
+        "selection-gap states must not churn healthy reference subscriptions"
+    );
+}
+
+#[test]
+fn selection_retry_does_not_reissue_reference_subscriptions_for_current_valid_quote() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut(POLYRESEARCH_BACKUP_SOURCE_ID)
+        .expect("polyresearch source should exist")
+        .enabled = false;
+    reference_price.max_source_age_ms = 1_000;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_125_u64 * NANOS_PER_MILLI_U64));
+    let valid_quote = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_100,
+        1_105,
+    );
+    DataActor::on_data(&mut strategy, &valid_quote)
+        .expect("valid reference quote should be handled");
+
+    assert_eq!(strategy.active.reference_current_price, Some(100.0));
+
+    let retry_event_count = strategy.live_input_subscription_retry_events.len();
+    let subscribe_event_count = strategy.reference_price_subscribe_events.len();
+    strategy.retry_missing_live_input_subscriptions_at(1_125);
+
+    assert_eq!(
+        strategy.live_input_subscription_retry_events[retry_event_count].reference_missing, false,
+        "fresh valid reference quote must satisfy reference liveness"
+    );
+    assert_eq!(
+        strategy.reference_price_subscribe_events.len(),
+        subscribe_event_count,
+        "fresh valid reference quote must not reissue reference subscriptions"
+    );
+}
+
+#[test]
+fn selection_retry_reissues_frozen_reference_stream_with_stale_buffered_quote() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut(POLYRESEARCH_BACKUP_SOURCE_ID)
+        .expect("polyresearch source should exist")
+        .enabled = false;
+    reference_price.max_source_age_ms = 100;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_125_u64 * NANOS_PER_MILLI_U64));
+    let initial_quote = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_100,
+        1_105,
+    );
+    DataActor::on_data(&mut strategy, &initial_quote)
+        .expect("initial reference quote should be handled");
+
+    assert!(
+        strategy
+            .reference_price_quotes
+            .contains_key(CHAINLINK_PRIMARY_SOURCE_ID),
+        "precondition: the stale quote remains buffered"
+    );
+    assert_eq!(strategy.active.reference_current_price, Some(100.0));
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_250_u64 * NANOS_PER_MILLI_U64));
+    let mut retry_snapshot = active_snapshot_with_start("MKT-1", 1_000);
+    retry_snapshot.published_at_ms = 1_250;
+    strategy.apply_selection_snapshot(retry_snapshot);
+
+    assert!(
+        strategy
+            .reference_price_quotes
+            .contains_key(CHAINLINK_PRIMARY_SOURCE_ID),
+        "the buffered quote must not be dropped just to force a retry"
+    );
+    assert_eq!(strategy.active.reference_current_price, None);
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
+            .map(|health| health.status()),
+        Some(ReferencePriceSourceStatus::Stale)
+    );
+
+    let retry_event_count = strategy.live_input_subscription_retry_events.len();
+    let subscribe_event_count = strategy.reference_price_subscribe_events.len();
+    strategy.retry_missing_live_input_subscriptions_at(1_250);
+
+    assert_eq!(
+        strategy.live_input_subscription_retry_events[retry_event_count].reference_missing,
+        true
+    );
+    assert_eq!(
+        strategy.reference_price_subscribe_events.len(),
+        subscribe_event_count + 2,
+        "stale buffered reference quote must not suppress unsubscribe/subscribe recovery"
+    );
+    assert_reference_price_subscription(
+        &strategy.reference_price_subscribe_events[subscribe_event_count],
+        REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        "chainlink_reference",
+        Some("BTC-USD.CHAINLINK_REFERENCE"),
+        None,
+    );
+    assert_reference_price_subscription(
+        &strategy.reference_price_subscribe_events[subscribe_event_count + 1],
+        REFERENCE_PRICE_SUBSCRIBE_ACTION,
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        "chainlink_reference",
+        Some("BTC-USD.CHAINLINK_REFERENCE"),
+        None,
+    );
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_275_u64 * NANOS_PER_MILLI_U64));
+    let recovered_quote = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        101.0,
+        1_270,
+        1_272,
+    );
+    DataActor::on_data(&mut strategy, &recovered_quote)
+        .expect("recovered reference quote should be handled");
+
+    assert_eq!(strategy.active.reference_current_price, Some(101.0));
+    assert_eq!(
+        strategy.active.reference_current_price_source_id.as_deref(),
+        Some(CHAINLINK_PRIMARY_SOURCE_ID)
+    );
+    assert_eq!(strategy.pricing.last_reference_current_price(), Some(101.0));
+}
+
+#[test]
+fn selection_retry_reissues_wrong_asset_reference_stream_with_fresh_buffered_quote() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut(POLYRESEARCH_BACKUP_SOURCE_ID)
+        .expect("polyresearch source should exist")
+        .enabled = false;
+    reference_price.max_source_age_ms = 1_000;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_125_u64 * NANOS_PER_MILLI_U64));
+    let wrong_asset_quote = reference_price_update_for_asset(
+        "ETH",
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_100,
+        1_105,
+    );
+    DataActor::on_data(&mut strategy, &wrong_asset_quote)
+        .expect("wrong-asset reference quote should be handled fail-closed");
+
+    assert!(
+        strategy
+            .reference_price_quotes
+            .contains_key(CHAINLINK_PRIMARY_SOURCE_ID),
+        "precondition: the unusable quote remains buffered"
+    );
+    assert_eq!(strategy.active.reference_current_price, None);
+
+    let retry_event_count = strategy.live_input_subscription_retry_events.len();
+    let subscribe_event_count = strategy.reference_price_subscribe_events.len();
+    strategy.retry_missing_live_input_subscriptions_at(1_125);
+
+    assert_eq!(
+        strategy.live_input_subscription_retry_events[retry_event_count].reference_missing, true,
+        "fresh wrong-asset quote must not satisfy reference liveness"
+    );
+    assert_eq!(
+        strategy.reference_price_subscribe_events.len(),
+        subscribe_event_count + 2,
+        "fresh wrong-asset quote must not suppress unsubscribe/subscribe recovery"
+    );
+    assert_reference_price_subscription(
+        &strategy.reference_price_subscribe_events[subscribe_event_count],
+        REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        "chainlink_reference",
+        Some("BTC-USD.CHAINLINK_REFERENCE"),
+        None,
+    );
+    assert_reference_price_subscription(
+        &strategy.reference_price_subscribe_events[subscribe_event_count + 1],
         REFERENCE_PRICE_SUBSCRIBE_ACTION,
         CHAINLINK_PRIMARY_SOURCE_ID,
         CHAINLINK_REFERENCE_PROVIDER,

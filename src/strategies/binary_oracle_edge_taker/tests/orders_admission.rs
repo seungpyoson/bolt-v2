@@ -1395,6 +1395,7 @@ fn market_quote_quantity_entry_submission_blocks_below_venue_minimum() {
 #[test]
 fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::MarketIfTouched;
@@ -1449,6 +1450,7 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
 #[test]
 fn submit_admission_test_helper_uses_explicit_execution_client_id() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let instrument_id = selected_entry_instrument(&strategy);
     let quantity = Quantity::new(2.0, 2);
@@ -1787,6 +1789,7 @@ fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
 #[test]
 fn post_only_maker_order_objects_preserve_nt_limit_gtc_fields() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
@@ -1824,6 +1827,7 @@ fn post_only_maker_order_objects_preserve_nt_limit_gtc_fields() {
 #[test]
 fn gtd_limit_order_objects_preserve_nt_expire_time() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
@@ -1852,6 +1856,7 @@ fn gtd_limit_order_objects_preserve_nt_expire_time() {
 #[test]
 fn non_gtd_limit_order_objects_preserve_nt_expire_time() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -1878,6 +1883,7 @@ fn non_gtd_limit_order_objects_preserve_nt_expire_time() {
 #[test]
 fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::StopMarket;
@@ -2034,6 +2040,7 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
 #[test]
 fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.order_type = OrderType::StopLimit;
@@ -2120,6 +2127,7 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
 #[test]
 fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.order_type = OrderType::LimitIfTouched;
@@ -2207,6 +2215,7 @@ fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
 #[test]
 fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
@@ -2494,6 +2503,7 @@ fn trailing_stop_market_rejects_required_nt_fields_before_factory() {
 #[test]
 fn configured_order_build_rejects_nt_model_invalid_tif_before_factory() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let instrument_id = selected_entry_instrument(&strategy);
     let quantity = Quantity::new(1.0, 2);

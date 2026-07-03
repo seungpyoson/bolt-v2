@@ -739,6 +739,7 @@ fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
 fn maker_entry_partial_fills_keep_entry_fill_accounting_without_overwriting_position_event_quantity()
  {
     let mut strategy = ready_to_trade_strategy();
+    configure_limit_base_entry_order(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
     let entry_client_order_id = ClientOrderId::from("ENTRY-PARTIAL");
@@ -778,6 +779,7 @@ fn managed_partial_entry_blocks_normal_exit_until_entry_order_resolves() {
     let configured_instruments = configured_outcome_instruments(&ready_to_trade_strategy());
     for instrument_id in configured_instruments {
         let mut strategy = ready_to_trade_strategy();
+        configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
         strategy.active.phase = SelectionPhase::Active;
@@ -815,6 +817,7 @@ fn forced_flat_exit_submits_despite_resting_pending_entry() {
     );
     for instrument_id in configured_instruments {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
         strategy.config.exit_order.order_type = OrderType::Limit;
@@ -897,6 +900,7 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         );
+        configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
         strategy.active.phase = SelectionPhase::Freeze;
@@ -1272,6 +1276,7 @@ fn position_closed_releases_entry_reconcile_pending_for_same_instrument() {
 #[test]
 fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
     let cache = register_test_strategy(&mut strategy);
@@ -1362,6 +1367,7 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         );
+        configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
         set_shadow_order_execution_policy(&mut strategy);
@@ -1445,6 +1451,7 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
 #[test]
 fn position_closed_in_shadow_mode_suppresses_resting_entry_cancel() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    configure_limit_base_entry_order(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
     set_shadow_order_execution_policy(&mut strategy);

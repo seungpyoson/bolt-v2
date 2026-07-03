@@ -481,8 +481,9 @@ fn runtime_config_parse_normalizes_order_fields_to_nt_enums() {
     let config = BinaryOracleEdgeTakerBuilder::parse_config(&valid_raw_config())
         .expect("valid raw config should parse into runtime config");
 
-    assert_eq!(config.entry_order.order_type, OrderType::Limit);
+    assert_eq!(config.entry_order.order_type, OrderType::Market);
     assert_eq!(config.entry_order.time_in_force, TimeInForce::Fok);
+    assert!(config.entry_order.is_quote_quantity);
     assert_eq!(config.exit_order.order_type, OrderType::Market);
     assert_eq!(config.exit_order.time_in_force, TimeInForce::Ioc);
 }

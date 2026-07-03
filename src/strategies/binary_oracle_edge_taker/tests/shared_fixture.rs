@@ -1015,8 +1015,39 @@ pub(super) fn submit_admission_with_provider_cap(
     )
 }
 
+pub(super) fn configure_supported_market_quote_entry_order(strategy: &mut BinaryOracleEdgeTaker) {
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.expire_time_unix_nanos = None;
+    strategy.config.entry_order.trigger_price = None;
+    strategy.config.entry_order.activation_price = None;
+    strategy.config.entry_order.trigger_type = None;
+    strategy.config.entry_order.trigger_instrument_id = None;
+    strategy.config.entry_order.trailing_offset = None;
+    strategy.config.entry_order.trailing_offset_type = None;
+    strategy.config.entry_order.is_post_only = false;
+    strategy.config.entry_order.is_reduce_only = false;
+    strategy.config.entry_order.is_quote_quantity = true;
+}
+
+pub(super) fn configure_limit_base_entry_order(strategy: &mut BinaryOracleEdgeTaker) {
+    strategy.config.entry_order.order_type = OrderType::Limit;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.expire_time_unix_nanos = None;
+    strategy.config.entry_order.trigger_price = None;
+    strategy.config.entry_order.activation_price = None;
+    strategy.config.entry_order.trigger_type = None;
+    strategy.config.entry_order.trigger_instrument_id = None;
+    strategy.config.entry_order.trailing_offset = None;
+    strategy.config.entry_order.trailing_offset_type = None;
+    strategy.config.entry_order.is_post_only = false;
+    strategy.config.entry_order.is_reduce_only = false;
+    strategy.config.entry_order.is_quote_quantity = false;
+}
+
 pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
     let mut strategy = test_strategy();
+    configure_supported_market_quote_entry_order(&mut strategy);
     strategy.config.warmup_tick_count = 2;
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
     strategy.active.price_to_beat = Some(3_100.0);
@@ -1086,6 +1117,7 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
     fee_provider.set_fee("condition-MKT-1-MKT-1-DOWN.POLYMARKET", down_fee_bps);
 
     let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
+    configure_supported_market_quote_entry_order(&mut strategy);
     strategy.config.warmup_tick_count = 2;
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
     strategy.active.price_to_beat = Some(3_100.0);

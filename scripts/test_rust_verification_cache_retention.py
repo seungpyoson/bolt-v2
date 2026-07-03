@@ -569,6 +569,8 @@ printf '123 cargo build\\n'
         payload = json.loads(result.stdout)
         if payload["refused"] is not True or payload["refusal_code"] != "active_process":
             raise AssertionError(payload)
+        if payload.get("age_only") is not True:
+            raise AssertionError(payload)
         if not debug_file.exists():
             raise AssertionError("refused age-only apply deleted files")
 
@@ -1783,6 +1785,33 @@ def assert_repo_policy_declares_cache_retention() -> None:
     missing = [item for item in required if item not in text]
     if missing:
         raise AssertionError(f"missing cache policy fields: {missing}")
+
+
+def assert_all_managed_cache_policies_are_bounded_to_30_gib() -> None:
+    expected = "soft_limit_bytes = 32212254720"
+    policy_paths = (
+        REPO_ROOT / "ci" / "rust-verification.toml",
+        REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml",
+    )
+    for path in policy_paths:
+        text = path.read_text(encoding="utf-8")
+        if expected not in text:
+            raise AssertionError(f"{path.relative_to(REPO_ROOT)} does not declare {expected}")
+
+
+def assert_cache_prune_recipe_sweeps_all_managed_cache_namespaces() -> None:
+    source = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    recipe_start = source.index("cache-prune *args:")
+    recipe_end = source.index("# clean-merged: print", recipe_start)
+    recipe = source[recipe_start:recipe_end]
+    required = (
+        '--repo "{{repo_root}}"',
+        '--repo "{{repo_root}}/crates/backtesting-vertical-slice"',
+        "--age-only",
+    )
+    missing = [item for item in required if item not in recipe]
+    if missing:
+        raise AssertionError(f"cache-prune recipe missing {missing}: {recipe}")
 
 
 def cache_prune_for_visible_command(command: str, *, expose_cwd: bool = True) -> tuple[subprocess.CompletedProcess[str], bool]:
@@ -3311,6 +3340,8 @@ def main() -> int:
     assert_cache_prune_apply_preserves_subtree_when_scan_incomplete()
     assert_cache_prune_rejects_conflicting_modes()
     assert_repo_policy_declares_cache_retention()
+    assert_all_managed_cache_policies_are_bounded_to_30_gib()
+    assert_cache_prune_recipe_sweeps_all_managed_cache_namespaces()
     assert_v6_regression_cargo_process_names_stay_visible()
     assert_managed_env_scrubs_build_target_dir_and_routes_target_dir()
     assert_v6_red_policy_gaps()

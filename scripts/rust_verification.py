@@ -2421,11 +2421,14 @@ def remove_cache_candidate(entry: dict[str, Any], target: pathlib.Path) -> None:
             pass
 
 
-def active_process_refusal_payload(repo: pathlib.Path, target: pathlib.Path, policy: dict[str, Any]) -> dict[str, Any] | None:
+def active_process_refusal_payload(
+    repo: pathlib.Path, target: pathlib.Path, policy: dict[str, Any], *, age_only: bool = False,
+) -> dict[str, Any] | None:
     try:
         active = active_related_processes(repo, target, policy)
     except ProcessVisibilityError as exc:
         return {
+            "age_only": age_only,
             "candidates": [],
             "dry_run": False,
             "reclaimable_bytes": 0,
@@ -2437,6 +2440,7 @@ def active_process_refusal_payload(repo: pathlib.Path, target: pathlib.Path, pol
     if active:
         return {
             "active_processes": active,
+            "age_only": age_only,
             "candidates": [],
             "dry_run": False,
             "reclaimable_bytes": 0,
@@ -2455,12 +2459,14 @@ def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool, age_only: bool = F
     with lock_context:
         if not dry_run:
             target = target_dir(repo, policy)
-            refusal = active_process_refusal_payload(repo, target, policy)
+            refusal = active_process_refusal_payload(repo, target, policy, age_only=age_only)
             if refusal is not None:
                 return refusal
         status = cache_status_payload(repo)
         if not dry_run:
-            refusal = active_process_refusal_payload(repo, pathlib.Path(status["target_dir"]), policy)
+            refusal = active_process_refusal_payload(
+                repo, pathlib.Path(status["target_dir"]), policy, age_only=age_only,
+            )
             if refusal is not None:
                 return refusal
         candidates: list[dict[str, Any]] = []
@@ -2482,7 +2488,7 @@ def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool, age_only: bool = F
         removed: list[dict[str, Any]] = []
         if not dry_run:
             target = pathlib.Path(status["target_dir"])
-            refusal = active_process_refusal_payload(repo, target, policy)
+            refusal = active_process_refusal_payload(repo, target, policy, age_only=age_only)
             if refusal is not None:
                 return refusal
             for entry in candidates:

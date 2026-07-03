@@ -2564,11 +2564,14 @@ def remove_cache_candidate(entry: dict[str, Any], target: pathlib.Path) -> None:
             pass
 
 
-def active_process_refusal_payload(repo: pathlib.Path, target: pathlib.Path, policy: dict[str, Any]) -> dict[str, Any] | None:
+def active_process_refusal_payload(
+    repo: pathlib.Path, target: pathlib.Path, policy: dict[str, Any], *, age_only: bool = False,
+) -> dict[str, Any] | None:
     try:
         active = active_related_processes(repo, target, policy)
     except ProcessVisibilityError as exc:
         return {
+            "age_only": age_only,
             "candidates": [],
             "dry_run": False,
             "reclaimable_bytes": 0,
@@ -2580,6 +2583,7 @@ def active_process_refusal_payload(repo: pathlib.Path, target: pathlib.Path, pol
     if active:
         return {
             "active_processes": active,
+            "age_only": age_only,
             "candidates": [],
             "dry_run": False,
             "reclaimable_bytes": 0,
@@ -2591,26 +2595,33 @@ def active_process_refusal_payload(repo: pathlib.Path, target: pathlib.Path, pol
     return None
 
 
-def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
+def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool, age_only: bool = False) -> dict[str, Any]:
     policy = load_policy(repo)
     validate_cache_policy(policy)
     lock_context = cache_lock(policy, exclusive=True) if not dry_run else contextlib.nullcontext()
     with lock_context:
         if not dry_run:
             target = target_dir(repo, policy)
-            refusal = active_process_refusal_payload(repo, target, policy)
+            refusal = active_process_refusal_payload(repo, target, policy, age_only=age_only)
             if refusal is not None:
                 return refusal
         status = cache_status_payload(repo)
         if not dry_run:
-            refusal = active_process_refusal_payload(repo, pathlib.Path(status["target_dir"]), policy)
+            refusal = active_process_refusal_payload(
+                repo, pathlib.Path(status["target_dir"]), policy, age_only=age_only,
+            )
             if refusal is not None:
                 return refusal
         candidates: list[dict[str, Any]] = []
         reclaimable_bytes = 0
         now = time.time()
         for subtree in status["subtrees"]:
-            candidate, reason = is_prune_candidate(subtree, policy, now=now, pressure=bool(status["pressure"]))
+            candidate, reason = is_prune_candidate(
+                subtree,
+                policy,
+                now=now,
+                pressure=age_only or bool(status["pressure"]),
+            )
             if not candidate:
                 continue
             entry = dict(subtree)
@@ -2620,13 +2631,14 @@ def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
         removed: list[dict[str, Any]] = []
         if not dry_run:
             target = pathlib.Path(status["target_dir"])
-            refusal = active_process_refusal_payload(repo, target, policy)
+            refusal = active_process_refusal_payload(repo, target, policy, age_only=age_only)
             if refusal is not None:
                 return refusal
             for entry in candidates:
                 remove_cache_candidate(entry, target)
                 removed.append(entry)
         return {
+            "age_only": age_only,
             "candidates": candidates,
             "dry_run": dry_run,
             "pressure": status["pressure"],
@@ -2638,8 +2650,11 @@ def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
         }
 
 
-def refusal_payload(*, code: str, reason: str, dry_run: bool, target: str | None = None) -> dict[str, Any]:
+def refusal_payload(
+    *, code: str, reason: str, dry_run: bool, target: str | None = None, age_only: bool = False,
+) -> dict[str, Any]:
     return {
+        "age_only": age_only,
         "candidates": [],
         "dry_run": dry_run,
         "reclaimable_bytes": 0,
@@ -4564,29 +4579,64 @@ def cmd_cache_prune(args: argparse.Namespace) -> int:
     if not args.json:
         print("--json is required for cache-prune", file=sys.stderr)
         return 2
-    repo = repo_path(args.repo)
+    repos = [repo_path(item) for item in args.repo]
     dry_run = not args.apply
-    try:
-        payload = cache_prune_payload(repo, dry_run=dry_run)
+    if len(repos) == 1:
+        payload, exit_code = cache_prune_command_result(repos[0], dry_run=dry_run, age_only=args.age_only)
         print(json.dumps(payload, sort_keys=True))
+        return exit_code
+    results: list[dict[str, Any]] = []
+    exit_code = 0
+    for repo in repos:
+        payload, repo_exit_code = cache_prune_command_result(repo, dry_run=dry_run, age_only=args.age_only)
+        results.append(
+            {
+                "exit_code": repo_exit_code,
+                "payload": payload,
+                "repo": str(repo),
+            }
+        )
+        exit_code = max(exit_code, repo_exit_code)
+    print(
+        json.dumps(
+            {
+                "age_only": args.age_only,
+                "dry_run": dry_run,
+                "refused": any(result["payload"].get("refused") for result in results),
+                "results": results,
+            },
+            sort_keys=True,
+        )
+    )
+    return exit_code
+
+
+def cache_prune_command_result(repo: pathlib.Path, *, dry_run: bool, age_only: bool) -> tuple[dict[str, Any], int]:
+    try:
+        payload = cache_prune_payload(repo, dry_run=dry_run, age_only=age_only)
     except FileNotFoundError as exc:
         expected_policy = policy_path(repo)
         missing = pathlib.Path(getattr(exc, "filename", "") or exc.args[0])
         code = "missing_policy" if missing == expected_policy else "operation_failed"
-        payload = refusal_payload(code=code, reason=str(exc), dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-        return 2
+        payload = refusal_payload(code=code, reason=str(exc), dry_run=dry_run, age_only=age_only)
+        return payload, 2
     except PolicyError as exc:
-        payload = refusal_payload(code="invalid_policy", reason=str(exc), dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-        return 2
+        payload = refusal_payload(code="invalid_policy", reason=str(exc), dry_run=dry_run, age_only=age_only)
+        return payload, 2
     except OSError as exc:
-        payload = refusal_payload(code="operation_failed", reason=str(exc), dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-        return 2
+        payload = refusal_payload(code="operation_failed", reason=str(exc), dry_run=dry_run, age_only=age_only)
+        return payload, 2
+    except Exception as exc:
+        payload = refusal_payload(
+            code="operation_failed",
+            reason=f"{type(exc).__name__}: {exc}",
+            dry_run=dry_run,
+            age_only=age_only,
+        )
+        return payload, 2
     if payload.get("refused"):
-        return 2
-    return 0
+        return payload, 2
+    return payload, 0
 
 
 def cmd_assert_global_cargo_target_dir(args: argparse.Namespace) -> int:
@@ -4681,10 +4731,15 @@ def build_parser() -> argparse.ArgumentParser:
     cache_status.set_defaults(func=cmd_cache_status)
 
     cache_prune = subparsers.add_parser("cache-prune")
-    cache_prune.add_argument("--repo", required=True)
+    cache_prune.add_argument("--repo", action="append", required=True)
     cache_prune_mode = cache_prune.add_mutually_exclusive_group()
     cache_prune_mode.add_argument("--dry-run", action="store_true")
     cache_prune_mode.add_argument("--apply", action="store_true")
+    cache_prune.add_argument(
+        "--age-only",
+        action="store_true",
+        help="run retention by age without requiring cache or filesystem pressure",
+    )
     cache_prune.add_argument("--json", action="store_true", required=True, help="required; emit JSON output")
     cache_prune.set_defaults(func=cmd_cache_prune)
 

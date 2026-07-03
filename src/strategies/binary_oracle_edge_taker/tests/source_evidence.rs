@@ -1116,6 +1116,7 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
         Some(replay.reference.source_id.as_str())
     );
     assert_eq!(snapshot.reference_current_price_failed_over, Some(false));
+    assert!(snapshot.reference_current_price_available);
     let log_fields =
         strategy.entry_evaluation_log_fields_at(replay.evaluation_now_ms, &replay_decision);
     assert_eq!(log_fields.spot_price, Some(108642.25));
@@ -1124,6 +1125,8 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
         !log_fields.fast_venue_available,
         "raw signal observation should not change admitted fast-venue diagnostics"
     );
+    assert!(log_fields.reference_current_price_available);
+    assert!(log_fields.reference_current_price_available_without_fast_venue);
 
     let submitted = strategy
         .try_submit_entry_order(replay.evaluation_now_ms)
@@ -1850,7 +1853,7 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
 }
 
 #[test]
-fn entry_skip_evidence_records_later_observed_feed_inputs_for_same_blocker() {
+fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
@@ -1881,7 +1884,26 @@ fn entry_skip_evidence_records_later_observed_feed_inputs_for_same_blocker() {
             BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
             None,
         )
-        .expect("same blocker with newly observed spot evidence should record");
+        .expect("same blocker with price-only evidence changes should not error");
+
+    let liveness_transition_ts_ms = strategy
+        .active
+        .last_reference_ts_ms
+        .map_or(1_202, |last_reference_ts_ms| last_reference_ts_ms + 1);
+    strategy.active.last_reference_ts_ms = Some(liveness_transition_ts_ms);
+    strategy.pricing.observe_reference_current_price(&fast_spot(
+        "chainlink",
+        3_100.5,
+        liveness_transition_ts_ms,
+    ));
+    strategy
+        .record_entry_skip_once(
+            1_202,
+            &spot_missing,
+            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+            None,
+        )
+        .expect("same blocker with a liveness-state transition should record");
 
     let entry_skips = evidence
         .events()
@@ -1894,10 +1916,21 @@ fn entry_skip_evidence_records_later_observed_feed_inputs_for_same_blocker() {
     assert_eq!(
         entry_skips.len(),
         2,
-        "same blocker must not dedupe away newly observed feed evidence"
+        "same blocker should record the initial skip and the liveness-state transition only"
     );
     assert_eq!(entry_skips[0].spot_price, None);
-    assert_eq!(entry_skips[1].spot_price.as_deref(), Some("3101.5"));
+    assert!(
+        entry_skips[1].spot_price.is_some(),
+        "liveness-state transition should still record current spot evidence when present"
+    );
+    assert_eq!(
+        entry_skips[1].reference_current_price.as_deref(),
+        Some("3100.5")
+    );
+    assert_eq!(
+        entry_skips[1].last_reference_ts_ms,
+        Some(liveness_transition_ts_ms)
+    );
 }
 
 #[test]

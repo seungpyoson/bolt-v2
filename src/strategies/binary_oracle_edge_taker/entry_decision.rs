@@ -242,6 +242,7 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) sized_notional: Option<f64>,
     pub(super) selected_side: Option<OutcomeSide>,
     pub(super) fast_venue_available: bool,
+    pub(super) reference_current_price_available: bool,
     pub(super) reference_current_price_available_without_fast_venue: bool,
     pub(super) lead_quality_policy_applied: bool,
     pub(super) lead_quality_reason: &'static str,
@@ -262,8 +263,6 @@ pub(super) struct EntrySkipDedupeKey {
     pub(super) pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
     pub(super) market_id: Option<String>,
     pub(super) interval_open: Option<String>,
-    pub(super) spot_price: Option<String>,
-    pub(super) reference_current_price: Option<String>,
     pub(super) last_reference_ts_ms: Option<u64>,
     pub(super) fast_venue_incoherent: bool,
 }

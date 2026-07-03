@@ -927,6 +927,7 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub reference_quote_ts_event: u64,
     pub spot_price: String,
     pub reference_current_price: Option<String>,
+    pub reference_current_price_available: bool,
     pub reference_current_price_source_id: Option<String>,
     pub reference_current_price_failed_over: Option<bool>,
     pub realized_volatility: String,
@@ -3425,6 +3426,7 @@ mod tests {
             reference_quote_ts_event: 1200,
             spot_price: "3100.5".to_string(),
             reference_current_price: Some("3100.5".to_string()),
+            reference_current_price_available: true,
             reference_current_price_source_id: Some("chainlink_primary".to_string()),
             reference_current_price_failed_over: Some(false),
             realized_volatility: "1.5".to_string(),
@@ -3498,7 +3500,7 @@ mod tests {
                 .as_object()
                 .expect("snapshot should encode as an object")
                 .len(),
-            62
+            63
         );
         assert_eq!(snapshot_field["price_to_beat_source"], "source-one");
         assert_eq!(snapshot_field["up_worst_case_edge_basis_points"], "11");
@@ -3516,6 +3518,7 @@ mod tests {
             snapshot_field["reference_current_price_source_id"],
             "chainlink_primary"
         );
+        assert_eq!(snapshot_field["reference_current_price_available"], true);
         assert_eq!(snapshot_field["reference_current_price_failed_over"], false);
         assert_eq!(snapshot_field["reference_quote_ts_event"], 1200);
         assert_eq!(snapshot_field["client_order_id"], "client-order-one");

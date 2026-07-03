@@ -104,6 +104,7 @@ pub(crate) fn outcome_side_evidence_label(side: OutcomeSide) -> &'static str {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct WorstCaseEvInputs {
     pub(crate) fair_probability: Option<Probability>,
@@ -112,6 +113,7 @@ pub(crate) struct WorstCaseEvInputs {
     pub(crate) fee_bps: Option<f64>,
 }
 
+#[cfg(test)]
 pub(crate) fn compute_worst_case_ev_bps(
     side: OutcomeSide,
     inputs: &WorstCaseEvInputs,

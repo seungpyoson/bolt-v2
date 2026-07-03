@@ -3363,13 +3363,6 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn current_position_uncertainty_band_probability_at(&self, now_ms: u64) -> Option<Probability> {
-        self.current_position_uncertainty_band_probability_for_gate_at(
-            now_ms,
-            Some(VenueEventMs::new(now_ms)),
-        )
-    }
-
     fn current_hold_ev_bps_for_gate_at(
         &self,
         now_ms: u64,

@@ -82,6 +82,7 @@ impl ExitEvaluationTriggerContext {
         }
     }
 
+    #[cfg(test)]
     pub(super) const fn unknown(now_ms: u64) -> Self {
         Self::new(BoltV3ExitTriggerSource::Unknown, now_ms, None)
     }
@@ -176,7 +177,6 @@ pub(super) struct ExitEvaluationLogFields {
 pub(super) enum ExitDecision {
     Hold,
     Exit,
-    ExitFailClosed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,7 +204,6 @@ impl BoltV3ExitDecisionEvidence {
             match fields.exit_decision {
                 Some(ExitDecision::Hold) => BoltV3ExitDecisionOutcome::Hold,
                 Some(ExitDecision::Exit) => BoltV3ExitDecisionOutcome::Exit,
-                Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionOutcome::ExitFailClosed,
                 None => BoltV3ExitDecisionOutcome::Blocked,
             }
         };
@@ -306,7 +305,6 @@ pub(super) fn exit_decision_evidence_from_optional(
     match decision {
         Some(ExitDecision::Hold) | None => BoltV3ExitDecisionOutcome::Hold,
         Some(ExitDecision::Exit) => BoltV3ExitDecisionOutcome::Exit,
-        Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionOutcome::ExitFailClosed,
     }
 }
 

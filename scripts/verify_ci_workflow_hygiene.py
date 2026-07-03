@@ -40,6 +40,7 @@ from ci_provenance import (
     top_level_block_lines,
     top_level_env_entry_key_value,
     top_level_env_immediate_entry_lines,
+    workflow_line_starts_block_scalar,
     workflow_yaml_structural_line,
 )
 
@@ -9570,9 +9571,6 @@ def fingerprint_reuse_gates_on_consumer_events(job_lines: list[str]) -> bool:
     return FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR in job_if_value(job_lines)
 
 
-WORKFLOW_BLOCK_SCALAR_HEADER_RE = re.compile(r":\s*[|>][-+0-9]*\s*$")
-
-
 def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
     errors = []
     scoped_keys = set(REUSE_RELEVANT_WORKFLOW_ENV_KEYS)
@@ -9609,7 +9607,8 @@ def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
         if key in scoped_keys and not reuse_scoped_env_value_uses_single_line_scalar(value):
             errors.append(
                 f"top-level env.{key} must use a same-line scalar value; "
-                f"top-level env.{key} must use a single-line scalar value for nextest reuse scope"
+                f"top-level env.{key} must use a single-line scalar value without YAML anchors "
+                "or aliases for nextest reuse scope"
             )
         if key not in scoped_keys and key not in REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS:
             errors.append(
@@ -9628,7 +9627,8 @@ def top_level_defaults_reuse_scope_errors(workflow_text: str) -> list[str]:
     for line in workflow_text.splitlines():
         if line.startswith((" ", "\t")):
             continue
-        if re.fullmatch(r"['\"]?defaults['\"]?\s*:.*", workflow_yaml_structural_line(line)):
+        key, separator, _value = workflow_yaml_structural_line(line).partition(":")
+        if separator and key.strip().strip("'\"") == "defaults":
             return ["top-level defaults must not be used in ci.yml while nextest reuse is enabled"]
     return []
 
@@ -9658,15 +9658,13 @@ def workflow_structural_line_has_yaml_anchor_or_alias(line: str) -> bool:
             elif char in ("&", "*"):
                 previous = line[index - 1] if index > 0 else ""
                 next_char = line[index + 1] if index + 1 < len(line) else ""
-                if (index == 0 or previous.isspace() or previous in "[{,:-") and re.match(
-                    r"[A-Za-z0-9_-]", next_char
+                if (
+                    (index == 0 or previous.isspace() or previous in "[{,:-")
+                    and next_char
+                    and not next_char.isspace()
+                    and next_char not in "&*[]{}:,#"
                 ):
-                    cursor = index + 2
-                    while cursor < len(line) and re.match(r"[A-Za-z0-9_.-]", line[cursor]):
-                        cursor += 1
-                    following = line[cursor] if cursor < len(line) else ""
-                    if not following or following.isspace() or following in "]},:":
-                        return True
+                    return True
         index += 1
     return False
 
@@ -9685,7 +9683,7 @@ def workflow_yaml_anchor_alias_errors(workflow_text: str) -> list[str]:
             continue
         if workflow_structural_line_has_yaml_anchor_or_alias(structural_line):
             return ["YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled"]
-        if WORKFLOW_BLOCK_SCALAR_HEADER_RE.search(structural_line):
+        if workflow_line_starts_block_scalar(structural_line):
             block_scalar_parent_indent = len(line) - len(line.lstrip(" \t"))
     return []
 

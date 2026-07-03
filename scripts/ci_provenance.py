@@ -1623,6 +1623,18 @@ def workflow_yaml_structural_line(line: str) -> str:
     return line.rstrip()
 
 
+def workflow_structural_mapping_value(line: str) -> str | None:
+    _key, separator, value = workflow_yaml_structural_line(line).partition(":")
+    if not separator:
+        return None
+    return value.lstrip()
+
+
+def workflow_line_starts_block_scalar(line: str) -> bool:
+    value = workflow_structural_mapping_value(line)
+    return value is not None and value.startswith(("|", ">"))
+
+
 def is_top_level_workflow_key(line: str, key: str) -> bool:
     if line.startswith((" ", "\t")):
         return False
@@ -1679,7 +1691,7 @@ def top_level_env_entry_key_value(line: str) -> tuple[str, str] | None:
 
 def reuse_scoped_env_value_uses_single_line_scalar(value: str) -> bool:
     stripped_value = value.strip()
-    return bool(stripped_value) and not stripped_value.startswith(("|", ">"))
+    return bool(stripped_value) and not stripped_value.startswith(("|", ">", "&", "*"))
 
 
 def top_level_env_entry_line(workflow_text: str, key: str) -> str:
@@ -1692,7 +1704,8 @@ def top_level_env_entry_line(workflow_text: str, key: str) -> str:
             if not reuse_scoped_env_value_uses_single_line_scalar(value):
                 raise ProvenanceError(
                     f"workflow reuse scope env.{key} must use a same-line scalar value; "
-                    "reuse-scoped env keys must use single-line scalar values"
+                    "reuse-scoped env keys must use single-line scalar values "
+                    "without YAML anchors or aliases"
                 )
             return f"  {key}: {value}"
     raise ProvenanceError(f"workflow reuse scope missing env.{key}")
@@ -1738,14 +1751,13 @@ def workflow_job_block_lines(workflow_text: str, job_name: str) -> list[str]:
 
 def normalize_workflow_scope_lines(lines: list[str]) -> list[str]:
     job_header_re = re.compile(r"^  ['\"]?([A-Za-z0-9_-]+)['\"]?:\s*$")
-    block_scalar_re = re.compile(r":\s*[|>][-+0-9]*\s*$")
     normalized: list[str] = []
     block_scalar_parent_indent: int | None = None
     for line in lines:
         if block_scalar_parent_indent is not None:
             indent = len(line) - len(line.lstrip(" \t"))
             if not line.strip() or indent > block_scalar_parent_indent:
-                normalized.append(line.rstrip())
+                normalized.append(line)
                 continue
             block_scalar_parent_indent = None
 
@@ -1758,7 +1770,7 @@ def normalize_workflow_scope_lines(lines: list[str]) -> list[str]:
             normalized.append(f"  {job_header.group(1)}:")
         else:
             normalized.append(line.rstrip())
-            if block_scalar_re.search(active_line):
+            if workflow_line_starts_block_scalar(active_line):
                 block_scalar_parent_indent = len(line) - len(line.lstrip(" \t"))
     return normalized
 

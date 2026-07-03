@@ -1398,6 +1398,32 @@ def assert_workflow_reuse_scope_digest_rejects_folded_scoped_env() -> None:
             raise AssertionError(f"folded JUST_VERSION values must be rejected: {returned_digests}")
 
 
+def assert_workflow_reuse_scope_digest_rejects_alias_scoped_env() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        for alias_value in ("&just_version \"1.49.0\"", "*just_version"):
+            alias_text = replace_once(
+                workflow_text,
+                '  JUST_VERSION: "1.49.0"',
+                f"  JUST_VERSION: {alias_value}",
+            )
+            try:
+                module.workflow_reuse_scope_digest_from_bytes(
+                    config,
+                    alias_text.encode("utf-8"),
+                )
+            except module.ProvenanceError as exc:
+                message = str(exc)
+                if "env.JUST_VERSION" not in message or "YAML anchors or aliases" not in message:
+                    raise AssertionError(message) from exc
+            else:
+                raise AssertionError(f"alias scoped env value must fail closed: {alias_value}")
+
+
 def assert_workflow_reuse_scope_digest_ignores_nested_env_decoys() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1480,6 +1506,38 @@ def assert_workflow_reuse_scope_digest_preserves_indicated_block_scalar_content(
         if source_digest == current_digest:
             raise AssertionError(
                 "indicated block scalar comment content must remain part of the reuse-scope digest"
+            )
+
+
+def assert_workflow_reuse_scope_digest_preserves_block_scalar_trailing_spaces() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        line_without_trailing_spaces = (
+            '          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \\\n'
+        )
+        line_with_trailing_spaces = (
+            '          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \\   \n'
+        )
+        current_text = replace_once(
+            workflow_text,
+            line_without_trailing_spaces,
+            line_with_trailing_spaces,
+        )
+        source_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            workflow_text.encode("utf-8"),
+        )
+        current_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            current_text.encode("utf-8"),
+        )
+        if source_digest == current_digest:
+            raise AssertionError(
+                "block scalar trailing spaces must remain part of the reuse-scope digest"
             )
 
 
@@ -4988,9 +5046,11 @@ def main() -> int:
     assert_workflow_reuse_scope_digest_distinguishes_quoted_hash_values()
     assert_workflow_reuse_scope_digest_rejects_multiline_scoped_env()
     assert_workflow_reuse_scope_digest_rejects_folded_scoped_env()
+    assert_workflow_reuse_scope_digest_rejects_alias_scoped_env()
     assert_workflow_reuse_scope_digest_ignores_nested_env_decoys()
     assert_workflow_reuse_scope_digest_preserves_block_scalar_content()
     assert_workflow_reuse_scope_digest_preserves_indicated_block_scalar_content()
+    assert_workflow_reuse_scope_digest_preserves_block_scalar_trailing_spaces()
     assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
     assert_fingerprint_reuse_rejects_failed_source_archive_through_resolver()

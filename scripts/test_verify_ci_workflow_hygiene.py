@@ -13921,6 +13921,26 @@ git() {
         ),
     )
     assert_error(
+        "YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "  RUST_VERIFICATION_ROOT_BASE: &reuse@root ${{ github.workspace }}/.rust-verification\n",
+        ),
+    )
+    assert_error(
+        "YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                '  JUST_VERSION: "1.49.0"\n',
+                '  JUST_VERSION: &just+version "1.49.0"\n',
+            ),
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "  RUST_VERIFICATION_ROOT_BASE: *just+version\n",
+        ),
+    )
+    assert_error(
         "top-level env.JUST_VERSION must use a single-line scalar value",
         replace_once(
             BASE_WORKFLOW,

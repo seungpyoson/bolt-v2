@@ -315,6 +315,10 @@ jobs:
               "+refs/pull/${PR_NUMBER}/head:${head_ref}"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             base_branch="$DISPATCH_BASE_REF"
+            if [[ "$base_branch" == refs/* ]]; then
+              echo "unsupported workflow_dispatch default_branch: $base_branch" >&2
+              exit 1
+            fi
             base_ref="refs/remotes/origin/dispatch-base-${GITHUB_RUN_ID}"
             head_ref="HEAD"
             git check-ref-format "refs/heads/$base_branch"

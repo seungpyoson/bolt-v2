@@ -126,7 +126,7 @@ REUSE_RELEVANT_WORKFLOW_JOBS = (
     "test",
     "build",
 )
-REUSE_RELEVANT_WORKFLOW_ENV_KEYS = ("JUST_VERSION",)
+REUSE_RELEVANT_WORKFLOW_ENV_KEYS = ("JUST_VERSION", "RUST_VERIFICATION_ROOT_BASE")
 GITHUB_API_HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
@@ -1653,7 +1653,12 @@ def top_level_env_entry_line(workflow_text: str, key: str) -> str:
     for line in top_level_block_lines(workflow_text, "env"):
         match = env_entry_re.match(workflow_yaml_structural_line(line))
         if match is not None:
-            return f"  {key}: {match.group('value').rstrip()}"
+            value = match.group("value").rstrip()
+            if not value:
+                raise ProvenanceError(
+                    f"workflow reuse scope env.{key} must use a same-line scalar value"
+                )
+            return f"  {key}: {value}"
     raise ProvenanceError(f"workflow reuse scope missing env.{key}")
 
 
@@ -1697,8 +1702,17 @@ def workflow_job_block_lines(workflow_text: str, job_name: str) -> list[str]:
 
 def normalize_workflow_scope_lines(lines: list[str]) -> list[str]:
     job_header_re = re.compile(r"^  ['\"]?([A-Za-z0-9_-]+)['\"]?:\s*$")
+    block_scalar_re = re.compile(r":\s*[|>][-+]?\s*$")
     normalized: list[str] = []
+    block_scalar_parent_indent: int | None = None
     for line in lines:
+        if block_scalar_parent_indent is not None:
+            indent = len(line) - len(line.lstrip(" \t"))
+            if not line.strip() or indent > block_scalar_parent_indent:
+                normalized.append(line.rstrip())
+                continue
+            block_scalar_parent_indent = None
+
         active_line = workflow_yaml_structural_line(line)
         stripped = active_line.strip()
         if not stripped:
@@ -1708,6 +1722,8 @@ def normalize_workflow_scope_lines(lines: list[str]) -> list[str]:
             normalized.append(f"  {job_header.group(1)}:")
         else:
             normalized.append(line.rstrip())
+            if block_scalar_re.search(active_line):
+                block_scalar_parent_indent = len(line) - len(line.lstrip(" \t"))
     return normalized
 
 

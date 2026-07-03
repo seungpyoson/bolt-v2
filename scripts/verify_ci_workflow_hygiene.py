@@ -464,7 +464,7 @@ FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR = (
 # artifacts or nextest archive contents. Build-affecting keys must instead go
 # into ci_provenance.REUSE_RELEVANT_WORKFLOW_ENV_KEYS so they invalidate reuse.
 REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS = frozenset(
-    {"CARGO_TERM_COLOR", "RUST_VERIFICATION_ROOT_BASE", "S3_DEPLOY_PATH"}
+    {"CARGO_TERM_COLOR", "S3_DEPLOY_PATH"}
 )
 FINGERPRINT_REUSE_JOB_IF_VALUE = (
     "${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' "
@@ -534,6 +534,10 @@ DETECTOR_REFS_RUN = '''if [[ "$EVENT_NAME" == "pull_request" ]]; then
     "+refs/pull/${PR_NUMBER}/head:${head_ref}"
 elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
   base_branch="$DISPATCH_BASE_REF"
+  if [[ "$base_branch" == refs/* ]]; then
+    echo "unsupported workflow_dispatch default_branch: $base_branch" >&2
+    exit 1
+  fi
   base_ref="refs/remotes/origin/dispatch-base-${GITHUB_RUN_ID}"
   head_ref="HEAD"
   git check-ref-format "refs/heads/$base_branch"
@@ -9563,7 +9567,9 @@ def fingerprint_reuse_gates_on_consumer_events(job_lines: list[str]) -> bool:
     return FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR in job_if_value(job_lines)
 
 
-TOP_LEVEL_ENV_KEY_RE = re.compile(r"^['\"]?(?P<key>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*:(\s|$)")
+TOP_LEVEL_ENV_ENTRY_RE = re.compile(
+    r"^['\"]?(?P<key>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*:(?P<value>.*)$"
+)
 
 
 def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
@@ -9592,15 +9598,21 @@ def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
             for line in entry_lines
             if len(line) - len(line.lstrip(" \t")) == minimum_indent
         ]
+        for line in entry_lines:
+            indent = len(line) - len(line.lstrip(" \t"))
+            if indent != minimum_indent:
+                errors.append(f"top-level env entry must use canonical indentation: {line!r}")
 
     seen_keys = set()
     for line in key_lines:
-        match = TOP_LEVEL_ENV_KEY_RE.match(line)
+        match = TOP_LEVEL_ENV_ENTRY_RE.match(line)
         if match is None:
             errors.append(f"top-level env entry is unparsable for reuse classification: {line!r}")
             continue
         key = match.group("key")
         seen_keys.add(key)
+        if not match.group("value").strip():
+            errors.append(f"top-level env.{key} must use a same-line scalar value")
         if key not in scoped_keys and key not in REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS:
             errors.append(
                 f"top-level env.{key} must be classified as reuse-scoped or build-neutral; "
@@ -9612,6 +9624,15 @@ def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
         errors.append(f"top-level env.{key} is reuse-scoped but missing from ci.yml")
 
     return errors
+
+
+def top_level_defaults_reuse_scope_errors(workflow_text: str) -> list[str]:
+    for line in workflow_text.splitlines():
+        if line.startswith((" ", "\t")):
+            continue
+        if re.fullmatch(r"['\"]?defaults['\"]?\s*:\s*", workflow_yaml_structural_line(line)):
+            return ["top-level defaults must not be used in ci.yml while nextest reuse is enabled"]
+    return []
 
 
 def test_shards_skip_on_fingerprint_reuse(job_lines: list[str]) -> bool:
@@ -11457,6 +11478,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if "nextest-fingerprint-reuse" in jobs:
         errors.extend(top_level_env_reuse_scope_errors(workflow_text))
+        errors.extend(top_level_defaults_reuse_scope_errors(workflow_text))
         reuse_lines = jobs["nextest-fingerprint-reuse"]
         reuse_needs = extract_needs(reuse_lines)
         if "ci-policy" not in reuse_needs:

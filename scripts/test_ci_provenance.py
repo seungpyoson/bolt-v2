@@ -1339,6 +1339,59 @@ def assert_workflow_reuse_scope_digest_distinguishes_quoted_hash_values() -> Non
             raise AssertionError("quoted # content must remain part of the reuse-scope digest")
 
 
+def assert_workflow_reuse_scope_digest_rejects_multiline_scoped_env() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        multiline_text = workflow_text.replace(
+            '  JUST_VERSION: "1.49.0"',
+            '  JUST_VERSION:\n    "1.49.0"',
+            1,
+        )
+        try:
+            module.workflow_reuse_scope_digest_from_bytes(
+                config,
+                multiline_text.encode("utf-8"),
+            )
+        except module.ProvenanceError as exc:
+            if "env.JUST_VERSION" not in str(exc) or "same-line scalar" not in str(exc):
+                raise AssertionError(exc)
+        else:
+            raise AssertionError("multiline scoped env value must fail closed")
+
+
+def assert_workflow_reuse_scope_digest_preserves_block_scalar_content() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        source_text = workflow_text.replace(
+            "          python3 scripts/nextest_fingerprint.py",
+            "          # source block-scalar content\n          python3 scripts/nextest_fingerprint.py",
+            1,
+        )
+        current_text = workflow_text.replace(
+            "          python3 scripts/nextest_fingerprint.py",
+            "          # current block-scalar content\n          python3 scripts/nextest_fingerprint.py",
+            1,
+        )
+        source_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            source_text.encode("utf-8"),
+        )
+        current_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            current_text.encode("utf-8"),
+        )
+        if source_digest == current_digest:
+            raise AssertionError("block scalar comment content must remain part of the reuse-scope digest")
+
+
 def assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -4842,6 +4895,8 @@ def main() -> int:
     assert_fingerprint_reuse_allows_deploy_only_env_drift()
     assert_workflow_reuse_scope_digest_accepts_yaml_header_formatting()
     assert_workflow_reuse_scope_digest_distinguishes_quoted_hash_values()
+    assert_workflow_reuse_scope_digest_rejects_multiline_scoped_env()
+    assert_workflow_reuse_scope_digest_preserves_block_scalar_content()
     assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
     assert_fingerprint_reuse_rejects_failed_source_archive_through_resolver()

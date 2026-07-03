@@ -160,6 +160,7 @@ permissions:
 
 env:
   JUST_VERSION: "1.49.0"
+  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
 
 jobs:
   merge-readiness-progress:
@@ -297,6 +298,10 @@ jobs:
               "+refs/pull/${PR_NUMBER}/head:${head_ref}"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             base_branch="$DISPATCH_BASE_REF"
+            if [[ "$base_branch" == refs/* ]]; then
+              echo "unsupported workflow_dispatch default_branch: $base_branch" >&2
+              exit 1
+            fi
             base_ref="refs/remotes/origin/dispatch-base-${GITHUB_RUN_ID}"
             head_ref="HEAD"
             git check-ref-format "refs/heads/$base_branch"
@@ -13515,6 +13520,10 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         "      - name: Fetch detector base/head refs",
         """          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             base_branch="$DISPATCH_BASE_REF"
+            if [[ "$base_branch" == refs/* ]]; then
+              echo "unsupported workflow_dispatch default_branch: $base_branch" >&2
+              exit 1
+            fi
             base_ref="refs/remotes/origin/dispatch-base-${GITHUB_RUN_ID}"
             head_ref="HEAD"
             git check-ref-format "refs/heads/$base_branch"
@@ -13611,6 +13620,66 @@ git() {
 
     for invalid_base_ref in ("", "refs/tags/main", "refs/pull/1182/merge", "main..evil", "feature branch"):
         completed, output_text, git_calls = detector_refs_result(invalid_base_ref)
+        if completed.returncode == 0:
+            raise AssertionError((invalid_base_ref, output_text, git_calls))
+
+    def dispatch_refs_result(dispatch_base_ref: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            output_path = tmp_path / "github-output"
+            git_calls_path = tmp_path / "git-calls"
+            script = (
+                """set -euo pipefail
+git() {
+  if [[ "$1" == "check-ref-format" ]]; then
+    command git check-ref-format "$2"
+    return $?
+  fi
+  if [[ "$1" == "fetch" ]]; then
+    printf '%s\\n' "$*" >> "$GIT_CALLS"
+    return 0
+  fi
+  echo "unexpected git invocation: $*" >&2
+  return 99
+}
+"""
+                + verifier.DETECTOR_REFS_RUN
+            )
+            env = {
+                **os.environ,
+                "EVENT_NAME": "workflow_dispatch",
+                "PR_BASE_REF": "main",
+                "PR_NUMBER": "1182",
+                "DISPATCH_BASE_REF": dispatch_base_ref,
+                "MERGE_GROUP_BASE_REF": "main",
+                "GITHUB_RUN_ID": "12345",
+                "GITHUB_OUTPUT": str(output_path),
+                "GIT_CALLS": str(git_calls_path),
+            }
+            completed = subprocess.run(
+                ["bash", "-c", script],
+                cwd=tmp_path,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            output_text = output_path.read_text(encoding="utf-8") if output_path.exists() else ""
+            git_calls = git_calls_path.read_text(encoding="utf-8") if git_calls_path.exists() else ""
+            return completed, output_text, git_calls
+
+    completed, output_text, git_calls = dispatch_refs_result("main")
+    if completed.returncode != 0:
+        raise AssertionError(("workflow_dispatch", completed.returncode, completed.stderr))
+    if "base_ref=refs/remotes/origin/dispatch-base-12345" not in output_text:
+        raise AssertionError(output_text)
+    if "head_ref=HEAD" not in output_text:
+        raise AssertionError(output_text)
+    if "+refs/heads/main:refs/remotes/origin/dispatch-base-12345" not in git_calls:
+        raise AssertionError(git_calls)
+
+    for invalid_base_ref in ("", "refs/tags/main", "main..evil", "feature branch"):
+        completed, output_text, git_calls = dispatch_refs_result(invalid_base_ref)
         if completed.returncode == 0:
             raise AssertionError((invalid_base_ref, output_text, git_calls))
 
@@ -13796,8 +13865,36 @@ git() {
         ),
     )
     assert_error(
+        "top-level env.JUST_VERSION must use a same-line scalar value",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            '  JUST_VERSION:\n    "1.49.0"\n',
+        ),
+    )
+    assert_error(
+        "top-level env entry must use canonical indentation",
+        replace_once(
+            BASE_WORKFLOW,
+            '  JUST_VERSION: "1.49.0"\n',
+            '  JUST_VERSION: "1.49.0"\n    RUSTFLAGS: "-D warnings"\n',
+        ),
+    )
+    assert_error(
         "top-level env.JUST_VERSION is reuse-scoped but missing from ci.yml",
         replace_once(BASE_WORKFLOW, '  JUST_VERSION: "1.49.0"\n', ""),
+    )
+    assert_error(
+        "top-level env.RUST_VERIFICATION_ROOT_BASE is reuse-scoped but missing from ci.yml",
+        replace_once(
+            BASE_WORKFLOW,
+            "  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification\n",
+            "",
+        ),
+    )
+    assert_error(
+        "top-level defaults must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(BASE_WORKFLOW, "permissions:\n", "defaults:\n  run:\n    shell: sh\n\npermissions:\n"),
     )
     folded_job_if = replace_once(
         BASE_WORKFLOW,

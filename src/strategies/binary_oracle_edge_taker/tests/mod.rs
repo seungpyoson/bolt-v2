@@ -39,6 +39,7 @@ mod shared_fixture;
 
 use shared_fixture::*;
 
+mod adverse_path_harness;
 mod book_sizing;
 mod config;
 mod core_glue;

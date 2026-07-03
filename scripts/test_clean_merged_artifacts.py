@@ -2370,6 +2370,24 @@ class LaneTTargetDirReaperTests(unittest.TestCase):
         self.assertEqual(applied.returncode, 0, applied.stderr)
         self.assertFalse(target.exists(), "apply must remove eligible idle target dir")
 
+    def test_target_dir_reaper_honors_keep_branch_in_single_lane_mode(self) -> None:
+        append_lane_t_config(self.work)
+        branch = "feat/keep-target-dir"
+        wt = self._linked_worktree(branch)
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        env = self._fake_ps_env()
+
+        applied = run_clean_proc(
+            self.work, "--lane", "t", "--apply", "--quiet", "--keep", branch, env=env,
+        )
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "Lane T must honor --keep for worktree target dirs")
+
     def test_target_dir_reaper_spares_recent_inner_mtime(self) -> None:
         append_lane_t_config(self.work)
         wt = self._linked_worktree("feat/recent-target-dir")
@@ -2405,6 +2423,22 @@ class LaneTTargetDirReaperTests(unittest.TestCase):
         self.assertEqual(applied.returncode, 0, applied.stderr)
         self.assertTrue(target.exists(), "active target dir must not be removed")
         self.assertIn("target-dir-refused-active-process", applied.stdout)
+
+    def test_target_dir_reaper_refuses_if_tree_changes_before_delete(self) -> None:
+        append_lane_t_config(self.work)
+        wt = self._linked_worktree("feat/racy-target-dir")
+        target = wt / "target"
+        artifact = target / "debug" / "artifact"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("old", encoding="utf-8")
+        self._age_subtree(target, days=8)
+        env = self._fake_ps_env(f"touch {target / 'debug' / 'new-artifact'}\nexit 0\n")
+
+        applied = run_clean_proc(self.work, "--include-target-dirs", "--apply", env=env)
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertTrue(target.exists(), "target dir changed before delete must not be removed")
+        self.assertIn("target-dir-refused-changed-before-delete", applied.stdout)
 
     def test_target_dir_reaper_uses_lsof_when_proc_cwd_is_unavailable(self) -> None:
         append_lane_t_config(self.work, active_process_patterns=("cargo",))

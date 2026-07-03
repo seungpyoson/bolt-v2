@@ -1938,6 +1938,7 @@ def scan_subtree_latest_mtime(path: pathlib.Path) -> tuple[float, int]:
                     try:
                         child_info = child_path.lstat()
                     except FileNotFoundError:
+                        skipped += 1
                         continue
                     except OSError:
                         skipped += 1
@@ -2052,20 +2053,29 @@ def active_target_dir_processes(
     return active, None
 
 
-def run_lane_t(repo_root: pathlib.Path, config: Config, *, apply: bool, quiet: bool) -> list[dict[str, Any]]:
+def run_lane_t(
+    repo_root: pathlib.Path, config: Config, *, apply: bool, keep: set[str], quiet: bool,
+    invoke_root: pathlib.Path | None = None,
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     lane_config = config.lane_t
     if lane_config is None:
         return records
+    invoke_root = invoke_root or repo_root
+    repo_root_resolved = repo_root.resolve()
+    invoke_root_resolved = invoke_root.resolve()
     now = time.time()
     cutoff = now - (lane_config.idle_after_days * 24 * 60 * 60)
     for wt in list_worktrees(repo_root):
-        if wt.path.resolve() == repo_root.resolve():
+        wt_path_resolved = wt.path.resolve()
+        if wt_path_resolved in {repo_root_resolved, invoke_root_resolved}:
+            continue
+        label = wt.branch or "<detached>"
+        if wt.branch in keep:
             continue
         target = wt.path / lane_config.target_dir_name
         if not target.exists():
             continue
-        label = wt.branch or "<detached>"
         if not target.is_dir() or target.is_symlink():
             records.append({
                 "lane": "T", "branch": label, "tip_sha": wt.head,
@@ -2111,6 +2121,25 @@ def run_lane_t(repo_root: pathlib.Path, config: Config, *, apply: bool, quiet: b
                 "action": "target-dir-refused-active-process",
                 "reason": "active Cargo/Rust process references target dir",
                 "active_processes": active,
+            })
+            continue
+        latest_mtime_before_delete, skipped_before_delete = scan_subtree_latest_mtime(target)
+        if skipped_before_delete:
+            records.append({
+                "lane": "T", "branch": label, "tip_sha": wt.head,
+                "worktree": str(wt.path), "target_dir": str(target),
+                "action": "target-dir-refused-scan-incomplete",
+                "reason": "target-dir scan skipped entries before deletion",
+                "skipped_entries": skipped_before_delete,
+            })
+            continue
+        if latest_mtime_before_delete != latest_mtime or latest_mtime_before_delete > cutoff:
+            records.append({
+                "lane": "T", "branch": label, "tip_sha": wt.head,
+                "worktree": str(wt.path), "target_dir": str(target),
+                "action": "target-dir-refused-changed-before-delete",
+                "reason": "target dir changed after eligibility scan",
+                "latest_mtime": latest_mtime_before_delete,
             })
             continue
         try:
@@ -2661,7 +2690,9 @@ def _lane_steps(
         ), True
 
     def t() -> tuple[list[dict[str, Any]], bool]:
-        return run_lane_t(repo_root, config, apply=apply, quiet=args.quiet), True
+        return run_lane_t(
+            repo_root, config, apply=apply, keep=keep, quiet=args.quiet, invoke_root=invoke_root,
+        ), True
 
     steps = {
         "s": LaneStep("S", sync, stop_on_failure=True),

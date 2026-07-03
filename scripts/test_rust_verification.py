@@ -1374,10 +1374,12 @@ def assert_managed_env_scrubs_then_reinjects_wrapper() -> None:
 
 
 def run_global_cargo_config_assertion(
-    repo: pathlib.Path, *, home: pathlib.Path, root_base: pathlib.Path,
+    repo: pathlib.Path, *, home: pathlib.Path, root_base: pathlib.Path, cargo_home: pathlib.Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
+    if cargo_home is not None:
+        env["CARGO_HOME"] = str(cargo_home)
     env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
     return run_owner(["assert-global-cargo-target-dir", "--repo", str(repo)], env=env)
 
@@ -1507,6 +1509,169 @@ def assert_global_cargo_target_dir_config_accepts_resolved_equivalent_path() -> 
             raise AssertionError("resolved-equivalent global Cargo config was rewritten")
 
 
+def assert_global_cargo_target_dir_config_uses_effective_cargo_home() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        home = tmp_path / "home"
+        cargo_home = tmp_path / "cargo-home"
+        root_base = tmp_path / "rust-root"
+        expected_target = (root_base / "bolt-v2" / "target").resolve()
+
+        result = run_global_cargo_config_assertion(
+            repo, home=home, root_base=root_base, cargo_home=cargo_home,
+        )
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        effective_config = cargo_home / "config.toml"
+        home_config = home / ".cargo" / "config.toml"
+        if f'target-dir = "{expected_target}"' not in effective_config.read_text(encoding="utf-8"):
+            raise AssertionError(effective_config.read_text(encoding="utf-8"))
+        if home_config.exists():
+            raise AssertionError("assertion wrote HOME Cargo config while CARGO_HOME was set")
+
+
+def assert_global_cargo_target_dir_config_updates_legacy_config_when_present() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        home = tmp_path / "home"
+        legacy_config = home / ".cargo" / "config"
+        legacy_config.parent.mkdir(parents=True)
+        legacy_config.write_text("[net]\ngit-fetch-with-cli = true\n", encoding="utf-8")
+        root_base = tmp_path / "rust-root"
+        expected_target = (root_base / "bolt-v2" / "target").resolve()
+
+        result = run_global_cargo_config_assertion(repo, home=home, root_base=root_base)
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        content = legacy_config.read_text(encoding="utf-8")
+        if "[net]" not in content or f'target-dir = "{expected_target}"' not in content:
+            raise AssertionError(content)
+        if (home / ".cargo" / "config.toml").exists():
+            raise AssertionError("assertion wrote config.toml even though Cargo will read legacy config")
+
+
+def assert_global_cargo_target_dir_config_preserves_dotted_build_keys() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        home = tmp_path / "home"
+        config = home / ".cargo" / "config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            textwrap.dedent(
+                """\
+                build.rustflags = ["-Dwarnings"]
+
+                [net]
+                git-fetch-with-cli = true
+                """
+            ),
+            encoding="utf-8",
+        )
+        root_base = tmp_path / "rust-root"
+        expected_target = (root_base / "bolt-v2" / "target").resolve()
+
+        result = run_global_cargo_config_assertion(repo, home=home, root_base=root_base)
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        content = config.read_text(encoding="utf-8")
+        if 'build.rustflags = ["-Dwarnings"]' not in content:
+            raise AssertionError(content)
+        if f'build.target-dir = "{expected_target}"' not in content:
+            raise AssertionError(content)
+
+
+def assert_global_cargo_target_dir_config_handles_quoted_build_table() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        home = tmp_path / "home"
+        config = home / ".cargo" / "config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text('[ "build" ]\nrustflags = ["-Dwarnings"]\n', encoding="utf-8")
+        root_base = tmp_path / "rust-root"
+        expected_target = (root_base / "bolt-v2" / "target").resolve()
+
+        result = run_global_cargo_config_assertion(repo, home=home, root_base=root_base)
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        content = config.read_text(encoding="utf-8")
+        if f'target-dir = "{expected_target}"' not in content or 'rustflags = ["-Dwarnings"]' not in content:
+            raise AssertionError(content)
+
+
+def assert_global_cargo_target_dir_config_refuses_inline_build_table() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        home = tmp_path / "home"
+        config = home / ".cargo" / "config.toml"
+        config.parent.mkdir(parents=True)
+        original = 'build = { rustflags = ["-Dwarnings"] }\n'
+        config.write_text(original, encoding="utf-8")
+
+        result = run_global_cargo_config_assertion(repo, home=home, root_base=tmp_path / "rust-root")
+        if result.returncode != 2:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        if "cannot be safely edited" not in result.stderr:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        if config.read_text(encoding="utf-8") != original:
+            raise AssertionError("unsupported inline Cargo config was rewritten")
+
+
+def assert_global_cargo_target_dir_config_reports_non_utf8_without_traceback() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        home = tmp_path / "home"
+        config = home / ".cargo" / "config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_bytes(b"\xff")
+
+        result = run_global_cargo_config_assertion(repo, home=home, root_base=tmp_path / "rust-root")
+        if result.returncode != 2:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        if "Traceback" in result.stderr:
+            raise AssertionError(result.stderr)
+
+
+def assert_global_cargo_target_dir_config_preserves_symlink() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        home = tmp_path / "home"
+        config = home / ".cargo" / "config.toml"
+        target_config = tmp_path / "dotfiles" / "cargo-config.toml"
+        config.parent.mkdir(parents=True)
+        target_config.parent.mkdir()
+        target_config.write_text("[net]\ngit-fetch-with-cli = true\n", encoding="utf-8")
+        config.symlink_to(target_config)
+
+        result = run_global_cargo_config_assertion(repo, home=home, root_base=tmp_path / "rust-root")
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        if not config.is_symlink():
+            raise AssertionError("Cargo config symlink was replaced")
+        if "target-dir" not in target_config.read_text(encoding="utf-8"):
+            raise AssertionError(target_config.read_text(encoding="utf-8"))
+
+
 def assert_setup_recipe_asserts_global_cargo_target_dir() -> None:
     source = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     if "assert-global-cargo-target-dir" not in source:
@@ -1547,6 +1712,13 @@ def main() -> int:
     assert_global_cargo_target_dir_config_preserves_existing_content()
     assert_global_cargo_target_dir_config_refuses_conflict()
     assert_global_cargo_target_dir_config_accepts_resolved_equivalent_path()
+    assert_global_cargo_target_dir_config_uses_effective_cargo_home()
+    assert_global_cargo_target_dir_config_updates_legacy_config_when_present()
+    assert_global_cargo_target_dir_config_preserves_dotted_build_keys()
+    assert_global_cargo_target_dir_config_handles_quoted_build_table()
+    assert_global_cargo_target_dir_config_refuses_inline_build_table()
+    assert_global_cargo_target_dir_config_reports_non_utf8_without_traceback()
+    assert_global_cargo_target_dir_config_preserves_symlink()
     assert_setup_recipe_asserts_global_cargo_target_dir()
     print("OK: Rust verification owner self-tests passed.")
     return 0

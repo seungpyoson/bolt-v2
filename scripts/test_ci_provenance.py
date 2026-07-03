@@ -1420,6 +1420,31 @@ def assert_workflow_reuse_scope_digest_rejects_alias_scoped_env() -> None:
                 raise AssertionError(f"alias scoped env value must fail closed: {alias_value}")
 
 
+def assert_workflow_reuse_scope_digest_rejects_tagged_scoped_env() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        tagged_text = replace_once(
+            workflow_text,
+            '  JUST_VERSION: "1.49.0"',
+            '  JUST_VERSION: !!str "1.49.0"',
+        )
+        try:
+            module.workflow_reuse_scope_digest_from_bytes(
+                config,
+                tagged_text.encode("utf-8"),
+            )
+        except module.ProvenanceError as exc:
+            message = str(exc)
+            if "env.JUST_VERSION" not in message or "YAML tags" not in message:
+                raise AssertionError(message) from exc
+        else:
+            raise AssertionError("tagged scoped env value must fail closed")
+
+
 def assert_workflow_reuse_scope_digest_ignores_nested_env_decoys() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -5100,6 +5125,7 @@ def main() -> int:
     assert_workflow_reuse_scope_digest_rejects_multiline_scoped_env()
     assert_workflow_reuse_scope_digest_rejects_folded_scoped_env()
     assert_workflow_reuse_scope_digest_rejects_alias_scoped_env()
+    assert_workflow_reuse_scope_digest_rejects_tagged_scoped_env()
     assert_workflow_reuse_scope_digest_ignores_nested_env_decoys()
     assert_workflow_reuse_scope_digest_preserves_block_scalar_content()
     assert_workflow_reuse_scope_digest_preserves_indicated_block_scalar_content()

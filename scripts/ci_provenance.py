@@ -1630,15 +1630,22 @@ def workflow_structural_mapping_value(line: str) -> str | None:
     return value.lstrip()
 
 
-def workflow_line_starts_block_scalar(line: str) -> bool:
+def workflow_structural_sequence_value(line: str) -> str | None:
     structural_line = workflow_yaml_structural_line(line)
+    stripped = structural_line.lstrip()
+    had_sequence = False
+    while stripped.startswith("- "):
+        had_sequence = True
+        stripped = stripped[2:].lstrip()
+    return stripped if had_sequence else None
+
+
+def workflow_line_starts_block_scalar(line: str) -> bool:
     value = workflow_structural_mapping_value(line)
     if value is not None and value.startswith(("|", ">")):
         return True
-    stripped = structural_line.lstrip()
-    while stripped.startswith("- "):
-        stripped = stripped[2:].lstrip()
-    return stripped.startswith(("|", ">"))
+    sequence_value = workflow_structural_sequence_value(line)
+    return sequence_value is not None and sequence_value.startswith(("|", ">"))
 
 
 def is_top_level_workflow_key(line: str, key: str) -> bool:
@@ -1697,7 +1704,7 @@ def top_level_env_entry_key_value(line: str) -> tuple[str, str] | None:
 
 def reuse_scoped_env_value_uses_single_line_scalar(value: str) -> bool:
     stripped_value = value.strip()
-    return bool(stripped_value) and not stripped_value.startswith(("|", ">", "&", "*"))
+    return bool(stripped_value) and not stripped_value.startswith(("|", ">", "&", "*", "!"))
 
 
 def top_level_env_entry_line(workflow_text: str, key: str) -> str:
@@ -1711,7 +1718,7 @@ def top_level_env_entry_line(workflow_text: str, key: str) -> str:
                 raise ProvenanceError(
                     f"workflow reuse scope env.{key} must use a same-line scalar value; "
                     "reuse-scoped env keys must use single-line scalar values "
-                    "without YAML anchors or aliases"
+                    "without YAML anchors or aliases or YAML tags"
                 )
             return f"  {key}: {value}"
     raise ProvenanceError(f"workflow reuse scope missing env.{key}")

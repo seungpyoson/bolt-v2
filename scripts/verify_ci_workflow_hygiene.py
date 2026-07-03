@@ -41,6 +41,8 @@ from ci_provenance import (
     top_level_env_entry_key_value,
     top_level_env_immediate_entry_lines,
     workflow_line_starts_block_scalar,
+    workflow_structural_mapping_value,
+    workflow_structural_sequence_value,
     workflow_yaml_structural_line,
 )
 
@@ -9608,7 +9610,7 @@ def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
             errors.append(
                 f"top-level env.{key} must use a same-line scalar value; "
                 f"top-level env.{key} must use a single-line scalar value without YAML anchors "
-                "or aliases for nextest reuse scope"
+                "or aliases or YAML tags for nextest reuse scope"
             )
         if key not in scoped_keys and key not in REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS:
             errors.append(
@@ -9685,6 +9687,63 @@ def workflow_yaml_anchor_alias_errors(workflow_text: str) -> list[str]:
             return ["YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled"]
         if workflow_line_starts_block_scalar(structural_line):
             block_scalar_parent_indent = len(line) - len(line.lstrip(" \t"))
+    return []
+
+
+UNSUPPORTED_YAML_REUSE_FEATURE_ERROR = (
+    "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml "
+    "while nextest reuse is enabled"
+)
+
+
+def workflow_structural_line_has_yaml_tag(line: str) -> bool:
+    stripped = workflow_yaml_structural_line(line).lstrip()
+    if stripped.startswith("!"):
+        return True
+
+    mapping_value = workflow_structural_mapping_value(line)
+    if mapping_value is not None and mapping_value.startswith("!"):
+        return True
+
+    sequence_value = workflow_structural_sequence_value(line)
+    return sequence_value is not None and sequence_value.startswith("!")
+
+
+def workflow_structural_line_has_explicit_key(line: str) -> bool:
+    sequence_value = workflow_structural_sequence_value(line)
+    stripped = (
+        sequence_value
+        if sequence_value is not None
+        else workflow_yaml_structural_line(line).lstrip()
+    )
+    return stripped == "?" or stripped.startswith("? ")
+
+
+def workflow_yaml_unsupported_feature_errors(workflow_text: str) -> list[str]:
+    block_scalar_parent_indent: int | None = None
+    for line in workflow_text.splitlines():
+        if block_scalar_parent_indent is not None:
+            indent = len(line) - len(line.lstrip(" \t"))
+            if not line.strip() or indent > block_scalar_parent_indent:
+                continue
+            block_scalar_parent_indent = None
+
+        structural_line = workflow_yaml_structural_line(line)
+        stripped = structural_line.strip()
+        if not stripped:
+            continue
+
+        if not line.startswith((" ", "\t")) and (
+            stripped.startswith("%") or stripped in ("---", "...")
+        ):
+            return [UNSUPPORTED_YAML_REUSE_FEATURE_ERROR]
+        if workflow_structural_line_has_yaml_tag(structural_line):
+            return [UNSUPPORTED_YAML_REUSE_FEATURE_ERROR]
+        if workflow_structural_line_has_explicit_key(structural_line):
+            return [UNSUPPORTED_YAML_REUSE_FEATURE_ERROR]
+        if workflow_line_starts_block_scalar(structural_line):
+            block_scalar_parent_indent = len(line) - len(line.lstrip(" \t"))
+
     return []
 
 
@@ -11533,6 +11592,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.extend(top_level_env_reuse_scope_errors(workflow_text))
         errors.extend(top_level_defaults_reuse_scope_errors(workflow_text))
         errors.extend(workflow_yaml_anchor_alias_errors(workflow_text))
+        errors.extend(workflow_yaml_unsupported_feature_errors(workflow_text))
         reuse_lines = jobs["nextest-fingerprint-reuse"]
         reuse_needs = extract_needs(reuse_lines)
         if "ci-policy" not in reuse_needs:

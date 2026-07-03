@@ -13941,6 +13941,38 @@ git() {
         ),
     )
     assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "        run: |\n          python3 scripts/nextest_fingerprint.py",
+            "        run: !!str |\n          python3 scripts/nextest_fingerprint.py",
+        ),
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "permissions:\n",
+            "%YAML 1.2\npermissions:\n",
+        ),
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "permissions:\n",
+            "---\npermissions:\n",
+        ),
+    )
+    assert_error(
+        "YAML tags, explicit keys, directives, and document markers must not be used in ci.yml while nextest reuse is enabled",
+        replace_once(
+            BASE_WORKFLOW,
+            "permissions:\n",
+            "? |\n  explicit key probe\npermissions:\n",
+        ),
+    )
+    assert_error(
         "top-level env.JUST_VERSION must use a single-line scalar value",
         replace_once(
             BASE_WORKFLOW,

@@ -1,6 +1,6 @@
 use crate::support;
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use bolt_v2::{
     bolt_v3_config::{
@@ -60,6 +60,25 @@ fn loaded_with_enabled_loss_governor(
     (loaded, temp)
 }
 
+fn loaded_with_daily_only_loss_governor(
+    state_path: &str,
+) -> (
+    bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    support::TempCaseDir,
+) {
+    let (mut loaded, temp) = loaded_with_enabled_loss_governor(state_path);
+    let loss_governor = loaded
+        .root
+        .risk
+        .loss_governor
+        .as_mut()
+        .expect("test fixture enables loss governor");
+    loss_governor.max_per_trade_loss = None;
+    loss_governor.max_rolling_loss = None;
+    loss_governor.max_drawdown = None;
+    (loaded, temp)
+}
+
 fn runtime_store(loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config) -> KillSwitchStore {
     let kill_switch = loaded
         .root
@@ -68,6 +87,26 @@ fn runtime_store(loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config) -> KillSw
         .as_ref()
         .expect("test enables kill-switch config");
     KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch)
+}
+
+fn manual_recovery_audit_path(store: &KillSwitchStore) -> PathBuf {
+    let stem = store
+        .path()
+        .file_stem()
+        .expect("test state path should have a file stem")
+        .to_string_lossy();
+    store
+        .path()
+        .with_file_name(format!("{stem}-manual-recoveries.jsonl"))
+}
+
+fn read_manual_recovery_audit_lines(store: &KillSwitchStore) -> Vec<serde_json::Value> {
+    let audit_path = manual_recovery_audit_path(store);
+    fs::read_to_string(&audit_path)
+        .unwrap_or_else(|error| panic!("manual recovery audit file should read: {error}"))
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("audit line should be JSON"))
+        .collect()
 }
 
 fn zero_loss_snapshot() -> KillSwitchLossProtectionSnapshot {
@@ -79,6 +118,13 @@ fn zero_loss_snapshot() -> KillSwitchLossProtectionSnapshot {
         closed_position_pnl: BTreeMap::new(),
         adjusted_position_pnl: BTreeMap::new(),
         pending_halt_actions: None,
+    }
+}
+
+fn breaching_loss_snapshot() -> KillSwitchLossProtectionSnapshot {
+    KillSwitchLossProtectionSnapshot {
+        daily_realized_pnl: Decimal::new(-750, 2),
+        ..zero_loss_snapshot()
     }
 }
 
@@ -104,8 +150,8 @@ fn valid_command() -> LossGovernorManualRecoveryCommand {
 }
 
 #[test]
-fn valid_manual_recovery_records_armed_state_and_audit_history() {
-    let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
+fn valid_manual_recovery_records_armed_state_and_append_only_audit_history() {
+    let (loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
     let store = runtime_store(&loaded);
     store
         .write_state_with_loss_snapshot(&loss_governor_halted_state(), Some(&zero_loss_snapshot()))
@@ -125,10 +171,15 @@ fn valid_manual_recovery_records_armed_state_and_audit_history() {
         KillSwitchRecoveryState::Recovered(KillSwitchState::Armed)
     );
     assert_eq!(record.loss_protection, Some(zero_loss_snapshot()));
-    assert_eq!(record.loss_governor_manual_recoveries.len(), 1);
-    assert_eq!(
-        record.loss_governor_manual_recoveries[0].evidence_sha256,
-        VALID_EVIDENCE_SHA256
+    let audit_lines = read_manual_recovery_audit_lines(&store);
+    assert_eq!(audit_lines.len(), 1);
+    assert_eq!(audit_lines[0]["evidence_sha256"], VALID_EVIDENCE_SHA256);
+    let state_json: serde_json::Value =
+        serde_json::from_slice(&fs::read(store.path()).expect("state file should read"))
+            .expect("state file should be JSON");
+    assert!(
+        state_json.get("loss_governor_manual_recoveries").is_none(),
+        "manual recovery audit history must not be stored in the kill-switch state file"
     );
 
     let refreshed_snapshot = KillSwitchLossProtectionSnapshot {
@@ -142,10 +193,126 @@ fn valid_manual_recovery_records_armed_state_and_audit_history() {
         .load_recovery_record()
         .expect("refreshed state should load");
     assert_eq!(refreshed_record.loss_protection, Some(refreshed_snapshot));
-    assert_eq!(refreshed_record.loss_governor_manual_recoveries.len(), 1);
+    assert_eq!(read_manual_recovery_audit_lines(&store).len(), 1);
+
+    store
+        .invalidate()
+        .expect("state invalidation should not touch append-only audit history");
     assert_eq!(
-        refreshed_record.loss_governor_manual_recoveries[0].evidence_sha256,
+        read_manual_recovery_audit_lines(&store)[0]["evidence_sha256"],
         VALID_EVIDENCE_SHA256
+    );
+}
+
+#[test]
+fn manual_recovery_refuses_missing_durable_dimensions_instead_of_fabricating_pass() {
+    let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halted = loss_governor_halted_state();
+    store
+        .write_state_with_loss_snapshot(&halted, Some(&zero_loss_snapshot()))
+        .expect("latched loss-governor halt should persist");
+
+    let error = recover_loss_governor_manual_halt(&loaded, valid_command())
+        .expect_err("missing durable dimensions must refuse manual recovery");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("missing-dimension fail-closed"),
+        "refusal must identify the missing-dimension fail-closed check, got: {message}"
+    );
+    assert!(
+        message.contains("per_trade_pnl"),
+        "refusal must name the missing durable dimension, got: {message}"
+    );
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("store should remain readable"),
+        KillSwitchRecoveryState::FailClosed {
+            reason: bolt_v2::bolt_v3_kill_switch_store::KillSwitchRecoveryReason::UnresolvedHalt,
+            state: Some(halted),
+        }
+    );
+}
+
+#[test]
+fn manual_recovery_refuses_still_breaching_stored_loss_with_diagnostic() {
+    let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halted = loss_governor_halted_state();
+    store
+        .write_state_with_loss_snapshot(&halted, Some(&breaching_loss_snapshot()))
+        .expect("latched loss-governor halt should persist");
+
+    let error = recover_loss_governor_manual_halt(&loaded, valid_command())
+        .expect_err("stored loss still breaching the limit must refuse manual recovery");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("daily_loss_limit"),
+        "refusal must identify the daily loss check, got: {message}"
+    );
+    assert!(
+        message.contains("-7.50") && message.contains("7.50"),
+        "refusal must include stored loss and configured limit, got: {message}"
+    );
+}
+
+#[test]
+fn manual_recovery_refuses_unauthorized_operator_without_downgrading() {
+    let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halted = loss_governor_halted_state();
+    store
+        .write_state_with_loss_snapshot(&halted, Some(&zero_loss_snapshot()))
+        .expect("latched loss-governor halt should persist");
+    let mut command = valid_command();
+    command.operator_id = "operator-secondary".to_string();
+
+    let error = recover_loss_governor_manual_halt(&loaded, command)
+        .expect_err("unauthorized operator must be refused");
+
+    assert!(
+        error.to_string().contains("is not authorized"),
+        "error must identify authorization refusal, got: {error}"
+    );
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("store should remain readable"),
+        KillSwitchRecoveryState::FailClosed {
+            reason: bolt_v2::bolt_v3_kill_switch_store::KillSwitchRecoveryReason::UnresolvedHalt,
+            state: Some(halted),
+        }
+    );
+}
+
+#[test]
+fn manual_recovery_clears_loss_governor_halting_state_when_condition_has_passed() {
+    let (loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halting = KillSwitchState::Halting {
+        halt_id: "halt-loss-governor-halting-1".to_string(),
+        trigger: KillSwitchHaltTrigger::loss_governor_breach(
+            "loss-governor",
+            2_000,
+            "daily loss cap breached",
+        ),
+    };
+    store
+        .write_state_with_loss_snapshot(&halting, Some(&zero_loss_snapshot()))
+        .expect("latched loss-governor halting state should persist");
+
+    let outcome = recover_loss_governor_manual_halt(&loaded, valid_command())
+        .expect("halting loss-governor state should recover when the condition has passed");
+
+    assert_eq!(outcome.previous_state, KillSwitchStateKind::Halting);
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("store should recover after manual recovery"),
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Armed)
     );
 }
 

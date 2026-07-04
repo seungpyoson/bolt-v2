@@ -488,6 +488,12 @@ def write_config(
     return path
 
 
+def raw_workflow_text_for_reuse_scope_digest() -> str:
+    # Deliberately unnormalized: production digests raw workflow bytes; normalizing
+    # here would diverge the test input from what ci_provenance actually hashes.
+    return (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+
 def strip_ci_provenance_config(config_text: str) -> str:
     lines = config_text.splitlines()
     kept: list[str] = []
@@ -1253,9 +1259,7 @@ def assert_fingerprint_reuse_allows_deploy_only_env_drift() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         config = write_config(tmp_path)
-        source_workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        source_workflow_text = raw_workflow_text_for_reuse_scope_digest()
         source_workflow_text = source_workflow_text.replace(
             'S3_DEPLOY_PATH: "s3://bolt-deploy-artifacts/artifacts/bolt-v2"',
             'S3_DEPLOY_PATH: "s3://bolt-deploy-artifacts/artifacts/bolt-v2-previous"',
@@ -1281,9 +1285,7 @@ def assert_workflow_reuse_scope_digest_tracks_reuse_resolver_job_block() -> None
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp)))
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         resolver_job_mutation = replace_once(
             workflow_text,
             '          --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"',
@@ -1306,9 +1308,7 @@ def assert_workflow_reuse_scope_digest_ignores_unscoped_job_block() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp)))
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         deny_job_mutation = replace_once(
             workflow_text,
             "      - name: deny\n        run: just deny",
@@ -1332,9 +1332,7 @@ def assert_workflow_reuse_scope_digest_accepts_yaml_header_formatting() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp)))
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         formatted_text = workflow_text.replace("env:\n", "env: # top-level env\n", 1)
         formatted_text = formatted_text.replace(
             '  JUST_VERSION: "1.49.0"',
@@ -1365,9 +1363,7 @@ def assert_workflow_reuse_scope_digest_distinguishes_quoted_hash_values() -> Non
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp)))
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         source_text = workflow_text.replace(
             '  JUST_VERSION: "1.49.0"',
             '  JUST_VERSION: "1.49.0#source"',
@@ -1394,9 +1390,7 @@ def assert_workflow_reuse_scope_digest_rejects_multiline_scoped_env() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp)))
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         multiline_text = workflow_text.replace(
             '  JUST_VERSION: "1.49.0"',
             '  JUST_VERSION:\n    "1.49.0"',
@@ -1418,9 +1412,7 @@ def assert_workflow_reuse_scope_digest_rejects_folded_scoped_env() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp)))
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         returned_digests = []
         for indicator in (">-", ">2", "|2"):
             for value in ("1.49.0", "9.9.9"):
@@ -1449,9 +1441,7 @@ def assert_workflow_reuse_scope_digest_rejects_alias_scoped_env() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp)))
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         for alias_value in ("&just_version \"1.49.0\"", "*just_version"):
             alias_text = replace_once(
                 workflow_text,
@@ -1475,9 +1465,7 @@ def assert_workflow_reuse_scope_digest_rejects_tagged_scoped_env() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp)))
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         tagged_text = replace_once(
             workflow_text,
             '  JUST_VERSION: "1.49.0"',
@@ -1500,9 +1488,7 @@ def assert_workflow_reuse_scope_digest_ignores_nested_env_decoys() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp)))
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         decoy_text = replace_once(workflow_text, '  JUST_VERSION: "1.49.0"\n', "")
         decoy_text = replace_once(
             decoy_text,
@@ -1525,9 +1511,7 @@ def assert_workflow_reuse_scope_digest_preserves_block_scalar_content() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp)))
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         source_text = workflow_text.replace(
             "          python3 scripts/nextest_fingerprint.py",
             "          # source block-scalar content\n          python3 scripts/nextest_fingerprint.py",
@@ -1554,9 +1538,7 @@ def assert_workflow_reuse_scope_digest_preserves_indicated_block_scalar_content(
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp)))
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         source_text = workflow_text.replace(
             "        run: |\n          python3 scripts/nextest_fingerprint.py",
             "        run: |2\n          # source indicated block-scalar content\n          python3 scripts/nextest_fingerprint.py",
@@ -1585,9 +1567,7 @@ def assert_workflow_reuse_scope_digest_preserves_block_scalar_trailing_spaces() 
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp)))
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         line_without_trailing_spaces = (
             '          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \\\n'
         )
@@ -1675,9 +1655,7 @@ def assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         config = write_config(tmp_path)
-        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
+        workflow_text = raw_workflow_text_for_reuse_scope_digest()
         display_names = {
             "nextest-fingerprint": "nextest fingerprint",
             "nextest-fingerprint-reuse": "nextest fingerprint reuse",

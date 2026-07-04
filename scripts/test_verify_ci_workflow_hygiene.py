@@ -2789,8 +2789,15 @@ def without_once_after(text: str, anchor: str, old: str) -> str:
     return before + after.replace(old, "", 1)
 
 
+def repo_source_text(path: str | pathlib.Path) -> str:
+    source_path = pathlib.Path(path)
+    if not source_path.is_absolute():
+        source_path = REPO_ROOT / source_path
+    return source_path.read_text().replace("\r\n", "\n")
+
+
 def repo_workflow_text(path: str) -> str:
-    return (REPO_ROOT / path).read_text().replace("\r\n", "\n")
+    return repo_source_text(path)
 
 
 def inline_matrix_values(job_lines: list[str], matrix_key: str) -> tuple[int, ...]:
@@ -9525,7 +9532,7 @@ def assert_nextest_fingerprint_reuse_governance_excludes_whole_ci_workflow() -> 
 
 
 def assert_reuse_neutral_env_comment_states_fail_closed_classification_rule() -> None:
-    verifier_text = VERIFIER_PATH.read_text(encoding="utf-8")
+    verifier_text = repo_source_text(VERIFIER_PATH)
     comment = (
         "# A key may be listed here only if it must not influence compiler/test-runner\n"
         "# behavior or archive content; when in doubt classify reuse-relevant\n"
@@ -12218,7 +12225,7 @@ def run_verifier_main_with_no_mistakes(
         tmp_path = pathlib.Path(tmp)
         verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
         verifier_path.parent.mkdir(parents=True)
-        verifier_path.write_text(VERIFIER_PATH.read_text())
+        verifier_path.write_text(repo_source_text(VERIFIER_PATH))
 
         workflow_dir = tmp_path / ".github" / "workflows"
         write_repo_workflows(workflow_dir)
@@ -12266,7 +12273,7 @@ def run_verifier_main_with_extra_action(
         tmp_path = pathlib.Path(tmp)
         verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
         verifier_path.parent.mkdir(parents=True)
-        verifier_path.write_text(VERIFIER_PATH.read_text())
+        verifier_path.write_text(repo_source_text(VERIFIER_PATH))
 
         workflow_dir = tmp_path / ".github" / "workflows"
         write_repo_workflows(workflow_dir)
@@ -12311,7 +12318,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         tmp_path = pathlib.Path(tmp)
         verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
         verifier_path.parent.mkdir(parents=True)
-        verifier_path.write_text(VERIFIER_PATH.read_text())
+        verifier_path.write_text(repo_source_text(VERIFIER_PATH))
 
         workflow_dir = tmp_path / ".github" / "workflows"
         write_repo_workflows(workflow_dir)

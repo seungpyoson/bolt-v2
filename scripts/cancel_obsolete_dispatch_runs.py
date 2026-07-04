@@ -29,6 +29,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import config_validators as _cv  # noqa: E402
+import ci_provenance as _ci_provenance  # noqa: E402
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -106,7 +107,7 @@ class GitHubClient:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with _ci_provenance.open_github_api_request(request, timeout=30) as response:
                 payload = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")[:500]

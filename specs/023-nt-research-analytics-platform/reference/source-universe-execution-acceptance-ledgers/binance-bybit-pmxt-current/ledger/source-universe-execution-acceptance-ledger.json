@@ -54,7 +54,7 @@
         {
           "role": "source_universe_operator_inputs",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments/operator-inputs/source-universe-operator-inputs.json",
-          "sha256": "8df9e1f9896d7301ad802ffab14fac4debd1e9a31c3dc0466ca7e4912d736143"
+          "sha256": "81886b67910f4c76d1ff426a00353cff8590cf08626e7f01acf001b9e99e1ac3"
         },
         {
           "role": "source_universe_execution_pack",

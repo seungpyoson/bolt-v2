@@ -229,10 +229,7 @@ fn manual_recovery_refuses_missing_durable_dimensions_instead_of_fabricating_pas
         store
             .load_recovery_state()
             .expect("store should remain readable"),
-        KillSwitchRecoveryState::FailClosed {
-            reason: bolt_v2::bolt_v3_kill_switch_store::KillSwitchRecoveryReason::UnresolvedHalt,
-            state: Some(halted),
-        }
+        KillSwitchRecoveryState::Recovered(halted)
     );
 }
 
@@ -281,10 +278,7 @@ fn manual_recovery_refuses_unauthorized_operator_without_downgrading() {
         store
             .load_recovery_state()
             .expect("store should remain readable"),
-        KillSwitchRecoveryState::FailClosed {
-            reason: bolt_v2::bolt_v3_kill_switch_store::KillSwitchRecoveryReason::UnresolvedHalt,
-            state: Some(halted),
-        }
+        KillSwitchRecoveryState::Recovered(halted)
     );
 }
 

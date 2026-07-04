@@ -169,14 +169,23 @@ enum OpsCommand {
         #[arg(short, long)]
         config: PathBuf,
     },
+    #[command(
+        about = "Recover only loss-governor halts whose stored loss condition has cleared; node must be stopped because state is last-writer-wins; not an operator override. Use a reviewed config change to the loss limits or wait for the condition to clear. evidence_path/evidence_sha256 are operator-attested audit metadata, not file or hash verification."
+    )]
     LossGovernorManualRecovery {
         #[arg(short, long)]
         config: PathBuf,
         #[arg(long)]
         operator_id: String,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Operator-attested audit metadata path; the file is not opened by this command"
+        )]
         evidence_path: String,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Operator-attested audit metadata digest; the file is not hash-verified by this command"
+        )]
         evidence_sha256: String,
         #[arg(long)]
         observed_at_ns: u64,
@@ -1876,6 +1885,29 @@ mod tests {
             .expect_err("help should exit through clap without loading config");
 
         assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(
+            help.contains("node must be stopped"),
+            "help must state the node-stopped operator posture: {help}"
+        );
+        assert!(
+            help.contains("last-writer-wins"),
+            "help must state the state race consequence: {help}"
+        );
+        assert!(
+            help.contains("not an operator override"),
+            "help must state the command is not an override: {help}"
+        );
+        assert!(
+            help.contains("reviewed config change to the loss limits")
+                && help.contains("wait for the condition to clear"),
+            "help must point to sanctioned alternatives: {help}"
+        );
+        assert!(
+            help.contains("operator-attested audit metadata")
+                && help.contains("not file or hash verification"),
+            "help must document evidence attestation semantics: {help}"
+        );
     }
 
     #[test]

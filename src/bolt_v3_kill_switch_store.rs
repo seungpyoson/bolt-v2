@@ -1,7 +1,8 @@
 use std::{
     collections::BTreeMap,
+    ffi::OsString,
     fs,
-    io::{self, Read},
+    io::{self, BufRead, Read},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -11,12 +12,15 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bolt_v3_atomic_io::{AtomicIoError, write_private_atomic_file, write_private_new_file},
+    bolt_v3_atomic_io::{
+        AtomicIoError, append_private_file, write_private_atomic_file, write_private_new_file,
+    },
     bolt_v3_config::{KillSwitchConfigBlock, resolve_root_relative_path},
     bolt_v3_kill_switch::KillSwitchState,
 };
 
 pub const KILL_SWITCH_STORE_SCHEMA_VERSION: u32 = 2;
+const LOSS_GOVERNOR_MANUAL_RECOVERY_AUDIT_SUFFIX: &str = "-manual-recoveries.jsonl";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KillSwitchRecoveryState {
@@ -54,10 +58,9 @@ impl std::fmt::Display for KillSwitchRecoveryReason {
 pub struct KillSwitchRecoveryRecord {
     pub recovery_state: KillSwitchRecoveryState,
     pub loss_protection: Option<KillSwitchLossProtectionSnapshot>,
-    pub loss_governor_manual_recoveries: Vec<KillSwitchLossGovernorManualRecoveryRecord>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KillSwitchLossGovernorManualRecoveryRecord {
     pub operator_id: String,
     pub evidence_path: String,
@@ -114,6 +117,15 @@ impl KillSwitchStore {
         &self.path
     }
 
+    pub fn loss_governor_manual_recovery_audit_path(&self) -> PathBuf {
+        let mut file_name = self
+            .path
+            .file_stem()
+            .map_or_else(|| OsString::from("kill-switch"), OsString::from);
+        file_name.push(LOSS_GOVERNOR_MANUAL_RECOVERY_AUDIT_SUFFIX);
+        self.path.with_file_name(file_name)
+    }
+
     pub fn write_state(&self, state: &KillSwitchState) -> Result<(), KillSwitchStoreError> {
         self.write_state_with_loss_snapshot(state, None)
     }
@@ -123,50 +135,72 @@ impl KillSwitchStore {
         state: &KillSwitchState,
         loss_protection: Option<&KillSwitchLossProtectionSnapshot>,
     ) -> Result<(), KillSwitchStoreError> {
-        let manual_recoveries = self.existing_loss_governor_manual_recoveries();
-        let bytes = serialize_state_with_loss_snapshot_and_manual_recoveries(
-            state,
-            loss_protection,
-            &manual_recoveries,
-        )?;
+        let bytes = serialize_state_with_loss_snapshot(state, loss_protection)?;
         self.ensure_state_bytes_within_limit(&bytes)?;
         write_private_atomic_file(&self.path, &bytes)?;
         Ok(())
     }
 
-    fn existing_loss_governor_manual_recoveries(
+    pub fn append_loss_governor_manual_recovery(
         &self,
-    ) -> Vec<KillSwitchLossGovernorManualRecoveryRecord> {
-        match self.load_recovery_record() {
-            Ok(record) => record.loss_governor_manual_recoveries,
-            Err(error) => {
-                let manual_recoveries = Vec::new();
-                log::error!(
-                    "failed to preserve loss-governor manual recovery audit history from {}; writing state with loss_governor_manual_recoveries={manual_recoveries:?}: {error}",
-                    self.path.display()
-                );
-                manual_recoveries
-            }
-        }
-    }
-
-    pub fn write_loss_governor_manual_recovery(
-        &self,
-        previous_record: &KillSwitchRecoveryRecord,
-        state: &KillSwitchState,
-        loss_protection: &KillSwitchLossProtectionSnapshot,
         manual_recovery: KillSwitchLossGovernorManualRecoveryRecord,
     ) -> Result<usize, KillSwitchStoreError> {
-        let mut manual_recoveries = previous_record.loss_governor_manual_recoveries.clone();
-        manual_recoveries.push(manual_recovery);
-        let bytes = serialize_state_with_loss_snapshot_and_manual_recoveries(
-            state,
-            Some(loss_protection),
-            &manual_recoveries,
-        )?;
-        self.ensure_state_bytes_within_limit(&bytes)?;
-        write_private_atomic_file(&self.path, &bytes)?;
-        Ok(manual_recoveries.len())
+        let previous_count = self.loss_governor_manual_recovery_audit_line_count()?;
+        let mut bytes =
+            serde_json::to_vec(&manual_recovery).map_err(KillSwitchStoreError::Serialize)?;
+        bytes.push(b'\n');
+        append_private_file(&self.loss_governor_manual_recovery_audit_path(), &bytes)?;
+        Ok(previous_count.saturating_add(1))
+    }
+
+    pub fn load_loss_governor_manual_recoveries(
+        &self,
+    ) -> Result<Vec<KillSwitchLossGovernorManualRecoveryRecord>, KillSwitchStoreError> {
+        let audit_path = self.loss_governor_manual_recovery_audit_path();
+        let file = match fs::File::open(&audit_path) {
+            Ok(file) => file,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => {
+                return Err(KillSwitchStoreError::Io {
+                    path: audit_path,
+                    source,
+                });
+            }
+        };
+        let mut records = Vec::new();
+        for line in io::BufReader::new(file).lines() {
+            let line = line.map_err(|source| KillSwitchStoreError::Io {
+                path: audit_path.clone(),
+                source,
+            })?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            records.push(serde_json::from_str(&line).map_err(|source| {
+                KillSwitchStoreError::Deserialize {
+                    path: audit_path.clone(),
+                    source,
+                }
+            })?);
+        }
+        Ok(records)
+    }
+
+    fn loss_governor_manual_recovery_audit_line_count(
+        &self,
+    ) -> Result<usize, KillSwitchStoreError> {
+        let audit_path = self.loss_governor_manual_recovery_audit_path();
+        match fs::read_to_string(&audit_path) {
+            Ok(contents) => Ok(contents
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count()),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(0),
+            Err(source) => Err(KillSwitchStoreError::Io {
+                path: audit_path,
+                source,
+            }),
+        }
     }
 
     pub fn bootstrap_initial_armed_loss_snapshot(&self) -> Result<(), KillSwitchStoreError> {
@@ -216,7 +250,6 @@ impl KillSwitchStore {
                         state: None,
                     },
                     loss_protection: None,
-                    loss_governor_manual_recoveries: Vec::new(),
                 });
             }
             Err(source) => {
@@ -245,7 +278,6 @@ impl KillSwitchStore {
                     state: None,
                 },
                 loss_protection: None,
-                loss_governor_manual_recoveries: Vec::new(),
             });
         }
 
@@ -258,18 +290,9 @@ impl KillSwitchStore {
                         state: None,
                     },
                     loss_protection: None,
-                    loss_governor_manual_recoveries: Vec::new(),
                 });
             }
         };
-
-        let loss_governor_manual_recoveries = persisted
-            .loss_governor_manual_recoveries
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .map(KillSwitchLossGovernorManualRecoveryRecord::from)
-            .collect::<Vec<_>>();
 
         if persisted.schema_version != KILL_SWITCH_STORE_SCHEMA_VERSION {
             return Ok(KillSwitchRecoveryRecord {
@@ -278,7 +301,6 @@ impl KillSwitchStore {
                     state: Some(persisted.state),
                 },
                 loss_protection: None,
-                loss_governor_manual_recoveries,
             });
         }
 
@@ -292,7 +314,6 @@ impl KillSwitchStore {
                             state: Some(persisted.state),
                         },
                         loss_protection: None,
-                        loss_governor_manual_recoveries,
                     });
                 }
             },
@@ -311,7 +332,6 @@ impl KillSwitchStore {
         Ok(KillSwitchRecoveryRecord {
             recovery_state,
             loss_protection,
-            loss_governor_manual_recoveries,
         })
     }
 }
@@ -332,24 +352,10 @@ fn serialize_state_with_loss_snapshot(
     state: &KillSwitchState,
     loss_protection: Option<&KillSwitchLossProtectionSnapshot>,
 ) -> Result<Vec<u8>, KillSwitchStoreError> {
-    serialize_state_with_loss_snapshot_and_manual_recoveries(state, loss_protection, &[])
-}
-
-fn serialize_state_with_loss_snapshot_and_manual_recoveries(
-    state: &KillSwitchState,
-    loss_protection: Option<&KillSwitchLossProtectionSnapshot>,
-    loss_governor_manual_recoveries: &[KillSwitchLossGovernorManualRecoveryRecord],
-) -> Result<Vec<u8>, KillSwitchStoreError> {
     let persisted = PersistedKillSwitchState {
         schema_version: KILL_SWITCH_STORE_SCHEMA_VERSION,
         state: state.clone(),
         loss_protection: loss_protection.map(PersistedKillSwitchLossProtectionSnapshot::from),
-        loss_governor_manual_recoveries: (!loss_governor_manual_recoveries.is_empty()).then(|| {
-            loss_governor_manual_recoveries
-                .iter()
-                .map(PersistedLossGovernorManualRecoveryRecord::from)
-                .collect()
-        }),
     };
     let mut bytes =
         serde_json::to_vec_pretty(&persisted).map_err(KillSwitchStoreError::Serialize)?;
@@ -363,17 +369,6 @@ struct PersistedKillSwitchState {
     state: KillSwitchState,
     #[serde(skip_serializing_if = "Option::is_none")]
     loss_protection: Option<PersistedKillSwitchLossProtectionSnapshot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    loss_governor_manual_recoveries: Option<Vec<PersistedLossGovernorManualRecoveryRecord>>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct PersistedLossGovernorManualRecoveryRecord {
-    operator_id: String,
-    evidence_path: String,
-    evidence_sha256: String,
-    observed_at_ns: u64,
-    recorded_at_ns: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -441,34 +436,6 @@ impl From<&KillSwitchLossProtectionSnapshot> for PersistedKillSwitchLossProtecti
     }
 }
 
-impl From<&KillSwitchLossGovernorManualRecoveryRecord>
-    for PersistedLossGovernorManualRecoveryRecord
-{
-    fn from(record: &KillSwitchLossGovernorManualRecoveryRecord) -> Self {
-        Self {
-            operator_id: record.operator_id.clone(),
-            evidence_path: record.evidence_path.clone(),
-            evidence_sha256: record.evidence_sha256.clone(),
-            observed_at_ns: record.observed_at_ns,
-            recorded_at_ns: record.recorded_at_ns,
-        }
-    }
-}
-
-impl From<&PersistedLossGovernorManualRecoveryRecord>
-    for KillSwitchLossGovernorManualRecoveryRecord
-{
-    fn from(record: &PersistedLossGovernorManualRecoveryRecord) -> Self {
-        Self {
-            operator_id: record.operator_id.clone(),
-            evidence_path: record.evidence_path.clone(),
-            evidence_sha256: record.evidence_sha256.clone(),
-            observed_at_ns: record.observed_at_ns,
-            recorded_at_ns: record.recorded_at_ns,
-        }
-    }
-}
-
 impl TryFrom<PersistedKillSwitchLossProtectionSnapshot> for KillSwitchLossProtectionSnapshot {
     type Error = ();
 
@@ -517,6 +484,10 @@ pub enum KillSwitchStoreError {
         source: io::Error,
     },
     Serialize(serde_json::Error),
+    Deserialize {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
     StateAlreadyExists {
         path: PathBuf,
     },
@@ -534,6 +505,9 @@ impl std::fmt::Display for KillSwitchStoreError {
                 write!(f, "failed to access {}: {source}", path.display())
             }
             Self::Serialize(error) => write!(f, "failed to serialize kill-switch state: {error}"),
+            Self::Deserialize { path, source } => {
+                write!(f, "failed to parse {}: {source}", path.display())
+            }
             Self::StateAlreadyExists { path } => {
                 write!(
                     f,
@@ -559,6 +533,7 @@ impl std::error::Error for KillSwitchStoreError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Serialize(error) => Some(error),
+            Self::Deserialize { source, .. } => Some(source),
             Self::StateAlreadyExists { .. } => None,
             Self::StateTooLarge { .. } => None,
         }

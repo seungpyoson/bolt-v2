@@ -86,12 +86,22 @@ def test_mapping_evaluation_rejects_stale_bar_rejection(module) -> None:
 
 def test_justfile_requires_source_fence_wiring(module) -> None:
     justfile = module.JUSTFILE.read_text(encoding="utf-8").replace(
-        "    python3 scripts/verify_bte_022_binary_option_bar_catalog.py\n",
+        "    python3 scripts/run_fences.py\n",
         "",
     )
     findings: list[str] = []
     module.verify_justfile(justfile, findings)
     assert_finding(findings, "source-fence-static-inner")
+
+
+def test_source_fence_inner_rejects_appended_command(module) -> None:
+    justfile = module.JUSTFILE.read_text(encoding="utf-8").replace(
+        "    python3 scripts/run_fences.py\n",
+        "    python3 scripts/run_fences.py\n    python3 scripts/verify_bte_022_binary_option_bar_catalog.py\n",
+    )
+    findings: list[str] = []
+    module.verify_justfile(justfile, findings)
+    assert_finding(findings, "source-fence-static-inner must contain only python3 scripts/run_fences.py")
 
 
 def main() -> int:
@@ -102,6 +112,7 @@ def main() -> int:
     test_comments_and_strings_only_do_not_satisfy_code_requirements(module)
     test_mapping_evaluation_rejects_stale_bar_rejection(module)
     test_justfile_requires_source_fence_wiring(module)
+    test_source_fence_inner_rejects_appended_command(module)
     print("OK: BTE-022 binary-option Bar catalog verifier self-tests passed.")
     return 0
 

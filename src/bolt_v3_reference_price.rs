@@ -656,11 +656,15 @@ impl ReferencePriceSelector {
         &self,
         interval_start_ms: VenueEventMs,
         interval_end_ms: VenueEventMs,
-        now_ms: NtStrategyClockMs,
+        evaluation_clock_ms: NtStrategyClockMs,
         quotes: &'a [ReferenceQuote],
     ) -> ReferencePriceSourceQuorum<'a> {
-        let valid_quotes =
-            self.valid_quotes_by_order(interval_start_ms, interval_end_ms, now_ms, quotes);
+        let valid_quotes = self.valid_quotes_by_order(
+            interval_start_ms,
+            interval_end_ms,
+            evaluation_clock_ms,
+            quotes,
+        );
         let has_min_valid_sources = valid_quotes.len() >= self.min_valid_sources;
         let has_required_sources = self.required_sources.iter().all(|required| {
             valid_quotes
@@ -680,7 +684,7 @@ impl ReferencePriceSelector {
         &self,
         interval_start_ms: VenueEventMs,
         interval_end_ms: VenueEventMs,
-        now_ms: NtStrategyClockMs,
+        evaluation_clock_ms: NtStrategyClockMs,
         quotes: &'a [ReferenceQuote],
     ) -> Vec<&'a ReferenceQuote> {
         self.sources
@@ -690,7 +694,7 @@ impl ReferencePriceSelector {
                     source_id,
                     interval_start_ms,
                     interval_end_ms,
-                    now_ms,
+                    evaluation_clock_ms,
                     quotes,
                 )
             })
@@ -702,7 +706,7 @@ impl ReferencePriceSelector {
         source_id: &str,
         interval_start_ms: VenueEventMs,
         interval_end_ms: VenueEventMs,
-        now_ms: NtStrategyClockMs,
+        evaluation_clock_ms: NtStrategyClockMs,
         quotes: &'a [ReferenceQuote],
     ) -> Option<&'a ReferenceQuote> {
         quotes
@@ -713,8 +717,7 @@ impl ReferencePriceSelector {
                     && quote.source_id == source_id
                     && observed_ts_ms >= interval_start_ms
                     && observed_ts_ms <= interval_end_ms
-                    && quote.observed_ts_ms <= now_ms.value()
-                    && now_ms.value().saturating_sub(quote.observed_ts_ms)
+                    && evaluation_clock_ms.saturating_duration_since_venue_event(observed_ts_ms)
                         <= self.max_source_staleness_ms
             })
             .max_by_key(|quote| quote.observed_ts_ms)

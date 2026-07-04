@@ -443,14 +443,14 @@ fn reference_quote_outside_live_window(
     quote: &ReferenceQuote,
     interval_start_ms: VenueEventMs,
     interval_end_ms: VenueEventMs,
-    now_ms: NtStrategyClockMs,
+    evaluation_clock_ms: NtStrategyClockMs,
     max_source_age_ms: u64,
 ) -> bool {
     let observed_ts_ms = VenueEventMs::new(quote.observed_ts_ms());
     observed_ts_ms < interval_start_ms
         || observed_ts_ms > interval_end_ms
-        || observed_ts_ms.value() > now_ms.value()
-        || now_ms.value().saturating_sub(observed_ts_ms.value()) > max_source_age_ms
+        || evaluation_clock_ms.saturating_duration_since_venue_event(observed_ts_ms)
+            > max_source_age_ms
 }
 
 impl PricingState {
@@ -5517,6 +5517,9 @@ impl DataActor for BinaryOracleEdgeTaker {
     }
 
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
+        for snapshot in self.context.observe_realized_volatility_quote(quote) {
+            self.pricing.observe_realized_vol_snapshot(snapshot);
+        }
         if self
             .signal_instrument_id()
             .is_some_and(|instrument_id| quote.instrument_id == instrument_id)
@@ -5530,9 +5533,6 @@ impl DataActor for BinaryOracleEdgeTaker {
                     Some(quote.ts_init.as_u64() / NANOS_PER_MILLI_U64),
                 );
             }
-        }
-        for snapshot in self.context.observe_realized_volatility_quote(quote) {
-            self.pricing.observe_realized_vol_snapshot(snapshot);
         }
         Ok(())
     }

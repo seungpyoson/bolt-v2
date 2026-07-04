@@ -18,7 +18,7 @@ use crate::{
     bolt_v3_taker_updown_signal::{
         ThetaScalerInputs, compute_theta_scaler, price_agreement_corr, price_gap_probability,
     },
-    bolt_v3_timestamp_domain::{NtStrategyClockMs, VenueEventMs},
+    bolt_v3_timestamp_domain::VenueEventMs,
 };
 
 pub use crate::bolt_v3_fair_value_pricing::FastSpotObservation;
@@ -319,13 +319,14 @@ impl TakerPricingState {
         &self,
         observed_ts_ms: VenueEventMs,
         config: &TakerPricingConfig<'_>,
-        now_ms: NtStrategyClockMs,
+        evaluation_event_ms: Option<VenueEventMs>,
     ) -> bool {
         config
             .max_reference_current_price_age_ms
             .is_some_and(|max_age_ms| {
-                observed_ts_ms.value() > now_ms.value()
-                    || now_ms.value() - observed_ts_ms.value() > max_age_ms
+                evaluation_event_ms.is_none_or(|evaluation_event_ms| {
+                    evaluation_event_ms.saturating_duration_since(observed_ts_ms) > max_age_ms
+                })
             })
     }
 
@@ -416,7 +417,7 @@ impl TakerPricingState {
                 self.reference_current_price_stale_at(
                     VenueEventMs::new(spot.observed_ts_ms),
                     config,
-                    NtStrategyClockMs::new(request.now_ms),
+                    request.realized_vol_gate_event_ms,
                 )
             });
 
@@ -427,7 +428,7 @@ impl TakerPricingState {
                         self.reference_current_price_stale_at(
                             VenueEventMs::new(ts_ms),
                             config,
-                            NtStrategyClockMs::new(request.now_ms),
+                            request.realized_vol_gate_event_ms,
                         )
                     })
             });

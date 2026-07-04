@@ -392,6 +392,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         strike_price: Some(100.0),
         seconds_to_market_end: Some(300),
         realized_volatility_snapshot: &realized_volatility_snapshot,
+        realized_volatility_max_source_age_ms: None,
         pricing_kurtosis: 0.25,
     };
     let expected_fair_probability_up = updown::fair_probability_up(&FairProbabilityInputs {

@@ -1000,6 +1000,29 @@ def test_source_fence_command_outside_recipe_is_a_finding() -> None:
     )
 
 
+def test_malformed_justfile_recipe_header_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        write_file(
+            root,
+            "justfile",
+            (
+                " verify-bte-022-pmxt-durable-source:\n"
+                "    python3 scripts/test_verify_bte_022_pmxt_durable_source.py\n"
+                "    python3 scripts/verify_bte_022_pmxt_durable_source.py\n"
+                "source-fence-static-inner:\n"
+                "    python3 scripts/run_fences.py\n"
+            ),
+        )
+        findings = verifier.scan_root(root)
+    assert any(
+        "verify-bte-022-pmxt-durable-source must run python3 scripts/test_verify_bte_022_pmxt_durable_source.py" in finding
+        for finding in findings
+    )
+
+
 def test_cli_fails_with_actionable_output() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1044,6 +1067,7 @@ def main() -> int:
         test_gitignore_negation_of_pmxt_artifact_is_a_finding,
         test_gitignore_leading_slash_negation_of_pmxt_artifact_is_a_finding,
         test_source_fence_command_outside_recipe_is_a_finding,
+        test_malformed_justfile_recipe_header_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]
     for test in tests:

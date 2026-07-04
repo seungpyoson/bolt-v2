@@ -21,6 +21,11 @@ def load_runner():
     return run_fences
 
 
+def write_dummy_standalone_tests(runner, scripts: pathlib.Path) -> None:
+    for filename in runner.STANDALONE_TEST_FILENAMES:
+        write(scripts / filename, "def main(): return 0\n")
+
+
 def assert_discovers_static_verify_modules_by_name() -> None:
     runner = load_runner()
     with tempfile.TemporaryDirectory() as tmp:
@@ -34,6 +39,25 @@ def assert_discovers_static_verify_modules_by_name() -> None:
         discovered = [path.name for path in runner.discover_fence_paths(scripts)]
 
     if discovered != ["verify_bolt_v3_alpha.py", "verify_ra_beta.py"]:
+        raise AssertionError(discovered)
+
+
+def assert_discovers_paired_and_standalone_test_modules() -> None:
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as tmp:
+        scripts = pathlib.Path(tmp) / "scripts"
+        fence_paths = [
+            scripts / "verify_bolt_v3_alpha.py",
+            scripts / "verify_ra_beta.py",
+        ]
+        discovered = [path.name for path in runner.discover_test_paths(fence_paths, scripts)]
+
+    expected = [
+        "test_verify_bolt_v3_alpha.py",
+        "test_verify_ra_beta.py",
+        *runner.STANDALONE_TEST_FILENAMES,
+    ]
+    if discovered != expected:
         raise AssertionError(discovered)
 
 
@@ -57,7 +81,7 @@ def assert_reports_raised_fence_and_continues() -> None:
         stderr = io.StringIO()
 
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            status = runner.run_fences(root=root, scripts_dir=scripts)
+            status = runner.run_fences(root=root, scripts_dir=scripts, run_tests=False)
 
     combined = stdout.getvalue() + stderr.getvalue()
     if status != 1:
@@ -74,7 +98,7 @@ def assert_shared_filesystem_cache_spans_fences() -> None:
     runner = load_runner()
     module_text = (
         "from pathlib import Path\n"
-        "REPO_ROOT = Path(__file__).resolve().parents[1]\n"
+        "REPO_ROOT = Path(__file__).absolute().parents[1]\n"
         "def main():\n"
         "    for _ in range(2):\n"
         "        for path in (REPO_ROOT / 'src').rglob('*.rs'):\n"
@@ -92,7 +116,7 @@ def assert_shared_filesystem_cache_spans_fences() -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            status, stats = runner.run_fences_with_stats(root=root, scripts_dir=scripts)
+            status, stats = runner.run_fences_with_stats(root=root, scripts_dir=scripts, run_tests=False)
 
     if status != 0:
         raise AssertionError((status, stdout.getvalue(), stderr.getvalue()))
@@ -122,7 +146,7 @@ def assert_runner_argv_does_not_leak_to_fences() -> None:
         sys.argv = ["run_fences.py", "--root", str(root)]
         try:
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                status = runner.run_fences(root=root, scripts_dir=scripts)
+                status = runner.run_fences(root=root, scripts_dir=scripts, run_tests=False)
         finally:
             sys.argv = original_argv
 
@@ -130,11 +154,106 @@ def assert_runner_argv_does_not_leak_to_fences() -> None:
         raise AssertionError((status, stdout.getvalue(), stderr.getvalue()))
 
 
+def assert_system_exit_none_is_success() -> None:
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        scripts = root / "scripts"
+        write(
+            scripts / "verify_bolt_v3_exit_none.py",
+            "import sys\n"
+            "def main():\n"
+            "    sys.exit()\n",
+        )
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = runner.run_fences(root=root, scripts_dir=scripts, run_tests=False)
+
+    if status != 0:
+        raise AssertionError((status, stdout.getvalue(), stderr.getvalue()))
+
+
+def assert_tests_run_without_filesystem_cache() -> None:
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        scripts = root / "scripts"
+        write(
+            scripts / "verify_bolt_v3_stale.py",
+            "from pathlib import Path\n"
+            "REPO_ROOT = Path(__file__).absolute().parents[1]\n"
+            "def main():\n"
+            "    path = REPO_ROOT / 'state.txt'\n"
+            "    path.write_text('before', encoding='utf-8')\n"
+            "    path.read_text(encoding='utf-8')\n"
+            "    path.read_text(encoding='utf-8')\n"
+            "    return 0\n",
+        )
+        write(
+            scripts / "test_verify_bolt_v3_stale.py",
+            "from pathlib import Path\n"
+            "REPO_ROOT = Path(__file__).absolute().parents[1]\n"
+            "def main():\n"
+            "    path = REPO_ROOT / 'state.txt'\n"
+            "    path.write_text('after', encoding='utf-8')\n"
+            "    if path.read_text(encoding='utf-8') != 'after':\n"
+            "        raise RuntimeError('test read saw cached verifier content')\n"
+            "    return 0\n",
+        )
+        write_dummy_standalone_tests(runner, scripts)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status, stats = runner.run_fences_with_stats(root=root, scripts_dir=scripts)
+
+    if status != 0:
+        raise AssertionError((status, stdout.getvalue(), stderr.getvalue()))
+    if stats.read_text_misses != 1 or stats.read_text_hits < 1:
+        raise AssertionError(stats)
+
+
+def assert_filesystem_cache_skips_paths_outside_root() -> None:
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside_tmp:
+        root = pathlib.Path(tmp)
+        outside = pathlib.Path(outside_tmp) / "outside.txt"
+        scripts = root / "scripts"
+        write(
+            scripts / "verify_bolt_v3_outside_root.py",
+            "from pathlib import Path\n"
+            f"OUTSIDE = Path({str(outside)!r})\n"
+            "def main():\n"
+            "    OUTSIDE.write_text('before', encoding='utf-8')\n"
+            "    OUTSIDE.read_text(encoding='utf-8')\n"
+            "    OUTSIDE.write_text('after', encoding='utf-8')\n"
+            "    if OUTSIDE.read_text(encoding='utf-8') != 'after':\n"
+            "        raise RuntimeError('outside-root path was cached')\n"
+            "    return 0\n",
+        )
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status, stats = runner.run_fences_with_stats(root=root, scripts_dir=scripts, run_tests=False)
+
+    if status != 0:
+        raise AssertionError((status, stdout.getvalue(), stderr.getvalue()))
+    if stats.read_text_misses != 0 or stats.read_text_hits != 0:
+        raise AssertionError(stats)
+
+
 def main() -> int:
     assert_discovers_static_verify_modules_by_name()
+    assert_discovers_paired_and_standalone_test_modules()
     assert_reports_raised_fence_and_continues()
     assert_shared_filesystem_cache_spans_fences()
     assert_runner_argv_does_not_leak_to_fences()
+    assert_system_exit_none_is_success()
+    assert_tests_run_without_filesystem_cache()
+    assert_filesystem_cache_skips_paths_outside_root()
     print("OK: run_fences self-tests passed.")
     return 0
 

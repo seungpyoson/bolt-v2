@@ -164,9 +164,13 @@ def _valid_lane_policy() -> dict:
             "local-gate:fmt-check",
             "local-gate:source-fence-static",
             "local-gate:ci-lint-workflow",
+            "run_fences.py",
             "test_clean_merged_artifacts.py",
             "test_developer_tool_storage_hygiene.py",
+            "test_lane_governor.py",
             "test_leadlag_clock_alignment.py",
+            "test_cargo_shim.py",
+            "verify_lane_governance.py",
             "verify_runtime_capture_yaml.py",
         ],
         "cheap_lane_just_recipes": [
@@ -262,6 +266,7 @@ def test_cheap_lane_labels_resolve_just_recipes() -> None:
     assert "test_lane_governor.py" in labels
     assert "verify_lane_governance.py" in labels
     assert "test_cargo_shim.py" in labels
+    assert "run_fences.py" in labels
     assert "test_developer_tool_storage_hygiene.py" in labels
     assert "test_host_health_sampler.py" not in labels
     assert "local-gate:source-fence-static" in labels
@@ -2251,6 +2256,9 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         return isinstance(value, str) and value.endswith(".py")
 
     def _handle_loader_call(self, node: ast.Call, call_name: str) -> None:
+        if self.path == SCRIPTS_DIR / "run_fences.py" and call_name.endswith("spec_from_file_location"):
+            self.targets.update(_run_fences_discovered_targets())
+            return
         if (
             call_name in self.import_module_names
             or call_name in {"importlib.import_module", "runpy.run_module"}
@@ -2648,6 +2656,12 @@ def _discover_cheap_lane_scripts() -> set[Path]:
     return scripts
 
 
+def _run_fences_discovered_targets() -> set[Path]:
+    module = _load("run_fences")
+    fence_paths = module.discover_fence_paths(SCRIPTS_DIR)
+    return {*fence_paths, *module.discover_test_paths(fence_paths, SCRIPTS_DIR)}
+
+
 def _cheap_lane_discovered_unlabeled_manifest() -> set[str]:
     label = _repo_relative_label(_MANIFEST_PATH)
     assert _MANIFEST_PATH.is_file(), f"missing cheap-lane manifest: {label}"
@@ -2755,6 +2769,7 @@ def test_cheap_lane_discovery_manifest_floor_and_required_edges() -> None:
     assert not missing_manifest, f"live discovery dropped committed manifest entries: {sorted(missing_manifest)}"
     required = {
         "scripts/local_verification_gate.py",
+        "scripts/run_fences.py",
         "scripts/rust_verification.py",
         "scripts/test_nextest_fingerprint.py",
         "scripts/nextest_fingerprint.py",

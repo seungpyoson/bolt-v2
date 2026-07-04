@@ -228,6 +228,28 @@ struct OrderLifecycleEvidenceInput {
     ts_event_ns: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+struct PendingEntryTerminalEvidenceInput {
+    pending: PendingEntryState,
+    transition: BoltV3OrderLifecycleTransition,
+    outcome: BoltV3OrderLifecycleOutcome,
+    source: &'static str,
+    raw_reason_text: Option<String>,
+    filled_quantity: Option<Quantity>,
+    ts_event_ns: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PendingEntryTerminalEventInput {
+    client_order_id: ClientOrderId,
+    event_instrument_id: InstrumentId,
+    transition: BoltV3OrderLifecycleTransition,
+    source: &'static str,
+    raw_reason_text: Option<String>,
+    ts_event_ns: u64,
+    terminal_proves_zero_fill: bool,
+}
+
 /// Project the strategy's trade-flow TOML knobs into the buffer's runtime config
 /// view. Single place that maps those fields onto [`SignedTradeFlowConfig`]
 /// (mirrors [`realized_vol_config`]).
@@ -1552,58 +1574,42 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn record_pending_entry_terminal_evidence(
-        &self,
-        pending: PendingEntryState,
-        transition: BoltV3OrderLifecycleTransition,
-        outcome: BoltV3OrderLifecycleOutcome,
-        source: &'static str,
-        raw_reason_text: Option<String>,
-        filled_quantity: Option<Quantity>,
-        ts_event_ns: u64,
-    ) {
+    fn record_pending_entry_terminal_evidence(&self, input: PendingEntryTerminalEvidenceInput) {
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-            transition,
-            outcome,
-            source,
-            market_id: pending.market_id,
-            instrument_id: Some(pending.instrument_id),
+            transition: input.transition,
+            outcome: input.outcome,
+            source: input.source,
+            market_id: input.pending.market_id,
+            instrument_id: Some(input.pending.instrument_id),
             position_id: None,
-            client_order_id: Some(pending.client_order_id),
+            client_order_id: Some(input.pending.client_order_id),
             prior_client_order_id: None,
-            raw_reason_text,
+            raw_reason_text: input.raw_reason_text,
             order_side: None,
-            filled_quantity,
+            filled_quantity: input.filled_quantity,
             residual_quantity: None,
-            ts_event_ns: Some(ts_event_ns),
+            ts_event_ns: Some(input.ts_event_ns),
         });
     }
 
-    fn resolve_pending_entry_terminal_event(
-        &mut self,
-        client_order_id: ClientOrderId,
-        event_instrument_id: InstrumentId,
-        transition: BoltV3OrderLifecycleTransition,
-        source: &'static str,
-        raw_reason_text: Option<String>,
-        ts_event_ns: u64,
-        terminal_proves_zero_fill: bool,
-    ) {
+    fn resolve_pending_entry_terminal_event(&mut self, input: PendingEntryTerminalEventInput) {
         if let Some((pending, observed_fill_quantity)) =
-            self.matching_entry_reconcile_snapshot(client_order_id, event_instrument_id)
+            self.matching_entry_reconcile_snapshot(input.client_order_id, input.event_instrument_id)
         {
             let fill_observed = observed_fill_quantity
                 .is_some_and(|quantity| is_positive_finite(quantity.as_f64()));
-            if fill_observed && !terminal_proves_zero_fill {
-                self.record_pending_entry_terminal_evidence(
+            if fill_observed && !input.terminal_proves_zero_fill {
+                self.record_pending_entry_terminal_evidence(PendingEntryTerminalEvidenceInput {
                     pending,
-                    transition,
-                    BoltV3OrderLifecycleOutcome::EntryReconcilePending,
-                    source,
-                    Some(ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON.to_string()),
-                    observed_fill_quantity,
-                    ts_event_ns,
-                );
+                    transition: input.transition,
+                    outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
+                    source: input.source,
+                    raw_reason_text: Some(
+                        ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON.to_string(),
+                    ),
+                    filled_quantity: observed_fill_quantity,
+                    ts_event_ns: input.ts_event_ns,
+                });
                 return;
             }
 
@@ -1612,31 +1618,31 @@ impl BinaryOracleEdgeTaker {
             // from that position truth instead of trusting the old pending order.
             self.exposure = ExposureState::Flat;
             self.prune_market_lifecycle_at_current_time();
-            self.record_pending_entry_terminal_evidence(
+            self.record_pending_entry_terminal_evidence(PendingEntryTerminalEvidenceInput {
                 pending,
-                transition,
-                BoltV3OrderLifecycleOutcome::Flat,
-                source,
-                raw_reason_text,
-                None,
-                ts_event_ns,
-            );
+                transition: input.transition,
+                outcome: BoltV3OrderLifecycleOutcome::Flat,
+                source: input.source,
+                raw_reason_text: input.raw_reason_text,
+                filled_quantity: None,
+                ts_event_ns: input.ts_event_ns,
+            });
             return;
         }
 
         let pending_entry =
-            self.matching_pending_entry_snapshot(client_order_id, event_instrument_id);
-        self.clear_pending_entry_for_client_order(client_order_id, event_instrument_id);
+            self.matching_pending_entry_snapshot(input.client_order_id, input.event_instrument_id);
+        self.clear_pending_entry_for_client_order(input.client_order_id, input.event_instrument_id);
         if let Some(pending_entry) = pending_entry {
-            self.record_pending_entry_terminal_evidence(
-                pending_entry,
-                transition,
-                Self::lifecycle_outcome_for_exposure(&self.exposure),
-                source,
-                raw_reason_text,
-                None,
-                ts_event_ns,
-            );
+            self.record_pending_entry_terminal_evidence(PendingEntryTerminalEvidenceInput {
+                pending: pending_entry,
+                transition: input.transition,
+                outcome: Self::lifecycle_outcome_for_exposure(&self.exposure),
+                source: input.source,
+                raw_reason_text: input.raw_reason_text,
+                filled_quantity: None,
+                ts_event_ns: input.ts_event_ns,
+            });
         }
     }
 
@@ -3408,14 +3414,17 @@ impl BinaryOracleEdgeTaker {
 
     fn materialize_position_from_event(
         &mut self,
-        instrument_id: InstrumentId,
-        position_id: PositionId,
-        entry_order_side: OrderSide,
-        side: PositionSide,
-        quantity: Quantity,
-        avg_px_open: f64,
+        spec: PositionMaterializationSpec,
         ts_event_ns: u64,
     ) {
+        let PositionMaterializationSpec {
+            instrument_id,
+            position_id,
+            entry_order_side,
+            side,
+            quantity,
+            avg_px_open,
+        } = spec;
         // Venue invariant (defense in depth): a live position event must be on the
         // execution venue, or it would be adopted into Managed and the exit path
         // would submit against a foreign instrument_id. Quarantine before any
@@ -6372,15 +6381,15 @@ impl DataActor for BinaryOracleEdgeTaker {
         &mut self,
         event: &nautilus_model::events::OrderCanceled,
     ) -> anyhow::Result<()> {
-        self.resolve_pending_entry_terminal_event(
-            event.client_order_id,
-            event.instrument_id,
-            BoltV3OrderLifecycleTransition::OrderCanceled,
-            ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED,
-            None,
-            event.ts_event.as_u64(),
-            false,
-        );
+        self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {
+            client_order_id: event.client_order_id,
+            event_instrument_id: event.instrument_id,
+            transition: BoltV3OrderLifecycleTransition::OrderCanceled,
+            source: ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED,
+            raw_reason_text: None,
+            ts_event_ns: event.ts_event.as_u64(),
+            terminal_proves_zero_fill: false,
+        });
         self.mark_exit_order_terminal(
             event.client_order_id,
             event.instrument_id,
@@ -6397,15 +6406,15 @@ impl DataActor for BinaryOracleEdgeTaker {
 nautilus_strategy!(BinaryOracleEdgeTaker, {
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
         self.record_entry_reject(&event);
-        self.resolve_pending_entry_terminal_event(
-            event.client_order_id,
-            event.instrument_id,
-            BoltV3OrderLifecycleTransition::OrderRejected,
-            ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED,
-            Some(event.reason.to_string()),
-            event.ts_event.as_u64(),
-            true,
-        );
+        self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {
+            client_order_id: event.client_order_id,
+            event_instrument_id: event.instrument_id,
+            transition: BoltV3OrderLifecycleTransition::OrderRejected,
+            source: ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED,
+            raw_reason_text: Some(event.reason.to_string()),
+            ts_event_ns: event.ts_event.as_u64(),
+            terminal_proves_zero_fill: true,
+        });
         self.mark_exit_order_terminal(
             event.client_order_id,
             event.instrument_id,
@@ -6423,15 +6432,15 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
             event.instrument_id,
             event.reason.as_str(),
         );
-        self.resolve_pending_entry_terminal_event(
-            event.client_order_id,
-            event.instrument_id,
-            BoltV3OrderLifecycleTransition::OrderDenied,
-            ORDER_LIFECYCLE_SOURCE_ORDER_DENIED,
-            Some(event.reason.to_string()),
-            event.ts_event.as_u64(),
-            true,
-        );
+        self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {
+            client_order_id: event.client_order_id,
+            event_instrument_id: event.instrument_id,
+            transition: BoltV3OrderLifecycleTransition::OrderDenied,
+            source: ORDER_LIFECYCLE_SOURCE_ORDER_DENIED,
+            raw_reason_text: Some(event.reason.to_string()),
+            ts_event_ns: event.ts_event.as_u64(),
+            terminal_proves_zero_fill: true,
+        });
         self.mark_exit_order_terminal(
             event.client_order_id,
             event.instrument_id,
@@ -6444,15 +6453,15 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
     }
 
     fn on_order_expired(&mut self, event: nautilus_model::events::OrderExpired) {
-        self.resolve_pending_entry_terminal_event(
-            event.client_order_id,
-            event.instrument_id,
-            BoltV3OrderLifecycleTransition::OrderExpired,
-            ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED,
-            None,
-            event.ts_event.as_u64(),
-            false,
-        );
+        self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {
+            client_order_id: event.client_order_id,
+            event_instrument_id: event.instrument_id,
+            transition: BoltV3OrderLifecycleTransition::OrderExpired,
+            source: ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED,
+            raw_reason_text: None,
+            ts_event_ns: event.ts_event.as_u64(),
+            terminal_proves_zero_fill: false,
+        });
         self.mark_exit_order_terminal(
             event.client_order_id,
             event.instrument_id,
@@ -6466,24 +6475,28 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
 
     fn on_position_opened(&mut self, _event: nautilus_model::events::PositionOpened) {
         self.materialize_position_from_event(
-            _event.instrument_id,
-            _event.position_id,
-            _event.entry,
-            _event.side,
-            _event.quantity,
-            _event.avg_px_open,
+            PositionMaterializationSpec {
+                instrument_id: _event.instrument_id,
+                position_id: _event.position_id,
+                entry_order_side: _event.entry,
+                side: _event.side,
+                quantity: _event.quantity,
+                avg_px_open: _event.avg_px_open,
+            },
             _event.ts_event.as_u64(),
         );
     }
 
     fn on_position_changed(&mut self, _event: nautilus_model::events::PositionChanged) {
         self.materialize_position_from_event(
-            _event.instrument_id,
-            _event.position_id,
-            _event.entry,
-            _event.side,
-            _event.quantity,
-            _event.avg_px_open,
+            PositionMaterializationSpec {
+                instrument_id: _event.instrument_id,
+                position_id: _event.position_id,
+                entry_order_side: _event.entry,
+                side: _event.side,
+                quantity: _event.quantity,
+                avg_px_open: _event.avg_px_open,
+            },
             _event.ts_event.as_u64(),
         );
     }

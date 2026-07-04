@@ -143,12 +143,14 @@ fn position_change_preserves_pending_exit_correlation() {
     );
 
     strategy.materialize_position_from_event(
-        instrument_id,
-        position_id,
-        OrderSide::Buy,
-        PositionSide::Long,
-        Quantity::new(7.0, 2),
-        0.470,
+        PositionMaterializationSpec {
+            instrument_id,
+            position_id,
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(7.0, 2),
+            avg_px_open: 0.470,
+        },
         0,
     );
 
@@ -450,12 +452,14 @@ fn partial_exit_fill_then_expire_restores_managed_residual_position() {
         .on_order_filled(&fill)
         .expect("partial exit fill bookkeeping should succeed");
     strategy.materialize_position_from_event(
-        instrument_id,
-        position_id,
-        OrderSide::Buy,
-        PositionSide::Long,
-        Quantity::new(6.0, 2),
-        0.45,
+        PositionMaterializationSpec {
+            instrument_id,
+            position_id,
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(6.0, 2),
+            avg_px_open: 0.45,
+        },
         0,
     );
 

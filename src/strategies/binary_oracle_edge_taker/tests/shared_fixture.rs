@@ -1245,12 +1245,14 @@ pub(super) fn configured_position_probe(
 ) -> OpenPositionState {
     let original_exposure = strategy.exposure.clone();
     strategy.materialize_position_from_event(
-        instrument_id,
-        PositionId::from("P-SIDE-PROBE"),
-        OrderSide::Buy,
-        PositionSide::Long,
-        Quantity::new(1.0, 2),
-        0.450,
+        PositionMaterializationSpec {
+            instrument_id,
+            position_id: PositionId::from("P-SIDE-PROBE"),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(1.0, 2),
+            avg_px_open: 0.450,
+        },
         0,
     );
     let position = managed_position_ref(strategy)
@@ -1379,12 +1381,14 @@ pub(super) fn materialize_configured_position(
     avg_px_open: f64,
 ) -> OpenPositionState {
     strategy.materialize_position_from_event(
-        instrument_id,
-        position_id,
-        OrderSide::Buy,
-        PositionSide::Long,
-        quantity,
-        avg_px_open,
+        PositionMaterializationSpec {
+            instrument_id,
+            position_id,
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity,
+            avg_px_open,
+        },
         0,
     );
     let mut position = managed_position_ref(strategy)

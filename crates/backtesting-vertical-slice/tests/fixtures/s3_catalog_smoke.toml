@@ -1,0 +1,80 @@
+[opt_in]
+env_var = "BVS_MINIO_S3_SMOKE"
+enabled_value = "1"
+
+[ci]
+env_var = "CI"
+required_value = "true"
+
+[ci_minio]
+image = "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
+container_name = "bvs-minio-s3-smoke"
+container_data_dir = "/data"
+api_port = 9000
+console_port = 9001
+health_path = "/minio/health/ready"
+readiness_attempts = 60
+readiness_sleep_seconds = 2
+
+[store]
+endpoint_url = "http://127.0.0.1:9000"
+region = "us-east-1"
+bucket = "bvs-s3-catalog-smoke"
+access_key_id = "minioadmin"
+secret_access_key = "minioadmin"
+allow_http = true
+virtual_hosted_style_request = false
+
+[probe]
+prefix = "object-store-conformance"
+sentinel_key = ".writer-probe/conditional-put.bin"
+race_key = "put-mode-create-race.bin"
+transcript_key = "no-overwrite-proof.json"
+writer_count = 8
+payload_stem = "logical-artifact-payload"
+requirement_ref = "normalization-catalog-plan.v3.md §4.3.5"
+proof_name = "ingest_manifest.no_overwrite_proof"
+
+[catalog]
+prefix = "nt-catalog-round-trip"
+symbol = "SYNTHETIC_PAIR"
+venue = "SIMULATED"
+price_precision = 2
+size_precision = 3
+price_increment = 0.01
+size_increment = 0.001
+
+[catalog.base_currency]
+code = "AAA"
+precision = 3
+iso4217 = 990
+name = "Synthetic base unit"
+currency_type = "Crypto"
+
+[catalog.quote_currency]
+code = "BBB"
+precision = 2
+iso4217 = 991
+name = "Synthetic quote unit"
+currency_type = "Crypto"
+
+[[catalog.trades]]
+price = 101.25
+size = 2.500
+aggressor_side = "buyer"
+trade_id = "synthetic-trade-1"
+timestamp_ns = 1000000000
+
+[[catalog.trades]]
+price = 101.75
+size = 1.750
+aggressor_side = "seller"
+trade_id = "synthetic-trade-2"
+timestamp_ns = 2000000000
+
+[[catalog.trades]]
+price = 102.00
+size = 3.125
+aggressor_side = "buyer"
+trade_id = "synthetic-trade-3"
+timestamp_ns = 3000000000

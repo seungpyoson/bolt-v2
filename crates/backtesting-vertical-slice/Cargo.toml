@@ -34,6 +34,7 @@ flate2 = "1.1.9"
 futures = "=0.3.32"
 futures-util = "=0.3.32"
 hex = "0.4"
+hmac = "=0.12.1"
 parquet = "58.3.0"
 reqwest = { version = "=0.13.4", default-features = false, features = ["rustls"] }
 rust_decimal = "1.42.0"

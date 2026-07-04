@@ -715,13 +715,84 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bvs-nextest-list-extract"
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH" --extract-to "$RUNNER_TEMP/bvs-nextest-list-extract" --extract-overwrite --workspace-remap "$GITHUB_WORKSPACE/crates/backtesting-vertical-slice"
 
+      - name: Load BVS MinIO S3 smoke config
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import pathlib
+          import tomllib
+          from urllib.parse import urlparse
+
+          cfg = tomllib.loads(pathlib.Path("crates/backtesting-vertical-slice/tests/fixtures/s3_catalog_smoke.toml").read_text())
+          endpoint = urlparse(cfg["store"]["endpoint_url"])
+          if not endpoint.hostname or not endpoint.port:
+              raise SystemExit("store.endpoint_url must include host and port for CI MinIO")
+          lines = {
+              "BVS_MINIO_S3_SMOKE_ENV_VAR": cfg["opt_in"]["env_var"],
+              "BVS_MINIO_S3_SMOKE_ENV_VALUE": cfg["opt_in"]["enabled_value"],
+              "BVS_MINIO_IMAGE": cfg["ci_minio"]["image"],
+              "BVS_MINIO_CONTAINER_NAME": cfg["ci_minio"]["container_name"],
+              "BVS_MINIO_CONTAINER_DATA_DIR": cfg["ci_minio"]["container_data_dir"],
+              "BVS_MINIO_BIND_HOST": endpoint.hostname,
+              "BVS_MINIO_HOST_PORT": str(endpoint.port),
+              "BVS_MINIO_API_PORT": str(cfg["ci_minio"]["api_port"]),
+              "BVS_MINIO_CONSOLE_PORT": str(cfg["ci_minio"]["console_port"]),
+              "BVS_MINIO_HEALTH_URL": cfg["store"]["endpoint_url"].rstrip("/") + cfg["ci_minio"]["health_path"],
+              "BVS_MINIO_READINESS_ATTEMPTS": str(cfg["ci_minio"]["readiness_attempts"]),
+              "BVS_MINIO_READINESS_SLEEP_SECONDS": str(cfg["ci_minio"]["readiness_sleep_seconds"]),
+              "MINIO_ROOT_USER": cfg["store"]["access_key_id"],
+              "MINIO_ROOT_PASSWORD": cfg["store"]["secret_access_key"],
+          }
+          for key, value in lines.items():
+              print(f"{key}={value}")
+          PY
+
+      - name: Start BVS MinIO S3 smoke container
+        shell: bash
+        run: |
+          docker rm -f "$BVS_MINIO_CONTAINER_NAME" >/dev/null 2>&1 || true
+          docker run \
+            --rm \
+            --detach \
+            --name "$BVS_MINIO_CONTAINER_NAME" \
+            --publish "${BVS_MINIO_BIND_HOST}:${BVS_MINIO_HOST_PORT}:${BVS_MINIO_API_PORT}" \
+            --env MINIO_ROOT_USER \
+            --env MINIO_ROOT_PASSWORD \
+            "$BVS_MINIO_IMAGE" \
+            server "$BVS_MINIO_CONTAINER_DATA_DIR" \
+            --address ":${BVS_MINIO_API_PORT}" \
+            --console-address ":${BVS_MINIO_CONSOLE_PORT}"
+
+      - name: Wait for BVS MinIO S3 smoke service
+        shell: bash
+        run: |
+          for attempt in $(seq 1 "$BVS_MINIO_READINESS_ATTEMPTS"); do
+            if curl -fsS "$BVS_MINIO_HEALTH_URL" >/dev/null; then
+              echo "BVS MinIO S3 smoke service ready"
+              exit 0
+            fi
+            echo "BVS MinIO S3 smoke service not ready on attempt ${attempt}/${BVS_MINIO_READINESS_ATTEMPTS}"
+            sleep "$BVS_MINIO_READINESS_SLEEP_SECONDS"
+          done
+          echo "BVS MinIO S3 smoke service did not become ready" >&2
+          exit 1
+
+      - name: test BVS MinIO S3 smoke
+        run: |
+          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract-s3-smoke"
+          env "$BVS_MINIO_S3_SMOKE_ENV_VAR=$BVS_MINIO_S3_SMOKE_ENV_VALUE" \
+            just bte-test-archive-run \
+              "$BVS_NEXTEST_ARCHIVE_PATH" \
+              "$RUNNER_TEMP/bvs-nextest-archive-extract-s3-smoke" \
+              backtesting_vertical_slice_s3_catalog_smoke
+
       - name: test
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
           failures=0
           for shard in $(seq 1 "$BVS_NEXTEST_SHARDS"); do
             echo "::group::bvs-test partition ${shard}/${BVS_NEXTEST_SHARDS}"
-            if ! just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl; then
+            if ! just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl --skip backtesting_vertical_slice_s3_catalog_smoke; then
               failures=$((failures + 1))
             fi
             echo "::endgroup::"
@@ -730,6 +801,10 @@ jobs:
             echo "$failures BVS test partitions failed"
             exit 1
           fi
+
+      - name: Stop BVS MinIO S3 smoke container
+        if: always()
+        run: docker rm -f "$BVS_MINIO_CONTAINER_NAME" >/dev/null 2>&1 || true
 
   issue_789:
     name: bvs-test issue-789

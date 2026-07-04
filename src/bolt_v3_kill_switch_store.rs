@@ -79,7 +79,7 @@ pub struct KillSwitchPendingHaltActionsSnapshot {
     pub retry_deadline_unix_nanos: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KillSwitchStore {
     path: PathBuf,
     max_state_file_bytes: u64,

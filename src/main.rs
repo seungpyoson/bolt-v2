@@ -1729,6 +1729,7 @@ fn run_loaded_secrets_resolve(
 mod tests {
     use super::*;
     use bolt_v2::bolt_v3_prod_profile::GENERATED_MARKER_PREFIX;
+    use clap::{CommandFactory, error::ErrorKind};
     use std::fs;
 
     fn parsed_ops_command(cli: Cli) -> OpsCommand {
@@ -1758,6 +1759,55 @@ mod tests {
             }
             _ => panic!("expected ops data-client-probe command"),
         }
+    }
+
+    #[test]
+    fn ops_loss_governor_manual_recovery_cli_parses_evidence_fields() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "loss-governor-manual-recovery",
+            "--config",
+            "config/root.toml",
+            "--operator-id",
+            "operator-primary",
+            "--evidence-path",
+            "loss-governor/manual-recovery.json",
+            "--evidence-sha256",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--observed-at-ns",
+            "2500",
+        ])
+        .expect("loss-governor manual recovery command should parse");
+
+        match parsed_ops_command(cli) {
+            OpsCommand::LossGovernorManualRecovery {
+                config,
+                operator_id,
+                evidence_path,
+                evidence_sha256,
+                observed_at_ns,
+            } => {
+                assert_eq!(config, PathBuf::from("config/root.toml"));
+                assert_eq!(operator_id, "operator-primary");
+                assert_eq!(evidence_path, "loss-governor/manual-recovery.json");
+                assert_eq!(
+                    evidence_sha256,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                );
+                assert_eq!(observed_at_ns, 2_500);
+            }
+            _ => panic!("expected ops loss-governor-manual-recovery command"),
+        }
+    }
+
+    #[test]
+    fn ops_loss_governor_manual_recovery_help_does_not_require_config() {
+        let error = Cli::command()
+            .try_get_matches_from(["bolt-v2", "ops", "loss-governor-manual-recovery", "--help"])
+            .expect_err("help should exit through clap without loading config");
+
+        assert_eq!(error.kind(), ErrorKind::DisplayHelp);
     }
 
     #[test]

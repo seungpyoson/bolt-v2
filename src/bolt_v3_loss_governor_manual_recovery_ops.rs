@@ -575,23 +575,23 @@ fn stored_loss_breach_refusal(
     policy: &LossGovernorPolicy,
     snapshot: &LossSnapshot,
 ) -> Option<LossGovernorManualRecoveryRefusal> {
-    if let (Some(limit), Some(stored_loss)) = (policy.max_daily_loss, snapshot.daily_pnl) {
-        if loss_breaches(stored_loss, limit) {
-            return Some(LossGovernorManualRecoveryRefusal::StoredLossBreach {
-                check: "daily_loss_limit",
-                stored_loss,
-                limit,
-            });
-        }
+    if let (Some(limit), Some(stored_loss)) = (policy.max_daily_loss, snapshot.daily_pnl)
+        && loss_breaches(stored_loss, limit)
+    {
+        return Some(LossGovernorManualRecoveryRefusal::StoredLossBreach {
+            check: "daily_loss_limit",
+            stored_loss,
+            limit,
+        });
     }
-    if let (Some(limit), Some(stored_loss)) = (policy.max_rolling_loss, snapshot.rolling_pnl) {
-        if loss_breaches(stored_loss, limit) {
-            return Some(LossGovernorManualRecoveryRefusal::StoredLossBreach {
-                check: "rolling_loss_limit",
-                stored_loss,
-                limit,
-            });
-        }
+    if let (Some(limit), Some(stored_loss)) = (policy.max_rolling_loss, snapshot.rolling_pnl)
+        && loss_breaches(stored_loss, limit)
+    {
+        return Some(LossGovernorManualRecoveryRefusal::StoredLossBreach {
+            check: "rolling_loss_limit",
+            stored_loss,
+            limit,
+        });
     }
     None
 }

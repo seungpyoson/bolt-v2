@@ -3185,9 +3185,11 @@ fn exposure_managed_recovery_origin_is_explicit_without_recovery_boolean() {
 #[test]
 fn position_truth_recovery_after_terminal_flat_records_rematerialization_evidence() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
     );
     let instrument_id = selected_entry_instrument(&strategy);
     let position_id = PositionId::from("P-REMATERIALIZED-001");

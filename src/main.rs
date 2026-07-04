@@ -26,6 +26,9 @@ use bolt_v2::{
         build_bolt_v3_strategy_free_data_client_probe_live_node, current_build_head_sha,
         run_bolt_v3_data_client_census, run_bolt_v3_data_client_probe, run_bolt_v3_live_node,
     },
+    bolt_v3_loss_governor_manual_recovery_ops::{
+        LossGovernorManualRecoveryCommand, recover_loss_governor_manual_halt,
+    },
     bolt_v3_operator_artifacts::{
         LaunchIdentity, WrittenOperatorArtifact, is_lowercase_git_sha, read_launch_identity,
         write_launch_identity,
@@ -68,6 +71,12 @@ const CLOB_V2_CACHE_SYNC_REQUEST_PATH_OUTPUT_FIELD: &str = "request_path";
 const CLOB_V2_CACHE_SYNC_BASE_URL_HTTP_SHA256_OUTPUT_FIELD: &str = "base_url_http_sha256";
 const KILL_SWITCH_STORE_INIT_COMPLETED_OUTPUT_FIELD: &str = "kill_switch_store_init_completed";
 const KILL_SWITCH_STORE_INIT_STATE_PATH_OUTPUT_FIELD: &str = "state_path";
+const LOSS_GOVERNOR_MANUAL_RECOVERY_COMPLETED_OUTPUT_FIELD: &str =
+    "loss_governor_manual_recovery_completed";
+const LOSS_GOVERNOR_MANUAL_RECOVERY_STATE_PATH_OUTPUT_FIELD: &str = "state_path";
+const LOSS_GOVERNOR_MANUAL_RECOVERY_PREVIOUS_STATE_OUTPUT_FIELD: &str = "previous_state";
+const LOSS_GOVERNOR_MANUAL_RECOVERY_RECOVERED_STATE_OUTPUT_FIELD: &str = "recovered_state";
+const LOSS_GOVERNOR_MANUAL_RECOVERY_COUNT_OUTPUT_FIELD: &str = "manual_recovery_count";
 const REFERENCE_CURRENT_PRICE_HEALTH_UNOBSERVED_ERROR: &str =
     "reference_current_price health did not observe every configured source";
 
@@ -159,6 +168,18 @@ enum OpsCommand {
     InitKillSwitchStore {
         #[arg(short, long)]
         config: PathBuf,
+    },
+    LossGovernorManualRecovery {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        operator_id: String,
+        #[arg(long)]
+        evidence_path: String,
+        #[arg(long)]
+        evidence_sha256: String,
+        #[arg(long)]
+        observed_at_ns: u64,
     },
     ReferenceLiveProbe {
         #[arg(short, long)]
@@ -346,6 +367,19 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
             intended_sha,
         } => run_ops_status(&config_root, &profile, intended_sha.as_deref()),
         OpsCommand::InitKillSwitchStore { config } => run_init_kill_switch_store(&config),
+        OpsCommand::LossGovernorManualRecovery {
+            config,
+            operator_id,
+            evidence_path,
+            evidence_sha256,
+            observed_at_ns,
+        } => run_loss_governor_manual_recovery(
+            &config,
+            operator_id,
+            evidence_path,
+            evidence_sha256,
+            observed_at_ns,
+        ),
         OpsCommand::ReferenceLiveProbe { config } => run_reference_live_probe_command(&config),
         OpsCommand::ReferenceCurrentPriceHealth { config } => {
             run_reference_current_price_health_command(&config)
@@ -648,6 +682,35 @@ fn run_init_kill_switch_store(config: &Path) -> Result<(), Box<dyn std::error::E
     let output = serde_json::json!({
         KILL_SWITCH_STORE_INIT_COMPLETED_OUTPUT_FIELD: true,
         KILL_SWITCH_STORE_INIT_STATE_PATH_OUTPUT_FIELD: store.path().display().to_string(),
+    });
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+fn run_loss_governor_manual_recovery(
+    config: &Path,
+    operator_id: String,
+    evidence_path: String,
+    evidence_sha256: String,
+    observed_at_ns: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_bolt_v3_config(config)?;
+    let outcome = recover_loss_governor_manual_halt(
+        &loaded,
+        LossGovernorManualRecoveryCommand {
+            operator_id,
+            evidence_path,
+            evidence_sha256,
+            observed_at_ns,
+            now_ns: current_unix_nanos_for_cli()?,
+        },
+    )?;
+    let output = serde_json::json!({
+        LOSS_GOVERNOR_MANUAL_RECOVERY_COMPLETED_OUTPUT_FIELD: true,
+        LOSS_GOVERNOR_MANUAL_RECOVERY_STATE_PATH_OUTPUT_FIELD: outcome.state_path.display().to_string(),
+        LOSS_GOVERNOR_MANUAL_RECOVERY_PREVIOUS_STATE_OUTPUT_FIELD: format!("{:?}", outcome.previous_state),
+        LOSS_GOVERNOR_MANUAL_RECOVERY_RECOVERED_STATE_OUTPUT_FIELD: format!("{:?}", outcome.recovered_state),
+        LOSS_GOVERNOR_MANUAL_RECOVERY_COUNT_OUTPUT_FIELD: outcome.manual_recovery_count,
     });
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
@@ -1620,6 +1683,11 @@ fn artifact_json(written: &WrittenOperatorArtifact) -> serde_json::Value {
 
 fn current_unix_seconds_for_cli() -> Result<u64, Box<dyn std::error::Error>> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
+}
+
+fn current_unix_nanos_for_cli() -> Result<u64, Box<dyn std::error::Error>> {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    Ok(u64::try_from(nanos)?)
 }
 
 fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error::Error>> {

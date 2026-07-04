@@ -14090,6 +14090,86 @@ classification = "decision_evidence_legacy_non_recovery_skip_kind"
 reason = "Legacy pre-v14 audit-only discriminator retained only so below-schema rebuild audit records skip instead of blocking reservation recovery."
 
 [[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"loss_governor_manual_recovery_completed"'''
+context = '''"loss_governor_manual_recovery_completed";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field reporting that the loss-governor manual recovery command completed its durable write."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"state_path"'''
+context = '''const LOSS_GOVERNOR_MANUAL_RECOVERY_STATE_PATH_OUTPUT_FIELD: &str = "state_path";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field naming the configured kill-switch state_path recovered by the loss-governor manual recovery command."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"previous_state"'''
+context = '''const LOSS_GOVERNOR_MANUAL_RECOVERY_PREVIOUS_STATE_OUTPUT_FIELD: &str = "previous_state";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field naming the prior kill-switch state kind before loss-governor manual recovery."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"recovered_state"'''
+context = '''const LOSS_GOVERNOR_MANUAL_RECOVERY_RECOVERED_STATE_OUTPUT_FIELD: &str = "recovered_state";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field naming the recovered kill-switch state kind after loss-governor manual recovery."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"manual_recovery_count"'''
+context = '''const LOSS_GOVERNOR_MANUAL_RECOVERY_COUNT_OUTPUT_FIELD: &str = "manual_recovery_count";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field reporting the append-only manual recovery audit record count."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"kill-switch store at {} is fail-closed ({reason}); refusing manual recovery"'''
+context = '''"kill-switch store at {} is fail-closed ({reason}); refusing manual recovery",'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing fail-closed diagnostic for a classified durable kill-switch store refusal; no runtime threshold or venue value is hardcoded."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"kill-switch store at {} has no loss-protection snapshot; refusing manual recovery"'''
+context = '''"kill-switch store at {} has no loss-protection snapshot; refusing manual recovery",'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing fail-closed diagnostic for a durable store missing its loss-protection snapshot; no runtime threshold or venue value is hardcoded."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"loss-governor manual recovery cannot recover kill-switch state {state:?}"'''
+context = '''"loss-governor manual recovery cannot recover kill-switch state {state:?}"'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing refusal diagnostic for kill-switch states outside the loss-governor recovery contract; the state comes from the durable store."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"refusing to recover non-loss-governor kill-switch state {state:?}"'''
+context = '''"refusing to recover non-loss-governor kill-switch state {state:?}"'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing no-downgrade diagnostic for non-loss-governor halt classes; the state comes from the durable store."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"loss-governor manual recovery refused by the recovery state machine"'''
+context = '''"loss-governor manual recovery refused by the recovery state machine"'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing refusal diagnostic when existing loss-governor manual recovery policy returns no Active recovery target."
+
+[[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"submit_reservation_metadata"'''

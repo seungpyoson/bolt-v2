@@ -54,6 +54,16 @@ impl std::fmt::Display for KillSwitchRecoveryReason {
 pub struct KillSwitchRecoveryRecord {
     pub recovery_state: KillSwitchRecoveryState,
     pub loss_protection: Option<KillSwitchLossProtectionSnapshot>,
+    pub loss_governor_manual_recoveries: Vec<KillSwitchLossGovernorManualRecoveryRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillSwitchLossGovernorManualRecoveryRecord {
+    pub operator_id: String,
+    pub evidence_path: String,
+    pub evidence_sha256: String,
+    pub observed_at_ns: u64,
+    pub recorded_at_ns: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,10 +123,30 @@ impl KillSwitchStore {
         state: &KillSwitchState,
         loss_protection: Option<&KillSwitchLossProtectionSnapshot>,
     ) -> Result<(), KillSwitchStoreError> {
-        let bytes = serialize_state_with_loss_snapshot(state, loss_protection)?;
+        let bytes =
+            serialize_state_with_loss_snapshot_and_manual_recoveries(state, loss_protection, &[])?;
         self.ensure_state_bytes_within_limit(&bytes)?;
         write_private_atomic_file(&self.path, &bytes)?;
         Ok(())
+    }
+
+    pub fn write_loss_governor_manual_recovery(
+        &self,
+        previous_record: &KillSwitchRecoveryRecord,
+        state: &KillSwitchState,
+        loss_protection: &KillSwitchLossProtectionSnapshot,
+        manual_recovery: KillSwitchLossGovernorManualRecoveryRecord,
+    ) -> Result<usize, KillSwitchStoreError> {
+        let mut manual_recoveries = previous_record.loss_governor_manual_recoveries.clone();
+        manual_recoveries.push(manual_recovery);
+        let bytes = serialize_state_with_loss_snapshot_and_manual_recoveries(
+            state,
+            Some(loss_protection),
+            &manual_recoveries,
+        )?;
+        self.ensure_state_bytes_within_limit(&bytes)?;
+        write_private_atomic_file(&self.path, &bytes)?;
+        Ok(manual_recoveries.len())
     }
 
     pub fn bootstrap_initial_armed_loss_snapshot(&self) -> Result<(), KillSwitchStoreError> {
@@ -166,6 +196,7 @@ impl KillSwitchStore {
                         state: None,
                     },
                     loss_protection: None,
+                    loss_governor_manual_recoveries: Vec::new(),
                 });
             }
             Err(source) => {
@@ -194,6 +225,7 @@ impl KillSwitchStore {
                     state: None,
                 },
                 loss_protection: None,
+                loss_governor_manual_recoveries: Vec::new(),
             });
         }
 
@@ -206,9 +238,18 @@ impl KillSwitchStore {
                         state: None,
                     },
                     loss_protection: None,
+                    loss_governor_manual_recoveries: Vec::new(),
                 });
             }
         };
+
+        let loss_governor_manual_recoveries = persisted
+            .loss_governor_manual_recoveries
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(KillSwitchLossGovernorManualRecoveryRecord::from)
+            .collect::<Vec<_>>();
 
         if persisted.schema_version != KILL_SWITCH_STORE_SCHEMA_VERSION {
             return Ok(KillSwitchRecoveryRecord {
@@ -217,6 +258,7 @@ impl KillSwitchStore {
                     state: Some(persisted.state),
                 },
                 loss_protection: None,
+                loss_governor_manual_recoveries,
             });
         }
 
@@ -230,6 +272,7 @@ impl KillSwitchStore {
                             state: Some(persisted.state),
                         },
                         loss_protection: None,
+                        loss_governor_manual_recoveries,
                     });
                 }
             },
@@ -248,6 +291,7 @@ impl KillSwitchStore {
         Ok(KillSwitchRecoveryRecord {
             recovery_state,
             loss_protection,
+            loss_governor_manual_recoveries,
         })
     }
 }
@@ -268,10 +312,24 @@ fn serialize_state_with_loss_snapshot(
     state: &KillSwitchState,
     loss_protection: Option<&KillSwitchLossProtectionSnapshot>,
 ) -> Result<Vec<u8>, KillSwitchStoreError> {
+    serialize_state_with_loss_snapshot_and_manual_recoveries(state, loss_protection, &[])
+}
+
+fn serialize_state_with_loss_snapshot_and_manual_recoveries(
+    state: &KillSwitchState,
+    loss_protection: Option<&KillSwitchLossProtectionSnapshot>,
+    loss_governor_manual_recoveries: &[KillSwitchLossGovernorManualRecoveryRecord],
+) -> Result<Vec<u8>, KillSwitchStoreError> {
     let persisted = PersistedKillSwitchState {
         schema_version: KILL_SWITCH_STORE_SCHEMA_VERSION,
         state: state.clone(),
         loss_protection: loss_protection.map(PersistedKillSwitchLossProtectionSnapshot::from),
+        loss_governor_manual_recoveries: (!loss_governor_manual_recoveries.is_empty()).then(|| {
+            loss_governor_manual_recoveries
+                .iter()
+                .map(PersistedLossGovernorManualRecoveryRecord::from)
+                .collect()
+        }),
     };
     let mut bytes =
         serde_json::to_vec_pretty(&persisted).map_err(KillSwitchStoreError::Serialize)?;
@@ -285,6 +343,17 @@ struct PersistedKillSwitchState {
     state: KillSwitchState,
     #[serde(skip_serializing_if = "Option::is_none")]
     loss_protection: Option<PersistedKillSwitchLossProtectionSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    loss_governor_manual_recoveries: Option<Vec<PersistedLossGovernorManualRecoveryRecord>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedLossGovernorManualRecoveryRecord {
+    operator_id: String,
+    evidence_path: String,
+    evidence_sha256: String,
+    observed_at_ns: u64,
+    recorded_at_ns: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -348,6 +417,34 @@ impl From<&KillSwitchLossProtectionSnapshot> for PersistedKillSwitchLossProtecti
             closed_position_pnl: persist_pnl_map(&snapshot.closed_position_pnl),
             adjusted_position_pnl: persist_pnl_map(&snapshot.adjusted_position_pnl),
             pending_halt_actions: snapshot.pending_halt_actions,
+        }
+    }
+}
+
+impl From<&KillSwitchLossGovernorManualRecoveryRecord>
+    for PersistedLossGovernorManualRecoveryRecord
+{
+    fn from(record: &KillSwitchLossGovernorManualRecoveryRecord) -> Self {
+        Self {
+            operator_id: record.operator_id.clone(),
+            evidence_path: record.evidence_path.clone(),
+            evidence_sha256: record.evidence_sha256.clone(),
+            observed_at_ns: record.observed_at_ns,
+            recorded_at_ns: record.recorded_at_ns,
+        }
+    }
+}
+
+impl From<&PersistedLossGovernorManualRecoveryRecord>
+    for KillSwitchLossGovernorManualRecoveryRecord
+{
+    fn from(record: &PersistedLossGovernorManualRecoveryRecord) -> Self {
+        Self {
+            operator_id: record.operator_id.clone(),
+            evidence_path: record.evidence_path.clone(),
+            evidence_sha256: record.evidence_sha256.clone(),
+            observed_at_ns: record.observed_at_ns,
+            recorded_at_ns: record.recorded_at_ns,
         }
     }
 }

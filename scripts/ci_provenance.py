@@ -122,6 +122,7 @@ NEXTEST_FINGERPRINT_RE = re.compile(
 )
 REUSE_RELEVANT_WORKFLOW_JOBS = (
     "nextest-fingerprint",
+    "nextest-fingerprint-reuse",
     "test-archive",
     "test",
     "build",

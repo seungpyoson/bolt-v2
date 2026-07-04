@@ -1277,6 +1277,57 @@ def assert_fingerprint_reuse_allows_deploy_only_env_drift() -> None:
             raise AssertionError(result)
 
 
+def assert_workflow_reuse_scope_digest_tracks_reuse_resolver_job_block() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        resolver_job_mutation = replace_once(
+            workflow_text,
+            '          --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"',
+            '          --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"\n'
+            "          --reuse-scope-test-sentinel",
+        )
+        source_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            workflow_text.encode("utf-8"),
+        )
+        mutated_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            resolver_job_mutation.encode("utf-8"),
+        )
+        if source_digest == mutated_digest:
+            raise AssertionError("nextest-fingerprint-reuse job edits must change the reuse-scope digest")
+
+
+def assert_workflow_reuse_scope_digest_ignores_unscoped_job_block() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        deny_job_mutation = replace_once(
+            workflow_text,
+            "      - name: deny\n        run: just deny",
+            "      - name: deny\n        run: just deny\n"
+            "      - name: Unscoped reuse digest sentinel\n"
+            "        run: echo unscoped",
+        )
+        source_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            workflow_text.encode("utf-8"),
+        )
+        mutated_digest = module.workflow_reuse_scope_digest_from_bytes(
+            config,
+            deny_job_mutation.encode("utf-8"),
+        )
+        if source_digest != mutated_digest:
+            raise AssertionError("unscoped deny job edits must not change the reuse-scope digest")
+
+
 def assert_workflow_reuse_scope_digest_accepts_yaml_header_formatting() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1629,6 +1680,7 @@ def assert_fingerprint_reuse_rejects_reuse_relevant_workflow_drift() -> None:
         )
         display_names = {
             "nextest-fingerprint": "nextest fingerprint",
+            "nextest-fingerprint-reuse": "nextest fingerprint reuse",
             "test-archive": "nextest archive",
             "test": "test",
             "build": "build",
@@ -5120,6 +5172,8 @@ def main() -> int:
     assert_fingerprint_reuse_rejects_source_record_workflow_digest_mismatch()
     assert_fingerprint_reuse_allows_unrelated_workflow_drift()
     assert_fingerprint_reuse_allows_deploy_only_env_drift()
+    assert_workflow_reuse_scope_digest_tracks_reuse_resolver_job_block()
+    assert_workflow_reuse_scope_digest_ignores_unscoped_job_block()
     assert_workflow_reuse_scope_digest_accepts_yaml_header_formatting()
     assert_workflow_reuse_scope_digest_distinguishes_quoted_hash_values()
     assert_workflow_reuse_scope_digest_rejects_multiline_scoped_env()

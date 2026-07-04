@@ -9487,6 +9487,29 @@ def assert_nextest_fingerprint_reuse_governance_covers_sidecar_helper() -> None:
         raise AssertionError(f"fingerprint-reuse governance pathspec must include root sidecar helper files: {missing}")
 
 
+def assert_nextest_fingerprint_reuse_governance_pathspec_order_is_pinned() -> None:
+    verifier = load_verifier()
+    expected_paths = (
+        ".github/actions/setup-environment/action.yml",
+        "ci/nextest-fingerprint.toml",
+        "ci/github-actions-runners.toml",
+        "scripts/nextest_fingerprint.py",
+        "scripts/test_nextest_fingerprint.py",
+        "scripts/root_bin_sidecars.py",
+        "scripts/test_root_bin_sidecars.py",
+        "scripts/config_validators.py",
+        "scripts/ci_provenance.py",
+        "scripts/test_ci_provenance.py",
+        "scripts/verify_ci_workflow_hygiene.py",
+        "scripts/test_verify_ci_workflow_hygiene.py",
+    )
+    if verifier.FINGERPRINT_REUSE_GOVERNANCE_PATHS != expected_paths:
+        raise AssertionError(
+            "fingerprint-reuse governance pathspec order drifted: "
+            f"{verifier.FINGERPRINT_REUSE_GOVERNANCE_PATHS!r}"
+        )
+
+
 def assert_nextest_fingerprint_reuse_governance_excludes_whole_ci_workflow() -> None:
     verifier = load_verifier()
     if ".github/workflows/ci.yml" in verifier.FINGERPRINT_REUSE_GOVERNANCE_PATHS:
@@ -9499,6 +9522,17 @@ def assert_nextest_fingerprint_reuse_governance_excludes_whole_ci_workflow() -> 
         """          changed="$(git diff --name-only "$diff_range" --             .github/workflows/ci.yml             .github/actions/setup-environment/action.yml""",
     )
     assert_error("detector must detect fingerprint-reuse governance changes", whole_workflow_detector)
+
+
+def assert_reuse_neutral_env_comment_states_fail_closed_classification_rule() -> None:
+    verifier_text = VERIFIER_PATH.read_text(encoding="utf-8")
+    comment = (
+        "# A key may be listed here only if it must not influence compiler/test-runner\n"
+        "# behavior or archive content; when in doubt classify reuse-relevant\n"
+        "# (fails toward rebuild)."
+    )
+    if comment not in verifier_text:
+        raise AssertionError("reuse-neutral env comment must state the fail-closed classification rule")
 
 
 def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
@@ -17709,7 +17743,9 @@ def main() -> int:
     assert_source_fence_static_ignores_comments()
     assert_local_verification_gate_recipes_are_enforced()
     assert_nextest_fingerprint_reuse_governance_covers_sidecar_helper()
+    assert_nextest_fingerprint_reuse_governance_pathspec_order_is_pinned()
     assert_nextest_fingerprint_reuse_governance_excludes_whole_ci_workflow()
+    assert_reuse_neutral_env_comment_states_fail_closed_classification_rule()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
     assert_ci_policy_matrix()
     assert_ci_policy_resolvers_agree()

@@ -114,6 +114,43 @@ def test_runner_timeout_is_attributed_to_suite() -> None:
             raise AssertionError(output)
 
 
+def test_runner_timeout_preserves_partial_output_in_grouped_result() -> None:
+    runner = load_runner_module()
+    suites = (
+        runner.CiLintSuite(
+            "partial-timeout",
+            python_command(
+                "import sys, time; "
+                "print('partial-' + 'stdout', flush=True); "
+                "print('partial-' + 'stderr', file=sys.stderr, flush=True); "
+                "time.sleep(60)"
+            ),
+        ),
+    )
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    status = runner.run_suites(suites, workers=1, timeout_seconds=0.05, stdout=stdout, stderr=stderr)
+
+    stdout_output = stdout.getvalue()
+    stderr_output = stderr.getvalue()
+    if status != 1:
+        raise AssertionError(status)
+    if "=== ci-lint suite: partial-timeout ===" not in stdout_output:
+        raise AssertionError(stdout_output)
+    if "partial-stdout" not in stdout_output:
+        raise AssertionError(stdout_output)
+    if "partial-stderr" not in stderr_output:
+        raise AssertionError(stderr_output)
+    for expected in (
+        "suite partial-timeout timed out after 0.05s",
+        "FAIL: partial-timeout exited 124",
+        "FINISH: ci-lint suite partial-timeout exited 124",
+    ):
+        if expected not in stderr_output:
+            raise AssertionError(stderr_output)
+
+
 def test_run_one_suite_turns_unexpected_exceptions_into_attributed_result() -> None:
     runner = load_runner_module()
     original_run = runner.subprocess.run
@@ -240,6 +277,7 @@ def main() -> int:
         test_runner_groups_each_suite_output_and_reports_all_failures,
         test_runner_emits_start_finish_breadcrumbs_to_stderr,
         test_runner_timeout_is_attributed_to_suite,
+        test_runner_timeout_preserves_partial_output_in_grouped_result,
         test_run_one_suite_turns_unexpected_exceptions_into_attributed_result,
         test_runner_future_crashes_are_attributed_and_do_not_abort_battery,
         test_runner_rejects_unbounded_worker_count_for_default_workflow,

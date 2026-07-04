@@ -9381,6 +9381,15 @@ ci-lint-workflow-inner: require-local-verification-gate
     if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py" in error for error in echo_decoy_errors):
         raise AssertionError(f"ci-lint runner echo decoy satisfied wiring, got: {echo_decoy_errors}")
 
+    noncanonical_runner = justfile_text.replace(
+        runner_line,
+        f"{runner_line}\n"
+        "    python3 scripts/run_ci_lint_suites.py --workers 2",
+    )
+    noncanonical_runner_errors = verifier.verify_local_verification_gate_recipes(noncanonical_runner)
+    if not any("justfile ci-lint-workflow-inner must not invoke the runner outside the pinned line" in error for error in noncanonical_runner_errors):
+        raise AssertionError(f"ci-lint noncanonical runner line was silent, got: {noncanonical_runner_errors}")
+
     commented_runner = justfile_text.replace(
         runner_line,
         f"    # {runner_line.strip()}",

@@ -6807,6 +6807,10 @@ def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
         elif runner_count > 1:
             errors.append(f"justfile ci-lint-workflow-inner must run {CI_LINT_WORKFLOW_RUNNER_COMMAND} exactly once")
 
+        for line in ci_lint_inner_lines:
+            if "run_ci_lint_suites.py" in line and line != CI_LINT_WORKFLOW_RUNNER_LINE:
+                errors.append("justfile ci-lint-workflow-inner must not invoke the runner outside the pinned line")
+
         suite_commands = ci_lint_suite_commands(errors)
         for line in ci_lint_inner_lines:
             if any(command in line for command in suite_commands):

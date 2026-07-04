@@ -12,9 +12,6 @@ use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{CustomData, DataType, IndexPriceUpdate, QuoteTick, TradeTick},
-    enums::PositionSide,
-};
-use nautilus_model::{
     enums::{OrderSide, OrderType, TimeInForce},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},

@@ -1429,7 +1429,11 @@ git config "remote.${{clean_merged_remote}}.prune" true
             source,
         )
         self.assertIn('if [ -n "$_entire_stdin" ]; then', source)
-        self.assertIn('entire hooks git post-rewrite "$1" < "$_entire_stdin"', source)
+        self.assertIn('if cat 2>/dev/null > "$_entire_stdin"; then', source)
+        self.assertIn(
+            'entire hooks git post-rewrite "$1" 2>/dev/null < "$_entire_stdin"',
+            source,
+        )
         self.assertIn("clean-merged Lane H dispatch", source)
         self.assertNotIn("post-rewrite.pre-entire", source)
 
@@ -1452,6 +1456,46 @@ git config "remote.${{clean_merged_remote}}.prune" true
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stderr, "")
+
+    def test_post_rewrite_stays_silent_when_stdin_stage_fails(self) -> None:
+        hook = self.work / ".git" / "hooks" / "post-rewrite"
+        shutil.copy2(REPO_ROOT / ".githooks" / "post-rewrite", hook)
+
+        fake_bin = self.tmp / "fake-bin-stage-fails"
+        fake_bin.mkdir()
+        unusable_stdin = self.tmp / "unusable-stdin"
+        marker = self.tmp / "entire-invoked"
+        fake_mktemp = fake_bin / "mktemp"
+        fake_mktemp.write_text(
+            "#!/bin/sh\n"
+            ': > "$FAKE_UNUSABLE_STDIN"\n'
+            'chmod 000 "$FAKE_UNUSABLE_STDIN"\n'
+            'printf "%s\\n" "$FAKE_UNUSABLE_STDIN"\n',
+            encoding="utf-8",
+        )
+        fake_mktemp.chmod(0o755)
+        fake_entire = fake_bin / "entire"
+        fake_entire.write_text(
+            "#!/bin/sh\n"
+            'printf invoked > "$FAKE_ENTIRE_MARKER"\n',
+            encoding="utf-8",
+        )
+        fake_entire.chmod(0o755)
+
+        proc = _run(
+            [str(hook), "amend"],
+            cwd=self.work,
+            env={
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                "FAKE_UNUSABLE_STDIN": str(unusable_stdin),
+                "FAKE_ENTIRE_MARKER": str(marker),
+            },
+            check=False,
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stderr, "")
+        self.assertFalse(marker.exists())
 
 
 # ---------------------------------------------------------------------------

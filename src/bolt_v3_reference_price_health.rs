@@ -568,7 +568,7 @@ fn reference_current_price_health_stop_timeout(loaded: &LoadedBoltV3Config) -> R
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, str::FromStr};
+    use std::path::Path;
 
     use super::*;
     use futures_util::{SinkExt, StreamExt};

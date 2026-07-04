@@ -3186,7 +3186,7 @@ fn exposure_managed_recovery_origin_is_explicit_without_recovery_boolean() {
 fn position_truth_recovery_after_terminal_flat_records_rematerialization_evidence() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        Arc::new(NoopFeeProvider),
+        RecordingFeeProvider::cold(),
         evidence.clone(),
     );
     let instrument_id = selected_entry_instrument(&strategy);
@@ -3206,7 +3206,7 @@ fn position_truth_recovery_after_terminal_flat_records_rematerialization_evidenc
     };
     set_pending_entry(&mut strategy, pending);
 
-    strategy.on_order_canceled(order_canceled_event(entry_client_order_id, instrument_id));
+    strategy.on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id));
     assert!(matches!(strategy.exposure, ExposureState::Flat));
 
     strategy.on_position_opened(position_opened_event(

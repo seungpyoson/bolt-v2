@@ -354,7 +354,7 @@ output_prefix_template = "source-universe={{universe_id}}/category={{category}}/
 }
 
 #[test]
-fn source_universe_conversion_queue_materializes_every_pmxt_archive_index_object_without_sha256_claim()
+fn source_universe_conversion_queue_materializes_every_pmxt_archive_index_object_with_evicted_sha256_claim()
  {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");

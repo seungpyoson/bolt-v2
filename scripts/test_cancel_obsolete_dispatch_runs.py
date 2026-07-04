@@ -337,14 +337,60 @@ max_pages = 4
     assert loaded.max_pages == 4, loaded
 
 
+def assert_github_client_uses_safe_redirect_opener() -> None:
+    module = load_script()
+    import ci_provenance
+
+    captured_handlers = []
+    original_build_opener = module.urllib.request.build_opener
+    original_urlopen = module.urllib.request.urlopen
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    class FakeOpener:
+        def open(self, _request, timeout):
+            if timeout != 30:
+                raise AssertionError(f"unexpected timeout: {timeout!r}")
+            return Response()
+
+    def build_opener(*handlers):
+        captured_handlers.extend(handlers)
+        return FakeOpener()
+
+    def direct_urlopen(_request, timeout):
+        if timeout != 30:
+            raise AssertionError(f"unexpected timeout: {timeout!r}")
+        return Response()
+
+    module.urllib.request.build_opener = build_opener
+    module.urllib.request.urlopen = direct_urlopen
+    try:
+        client = module.GitHubClient(repo="example/repo", token="token")
+        client.get_json("actions/runs", {})
+    finally:
+        module.urllib.request.build_opener = original_build_opener
+        module.urllib.request.urlopen = original_urlopen
+
+    if not any(isinstance(handler, ci_provenance.SafeGitHubRedirectHandler) for handler in captured_handlers):
+        raise AssertionError("GitHub client must use SafeGitHubRedirectHandler")
+
+
 def assert_api_transport_errors_are_domain_errors() -> None:
     module = load_script()
-    original_urlopen = module.urllib.request.urlopen
+    original_open_github_api_request = module._ci_provenance.open_github_api_request
 
     def raise_url_error(_request, timeout):
         raise module.urllib.error.URLError("dns failed")
 
-    module.urllib.request.urlopen = raise_url_error
+    module._ci_provenance.open_github_api_request = raise_url_error
     try:
         client = module.GitHubClient(repo="example/repo", token="token")
         try:
@@ -355,12 +401,12 @@ def assert_api_transport_errors_are_domain_errors() -> None:
         else:
             raise AssertionError("expected DispatchCancelError")
     finally:
-        module.urllib.request.urlopen = original_urlopen
+        module._ci_provenance.open_github_api_request = original_open_github_api_request
 
 
 def assert_invalid_json_is_domain_error() -> None:
     module = load_script()
-    original_urlopen = module.urllib.request.urlopen
+    original_open_github_api_request = module._ci_provenance.open_github_api_request
 
     class Response:
         def __enter__(self):
@@ -375,7 +421,7 @@ def assert_invalid_json_is_domain_error() -> None:
     def invalid_json_response(_request, timeout):
         return Response()
 
-    module.urllib.request.urlopen = invalid_json_response
+    module._ci_provenance.open_github_api_request = invalid_json_response
     try:
         client = module.GitHubClient(repo="example/repo", token="token")
         try:
@@ -386,7 +432,7 @@ def assert_invalid_json_is_domain_error() -> None:
         else:
             raise AssertionError("expected DispatchCancelError")
     finally:
-        module.urllib.request.urlopen = original_urlopen
+        module._ci_provenance.open_github_api_request = original_open_github_api_request
 
 
 def assert_invalid_event_file_json_is_domain_error() -> None:
@@ -416,6 +462,7 @@ def main() -> int:
     assert_paginates_until_partial_page()
     assert_warns_when_pagination_cap_is_full()
     assert_config_comes_from_toml()
+    assert_github_client_uses_safe_redirect_opener()
     assert_api_transport_errors_are_domain_errors()
     assert_invalid_json_is_domain_error()
     assert_invalid_event_file_json_is_domain_error()

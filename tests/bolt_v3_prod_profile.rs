@@ -16,7 +16,11 @@
 
 use crate::support;
 
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use bolt_v2::{
     bolt_v3_config::{LiveSubmitGovernanceMode, LoadedBoltV3Config, load_bolt_v3_config},
@@ -39,6 +43,8 @@ const BASE: &str = "config/root.toml";
 /// tooling cannot pick it up as a config).
 const LEGACY_ORACLE: &str = "tests/fixtures/legacy_prod_btc_5m_oracle.toml";
 const BTC_STRATEGY: &str = "strategies/binary_oracle_btc.toml";
+const PROFILE_OVERLAY_SUFFIX: &str = ".overlay.toml";
+const UNKNOWN_OVERLAY_KEY: &str = "unrecognized_fixture_key";
 /// The exact stale key that blocked the 2026-06-18 BTC pilot start at systemd
 /// time. The current binary's `NautilusDataEngineBlock` has no such field and is
 /// `#[serde(deny_unknown_fields)]`, so any config carrying it must fail to load.
@@ -50,37 +56,41 @@ const STALE_DEPLOY_KEY: &str = "graceful_shutdown_on_error";
 fn stage_runtime_dir(label: &str) -> support::TempCaseDir {
     let dir = support::TempCaseDir::new(label);
     let strategies = dir.path().join("strategies");
-    std::fs::create_dir_all(&strategies).expect("staged strategies dir should be created");
-    for entry in std::fs::read_dir(support::repo_path("config/strategies"))
+    fs::create_dir_all(&strategies).expect("staged strategies dir should be created");
+    for entry in fs::read_dir(support::repo_path("config/strategies"))
         .expect("tracked strategies dir should be readable")
     {
         let path = entry.expect("strategy dir entry should read").path();
         if path.extension().and_then(|extension| extension.to_str()) == Some("toml") {
             let file_name = path.file_name().expect("strategy file should have a name");
-            std::fs::copy(&path, strategies.join(file_name)).expect("strategy file should copy");
+            fs::copy(&path, strategies.join(file_name)).expect("strategy file should copy");
         }
     }
     dir
 }
 
 /// Stage a FULL on-box config tree mirroring `/opt/bolt-v2/config`: the strategies
-/// (via [`stage_runtime_dir`]), a copy of the base `root.toml`, and the overlay
-/// under `profiles/`. In this single-tree layout the derived overlay, derived
-/// `live.toml`, and strategies all live under one config root.
+/// (via [`stage_runtime_dir`]), a copy of the base `root.toml`, and every committed
+/// profile overlay under `profiles/`. In this single-tree layout the derived
+/// overlay, derived `live.toml`, and strategies all live under one config root.
 fn stage_full_config_tree(label: &str) -> support::TempCaseDir {
     let dir = stage_runtime_dir(label);
-    std::fs::copy(support::repo_path(BASE), dir.path().join("root.toml"))
+    fs::copy(support::repo_path(BASE), dir.path().join("root.toml"))
         .expect("base root.toml copies into the staged tree");
     let profiles = dir.path().join("profiles");
-    std::fs::create_dir_all(&profiles).expect("staged profiles dir creates");
-    let overlay = profiles.join("prod-btc-5m.overlay.toml");
-    std::fs::copy(support::repo_path(OVERLAY), &overlay)
-        .expect("overlay copies into the staged tree");
+    fs::create_dir_all(&profiles).expect("staged profiles dir creates");
+    for overlay in committed_profile_overlay_paths() {
+        let file_name = overlay
+            .file_name()
+            .expect("committed profile overlay should have a file name");
+        fs::copy(&overlay, profiles.join(file_name))
+            .expect("committed profile overlay copies into the staged tree");
+    }
     dir
 }
 
 fn write(path: &Path, text: &str) {
-    std::fs::write(path, text).expect("test file should write");
+    fs::write(path, text).expect("test file should write");
 }
 
 /// Load a config TEXT by writing it into a staged runtime dir (so its relative
@@ -98,6 +108,44 @@ fn repo_config_root() -> std::path::PathBuf {
 
 fn repo_config_text(relative: &str) -> String {
     support::repo_text(&format!("{CONFIG_ROOT}/{relative}"))
+}
+
+fn profile_id_from_overlay_path(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|file_name| file_name.to_str())
+        .and_then(|file_name| file_name.strip_suffix(PROFILE_OVERLAY_SUFFIX))
+        .map(str::to_string)
+}
+
+fn committed_profile_overlay_paths() -> Vec<PathBuf> {
+    let mut overlays: Vec<PathBuf> = fs::read_dir(support::repo_path("config/profiles"))
+        .expect("committed profile directory should be readable")
+        .map(|entry| {
+            entry
+                .expect("committed profile directory entry should read")
+                .path()
+        })
+        .filter(|path| path.is_file() && profile_id_from_overlay_path(path).is_some())
+        .collect();
+    overlays.sort();
+    overlays
+}
+
+fn committed_profile_ids() -> Vec<String> {
+    committed_profile_overlay_paths()
+        .into_iter()
+        .map(|path| {
+            let profile_id = profile_id_from_overlay_path(&path)
+                .expect("committed profile overlay path should encode profile id");
+            ProfileId::parse(&profile_id).unwrap_or_else(|error| {
+                panic!(
+                    "profile overlay `{}` must use an opaque profile id: {error}",
+                    path.display()
+                )
+            });
+            profile_id
+        })
+        .collect()
 }
 
 #[test]
@@ -163,6 +211,45 @@ fn composed_prod_config_loads_against_this_binary() {
         !loaded.config_bundle_checksum.is_empty(),
         "a loaded composed config must produce a config bundle checksum"
     );
+}
+
+#[test]
+fn committed_profile_overlays_generate_and_verify_against_current_binary() {
+    let profile_ids = committed_profile_ids();
+    assert!(
+        !profile_ids.is_empty(),
+        "profile discovery must find at least one committed `{PROFILE_OVERLAY_SUFFIX}` file"
+    );
+
+    for profile_id in profile_ids {
+        let committed_generated = generate_live_config(&repo_config_root(), &profile_id)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "committed profile `{profile_id}` must generate from {BASE} and committed strategies: {error}"
+                )
+            });
+        let staged = stage_full_config_tree(&format!("committed-profile-{profile_id}"));
+        let staged_generated =
+            generate_live_config(staged.path(), &profile_id).unwrap_or_else(|error| {
+                panic!(
+                    "staged committed profile `{profile_id}` must generate through the ops generation path: {error}"
+                )
+            });
+        assert_eq!(
+            staged_generated.text, committed_generated.text,
+            "staged profile `{profile_id}` must compose to the same runtime config as committed {BASE}"
+        );
+
+        write(&live_config_path(staged.path()), &staged_generated.text);
+        let verification =
+            verify_live_config(staged.path(), &profile_id).unwrap_or_else(|error| {
+                panic!(
+                    "staged committed profile `{profile_id}` must verify through the ops verification path: {error}"
+                )
+            });
+        assert!(verification.matches_profile);
+        assert!(verification.loads_against_binary);
+    }
 }
 
 #[test]
@@ -585,7 +672,7 @@ fn generate_rejects_overlay_with_unknown_field() {
     let overlay_text = support::repo_text(OVERLAY);
     let invalid = overlay_text.replace(
         "strategy_files =",
-        "bogus_unknown_overlay_key = 1\nstrategy_files =",
+        &format!("{UNKNOWN_OVERLAY_KEY} = 1\nstrategy_files ="),
     );
     assert_ne!(
         invalid, overlay_text,
@@ -600,6 +687,10 @@ fn generate_rejects_overlay_with_unknown_field() {
     assert!(
         matches!(error, ProfileError::Overlay { .. }),
         "unknown-field overlay must fail at overlay parse, got: {error}"
+    );
+    assert!(
+        error.to_string().contains(UNKNOWN_OVERLAY_KEY),
+        "unknown-field overlay error must name `{UNKNOWN_OVERLAY_KEY}`, got: {error}"
     );
 }
 

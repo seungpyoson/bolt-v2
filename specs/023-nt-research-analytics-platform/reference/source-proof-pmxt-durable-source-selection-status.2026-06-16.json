@@ -21,7 +21,7 @@
     },
     "admissibility_contract": {
       "path": "repo://crates/backtesting-vertical-slice/src/source_proof_admissibility.rs",
-      "sha256": "b52df4d20d6c8b5e656294ee331758c648f1cb1eb27c0c1b6fbb7e2c021fcf12"
+      "sha256": "c52df4d20d6c8b5e656294ee331758c648f1cb1eb27c0c1b6fbb7e2c021fcf12"
     },
     "acceptance_contract": {
       "path": "repo://crates/backtesting-vertical-slice/src/source_proof.rs",

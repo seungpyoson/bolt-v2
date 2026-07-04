@@ -105,7 +105,12 @@ impl ExitPendingState {
             return None;
         }
         let mut residual_position = position.position.clone();
-        residual_position.quantity = Quantity::new(residual, position.position.quantity.precision);
+        let residual_precision = position
+            .position
+            .quantity
+            .precision
+            .max(filled_quantity.precision);
+        residual_position.quantity = Quantity::new(residual, residual_precision);
         Some(residual_position)
     }
 
@@ -190,6 +195,7 @@ pub(super) enum ExposureState {
     EntryReconcilePending {
         pending: PendingEntryState,
         reason: EntryReconcileReason,
+        observed_fill_quantity: Option<Quantity>,
     },
     Managed(ManagedPositionState),
     ExitPending(ExitPendingState),

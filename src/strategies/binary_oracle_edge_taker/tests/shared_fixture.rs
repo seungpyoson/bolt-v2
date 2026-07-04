@@ -1251,6 +1251,7 @@ pub(super) fn configured_position_probe(
         PositionSide::Long,
         Quantity::new(1.0, 2),
         0.450,
+        0,
     );
     let position = managed_position_ref(strategy)
         .cloned()
@@ -1384,6 +1385,7 @@ pub(super) fn materialize_configured_position(
         PositionSide::Long,
         quantity,
         avg_px_open,
+        0,
     );
     let mut position = managed_position_ref(strategy)
         .cloned()
@@ -1412,7 +1414,24 @@ pub(super) fn set_entry_reconcile_pending(
     pending: PendingEntryState,
     reason: EntryReconcileReason,
 ) {
-    strategy.exposure = ExposureState::EntryReconcilePending { pending, reason };
+    strategy.exposure = ExposureState::EntryReconcilePending {
+        pending,
+        reason,
+        observed_fill_quantity: None,
+    };
+}
+
+pub(super) fn set_entry_reconcile_pending_with_observed_fill(
+    strategy: &mut BinaryOracleEdgeTaker,
+    pending: PendingEntryState,
+    reason: EntryReconcileReason,
+    observed_fill_quantity: Quantity,
+) {
+    strategy.exposure = ExposureState::EntryReconcilePending {
+        pending,
+        reason,
+        observed_fill_quantity: Some(observed_fill_quantity),
+    };
 }
 
 pub(super) fn set_managed_position(

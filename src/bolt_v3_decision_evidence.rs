@@ -1715,6 +1715,8 @@ pub struct BoltV3OrderRejectEvidence {
 pub enum BoltV3OrderLifecycleTransition {
     BoundaryReclassification,
     EntryFillMaterialized,
+    EntryReconcilePending,
+    PositionClosed,
     ResidualRemanaged,
     RestartOpenOrderAdopted,
     RestartOpenOrderRecoveryBlocked,

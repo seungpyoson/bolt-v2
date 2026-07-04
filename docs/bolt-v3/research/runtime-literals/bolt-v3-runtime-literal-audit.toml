@@ -19725,6 +19725,14 @@ reason = "Stable source label for lifecycle evidence emitted when an entry fill 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
+literal = '''"position_event"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_POSITION_EVENT: &str = "position_event";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted when venue position events resolve or reclassify entry reconciliation; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
 literal = '''"exit_terminal"'''
 context = '''const ORDER_LIFECYCLE_SOURCE_EXIT_TERMINAL: &str = "exit_terminal";'''
 classification = "order_lifecycle_evidence_source_label"
@@ -19769,6 +19777,14 @@ literal = '''"order_expired"'''
 context = '''const ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED: &str = "order_expired";'''
 classification = "order_lifecycle_evidence_source_label"
 reason = "Stable source label for lifecycle evidence emitted from the strategy order-expired handler; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"preserved fail-closed: fill observed, awaiting position truth"'''
+context = '''"preserved fail-closed: fill observed, awaiting position truth";'''
+classification = "order_lifecycle_recovery_reason_label"
+reason = "Stable recovery evidence reason for preserving entry reconciliation after a terminal order event when fill evidence has already been observed; it distinguishes the fail-closed lifecycle class and does not configure strategy behavior."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"

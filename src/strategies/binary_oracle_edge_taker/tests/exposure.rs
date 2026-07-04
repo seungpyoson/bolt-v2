@@ -149,6 +149,7 @@ fn position_change_preserves_pending_exit_correlation() {
         PositionSide::Long,
         Quantity::new(7.0, 2),
         0.470,
+        0,
     );
 
     let exit_pending = strategy
@@ -455,6 +456,7 @@ fn partial_exit_fill_then_expire_restores_managed_residual_position() {
         PositionSide::Long,
         Quantity::new(6.0, 2),
         0.45,
+        0,
     );
 
     strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
@@ -1131,50 +1133,181 @@ fn entry_fill_without_position_id_stays_fail_closed_until_position_event_arrives
 }
 
 #[test]
-fn late_entry_terminal_events_preserve_entry_reconcile_fail_closed_state() {
-    let entry_client_order_id = ClientOrderId::from("ENTRY-LATE-TERM");
-
-    let mut canceled = ready_to_trade_strategy();
+fn late_zero_fill_entry_terminal_events_resolve_entry_reconcile_to_flat() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut canceled = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    register_test_strategy_with_active_instruments(&mut canceled);
+    let entry_client_order_id = ClientOrderId::from("ENTRY-ZERO-FILL-CANCEL");
     let canceled_pending = pending_entry_state(&mut canceled, entry_client_order_id);
-    let instrument_id = canceled_pending.instrument_id;
+    let canceled_instrument_id = canceled_pending.instrument_id;
     set_entry_reconcile_pending(
         &mut canceled,
         canceled_pending,
-        EntryReconcileReason::AwaitingPositionMaterialization,
+        EntryReconcileReason::UnresolvedAtSelectionBoundary,
     );
     canceled
-        .on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id))
-        .expect("late cancel should preserve fail-closed reconcile state");
-    assert!(matches!(
-        canceled.exposure,
-        ExposureState::EntryReconcilePending { .. }
-    ));
+        .on_order_canceled(&order_canceled_event(
+            entry_client_order_id,
+            canceled_instrument_id,
+        ))
+        .expect("zero-fill cancel should resolve reconcile state");
+    assert!(matches!(canceled.exposure, ExposureState::Flat));
+    assert!(
+        evidence.events().into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::OrderCanceled
+                    && record.client_order_id.as_deref() == Some("ENTRY-ZERO-FILL-CANCEL")
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Flat
+        )),
+        "zero-fill cancel must record a Flat terminal lifecycle outcome"
+    );
 
     let mut rejected = ready_to_trade_strategy();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-ZERO-FILL-REJECT");
     let rejected_pending = pending_entry_state(&mut rejected, entry_client_order_id);
-    set_entry_reconcile_pending(
+    let rejected_instrument_id = rejected_pending.instrument_id;
+    set_entry_reconcile_pending_with_observed_fill(
         &mut rejected,
         rejected_pending,
         EntryReconcileReason::AwaitingPositionMaterialization,
+        Quantity::new(1.0, 2),
     );
-    rejected.on_order_rejected(order_rejected_event(entry_client_order_id, instrument_id));
-    assert!(matches!(
-        rejected.exposure,
-        ExposureState::EntryReconcilePending { .. }
+    rejected.on_order_rejected(order_rejected_event(
+        entry_client_order_id,
+        rejected_instrument_id,
     ));
+    assert!(matches!(rejected.exposure, ExposureState::Flat));
+
+    let mut denied = ready_to_trade_strategy();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-ZERO-FILL-DENIED");
+    let denied_pending = pending_entry_state(&mut denied, entry_client_order_id);
+    let denied_instrument_id = denied_pending.instrument_id;
+    set_entry_reconcile_pending_with_observed_fill(
+        &mut denied,
+        denied_pending,
+        EntryReconcileReason::AwaitingPositionMaterialization,
+        Quantity::new(1.0, 2),
+    );
+    denied.on_order_denied(order_denied_event_with_reason(
+        entry_client_order_id,
+        denied_instrument_id,
+        "DENIED",
+    ));
+    assert!(matches!(denied.exposure, ExposureState::Flat));
 
     let mut expired = ready_to_trade_strategy();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-ZERO-FILL-EXPIRE");
     let expired_pending = pending_entry_state(&mut expired, entry_client_order_id);
+    let expired_instrument_id = expired_pending.instrument_id;
     set_entry_reconcile_pending(
         &mut expired,
         expired_pending,
-        EntryReconcileReason::AwaitingPositionMaterialization,
+        EntryReconcileReason::UnresolvedAtSelectionBoundary,
     );
-    expired.on_order_expired(order_expired_event(entry_client_order_id, instrument_id));
+    expired.on_order_expired(order_expired_event(
+        entry_client_order_id,
+        expired_instrument_id,
+    ));
+    assert!(matches!(expired.exposure, ExposureState::Flat));
+}
+
+#[test]
+fn late_fill_observed_entry_cancel_or_expire_preserves_entry_reconcile_fail_closed_state() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+
+    let mut canceled = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    register_test_strategy_with_active_instruments(&mut canceled);
+    let entry_client_order_id = ClientOrderId::from("ENTRY-FILL-SEEN-CANCEL");
+    let canceled_pending = pending_entry_state(&mut canceled, entry_client_order_id);
+    let canceled_instrument_id = canceled_pending.instrument_id;
+    set_entry_reconcile_pending_with_observed_fill(
+        &mut canceled,
+        canceled_pending,
+        EntryReconcileReason::AwaitingPositionMaterialization,
+        Quantity::new(2.0, 2),
+    );
+    canceled
+        .on_order_canceled(&order_canceled_event(
+            entry_client_order_id,
+            canceled_instrument_id,
+        ))
+        .expect("fill-observed cancel should preserve fail-closed reconcile state");
+    assert!(matches!(
+        canceled.exposure,
+        ExposureState::EntryReconcilePending {
+            observed_fill_quantity: Some(quantity),
+            ..
+        } if quantity == Quantity::new(2.0, 2)
+    ));
+
+    let mut expired = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    register_test_strategy_with_active_instruments(&mut expired);
+    let entry_client_order_id = ClientOrderId::from("ENTRY-FILL-SEEN-EXPIRE");
+    let expired_pending = pending_entry_state(&mut expired, entry_client_order_id);
+    let expired_instrument_id = expired_pending.instrument_id;
+    set_entry_reconcile_pending_with_observed_fill(
+        &mut expired,
+        expired_pending,
+        EntryReconcileReason::AwaitingPositionMaterialization,
+        Quantity::new(3.0, 2),
+    );
+    expired.on_order_expired(order_expired_event(
+        entry_client_order_id,
+        expired_instrument_id,
+    ));
     assert!(matches!(
         expired.exposure,
-        ExposureState::EntryReconcilePending { .. }
+        ExposureState::EntryReconcilePending {
+            observed_fill_quantity: Some(quantity),
+            ..
+        } if quantity == Quantity::new(3.0, 2)
     ));
+
+    let events = evidence.events();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::OrderCanceled
+                    && record.raw_reason_text.as_deref()
+                        == Some(ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON)
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::EntryReconcilePending
+        )),
+        "fill-observed cancel must record preserved fail-closed lifecycle evidence"
+    );
+    assert!(
+        events.into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::OrderExpired
+                    && record.raw_reason_text.as_deref()
+                        == Some(ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON)
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::EntryReconcilePending
+        )),
+        "fill-observed expiry must record preserved fail-closed lifecycle evidence"
+    );
 }
 
 #[test]
@@ -1269,6 +1402,7 @@ fn selection_rotation_reclassifies_unresolved_pending_entry_and_records_lifecycl
         ExposureState::EntryReconcilePending {
             pending,
             reason: EntryReconcileReason::UnresolvedAtSelectionBoundary,
+            observed_fill_quantity: None,
         } if pending.instrument_id == instrument_id
     ));
     let instrument_id_text = instrument_id.to_string();
@@ -1449,7 +1583,14 @@ fn book_delta_entry_reconcile_pending_does_not_try_new_entry() {
 
 #[test]
 fn position_closed_releases_entry_reconcile_pending_for_same_instrument() {
-    let mut strategy = ready_to_trade_strategy();
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
     let entry_client_order_id = ClientOrderId::from("ENTRY-CLOSED-BEFORE-OPEN");
     let pending = pending_entry_state(&mut strategy, entry_client_order_id);
     let instrument_id = pending.instrument_id;
@@ -1466,6 +1607,19 @@ fn position_closed_releases_entry_reconcile_pending_for_same_instrument() {
 
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     assert!(strategy.pending_entry().is_none());
+    assert!(
+        evidence.events().into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::PositionClosed
+                    && record.client_order_id.as_deref() == Some("ENTRY-CLOSED-BEFORE-OPEN")
+                    && record.position_id.as_deref() == Some("P-CLOSED-BEFORE-OPEN")
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Flat
+        )),
+        "position-closed release must write lifecycle evidence"
+    );
 }
 
 #[test]
@@ -1882,6 +2036,104 @@ fn sell_fill_enters_recovery_without_materializing_position() {
 }
 
 #[test]
+fn entry_fill_reconcile_branches_record_lifecycle_evidence() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+
+    let mut awaiting = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    register_test_strategy_with_active_instruments(&mut awaiting);
+    let entry_client_order_id = ClientOrderId::from("ENTRY-FILL-AWAITING-POSITION");
+    let pending = pending_entry_state(&mut awaiting, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut awaiting, pending);
+    let mut fill =
+        order_filled_event_with_details(entry_client_order_id, instrument_id, None, OrderSide::Buy);
+    fill.last_qty = Quantity::new(2.0, 2);
+
+    awaiting
+        .on_order_filled(&fill)
+        .expect("entry fill without position id should enter reconcile state");
+
+    assert!(matches!(
+        awaiting.exposure,
+        ExposureState::EntryReconcilePending {
+            reason: EntryReconcileReason::AwaitingPositionMaterialization,
+            observed_fill_quantity: Some(quantity),
+            ..
+        } if quantity == Quantity::new(2.0, 2)
+    ));
+
+    let mut unsupported = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    register_test_strategy_with_active_instruments(&mut unsupported);
+    let entry_client_order_id = ClientOrderId::from("ENTRY-FILL-UNSUPPORTED-SIDE");
+    let pending = pending_entry_state(&mut unsupported, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut unsupported, pending);
+    let mut fill = order_filled_event_with_details(
+        entry_client_order_id,
+        instrument_id,
+        Some(PositionId::from("P-FILL-UNSUPPORTED-SIDE")),
+        OrderSide::Sell,
+    );
+    fill.last_qty = Quantity::new(3.0, 2);
+
+    unsupported
+        .on_order_filled(&fill)
+        .expect("entry fill with unsupported side should enter reconcile state");
+
+    assert!(matches!(
+        unsupported.exposure,
+        ExposureState::EntryReconcilePending {
+            reason: EntryReconcileReason::UnsupportedEntryFillSide {
+                order_side: OrderSide::Sell,
+            },
+            observed_fill_quantity: Some(quantity),
+            ..
+        } if quantity == Quantity::new(3.0, 2)
+    ));
+
+    let events = evidence.events();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::EntryReconcilePending
+                    && record.client_order_id.as_deref() == Some("ENTRY-FILL-AWAITING-POSITION")
+                    && record.position_id.is_none()
+                    && record.filled_quantity.is_some()
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::EntryReconcilePending
+        )),
+        "awaiting-position entry fill must write lifecycle evidence"
+    );
+    assert!(
+        events.into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::EntryReconcilePending
+                    && record.client_order_id.as_deref() == Some("ENTRY-FILL-UNSUPPORTED-SIDE")
+                    && record.position_id.as_deref() == Some("P-FILL-UNSUPPORTED-SIDE")
+                    && record.order_side.as_deref() == Some("Sell")
+                    && record.filled_quantity.is_some()
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::EntryReconcilePending
+        )),
+        "unsupported-side entry fill must write lifecycle evidence"
+    );
+}
+
+#[test]
 fn unsupported_entry_fill_without_matching_context_keeps_unknown_side_absent() {
     let mut strategy = ready_to_trade_strategy();
     let entry_client_order_id = ClientOrderId::from("ENTRY-MISMATCHED-FILL");
@@ -2052,7 +2304,14 @@ fn order_fill_entry_quarantines_foreign_venue_position() {
 
 #[test]
 fn pending_entry_unknown_position_side_stays_fail_closed_without_materializing_position() {
-    let mut strategy = ready_to_trade_strategy();
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
     let entry_client_order_id = ClientOrderId::from("ENTRY-BAD-SIDE");
     let pending = pending_entry_state(&mut strategy, entry_client_order_id);
     let instrument_id = pending.instrument_id;
@@ -2074,6 +2333,20 @@ fn pending_entry_unknown_position_side_stays_fail_closed_without_materializing_p
             .pending_entry()
             .map(|pending| pending.client_order_id),
         Some(entry_client_order_id)
+    );
+    assert!(
+        evidence.events().into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::EntryReconcilePending
+                    && record.source == ORDER_LIFECYCLE_SOURCE_POSITION_EVENT
+                    && record.client_order_id.as_deref() == Some("ENTRY-BAD-SIDE")
+                    && record.position_id.as_deref() == Some("P-BAD-SIDE")
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::EntryReconcilePending
+        )),
+        "invalid observed position side must write lifecycle evidence"
     );
 }
 
@@ -2686,6 +2959,7 @@ fn exposure_entry_reconcile_pending_preserves_context_and_blocks_new_entries() {
     let exposure = ExposureState::EntryReconcilePending {
         pending: pending.clone(),
         reason: EntryReconcileReason::AwaitingPositionMaterialization,
+        observed_fill_quantity: None,
     };
 
     assert_eq!(exposure.pending_entry(), Some(&pending));
@@ -2746,6 +3020,52 @@ fn exposure_exit_pending_requires_both_fill_and_close_to_become_flat() {
             .map(|state| state.position.position_id),
         Some(PositionId::from("P-EXIT-STATE-001"))
     );
+}
+
+#[test]
+fn residual_position_after_terminal_preserves_fill_precision() {
+    let strategy = ready_to_trade_strategy();
+    let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+    let managed = ManagedPositionState {
+        position: OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            position_id: PositionId::from("P-EXIT-PRECISION-001"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: OutcomeFeeState::empty(),
+            historical_entry_fee_bps: Some(0.0),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        },
+        origin: ManagedPositionOrigin::StrategyEntry,
+        pending_entry: None,
+    };
+    let exit_pending = ExitPendingState {
+        position: Some(managed),
+        pending_exit: PendingExitState {
+            client_order_id: ClientOrderId::from("EXIT-PRECISION-001"),
+            market_id: Some("MKT-1".to_string()),
+            position_id: Some(PositionId::from("P-EXIT-PRECISION-001")),
+            fill_received: true,
+            filled_quantity: Some(Quantity::new(4.1234, 4)),
+            close_received: false,
+            terminal_received: true,
+            residual_position_observed_after_fill: false,
+        },
+    };
+
+    let residual = exit_pending
+        .residual_position_after_terminal()
+        .expect("positive residual quantity should be returned");
+
+    assert_eq!(residual.quantity, Quantity::new(5.8766, 4));
+    assert_eq!(residual.quantity.precision, 4);
 }
 
 #[test]

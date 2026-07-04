@@ -1512,7 +1512,13 @@ git config "remote.${{clean_merged_remote}}.prune" true
         self.assertFalse(marker.exists())
         self.assertTrue(clean_marker.is_file())
 
-    def test_post_rewrite_stays_silent_when_entire_errors(self) -> None:
+    def test_post_rewrite_suppresses_entire_stderr_and_dispatches_clean_merged(self) -> None:
+        """Verify Entire stderr stays silent and clean-merged still dispatches.
+
+        The `|| true` guard is forward-defense for a future stricter shell mode; with
+        the current hook's no-`set -e` semantics and explicit final `exit 0`, it is
+        inert and therefore not independently testable here.
+        """
         hook, clean_marker = self._install_post_rewrite_with_clean_marker()
 
         fake_bin = self.tmp / "fake-bin-entire-errors"

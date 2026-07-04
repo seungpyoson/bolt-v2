@@ -310,8 +310,8 @@ def find_record(
     return matches[0]
 
 
-def just_recipe_commands(justfile: str, recipe_name: str) -> set[str]:
-    commands: set[str] = set()
+def just_recipe_commands(justfile: str, recipe_name: str) -> list[str]:
+    commands: list[str] = []
     in_recipe = False
     for line in justfile.splitlines():
         stripped = line.strip()
@@ -323,7 +323,7 @@ def just_recipe_commands(justfile: str, recipe_name: str) -> set[str]:
         if not stripped or stripped.startswith("#"):
             continue
         if line.startswith((" ", "\t")):
-            commands.add(stripped)
+            commands.append(stripped)
         else:
             break
     return commands
@@ -517,9 +517,9 @@ def check_guard_verification(status: dict, justfile: str, findings: list[str]) -
     source_fence_commands = just_recipe_commands(justfile, "source-fence-static-inner")
     if not source_fence_commands:
         findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
-    for command in SOURCE_FENCE_STATIC_COMMANDS:
-        if command not in source_fence_commands:
-            findings.append(f"{JUSTFILE}: source-fence-static-inner missing command {command!r}")
+    if tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS:
+        expected = " && ".join(SOURCE_FENCE_STATIC_COMMANDS)
+        findings.append(f"{JUSTFILE}: source-fence-static-inner must contain only {expected}")
 
 
 def artifact_by_id(status: dict, artifact_id: str, findings: list[str]) -> dict:

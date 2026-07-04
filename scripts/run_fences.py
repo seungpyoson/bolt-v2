@@ -31,6 +31,8 @@ NON_STATIC_VERIFY_PREFIXES = (
     "verify_ci_",
     "verify_runtime_capture_yaml",
 )
+# Add new standalone source-fence test suites here; paired test_verify_*.py
+# suites are discovered automatically from their verifier filenames.
 STANDALONE_TEST_FILENAMES = (
     "test_migrate_bolt_v3_capital_admission_config.py",
     "test_migrate_bolt_v3_decision_evidence_v13_to_v14.py",
@@ -52,6 +54,13 @@ class FenceRunStats:
 
 
 class SharedFenceCache:
+    """Shared filesystem cache for read-only source fences.
+
+    Fences run under this cache must be read-only with respect to repo-root
+    paths. Test suites run outside the cache so fixture writes are never served
+    stale contents.
+    """
+
     def __init__(self, root: pathlib.Path) -> None:
         self.root = root.absolute()
         self.stats = FenceRunStats()
@@ -220,12 +229,14 @@ def call_module(module: ModuleType) -> int:
         return status
 
     suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+    tests = [
+        value
+        for name, value in sorted(vars(module).items())
+        if name.startswith("test_") and callable(value)
+    ]
+    if suite.countTestCases() > 0 and tests:
+        raise RuntimeError(f"{module.__name__} mixes unittest TestCase classes and top-level test_* functions")
     if suite.countTestCases() == 0:
-        tests = [
-            value
-            for name, value in sorted(vars(module).items())
-            if name.startswith("test_") and callable(value)
-        ]
         if not tests:
             raise RuntimeError(f"{module.__name__} does not define callable main(), unittest cases, or test_* functions")
         for test in tests:

@@ -250,8 +250,8 @@ def require_hash_entry(
     )
 
 
-def just_recipe_commands(text: str, recipe: str) -> set[str]:
-    commands: set[str] = set()
+def just_recipe_commands(text: str, recipe: str) -> list[str]:
+    commands: list[str] = []
     in_recipe = False
     for raw_line in text.splitlines():
         stripped = raw_line.strip()
@@ -262,7 +262,7 @@ def just_recipe_commands(text: str, recipe: str) -> set[str]:
         if raw_line and not raw_line.startswith((" ", "\t")):
             break
         if stripped and not stripped.startswith("#"):
-            commands.add(stripped)
+            commands.append(stripped)
     return commands
 
 
@@ -460,9 +460,9 @@ def check_justfile(justfile_text: str, findings: list[str]) -> None:
     if not source_fence_commands:
         findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
         return
-    for command in SOURCE_FENCE_STATIC_COMMANDS:
-        if command not in source_fence_commands:
-            findings.append(f"{JUSTFILE}: source-fence-static-inner must run {command}")
+    if tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS:
+        expected = " && ".join(SOURCE_FENCE_STATIC_COMMANDS)
+        findings.append(f"{JUSTFILE}: source-fence-static-inner must contain only {expected}")
 
 
 def scan_root(root: Path) -> list[str]:

@@ -324,9 +324,9 @@ def verify_justfile(justfile_text: str, findings: list[str]) -> None:
     for command in REQUIRED_SOURCE_FENCE_COMMANDS:
         if command not in recipe:
             findings.append(f"{JUSTFILE}: verify-bte-022-binary-option-bar-catalog must run {command}")
-    for command in SOURCE_FENCE_STATIC_COMMANDS:
-        if command not in source_fence:
-            findings.append(f"{JUSTFILE}: source-fence-static-inner must run {command}")
+    if tuple(source_fence) != SOURCE_FENCE_STATIC_COMMANDS:
+        expected = " && ".join(SOURCE_FENCE_STATIC_COMMANDS)
+        findings.append(f"{JUSTFILE}: source-fence-static-inner must contain only {expected}")
 
 
 def verify() -> list[str]:

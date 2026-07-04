@@ -370,13 +370,13 @@ def status_artifact(
     return status
 
 
-def justfile_text(*, include_dynamic: bool = True) -> str:
+def justfile_text(*, include_dynamic: bool = True, extra_source_fence_command: str = "") -> str:
     dynamic = (
         "verify-bte-022-pmxt-dynamic-tick-size: check-workspace\n"
         "    python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py\n"
         "    python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py\n\n"
     )
-    source_fence_dynamic = "    python3 scripts/run_fences.py\n"
+    source_fence_dynamic = "    python3 scripts/run_fences.py\n" + extra_source_fence_command
     return (
         (dynamic if include_dynamic else "")
         + "source-fence-static-inner: check-workspace\n"
@@ -676,6 +676,20 @@ def assert_justfile_wiring_is_a_finding() -> None:
             raise AssertionError(f"expected source-fence wiring finding, got {findings}")
 
 
+def assert_source_fence_inner_rejects_appended_command() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(
+            root,
+            module,
+            justfile=justfile_text(extra_source_fence_command="    python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py\n"),
+        )
+        findings = module.scan_root(root)
+        if not any("source-fence-static-inner must contain only python3 scripts/run_fences.py" in finding for finding in findings):
+            raise AssertionError(f"expected exact source-fence wiring finding, got {findings}")
+
+
 def assert_script_cli_fails_closed_on_fixture_drift() -> None:
     module = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -717,6 +731,7 @@ def main() -> int:
         assert_dynamic_status_flag_drift_is_a_finding,
         assert_dynamic_status_observed_at_format_is_a_finding,
         assert_justfile_wiring_is_a_finding,
+        assert_source_fence_inner_rejects_appended_command,
         assert_script_cli_fails_closed_on_fixture_drift,
     )
     for test in tests:

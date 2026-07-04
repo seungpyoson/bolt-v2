@@ -476,8 +476,8 @@ def active_gitignore_patterns(gitignore: str) -> tuple[set[str], dict[str, bool]
     return patterns, representative_ignored
 
 
-def just_recipe_commands(justfile: str, recipe_name: str) -> set[str]:
-    commands: set[str] = set()
+def just_recipe_commands(justfile: str, recipe_name: str) -> list[str]:
+    commands: list[str] = []
     in_recipe = False
     for line in justfile.splitlines():
         stripped = line.strip()
@@ -489,7 +489,7 @@ def just_recipe_commands(justfile: str, recipe_name: str) -> set[str]:
             break
         if not stripped or stripped.startswith("#"):
             continue
-        commands.add(stripped)
+        commands.append(stripped)
     return commands
 
 
@@ -966,9 +966,9 @@ def scan_root(root: Path) -> list[str]:
     source_fence_commands = just_recipe_commands(justfile, "source-fence-static-inner")
     if not source_fence_commands:
         findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
-    for command in SOURCE_FENCE_STATIC_COMMANDS:
-        if command not in source_fence_commands:
-            findings.append(f"{JUSTFILE}: source-fence-static-inner must run {command}")
+    if tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS:
+        expected = " && ".join(SOURCE_FENCE_STATIC_COMMANDS)
+        findings.append(f"{JUSTFILE}: source-fence-static-inner must contain only {expected}")
 
     return findings
 

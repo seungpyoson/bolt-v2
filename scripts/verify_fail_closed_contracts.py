@@ -271,11 +271,10 @@ def source_fence_wiring_findings(root: Path) -> list[str]:
     except FileNotFoundError:
         return [f"{SOURCE_FENCE_STATIC_RECIPE} recipe missing from {JUSTFILE}"]
     commands = source_fence_static_commands(justfile_text)
-    return [
-        f"{SOURCE_FENCE_STATIC_RECIPE} must run {command}"
-        for command in REQUIRED_SOURCE_FENCE_COMMANDS
-        if command not in commands
-    ]
+    if commands != REQUIRED_SOURCE_FENCE_COMMANDS:
+        expected = " && ".join(REQUIRED_SOURCE_FENCE_COMMANDS)
+        return [f"{SOURCE_FENCE_STATIC_RECIPE} must contain only {expected}"]
+    return []
 
 
 def selected_paths(root: Path, config: Config) -> list[Path]:

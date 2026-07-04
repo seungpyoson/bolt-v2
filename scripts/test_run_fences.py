@@ -245,6 +245,38 @@ def assert_filesystem_cache_skips_paths_outside_root() -> None:
         raise AssertionError(stats)
 
 
+def assert_mixed_unittest_and_bare_tests_fail_loud() -> None:
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        scripts = root / "scripts"
+        write(
+            scripts / "verify_bolt_v3_mixed_tests.py",
+            "def main(): return 0\n",
+        )
+        write(
+            scripts / "test_verify_bolt_v3_mixed_tests.py",
+            "import unittest\n"
+            "class MixedTest(unittest.TestCase):\n"
+            "    def test_case(self):\n"
+            "        pass\n"
+            "def test_bare():\n"
+            "    pass\n",
+        )
+        write_dummy_standalone_tests(runner, scripts)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = runner.run_fences(root=root, scripts_dir=scripts)
+
+    combined = stdout.getvalue() + stderr.getvalue()
+    if status != 1:
+        raise AssertionError((status, combined))
+    if "mixes unittest TestCase classes and top-level test_* functions" not in combined:
+        raise AssertionError(combined)
+
+
 def main() -> int:
     assert_discovers_static_verify_modules_by_name()
     assert_discovers_paired_and_standalone_test_modules()
@@ -254,6 +286,7 @@ def main() -> int:
     assert_system_exit_none_is_success()
     assert_tests_run_without_filesystem_cache()
     assert_filesystem_cache_skips_paths_outside_root()
+    assert_mixed_unittest_and_bare_tests_fail_loud()
     print("OK: run_fences self-tests passed.")
     return 0
 

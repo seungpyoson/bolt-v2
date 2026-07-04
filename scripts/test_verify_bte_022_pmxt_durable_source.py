@@ -995,7 +995,26 @@ def test_source_fence_command_outside_recipe_is_a_finding() -> None:
         )
         findings = verifier.scan_root(root)
     assert any(
-        "source-fence-static-inner must run python3 scripts/run_fences.py" in finding
+        "source-fence-static-inner must contain only python3 scripts/run_fences.py" in finding
+        for finding in findings
+    )
+
+
+def test_source_fence_inner_rejects_appended_command() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        justfile_path = root / "justfile"
+        justfile = justfile_path.read_text(encoding="utf-8")
+        justfile = justfile.replace(
+            "    python3 scripts/run_fences.py\n",
+            "    python3 scripts/run_fences.py\n    python3 scripts/verify_bte_022_pmxt_durable_source.py\n",
+        )
+        justfile_path.write_text(justfile, encoding="utf-8")
+        findings = verifier.scan_root(root)
+    assert any(
+        "source-fence-static-inner must contain only python3 scripts/run_fences.py" in finding
         for finding in findings
     )
 
@@ -1067,6 +1086,7 @@ def main() -> int:
         test_gitignore_negation_of_pmxt_artifact_is_a_finding,
         test_gitignore_leading_slash_negation_of_pmxt_artifact_is_a_finding,
         test_source_fence_command_outside_recipe_is_a_finding,
+        test_source_fence_inner_rejects_appended_command,
         test_malformed_justfile_recipe_header_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]

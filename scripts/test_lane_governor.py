@@ -1595,6 +1595,7 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         self.targets: set[Path] = set()
         self.failures: list[str] = []
         self.scopes: list[dict[str, object]] = [{}]
+        self.function_stack: list[str] = []
         self.functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
         self.active_functions: set[str] = set()
         self.subprocess_modules = {"subprocess"}
@@ -1839,10 +1840,12 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         for arg in self._function_parameters(node):
             parent[arg.arg] = bound_args.get(arg.arg, _PARAMETER)
         self.scopes.append(parent)
+        self.function_stack.append(node.name)
         try:
             for statement in node.body:
                 self.visit(statement)
         finally:
+            self.function_stack.pop()
             self.scopes.pop()
 
     def _handle_local_wrapper_call(self, node: ast.Call) -> None:
@@ -2257,7 +2260,10 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
 
     def _handle_loader_call(self, node: ast.Call, call_name: str) -> None:
         if self.path == SCRIPTS_DIR / "run_fences.py" and call_name.endswith("spec_from_file_location"):
-            self.targets.update(_run_fences_discovered_targets())
+            if self._is_run_fences_discovery_loader_call(node, call_name):
+                self.targets.update(_run_fences_discovered_targets())
+            else:
+                self._fail(node, "run_fences.py may only use spec_from_file_location in import_module_from_path(module_name, path)")
             return
         if (
             call_name in self.import_module_names
@@ -2304,6 +2310,20 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             self.targets.add(target)
             return
         self._fail(node, f"loader target is not a resolvable Python script: {target}")
+
+    def _is_run_fences_discovery_loader_call(self, node: ast.Call, call_name: str) -> bool:
+        if not call_name.endswith("spec_from_file_location"):
+            return False
+        if not self.function_stack or self.function_stack[-1] != "import_module_from_path":
+            return False
+        if len(node.args) != 2 or node.keywords:
+            return False
+        return (
+            isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "module_name"
+            and isinstance(node.args[1], ast.Name)
+            and node.args[1].id == "path"
+        )
 
     def _module_keyword_target(self, node: ast.Call, keyword_name: str) -> ast.AST | None:
         for keyword in node.keywords:
@@ -3009,6 +3029,22 @@ run_async("scripts/test_nextest_fingerprint.py")
         "command_understanding.py",
         "ci_provenance.py",
     } <= rels
+
+
+def test_run_fences_loader_special_case_is_single_site() -> None:
+    source = (SCRIPTS_DIR / "run_fences.py").read_text(encoding="utf-8")
+    source += """
+
+def unexpected_loader(path):
+    return importlib.util.spec_from_file_location("unexpected", path)
+"""
+    resolver = _CodeExecutionEdgeResolver(
+        SCRIPTS_DIR / "run_fences.py",
+        ast.parse(source),
+        scan_set={SCRIPTS_DIR / "run_fences.py"},
+    )
+    _targets, failures = resolver.resolve()
+    assert any("run_fences.py may only use spec_from_file_location" in failure for failure in failures), failures
 
 
 def test_subprocess_executable_keyword_process_image_resolves_before_argv0() -> None:
@@ -4236,6 +4272,7 @@ def _registered_self_tests():
         test_repo_origin_detection_is_expression_based,
         test_repo_write_analyzer_catches_extended_mutators,
         test_code_execution_edges_are_static_fixed_point,
+        test_run_fences_loader_special_case_is_single_site,
         test_subprocess_executable_keyword_process_image_resolves_before_argv0,
         test_subprocess_direct_process_image_resolves_python_by_semantics,
         test_asyncio_subprocess_resolves_python_targets,

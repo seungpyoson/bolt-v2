@@ -376,14 +376,10 @@ def justfile_text(*, include_dynamic: bool = True) -> str:
         "    python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py\n"
         "    python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py\n\n"
     )
-    source_fence_dynamic = (
-        "    python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py\n"
-        "    python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py\n"
-    )
+    source_fence_dynamic = "    python3 scripts/run_fences.py\n"
     return (
         (dynamic if include_dynamic else "")
         + "source-fence-static-inner: check-workspace\n"
-        + "    python3 scripts/test_verify_bte_022_pmxt_durable_source.py\n"
         + ("    python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py\n" if not include_dynamic else source_fence_dynamic)
     )
 

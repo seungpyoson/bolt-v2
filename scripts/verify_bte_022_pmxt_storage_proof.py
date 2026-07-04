@@ -68,7 +68,8 @@ JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_pmxt_storage_proof.py",
     "python3 scripts/verify_bte_022_pmxt_storage_proof.py",
 )
-JUSTFILE_RECIPES = ("verify-bte-022-pmxt-storage-proof", "source-fence-static-inner")
+SOURCE_FENCE_STATIC_COMMANDS = ("python3 scripts/run_fences.py",)
+JUSTFILE_RECIPES = ("verify-bte-022-pmxt-storage-proof",)
 
 TOP_LEVEL_KEYS = (
     "schema_version",
@@ -513,6 +514,12 @@ def check_guard_verification(status: dict, justfile: str, findings: list[str]) -
         for command in JUSTFILE_COMMANDS:
             if command not in commands:
                 findings.append(f"{JUSTFILE}: {recipe} missing command {command!r}")
+    source_fence_commands = just_recipe_commands(justfile, "source-fence-static-inner")
+    if not source_fence_commands:
+        findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
+    for command in SOURCE_FENCE_STATIC_COMMANDS:
+        if command not in source_fence_commands:
+            findings.append(f"{JUSTFILE}: source-fence-static-inner missing command {command!r}")
 
 
 def artifact_by_id(status: dict, artifact_id: str, findings: list[str]) -> dict:

@@ -135,8 +135,7 @@ def justfile_text() -> str:
     python3 scripts/verify_bte_022_pmxt_storage_proof.py
 
 source-fence-static-inner: require-local-verification-gate check-workspace require-rust-verification-owner
-    python3 scripts/test_verify_bte_022_pmxt_storage_proof.py
-    python3 scripts/verify_bte_022_pmxt_storage_proof.py
+    python3 scripts/run_fences.py
 """
 
 

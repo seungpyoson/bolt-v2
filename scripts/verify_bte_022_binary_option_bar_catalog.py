@@ -31,6 +31,7 @@ REQUIRED_SOURCE_FENCE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_binary_option_bar_catalog.py",
     "python3 scripts/verify_bte_022_binary_option_bar_catalog.py",
 )
+SOURCE_FENCE_STATIC_COMMANDS = ("python3 scripts/run_fences.py",)
 
 CATALOG_PROJECTION_REQUIRED_SOURCE_SNIPPETS = (
     "fn binary_option_bar_catalog_projection_round_trips_through_nt_catalog()",
@@ -323,6 +324,7 @@ def verify_justfile(justfile_text: str, findings: list[str]) -> None:
     for command in REQUIRED_SOURCE_FENCE_COMMANDS:
         if command not in recipe:
             findings.append(f"{JUSTFILE}: verify-bte-022-binary-option-bar-catalog must run {command}")
+    for command in SOURCE_FENCE_STATIC_COMMANDS:
         if command not in source_fence:
             findings.append(f"{JUSTFILE}: source-fence-static-inner must run {command}")
 

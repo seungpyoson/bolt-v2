@@ -23,8 +23,7 @@ EXCEPTIONS_TABLE = "fail_closed_exceptions"
 SUPPORTED_CONFIG_VERSION = 1
 SOURCE_FENCE_STATIC_RECIPE = "source-fence-static-inner"
 REQUIRED_SOURCE_FENCE_COMMANDS = (
-    "python3 scripts/test_verify_fail_closed_contracts.py",
-    "python3 scripts/verify_fail_closed_contracts.py",
+    "python3 scripts/run_fences.py",
 )
 
 

@@ -245,8 +245,7 @@ def justfile_text(*, include_coverage: bool = True) -> str:
     )
     source_fence = (
         "source-fence-static-inner: check-workspace\n"
-        "    python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py\n"
-        "    python3 scripts/verify_bte_022_pmxt_coverage_ledger.py\n"
+        "    python3 scripts/run_fences.py\n"
     )
     if include_coverage:
         return recipe + source_fence

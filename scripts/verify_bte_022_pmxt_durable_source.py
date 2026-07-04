@@ -89,7 +89,8 @@ JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_pmxt_durable_source.py",
     "python3 scripts/verify_bte_022_pmxt_durable_source.py",
 )
-JUSTFILE_RECIPES = ("verify-bte-022-pmxt-durable-source", "source-fence-static-inner")
+SOURCE_FENCE_STATIC_COMMANDS = ("python3 scripts/run_fences.py",)
+JUSTFILE_RECIPES = ("verify-bte-022-pmxt-durable-source",)
 STATUS_HASH_TARGETS = (
     (("source_proof_set_spec",), PMXT_SOURCE_PROOF_SPEC),
     (("committed_input_hashes", "source_universe_manifest"), PMXT_SOURCE_MANIFEST),
@@ -962,6 +963,12 @@ def scan_root(root: Path) -> list[str]:
         for command in JUSTFILE_COMMANDS:
             if command not in recipe_commands:
                 findings.append(f"{JUSTFILE}: {recipe} must run {command}")
+    source_fence_commands = just_recipe_commands(justfile, "source-fence-static-inner")
+    if not source_fence_commands:
+        findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
+    for command in SOURCE_FENCE_STATIC_COMMANDS:
+        if command not in source_fence_commands:
+            findings.append(f"{JUSTFILE}: source-fence-static-inner must run {command}")
 
     return findings
 

@@ -86,7 +86,7 @@ def test_mapping_evaluation_rejects_stale_bar_rejection(module) -> None:
 
 def test_justfile_requires_source_fence_wiring(module) -> None:
     justfile = module.JUSTFILE.read_text(encoding="utf-8").replace(
-        "    python3 scripts/verify_bte_022_binary_option_bar_catalog.py\n",
+        "    python3 scripts/run_fences.py\n",
         "",
     )
     findings: list[str] = []

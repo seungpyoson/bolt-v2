@@ -389,10 +389,7 @@ def validate_just_wiring(root: Path) -> list[str]:
     if recipe_body is None:
         return [f"Justfile: missing {recipe_name} recipe"]
     findings = []
-    for command in (
-        "python3 scripts/test_verify_outcome_group_nt_reuse.py",
-        "python3 scripts/verify_outcome_group_nt_reuse.py",
-    ):
+    for command in ("python3 scripts/run_fences.py",):
         if command not in recipe_body:
             findings.append(f"{recipe_name} must run {command}")
     return findings

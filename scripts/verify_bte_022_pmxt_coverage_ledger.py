@@ -35,7 +35,8 @@ JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py",
     "python3 scripts/verify_bte_022_pmxt_coverage_ledger.py",
 )
-JUSTFILE_RECIPES = ("verify-bte-022-pmxt-coverage-ledger", "source-fence-static-inner")
+SOURCE_FENCE_STATIC_COMMANDS = ("python3 scripts/run_fences.py",)
+JUSTFILE_RECIPES = ("verify-bte-022-pmxt-coverage-ledger",)
 
 COVERAGE_STATUS_KEYS = (
     "claim_limits",
@@ -455,6 +456,13 @@ def check_justfile(justfile_text: str, findings: list[str]) -> None:
         for command in JUSTFILE_COMMANDS:
             if command not in commands:
                 findings.append(f"{JUSTFILE}: {recipe} must run {command}")
+    source_fence_commands = just_recipe_commands(justfile_text, "source-fence-static-inner")
+    if not source_fence_commands:
+        findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
+        return
+    for command in SOURCE_FENCE_STATIC_COMMANDS:
+        if command not in source_fence_commands:
+            findings.append(f"{JUSTFILE}: source-fence-static-inner must run {command}")
 
 
 def scan_root(root: Path) -> list[str]:

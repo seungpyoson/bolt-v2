@@ -34,10 +34,8 @@ struct AcceptanceLedgerRecordRefs {
 #[test]
 fn committed_source_universe_artifact_refs_match_current_reference_bytes() {
     let repo_root = repo_root_from_manifest_dir();
-    let reference_root =
-        repo_root.join("specs/023-nt-research-analytics-platform/reference");
-    let evicted_index =
-        EvictedFixtureIndex::load(&repo_root).expect("load evicted fixture index");
+    let reference_root = repo_root.join("specs/023-nt-research-analytics-platform/reference");
+    let evicted_index = EvictedFixtureIndex::load(&repo_root).expect("load evicted fixture index");
 
     let mut mismatches = Vec::new();
 
@@ -109,7 +107,10 @@ fn check_artifact_ref(
     if recorded_sha256 != actual_sha256 {
         mismatches.push(format!(
             "{} role {role} path {artifact_path} recorded {recorded_sha256} actual {actual_sha256}",
-            owner_path.strip_prefix(repo_root).unwrap_or(owner_path).display()
+            owner_path
+                .strip_prefix(repo_root)
+                .unwrap_or(owner_path)
+                .display()
         ));
     }
 }
@@ -123,7 +124,10 @@ fn committed_files_named(root: &Path, file_name: &str) -> Vec<PathBuf> {
 
 fn collect_files_named(dir: &Path, file_name: &str, files: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).unwrap_or_else(|err| {
-        panic!("read directory {} while looking for {file_name}: {err}", dir.display())
+        panic!(
+            "read directory {} while looking for {file_name}: {err}",
+            dir.display()
+        )
     }) {
         let entry = entry.expect("directory entry is readable");
         let path = entry.path();
@@ -139,8 +143,7 @@ fn read_json<T>(path: &Path) -> T
 where
     T: for<'de> Deserialize<'de>,
 {
-    let bytes =
-        fs::read(path).unwrap_or_else(|err| panic!("read JSON {}: {err}", path.display()));
+    let bytes = fs::read(path).unwrap_or_else(|err| panic!("read JSON {}: {err}", path.display()));
     serde_json::from_slice(&bytes)
         .unwrap_or_else(|err| panic!("parse JSON {}: {err}", path.display()))
 }
@@ -151,7 +154,8 @@ fn sha256_file(path: &Path) -> String {
     format!(
         "{:x}",
         Sha256::digest(
-            fs::read(path).unwrap_or_else(|err| panic!("read file for hash {}: {err}", path.display()))
+            fs::read(path)
+                .unwrap_or_else(|err| panic!("read file for hash {}: {err}", path.display()))
         )
     )
 }

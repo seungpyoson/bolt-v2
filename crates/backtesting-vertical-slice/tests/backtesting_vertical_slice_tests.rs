@@ -114,6 +114,8 @@ mod backtesting_vertical_slice_source_proof_reference_fixtures;
 mod backtesting_vertical_slice_source_proof_shortlist;
 #[path = "backtesting_vertical_slice_source_selection_readiness.rs"]
 mod backtesting_vertical_slice_source_selection_readiness;
+#[path = "backtesting_vertical_slice_source_universe_artifact_refs.rs"]
+mod backtesting_vertical_slice_source_universe_artifact_refs;
 #[path = "backtesting_vertical_slice_source_universe_batch_execution.rs"]
 mod backtesting_vertical_slice_source_universe_batch_execution;
 #[path = "backtesting_vertical_slice_source_universe_conversion_queue.rs"]
@@ -124,8 +126,6 @@ mod backtesting_vertical_slice_source_universe_conversion_run_plan;
 mod backtesting_vertical_slice_source_universe_conversion_work_order;
 #[path = "backtesting_vertical_slice_source_universe_execution_acceptance.rs"]
 mod backtesting_vertical_slice_source_universe_execution_acceptance;
-#[path = "backtesting_vertical_slice_source_universe_artifact_refs.rs"]
-mod backtesting_vertical_slice_source_universe_artifact_refs;
 #[path = "backtesting_vertical_slice_source_universe_execution_pack.rs"]
 mod backtesting_vertical_slice_source_universe_execution_pack;
 #[path = "backtesting_vertical_slice_source_universe_object_gates.rs"]

@@ -237,7 +237,7 @@ def bte_status(module, *, coverage_text: str | None = None, can_close: bool = Fa
     }
 
 
-def justfile_text(*, include_coverage: bool = True) -> str:
+def justfile_text(*, include_coverage: bool = True, extra_source_fence_command: str = "") -> str:
     recipe = (
         "verify-bte-022-pmxt-coverage-ledger: check-workspace\n"
         "    python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py\n"
@@ -245,8 +245,8 @@ def justfile_text(*, include_coverage: bool = True) -> str:
     )
     source_fence = (
         "source-fence-static-inner: check-workspace\n"
-        "    python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py\n"
-        "    python3 scripts/verify_bte_022_pmxt_coverage_ledger.py\n"
+        "    python3 scripts/run_fences.py\n"
+        f"{extra_source_fence_command}"
     )
     if include_coverage:
         return recipe + source_fence
@@ -408,6 +408,20 @@ def assert_justfile_wiring_is_a_finding() -> None:
             raise AssertionError(f"expected source-fence wiring finding, got {findings}")
 
 
+def assert_source_fence_inner_rejects_appended_command() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(
+            root,
+            module,
+            justfile=justfile_text(extra_source_fence_command="    python3 scripts/verify_bte_022_pmxt_coverage_ledger.py\n"),
+        )
+        findings = module.scan_root(root)
+        if not any("source-fence-static-inner must contain only python3 scripts/run_fences.py" in finding for finding in findings):
+            raise AssertionError(f"expected exact source-fence wiring finding, got {findings}")
+
+
 def assert_cli_fails_with_actionable_output() -> None:
     module = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -437,6 +451,7 @@ def main() -> int:
         assert_missing_bte_static_gate_text_is_a_finding,
         assert_bte_close_claim_is_a_finding,
         assert_justfile_wiring_is_a_finding,
+        assert_source_fence_inner_rejects_appended_command,
         assert_cli_fails_with_actionable_output,
     )
     for test in tests:

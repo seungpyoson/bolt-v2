@@ -161,8 +161,7 @@ def write_fixture(
                 just source-fence-static-inner
 
             source-fence-static-inner:
-                python3 scripts/test_verify_outcome_group_nt_reuse.py
-                python3 scripts/verify_outcome_group_nt_reuse.py
+                python3 scripts/run_fences.py
             """
         ),
         encoding="utf-8",
@@ -296,11 +295,28 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
 
         self.assert_has_finding(
             findings,
-            "source-fence-static-inner must run python3 scripts/test_verify_outcome_group_nt_reuse.py",
+            "source-fence-static-inner must contain only python3 scripts/run_fences.py",
         )
+
+    def test_source_fence_inner_rejects_appended_command(self) -> None:
+        findings = self.collect(
+            justfile_text="""
+            source-fence-static:
+                just source-fence-static-inner
+
+            source-fence-static-inner:
+                python3 scripts/run_fences.py
+                python3 scripts/verify_outcome_group_nt_reuse.py
+
+            dead-outcome-group-checks:
+                python3 scripts/test_verify_outcome_group_nt_reuse.py
+                python3 scripts/verify_outcome_group_nt_reuse.py
+            """
+        )
+
         self.assert_has_finding(
             findings,
-            "source-fence-static-inner must run python3 scripts/verify_outcome_group_nt_reuse.py",
+            "source-fence-static-inner must contain only python3 scripts/run_fences.py",
         )
 
     def test_comment_only_submit_order_list_with_per_leg_submit_loop_fails(self) -> None:

@@ -227,9 +227,9 @@ specs/711-capital-admission-rename/spec.md:399	a payload string whose value is l
 specs/711-capital-admission-rename/spec.md:408	`position_sizer_rebuild` audit record is skipped (not failed).	Issue #711 authoritative rename spec/plan historical reference.
 specs/711-capital-admission-rename/spec.md:410	same pool policy values as the pre-rename config; an un-migrated `sizing_policy` config and an	Issue #711 authoritative rename spec/plan historical reference.
 specs/711-capital-admission-rename/spec.md:424	- **#658 is merged** (2026-06-15), so the `position_sizer` naming is on `main` and this rename is	Issue #711 authoritative rename spec/plan historical reference.
-src/bolt_v3_decision_evidence.rs:2615	| "position_sizer_rebuild"	FR-017 legacy pre-v14 audit-only discriminator retained in below-schema skip set.
-src/bolt_v3_decision_evidence.rs:3895	gate_id: "bolt_v3.position_sizer_rebuild".to_string(),	FR-017 test fixture keeps legacy v13 audit-only discriminator bytes.
-src/bolt_v3_decision_evidence.rs:3897	kind: "position_sizer_rebuild".to_string(),	FR-017 test fixture keeps legacy v13 audit-only discriminator bytes.
+src/bolt_v3_decision_evidence.rs:2705	| "position_sizer_rebuild"	FR-017 legacy pre-v14 audit-only discriminator retained in below-schema skip set.
+src/bolt_v3_decision_evidence.rs:4029	gate_id: "bolt_v3.position_sizer_rebuild".to_string(),	FR-017 test fixture keeps legacy v13 audit-only discriminator bytes.
+src/bolt_v3_decision_evidence.rs:4031	kind: "position_sizer_rebuild".to_string(),	FR-017 test fixture keeps legacy v13 audit-only discriminator bytes.
 tests/bolt_v3_capital_admission_recovery_equivalence.rs:104	"position_sizer_rebuild" => {	Recovery-equivalence test locates legacy v13 serialized fixture value.
 tests/bolt_v3_capital_admission_recovery_equivalence.rs:185	.find(|line| line.contains(r#""kind":"position_sizer_rebuild""#))	Recovery-equivalence test locates legacy v13 serialized fixture value.
 tests/fixtures/bolt_v3/capital_admission_recovery/v13/decision-evidence.jsonl:1	{"schema_version":13,"recorded_at_utc_ns":1731234567890123456,"gate_id":"bolt_v3.position_sizer_rebuild","gate_version":"0.1.0","kind":"position_sizer_rebuild","audit":{"observed_at_ns":999,"source":"startup_rebuild","observed_open_order_count":2,"all_open_orders_attributed":true,"accepted":true,"reason":null,"attempted_reservation_count":2,"recovered_reservation_count":2,"live_reserved_liability":"4.8"}}	Recovery-equivalence v13 fixture intentionally preserves pre-migration serialized input.

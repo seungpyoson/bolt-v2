@@ -135,8 +135,7 @@ def justfile_text() -> str:
     python3 scripts/verify_bte_022_pmxt_storage_proof.py
 
 source-fence-static-inner: require-local-verification-gate check-workspace require-rust-verification-owner
-    python3 scripts/test_verify_bte_022_pmxt_storage_proof.py
-    python3 scripts/verify_bte_022_pmxt_storage_proof.py
+    python3 scripts/run_fences.py
 """
 
 
@@ -434,6 +433,40 @@ def test_missing_justfile_command_is_a_finding() -> None:
     with_fixture(check)
 
 
+def test_malformed_justfile_recipe_header_is_a_finding() -> None:
+    def check(root: Path, module) -> None:
+        write_file(
+            root,
+            module.JUSTFILE,
+            """ verify-bte-022-pmxt-storage-proof: check-workspace
+    python3 scripts/test_verify_bte_022_pmxt_storage_proof.py
+    python3 scripts/verify_bte_022_pmxt_storage_proof.py
+
+source-fence-static-inner: require-local-verification-gate check-workspace require-rust-verification-owner
+    python3 scripts/run_fences.py
+""",
+        )
+        findings = module.scan_root(root)
+        assert any("verify-bte-022-pmxt-storage-proof missing command" in finding for finding in findings), findings
+
+    with_fixture(check)
+
+
+def test_source_fence_inner_rejects_appended_command() -> None:
+    def check(root: Path, module) -> None:
+        justfile_path = root / module.JUSTFILE
+        justfile = justfile_path.read_text(encoding="utf-8")
+        justfile = justfile.replace(
+            "    python3 scripts/run_fences.py\n",
+            "    python3 scripts/run_fences.py\n    python3 scripts/verify_bte_022_pmxt_storage_proof.py\n",
+        )
+        justfile_path.write_text(justfile, encoding="utf-8")
+        findings = module.scan_root(root)
+        assert any("source-fence-static-inner must contain only python3 scripts/run_fences.py" in finding for finding in findings), findings
+
+    with_fixture(check)
+
+
 def test_committed_hash_drift_is_a_finding() -> None:
     def check(root: Path, module) -> None:
         overwrite_json(root, module.PMXT_STORAGE_STATUS, lambda value: value["committed_input_hashes"]["pmxt_category_manifest"].update({"sha256": "0" * 64}))
@@ -468,6 +501,8 @@ def main() -> int:
         test_missing_bte_storage_reference_is_a_finding,
         test_staged_source_proof_fixture_present_is_a_finding,
         test_missing_justfile_command_is_a_finding,
+        test_malformed_justfile_recipe_header_is_a_finding,
+        test_source_fence_inner_rejects_appended_command,
         test_committed_hash_drift_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]

@@ -3073,6 +3073,43 @@ fn residual_position_after_terminal_preserves_fill_precision() {
 }
 
 #[test]
+fn residual_position_after_terminal_uses_observed_position_after_fill() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-EXIT-OBSERVED-RESIDUAL-001"),
+        Quantity::new(7.0, 2),
+        0.450,
+    );
+    let exit_pending = ExitPendingState {
+        position: Some(ManagedPositionState {
+            position: open_position.clone(),
+            origin: ManagedPositionOrigin::StrategyEntry,
+            pending_entry: None,
+        }),
+        pending_exit: PendingExitState {
+            client_order_id: ClientOrderId::from("EXIT-OBSERVED-RESIDUAL-001"),
+            market_id: open_position.market_id.clone(),
+            position_id: Some(open_position.position_id),
+            fill_received: true,
+            filled_quantity: Some(Quantity::new(4.0, 2)),
+            close_received: false,
+            terminal_received: true,
+            residual_position_observed_after_fill: true,
+        },
+    };
+
+    let residual = exit_pending
+        .residual_position_after_terminal()
+        .expect("observed residual position should be authoritative");
+
+    assert_eq!(residual.position_id, open_position.position_id);
+    assert_eq!(residual.quantity, Quantity::new(7.0, 2));
+}
+
+#[test]
 fn exposure_exit_pending_terminal_with_residual_position_restores_managed_state() {
     let mut strategy = ready_to_trade_strategy();
     let instrument_id = strategy.active.books.up.instrument_id.unwrap();
@@ -3142,5 +3179,56 @@ fn exposure_managed_recovery_origin_is_explicit_without_recovery_boolean() {
     assert_eq!(
         managed.position.position_id,
         PositionId::from("P-RECOVERY-001")
+    );
+}
+
+#[test]
+fn position_truth_recovery_after_terminal_flat_records_rematerialization_evidence() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
+        Arc::new(NoopFeeProvider),
+        evidence.clone(),
+    );
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-REMATERIALIZED-001");
+    let entry_client_order_id = ClientOrderId::from("ENTRY-REMATERIALIZED-001");
+    let pending = PendingEntryState {
+        client_order_id: entry_client_order_id,
+        market_id: Some("MKT-1".to_string()),
+        instrument_id,
+        outcome_side: Some(OutcomeSide::Up),
+        outcome_fees: strategy.active.outcome_fees.clone(),
+        historical_entry_fee_bps: Some(0.0),
+        interval_open: Some(3_100.0),
+        selection_published_at_ms: Some(1_000),
+        seconds_to_expiry_at_selection: Some(300),
+        book: configured_book_for_instrument(&mut strategy, instrument_id),
+    };
+    set_pending_entry(&mut strategy, pending);
+
+    strategy.on_order_canceled(order_canceled_event(entry_client_order_id, instrument_id));
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+
+    strategy.on_position_opened(position_opened_event(
+        instrument_id,
+        position_id,
+        Quantity::new(5.0, 2),
+        0.450,
+    ));
+
+    assert!(
+        evidence.events().into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::PositionTruthRematerialized
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Managed
+                    && record.source == "position_event"
+                    && record.client_order_id.as_deref() == Some("ENTRY-REMATERIALIZED-001")
+                    && record.position_id.as_deref() == Some("P-REMATERIALIZED-001")
+                    && record.residual_quantity.as_deref() == Some("5.00")
+        )),
+        "position truth rematerialization after a terminal Flat override must write linking lifecycle evidence"
     );
 }

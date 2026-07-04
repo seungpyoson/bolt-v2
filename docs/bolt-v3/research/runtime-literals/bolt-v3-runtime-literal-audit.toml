@@ -19846,7 +19846,7 @@ reason = "Stable decision-evidence record kind for durable venue-truth divergenc
 path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"venue_truth_capture_failure"'''
-context = '''const VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE: &str = "venue_truth_capture_failure";'''
+context = '''pub const VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE: &str = "venue_truth_capture_failure";'''
 classification = "capital_admission_reservation_evidence_source"
 reason = "Reservation-snapshot source label used while venue REST capture authority is degraded; it marks suspension evidence and does not configure a threshold, cap, or venue value."
 
@@ -20169,3 +20169,83 @@ literal = '''"poll Polymarket venue-truth endpoints"'''
 context = '''.context("poll Polymarket venue-truth endpoints")?;'''
 classification = "provider_runtime_diagnostic_context"
 reason = "Static error context for fail-closed venue-truth REST polling; cadence, endpoints, account, and credentials remain TOML or SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_health.rs"
+kind = "string"
+literal = '''"strategy `{}` lists reference source `{source_id}` without a source block"'''
+context = '''"strategy `{}` lists reference source `{source_id}` without a source block",'''
+classification = "operator_health_config_consistency_diagnostic"
+reason = "Static diagnostic template for an internally inconsistent reference-current-price source announcement; configured source ids and blocks remain TOML-owned."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"ops-status-kill-switch-store-fail-closed"'''
+context = '''"ops-status-kill-switch-store-fail-closed";'''
+classification = "ops_status_health_diagnostic_halt_id"
+reason = "Synthetic ops-status health halt id used only when the enabled durable kill-switch store fails closed; it labels the advisory JSON surface and does not configure runtime trading behavior."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"ops-status-kill-switch-store-unreadable"'''
+context = '''"ops-status-kill-switch-store-unreadable";'''
+classification = "ops_status_health_diagnostic_halt_id"
+reason = "Synthetic ops-status health halt id used only when the enabled durable kill-switch store cannot be read; it labels the advisory JSON surface and does not configure runtime trading behavior."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"kill-switch store fail-closed"'''
+context = '''"kill-switch store fail-closed";'''
+classification = "ops_status_health_diagnostic_reason_prefix"
+reason = "Static reason prefix for the ops-status health surface when durable kill-switch recovery fails closed; the underlying fail-closed reason comes from the store reader."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"{OPS_STATUS_KILL_SWITCH_STORE_FAIL_CLOSED_REASON_PREFIX}: {reason}"'''
+context = '''"{OPS_STATUS_KILL_SWITCH_STORE_FAIL_CLOSED_REASON_PREFIX}: {reason}"'''
+classification = "ops_status_health_diagnostic_reason_template"
+reason = "Static formatting template joining the fixed ops-status prefix with the typed kill-switch recovery reason; it is advisory output text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_health.rs"
+kind = "number"
+literal = "0"
+context = '''active_episode_count: 0,'''
+classification = "operator_health_counter_identity"
+reason = "A not-configured reject-observer health surface starts with zero active episodes; it is observability output state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_health.rs"
+kind = "number"
+literal = "0"
+context = '''total_retry_count: 0,'''
+classification = "operator_health_counter_identity"
+reason = "A not-configured reject-observer health surface starts with zero retries; it is observability output state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_health.rs"
+kind = "number"
+literal = "0"
+context = '''configured_source_count: 0,'''
+classification = "operator_health_counter_identity"
+reason = "A not-configured input-health surface has zero configured reference sources; it is observability output state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_health.rs"
+kind = "number"
+literal = "0"
+context = '''observed_source_count: 0,'''
+classification = "operator_health_counter_identity"
+reason = "A not-configured input-health surface has zero observed reference sources; it is observability output state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "0_u32"
+context = '''.fold(0_u32, |total, episode| total.saturating_add(episode.count));'''
+classification = "order_reject_observer_episode_counter_identity"
+reason = "Reject-observer retry totals fold from zero before observed episodes contribute counts; this is observability aggregation state, not an operator runtime value."

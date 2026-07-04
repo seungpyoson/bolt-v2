@@ -106,6 +106,14 @@ pub struct BoltV3OrderRejectObserverFeed {
     episodes: BTreeMap<String, RejectObserverEpisode>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3OrderRejectObserverHealthSnapshot {
+    pub active_episode_count: usize,
+    pub total_retry_count: u32,
+    pub oldest_episode_first_ns: Option<u64>,
+    pub latest_client_order_id: Option<String>,
+}
+
 impl BoltV3OrderRejectObserverFeed {
     #[must_use]
     pub fn new(
@@ -116,6 +124,27 @@ impl BoltV3OrderRejectObserverFeed {
             decision_evidence,
             account_id,
             episodes: BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn health_snapshot(&self) -> BoltV3OrderRejectObserverHealthSnapshot {
+        let active_episode_count = self.episodes.len();
+        let total_retry_count = self
+            .episodes
+            .values()
+            .fold(0_u32, |total, episode| total.saturating_add(episode.count));
+        let oldest_episode_first_ns = self.episodes.values().map(|episode| episode.first_ns).min();
+        let latest_client_order_id = self
+            .episodes
+            .values()
+            .max_by_key(|episode| episode.first_ns)
+            .map(|episode| episode.last_client_order_id.clone());
+        BoltV3OrderRejectObserverHealthSnapshot {
+            active_episode_count,
+            total_retry_count,
+            oldest_episode_first_ns,
+            latest_client_order_id,
         }
     }
 

@@ -50,7 +50,7 @@ use std::{
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
 
 const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
-const VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE: &str = "venue_truth_capture_failure";
+pub const VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE: &str = "venue_truth_capture_failure";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct BoltV3ExchangeMutationCounts {

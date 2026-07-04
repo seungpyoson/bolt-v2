@@ -177,6 +177,9 @@ use crate::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
         LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
     },
+    bolt_v3_operator_health::{
+        BoltV3InputHealth, BoltV3OperatorHealthSurface, runtime_source_announcements,
+    },
     bolt_v3_order_reject_observer_feed::{
         BoltV3OrderRejectObserverFeed, OrderRejectObserverFeedSubscription,
         subscribe_order_reject_observer_feed,
@@ -281,6 +284,7 @@ pub fn current_build_head_sha() -> Option<&'static str> {
 pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     registration_summary: BoltV3RegistrationSummary,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     loss_protection: Option<Rc<RefCell<KillSwitchLossProtection>>>,
     loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
@@ -408,6 +412,7 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
 }
 
 struct BoltV3LiveNodeRuntimeFeeds {
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     loss_protection: Option<Rc<RefCell<KillSwitchLossProtection>>>,
     loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
     loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
@@ -435,6 +440,7 @@ impl BoltV3LiveNodeRuntime {
         Self {
             node,
             registration_summary,
+            decision_evidence: feeds.decision_evidence,
             submit_admission,
             loss_protection: feeds.loss_protection,
             loss_halt_action_policy: feeds.loss_halt_action_policy,
@@ -929,6 +935,31 @@ impl BoltV3LiveNodeRuntime {
         self.venue_truth_runtime_guard.is_some()
     }
 
+    pub fn operator_health_surface(
+        &self,
+        input_health: Option<BoltV3InputHealth>,
+    ) -> BoltV3OperatorHealthSurface {
+        let reject_snapshot = self.order_reject_observer_feed.as_ref().map(|feed| {
+            feed.lock()
+                .expect("order reject observer feed lock poisoned")
+                .health_snapshot()
+        });
+        let capital_state = self.submit_admission.capital_admission_state_snapshot();
+        let kill_switch_state = self.submit_admission.kill_switch_state();
+        BoltV3OperatorHealthSurface::from_parts(
+            reject_snapshot.as_ref(),
+            &kill_switch_state,
+            capital_state.as_ref(),
+            input_health,
+        )
+    }
+
+    fn drain_decision_evidence_shutdown(&self) -> Result<(), BoltV3LiveNodeError> {
+        self.decision_evidence
+            .drain_shutdown()
+            .map_err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain)
+    }
+
     pub fn nt_risk_trading_state(&self) -> TradingState {
         self.node.kernel().risk_engine().borrow().trading_state()
     }
@@ -1341,6 +1372,18 @@ pub enum BoltV3LiveNodeError {
         run_error: anyhow::Error,
         shutdown_error: anyhow::Error,
     },
+    /// Decision-evidence shutdown drain failed after the NT runner and runtime
+    /// capture shutdown path completed. This is a fail-loud data-loss boundary:
+    /// buffered or kernel-resident evidence records must be flushed before the
+    /// live runner reports success.
+    DecisionEvidenceShutdownDrain(anyhow::Error),
+    /// The runner/capture path failed and the decision-evidence shutdown drain
+    /// also failed. Preserve both categories so the evidence loss cannot be
+    /// hidden behind the earlier runner error.
+    RunAndDecisionEvidenceShutdownDrain {
+        run_error: Box<BoltV3LiveNodeError>,
+        drain_error: anyhow::Error,
+    },
     /// The bolt-v3 controlled-connect boundary
     /// ([`connect_bolt_v3_clients`]) bounds the dispatched
     /// `NautilusKernel::connect_data_clients` and
@@ -1486,6 +1529,20 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 "LiveNode run failed and NT runtime capture shutdown failed: \
                  run error: {run_error}; shutdown error: {shutdown_error}"
             ),
+            BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(error) => {
+                write!(
+                    f,
+                    "bolt-v3 decision evidence shutdown drain failed: {error}"
+                )
+            }
+            BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain {
+                run_error,
+                drain_error,
+            } => write!(
+                f,
+                "LiveNode run or runtime-capture shutdown failed and bolt-v3 decision \
+                 evidence shutdown drain failed: run error: {run_error}; drain error: {drain_error}"
+            ),
             BoltV3LiveNodeError::ConnectTimeout { timeout_secs } => write!(
                 f,
                 "bolt-v3 controlled-connect exceeded the configured \
@@ -1586,6 +1643,10 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::RunAndRuntimeCaptureShutdown { run_error, .. } => {
                 Some(run_error.as_ref())
             }
+            BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(error) => Some(error.as_ref()),
+            BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain { run_error, .. } => {
+                Some(run_error.as_ref())
+            }
             BoltV3LiveNodeError::ConnectTimeout { .. }
             | BoltV3LiveNodeError::ConnectIncomplete
             | BoltV3LiveNodeError::DisconnectTimeout { .. }
@@ -1682,14 +1743,44 @@ pub async fn run_bolt_v3_live_node(
 
     let run_and_capture_result =
         classify_live_node_run_and_capture_shutdown(run_result, shutdown_result);
-    match (run_and_capture_result, iv_stop_result) {
-        (Err(run_or_capture_error), Err(iv_stop_error)) => {
+    let drain_result = runtime.drain_decision_evidence_shutdown();
+    match (run_and_capture_result, iv_stop_result, drain_result) {
+        (
+            Err(run_or_capture_error),
+            Err(iv_stop_error),
+            Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(drain_error)),
+        ) => {
+            log::error!("IV lifecycle stop failed after live-node run failure: {iv_stop_error}");
+            Err(BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain {
+                run_error: Box::new(run_or_capture_error),
+                drain_error,
+            })
+        }
+        (Err(run_or_capture_error), Err(iv_stop_error), Ok(())) => {
             log::error!("IV lifecycle stop failed after live-node run failure: {iv_stop_error}");
             Err(run_or_capture_error)
         }
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => Err(error),
-        (Ok(()), Ok(())) => Ok(()),
+        (
+            Err(run_or_capture_error),
+            Ok(()),
+            Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(drain_error)),
+        ) => Err(BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain {
+            run_error: Box::new(run_or_capture_error),
+            drain_error,
+        }),
+        (Err(error), Ok(()), Ok(())) => Err(error),
+        (
+            Ok(()),
+            Err(iv_stop_error),
+            Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(drain_error)),
+        ) => Err(BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain {
+            run_error: Box::new(iv_stop_error),
+            drain_error,
+        }),
+        (Ok(()), Err(error), Ok(())) => Err(error),
+        (Ok(()), Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(()), Ok(())) => Ok(()),
+        (_, _, Err(error)) => Err(error),
     }
 }
 
@@ -2054,12 +2145,25 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         )
     }
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
+    let source_announcements =
+        runtime_source_announcements(loaded, &strategy_summary).map_err(|message| {
+            BoltV3LiveNodeError::StrategyRegistration(BoltV3StrategyRegistrationError::Evidence {
+                message,
+            })
+        })?;
     for strategy in &strategy_summary.registered {
         log::info!(
             "bolt-v3 registered strategy: strategy_instance_id={} strategy_archetype={} nt_strategy_id={}",
             strategy.strategy_instance_id,
             strategy.strategy_archetype.as_str(),
             strategy.registered_strategy_id
+        );
+    }
+    for announcement in &source_announcements {
+        log::warn!(
+            "bolt-v3 runtime feed announcement: {}",
+            serde_json::to_string(announcement)
+                .expect("runtime source announcement should serialize")
         );
     }
     // Configure the durable kill-switch loss-protection accumulator after
@@ -2102,6 +2206,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         summary.clone(),
         submit_admission,
         BoltV3LiveNodeRuntimeFeeds {
+            decision_evidence,
             loss_protection,
             loss_halt_action_policy,
             loss_runtime_feed,

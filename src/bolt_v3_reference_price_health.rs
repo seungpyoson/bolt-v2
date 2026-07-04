@@ -83,6 +83,12 @@ pub struct ReferenceCurrentPriceSourceUpdateObservation {
     pub received_ts_ms: Option<u64>,
 }
 
+impl ReferenceCurrentPriceSourceUpdateObservation {
+    pub fn is_observed(&self) -> bool {
+        self.status == SOURCE_UPDATE_OBSERVATION_STATUS_OBSERVED
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReferenceCurrentPriceHealthReport {
     pub targets: Vec<ReferenceCurrentPriceHealthTarget>,
@@ -94,7 +100,7 @@ impl ReferenceCurrentPriceHealthReport {
     pub fn all_sources_observed(&self) -> bool {
         self.source_update_observations
             .iter()
-            .all(|observation| observation.status == SOURCE_UPDATE_OBSERVATION_STATUS_OBSERVED)
+            .all(ReferenceCurrentPriceSourceUpdateObservation::is_observed)
     }
 }
 

@@ -24,6 +24,10 @@ impl VenueEventMs {
     pub const fn saturating_duration_since(self, earlier: Self) -> u64 {
         self.0.saturating_sub(earlier.0)
     }
+
+    pub const fn signed_delta_since(self, baseline: Self) -> i64 {
+        self.0 as i64 - baseline.0 as i64
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -96,6 +100,18 @@ mod tests {
         assert_eq!(
             strategy_clock.saturating_duration_since_venue_event(venue_leading_event),
             0
+        );
+    }
+
+    #[test]
+    fn venue_event_signed_delta_preserves_leading_skew() {
+        assert_eq!(
+            VenueEventMs::new(995).signed_delta_since(VenueEventMs::new(1_000)),
+            -5
+        );
+        assert_eq!(
+            VenueEventMs::new(1_005).signed_delta_since(VenueEventMs::new(1_000)),
+            5
         );
     }
 }

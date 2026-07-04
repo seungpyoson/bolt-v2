@@ -387,13 +387,17 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         family_key: updown::KEY,
         interval_start_ms: 1_000,
         interval_end_ms: 2_000,
-        now_ms: 1_500,
         reference_quotes: &quotes,
         strike_price: Some(100.0),
         seconds_to_market_end: Some(300),
         realized_volatility_snapshot: &realized_volatility_snapshot,
         realized_volatility_max_source_age_ms: None,
         pricing_kurtosis: 0.25,
+    };
+    let quote_set_at_reference_evaluation = || {
+        let mut quote_set = quote_set_inputs();
+        quote_set.now_ms = 1_500;
+        quote_set
     };
     let expected_fair_probability_up = updown::fair_probability_up(&FairProbabilityInputs {
         spot_price: 100.05,
@@ -416,7 +420,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
             BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
                 reference_fair_value: fair_input,
                 quote_plan: quote_plan_inputs(updown::KEY),
-                quote_set: quote_set_inputs(),
+                quote_set: quote_set_at_reference_evaluation(),
                 order_plan: order_plan_inputs(),
                 submit_template: &maker_limit_post_only_template(),
                 price_precision: 2,
@@ -505,7 +509,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                     ..fair_input
                 },
                 quote_plan: quote_plan_inputs(updown::KEY),
-                quote_set: quote_set_inputs(),
+                quote_set: quote_set_at_reference_evaluation(),
                 order_plan: order_plan_inputs(),
                 submit_template: &maker_limit_post_only_template(),
                 price_precision: 2,
@@ -582,7 +586,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
                     reference_fair_value,
                     quote_plan: quote_plan_inputs(reference_fair_value.family_key),
-                    quote_set: quote_set_inputs(),
+                    quote_set: quote_set_at_reference_evaluation(),
                     order_plan: order_plan_inputs(),
                     submit_template: &maker_limit_post_only_template(),
                     price_precision: 2,
@@ -639,7 +643,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                     ..fair_input
                 },
                 quote_plan: quote_plan_inputs(updown::KEY),
-                quote_set: quote_set_inputs(),
+                quote_set: quote_set_at_reference_evaluation(),
                 order_plan: order_plan_inputs(),
                 submit_template: &maker_limit_post_only_template(),
                 price_precision: 2,
@@ -1231,7 +1235,7 @@ fn gate_cleared_informed_fraction() -> UsableMu {
     );
     let instrument = InstrumentId::from("MUFIXTURE.SIM");
     let mut ts_ms = STEP_MS;
-    let mut observe = |state: &mut MakerMuState, aggressor: AggressorSide, ts_ms: u64| {
+    let observe = |state: &mut MakerMuState, aggressor: AggressorSide, ts_ms: u64| {
         let ts_ns = ts_ms * NANOS_PER_MILLI;
         let trade = TradeTick::new_checked(
             instrument,

@@ -1306,7 +1306,7 @@ permissions:
 jobs:
   coverage-enforcer:
     name: coverage-enforcer
-    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -7134,9 +7134,9 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n",
                     "    if: ${{ github.event_name == 'pull_request' }}\n"
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n",
                 )
             },
         ),
@@ -7156,8 +7156,8 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n"
                     "    'if': ${{ github.event_name == 'pull_request' }}\n",
                 )
             },
@@ -7167,8 +7167,8 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n"
                     "    continue-on-error: true\n",
                 )
             },
@@ -7178,8 +7178,8 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n"
                     "    permissions:\n"
                     "      contents: write\n"
                     "      checks: write\n"

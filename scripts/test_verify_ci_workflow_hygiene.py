@@ -9248,15 +9248,7 @@ source-fence-static:
 source-fence-static-inner: require-local-verification-gate
     # cargo fetch and scripts/verify_runtime_capture_yaml.py stay in source-fence
     # python3 scripts/rust_verification.py cargo --repo . -- test stays remote-only
-    python3 scripts/test_verify_runtime_capture_yaml.py
-    python3 scripts/test_local_verification_gate.py
-    python3 scripts/test_lane_governor.py
-    python3 scripts/test_verify_lane_governance.py
-    python3 scripts/verify_lane_governance.py
-    python3 scripts/test_verify_fail_closed_contracts.py
-    python3 scripts/verify_fail_closed_contracts.py
-    python3 scripts/test_verify_probability_typed_pilot.py
-    python3 scripts/verify_probability_typed_pilot.py
+    python3 scripts/run_fences.py
 
 source-fence: source-fence-static
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
@@ -9292,7 +9284,7 @@ source-fence: source-fence-static
         raise AssertionError(f"source-fence-static public recipe extra work was silent, got: {extra_public_errors}")
 
     nested_public_gate = justfile_text.replace(
-        "    python3 scripts/test_local_verification_gate.py",
+        "    python3 scripts/run_fences.py",
         "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner",
     )
     nested_public_errors = verifier.verify_source_fence_static_recipe(nested_public_gate)
@@ -9307,60 +9299,27 @@ source-fence: source-fence-static
     if not any("source-fence-static-inner must not depend on local verification gate recipes" in error for error in nested_dependency_errors):
         raise AssertionError(f"source-fence-static nested gate dependency was silent, got: {nested_dependency_errors}")
 
-    missing_lane_check = justfile_text.replace("    python3 scripts/verify_lane_governance.py\n", "")
-    missing_errors = verifier.verify_source_fence_static_recipe(missing_lane_check)
-    if not any("must run python3 scripts/verify_lane_governance.py" in error for error in missing_errors):
-        raise AssertionError(f"source-fence-static must require lane governance meta-check, got: {missing_errors}")
+    missing_runner = justfile_text.replace("    python3 scripts/run_fences.py\n", "")
+    missing_errors = verifier.verify_source_fence_static_recipe(missing_runner)
+    if not any("must run python3 scripts/run_fences.py" in error for error in missing_errors):
+        raise AssertionError(f"source-fence-static must require run_fences harness, got: {missing_errors}")
 
-    missing_fail_closed_verifier = justfile_text.replace(
-        "    python3 scripts/verify_fail_closed_contracts.py\n",
-        "",
+    extra_inner_work = justfile_text.replace(
+        "    python3 scripts/run_fences.py",
+        "    python3 scripts/run_fences.py\n"
+        "    python3 scripts/verify_lane_governance.py",
     )
-    missing_fail_closed_errors = verifier.verify_source_fence_static_recipe(missing_fail_closed_verifier)
-    if not any("must run python3 scripts/verify_fail_closed_contracts.py" in error for error in missing_fail_closed_errors):
-        raise AssertionError(f"source-fence-static must require fail-closed verifier, got: {missing_fail_closed_errors}")
-
-    missing_fail_closed_pair = justfile_text.replace(
-        "    python3 scripts/test_verify_fail_closed_contracts.py\n"
-        "    python3 scripts/verify_fail_closed_contracts.py\n",
-        "",
-    )
-    missing_fail_closed_pair_errors = verifier.verify_source_fence_static_recipe(missing_fail_closed_pair)
-    for command in (
-        "python3 scripts/test_verify_fail_closed_contracts.py",
-        "python3 scripts/verify_fail_closed_contracts.py",
-    ):
-        if not any(f"must run {command}" in error for error in missing_fail_closed_pair_errors):
-            raise AssertionError(
-                f"source-fence-static must require fail-closed command {command}, "
-                f"got: {missing_fail_closed_pair_errors}"
-            )
-
-    missing_probability_pair = justfile_text.replace(
-        "    python3 scripts/test_verify_probability_typed_pilot.py\n"
-        "    python3 scripts/verify_probability_typed_pilot.py\n",
-        "",
-    )
-    missing_probability_pair_errors = verifier.verify_source_fence_static_recipe(
-        missing_probability_pair
-    )
-    for command in (
-        "python3 scripts/test_verify_probability_typed_pilot.py",
-        "python3 scripts/verify_probability_typed_pilot.py",
-    ):
-        if not any(f"must run {command}" in error for error in missing_probability_pair_errors):
-            raise AssertionError(
-                f"source-fence-static must require probability typed-pilot command {command}, "
-                f"got: {missing_probability_pair_errors}"
-            )
+    extra_inner_errors = verifier.verify_source_fence_static_recipe(extra_inner_work)
+    if not any("source-fence-static-inner must contain only python3 scripts/run_fences.py" in error for error in extra_inner_errors):
+        raise AssertionError(f"source-fence-static extra inner work was silent, got: {extra_inner_errors}")
 
     commented_lane_test = justfile_text.replace(
-        "    python3 scripts/test_lane_governor.py",
-        "    # python3 scripts/test_lane_governor.py",
+        "    python3 scripts/run_fences.py",
+        "    # python3 scripts/run_fences.py",
     )
     commented_errors = verifier.verify_source_fence_static_recipe(commented_lane_test)
-    if not any("must run python3 scripts/test_lane_governor.py" in error for error in commented_errors):
-        raise AssertionError(f"source-fence-static comments must not satisfy lane test wiring, got: {commented_errors}")
+    if not any("must run python3 scripts/run_fences.py" in error for error in commented_errors):
+        raise AssertionError(f"source-fence-static comments must not satisfy runner wiring, got: {commented_errors}")
 
 
 def assert_local_verification_gate_recipes_are_enforced() -> None:

@@ -1598,6 +1598,7 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         self.function_stack: list[str] = []
         self.functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
         self.active_functions: set[str] = set()
+        self.run_fences_canonical_loader_call: ast.Call | None = None
         self.subprocess_modules = {"subprocess"}
         self.asyncio_modules = {"asyncio"}
         self.os_modules = {"os"}
@@ -1628,6 +1629,8 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
 
     def resolve(self) -> tuple[set[Path], list[str]]:
         self._collect_function_defs(self.tree)
+        if self.path == SCRIPTS_DIR / "run_fences.py":
+            self._validate_run_fences_loader_contract()
         self.visit(self.tree)
         return self.targets, self.failures
 
@@ -2259,11 +2262,11 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         return isinstance(value, str) and value.endswith(".py")
 
     def _handle_loader_call(self, node: ast.Call, call_name: str) -> None:
-        if self.path == SCRIPTS_DIR / "run_fences.py" and call_name.endswith("spec_from_file_location"):
+        if self.path == SCRIPTS_DIR / "run_fences.py":
             if self._is_run_fences_discovery_loader_call(node, call_name):
                 self.targets.update(_run_fences_discovered_targets())
             else:
-                self._fail(node, "run_fences.py may only use spec_from_file_location in import_module_from_path(module_name, path)")
+                self._fail(node, "run_fences.py may only use its canonical import_module_from_path importlib.util.spec_from_file_location(module_name, path) loader call")
             return
         if (
             call_name in self.import_module_names
@@ -2312,17 +2315,101 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         self._fail(node, f"loader target is not a resolvable Python script: {target}")
 
     def _is_run_fences_discovery_loader_call(self, node: ast.Call, call_name: str) -> bool:
-        if not call_name.endswith("spec_from_file_location"):
-            return False
-        if not self.function_stack or self.function_stack[-1] != "import_module_from_path":
-            return False
-        if len(node.args) != 2 or node.keywords:
-            return False
         return (
-            isinstance(node.args[0], ast.Name)
+            self._is_loader_call(call_name)
+            and node is self.run_fences_canonical_loader_call
+            and call_name == "importlib.util.spec_from_file_location"
+            and self._is_run_fences_canonical_loader_call(node)
+        )
+
+    def _validate_run_fences_loader_contract(self) -> None:
+        module_defs = [
+            node
+            for node in getattr(self.tree, "body", [])
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "import_module_from_path"
+        ]
+        all_named_defs = [
+            node
+            for node in ast.walk(self.tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "import_module_from_path"
+        ]
+        if len(module_defs) != 1:
+            target = module_defs[0] if module_defs else self.tree
+            self._fail(target, "run_fences.py must define exactly one module-level import_module_from_path function")
+        for node in all_named_defs:
+            if node not in module_defs:
+                self._fail(node, "run_fences.py must not define nested or method import_module_from_path functions")
+        if len(module_defs) != 1:
+            self._validate_run_fences_spec_occurrences(None)
+            return
+
+        canonical_def = module_defs[0]
+        runtime_calls = [
+            node
+            for node in self._runtime_nodes(canonical_def)
+            if isinstance(node, ast.Call)
+            and self._is_direct_importlib_spec_call(node)
+        ]
+        canonical_calls = [
+            node
+            for node in runtime_calls
+            if self._is_run_fences_canonical_loader_call(node)
+        ]
+        if len(canonical_calls) != 1:
+            self._fail(canonical_def, "run_fences.py import_module_from_path must contain exactly one direct importlib.util.spec_from_file_location(module_name, path) call")
+        else:
+            self.run_fences_canonical_loader_call = canonical_calls[0]
+        for node in runtime_calls:
+            if node is not self.run_fences_canonical_loader_call:
+                self._fail(node, "run_fences.py import_module_from_path contains a noncanonical spec_from_file_location call")
+        self._validate_run_fences_spec_occurrences(self.run_fences_canonical_loader_call)
+
+    def _validate_run_fences_spec_occurrences(self, canonical_call: ast.Call | None) -> None:
+        allowed_attribute = canonical_call.func if canonical_call is not None else None
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "importlib.util":
+                for alias in node.names:
+                    if alias.name in {"*", "spec_from_file_location"}:
+                        self._fail(node, "run_fences.py must not import spec_from_file_location by alias")
+            elif isinstance(node, ast.Attribute) and node.attr == "spec_from_file_location":
+                if node is not allowed_attribute:
+                    self._fail(node, "run_fences.py spec_from_file_location references must stay at the canonical loader call")
+            elif isinstance(node, ast.Constant) and node.value == "spec_from_file_location":
+                self._fail(node, "run_fences.py must not reference spec_from_file_location by string indirection")
+
+    def _runtime_nodes(self, function: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.AST]:
+        def walk(node: ast.AST) -> Iterator[ast.AST]:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                    continue
+                yield child
+                yield from walk(child)
+
+        for statement in function.body:
+            yield statement
+            yield from walk(statement)
+
+    def _is_run_fences_canonical_loader_call(self, node: ast.Call) -> bool:
+        return (
+            self._is_direct_importlib_spec_call(node)
+            and len(node.args) == 2
+            and not node.keywords
+            and isinstance(node.args[0], ast.Name)
             and node.args[0].id == "module_name"
             and isinstance(node.args[1], ast.Name)
             and node.args[1].id == "path"
+        )
+
+    def _is_direct_importlib_spec_call(self, node: ast.Call) -> bool:
+        return (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "spec_from_file_location"
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "util"
+            and isinstance(node.func.value.value, ast.Name)
+            and node.func.value.value.id == "importlib"
         )
 
     def _module_keyword_target(self, node: ast.Call, keyword_name: str) -> ast.AST | None:
@@ -3031,20 +3118,72 @@ run_async("scripts/test_nextest_fingerprint.py")
     } <= rels
 
 
-def test_run_fences_loader_special_case_is_single_site() -> None:
+def _run_fences_loader_failures(extra_source: str) -> list[str]:
     source = (SCRIPTS_DIR / "run_fences.py").read_text(encoding="utf-8")
-    source += """
-
-def unexpected_loader(path):
-    return importlib.util.spec_from_file_location("unexpected", path)
-"""
+    source += extra_source
     resolver = _CodeExecutionEdgeResolver(
         SCRIPTS_DIR / "run_fences.py",
         ast.parse(source),
         scan_set={SCRIPTS_DIR / "run_fences.py"},
     )
     _targets, failures = resolver.resolve()
-    assert any("run_fences.py may only use spec_from_file_location" in failure for failure in failures), failures
+    return failures
+
+
+def test_run_fences_loader_special_case_is_single_site() -> None:
+    failures = _run_fences_loader_failures(
+        """
+
+def unexpected_loader(path):
+    return importlib.util.spec_from_file_location("unexpected", path)
+"""
+    )
+    assert any("run_fences.py" in failure for failure in failures), failures
+
+
+def test_run_fences_loader_special_case_rejects_reproduced_bypasses() -> None:
+    fixtures = {
+        "variable alias": """
+
+SPEC_LOADER = importlib.util.spec_from_file_location
+
+def unexpected_loader(path):
+    return SPEC_LOADER("unexpected", path)
+""",
+        "from import alias": """
+
+from importlib.util import spec_from_file_location as SPEC_LOADER
+
+def unexpected_loader(path):
+    return SPEC_LOADER("unexpected", path)
+""",
+        "getattr string": """
+
+def unexpected_loader(path):
+    return getattr(importlib.util, "spec_from_file_location")("unexpected", path)
+""",
+        "module duplicate": """
+
+def import_module_from_path(module_name, path):
+    return importlib.util.spec_from_file_location(module_name, path)
+""",
+        "nested duplicate": """
+
+def outer_loader():
+    def import_module_from_path(module_name, path):
+        return importlib.util.spec_from_file_location(module_name, path)
+    return import_module_from_path
+""",
+        "method duplicate": """
+
+class Loader:
+    def import_module_from_path(self, module_name, path):
+        return importlib.util.spec_from_file_location(module_name, path)
+""",
+    }
+    for label, extra_source in fixtures.items():
+        failures = _run_fences_loader_failures(extra_source)
+        assert any("run_fences.py" in failure for failure in failures), (label, failures)
 
 
 def test_subprocess_executable_keyword_process_image_resolves_before_argv0() -> None:
@@ -4273,6 +4412,7 @@ def _registered_self_tests():
         test_repo_write_analyzer_catches_extended_mutators,
         test_code_execution_edges_are_static_fixed_point,
         test_run_fences_loader_special_case_is_single_site,
+        test_run_fences_loader_special_case_rejects_reproduced_bypasses,
         test_subprocess_executable_keyword_process_image_resolves_before_argv0,
         test_subprocess_direct_process_image_resolves_python_by_semantics,
         test_asyncio_subprocess_resolves_python_targets,

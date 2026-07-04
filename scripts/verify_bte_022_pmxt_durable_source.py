@@ -966,6 +966,7 @@ def scan_root(root: Path) -> list[str]:
     source_fence_commands = just_recipe_commands(justfile, "source-fence-static-inner")
     if not source_fence_commands:
         findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
+        return findings
     if tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS:
         expected = " && ".join(SOURCE_FENCE_STATIC_COMMANDS)
         findings.append(f"{JUSTFILE}: source-fence-static-inner must contain only {expected}")

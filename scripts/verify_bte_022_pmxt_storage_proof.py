@@ -517,6 +517,7 @@ def check_guard_verification(status: dict, justfile: str, findings: list[str]) -
     source_fence_commands = just_recipe_commands(justfile, "source-fence-static-inner")
     if not source_fence_commands:
         findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
+        return
     if tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS:
         expected = " && ".join(SOURCE_FENCE_STATIC_COMMANDS)
         findings.append(f"{JUSTFILE}: source-fence-static-inner must contain only {expected}")

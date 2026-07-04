@@ -55,7 +55,7 @@ fn indexed_evicted_sha256(index: &EvictedFixtureIndex, path: &str) -> String {
         .entries
         .iter()
         .find(|entry| entry.path == path)
-        .unwrap_or_else(|| panic!("evicted fixture index contains {path}"))
+        .unwrap_or_else(|| panic!("evicted fixture index does not contain {path}"))
         .sha256
         .clone()
 }

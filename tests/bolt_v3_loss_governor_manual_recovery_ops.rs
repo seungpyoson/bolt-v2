@@ -130,6 +130,23 @@ fn valid_manual_recovery_records_armed_state_and_audit_history() {
         record.loss_governor_manual_recoveries[0].evidence_sha256,
         VALID_EVIDENCE_SHA256
     );
+
+    let refreshed_snapshot = KillSwitchLossProtectionSnapshot {
+        daily_realized_pnl: Decimal::new(1, 0),
+        ..zero_loss_snapshot()
+    };
+    store
+        .write_state_with_loss_snapshot(&KillSwitchState::Armed, Some(&refreshed_snapshot))
+        .expect("later runtime loss snapshot write should persist");
+    let refreshed_record = store
+        .load_recovery_record()
+        .expect("refreshed state should load");
+    assert_eq!(refreshed_record.loss_protection, Some(refreshed_snapshot));
+    assert_eq!(refreshed_record.loss_governor_manual_recoveries.len(), 1);
+    assert_eq!(
+        refreshed_record.loss_governor_manual_recoveries[0].evidence_sha256,
+        VALID_EVIDENCE_SHA256
+    );
 }
 
 #[test]

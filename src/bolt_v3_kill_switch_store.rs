@@ -123,11 +123,24 @@ impl KillSwitchStore {
         state: &KillSwitchState,
         loss_protection: Option<&KillSwitchLossProtectionSnapshot>,
     ) -> Result<(), KillSwitchStoreError> {
-        let bytes =
-            serialize_state_with_loss_snapshot_and_manual_recoveries(state, loss_protection, &[])?;
+        let manual_recoveries = self.existing_loss_governor_manual_recoveries();
+        let bytes = serialize_state_with_loss_snapshot_and_manual_recoveries(
+            state,
+            loss_protection,
+            &manual_recoveries,
+        )?;
         self.ensure_state_bytes_within_limit(&bytes)?;
         write_private_atomic_file(&self.path, &bytes)?;
         Ok(())
+    }
+
+    fn existing_loss_governor_manual_recoveries(
+        &self,
+    ) -> Vec<KillSwitchLossGovernorManualRecoveryRecord> {
+        match self.load_recovery_record() {
+            Ok(record) => record.loss_governor_manual_recoveries,
+            Err(_) => Vec::new(),
+        }
     }
 
     pub fn write_loss_governor_manual_recovery(

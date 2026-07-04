@@ -9,10 +9,10 @@
 //! `deny_unknown_fields` fails loud on any stray key.
 //!
 //! This struct validates the flat table's structure (field presence, TOML type,
-//! unknown keys, `oms_type` parseability) and mirrors the live archetype's
-//! runtime bounds for the knobs threaded into this shape. That keeps registry
-//! manifest validation fail-closed before backtest/build can turn malformed maker
-//! config into a green no-op run.
+//! unknown keys, `oms_type` parseability) and delegates the live archetype's
+//! runtime bounds for the knobs threaded into this shape to the shared maker
+//! validation helpers. That keeps registry manifest validation fail-closed before
+//! backtest/build can turn malformed maker config into a green no-op run.
 
 use anyhow::{Context, Result};
 use nautilus_model::enums::OmsType;
@@ -22,10 +22,12 @@ use toml::Value;
 use super::binding::MakerMarketDeclaration;
 use crate::{
     bolt_v3_maker_market_selection::{
-        MakerMarketPortfolioBlocker, MakerMarketPortfolioPolicy,
-        maker_market_portfolio_policy_blockers,
+        MakerMarketPortfolioBlocker, MakerMarketPortfolioDeclarationBlocker,
+        MakerMarketPortfolioDeclarationInputs, MakerMarketPortfolioPolicy,
+        MakerMarketPortfolioPolicyInputs, MakerRuntimeParameterBlocker,
+        MakerRuntimeParameterBoundInputs, maker_market_portfolio_declaration_blockers,
+        maker_market_portfolio_policy_input_blockers, maker_runtime_parameter_input_blockers,
     },
-    bolt_v3_numeric::{MILLIS_PER_SECOND_U64, NANOS_PER_MILLI_U64, UNIT_F64, is_positive_finite},
     strategies::registry::ValidationError,
 };
 
@@ -282,36 +284,32 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
         MISSING_MARKETS_CONFIG_DIGEST_CODE,
         errors,
     );
-    let trade_flow_window_secs = validate_positive_u64_field(
+    let trade_flow_window_secs = validate_non_negative_u64_field(
         table,
         field_prefix,
         TRADE_FLOW_WINDOW_SECS_FIELD,
         MISSING_TRADE_FLOW_WINDOW_SECS_CODE,
-        "must be > 0 (a zero retention window holds no trades, so a μ can never be produced)",
         errors,
     );
-    let trade_flow_max_samples = validate_positive_u64_field(
+    let trade_flow_max_samples = validate_non_negative_u64_field(
         table,
         field_prefix,
         TRADE_FLOW_MAX_SAMPLES_FIELD,
         MISSING_TRADE_FLOW_MAX_SAMPLES_CODE,
-        "must be > 0 (a zero sample cap retains no trades, so a μ can never be produced)",
         errors,
     );
-    let mu_min_classified_samples = validate_positive_u64_field(
+    let mu_min_classified_samples = validate_non_negative_u64_field(
         table,
         field_prefix,
         MU_MIN_CLASSIFIED_SAMPLES_FIELD,
         MISSING_MU_MIN_CLASSIFIED_SAMPLES_CODE,
-        "must be > 0 (a zero warmup threshold would admit a μ from an empty window)",
         errors,
     );
-    validate_positive_u64_field(
+    let mu_stale_window_ms = validate_non_negative_u64_field(
         table,
         field_prefix,
         MU_STALE_WINDOW_MS_FIELD,
         MISSING_MU_STALE_WINDOW_MS_CODE,
-        "must be > 0 (a zero staleness window marks every reading stale, blocking μ permanently)",
         errors,
     );
     let mu_min_floor = validate_float_field(
@@ -321,20 +319,18 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
         MISSING_MU_MIN_FLOOR_CODE,
         errors,
     );
-    validate_positive_u64_field(
+    let requote_min_interval_ms = validate_non_negative_u64_field(
         table,
         field_prefix,
         REQUOTE_MIN_INTERVAL_MS_FIELD,
         MISSING_REQUOTE_MIN_INTERVAL_MS_CODE,
-        "must be > 0 (a zero requote interval disables the same-tick throttle)",
         errors,
     );
-    let quote_interval_ms = validate_positive_u64_field(
+    let quote_interval_ms = validate_non_negative_u64_field(
         table,
         field_prefix,
         QUOTE_INTERVAL_MS_FIELD,
         MISSING_QUOTE_INTERVAL_MS_CODE,
-        "must be > 0 (a zero quote-loop interval would schedule a degenerate timer)",
         errors,
     );
     let market_portfolio_max_active_markets = validate_non_negative_u64_field(
@@ -365,7 +361,9 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
             trade_flow_window_secs,
             trade_flow_max_samples,
             mu_min_classified_samples,
+            mu_stale_window_ms,
             mu_min_floor,
+            requote_min_interval_ms,
             quote_interval_ms,
             market_portfolio_max_active_markets,
             market_portfolio_total_bankroll_notional,
@@ -383,7 +381,9 @@ struct RuntimeBoundInputs {
     trade_flow_window_secs: Option<u64>,
     trade_flow_max_samples: Option<u64>,
     mu_min_classified_samples: Option<u64>,
+    mu_stale_window_ms: Option<u64>,
     mu_min_floor: Option<f64>,
+    requote_min_interval_ms: Option<u64>,
     quote_interval_ms: Option<u64>,
     market_portfolio_max_active_markets: Option<u64>,
     market_portfolio_total_bankroll_notional: Option<f64>,
@@ -396,53 +396,95 @@ fn validate_runtime_bounds(
     inputs: RuntimeBoundInputs,
     errors: &mut Vec<ValidationError>,
 ) {
-    if let Some(trade_flow_window_secs) = inputs.trade_flow_window_secs
-        && trade_flow_window_secs
-            .checked_mul(MILLIS_PER_SECOND_U64)
-            .is_none()
-    {
-        errors.push(ValidationError {
-            field: format!("{field_prefix}.{TRADE_FLOW_WINDOW_SECS_FIELD}"),
-            code: CONVERSION_OVERFLOW_CODE,
-            message: format!(
-                "({trade_flow_window_secs}) must be small enough that its second-to-millisecond conversion does not overflow u64"
-            ),
-        });
-    }
-    if let (Some(mu_min_classified_samples), Some(trade_flow_max_samples)) = (
-        inputs.mu_min_classified_samples,
-        inputs.trade_flow_max_samples,
-    ) && mu_min_classified_samples > trade_flow_max_samples
-    {
-        errors.push(ValidationError {
-            field: format!("{field_prefix}.{MU_MIN_CLASSIFIED_SAMPLES_FIELD}"),
-            code: UNSATISFIABLE_WARMUP_CODE,
-            message: format!(
-                "({mu_min_classified_samples}) must be <= {TRADE_FLOW_MAX_SAMPLES_FIELD} ({trade_flow_max_samples})"
-            ),
-        });
-    }
-    if let Some(mu_min_floor) = inputs.mu_min_floor
-        && (!is_positive_finite(mu_min_floor) || mu_min_floor >= UNIT_F64)
-    {
-        errors.push(ValidationError {
-            field: format!("{field_prefix}.{MU_MIN_FLOOR_FIELD}"),
-            code: VALUE_OUT_OF_RANGE_CODE,
-            message: format!("({mu_min_floor}) must be finite and in the open interval (0, 1)"),
-        });
-    }
-    if let Some(quote_interval_ms) = inputs.quote_interval_ms
-        && quote_interval_ms.checked_mul(NANOS_PER_MILLI_U64).is_none()
-    {
-        errors.push(ValidationError {
-            field: format!("{field_prefix}.{QUOTE_INTERVAL_MS_FIELD}"),
-            code: CONVERSION_OVERFLOW_CODE,
-            message: format!(
-                "({quote_interval_ms}) must be small enough that its millisecond-to-nanosecond conversion does not overflow u64"
-            ),
-        });
+    let runtime_bound_inputs = MakerRuntimeParameterBoundInputs {
+        trade_flow_window_secs: inputs.trade_flow_window_secs,
+        trade_flow_max_samples: inputs.trade_flow_max_samples,
+        mu_min_classified_samples: inputs.mu_min_classified_samples,
+        mu_stale_window_ms: inputs.mu_stale_window_ms,
+        mu_min_floor: inputs.mu_min_floor,
+        requote_min_interval_ms: inputs.requote_min_interval_ms,
+        quote_interval_ms: inputs.quote_interval_ms,
+    };
+    for blocker in maker_runtime_parameter_input_blockers(runtime_bound_inputs) {
+        push_runtime_parameter_blocker(field_prefix, blocker, errors);
     }
     validate_market_portfolio_bounds(field_prefix, inputs, errors);
+}
+
+fn push_runtime_parameter_blocker(
+    field_prefix: &str,
+    blocker: MakerRuntimeParameterBlocker,
+    errors: &mut Vec<ValidationError>,
+) {
+    let (field, code, message) = match blocker {
+        MakerRuntimeParameterBlocker::ZeroTradeFlowWindowSecs => (
+            TRADE_FLOW_WINDOW_SECS_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 (a zero retention window holds no trades, so a μ can never be produced)"
+                .to_string(),
+        ),
+        MakerRuntimeParameterBlocker::TradeFlowWindowMillisOverflow { window_secs } => (
+            TRADE_FLOW_WINDOW_SECS_FIELD,
+            CONVERSION_OVERFLOW_CODE,
+            format!(
+                "({window_secs}) must be small enough that its second-to-millisecond conversion does not overflow u64"
+            ),
+        ),
+        MakerRuntimeParameterBlocker::ZeroTradeFlowMaxSamples => (
+            TRADE_FLOW_MAX_SAMPLES_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 (a zero sample cap retains no trades, so a μ can never be produced)"
+                .to_string(),
+        ),
+        MakerRuntimeParameterBlocker::ZeroMuMinClassifiedSamples => (
+            MU_MIN_CLASSIFIED_SAMPLES_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 (a zero warmup threshold would admit a μ from an empty window)".to_string(),
+        ),
+        MakerRuntimeParameterBlocker::MuMinClassifiedSamplesAboveMax {
+            min_classified_samples,
+            max_samples,
+        } => (
+            MU_MIN_CLASSIFIED_SAMPLES_FIELD,
+            UNSATISFIABLE_WARMUP_CODE,
+            format!(
+                "({min_classified_samples}) must be <= {TRADE_FLOW_MAX_SAMPLES_FIELD} ({max_samples})"
+            ),
+        ),
+        MakerRuntimeParameterBlocker::ZeroMuStaleWindowMs => (
+            MU_STALE_WINDOW_MS_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 (a zero staleness window marks every reading stale, blocking μ permanently)"
+                .to_string(),
+        ),
+        MakerRuntimeParameterBlocker::MuMinFloorOutOfRange { floor } => (
+            MU_MIN_FLOOR_FIELD,
+            VALUE_OUT_OF_RANGE_CODE,
+            format!("({floor}) must be finite and in the open interval (0, 1)"),
+        ),
+        MakerRuntimeParameterBlocker::ZeroRequoteMinIntervalMs => (
+            REQUOTE_MIN_INTERVAL_MS_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 (a zero requote interval disables the same-tick throttle)".to_string(),
+        ),
+        MakerRuntimeParameterBlocker::ZeroQuoteIntervalMs => (
+            QUOTE_INTERVAL_MS_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 (a zero quote-loop interval would schedule a degenerate timer)".to_string(),
+        ),
+        MakerRuntimeParameterBlocker::QuoteIntervalNanosOverflow { quote_interval_ms } => (
+            QUOTE_INTERVAL_MS_FIELD,
+            CONVERSION_OVERFLOW_CODE,
+            format!(
+                "({quote_interval_ms}) must be small enough that its millisecond-to-nanosecond conversion does not overflow u64"
+            ),
+        ),
+    };
+    errors.push(ValidationError {
+        field: format!("{field_prefix}.{field}"),
+        code,
+        message,
+    });
 }
 
 fn validate_market_portfolio_bounds(
@@ -450,21 +492,34 @@ fn validate_market_portfolio_bounds(
     inputs: RuntimeBoundInputs,
     errors: &mut Vec<ValidationError>,
 ) {
-    let policy = match (
-        inputs.market_portfolio_max_active_markets,
-        inputs.market_portfolio_total_bankroll_notional,
-        inputs.market_portfolio_min_slot_notional,
-    ) {
-        (Some(max_active_markets), Some(total_bankroll_notional), Some(min_slot_notional)) => {
-            let Ok(max_active_markets) = usize::try_from(max_active_markets) else {
+    let max_active_markets = inputs
+        .market_portfolio_max_active_markets
+        .and_then(|value| match usize::try_from(value) {
+            Ok(value) => Some(value),
+            Err(_) => {
                 errors.push(ValidationError {
                     field: format!("{field_prefix}.{MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD}"),
                     code: VALUE_OUT_OF_RANGE_CODE,
                     message: "must fit the platform usize used by the portfolio planner"
                         .to_string(),
                 });
-                return;
-            };
+                None
+            }
+        });
+    let policy_inputs = MakerMarketPortfolioPolicyInputs {
+        max_active_markets,
+        total_bankroll_notional: inputs.market_portfolio_total_bankroll_notional,
+        min_slot_notional: inputs.market_portfolio_min_slot_notional,
+    };
+    for blocker in maker_market_portfolio_policy_input_blockers(policy_inputs) {
+        push_market_portfolio_policy_blocker(field_prefix, blocker, errors);
+    }
+    let policy = match (
+        max_active_markets,
+        inputs.market_portfolio_total_bankroll_notional,
+        inputs.market_portfolio_min_slot_notional,
+    ) {
+        (Some(max_active_markets), Some(total_bankroll_notional), Some(min_slot_notional)) => {
             Some(MakerMarketPortfolioPolicy {
                 max_active_markets,
                 total_bankroll_notional,
@@ -473,44 +528,15 @@ fn validate_market_portfolio_bounds(
         }
         _ => None,
     };
-
-    if let Some(policy) = policy {
-        for blocker in maker_market_portfolio_policy_blockers(policy) {
-            push_market_portfolio_policy_blocker(field_prefix, blocker, errors);
+    if let Some(declared_market_count) = inputs.declared_market_count {
+        for blocker in
+            maker_market_portfolio_declaration_blockers(MakerMarketPortfolioDeclarationInputs {
+                policy,
+                declared_market_count,
+            })
+        {
+            push_market_portfolio_declaration_blocker(field_prefix, blocker, errors);
         }
-        if let Some(declared_market_count) = inputs.declared_market_count {
-            validate_declared_market_count(field_prefix, declared_market_count, policy, errors);
-            validate_bankroll_floor(field_prefix, declared_market_count, policy, errors);
-        }
-        return;
-    }
-
-    if inputs.market_portfolio_max_active_markets == Some(0) {
-        push_market_portfolio_policy_blocker(
-            field_prefix,
-            MakerMarketPortfolioBlocker::InvalidMaxActiveMarkets,
-            errors,
-        );
-    }
-    if inputs
-        .market_portfolio_total_bankroll_notional
-        .is_some_and(|value| !is_positive_finite(value))
-    {
-        push_market_portfolio_policy_blocker(
-            field_prefix,
-            MakerMarketPortfolioBlocker::InvalidTotalBankroll,
-            errors,
-        );
-    }
-    if inputs
-        .market_portfolio_min_slot_notional
-        .is_some_and(|value| !is_positive_finite(value))
-    {
-        push_market_portfolio_policy_blocker(
-            field_prefix,
-            MakerMarketPortfolioBlocker::InvalidMinSlotNotional,
-            errors,
-        );
     }
 }
 
@@ -549,66 +575,44 @@ fn push_market_portfolio_policy_blocker(
     });
 }
 
-fn validate_declared_market_count(
+fn push_market_portfolio_declaration_blocker(
     field_prefix: &str,
-    declared_market_count: usize,
-    policy: MakerMarketPortfolioPolicy,
+    blocker: MakerMarketPortfolioDeclarationBlocker,
     errors: &mut Vec<ValidationError>,
 ) {
-    if declared_market_count > policy.max_active_markets {
-        errors.push(ValidationError {
-            field: format!("{field_prefix}.{MARKETS_FIELD}"),
-            code: MARKETS_ABOVE_ACTIVE_CAP_CODE,
-            message: format!(
-                "declares {declared_market_count} markets but {MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD} is {}",
-                policy.max_active_markets
+    let (field, code, message) = match blocker {
+        MakerMarketPortfolioDeclarationBlocker::EmptyMarkets => (
+            MARKETS_FIELD,
+            EMPTY_MARKETS_CODE,
+            "must declare at least one market".to_string(),
+        ),
+        MakerMarketPortfolioDeclarationBlocker::MarketsAboveActiveCap {
+            declared_market_count,
+            max_active_markets,
+        } => (
+            MARKETS_FIELD,
+            MARKETS_ABOVE_ACTIVE_CAP_CODE,
+            format!(
+                "declares {declared_market_count} markets but {MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD} is {max_active_markets}"
             ),
-        });
-    }
-}
-
-fn validate_bankroll_floor(
-    field_prefix: &str,
-    declared_market_count: usize,
-    policy: MakerMarketPortfolioPolicy,
-    errors: &mut Vec<ValidationError>,
-) {
-    let fundable_slots = declared_market_count.min(policy.max_active_markets);
-    if fundable_slots > 0
-        && is_positive_finite(policy.total_bankroll_notional)
-        && is_positive_finite(policy.min_slot_notional)
-        && policy.total_bankroll_notional / (fundable_slots as f64) < policy.min_slot_notional
-    {
-        errors.push(ValidationError {
-            field: format!("{field_prefix}.{MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD}"),
-            code: BANKROLL_BELOW_MIN_SLOT_CODE,
-            message: format!(
-                "must be >= min(declared markets, max_active_markets) * {MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD}; configured total_bankroll_notional={}, min_slot_notional={}",
-                policy.total_bankroll_notional, policy.min_slot_notional
+        ),
+        MakerMarketPortfolioDeclarationBlocker::BankrollBelowMinSlotFloor {
+            total_bankroll_notional,
+            min_slot_notional,
+            ..
+        } => (
+            MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD,
+            BANKROLL_BELOW_MIN_SLOT_CODE,
+            format!(
+                "must be >= min(declared markets, max_active_markets) * {MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD}; configured total_bankroll_notional={total_bankroll_notional}, min_slot_notional={min_slot_notional}"
             ),
-        });
-    }
-}
-
-fn validate_positive_u64_field(
-    table: &toml::map::Map<String, Value>,
-    field_prefix: &str,
-    field_name: &'static str,
-    missing_code: &'static str,
-    required_state: &'static str,
-    errors: &mut Vec<ValidationError>,
-) -> Option<u64> {
-    let value =
-        validate_non_negative_u64_field(table, field_prefix, field_name, missing_code, errors)?;
-    if value == 0 {
-        errors.push(ValidationError {
-            field: format!("{field_prefix}.{field_name}"),
-            code: POSITIVE_REQUIRED_CODE,
-            message: required_state.to_string(),
-        });
-        return None;
-    }
-    Some(value)
+        ),
+    };
+    errors.push(ValidationError {
+        field: format!("{field_prefix}.{field}"),
+        code,
+        message,
+    });
 }
 
 fn validate_non_negative_u64_field(
@@ -674,13 +678,6 @@ fn validate_markets_array_field<'a>(
     let markets = value
         .as_array()
         .expect("array field was type-checked before extraction");
-    if markets.is_empty() {
-        errors.push(ValidationError {
-            field: format!("{field_prefix}.{MARKETS_FIELD}"),
-            code: EMPTY_MARKETS_CODE,
-            message: "must declare at least one market".to_string(),
-        });
-    }
     Some(markets.as_slice())
 }
 

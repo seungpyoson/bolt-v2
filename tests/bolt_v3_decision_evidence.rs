@@ -809,32 +809,13 @@ fn exit_decision_evidence_writes_one_durable_line_and_readers_skip_it() {
 
 #[test]
 fn exit_decision_observed_inputs_default_absent_for_predeploy_lines() {
-    let mut value = serde_json::to_value(sample_exit_decision_evidence())
-        .expect("exit decision evidence should encode as json");
-    let object = value
-        .as_object_mut()
-        .expect("exit decision should encode as an object");
-    for field in [
-        "spot_price",
-        "spot_venue_name",
-        "fast_venue_available",
-        "reference_current_price",
-        "reference_current_price_available",
-        "interval_open",
-        "fair_probability_up",
-        "fair_probability_down",
-        "uncertainty_band_probability",
-        "up_fee_bps",
-        "down_fee_bps",
-        "submission_order_side",
-        "submission_price",
-        "submission_quantity",
-    ] {
-        object.remove(field);
-    }
+    let line = fixture_decision_evidence_line(
+        "tests/fixtures/bolt_v3/predeploy_exit_decision_evidence.jsonl",
+    );
+    assert_eq!(line["kind"], "exit_decision");
 
-    let decoded: BoltV3ExitDecisionEvidence =
-        serde_json::from_value(value).expect("predeploy exit decision should decode");
+    let decoded: BoltV3ExitDecisionEvidence = serde_json::from_value(line["exit_decision"].clone())
+        .expect("predeploy exit decision should decode");
 
     assert_eq!(decoded.spot_price, None);
     assert_eq!(decoded.spot_venue_name, None);
@@ -1292,6 +1273,20 @@ fn write_decision_evidence_lines(path: &std::path::Path, lines: &[serde_json::Va
     std::fs::write(path, body).expect("decision evidence should write");
 }
 
+fn fixture_decision_evidence_line(relative_path: &str) -> serde_json::Value {
+    let fixture = support::repo_text(relative_path);
+    let mut lines = fixture.lines();
+    let line = lines
+        .next()
+        .unwrap_or_else(|| panic!("fixture `{relative_path}` should contain one JSONL line"));
+    assert!(
+        lines.next().is_none(),
+        "fixture `{relative_path}` should contain exactly one JSONL line"
+    );
+    serde_json::from_str(line)
+        .unwrap_or_else(|error| panic!("fixture `{relative_path}` should parse: {error}"))
+}
+
 fn sample_exit_evaluation_evidence(populated: bool) -> BoltV3ExitEvaluationEvidence {
     if populated {
         BoltV3ExitEvaluationEvidence {
@@ -1532,29 +1527,13 @@ fn exit_evaluation_evidence_round_trips_populated_and_sparse_records() {
 
 #[test]
 fn exit_evaluation_observed_inputs_default_absent_for_predeploy_lines() {
-    let mut value = serde_json::to_value(sample_exit_evaluation_evidence(true))
-        .expect("exit evaluation evidence should encode as json");
-    let object = value
-        .as_object_mut()
-        .expect("exit evaluation should encode as an object");
-    for field in [
-        "spot_price",
-        "spot_venue_name",
-        "fast_venue_available",
-        "reference_current_price",
-        "reference_current_price_available",
-        "interval_open",
-        "fair_probability_up",
-        "fair_probability_down",
-        "uncertainty_band_probability",
-        "up_fee_bps",
-        "down_fee_bps",
-    ] {
-        object.remove(field);
-    }
+    let line = fixture_decision_evidence_line(
+        "tests/fixtures/bolt_v3/predeploy_exit_evaluation_evidence.jsonl",
+    );
+    assert_eq!(line["kind"], BOLT_V3_EXIT_EVALUATION_RECORD_KIND);
 
-    let decoded: BoltV3ExitEvaluationEvidence =
-        serde_json::from_value(value).expect("predeploy exit evaluation should decode");
+    let decoded: BoltV3ExitEvaluationEvidence = serde_json::from_value(line["evidence"].clone())
+        .expect("predeploy exit evaluation should decode");
 
     assert_eq!(decoded.spot_price, None);
     assert_eq!(decoded.spot_venue_name, None);

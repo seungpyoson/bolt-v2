@@ -653,6 +653,116 @@ fn partial_fill_cancel_before_judgment_accepts_at_capture_fence() {
 }
 
 #[test]
+fn accepted_order_during_in_flight_capture_explains_next_capture_without_false_halt() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("baseline should be accepted");
+
+    reconciler.record_snapshot_completion_without_processing(empty_snapshot(
+        1_200,
+        Decimal::new(50_000_000, 0),
+    ));
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Accepted(order_accepted_event(
+            "client-order-1",
+            "venue-order-1",
+            "condition-token123.POLYMARKET",
+            1_250,
+        )),
+    );
+
+    let capture_three_results = reconciler
+        .record_snapshot_completion(snapshot_with_order(
+            1_300,
+            Decimal::new(50_000_000, 0),
+            Decimal::ZERO,
+            0.0,
+        ))
+        .expect("accepted order during capture 2 must be retained for capture 3");
+    let capture_four = reconciler.record_snapshot_completion(snapshot_with_order(
+        1_400,
+        Decimal::new(50_000_000, 0),
+        Decimal::ZERO,
+        0.0,
+    ));
+
+    assert!(
+        capture_four.is_ok(),
+        "capture 3 must not false-halt at the capture 4 fence after an in-flight accepted event: {capture_four:?}"
+    );
+    assert!(
+        capture_three_results
+            .iter()
+            .any(|result| result.capture_number == 3
+                && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 3 must accept the new open order explained by the in-flight Accepted event"
+    );
+}
+
+#[test]
+fn accepted_partial_fill_during_in_flight_capture_explains_next_capture_without_false_halt() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("baseline should be accepted");
+
+    reconciler.record_snapshot_completion_without_processing(empty_snapshot(
+        1_200,
+        Decimal::new(50_000_000, 0),
+    ));
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Accepted(order_accepted_event(
+            "client-order-1",
+            "venue-order-1",
+            "condition-token123.POLYMARKET",
+            1_240,
+        )),
+    );
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_250,
+        )),
+    );
+
+    let capture_three_results = reconciler
+        .record_snapshot_completion(snapshot_with_order(
+            1_300,
+            Decimal::new(48_400_000, 0),
+            Decimal::new(4, 0),
+            4.0,
+        ))
+        .expect("accepted partial fill during capture 2 must be retained for capture 3");
+    let capture_four = reconciler.record_snapshot_completion(snapshot_with_order(
+        1_400,
+        Decimal::new(48_400_000, 0),
+        Decimal::new(4, 0),
+        4.0,
+    ));
+
+    assert!(
+        capture_four.is_ok(),
+        "capture 3 must not false-halt at the capture 4 fence after in-flight Accepted+Filled events: {capture_four:?}"
+    );
+    assert!(
+        capture_three_results
+            .iter()
+            .any(|result| result.capture_number == 3
+                && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 3 must accept the matched-size and position deltas explained by in-flight events"
+    );
+}
+
+#[test]
 fn positions_fresher_than_balance_skew_pends_then_explains_at_fence() {
     let mut reconciler = VenueTruthReconciler::new();
     reconciler

@@ -278,10 +278,11 @@ struct VenueTruthEventProjection {
     local_event_count: u64,
     last_venue_observed_at_ns: Option<UnixNanos>,
     ordering_violation: bool,
-    accepted_venue_order_ids: BTreeSet<VenueOrderId>,
+    accepted_venue_order_ids: BTreeMap<VenueOrderId, u64>,
     client_to_venue_order_id: BTreeMap<String, VenueOrderId>,
-    terminal_venue_order_ids: BTreeSet<VenueOrderId>,
+    terminal_venue_order_ids: BTreeMap<VenueOrderId, u64>,
     fill_quantity_by_venue_order_id: BTreeMap<VenueOrderId, Decimal>,
+    fill_capture_number_by_venue_order_id: BTreeMap<VenueOrderId, u64>,
     fill_collateral_lots: Vec<VenueTruthFillCollateralLot>,
     drainable_collateral_balance_delta: Decimal,
     drainable_collateral_allowance_delta: Decimal,
@@ -328,7 +329,8 @@ impl VenueTruthReconciler {
     }
 
     pub fn record_order_event(&mut self, event: VenueTruthOrderEvent) {
-        self.event_projection.record_order_event(event);
+        self.event_projection
+            .record_order_event(event, self.next_capture_number);
     }
 
     #[must_use]
@@ -456,7 +458,7 @@ impl VenueTruthReconciler {
         let snapshot = capture.snapshot.clone();
         let Some(previous) = &self.previous_snapshot else {
             self.event_projection
-                .prune_after_capture_acceptance(&snapshot);
+                .prune_after_capture_acceptance(&snapshot, capture.capture_number);
             self.previous_snapshot = Some(snapshot.clone());
             return Ok(VenueTruthReconciliationResult {
                 capture_number: capture.capture_number,
@@ -483,7 +485,7 @@ impl VenueTruthReconciler {
             return Err(VenueTruthDivergenceKind::OrderingViolation.into());
         }
 
-        projection.prune_after_capture_acceptance(&snapshot);
+        projection.prune_after_capture_acceptance(&snapshot, capture.capture_number);
         self.event_projection = projection;
         self.previous_snapshot = Some(snapshot.clone());
         Ok(VenueTruthReconciliationResult {
@@ -524,17 +526,18 @@ impl VenueTruthEventProjection {
             local_event_count: 0,
             last_venue_observed_at_ns: None,
             ordering_violation: false,
-            accepted_venue_order_ids: BTreeSet::new(),
+            accepted_venue_order_ids: BTreeMap::new(),
             client_to_venue_order_id: BTreeMap::new(),
-            terminal_venue_order_ids: BTreeSet::new(),
+            terminal_venue_order_ids: BTreeMap::new(),
             fill_quantity_by_venue_order_id: BTreeMap::new(),
+            fill_capture_number_by_venue_order_id: BTreeMap::new(),
             fill_collateral_lots: Vec::new(),
             drainable_collateral_balance_delta: Decimal::ZERO,
             drainable_collateral_allowance_delta: Decimal::ZERO,
         }
     }
 
-    fn record_order_event(&mut self, event: VenueTruthOrderEvent) {
+    fn record_order_event(&mut self, event: VenueTruthOrderEvent, capture_number: u64) {
         if let Some(observed_at_ns) = event.venue_observed_at_ns() {
             if self
                 .last_venue_observed_at_ns
@@ -554,7 +557,8 @@ impl VenueTruthEventProjection {
                 venue_order_id,
                 ..
             } => {
-                self.accepted_venue_order_ids.insert(venue_order_id);
+                self.accepted_venue_order_ids
+                    .insert(venue_order_id, capture_number);
                 self.client_to_venue_order_id
                     .insert(client_order_id, venue_order_id);
             }
@@ -572,6 +576,10 @@ impl VenueTruthEventProjection {
                     venue_order_id,
                     quantity,
                 );
+                self.fill_capture_number_by_venue_order_id
+                    .entry(venue_order_id)
+                    .and_modify(|existing| *existing = (*existing).max(capture_number))
+                    .or_insert(capture_number);
                 if matches!(side, OrderSide::Buy | OrderSide::Sell) && quantity > Decimal::ZERO {
                     self.fill_collateral_lots.push(VenueTruthFillCollateralLot {
                         product_id,
@@ -595,24 +603,46 @@ impl VenueTruthEventProjection {
                 if let Some(venue_order_id) = venue_order_id
                     .or_else(|| self.client_to_venue_order_id.get(&client_order_id).copied())
                 {
-                    self.terminal_venue_order_ids.insert(venue_order_id);
+                    self.terminal_venue_order_ids
+                        .insert(venue_order_id, capture_number);
                 }
             }
         }
     }
 
-    fn prune_after_capture_acceptance(&mut self, snapshot: &VenueTruthSnapshot) {
+    fn prune_after_capture_acceptance(
+        &mut self,
+        snapshot: &VenueTruthSnapshot,
+        accepted_capture_number: u64,
+    ) {
         let open_venue_order_ids = snapshot
             .open_orders
             .keys()
             .copied()
             .collect::<BTreeSet<_>>();
         self.terminal_venue_order_ids
-            .retain(|venue_order_id| open_venue_order_ids.contains(venue_order_id));
+            .retain(|venue_order_id, capture_number| {
+                open_venue_order_ids.contains(venue_order_id)
+                    || *capture_number > accepted_capture_number
+            });
         self.accepted_venue_order_ids
-            .retain(|venue_order_id| open_venue_order_ids.contains(venue_order_id));
+            .retain(|venue_order_id, capture_number| {
+                open_venue_order_ids.contains(venue_order_id)
+                    || *capture_number > accepted_capture_number
+            });
+        let fill_capture_numbers = self.fill_capture_number_by_venue_order_id.clone();
         self.fill_quantity_by_venue_order_id
-            .retain(|venue_order_id, _| open_venue_order_ids.contains(venue_order_id));
+            .retain(|venue_order_id, _| {
+                open_venue_order_ids.contains(venue_order_id)
+                    || fill_capture_numbers
+                        .get(venue_order_id)
+                        .is_some_and(|capture_number| *capture_number > accepted_capture_number)
+            });
+        self.fill_capture_number_by_venue_order_id
+            .retain(|venue_order_id, _| {
+                self.fill_quantity_by_venue_order_id
+                    .contains_key(venue_order_id)
+            });
         let retained_terminal_venue_order_ids = self.terminal_venue_order_ids.clone();
         let accepted_venue_order_ids = self.accepted_venue_order_ids.clone();
         let fill_venue_order_ids = self
@@ -622,10 +652,28 @@ impl VenueTruthEventProjection {
             .collect::<BTreeSet<_>>();
         self.client_to_venue_order_id.retain(|_, venue_order_id| {
             open_venue_order_ids.contains(venue_order_id)
-                || retained_terminal_venue_order_ids.contains(venue_order_id)
-                || accepted_venue_order_ids.contains(venue_order_id)
+                || retained_terminal_venue_order_ids.contains_key(venue_order_id)
+                || accepted_venue_order_ids.contains_key(venue_order_id)
                 || fill_venue_order_ids.contains(venue_order_id)
         });
+    }
+
+    fn consume_fill_quantity(&mut self, venue_order_id: &VenueOrderId, amount: Decimal) -> bool {
+        if !consume_decimal(
+            &mut self.fill_quantity_by_venue_order_id,
+            venue_order_id,
+            amount,
+        ) {
+            return false;
+        }
+        if !self
+            .fill_quantity_by_venue_order_id
+            .contains_key(venue_order_id)
+        {
+            self.fill_capture_number_by_venue_order_id
+                .remove(venue_order_id);
+        }
+        true
     }
 
     fn consume_position_fill(
@@ -746,15 +794,15 @@ fn explain_open_order_delta(
     for (venue_order_id, current_order) in &current.open_orders {
         match previous.open_orders.get(venue_order_id) {
             None => {
-                if !projection.accepted_venue_order_ids.remove(venue_order_id) {
+                if projection
+                    .accepted_venue_order_ids
+                    .remove(venue_order_id)
+                    .is_none()
+                {
                     return Err(VenueTruthDivergenceKind::UnexplainedOpenOrderDelta);
                 }
                 if current_order.size_matched > Decimal::ZERO
-                    && !consume_decimal(
-                        &mut projection.fill_quantity_by_venue_order_id,
-                        venue_order_id,
-                        current_order.size_matched,
-                    )
+                    && !projection.consume_fill_quantity(venue_order_id, current_order.size_matched)
                 {
                     return Err(VenueTruthDivergenceKind::UnexplainedOpenOrderDelta);
                 }
@@ -772,11 +820,7 @@ fn explain_open_order_delta(
                 }
                 let matched_delta = current_order.size_matched - previous_order.size_matched;
                 if matched_delta > Decimal::ZERO
-                    && !consume_decimal(
-                        &mut projection.fill_quantity_by_venue_order_id,
-                        venue_order_id,
-                        matched_delta,
-                    )
+                    && !projection.consume_fill_quantity(venue_order_id, matched_delta)
                 {
                     return Err(VenueTruthDivergenceKind::UnexplainedOpenOrderDelta);
                 }
@@ -787,14 +831,14 @@ fn explain_open_order_delta(
         if current.open_orders.contains_key(venue_order_id) {
             continue;
         }
-        if projection.terminal_venue_order_ids.remove(venue_order_id) {
+        if projection
+            .terminal_venue_order_ids
+            .remove(venue_order_id)
+            .is_some()
+        {
             continue;
         }
-        if consume_decimal(
-            &mut projection.fill_quantity_by_venue_order_id,
-            venue_order_id,
-            previous_order.open_size,
-        ) {
+        if projection.consume_fill_quantity(venue_order_id, previous_order.open_size) {
             continue;
         }
         return Err(VenueTruthDivergenceKind::UnexplainedOpenOrderDelta);
@@ -1062,7 +1106,7 @@ mod tests {
             reconciler
                 .event_projection
                 .accepted_venue_order_ids
-                .contains(&venue_order_id)
+                .contains_key(&venue_order_id)
         );
         assert!(
             reconciler
@@ -1089,7 +1133,7 @@ mod tests {
             reconciler
                 .event_projection
                 .accepted_venue_order_ids
-                .contains(&venue_order_id),
+                .contains_key(&venue_order_id),
             "terminal observation must keep accepted-order explanation until the snapshot boundary"
         );
         assert!(
@@ -1103,7 +1147,7 @@ mod tests {
             reconciler
                 .event_projection
                 .terminal_venue_order_ids
-                .contains(&venue_order_id),
+                .contains_key(&venue_order_id),
             "terminal marker remains until a structural venue snapshot boundary"
         );
 
@@ -1131,7 +1175,7 @@ mod tests {
             !reconciler
                 .event_projection
                 .accepted_venue_order_ids
-                .contains(&venue_order_id),
+                .contains_key(&venue_order_id),
             "accepted capture boundary should clear stale accepted-order projection"
         );
         assert!(
@@ -1195,6 +1239,77 @@ mod tests {
                 .client_to_venue_order_id
                 .is_empty(),
             "FOK client mapping must not leak after the accepted snapshot boundary"
+        );
+    }
+
+    #[test]
+    fn fok_fill_during_in_flight_capture_prunes_at_following_boundary() {
+        let mut reconciler = VenueTruthReconciler::new();
+        let venue_order_id = VenueOrderId::from("venue-order-1");
+        assert_eq!(
+            reconciler
+                .reconcile_snapshot(empty_snapshot(1))
+                .expect("baseline should reconcile"),
+            VenueTruthReconciliation::BaselineAccepted
+        );
+
+        reconciler.record_snapshot_completion_without_processing(empty_snapshot(2));
+        reconciler.record_order_event(VenueTruthOrderEvent::Accepted {
+            client_order_id: "client-order-1".to_string(),
+            venue_order_id,
+            observed_at_ns: UnixNanos::from(3),
+        });
+        reconciler.record_order_event(VenueTruthOrderEvent::Filled {
+            venue_order_id,
+            product_id: "product-1".to_string(),
+            side: OrderSide::Buy,
+            quantity: Decimal::new(1, 0),
+            fill_price: Decimal::new(5, 1),
+            fee: Decimal::ZERO,
+            observed_at_ns: UnixNanos::from(4),
+        });
+
+        assert_eq!(
+            reconciler
+                .process_completed_captures()
+                .expect("in-flight FOK state should not block the earlier capture")[0]
+                .outcome,
+            VenueTruthReconciliation::DeltaExplained
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .accepted_venue_order_ids
+                .contains_key(&venue_order_id),
+            "FOK accepted-order projection must survive the in-flight capture boundary"
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .fill_quantity_by_venue_order_id
+                .contains_key(&venue_order_id),
+            "FOK fill-quantity projection must survive the in-flight capture boundary"
+        );
+
+        assert_eq!(
+            reconciler
+                .reconcile_snapshot(snapshot_with_position(5))
+                .expect("following capture should reconcile the in-flight FOK fill"),
+            VenueTruthReconciliation::DeltaExplained
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .accepted_venue_order_ids
+                .is_empty(),
+            "FOK accepted-order projection must prune after the following accepted boundary"
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .fill_quantity_by_venue_order_id
+                .is_empty(),
+            "FOK fill-quantity projection must prune after the following accepted boundary"
         );
     }
 

@@ -491,7 +491,7 @@ def write_config(
 def raw_workflow_text_for_reuse_scope_digest() -> str:
     # Deliberately unnormalized: production digests raw workflow bytes; normalizing
     # here would diverge the test input from what ci_provenance actually hashes.
-    return (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    return (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_bytes().decode("utf-8")
 
 
 def strip_ci_provenance_config(config_text: str) -> str:

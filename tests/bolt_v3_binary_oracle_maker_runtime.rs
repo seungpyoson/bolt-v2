@@ -1235,7 +1235,7 @@ fn gate_cleared_informed_fraction() -> UsableMu {
     );
     let instrument = InstrumentId::from("MUFIXTURE.SIM");
     let mut ts_ms = STEP_MS;
-    let mut observe = |state: &mut MakerMuState, aggressor: AggressorSide, ts_ms: u64| {
+    let observe = |state: &mut MakerMuState, aggressor: AggressorSide, ts_ms: u64| {
         let ts_ns = ts_ms * NANOS_PER_MILLI;
         let trade = TradeTick::new_checked(
             instrument,

@@ -130,7 +130,7 @@ def test_runner_timeout_preserves_partial_output_in_grouped_result() -> None:
     stdout = io.StringIO()
     stderr = io.StringIO()
 
-    status = runner.run_suites(suites, workers=1, timeout_seconds=0.05, stdout=stdout, stderr=stderr)
+    status = runner.run_suites(suites, workers=1, timeout_seconds=1.0, stdout=stdout, stderr=stderr)
 
     stdout_output = stdout.getvalue()
     stderr_output = stderr.getvalue()
@@ -143,7 +143,7 @@ def test_runner_timeout_preserves_partial_output_in_grouped_result() -> None:
     if "partial-stderr" not in stderr_output:
         raise AssertionError(stderr_output)
     for expected in (
-        "suite partial-timeout timed out after 0.05s",
+        "suite partial-timeout timed out after 1s",
         "FAIL: partial-timeout exited 124",
         "FINISH: ci-lint suite partial-timeout exited 124",
     ):

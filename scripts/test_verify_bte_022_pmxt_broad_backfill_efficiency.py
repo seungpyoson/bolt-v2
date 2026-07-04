@@ -155,10 +155,26 @@ def test_justfile_wiring_is_a_finding() -> None:
         root = Path(tmp)
         copy_fixture(root, module)
         justfile = (root / module.JUSTFILE).read_text(encoding="utf-8")
-        justfile = justfile.replace("    python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py\n", "")
+        justfile = justfile.replace("    python3 scripts/run_fences.py\n", "")
         (root / module.JUSTFILE).write_text(justfile, encoding="utf-8")
         findings = module.scan_root(root)
     assert_contains(findings, "source-fence-static-inner")
+
+
+def test_source_fence_inner_rejects_appended_command() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        copy_fixture(root, module)
+        justfile_path = root / module.JUSTFILE
+        justfile = justfile_path.read_text(encoding="utf-8")
+        justfile = justfile.replace(
+            "    python3 scripts/run_fences.py\n",
+            "    python3 scripts/run_fences.py\n    python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py\n",
+        )
+        justfile_path.write_text(justfile, encoding="utf-8")
+        findings = module.scan_root(root)
+    assert_contains(findings, "source-fence-static-inner must contain only python3 scripts/run_fences.py")
 
 
 def test_cli_fails_with_actionable_output() -> None:
@@ -191,6 +207,7 @@ def main() -> int:
         test_dynamic_tick_size_overclaim_is_a_finding,
         test_missing_bte_static_gate_text_is_a_finding,
         test_justfile_wiring_is_a_finding,
+        test_source_fence_inner_rejects_appended_command,
         test_cli_fails_with_actionable_output,
     )
     for test in tests:

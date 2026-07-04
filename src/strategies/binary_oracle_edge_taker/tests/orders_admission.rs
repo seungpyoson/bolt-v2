@@ -1549,7 +1549,6 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
 fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.config.exit_order.is_quote_quantity = true;
-    strategy.config.exit_hysteresis_bps = 1_000_000;
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));
@@ -2643,6 +2642,8 @@ fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
     strategy.config.exit_order.trigger_price = Some(0.40);
     strategy.config.exit_order.trigger_type = Some(TriggerType::LastPrice);
     strategy.config.exit_order.is_post_only = false;
+    strategy.config.forced_exit_order = strategy.config.exit_order.clone();
+    strategy.active.phase = SelectionPhase::Freeze;
     let instrument_id = selected_entry_instrument(&strategy);
     let mut book = configured_book_for_instrument(&mut strategy, instrument_id);
     book.bid_levels.clear();
@@ -2667,6 +2668,7 @@ fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
     let decision = strategy.exit_submission_decision_at(1_200);
 
     assert_eq!(decision.blocked_reason, None);
+    assert_eq!(decision.forced_flat_reasons, vec![ForcedFlatReason::Freeze]);
     assert_eq!(decision.order_type, Some(OrderType::StopMarket));
     assert_eq!(decision.order_side, Some(OrderSide::Sell));
     assert_eq!(decision.price, Some(0.40));

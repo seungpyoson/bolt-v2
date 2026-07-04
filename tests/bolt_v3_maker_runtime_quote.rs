@@ -179,6 +179,7 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
             strike_price: Some(0.50),
             seconds_to_market_end: Some(0),
             realized_volatility_snapshot: &realized_volatility_snapshot,
+            realized_volatility_max_source_age_ms: None,
             pricing_kurtosis: f64::NAN,
         },
     )
@@ -257,6 +258,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
         strike_price: Some(100.0),
         seconds_to_market_end: Some(300),
         realized_volatility_snapshot: &realized_volatility_snapshot,
+        realized_volatility_max_source_age_ms: None,
         pricing_kurtosis: 0.25,
     };
 
@@ -322,6 +324,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
             strike_price: input.strike_price,
             seconds_to_market_end: input.seconds_to_market_end,
             realized_volatility_snapshot: input.realized_volatility_snapshot,
+            realized_volatility_max_source_age_ms: input.realized_volatility_max_source_age_ms,
             pricing_kurtosis: input.pricing_kurtosis,
         },
     );
@@ -352,6 +355,30 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
     assert_eq!(rv_blocked.fair_value, None);
     assert_eq!(
         rv_blocked.blocked_by,
+        Some(MakerRuntimeReferenceFairValueBlockReason::RealizedVolNotReady)
+    );
+
+    let stale_snapshot = ready_realized_vol_snapshot(1_400, 1.5);
+    let mut stale_rv_selector = ReferencePriceSelector::new(
+        TEST_REFERENCE_ASSET,
+        vec!["primary".to_string(), "backup".to_string()],
+        1,
+        100,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let stale_rv = maker_reference_current_price_fair_value_decision(
+        &mut stale_rv_selector,
+        MakerRuntimeReferenceFairValueInput {
+            realized_volatility_snapshot: &stale_snapshot,
+            realized_volatility_max_source_age_ms: Some(50),
+            ..input
+        },
+    );
+
+    assert_eq!(stale_rv.fair_value, None);
+    assert_eq!(
+        stale_rv.blocked_by,
         Some(MakerRuntimeReferenceFairValueBlockReason::RealizedVolNotReady)
     );
 

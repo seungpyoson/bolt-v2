@@ -192,6 +192,12 @@ impl RealizedVolSurfaceRuntime {
         self.surfaces.keys().cloned().collect()
     }
 
+    pub fn max_source_age_ms_for_surface(&self, surface_id: &str) -> Option<u64> {
+        self.surfaces
+            .get(surface_id)
+            .map(|state| state.engine.config().max_source_age_ms)
+    }
+
     /// Deduped union of every surface's subscription requests, in canonical (sorted) order.
     /// Test/audit-only derived view for fanout diagnostics (see
     /// `subscription_requests_by_surface`). A strategy must NOT subscribe from this; use

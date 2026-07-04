@@ -191,6 +191,16 @@ impl StrategyBuildContext {
             .index_subscription_requests_for_surface(surface_id)
     }
 
+    pub fn realized_volatility_max_source_age_ms_for_surface(
+        &self,
+        surface_id: &str,
+    ) -> Option<u64> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .max_source_age_ms_for_surface(surface_id)
+    }
+
     pub fn observe_realized_volatility_quote(&self, quote: &QuoteTick) -> Vec<RealizedVolSnapshot> {
         self.realized_volatility_runtime
             .lock()

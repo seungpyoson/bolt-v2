@@ -9335,38 +9335,55 @@ ci-lint-workflow:
     python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner
 
 ci-lint-workflow-inner: require-local-verification-gate
-    python3 scripts/run_ci_lint_suites.py --workers 6
+    if [ -n "${BOLT_CI_LINT_WORKFLOW_WORKERS:-}" ]; then
+        set -- --workers "$BOLT_CI_LINT_WORKFLOW_WORKERS"
+    else
+        set --
+    fi
+    if ! python3 scripts/run_ci_lint_suites.py "$@"; then
+        failed=1
+    fi
 """
     errors = verifier.verify_local_verification_gate_recipes(justfile_text)
     if errors:
         raise AssertionError(f"local gate recipe wiring should pass, got: {errors}")
 
-    missing_runner = justfile_text.replace("    python3 scripts/run_ci_lint_suites.py --workers 6\n", "")
+    runner_line = '    if ! python3 scripts/run_ci_lint_suites.py "$@"; then'
+
+    missing_runner = justfile_text.replace(f"{runner_line}\n", "")
     missing_runner_errors = verifier.verify_local_verification_gate_recipes(missing_runner)
     if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py" in error for error in missing_runner_errors):
         raise AssertionError(f"ci-lint runner wiring drift was silent, got: {missing_runner_errors}")
 
     duplicate_runner = justfile_text.replace(
-        "    python3 scripts/run_ci_lint_suites.py --workers 6\n",
-        "    python3 scripts/run_ci_lint_suites.py --workers 6\n"
-        "    python3 scripts/run_ci_lint_suites.py --workers 6\n",
+        f"{runner_line}\n",
+        f"{runner_line}\n"
+        f"{runner_line}\n",
     )
     duplicate_runner_errors = verifier.verify_local_verification_gate_recipes(duplicate_runner)
     if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py exactly once" in error for error in duplicate_runner_errors):
         raise AssertionError(f"duplicate ci-lint runner wiring was silent, got: {duplicate_runner_errors}")
 
     extra_inner_work = justfile_text.replace(
-        "    python3 scripts/run_ci_lint_suites.py --workers 6",
-        "    python3 scripts/run_ci_lint_suites.py --workers 6\n"
+        runner_line,
+        f"{runner_line}\n"
         "    python3 scripts/test_ci_storage_audit.py",
     )
     extra_inner_errors = verifier.verify_local_verification_gate_recipes(extra_inner_work)
     if not any("justfile ci-lint-workflow-inner must not run CI lint suite commands outside scripts/run_ci_lint_suites.py" in error for error in extra_inner_errors):
         raise AssertionError(f"ci-lint extra inner work was silent, got: {extra_inner_errors}")
 
+    echo_decoy = justfile_text.replace(
+        runner_line,
+        '    echo python3 scripts/run_ci_lint_suites.py "$@"',
+    )
+    echo_decoy_errors = verifier.verify_local_verification_gate_recipes(echo_decoy)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py" in error for error in echo_decoy_errors):
+        raise AssertionError(f"ci-lint runner echo decoy satisfied wiring, got: {echo_decoy_errors}")
+
     commented_runner = justfile_text.replace(
-        "    python3 scripts/run_ci_lint_suites.py --workers 6",
-        "    # python3 scripts/run_ci_lint_suites.py --workers 6",
+        runner_line,
+        f"    # {runner_line.strip()}",
     )
     commented_runner_errors = verifier.verify_local_verification_gate_recipes(commented_runner)
     if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py" in error for error in commented_runner_errors):
@@ -9397,7 +9414,20 @@ ci-lint-workflow-inner: require-local-verification-gate
     if not any("justfile ci-lint-workflow must contain only the local verification gate command" in error for error in extra_public_errors):
         raise AssertionError(f"ci-lint-workflow public recipe extra work was silent, got: {extra_public_errors}")
 
-    nested_public_gate = justfile_text.replace("    python3 scripts/run_ci_lint_suites.py --workers 6", "    just ci-lint-workflow")
+    broken_runner = object()
+    original_runner_module = sys.modules.get("run_ci_lint_suites")
+    sys.modules["run_ci_lint_suites"] = broken_runner
+    try:
+        broken_runner_errors = verifier.verify_local_verification_gate_recipes(justfile_text)
+    finally:
+        if original_runner_module is None:
+            sys.modules.pop("run_ci_lint_suites", None)
+        else:
+            sys.modules["run_ci_lint_suites"] = original_runner_module
+    if not any("ci-lint workflow runner suite table must be importable" in error for error in broken_runner_errors):
+        raise AssertionError(f"broken ci-lint runner import was not governed, got: {broken_runner_errors}")
+
+    nested_public_gate = justfile_text.replace(runner_line, "    just ci-lint-workflow")
     nested_public_errors = verifier.verify_local_verification_gate_recipes(nested_public_gate)
     if not any("justfile ci-lint-workflow-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
         raise AssertionError(f"ci-lint-workflow nested public gate call was silent, got: {nested_public_errors}")

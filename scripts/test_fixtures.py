@@ -73,7 +73,7 @@ def write_policy(
     policy_text: str | None = None,
     write_justfile: bool = True,
 ) -> pathlib.Path:
-    (repo / "ci").mkdir()
+    (repo / "ci").mkdir(parents=True)
     policy_path = repo / "ci" / "rust-verification.toml"
     text = rust_verification_policy_text(target_namespace=target_namespace) if policy_text is None else policy_text
     policy_path.write_text(text, encoding="utf-8")

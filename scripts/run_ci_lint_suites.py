@@ -16,6 +16,7 @@ from typing import TextIO
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_WORKERS = 4
 MAX_WORKERS = 6
+DEFAULT_TIMEOUT_SECONDS = 900
 
 
 @dataclasses.dataclass(frozen=True)
@@ -70,7 +71,34 @@ def validate_workers(workers: int) -> int:
     return workers
 
 
-def run_one_suite(suite: CiLintSuite, repo_root: pathlib.Path) -> SuiteResult:
+def format_seconds(seconds: float) -> str:
+    if float(seconds).is_integer():
+        return f"{int(seconds)}s"
+    return f"{seconds:g}s"
+
+
+def timeout_output(text: str | bytes | None) -> str:
+    if text is None:
+        return ""
+    if isinstance(text, bytes):
+        return text.decode(errors="replace")
+    return text
+
+
+def exception_result(suite: CiLintSuite, exc: Exception, *, context: str = "raised") -> SuiteResult:
+    return SuiteResult(
+        suite=suite,
+        returncode=127,
+        stdout="",
+        stderr=f"suite {suite.name} {context} {type(exc).__name__}: {exc}\n",
+    )
+
+
+def run_one_suite(
+    suite: CiLintSuite,
+    repo_root: pathlib.Path,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+) -> SuiteResult:
     try:
         result = subprocess.run(
             list(suite.command),
@@ -78,10 +106,18 @@ def run_one_suite(suite: CiLintSuite, repo_root: pathlib.Path) -> SuiteResult:
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            timeout=timeout_seconds,
             check=False,
         )
-    except OSError as exc:
-        return SuiteResult(suite=suite, returncode=127, stdout="", stderr=f"{type(exc).__name__}: {exc}\n")
+    except subprocess.TimeoutExpired as exc:
+        return SuiteResult(
+            suite=suite,
+            returncode=124,
+            stdout=timeout_output(exc.stdout),
+            stderr=f"{timeout_output(exc.stderr)}suite {suite.name} timed out after {format_seconds(timeout_seconds)}\n",
+        )
+    except Exception as exc:
+        return exception_result(suite, exc)
     return SuiteResult(suite=suite, returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
 
 
@@ -108,6 +144,7 @@ def run_suites(
     suites: Iterable[CiLintSuite] = CI_LINT_SUITES,
     *,
     workers: int = DEFAULT_WORKERS,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     repo_root: pathlib.Path = REPO_ROOT,
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
@@ -118,10 +155,20 @@ def run_suites(
         return 0
     results_by_index: dict[int, SuiteResult] = {}
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {executor.submit(run_one_suite, suite, repo_root): index for index, suite in enumerate(suite_list)}
+        futures = {}
+        for index, suite in enumerate(suite_list):
+            stderr.write(f"START: ci-lint suite {suite.name}\n")
+            stderr.flush()
+            futures[executor.submit(run_one_suite, suite, repo_root, timeout_seconds)] = (index, suite)
         for future in as_completed(futures):
-            result = future.result()
-            results_by_index[futures[future]] = result
+            index, suite = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = exception_result(suite, exc, context="worker raised")
+            results_by_index[index] = result
+            stderr.write(f"FINISH: ci-lint suite {suite.name} exited {result.returncode}\n")
+            stderr.flush()
 
     failures: list[SuiteResult] = []
     for index, suite in enumerate(suite_list):
@@ -142,6 +189,7 @@ def run_suites(
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
+    parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--repo-root", type=pathlib.Path, default=REPO_ROOT)
     parser.add_argument("--list", action="store_true", help="print suite commands without running them")
     return parser.parse_args(argv)
@@ -153,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         for suite in CI_LINT_SUITES:
             print(" ".join(suite.command))
         return 0
-    return run_suites(workers=args.workers, repo_root=args.repo_root)
+    return run_suites(workers=args.workers, timeout_seconds=args.timeout_seconds, repo_root=args.repo_root)
 
 
 if __name__ == "__main__":

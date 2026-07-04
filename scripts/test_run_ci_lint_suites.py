@@ -33,33 +33,145 @@ def test_runner_groups_each_suite_output_and_reports_all_failures() -> None:
     suites = (
         runner.CiLintSuite(
             "first-failure",
-            python_command("import sys; print('first stdout'); print('first stderr', file=sys.stderr); raise SystemExit(3)"),
+            python_command("import sys; print('first-' + 'stdout'); print('first-' + 'stderr', file=sys.stderr); raise SystemExit(3)"),
         ),
         runner.CiLintSuite(
             "second-failure",
-            python_command("import sys; print('second stdout'); print('second stderr', file=sys.stderr); raise SystemExit(7)"),
+            python_command("import sys; print('second-' + 'stdout'); print('second-' + 'stderr', file=sys.stderr); raise SystemExit(7)"),
         ),
     )
-    stream = io.StringIO()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
 
-    status = runner.run_suites(suites, workers=2, stdout=stream, stderr=stream)
+    status = runner.run_suites(suites, workers=2, stdout=stdout, stderr=stderr)
 
-    output = stream.getvalue()
+    stdout_output = stdout.getvalue()
+    stderr_output = stderr.getvalue()
     if status != 1:
         raise AssertionError(status)
-    first_header = output.find("=== ci-lint suite: first-failure ===")
-    second_header = output.find("=== ci-lint suite: second-failure ===")
+    first_header = stdout_output.find("=== ci-lint suite: first-failure ===")
+    second_header = stdout_output.find("=== ci-lint suite: second-failure ===")
     if first_header == -1 or second_header == -1:
-        raise AssertionError(output)
-    first_stdout = output.find("first stdout")
-    first_stderr = output.find("first stderr")
-    second_stdout = output.find("second stdout")
-    second_stderr = output.find("second stderr")
-    if not (first_header < first_stdout < first_stderr < second_header < second_stdout < second_stderr):
-        raise AssertionError(output)
+        raise AssertionError(stdout_output)
+    first_stdout = stdout_output.find("first-stdout")
+    second_stdout = stdout_output.find("second-stdout")
+    if not (first_header < first_stdout < second_header < second_stdout):
+        raise AssertionError(stdout_output)
+    if "first-stderr" in stdout_output or "second-stderr" in stdout_output:
+        raise AssertionError(stdout_output)
+    if "first-stdout" in stderr_output or "second-stdout" in stderr_output:
+        raise AssertionError(stderr_output)
+    first_stderr = stderr_output.find("first-stderr")
+    first_failure = stderr_output.find("FAIL: first-failure exited 3")
+    second_stderr = stderr_output.find("second-stderr")
+    second_failure = stderr_output.find("FAIL: second-failure exited 7")
+    if not (first_stderr < first_failure < second_stderr < second_failure):
+        raise AssertionError(stderr_output)
+
+
+def test_runner_emits_start_finish_breadcrumbs_to_stderr() -> None:
+    runner = load_runner_module()
+    suites = (
+        runner.CiLintSuite("first", python_command("print('first')")),
+        runner.CiLintSuite("second", python_command("print('second')")),
+    )
+    stderr = io.StringIO()
+
+    status = runner.run_suites(suites, workers=2, stdout=io.StringIO(), stderr=stderr)
+
+    if status != 0:
+        raise AssertionError(status)
+    output = stderr.getvalue()
     for expected in ("first-failure exited 3", "second-failure exited 7"):
+        if expected in output:
+            raise AssertionError(output)
+    for expected in (
+        "START: ci-lint suite first",
+        "START: ci-lint suite second",
+        "FINISH: ci-lint suite first exited 0",
+        "FINISH: ci-lint suite second exited 0",
+    ):
         if expected not in output:
             raise AssertionError(output)
+
+
+def test_runner_timeout_is_attributed_to_suite() -> None:
+    runner = load_runner_module()
+    suites = (runner.CiLintSuite("slow", python_command("import time; time.sleep(60)")),)
+    stderr = io.StringIO()
+
+    status = runner.run_suites(suites, workers=1, timeout_seconds=0.01, stdout=io.StringIO(), stderr=stderr)
+
+    output = stderr.getvalue()
+    if status != 1:
+        raise AssertionError(status)
+    for expected in (
+        "suite slow timed out after 0.01s",
+        "FAIL: slow exited 124",
+        "FINISH: ci-lint suite slow exited 124",
+    ):
+        if expected not in output:
+            raise AssertionError(output)
+
+
+def test_run_one_suite_turns_unexpected_exceptions_into_attributed_result() -> None:
+    runner = load_runner_module()
+    original_run = runner.subprocess.run
+
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("subprocess wrapper exploded")
+
+    try:
+        runner.subprocess.run = explode
+        result = runner.run_one_suite(
+            runner.CiLintSuite("crash", python_command("raise SystemExit(0)")),
+            REPO_ROOT,
+            timeout_seconds=900,
+        )
+    finally:
+        runner.subprocess.run = original_run
+
+    if result.returncode == 0:
+        raise AssertionError(result)
+    if "suite crash raised RuntimeError: subprocess wrapper exploded" not in result.stderr:
+        raise AssertionError(result.stderr)
+
+
+def test_runner_future_crashes_are_attributed_and_do_not_abort_battery() -> None:
+    runner = load_runner_module()
+    original_run_one_suite = runner.run_one_suite
+
+    def maybe_crash(suite: object, repo_root: pathlib.Path, timeout_seconds: float) -> object:
+        if suite.name == "crash":
+            raise RuntimeError("worker exploded")
+        return original_run_one_suite(suite, repo_root, timeout_seconds)
+
+    try:
+        runner.run_one_suite = maybe_crash
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        status = runner.run_suites(
+            (
+                runner.CiLintSuite("crash", python_command("raise SystemExit(0)")),
+                runner.CiLintSuite("ok", python_command("print('ok still ran')")),
+            ),
+            workers=2,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    finally:
+        runner.run_one_suite = original_run_one_suite
+
+    if status != 1:
+        raise AssertionError(status)
+    if "ok still ran" not in stdout.getvalue():
+        raise AssertionError(stdout.getvalue())
+    for expected in (
+        "suite crash worker raised RuntimeError: worker exploded",
+        "FAIL: crash exited 127",
+    ):
+        if expected not in stderr.getvalue():
+            raise AssertionError(stderr.getvalue())
 
 
 def test_runner_rejects_unbounded_worker_count_for_default_workflow() -> None:
@@ -126,6 +238,10 @@ def test_default_suite_table_covers_the_ci_lint_contract() -> None:
 def main() -> int:
     tests = (
         test_runner_groups_each_suite_output_and_reports_all_failures,
+        test_runner_emits_start_finish_breadcrumbs_to_stderr,
+        test_runner_timeout_is_attributed_to_suite,
+        test_run_one_suite_turns_unexpected_exceptions_into_attributed_result,
+        test_runner_future_crashes_are_attributed_and_do_not_abort_battery,
         test_runner_rejects_unbounded_worker_count_for_default_workflow,
         test_default_suite_table_covers_the_ci_lint_contract,
     )

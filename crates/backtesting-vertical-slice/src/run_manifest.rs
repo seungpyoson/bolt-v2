@@ -3467,6 +3467,7 @@ mod tests {
         "0000000000000000000000000000000000000000000000000000000000000000";
     const TEST_SHA256_ONE: &str =
         "1111111111111111111111111111111111111111111111111111111111111111";
+    const TEST_BINARY_ORACLE_MAKER_KEY: &str = "binary_oracle_maker";
 
     fn accepted_dataset() -> AcceptedDataset {
         synthetic_accepted_dataset_for_tests()
@@ -4728,6 +4729,57 @@ mod tests {
         manifest
     }
 
+    fn binary_oracle_maker_config_toml() -> String {
+        r#"
+        strategy_id = "binary_oracle_maker-backtest-001"
+        order_id_tag = "001"
+        oms_type = "netting"
+        client_id = "maker_execution_client"
+        trade_flow_window_secs = 600
+        trade_flow_max_samples = 1000
+        mu_min_classified_samples = 4
+        mu_stale_window_ms = 60000
+        mu_min_floor = 0.05
+        requote_min_interval_ms = 500
+        quote_interval_ms = 1000
+        market_portfolio_max_active_markets = 1
+        market_portfolio_total_bankroll_notional = 1500.0
+        market_portfolio_min_slot_notional = 100.0
+        markets_config_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+        [[markets]]
+        market_key = "sample-event"
+        family_key = "static_binary_event"
+        underlying_asset = "ETH"
+        cadence_seconds = 60
+        cadence_slug_token = "will-sample-event-resolve-yes"
+        static_condition_id = "condition-sample-event"
+        static_yes_outcome = "Yes"
+        static_no_outcome = "No"
+        "#
+        .to_string()
+    }
+
+    fn binary_oracle_maker_manifest() -> BacktestingRunManifest {
+        let mut manifest = valid_manifest();
+        manifest.market_structure_fixture = MarketStructureFixture::BinaryOption;
+        manifest.strategy.registry_key = TEST_BINARY_ORACLE_MAKER_KEY.to_string();
+        manifest.strategy.parameters = BTreeMap::from([
+            (
+                STRATEGY_PARAM_CONFIG_TOML.to_string(),
+                binary_oracle_maker_config_toml(),
+            ),
+            (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
+            (
+                STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
+                "shadow".to_string(),
+            ),
+        ]);
+        manifest.strategy_config_hash =
+            "3333333333333333333333333333333333333333333333333333333333333333".to_string();
+        manifest
+    }
+
     #[test]
     fn binary_oracle_accepts_production_config_overlay_without_inline_config_toml() {
         let manifest = binary_oracle_overlay_manifest();
@@ -4752,6 +4804,15 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn binary_oracle_maker_accepts_inline_config_toml() {
+        let manifest = binary_oracle_maker_manifest();
+
+        manifest
+            .validate(&accepted_dataset())
+            .expect("binary-oracle maker inline config should validate");
     }
 
     #[test]

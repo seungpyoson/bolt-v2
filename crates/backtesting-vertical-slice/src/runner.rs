@@ -2066,17 +2066,23 @@ pub(crate) fn time_window_excludes_all_data(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::PathBuf, str::FromStr};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::{Path, PathBuf},
+        str::FromStr,
+    };
 
     use anyhow::{Context, Result, ensure};
-    use nautilus_core::UnixNanos;
+    use nautilus_core::{Params, UnixNanos};
     use nautilus_model::{
         data::TradeTick,
-        enums::AggressorSide,
-        identifiers::{InstrumentId, TradeId},
-        instruments::Instrument,
-        types::{Price, Quantity},
+        enums::{AggressorSide, AssetClass},
+        identifiers::{InstrumentId, Symbol, TradeId},
+        instruments::{BinaryOption, Instrument, InstrumentAny},
+        types::{Currency, Price, Quantity},
     };
+    use nautilus_persistence::backend::catalog::ParquetDataCatalog;
     use nautilus_polymarket::http::models::GammaMarket;
     use rust_decimal::Decimal;
     use serde::Deserialize;
@@ -2118,6 +2124,16 @@ mod tests {
     use crate::source_proof::{SourceProofFidelityClass, SourceProofUsageScope};
 
     const TEST_INSTRUMENT: &str = "BTCUSDT.BYBIT";
+    const TEST_BINARY_ORACLE_MAKER_KEY: &str = "binary_oracle_maker";
+    const MAKER_SMOKE_VENUE: &str = "POLYMARKET";
+    const MAKER_SMOKE_YES_INSTRUMENT: &str = "SAMPLE-EVENT-YES.POLYMARKET";
+    const MAKER_SMOKE_NO_INSTRUMENT: &str = "SAMPLE-EVENT-NO.POLYMARKET";
+    const MAKER_SMOKE_MARKET_SLUG: &str = "will-sample-event-resolve-yes";
+    const MAKER_SMOKE_CONDITION_ID: &str = "condition-sample-event";
+    const MAKER_SMOKE_QUESTION_ID: &str = "question-sample-event";
+    const MAKER_SMOKE_CLIENT_ID: &str = "maker_execution_client";
+    const MAKER_SMOKE_RUN_ID: &str = "binary-oracle-maker-backtest-smoke";
+    const MAKER_SMOKE_TS_NS: u64 = 1_772_323_201_665_000_000;
 
     fn canonical_row(
         trade_id: &str,
@@ -2439,6 +2455,294 @@ mod tests {
             time_window_excludes_all_data(None, Some(99), 100, 200),
             Some("end_time")
         );
+    }
+
+    fn maker_smoke_binary_option(instrument_id: &str, outcome: &str) -> InstrumentAny {
+        let mut info = Params::new();
+        for (key, value) in [
+            ("market_slug", MAKER_SMOKE_MARKET_SLUG),
+            ("market_id", "sample-event-yes-no"),
+            ("condition_id", MAKER_SMOKE_CONDITION_ID),
+            ("question_id", MAKER_SMOKE_QUESTION_ID),
+        ] {
+            info.insert(
+                key.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
+        }
+        InstrumentAny::BinaryOption(BinaryOption::new(
+            InstrumentId::from(instrument_id),
+            Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),
+            AssetClass::Alternative,
+            Currency::USDC(),
+            (MAKER_SMOKE_TS_NS - 1_000_000_000).into(),
+            (MAKER_SMOKE_TS_NS + 60_000_000_000).into(),
+            3,
+            2,
+            Price::from("0.001"),
+            Quantity::from("0.01"),
+            Some(ustr::Ustr::from(outcome)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(Price::from("0.999")),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(info),
+            1.into(),
+            1.into(),
+        ))
+    }
+
+    fn maker_smoke_trade(
+        instrument_id: InstrumentId,
+        trade_id: &str,
+        side: AggressorSide,
+        ts_ns: u64,
+    ) -> TradeTick {
+        let ts = UnixNanos::from(ts_ns);
+        TradeTick::new(
+            instrument_id,
+            Price::from("0.500"),
+            Quantity::from("1.00"),
+            side,
+            TradeId::from(trade_id),
+            ts,
+            ts,
+        )
+    }
+
+    fn write_maker_smoke_catalog(catalog_root: &Path) -> Result<()> {
+        let yes = maker_smoke_binary_option(MAKER_SMOKE_YES_INSTRUMENT, "Yes");
+        let no = maker_smoke_binary_option(MAKER_SMOKE_NO_INSTRUMENT, "No");
+        let yes_id = yes.id();
+        let no_id = no.id();
+        let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+        catalog
+            .write_instruments(vec![yes, no])
+            .context("write maker smoke instruments")?;
+        catalog
+            .write_to_parquet(
+                vec![
+                    maker_smoke_trade(
+                        yes_id,
+                        "maker-smoke-yes-1",
+                        AggressorSide::Buyer,
+                        MAKER_SMOKE_TS_NS,
+                    ),
+                    maker_smoke_trade(
+                        no_id,
+                        "maker-smoke-no-1",
+                        AggressorSide::Seller,
+                        MAKER_SMOKE_TS_NS + 1_000_000,
+                    ),
+                ],
+                None,
+                None,
+                None,
+            )
+            .context("write maker smoke trade ticks")?;
+        Ok(())
+    }
+
+    fn maker_smoke_config_toml() -> String {
+        r#"
+        strategy_id = "binary_oracle_maker-backtest-smoke"
+        order_id_tag = "001"
+        oms_type = "netting"
+        client_id = "maker_execution_client"
+        trade_flow_window_secs = 600
+        trade_flow_max_samples = 1000
+        mu_min_classified_samples = 4
+        mu_stale_window_ms = 60000
+        mu_min_floor = 0.05
+        requote_min_interval_ms = 500
+        quote_interval_ms = 1000
+        market_portfolio_max_active_markets = 1
+        market_portfolio_total_bankroll_notional = 1500.0
+        market_portfolio_min_slot_notional = 100.0
+        markets_config_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+        [[markets]]
+        market_key = "sample-event"
+        family_key = "static_binary_event"
+        underlying_asset = "ETH"
+        cadence_seconds = 60
+        cadence_slug_token = "will-sample-event-resolve-yes"
+        static_condition_id = "condition-sample-event"
+        static_yes_outcome = "Yes"
+        static_no_outcome = "No"
+        "#
+        .to_string()
+    }
+
+    fn maker_smoke_venue() -> ManifestVenueConfig {
+        ManifestVenueConfig {
+            nt_venue: MAKER_SMOKE_VENUE.to_string(),
+            oms_type: "NETTING".to_string(),
+            account_type: "CASH".to_string(),
+            book_type: "L1_MBP".to_string(),
+            starting_balances: vec!["1_000_000 USDC".to_string()],
+            routing: false,
+            frozen_account: false,
+            reject_stop_orders: true,
+            support_gtd_orders: true,
+            support_contingent_orders: true,
+            use_position_ids: true,
+            use_random_ids: false,
+            use_reduce_only: true,
+            bar_execution: true,
+            bar_adaptive_high_low_ordering: false,
+            trade_execution: true,
+            use_market_order_acks: false,
+            liquidity_consumption: false,
+            allow_cash_borrowing: false,
+            queue_position: false,
+            oto_trigger_mode: "PARTIAL".to_string(),
+            base_currency: "NONE".to_string(),
+            default_leverage: "1".to_string(),
+            price_protection_points: 0,
+            leverages: None,
+            margin_model: None,
+            modules: None,
+            fill_model: None,
+            latency_model: None,
+            fee_model: None,
+            settlement_prices: None,
+        }
+    }
+
+    fn maker_smoke_catalog_input(catalog_path: &str, instrument_id: &str) -> ManifestCatalogInput {
+        ManifestCatalogInput {
+            catalog_path: catalog_path.to_string(),
+            catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
+            catalog_fs_storage_options: BTreeMap::new(),
+            catalog_fs_rust_storage_options: BTreeMap::new(),
+            data_type: "TradeTick".to_string(),
+            nt_instrument_id: instrument_id.to_string(),
+            instrument_ids: None,
+            start_time: None,
+            end_time: None,
+            filter_expr: None,
+            client_id: Some(MAKER_SMOKE_CLIENT_ID.to_string()),
+            metadata: None,
+            bar_spec: None,
+            bar_types: None,
+            optimize_file_loading: None,
+        }
+    }
+
+    fn maker_smoke_manifest(catalog_root: &Path) -> BacktestingRunManifest {
+        let catalog_path = catalog_root.to_str().expect("catalog path is UTF-8");
+        BacktestingRunManifest {
+            manifest_schema_version: BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION.to_string(),
+            run_id: MAKER_SMOKE_RUN_ID.to_string(),
+            target_bolt_v2_branch: "codex/437-maker-backtest-allowlist".to_string(),
+            target_bolt_v2_ref: "worktree".to_string(),
+            resolved_nt_version: "6be5a5094716790a8ca2875445fde4fa2586107e".to_string(),
+            market_structure_fixture: MarketStructureFixture::BinaryOption,
+            venue_binding_key: "maker-smoke-static-binary-event".to_string(),
+            run_purpose: RunPurpose::Normal,
+            source_proof_id: "maker-smoke-source-proof".to_string(),
+            source_proof_version: 1,
+            pins_non_latest_proof: false,
+            proof_pin_reason_code: None,
+            proof_pin_reason_detail: None,
+            strategy: StrategySource {
+                source_kind: StrategySourceKind::CompiledRustRegistry,
+                registry_key: TEST_BINARY_ORACLE_MAKER_KEY.to_string(),
+                parameters: BTreeMap::from([
+                    ("config_toml".to_string(), maker_smoke_config_toml()),
+                    (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
+                    (
+                        STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
+                        "shadow".to_string(),
+                    ),
+                ]),
+                typed_config_uri: None,
+                typed_config_hash: None,
+                experiment_result_uri: None,
+                experiment_result_hash: None,
+                config_overlay: None,
+            },
+            strategy_config_hash: sha256_hex(maker_smoke_config_toml().as_bytes()),
+            venue: maker_smoke_venue(),
+            additional_venues: Vec::new(),
+            catalog_inputs: vec![
+                maker_smoke_catalog_input(catalog_path, MAKER_SMOKE_YES_INSTRUMENT),
+                maker_smoke_catalog_input(catalog_path, MAKER_SMOKE_NO_INSTRUMENT),
+            ],
+            reconstructed_reference_current_price: Vec::new(),
+            instrument_settlements: Vec::new(),
+            catalog_hash: sha256_hex(catalog_path.as_bytes()),
+            execution_model: "nt_backtest_node".to_string(),
+            artifact_root: "memory://maker-smoke".to_string(),
+            output_prefix: "maker-smoke".to_string(),
+            artifact_store: ManifestArtifactStore {
+                storage_options: BTreeMap::new(),
+                rust_storage_options: BTreeMap::new(),
+                ssm_parameters: None,
+            },
+            domain_metrics: Vec::new(),
+            start_time: None,
+            end_time: None,
+        }
+    }
+
+    #[test]
+    fn binary_oracle_maker_manifest_runs_through_backtest_node() -> Result<()> {
+        let tempdir = tempfile::TempDir::new().context("create maker smoke catalog root")?;
+        write_maker_smoke_catalog(tempdir.path())?;
+        let manifest = maker_smoke_manifest(tempdir.path());
+
+        let output = run_nt_backtest_node(&manifest)
+            .context("run binary-oracle maker manifest through BacktestNode")?;
+
+        ensure!(
+            output.result.run_config_id.as_deref() == Some(MAKER_SMOKE_RUN_ID),
+            "maker smoke returned unexpected run id {:?}",
+            output.result.run_config_id
+        );
+        ensure!(
+            output.result.iterations == 2,
+            "maker smoke must iterate the two catalog trade ticks, got {}",
+            output.result.iterations
+        );
+        ensure!(
+            output.config_override_report.is_none(),
+            "inline maker config must not produce a taker config-overlay report"
+        );
+        ensure!(
+            output.run_guard_report.is_some(),
+            "maker registration must retain the shared decision-evidence/run-guard writer"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_manifest_strategy_still_fails_allowlist() -> Result<()> {
+        let tempdir = tempfile::TempDir::new().context("create unknown-strategy catalog root")?;
+        write_maker_smoke_catalog(tempdir.path())?;
+        let mut manifest = maker_smoke_manifest(tempdir.path());
+        manifest.strategy.registry_key = "binary_oracle_maker_typo".to_string();
+
+        let error = run_nt_backtest_node(&manifest)
+            .err()
+            .context("unknown strategy unexpectedly ran")?;
+
+        ensure!(
+            error
+                .to_string()
+                .contains("not a registered compiled Rust strategy"),
+            "unexpected unknown-strategy error: {error:#}"
+        );
+        Ok(())
     }
 
     const ISSUE_789_START_MS: u64 = 1_776_816_000_000;

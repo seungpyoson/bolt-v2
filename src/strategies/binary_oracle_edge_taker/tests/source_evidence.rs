@@ -1645,6 +1645,38 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
         vec![BoltV3ForcedFlatReason::Freeze]
     );
     assert_eq!(decision.blocked_reason, None);
+    assert_eq!(decision.spot_price.as_deref(), Some("3100.25"));
+    assert_eq!(
+        decision.spot_venue_name.as_deref(),
+        Some("signal_data_client")
+    );
+    assert!(decision.fast_venue_available);
+    assert_eq!(decision.reference_current_price.as_deref(), Some("3100.5"));
+    assert!(decision.reference_current_price_available);
+    assert_eq!(decision.interval_open.as_deref(), Some("3100"));
+    assert_eq!(decision.fair_probability_up, None);
+    assert_eq!(decision.fair_probability_down, None);
+    assert_eq!(decision.uncertainty_band_probability, None);
+    assert!(
+        decision.up_fee_bps.is_some(),
+        "exit decision evidence must preserve the up-side fee input"
+    );
+    assert!(
+        decision.down_fee_bps.is_some(),
+        "exit decision evidence must preserve the down-side fee input"
+    );
+    assert!(
+        decision.submission_order_side.is_some(),
+        "exit decision evidence must preserve the submitted order side"
+    );
+    assert!(
+        decision.submission_price.is_some(),
+        "exit decision evidence must preserve the submitted order price"
+    );
+    assert!(
+        decision.submission_quantity.is_some(),
+        "exit decision evidence must preserve the submitted order quantity"
+    );
     assert_eq!(
         decision.exit_trigger_source,
         BoltV3ExitTriggerSource::SignalQuote
@@ -2518,6 +2550,20 @@ fn recorded_exit_evaluations(
         .collect()
 }
 
+/// Collect every recorded exit-decision evidence record, in order.
+fn recorded_exit_decisions(
+    evidence: &RecordingSequencedDecisionEvidenceWriter,
+) -> Vec<crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence> {
+    evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::ExitDecision(evidence) => Some(evidence),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
     // FIX 3b: the exit-evaluation evidence sink is swallow-on-error. A writer that
@@ -2618,12 +2664,45 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
 }
 
 #[test]
+fn exit_decision_evidence_reports_fast_venue_when_position_spot_is_absent() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    strategy.active.market_id = Some("different-active-market".to_string());
+
+    strategy
+        .record_exit_decision_once(
+            1_200,
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                1_200,
+                Some(1_180),
+            ),
+            &minimal_exit_submission_decision(),
+        )
+        .expect("exit-decision evidence should record");
+
+    let records = recorded_exit_decisions(&evidence);
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(
+        record.spot_price, None,
+        "the position-coupled exit spot price should be absent for a market mismatch"
+    );
+    assert!(
+        record.fast_venue_available,
+        "fast_venue_available must report selected venue state, not position-coupled price presence"
+    );
+}
+
+#[test]
 fn exit_evaluation_evidence_records_accepted_rv_gate() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
     // RV ready at as_of == now == 1_200 → the gate accepts the snapshot.
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+    strategy
+        .pricing
+        .observe_reference_current_price(&fast_spot("bybit", 3_099.75, 1_200));
 
     strategy
         .try_submit_exit_order_for_trigger(
@@ -2661,6 +2740,88 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
     );
     assert_eq!(record.trigger_ts_event_ms, Some(1_200));
     assert_eq!(record.trigger_ts_init_ms, Some(1_180));
+    assert_eq!(record.spot_price.as_deref(), Some("3099.75"));
+    assert_eq!(record.spot_venue_name.as_deref(), Some("bybit"));
+    assert!(record.fast_venue_available);
+    assert_eq!(record.reference_current_price.as_deref(), Some("3099.75"));
+    assert!(record.reference_current_price_available);
+    assert_eq!(record.interval_open.as_deref(), Some("3100"));
+    assert!(
+        record.fair_probability_up.is_some(),
+        "exit evaluation evidence must preserve the computed fair probability"
+    );
+    assert!(
+        record.fair_probability_down.is_some(),
+        "exit evaluation evidence must preserve the computed complement probability"
+    );
+    assert!(
+        record.uncertainty_band_probability.is_some(),
+        "exit evaluation evidence must preserve the computed uncertainty band"
+    );
+    assert!(
+        record.up_fee_bps.is_some(),
+        "exit evaluation evidence must preserve the up-side fee input"
+    );
+    assert!(
+        record.down_fee_bps.is_some(),
+        "exit evaluation evidence must preserve the down-side fee input"
+    );
+}
+
+#[test]
+fn exit_evaluation_evidence_reports_fast_venue_when_position_spot_is_absent() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    strategy.active.market_id = Some("different-active-market".to_string());
+
+    strategy.record_exit_evaluation_evidence(
+        1_200,
+        &minimal_exit_submission_decision(),
+        ExitEvaluationTriggerContext::new(
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            1_200,
+            Some(1_180),
+        ),
+        false,
+    );
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(
+        record.spot_price, None,
+        "the position-coupled exit spot price should be absent for a market mismatch"
+    );
+    assert!(
+        record.fast_venue_available,
+        "fast_venue_available must report selected venue state, not position-coupled price presence"
+    );
+}
+
+#[test]
+fn exit_evaluation_evidence_omits_non_finite_optional_numbers() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    let mut decision = minimal_exit_submission_decision();
+    decision.evaluation.hold_ev_bps = Some(f64::NAN);
+    decision.evaluation.exit_ev_bps = Some(f64::INFINITY);
+    decision.price = Some(f64::NAN);
+
+    strategy.record_exit_evaluation_evidence(
+        1_200,
+        &decision,
+        ExitEvaluationTriggerContext::new(
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            1_200,
+            Some(1_180),
+        ),
+        false,
+    );
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.hold_ev_bps, None);
+    assert_eq!(record.exit_ev_bps, None);
+    assert_eq!(record.submission_price, None);
 }
 
 #[test]

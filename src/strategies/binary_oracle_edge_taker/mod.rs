@@ -3704,6 +3704,7 @@ impl BinaryOracleEdgeTaker {
             rv_gate_result,
             rv_future_dating_delta_ms,
         ) = self.exit_realized_volatility_gate_fields_at(realized_vol_gate_event_ms);
+        let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
         ExitEvaluationLogFields {
             market_id: self.current_position_market_id(),
             phase: self.active.phase,
@@ -3717,6 +3718,7 @@ impl BinaryOracleEdgeTaker {
             spot_venue_name: self
                 .current_position_fast_spot()
                 .map(|spot| spot.venue.clone()),
+            fast_venue_available,
             reference_current_price: self.pricing.last_reference_current_price(),
             interval_open: open_position.and_then(|position| position.interval_open),
             seconds_to_expiry: self.current_position_seconds_to_expiry_at(now_ms),
@@ -4733,6 +4735,18 @@ impl BinaryOracleEdgeTaker {
             .pricing
             .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id)
             .is_some_and(|snapshot| snapshot.ready_realized_vol().is_some());
+        let spot_price = option_evidence_number(log_fields.spot_price);
+        let reference_current_price = option_evidence_number(log_fields.reference_current_price);
+        let interval_open = option_evidence_number(log_fields.interval_open);
+        let fair_probability_up = option_evidence_number(log_fields.fair_probability_up);
+        let fair_probability_down = option_evidence_number(log_fields.fair_probability_down);
+        let uncertainty_band_probability =
+            option_evidence_number(log_fields.uncertainty_band_probability);
+        let up_fee_bps = option_evidence_number(log_fields.up_fee_bps);
+        let down_fee_bps = option_evidence_number(log_fields.down_fee_bps);
+        let hold_ev_bps = option_evidence_number(log_fields.hold_ev_bps);
+        let exit_ev_bps = option_evidence_number(log_fields.exit_ev_bps);
+        let submission_price = option_evidence_number(log_fields.submission_price);
 
         let exit_decision = exit_decision_evidence_from_optional(decision.evaluation.exit_decision);
         let outcome_key = ExitOutcomeKey {
@@ -4781,8 +4795,19 @@ impl BinaryOracleEdgeTaker {
                 .collect(),
             rv_gate_result,
             rv_as_of_minus_now_ms,
-            hold_ev_bps: log_fields.hold_ev_bps.map(evidence_number),
-            exit_ev_bps: log_fields.exit_ev_bps.map(evidence_number),
+            spot_price,
+            spot_venue_name: log_fields.spot_venue_name.clone(),
+            fast_venue_available: log_fields.fast_venue_available,
+            reference_current_price_available: reference_current_price.is_some(),
+            reference_current_price,
+            interval_open,
+            fair_probability_up,
+            fair_probability_down,
+            uncertainty_band_probability,
+            up_fee_bps,
+            down_fee_bps,
+            hold_ev_bps,
+            exit_ev_bps,
             exit_decision,
             forced_flat_reasons: log_fields
                 .forced_flat_reasons
@@ -4792,7 +4817,7 @@ impl BinaryOracleEdgeTaker {
             submission_order_side: log_fields
                 .submission_order_side
                 .map(|side| side.to_string()),
-            submission_price: log_fields.submission_price.map(evidence_number),
+            submission_price,
             submission_quantity: log_fields
                 .submission_quantity
                 .map(|quantity| quantity.to_string()),

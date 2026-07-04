@@ -94,12 +94,8 @@ fn check_artifact_ref(
     let artifact_path = artifact_path
         .to_str()
         .expect("artifact ref path must be UTF-8");
-    let actual_sha256 = if let Some(indexed) = evicted_index
-        .entries
-        .iter()
-        .find(|entry| entry.path == artifact_path)
-    {
-        indexed.sha256.clone()
+    let actual_sha256 = if let Some(indexed) = evicted_index.sha256_for(artifact_path) {
+        indexed.to_string()
     } else {
         sha256_file(&repo_root.join(artifact_path))
     };

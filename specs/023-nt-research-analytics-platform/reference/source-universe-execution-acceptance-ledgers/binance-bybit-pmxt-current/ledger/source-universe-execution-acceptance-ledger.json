@@ -59,7 +59,7 @@
         {
           "role": "source_universe_execution_pack",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/execution-pack/source-universe-execution-pack.json",
-          "sha256": "f9b995867fba9344c85e1cb50aa56a6fa9d2625e103465e654d7cd35d3aaefa8"
+          "sha256": "1af3250104470877c7c3fe3ec8ce14ea0aec4fbdcb453f5699477428d9660b43"
         }
       ],
       "blocking_reasons": [

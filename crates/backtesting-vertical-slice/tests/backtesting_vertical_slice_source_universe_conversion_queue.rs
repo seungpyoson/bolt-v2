@@ -30,16 +30,6 @@ fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir:
     fs::write(target_spec, format!("{updated}\n")).expect("write temp source-universe spec");
 }
 
-fn indexed_evicted_sha256(index: &EvictedFixtureIndex, path: &str) -> String {
-    index
-        .entries
-        .iter()
-        .find(|entry| entry.path == path)
-        .unwrap_or_else(|| panic!("evicted fixture index does not contain {path}"))
-        .sha256
-        .clone()
-}
-
 fn assert_source_manifest_path_is_portable(
     queue: &SourceUniverseConversionQueue,
     expected_manifest_path: &Path,
@@ -387,7 +377,11 @@ fn source_universe_conversion_queue_materializes_every_pmxt_archive_index_object
         EvictedFixtureIndex::load(&repo_root_from_manifest_dir()).expect("load eviction index");
     assert_eq!(
         artifact.content_hash,
-        indexed_evicted_sha256(&evicted_index, TIER1_PMXT_CONVERSION_QUEUE_PATH),
+        evicted_index
+            .sha256_for(TIER1_PMXT_CONVERSION_QUEUE_PATH)
+            .unwrap_or_else(|| {
+                panic!("evicted fixture index does not contain {TIER1_PMXT_CONVERSION_QUEUE_PATH}")
+            }),
         "regenerated PMXT conversion queue bytes must match the evicted fixture index"
     );
     let queue: SourceUniverseConversionQueue =

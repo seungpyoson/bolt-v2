@@ -424,13 +424,13 @@ fn clamp_risk_reducing_exit_to_venue_position(
 
 #[derive(Debug)]
 struct BoltV3ExitClampError {
-    intent: BoltV3OrderIntentEvidence,
+    intent: Box<BoltV3OrderIntentEvidence>,
     error: anyhow::Error,
 }
 
 impl BoltV3ExitClampError {
     fn intent(&self) -> &BoltV3OrderIntentEvidence {
-        &self.intent
+        self.intent.as_ref()
     }
 
     fn into_error(self) -> anyhow::Error {
@@ -443,7 +443,10 @@ fn rejected_exit_clamp(
     error: anyhow::Error,
 ) -> BoltV3ExitClampError {
     intent.clamp_outcome = Some(BoltV3OrderIntentClampOutcome::Rejected);
-    BoltV3ExitClampError { intent, error }
+    BoltV3ExitClampError {
+        intent: Box::new(intent),
+        error,
+    }
 }
 
 enum VenueTruthExitPosition {

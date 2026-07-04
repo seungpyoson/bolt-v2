@@ -2020,7 +2020,8 @@ impl BinaryOracleEdgeTaker {
         let spot_venue_name = self.evidence_spot_venue_name();
         let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
         let reference_current_price = self.evidence_reference_current_price();
-        let reference_current_price_available = reference_current_price.is_some();
+        let reference_current_price_available =
+            self.pricing.last_reference_current_price().is_some();
         let (realized_vol_source_venue, realized_vol_source_ts_ms) =
             self.pricing.current_realized_vol_source_at(now_ms);
 
@@ -4063,9 +4064,10 @@ impl BinaryOracleEdgeTaker {
             Some(OutcomeSide::Down) => decision.evaluation.down_worst_case_ev_bps,
             None => None,
         };
-        let reference_current_price = self.evidence_reference_current_price().map(evidence_number);
+        let reference_current_price = self.evidence_reference_current_price();
         let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
-        let reference_current_price_available = reference_current_price.is_some();
+        let reference_current_price_available =
+            self.pricing.last_reference_current_price().is_some();
 
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
@@ -4115,7 +4117,7 @@ impl BinaryOracleEdgeTaker {
                 .evidence_spot_price()
                 .map_or_else(String::new, evidence_number),
             fast_venue_available,
-            reference_current_price,
+            reference_current_price: reference_current_price.map(evidence_number),
             reference_current_price_available,
             reference_current_price_source_id: self.evidence_reference_current_price_source_id(),
             reference_current_price_failed_over: self
@@ -4304,9 +4306,10 @@ impl BinaryOracleEdgeTaker {
         let order_side = decision.order_side.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires submission order side")
         })?;
-        let reference_current_price = self.evidence_reference_current_price().map(evidence_number);
+        let reference_current_price = self.evidence_reference_current_price();
         let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
-        let reference_current_price_available = reference_current_price.is_some();
+        let reference_current_price_available =
+            self.pricing.last_reference_current_price().is_some();
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
             configured_target_id: self.config.configured_target_id.clone(),
@@ -4349,7 +4352,7 @@ impl BinaryOracleEdgeTaker {
             reference_quote_ts_event,
             spot_price: evidence_number(spot_price),
             fast_venue_available,
-            reference_current_price,
+            reference_current_price: reference_current_price.map(evidence_number),
             reference_current_price_available,
             reference_current_price_source_id: self.evidence_reference_current_price_source_id(),
             reference_current_price_failed_over: self

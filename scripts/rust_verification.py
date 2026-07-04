@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import errno
 import fcntl
 import functools
 import json
@@ -167,6 +168,10 @@ class PolicyError(RuntimeError):
 
 
 require_positive_int = functools.partial(_cv.require_positive_int, error_cls=PolicyError)
+
+
+class CacheLockTimeoutError(RuntimeError):
+    pass
 
 
 class ProcessVisibilityError(RuntimeError):
@@ -810,16 +815,112 @@ def cache_lock_path(policy: dict[str, Any]) -> pathlib.Path:
     return root_base() / policy["target_namespace"] / "cache.lock"
 
 
+_CACHE_LOCK_BUSY_ERRNOS = {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}
+
+
+def cache_lock_holder_payload() -> dict[str, Any]:
+    return {
+        "cmdline": " ".join(shlex.quote(arg) for arg in sys.argv),
+        "pid": os.getpid(),
+        "started_at": time.time(),
+    }
+
+
+def read_cache_lock_holder(path: pathlib.Path) -> dict[str, Any]:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {}
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def process_command_for_pid(pid: int) -> str | None:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    command = result.stdout.strip()
+    return command if result.returncode == 0 and command else None
+
+
+def cache_lock_holder_description(path: pathlib.Path) -> str:
+    holder = read_cache_lock_holder(path)
+    pid = holder.get("pid")
+    cmdline = holder.get("cmdline")
+    parts: list[str] = []
+    if isinstance(pid, int):
+        parts.append(f"pid {pid}")
+        if not isinstance(cmdline, str) or not cmdline:
+            cmdline = process_command_for_pid(pid)
+    if isinstance(cmdline, str) and cmdline:
+        parts.append(f"cmdline {cmdline!r}")
+    return " ".join(parts) if parts else "unknown holder"
+
+
 @contextlib.contextmanager
 def cache_lock(policy: dict[str, Any], *, exclusive: bool) -> Any:
     path = cache_lock_path(policy)
     path.parent.mkdir(parents=True, exist_ok=True)
+    lane_policy = policy["local_lane_policy"]
+    timeout = float(lane_policy["acquire_timeout_seconds"])
+    heartbeat = float(lane_policy["heartbeat_seconds"])
+    poll = float(lane_policy["poll_interval_seconds"])
     with path.open("a", encoding="utf-8") as handle:
         mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
-        fcntl.flock(handle.fileno(), mode)
+        started = time.monotonic()
+        last_heartbeat = started
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), mode | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno not in _CACHE_LOCK_BUSY_ERRNOS:
+                    raise OSError(
+                        exc.errno,
+                        f"failed to lock {path}: {exc.strerror or exc}",
+                        exc.filename,
+                    ) from exc
+                now = time.monotonic()
+                waited = now - started
+                holder = cache_lock_holder_description(path)
+                if waited >= timeout:
+                    raise CacheLockTimeoutError(
+                        f"cache lock wait timed out after {waited:.0f}s for {path}; held by {holder}"
+                    ) from exc
+                if now - last_heartbeat >= heartbeat:
+                    print(
+                        f"waiting for cache lock {path} held by {holder} ({waited:.0f}s elapsed)",
+                        file=sys.stderr,
+                    )
+                    last_heartbeat = now
+                time.sleep(min(poll, max(0.0, timeout - waited)))
+                continue
+            if exclusive:
+                handle.seek(0)
+                handle.truncate(0)
+                json.dump(cache_lock_holder_payload(), handle)
+                handle.write("\n")
+                handle.flush()
+            break
         try:
             yield
         finally:
+            if exclusive:
+                handle.seek(0)
+                handle.truncate(0)
+                handle.flush()
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
@@ -4492,19 +4593,25 @@ def cmd_cargo(args: argparse.Namespace) -> int:
                     dry_run=False,
                 )
             )
-        with cache_lock(policy, exclusive=True):
-            target, refusal = clean_preflight_refusal_payload(repo, policy, target)
-            if refusal is not None:
-                return print_refusal(refusal)
-            return run_process([cargo, *cargo_args], repo=repo, env=managed_env(repo, policy))
+        try:
+            with cache_lock(policy, exclusive=True):
+                target, refusal = clean_preflight_refusal_payload(repo, policy, target)
+                if refusal is not None:
+                    return print_refusal(refusal)
+                return run_process([cargo, *cargo_args], repo=repo, env=managed_env(repo, policy))
+        except CacheLockTimeoutError as exc:
+            return print_refusal(refusal_payload(code="cache_lock_timeout", reason=str(exc), dry_run=False))
     if cargo_subcommand(cargo_args) == "fmt":
         return run_process([cargo, *cargo_args], repo=repo, env=scrubbed_local_env())
     if cargo_args_need_disk_preflight(cargo_args):
         refusal = disk_preflight_refusal_payload(repo, policy)
         if refusal is not None:
             return print_refusal(refusal)
-    with cache_lock(policy, exclusive=cargo_args_need_exclusive_cache_lock(cargo_args)):
-        return run_process([cargo, *cargo_args], repo=repo, env=managed_env(repo, policy))
+    try:
+        with cache_lock(policy, exclusive=cargo_args_need_exclusive_cache_lock(cargo_args)):
+            return run_process([cargo, *cargo_args], repo=repo, env=managed_env(repo, policy))
+    except CacheLockTimeoutError as exc:
+        return print_refusal(refusal_payload(code="cache_lock_timeout", reason=str(exc), dry_run=False))
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -4538,10 +4645,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         args.args,
         test_separator=test_separator,
     )
-    with cache_lock(policy, exclusive=run_exclusive):
-        env = managed_env(repo, policy)
-        env["BOLT_MANAGED_JUST"] = "1"
-        return run_process(argv, repo=repo, env=env)
+    try:
+        with cache_lock(policy, exclusive=run_exclusive):
+            env = managed_env(repo, policy)
+            env["BOLT_MANAGED_JUST"] = "1"
+            return run_process(argv, repo=repo, env=env)
+    except CacheLockTimeoutError as exc:
+        return print_refusal(refusal_payload(code="cache_lock_timeout", reason=str(exc), dry_run=False))
 
 
 def cmd_scrub_env_keys(_args: argparse.Namespace) -> int:
@@ -4622,6 +4732,9 @@ def cache_prune_command_result(repo: pathlib.Path, *, dry_run: bool, age_only: b
         return payload, 2
     except PolicyError as exc:
         payload = refusal_payload(code="invalid_policy", reason=str(exc), dry_run=dry_run, age_only=age_only)
+        return payload, 2
+    except CacheLockTimeoutError as exc:
+        payload = refusal_payload(code="cache_lock_timeout", reason=str(exc), dry_run=dry_run, age_only=age_only)
         return payload, 2
     except OSError as exc:
         payload = refusal_payload(code="operation_failed", reason=str(exc), dry_run=dry_run, age_only=age_only)

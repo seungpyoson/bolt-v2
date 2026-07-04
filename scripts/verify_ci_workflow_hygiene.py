@@ -469,7 +469,8 @@ FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR = (
 )
 # A key may be listed here only if it must not influence compiler/test-runner
 # behavior or archive content; when in doubt classify reuse-relevant
-# (fails toward rebuild).
+# (fails toward rebuild). Build-affecting keys must instead go into
+# ci_provenance.REUSE_RELEVANT_WORKFLOW_ENV_KEYS so they invalidate reuse.
 REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS = frozenset(
     {"CARGO_TERM_COLOR", "S3_DEPLOY_PATH"}
 )

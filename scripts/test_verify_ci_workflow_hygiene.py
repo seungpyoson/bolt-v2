@@ -9529,7 +9529,8 @@ def assert_reuse_neutral_env_comment_states_fail_closed_classification_rule() ->
     comment = (
         "# A key may be listed here only if it must not influence compiler/test-runner\n"
         "# behavior or archive content; when in doubt classify reuse-relevant\n"
-        "# (fails toward rebuild)."
+        "# (fails toward rebuild). Build-affecting keys must instead go into\n"
+        "# ci_provenance.REUSE_RELEVANT_WORKFLOW_ENV_KEYS so they invalidate reuse."
     )
     if comment not in verifier_text:
         raise AssertionError("reuse-neutral env comment must state the fail-closed classification rule")

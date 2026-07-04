@@ -614,6 +614,7 @@ fn assert_managed_or_halted_loud(strategy: &BinaryOracleEdgeTaker, context: &str
         matches!(
             strategy.exposure,
             ExposureState::Managed(_)
+                | ExposureState::EntryReconcilePending { .. }
                 | ExposureState::BlindRecovery(_)
                 | ExposureState::UnsupportedObserved(_)
         ),

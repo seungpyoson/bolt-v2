@@ -96,6 +96,9 @@ impl ExitPendingState {
 
     pub(super) fn residual_position_after_terminal(&self) -> Option<OpenPositionState> {
         let position = self.position.as_ref()?;
+        if self.pending_exit.residual_position_observed_after_fill {
+            return Some(position.position.clone());
+        }
         let filled_quantity = self.pending_exit.filled_quantity.as_ref()?;
         let residual = position.position.quantity.as_f64() - filled_quantity.as_f64();
         if !is_positive_finite(residual) {

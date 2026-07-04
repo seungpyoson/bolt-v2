@@ -134,6 +134,7 @@ pub(super) struct ExitEvaluationLogFields {
     pub(super) forced_flat_reasons: Vec<ForcedFlatReason>,
     pub(super) spot_price: Option<f64>,
     pub(super) spot_venue_name: Option<String>,
+    pub(super) fast_venue_available: bool,
     pub(super) reference_current_price: Option<f64>,
     pub(super) interval_open: Option<f64>,
     pub(super) seconds_to_expiry: Option<u64>,
@@ -207,6 +208,19 @@ impl BoltV3ExitDecisionEvidence {
                 None => BoltV3ExitDecisionOutcome::Blocked,
             }
         };
+        let spot_price = option_evidence_number(fields.spot_price);
+        let reference_current_price = option_evidence_number(fields.reference_current_price);
+        let interval_open = option_evidence_number(fields.interval_open);
+        let fair_probability_up = option_evidence_number(fields.fair_probability_up);
+        let fair_probability_down = option_evidence_number(fields.fair_probability_down);
+        let uncertainty_band_probability =
+            option_evidence_number(fields.uncertainty_band_probability);
+        let up_fee_bps = option_evidence_number(fields.up_fee_bps);
+        let down_fee_bps = option_evidence_number(fields.down_fee_bps);
+        let hold_ev_bps = option_evidence_number(fields.hold_ev_bps);
+        let exit_ev_bps = option_evidence_number(fields.exit_ev_bps);
+        let realized_vol = option_evidence_number(fields.realized_vol);
+        let submission_price = option_evidence_number(fields.submission_price);
         Self {
             strategy_id,
             market_id: fields.market_id.clone(),
@@ -222,9 +236,20 @@ impl BoltV3ExitDecisionEvidence {
                 .iter()
                 .map(forced_flat_reason_to_evidence)
                 .collect(),
-            hold_ev_bps: option_evidence_number(fields.hold_ev_bps),
-            exit_ev_bps: option_evidence_number(fields.exit_ev_bps),
-            realized_vol: option_evidence_number(fields.realized_vol),
+            spot_price,
+            spot_venue_name: fields.spot_venue_name.clone(),
+            fast_venue_available: fields.fast_venue_available,
+            reference_current_price_available: reference_current_price.is_some(),
+            reference_current_price,
+            interval_open,
+            fair_probability_up,
+            fair_probability_down,
+            uncertainty_band_probability,
+            up_fee_bps,
+            down_fee_bps,
+            hold_ev_bps,
+            exit_ev_bps,
+            realized_vol,
             realized_vol_source_venue: fields.realized_vol_source_venue.clone(),
             realized_vol_source_ts_ms: fields.realized_vol_source_ts_ms,
             exit_eval_now_ms: fields.exit_eval_now_ms,
@@ -244,6 +269,13 @@ impl BoltV3ExitDecisionEvidence {
             client_order_id: fields
                 .submission_client_order_id
                 .map(|client_order_id| client_order_id.to_string()),
+            submission_order_side: fields
+                .submission_order_side
+                .map(|order_side| order_side.to_string()),
+            submission_price,
+            submission_quantity: fields
+                .submission_quantity
+                .map(|quantity| quantity.to_string()),
             seconds_to_market_end: fields.seconds_to_expiry,
             ts_ms,
             stale_reference_after_ms: forced_flat_inputs.stale_reference_after_ms,
@@ -327,5 +359,103 @@ pub(super) fn evaluate_exit_decision(
         ExitDecision::Exit
     } else {
         ExitDecision::Hold
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_decision_evidence_preserves_observed_inputs_from_log_fields() {
+        let fields = ExitEvaluationLogFields {
+            market_id: Some("market-one".to_string()),
+            phase: SelectionPhase::Freeze,
+            position_outcome_side: Some(OutcomeSide::Up),
+            position_id: Some(PositionId::from("position-one")),
+            position_instrument_id: Some(InstrumentId::from("UP.POLYMARKET")),
+            position_quantity: Some(Quantity::new(7.0, 2)),
+            position_avg_px_open: Some(0.45),
+            forced_flat_reasons: vec![ForcedFlatReason::Freeze],
+            spot_price: Some(3_100.5),
+            spot_venue_name: Some("venue-one".to_string()),
+            fast_venue_available: true,
+            reference_current_price: Some(3_099.75),
+            interval_open: Some(3_100.0),
+            seconds_to_expiry: Some(240),
+            realized_vol: Some(1.5),
+            realized_vol_source_venue: Some("source-one".to_string()),
+            realized_vol_source_ts_ms: Some(1_200),
+            rv_surface_id: "surface-one".to_string(),
+            rv_snapshot_as_of_ms: Some(1_200),
+            rv_snapshot_ready: true,
+            rv_snapshot_blockers: Vec::new(),
+            rv_source_diagnostics: Vec::new(),
+            rv_gate_result: BoltV3ExitRvGateResult::Accepted,
+            rv_future_dating_delta_ms: None,
+            exit_eval_now_ms: 1_200,
+            exit_trigger_source: BoltV3ExitTriggerSource::SignalQuote,
+            trigger_ts_event_ms: 1_190,
+            trigger_ts_init_ms: Some(1_195),
+            pricing_kurtosis: 3.0,
+            exit_hysteresis_bps: 5,
+            fair_probability_up: Some(0.55),
+            fair_probability_down: Some(0.45),
+            uncertainty_band_probability: Some(0.02),
+            up_fee_bps: Some(1.25),
+            down_fee_bps: Some(2.5),
+            hold_ev_bps: Some(12.5),
+            exit_ev_bps: Some(11.25),
+            exit_decision: Some(ExitDecision::Exit),
+            historical_entry_fee_rate_known: true,
+            historical_entry_fee_rate_reason: "known",
+            final_fee_amount_known: false,
+            final_fee_amount_reason: "pending_fill",
+            submission_instrument_id: Some(InstrumentId::from("SUBMISSION.POLYMARKET")),
+            submission_order_side: Some(OrderSide::Sell),
+            submission_price: Some(0.49),
+            submission_quantity: Some(Quantity::new(7.0, 2)),
+            submission_client_order_id: Some(ClientOrderId::from("client-order-one")),
+            submission_blocked_reason: None,
+        };
+
+        let evidence = BoltV3ExitDecisionEvidence::from_exit_decision(
+            "strategy-one".to_string(),
+            1_201,
+            &fields,
+            ForcedFlatEvidenceInputs {
+                stale_reference_after_ms: Some(1_500),
+                last_reference_ts_ms: Some(1_000),
+                min_liquidity_required: Some("100".to_string()),
+                liquidity_available: Some("80".to_string()),
+                frozen: true,
+                metadata_matches_selection: true,
+                fast_venue_incoherent: false,
+            },
+        );
+
+        assert_eq!(evidence.spot_price.as_deref(), Some("3100.5"));
+        assert_eq!(evidence.spot_venue_name.as_deref(), Some("venue-one"));
+        assert!(evidence.fast_venue_available);
+        assert_eq!(evidence.reference_current_price.as_deref(), Some("3099.75"));
+        assert!(evidence.reference_current_price_available);
+        assert_eq!(evidence.interval_open.as_deref(), Some("3100"));
+        assert_eq!(evidence.fair_probability_up.as_deref(), Some("0.55"));
+        assert_eq!(evidence.fair_probability_down.as_deref(), Some("0.45"));
+        assert_eq!(
+            evidence.uncertainty_band_probability.as_deref(),
+            Some("0.02")
+        );
+        assert_eq!(evidence.up_fee_bps.as_deref(), Some("1.25"));
+        assert_eq!(evidence.down_fee_bps.as_deref(), Some("2.5"));
+        assert_eq!(
+            evidence.submission_order_side,
+            Some(OrderSide::Sell.to_string())
+        );
+        assert_eq!(evidence.submission_price.as_deref(), Some("0.49"));
+        assert_eq!(
+            evidence.submission_quantity,
+            Some(Quantity::new(7.0, 2).to_string())
+        );
     }
 }

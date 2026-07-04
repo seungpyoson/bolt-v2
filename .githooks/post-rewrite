@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-_entire_stdin="$(mktemp "${TMPDIR:-/tmp}/entire-post-rewrite.XXXXXX")"
-cat > "$_entire_stdin"
-trap 'rm -f "$_entire_stdin"' EXIT
-
-# Entire CLI hooks
-# Post-rewrite hook: remap session linkage after amend/rebase rewrites.
-if command -v entire >/dev/null 2>&1; then entire hooks git post-rewrite "$1" < "$_entire_stdin" 2>/dev/null || true; else :; fi
+# Entire CLI hooks - fail-silent: if we can't stage stdin, skip Entire entirely.
+_entire_stdin="$(mktemp "${TMPDIR:-/tmp}/entire-post-rewrite.XXXXXX" 2>/dev/null || true)"
+if [ -n "$_entire_stdin" ]; then
+    trap 'rm -f "$_entire_stdin"' EXIT
+    cat > "$_entire_stdin"
+    # Post-rewrite hook: remap session linkage after amend/rebase rewrites.
+    if command -v entire >/dev/null 2>&1; then
+        entire hooks git post-rewrite "$1" < "$_entire_stdin" 2>/dev/null || true
+    fi
+fi
 
 # clean-merged-managed
 # clean-merged: post-rewrite hook.

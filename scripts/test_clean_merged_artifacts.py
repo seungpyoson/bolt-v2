@@ -1423,9 +1423,35 @@ git config "remote.${{clean_merged_remote}}.prune" true
         source = (REPO_ROOT / ".githooks" / "post-rewrite").read_text(encoding="utf-8")
 
         self.assertIn("# Entire CLI hooks", source)
+        self.assertIn(
+            '_entire_stdin="$(mktemp "${TMPDIR:-/tmp}/entire-post-rewrite.XXXXXX" '
+            '2>/dev/null || true)"',
+            source,
+        )
+        self.assertIn('if [ -n "$_entire_stdin" ]; then', source)
         self.assertIn('entire hooks git post-rewrite "$1" < "$_entire_stdin"', source)
         self.assertIn("clean-merged Lane H dispatch", source)
         self.assertNotIn("post-rewrite.pre-entire", source)
+
+    def test_post_rewrite_stays_silent_when_mktemp_fails(self) -> None:
+        hook = self.work / ".git" / "hooks" / "post-rewrite"
+        shutil.copy2(REPO_ROOT / ".githooks" / "post-rewrite", hook)
+
+        fake_bin = self.tmp / "fake-bin"
+        fake_bin.mkdir()
+        failing_mktemp = fake_bin / "mktemp"
+        failing_mktemp.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        failing_mktemp.chmod(0o755)
+
+        proc = _run(
+            [str(hook), "amend"],
+            cwd=self.work,
+            env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            check=False,
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stderr, "")
 
 
 # ---------------------------------------------------------------------------

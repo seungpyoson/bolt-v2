@@ -396,53 +396,51 @@ fn validate_runtime_bounds(
     inputs: RuntimeBoundInputs,
     errors: &mut Vec<ValidationError>,
 ) {
-    if let Some(trade_flow_window_secs) = inputs.trade_flow_window_secs {
-        if trade_flow_window_secs
+    if let Some(trade_flow_window_secs) = inputs.trade_flow_window_secs
+        && trade_flow_window_secs
             .checked_mul(MILLIS_PER_SECOND_U64)
             .is_none()
-        {
-            errors.push(ValidationError {
-                field: format!("{field_prefix}.{TRADE_FLOW_WINDOW_SECS_FIELD}"),
-                code: CONVERSION_OVERFLOW_CODE,
-                message: format!(
-                    "({trade_flow_window_secs}) must be small enough that its second-to-millisecond conversion does not overflow u64"
-                ),
-            });
-        }
+    {
+        errors.push(ValidationError {
+            field: format!("{field_prefix}.{TRADE_FLOW_WINDOW_SECS_FIELD}"),
+            code: CONVERSION_OVERFLOW_CODE,
+            message: format!(
+                "({trade_flow_window_secs}) must be small enough that its second-to-millisecond conversion does not overflow u64"
+            ),
+        });
     }
     if let (Some(mu_min_classified_samples), Some(trade_flow_max_samples)) = (
         inputs.mu_min_classified_samples,
         inputs.trade_flow_max_samples,
-    ) {
-        if mu_min_classified_samples > trade_flow_max_samples {
-            errors.push(ValidationError {
-                field: format!("{field_prefix}.{MU_MIN_CLASSIFIED_SAMPLES_FIELD}"),
-                code: UNSATISFIABLE_WARMUP_CODE,
-                message: format!(
-                    "({mu_min_classified_samples}) must be <= {TRADE_FLOW_MAX_SAMPLES_FIELD} ({trade_flow_max_samples})"
-                ),
-            });
-        }
+    ) && mu_min_classified_samples > trade_flow_max_samples
+    {
+        errors.push(ValidationError {
+            field: format!("{field_prefix}.{MU_MIN_CLASSIFIED_SAMPLES_FIELD}"),
+            code: UNSATISFIABLE_WARMUP_CODE,
+            message: format!(
+                "({mu_min_classified_samples}) must be <= {TRADE_FLOW_MAX_SAMPLES_FIELD} ({trade_flow_max_samples})"
+            ),
+        });
     }
-    if let Some(mu_min_floor) = inputs.mu_min_floor {
-        if !is_positive_finite(mu_min_floor) || mu_min_floor >= UNIT_F64 {
-            errors.push(ValidationError {
-                field: format!("{field_prefix}.{MU_MIN_FLOOR_FIELD}"),
-                code: VALUE_OUT_OF_RANGE_CODE,
-                message: format!("({mu_min_floor}) must be finite and in the open interval (0, 1)"),
-            });
-        }
+    if let Some(mu_min_floor) = inputs.mu_min_floor
+        && (!is_positive_finite(mu_min_floor) || mu_min_floor >= UNIT_F64)
+    {
+        errors.push(ValidationError {
+            field: format!("{field_prefix}.{MU_MIN_FLOOR_FIELD}"),
+            code: VALUE_OUT_OF_RANGE_CODE,
+            message: format!("({mu_min_floor}) must be finite and in the open interval (0, 1)"),
+        });
     }
-    if let Some(quote_interval_ms) = inputs.quote_interval_ms {
-        if quote_interval_ms.checked_mul(NANOS_PER_MILLI_U64).is_none() {
-            errors.push(ValidationError {
-                field: format!("{field_prefix}.{QUOTE_INTERVAL_MS_FIELD}"),
-                code: CONVERSION_OVERFLOW_CODE,
-                message: format!(
-                    "({quote_interval_ms}) must be small enough that its millisecond-to-nanosecond conversion does not overflow u64"
-                ),
-            });
-        }
+    if let Some(quote_interval_ms) = inputs.quote_interval_ms
+        && quote_interval_ms.checked_mul(NANOS_PER_MILLI_U64).is_none()
+    {
+        errors.push(ValidationError {
+            field: format!("{field_prefix}.{QUOTE_INTERVAL_MS_FIELD}"),
+            code: CONVERSION_OVERFLOW_CODE,
+            message: format!(
+                "({quote_interval_ms}) must be small enough that its millisecond-to-nanosecond conversion does not overflow u64"
+            ),
+        });
     }
     validate_market_portfolio_bounds(field_prefix, inputs, errors);
 }

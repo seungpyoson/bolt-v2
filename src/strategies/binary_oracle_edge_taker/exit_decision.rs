@@ -121,6 +121,7 @@ pub(super) struct ExitEvaluationLogFields {
     pub(super) forced_flat_reasons: Vec<ForcedFlatReason>,
     pub(super) spot_price: Option<f64>,
     pub(super) spot_venue_name: Option<String>,
+    pub(super) fast_venue_available: bool,
     pub(super) reference_current_price: Option<f64>,
     pub(super) interval_open: Option<f64>,
     pub(super) seconds_to_expiry: Option<u64>,
@@ -196,6 +197,19 @@ impl BoltV3ExitDecisionEvidence {
                 None => BoltV3ExitDecisionOutcome::Blocked,
             }
         };
+        let spot_price = option_evidence_number(fields.spot_price);
+        let reference_current_price = option_evidence_number(fields.reference_current_price);
+        let interval_open = option_evidence_number(fields.interval_open);
+        let fair_probability_up = option_evidence_number(fields.fair_probability_up);
+        let fair_probability_down = option_evidence_number(fields.fair_probability_down);
+        let uncertainty_band_probability =
+            option_evidence_number(fields.uncertainty_band_probability);
+        let up_fee_bps = option_evidence_number(fields.up_fee_bps);
+        let down_fee_bps = option_evidence_number(fields.down_fee_bps);
+        let hold_ev_bps = option_evidence_number(fields.hold_ev_bps);
+        let exit_ev_bps = option_evidence_number(fields.exit_ev_bps);
+        let realized_vol = option_evidence_number(fields.realized_vol);
+        let submission_price = option_evidence_number(fields.submission_price);
         Self {
             strategy_id,
             market_id: fields.market_id.clone(),
@@ -211,22 +225,20 @@ impl BoltV3ExitDecisionEvidence {
                 .iter()
                 .map(forced_flat_reason_to_evidence)
                 .collect(),
-            spot_price: option_evidence_number(fields.spot_price),
+            spot_price,
             spot_venue_name: fields.spot_venue_name.clone(),
-            fast_venue_available: fields.spot_price.is_some(),
-            reference_current_price: option_evidence_number(fields.reference_current_price),
-            reference_current_price_available: fields.reference_current_price.is_some(),
-            interval_open: option_evidence_number(fields.interval_open),
-            fair_probability_up: option_evidence_number(fields.fair_probability_up),
-            fair_probability_down: option_evidence_number(fields.fair_probability_down),
-            uncertainty_band_probability: option_evidence_number(
-                fields.uncertainty_band_probability,
-            ),
-            up_fee_bps: option_evidence_number(fields.up_fee_bps),
-            down_fee_bps: option_evidence_number(fields.down_fee_bps),
-            hold_ev_bps: option_evidence_number(fields.hold_ev_bps),
-            exit_ev_bps: option_evidence_number(fields.exit_ev_bps),
-            realized_vol: option_evidence_number(fields.realized_vol),
+            fast_venue_available: fields.fast_venue_available,
+            reference_current_price_available: reference_current_price.is_some(),
+            reference_current_price,
+            interval_open,
+            fair_probability_up,
+            fair_probability_down,
+            uncertainty_band_probability,
+            up_fee_bps,
+            down_fee_bps,
+            hold_ev_bps,
+            exit_ev_bps,
+            realized_vol,
             realized_vol_source_venue: fields.realized_vol_source_venue.clone(),
             realized_vol_source_ts_ms: fields.realized_vol_source_ts_ms,
             exit_eval_now_ms: fields.exit_eval_now_ms,
@@ -249,7 +261,7 @@ impl BoltV3ExitDecisionEvidence {
             submission_order_side: fields
                 .submission_order_side
                 .map(|order_side| order_side.to_string()),
-            submission_price: option_evidence_number(fields.submission_price),
+            submission_price,
             submission_quantity: fields
                 .submission_quantity
                 .map(|quantity| quantity.to_string()),
@@ -357,6 +369,7 @@ mod tests {
             forced_flat_reasons: vec![ForcedFlatReason::Freeze],
             spot_price: Some(3_100.5),
             spot_venue_name: Some("venue-one".to_string()),
+            fast_venue_available: true,
             reference_current_price: Some(3_099.75),
             interval_open: Some(3_100.0),
             seconds_to_expiry: Some(240),

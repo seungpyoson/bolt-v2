@@ -124,6 +124,8 @@ mod backtesting_vertical_slice_source_universe_conversion_run_plan;
 mod backtesting_vertical_slice_source_universe_conversion_work_order;
 #[path = "backtesting_vertical_slice_source_universe_execution_acceptance.rs"]
 mod backtesting_vertical_slice_source_universe_execution_acceptance;
+#[path = "backtesting_vertical_slice_source_universe_artifact_refs.rs"]
+mod backtesting_vertical_slice_source_universe_artifact_refs;
 #[path = "backtesting_vertical_slice_source_universe_execution_pack.rs"]
 mod backtesting_vertical_slice_source_universe_execution_pack;
 #[path = "backtesting_vertical_slice_source_universe_object_gates.rs"]

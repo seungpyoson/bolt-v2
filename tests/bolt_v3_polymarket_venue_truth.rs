@@ -12,7 +12,7 @@ use bolt_v2::bolt_v3_venue_truth::{
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     enums::{LiquiditySide, OrderSide, OrderType},
-    events::{OrderAccepted, OrderDenied, OrderEventAny, OrderFilled},
+    events::{OrderAccepted, OrderCanceled, OrderDenied, OrderEventAny, OrderFilled},
     identifiers::{
         AccountId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId, VenueOrderId,
     },
@@ -532,6 +532,127 @@ fn pending_capture_accepts_after_interleaved_fill_at_next_capture_fence() {
 }
 
 #[test]
+fn new_open_order_cancel_before_judgment_accepts_at_capture_fence() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("baseline should be accepted");
+
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Accepted(order_accepted_event(
+            "client-order-1",
+            "venue-order-1",
+            "condition-token123.POLYMARKET",
+            1_100,
+        )),
+    );
+    reconciler.record_snapshot_completion_without_processing(snapshot_with_order(
+        1_200,
+        Decimal::new(50_000_000, 0),
+        Decimal::ZERO,
+        0.0,
+    ));
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Canceled(order_canceled_event(
+            "client-order-1",
+            "venue-order-1",
+            "condition-token123.POLYMARKET",
+            1_250,
+        )),
+    );
+
+    let results = reconciler
+        .record_snapshot_completion(empty_snapshot(1_300, Decimal::new(50_000_000, 0)))
+        .expect("cancel after capture completion must not erase the explanation for that capture");
+
+    assert!(
+        results.iter().any(|result| result.capture_number == 2
+            && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 2 must accept the new open order shown before the cancel"
+    );
+    assert!(
+        results.iter().any(|result| result.capture_number == 3
+            && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 3 must accept the order disappearance explained by the cancel"
+    );
+}
+
+#[test]
+fn partial_fill_cancel_before_judgment_accepts_at_capture_fence() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("baseline should be accepted");
+
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Accepted(order_accepted_event(
+            "client-order-1",
+            "venue-order-1",
+            "condition-token123.POLYMARKET",
+            1_100,
+        )),
+    );
+    reconciler
+        .record_snapshot_completion(snapshot_with_order(
+            1_150,
+            Decimal::new(50_000_000, 0),
+            Decimal::ZERO,
+            0.0,
+        ))
+        .expect("open order baseline should be accepted");
+
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_200,
+        )),
+    );
+    reconciler.record_snapshot_completion_without_processing(snapshot_with_order(
+        1_250,
+        Decimal::new(48_400_000, 0),
+        Decimal::new(4, 0),
+        4.0,
+    ));
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Canceled(order_canceled_event(
+            "client-order-1",
+            "venue-order-1",
+            "condition-token123.POLYMARKET",
+            1_275,
+        )),
+    );
+
+    let results = reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_300,
+            Decimal::new(48_400_000, 0),
+            4.0,
+        ))
+        .expect("cancel after capture completion must not erase the partial-fill explanation");
+
+    assert!(
+        results.iter().any(|result| result.capture_number == 3
+            && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 3 must accept the matched-size and position deltas shown before the cancel"
+    );
+    assert!(
+        results.iter().any(|result| result.capture_number == 4
+            && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 4 must accept the order disappearance explained by the cancel"
+    );
+}
+
+#[test]
 fn positions_fresher_than_balance_skew_pends_then_explains_at_fence() {
     let mut reconciler = VenueTruthReconciler::new();
     reconciler
@@ -801,6 +922,63 @@ fn filled_order_event_does_not_explain_unrelated_collateral_delta() {
 }
 
 #[test]
+fn unexplained_balance_with_explained_allowance_reports_balance_evidence() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .reconcile_snapshot(empty_snapshot_with_allowance(
+            1_000,
+            Decimal::new(50_000_000, 0),
+            Decimal::new(40_000_000, 0),
+        ))
+        .expect("initial venue truth establishes the baseline");
+
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_100,
+        )),
+    );
+
+    assert_eq!(
+        reconciler
+            .record_snapshot_completion(snapshot_with_position_and_allowance(
+                1_200,
+                Decimal::new(51_000_000, 0),
+                Decimal::new(38_400_000, 0),
+                4.0,
+            ))
+            .expect("unexplained balance movement should pend until the capture fence")[0]
+            .outcome,
+        VenueTruthReconciliation::DeltaPending
+    );
+
+    let divergence = reconciler
+        .record_snapshot_completion(snapshot_with_position_and_allowance(
+            1_300,
+            Decimal::new(51_000_000, 0),
+            Decimal::new(38_400_000, 0),
+            4.0,
+        ))
+        .expect_err("unexplained balance movement must halt loudly at its fence");
+
+    assert_eq!(
+        divergence.kind,
+        VenueTruthDivergenceKind::UnexplainedCollateralDelta
+    );
+    assert_eq!(divergence.field, "collateral_balance");
+    assert_eq!(
+        divergence.missing_explanation,
+        "unexplained_collateral_balance_delta"
+    );
+}
+
+#[test]
 fn collateral_only_operator_transfer_is_unexplainable() {
     let mut reconciler = VenueTruthReconciler::new();
     reconciler
@@ -1062,5 +1240,25 @@ fn order_denied_event(client_order_id: &str, instrument_id: &str, ts_event: u64)
         UUID4::default(),
         UnixNanos::from(ts_event),
         UnixNanos::from(ts_event),
+    )
+}
+
+fn order_canceled_event(
+    client_order_id: &str,
+    venue_order_id: &str,
+    instrument_id: &str,
+    ts_event: u64,
+) -> OrderCanceled {
+    OrderCanceled::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from(instrument_id),
+        ClientOrderId::from(client_order_id),
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        false,
+        Some(VenueOrderId::from(venue_order_id)),
+        Some(AccountId::from("POLYMARKET-001")),
     )
 }

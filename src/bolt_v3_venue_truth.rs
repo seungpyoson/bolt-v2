@@ -113,6 +113,36 @@ pub enum VenueTruthDivergenceKind {
     UnexplainedCollateralDelta,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VenueTruthCollateralDivergenceField {
+    Balance,
+    Allowance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VenueTruthDivergenceCause {
+    kind: VenueTruthDivergenceKind,
+    collateral_field: Option<VenueTruthCollateralDivergenceField>,
+}
+
+impl VenueTruthDivergenceCause {
+    fn collateral(field: VenueTruthCollateralDivergenceField) -> Self {
+        Self {
+            kind: VenueTruthDivergenceKind::UnexplainedCollateralDelta,
+            collateral_field: Some(field),
+        }
+    }
+}
+
+impl From<VenueTruthDivergenceKind> for VenueTruthDivergenceCause {
+    fn from(kind: VenueTruthDivergenceKind) -> Self {
+        Self {
+            kind,
+            collateral_field: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VenueTruthDivergenceAlarmClass {
@@ -352,9 +382,9 @@ impl VenueTruthReconciler {
                         results.push(result);
                         continue;
                     }
-                    Err(kind) => {
+                    Err(cause) => {
                         return Err(Box::new(self.classified_divergence(
-                            kind,
+                            cause,
                             &pending.capture,
                             pending.event_count_at_first_judgment,
                             pending.venue_event_count_at_first_judgment,
@@ -372,12 +402,12 @@ impl VenueTruthReconciler {
                 .is_some_and(|next| next.capture_number > capture.capture_number);
             match self.try_accept_capture(&capture, fence_already_completed) {
                 Ok(result) => results.push(result),
-                Err(kind)
+                Err(cause)
                     if fence_already_completed
-                        || kind == VenueTruthDivergenceKind::OrderingViolation =>
+                        || cause.kind == VenueTruthDivergenceKind::OrderingViolation =>
                 {
                     return Err(Box::new(self.classified_divergence(
-                        kind,
+                        cause,
                         &capture,
                         capture.event_count_at_completion,
                         capture.venue_event_count_at_completion,
@@ -422,7 +452,7 @@ impl VenueTruthReconciler {
         &mut self,
         capture: &VenueTruthCompletedCapture,
         allow_deferred_collateral: bool,
-    ) -> Result<VenueTruthReconciliationResult, VenueTruthDivergenceKind> {
+    ) -> Result<VenueTruthReconciliationResult, VenueTruthDivergenceCause> {
         let snapshot = capture.snapshot.clone();
         let Some(previous) = &self.previous_snapshot else {
             self.event_projection
@@ -435,12 +465,14 @@ impl VenueTruthReconciler {
             });
         };
         if previous.account_id != snapshot.account_id {
-            return Err(VenueTruthDivergenceKind::AccountChanged);
+            return Err(VenueTruthDivergenceKind::AccountChanged.into());
         }
 
         let mut projection = self.event_projection.clone();
-        explain_open_order_delta(previous, &snapshot, &mut projection)?;
-        explain_position_delta(previous, &snapshot, &mut projection)?;
+        explain_open_order_delta(previous, &snapshot, &mut projection)
+            .map_err(VenueTruthDivergenceCause::from)?;
+        explain_position_delta(previous, &snapshot, &mut projection)
+            .map_err(VenueTruthDivergenceCause::from)?;
         explain_collateral_delta(
             previous,
             &snapshot,
@@ -448,7 +480,7 @@ impl VenueTruthReconciler {
             allow_deferred_collateral,
         )?;
         if projection.ordering_violation {
-            return Err(VenueTruthDivergenceKind::OrderingViolation);
+            return Err(VenueTruthDivergenceKind::OrderingViolation.into());
         }
 
         projection.prune_after_capture_acceptance(&snapshot);
@@ -463,7 +495,7 @@ impl VenueTruthReconciler {
 
     fn classified_divergence(
         &self,
-        kind: VenueTruthDivergenceKind,
+        cause: VenueTruthDivergenceCause,
         capture: &VenueTruthCompletedCapture,
         _earlier_event_count: u64,
         earlier_venue_event_count: u64,
@@ -476,7 +508,7 @@ impl VenueTruthReconciler {
             VenueTruthDivergenceAlarmClass::TrueDivergence
         };
         divergence(
-            kind,
+            cause,
             alarm_class,
             self.previous_snapshot.as_ref(),
             &capture.snapshot,
@@ -564,10 +596,7 @@ impl VenueTruthEventProjection {
                     .or_else(|| self.client_to_venue_order_id.get(&client_order_id).copied())
                 {
                     self.terminal_venue_order_ids.insert(venue_order_id);
-                    self.accepted_venue_order_ids.remove(&venue_order_id);
-                    self.fill_quantity_by_venue_order_id.remove(&venue_order_id);
                 }
-                self.client_to_venue_order_id.remove(&client_order_id);
             }
         }
     }
@@ -580,6 +609,10 @@ impl VenueTruthEventProjection {
             .collect::<BTreeSet<_>>();
         self.terminal_venue_order_ids
             .retain(|venue_order_id| open_venue_order_ids.contains(venue_order_id));
+        self.accepted_venue_order_ids
+            .retain(|venue_order_id| open_venue_order_ids.contains(venue_order_id));
+        self.fill_quantity_by_venue_order_id
+            .retain(|venue_order_id, _| open_venue_order_ids.contains(venue_order_id));
         let retained_terminal_venue_order_ids = self.terminal_venue_order_ids.clone();
         let accepted_venue_order_ids = self.accepted_venue_order_ids.clone();
         let fill_venue_order_ids = self
@@ -811,13 +844,15 @@ fn explain_collateral_delta(
     current: &VenueTruthSnapshot,
     projection: &mut VenueTruthEventProjection,
     allow_deferred_collateral: bool,
-) -> Result<(), VenueTruthDivergenceKind> {
+) -> Result<(), VenueTruthDivergenceCause> {
     let collateral_balance_delta =
         current.collateral_balance.as_decimal() - previous.collateral_balance.as_decimal();
     if !projection
         .consume_collateral_balance_delta(collateral_balance_delta, allow_deferred_collateral)
     {
-        return Err(VenueTruthDivergenceKind::UnexplainedCollateralDelta);
+        return Err(VenueTruthDivergenceCause::collateral(
+            VenueTruthCollateralDivergenceField::Balance,
+        ));
     }
     // Allowance is an operator-changeable on-chain approval, not a venue-invariant fact.
     // The 2026-07-04 evidence search found no captured allowance-spanning-fill artifact,
@@ -826,7 +861,9 @@ fn explain_collateral_delta(
     let collateral_allowance_delta =
         current.collateral_allowance.as_decimal() - previous.collateral_allowance.as_decimal();
     if !projection.consume_collateral_allowance_delta(collateral_allowance_delta) {
-        return Err(VenueTruthDivergenceKind::UnexplainedCollateralDelta);
+        return Err(VenueTruthDivergenceCause::collateral(
+            VenueTruthCollateralDivergenceField::Allowance,
+        ));
     }
     Ok(())
 }
@@ -857,15 +894,15 @@ fn collateral_allowance_delta_for_fill_event(
 }
 
 fn divergence(
-    kind: VenueTruthDivergenceKind,
+    cause: VenueTruthDivergenceCause,
     alarm_class: VenueTruthDivergenceAlarmClass,
     previous: Option<&VenueTruthSnapshot>,
     current: &VenueTruthSnapshot,
 ) -> VenueTruthDivergence {
     let (field, venue_value, prior_accepted_value, missing_explanation) =
-        divergence_evidence_fields(kind, previous, current);
+        divergence_evidence_fields(cause, previous, current);
     VenueTruthDivergence {
-        kind,
+        kind: cause.kind,
         alarm_class,
         previous_captured_at: previous.map(|snapshot| snapshot.captured_at),
         current_captured_at: current.captured_at,
@@ -878,11 +915,11 @@ fn divergence(
 }
 
 fn divergence_evidence_fields(
-    kind: VenueTruthDivergenceKind,
+    cause: VenueTruthDivergenceCause,
     previous: Option<&VenueTruthSnapshot>,
     current: &VenueTruthSnapshot,
 ) -> (String, String, String, String) {
-    match kind {
+    match cause.kind {
         VenueTruthDivergenceKind::AccountChanged => (
             VENUE_TRUTH_DIVERGENCE_FIELD_ACCOUNT_ID.to_string(),
             current.account_id.to_string(),
@@ -913,29 +950,27 @@ fn divergence_evidence_fields(
             }),
             VENUE_TRUTH_DIVERGENCE_REASON_POSITIONS.to_string(),
         ),
-        VenueTruthDivergenceKind::UnexplainedCollateralDelta => {
-            if previous.is_some_and(|snapshot| {
-                snapshot.collateral_allowance != current.collateral_allowance
-            }) {
-                (
-                    VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_ALLOWANCE.to_string(),
-                    current.collateral_allowance.as_decimal().to_string(),
-                    prior_accepted_value(previous, |snapshot| {
-                        snapshot.collateral_allowance.as_decimal().to_string()
-                    }),
-                    VENUE_TRUTH_DIVERGENCE_REASON_COLLATERAL_ALLOWANCE.to_string(),
-                )
-            } else {
-                (
-                    VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_BALANCE.to_string(),
-                    current.collateral_balance.as_decimal().to_string(),
-                    prior_accepted_value(previous, |snapshot| {
-                        snapshot.collateral_balance.as_decimal().to_string()
-                    }),
-                    VENUE_TRUTH_DIVERGENCE_REASON_COLLATERAL_BALANCE.to_string(),
-                )
-            }
-        }
+        VenueTruthDivergenceKind::UnexplainedCollateralDelta => match cause
+            .collateral_field
+            .unwrap_or(VenueTruthCollateralDivergenceField::Balance)
+        {
+            VenueTruthCollateralDivergenceField::Allowance => (
+                VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_ALLOWANCE.to_string(),
+                current.collateral_allowance.as_decimal().to_string(),
+                prior_accepted_value(previous, |snapshot| {
+                    snapshot.collateral_allowance.as_decimal().to_string()
+                }),
+                VENUE_TRUTH_DIVERGENCE_REASON_COLLATERAL_ALLOWANCE.to_string(),
+            ),
+            VenueTruthCollateralDivergenceField::Balance => (
+                VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_BALANCE.to_string(),
+                current.collateral_balance.as_decimal().to_string(),
+                prior_accepted_value(previous, |snapshot| {
+                    snapshot.collateral_balance.as_decimal().to_string()
+                }),
+                VENUE_TRUTH_DIVERGENCE_REASON_COLLATERAL_BALANCE.to_string(),
+            ),
+        },
     }
 }
 
@@ -999,7 +1034,7 @@ mod tests {
     use nautilus_model::types::Currency;
 
     #[test]
-    fn terminal_and_capture_acceptance_prune_projection_maps() {
+    fn terminal_marks_only_and_capture_acceptance_prunes_projection_maps() {
         let mut reconciler = VenueTruthReconciler::new();
         let venue_order_id = VenueOrderId::from("venue-order-1");
         reconciler.record_order_event(VenueTruthOrderEvent::Accepted {
@@ -1044,25 +1079,25 @@ mod tests {
         });
 
         assert!(
-            !reconciler
+            reconciler
                 .event_projection
                 .client_to_venue_order_id
                 .contains_key("client-order-1"),
-            "terminal observation should clear the client-to-venue projection"
+            "terminal observation must keep explanation state until the snapshot boundary"
         );
         assert!(
-            !reconciler
+            reconciler
                 .event_projection
                 .accepted_venue_order_ids
                 .contains(&venue_order_id),
-            "terminal observation should clear stale accepted-order projection"
+            "terminal observation must keep accepted-order explanation until the snapshot boundary"
         );
         assert!(
-            !reconciler
+            reconciler
                 .event_projection
                 .fill_quantity_by_venue_order_id
                 .contains_key(&venue_order_id),
-            "terminal observation should clear stale fill-quantity projection"
+            "terminal observation must keep fill explanation until the snapshot boundary"
         );
         assert!(
             reconciler
@@ -1085,6 +1120,82 @@ mod tests {
                 .is_empty(),
             "accepted capture boundary should clear terminal markers for non-open venue orders"
         );
+        assert!(
+            !reconciler
+                .event_projection
+                .client_to_venue_order_id
+                .contains_key("client-order-1"),
+            "accepted capture boundary should clear stale client-to-venue projection"
+        );
+        assert!(
+            !reconciler
+                .event_projection
+                .accepted_venue_order_ids
+                .contains(&venue_order_id),
+            "accepted capture boundary should clear stale accepted-order projection"
+        );
+        assert!(
+            !reconciler
+                .event_projection
+                .fill_quantity_by_venue_order_id
+                .contains_key(&venue_order_id),
+            "accepted capture boundary should clear stale fill-quantity projection"
+        );
+    }
+
+    #[test]
+    fn fok_fill_projection_maps_prune_at_acceptance_boundary_without_terminal() {
+        let mut reconciler = VenueTruthReconciler::new();
+        let venue_order_id = VenueOrderId::from("venue-order-1");
+        assert_eq!(
+            reconciler
+                .reconcile_snapshot(empty_snapshot(1))
+                .expect("baseline should reconcile"),
+            VenueTruthReconciliation::BaselineAccepted
+        );
+        reconciler.record_order_event(VenueTruthOrderEvent::Accepted {
+            client_order_id: "client-order-1".to_string(),
+            venue_order_id,
+            observed_at_ns: UnixNanos::from(2),
+        });
+        reconciler.record_order_event(VenueTruthOrderEvent::Filled {
+            venue_order_id,
+            product_id: "product-1".to_string(),
+            side: OrderSide::Buy,
+            quantity: Decimal::new(1, 0),
+            fill_price: Decimal::new(5, 1),
+            fee: Decimal::ZERO,
+            observed_at_ns: UnixNanos::from(3),
+        });
+
+        assert_eq!(
+            reconciler
+                .reconcile_snapshot(snapshot_with_position(4))
+                .expect("FOK fill should reconcile through position and collateral deltas"),
+            VenueTruthReconciliation::DeltaExplained
+        );
+
+        assert!(
+            reconciler
+                .event_projection
+                .accepted_venue_order_ids
+                .is_empty(),
+            "FOK accepted-order projection must not leak after the accepted snapshot boundary"
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .fill_quantity_by_venue_order_id
+                .is_empty(),
+            "FOK fill-quantity projection must not leak after the accepted snapshot boundary"
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .client_to_venue_order_id
+                .is_empty(),
+            "FOK client mapping must not leak after the accepted snapshot boundary"
+        );
     }
 
     fn empty_snapshot(captured_at: u64) -> VenueTruthSnapshot {
@@ -1096,6 +1207,20 @@ mod tests {
             collateral_allowance: Money::new(100.0, currency),
             open_orders: BTreeMap::new(),
             positions_by_product_id: BTreeMap::new(),
+        }
+    }
+
+    fn snapshot_with_position(captured_at: u64) -> VenueTruthSnapshot {
+        let currency = Currency::from("USD");
+        let mut positions_by_product_id = BTreeMap::new();
+        positions_by_product_id.insert("product-1".to_string(), Decimal::new(1, 0));
+        VenueTruthSnapshot {
+            captured_at: UnixNanos::from(captured_at),
+            account_id: AccountId::from("ACCOUNT-001"),
+            collateral_balance: Money::new(99.5, currency),
+            collateral_allowance: Money::new(100.0, currency),
+            open_orders: BTreeMap::new(),
+            positions_by_product_id,
         }
     }
 }

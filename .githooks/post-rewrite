@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
+_entire_stdin="$(mktemp "${TMPDIR:-/tmp}/entire-post-rewrite.XXXXXX")"
+cat > "$_entire_stdin"
+trap 'rm -f "$_entire_stdin"' EXIT
+
+# Entire CLI hooks
+# Post-rewrite hook: remap session linkage after amend/rebase rewrites.
+if command -v entire >/dev/null 2>&1; then entire hooks git post-rewrite "$1" < "$_entire_stdin" 2>/dev/null || true; else :; fi
+
 # clean-merged-managed
 # clean-merged: post-rewrite hook.
 #
 # Fires after `git pull --rebase` with divergent local (actual rebase, not FF),
 # `git rebase`, and `git commit --amend`. Covers the Lane H trigger gap when an
-# operator has pull.rebase=true and the local configured trunk has divergent commits.
+# operator has pull.rebase=true and the configured trunk has divergent commits.
 #
 # Never breaks the git op: every path exits 0.
 

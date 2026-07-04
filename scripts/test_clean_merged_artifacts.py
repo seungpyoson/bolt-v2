@@ -1419,6 +1419,14 @@ git config "remote.${{clean_merged_remote}}.prune" true
         self.assertNotIn("local main", source)
         self.assertIn("configured trunk", source)
 
+    def test_post_rewrite_adopts_entire_without_wrapper_split(self) -> None:
+        source = (REPO_ROOT / ".githooks" / "post-rewrite").read_text(encoding="utf-8")
+
+        self.assertIn("# Entire CLI hooks", source)
+        self.assertIn('entire hooks git post-rewrite "$1" < "$_entire_stdin"', source)
+        self.assertIn("clean-merged Lane H dispatch", source)
+        self.assertNotIn("post-rewrite.pre-entire", source)
+
 
 # ---------------------------------------------------------------------------
 # gh cache (A3)

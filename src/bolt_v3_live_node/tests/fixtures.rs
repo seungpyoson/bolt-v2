@@ -10,6 +10,27 @@ pub(super) fn loaded_config_with_submit_sizer_recovery(
     ))
     .expect("fixture config should load");
     loaded.strategies.clear();
+    enable_fixture_kill_switch_for_enforced_venue_truth(&mut loaded, temp_path);
+    loaded
+        .root
+        .risk
+        .capital_pools
+        .as_mut()
+        .expect("fixture should configure capital pools")[0]
+        .enforce_submit_admission = true;
+    loaded.root.persistence.catalog_directory = temp_path.to_string_lossy().to_string();
+    loaded
+        .root
+        .persistence
+        .decision_evidence
+        .recovery_evidence_max_bytes = Some(100_000);
+    loaded
+}
+
+pub(super) fn enable_fixture_kill_switch_for_enforced_venue_truth(
+    loaded: &mut LoadedBoltV3Config,
+    temp_path: &std::path::Path,
+) {
     loaded.root_path = temp_path.join("root.toml");
     let kill_switch = loaded
         .root
@@ -26,20 +47,6 @@ pub(super) fn loaded_config_with_submit_sizer_recovery(
     store
         .bootstrap_initial_armed_loss_snapshot()
         .expect("fixture kill switch state should bootstrap armed");
-    loaded
-        .root
-        .risk
-        .capital_pools
-        .as_mut()
-        .expect("fixture should configure capital pools")[0]
-        .enforce_submit_admission = true;
-    loaded.root.persistence.catalog_directory = temp_path.to_string_lossy().to_string();
-    loaded
-        .root
-        .persistence
-        .decision_evidence
-        .recovery_evidence_max_bytes = Some(100_000);
-    loaded
 }
 
 pub(super) fn fixture_submit_reservation_metadata(
@@ -330,6 +337,7 @@ pub(super) fn write_venue_spendability_source(
     collateral_allowance: &str,
 ) {
     let path = temp_path.join("venue-spendability-source.json");
+    enable_fixture_kill_switch_for_enforced_venue_truth(loaded, temp_path);
     let pool = loaded
         .root
         .risk

@@ -6727,13 +6727,7 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
 ACTIONLINT_WORKFLOW_REQUIRED_COMMANDS = (
     "python3 scripts/test_ci_storage_audit.py",
 )
-CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
-    "python3 scripts/test_ci_storage_audit.py",
-    "python3 scripts/test_ci_storage_tripwire.py",
-    "python3 scripts/test_root_bin_sidecars.py",
-    "python3 scripts/test_ci_input_sets.py",
-    "python3 scripts/test_rust_test_targets.py",
-)
+CI_LINT_WORKFLOW_RUNNER_COMMAND = "python3 scripts/run_ci_lint_suites.py"
 SOURCE_FENCE_STATIC_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/run_fences.py",
 )
@@ -6796,12 +6790,21 @@ def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
         gated_inner_recipe_name(recipes, public_name, inner_name, errors)
     if "ci-lint-workflow-inner" in recipes:
         ci_lint_inner_lines = active_recipe_lines(recipes, "ci-lint-workflow-inner")
-        for required_command in CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS:
-            command_count = sum(1 for line in ci_lint_inner_lines if required_command in line)
-            if command_count == 0:
-                errors.append(f"justfile ci-lint-workflow-inner must run {required_command}")
-            elif command_count > 1:
-                errors.append(f"justfile ci-lint-workflow-inner must run {required_command} exactly once")
+        runner_count = sum(1 for line in ci_lint_inner_lines if CI_LINT_WORKFLOW_RUNNER_COMMAND in line)
+        if runner_count == 0:
+            errors.append(f"justfile ci-lint-workflow-inner must run {CI_LINT_WORKFLOW_RUNNER_COMMAND}")
+        elif runner_count > 1:
+            errors.append(f"justfile ci-lint-workflow-inner must run {CI_LINT_WORKFLOW_RUNNER_COMMAND} exactly once")
+        import run_ci_lint_suites
+
+        suite_commands = tuple(" ".join(suite.command) for suite in run_ci_lint_suites.CI_LINT_SUITES)
+        for line in ci_lint_inner_lines:
+            if any(command in line for command in suite_commands):
+                errors.append(
+                    "justfile ci-lint-workflow-inner must not run CI lint suite commands outside "
+                    "scripts/run_ci_lint_suites.py"
+                )
+                break
     return errors
 
 

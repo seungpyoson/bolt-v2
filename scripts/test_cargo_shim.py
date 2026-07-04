@@ -3,7 +3,6 @@
 
 import os
 import plistlib
-import stat
 import subprocess
 import sys
 from importlib.machinery import SourceFileLoader
@@ -11,6 +10,7 @@ from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 
 import pytest
+from test_fixtures import write_executable, write_policy
 
 ROOT = Path(__file__).resolve().parents[1]
 SHIM = ROOT / "scripts" / "cargo-shim"
@@ -35,20 +35,14 @@ REFUSAL_LINES = [
 ]
 
 
-def _write_executable(path: Path, body: str) -> None:
-    path.write_text(body, encoding="utf-8")
-    path.chmod(path.stat().st_mode | stat.S_IXUSR)
-
-
 def _init_repo(path: Path, policy: str = POLICY) -> None:
-    (path / "ci").mkdir(parents=True)
-    (path / "ci" / "rust-verification.toml").write_text(policy, encoding="utf-8")
+    write_policy(path, policy_text=policy, write_justfile=False)
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
 
 
 def _fake_real_cargo(tmp_path: Path) -> Path:
     real = tmp_path / "real-cargo"
-    _write_executable(
+    write_executable(
         real,
         "#!/usr/bin/env sh\n"
         "echo real-cargo \"$@\"\n",
@@ -465,7 +459,7 @@ def test_resolve_real_cargo_falls_back_to_path_when_home_unavailable(tmp_path, m
     real_dir = tmp_path / "bin"
     real_dir.mkdir()
     real = real_dir / "cargo"
-    _write_executable(real, "#!/usr/bin/env sh\n")
+    write_executable(real, "#!/usr/bin/env sh\n")
 
     def fail_home():
         raise RuntimeError("home unavailable")

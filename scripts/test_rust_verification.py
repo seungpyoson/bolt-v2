@@ -14,6 +14,8 @@ import sys
 import tempfile
 import textwrap
 
+from test_fixtures import load_owner_module, write_executable, write_policy
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "rust_verification.py"
@@ -31,15 +33,6 @@ def run_owner(args: list[str], *, env: dict[str, str]) -> subprocess.CompletedPr
         stderr=subprocess.PIPE,
         check=False,
     )
-
-
-def load_owner_module() -> object:
-    spec = importlib.util.spec_from_file_location("rust_verification_under_test", SCRIPT)
-    if spec is None or spec.loader is None:
-        raise AssertionError("unable to load rust_verification.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def load_ci_provenance_module() -> object:
@@ -82,55 +75,6 @@ def assert_ci_provenance_gate_name_helpers_stay_in_parity() -> None:
         provenance_errors = provenance.gate_name_collision_errors(gate_names)
         if owner_errors != provenance_errors:
             raise AssertionError((gate_names, owner_errors, provenance_errors))
-
-
-def write_executable(path: pathlib.Path, body: str) -> None:
-    path.write_text(body, encoding="utf-8")
-    path.chmod(0o755)
-
-
-def write_policy(repo: pathlib.Path) -> None:
-    (repo / "ci").mkdir()
-    (repo / "ci" / "rust-verification.toml").write_text(
-        textwrap.dedent(
-            """\
-            schema_version = 2
-            project_id = "bolt-v2"
-            target_namespace = "bolt-v2"
-
-            [local_compile_policy]
-            enabled = true
-            allowed_ci_env = "GITHUB_ACTIONS"
-            break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
-            refused_managed_commands = ["test", "clippy", "build"]
-            refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]
-
-            [local_lane_policy]
-            enabled = true
-            allowed_ci_env = "GITHUB_ACTIONS"
-            lock_dir = "/tmp/rust-verification-lanes"
-            acquire_timeout_seconds = 1800
-            heartbeat_seconds = 15
-            poll_interval_seconds = 1
-
-            [commands]
-
-            [commands.test]
-            recipe = "managed-test"
-
-            [commands.clippy]
-            recipe = "managed-clippy"
-
-            [commands.build]
-            recipe = "managed-build"
-            artifact_layout = "cargo"
-            profile = "release"
-            target = "aarch64-unknown-linux-gnu"
-            """
-        ),
-        encoding="utf-8",
-    )
-    (repo / "justfile").write_text("", encoding="utf-8")
 
 
 def parse_log(path: pathlib.Path) -> dict[str, str]:

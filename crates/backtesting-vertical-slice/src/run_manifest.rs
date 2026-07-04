@@ -3544,6 +3544,14 @@ mod tests {
         synthetic_accepted_dataset_for_tests()
     }
 
+    fn binary_option_accepted_dataset() -> AcceptedDataset {
+        let mut accepted = accepted_dataset();
+        accepted.product_family = "prediction-market".to_string();
+        accepted.product_category = "binary-option".to_string();
+        accepted.fixture_type = FixtureType::BinaryOption;
+        accepted
+    }
+
     fn valid_manifest() -> BacktestingRunManifest {
         BacktestingRunManifest {
             manifest_schema_version: BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION.to_string(),
@@ -4882,7 +4890,7 @@ mod tests {
         let manifest = binary_oracle_maker_manifest();
 
         manifest
-            .validate(&accepted_dataset())
+            .validate(&binary_option_accepted_dataset())
             .expect("binary-oracle maker inline config should validate");
     }
 

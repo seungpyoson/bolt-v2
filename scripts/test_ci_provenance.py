@@ -470,6 +470,7 @@ fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
 _SCRIPT_MODULE = None
 
 
+# load_script() returns a cached module. Any test that mutates module attributes MUST restore them in try/finally, or use fresh_load_script() for an isolated copy.
 def fresh_load_script():
     if not SCRIPT_PATH.exists():
         raise AssertionError(f"missing script: {SCRIPT_PATH}")

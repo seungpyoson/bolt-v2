@@ -856,12 +856,26 @@ def process_command_for_pid(pid: int) -> str | None:
     return command if result.returncode == 0 and command else None
 
 
+def process_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def cache_lock_holder_description(path: pathlib.Path) -> str:
     holder = read_cache_lock_holder(path)
     pid = holder.get("pid")
     cmdline = holder.get("cmdline")
     parts: list[str] = []
     if isinstance(pid, int):
+        if not process_is_running(pid):
+            if isinstance(cmdline, str) and cmdline:
+                return f"stale metadata: pid {pid} (no longer running), last cmdline {cmdline!r}"
+            return f"stale metadata: pid {pid} (no longer running)"
         parts.append(f"pid {pid}")
         if not isinstance(cmdline, str) or not cmdline:
             cmdline = process_command_for_pid(pid)
@@ -882,6 +896,7 @@ def cache_lock(policy: dict[str, Any], *, exclusive: bool) -> Any:
         mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
         started = time.monotonic()
         last_heartbeat = started
+        deadline_reached = False
         while True:
             try:
                 fcntl.flock(handle.fileno(), mode | fcntl.LOCK_NB)
@@ -895,10 +910,15 @@ def cache_lock(policy: dict[str, Any], *, exclusive: bool) -> Any:
                 now = time.monotonic()
                 waited = now - started
                 holder = cache_lock_holder_description(path)
-                if waited >= timeout:
+                if deadline_reached or waited >= timeout:
                     raise CacheLockTimeoutError(
                         f"cache lock wait timed out after {waited:.0f}s for {path}; held by {holder}"
                     ) from exc
+                now = time.monotonic()
+                waited = now - started
+                if waited >= timeout:
+                    deadline_reached = True
+                    continue
                 if now - last_heartbeat >= heartbeat:
                     print(
                         f"waiting for cache lock {path} held by {holder} ({waited:.0f}s elapsed)",
@@ -906,6 +926,8 @@ def cache_lock(policy: dict[str, Any], *, exclusive: bool) -> Any:
                     )
                     last_heartbeat = now
                 time.sleep(min(poll, max(0.0, timeout - waited)))
+                waited = time.monotonic() - started
+                deadline_reached = waited >= timeout
                 continue
             if exclusive:
                 handle.seek(0)

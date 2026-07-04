@@ -64,6 +64,17 @@ def load_owner_module() -> object:
     return module
 
 
+def unused_pid() -> int:
+    for pid in range(999_999, 999_000, -1):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return pid
+        except PermissionError:
+            continue
+    raise AssertionError("unable to locate an unused pid for stale metadata coverage")
+
+
 def write_executable(path: pathlib.Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
@@ -1389,6 +1400,80 @@ def assert_cache_prune_apply_times_out_for_wedged_cache_lock() -> None:
             raise AssertionError(payload)
         if "waiting for cache lock" not in result.stderr:
             raise AssertionError(result.stderr)
+
+
+def assert_cache_lock_holder_description_marks_dead_pid_metadata_stale() -> None:
+    module = load_owner_module()
+    dead_pid = unused_pid()
+    with tempfile.TemporaryDirectory() as tmp:
+        lock_path = pathlib.Path(tmp) / "cache.lock"
+        lock_path.write_text(json.dumps({"pid": dead_pid, "cmdline": "held-cache-lock"}) + "\n", encoding="utf-8")
+
+        description = module.cache_lock_holder_description(lock_path)
+
+    expected = f"stale metadata: pid {dead_pid} (no longer running), last cmdline 'held-cache-lock'"
+    if description != expected:
+        raise AssertionError(description)
+
+
+def assert_cache_lock_recomputes_remaining_wait_after_holder_diagnostics() -> None:
+    module = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        lock_path = pathlib.Path(tmp) / "cache.lock"
+        policy = {
+            "target_namespace": "bolt-v2",
+            "local_lane_policy": {
+                "acquire_timeout_seconds": 1,
+                "heartbeat_seconds": 10,
+                "poll_interval_seconds": 0.5,
+            },
+        }
+        state = {"now": 0.0}
+        attempts: list[float] = []
+        sleeps: list[float] = []
+
+        def fake_monotonic() -> float:
+            return state["now"]
+
+        def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            state["now"] += seconds
+
+        def fake_flock(_fd: int, _mode: int) -> None:
+            attempts.append(state["now"])
+            raise OSError(module.errno.EAGAIN, "busy")
+
+        def slow_holder_description(_path: pathlib.Path) -> str:
+            state["now"] += 0.75
+            return "slow-holder"
+
+        original_cache_lock_path = module.cache_lock_path
+        original_flock = module.fcntl.flock
+        original_monotonic = module.time.monotonic
+        original_sleep = module.time.sleep
+        original_holder_description = module.cache_lock_holder_description
+        module.cache_lock_path = lambda _policy: lock_path
+        module.fcntl.flock = fake_flock
+        module.time.monotonic = fake_monotonic
+        module.time.sleep = fake_sleep
+        module.cache_lock_holder_description = slow_holder_description
+        try:
+            try:
+                with module.cache_lock(policy, exclusive=False):
+                    raise AssertionError("cache lock unexpectedly acquired")
+            except module.CacheLockTimeoutError:
+                pass
+        finally:
+            module.cache_lock_path = original_cache_lock_path
+            module.fcntl.flock = original_flock
+            module.time.monotonic = original_monotonic
+            module.time.sleep = original_sleep
+            module.cache_lock_holder_description = original_holder_description
+
+    if len(attempts) < 2:
+        raise AssertionError(attempts)
+    if attempts[1] > 1.000001:
+        raise AssertionError({"attempts": attempts, "sleeps": sleeps})
 
 
 def assert_cache_prune_apply_waits_for_managed_cargo_lock() -> None:
@@ -3550,6 +3635,8 @@ def main() -> int:
     assert_cache_prune_refuses_wrapped_active_processes_by_cwd()
     assert_cache_prune_ignores_bash_login_without_command_by_cwd()
     assert_cache_prune_apply_times_out_for_wedged_cache_lock()
+    assert_cache_lock_holder_description_marks_dead_pid_metadata_stale()
+    assert_cache_lock_recomputes_remaining_wait_after_holder_diagnostics()
     assert_cache_prune_apply_waits_for_managed_cargo_lock()
     assert_cache_prune_apply_waits_for_managed_run_lock()
     assert_cache_prune_apply_checks_active_process_before_scan()

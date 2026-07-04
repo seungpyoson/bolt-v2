@@ -18101,7 +18101,7 @@ reason = "Maximum opaque profile ID length accepted before deriving a profile ov
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''"profiles"'''
-context = '''const PROFILES_DIR_NAME: &str = "profiles";'''
+context = '''pub const PROFILES_DIR_NAME: &str = "profiles";'''
 classification = "prod_profile_source_path_derivation"
 reason = "Structural directory name under config root for reviewed deploy profile overlays; the operator supplies only an opaque profile ID, not this path."
 
@@ -18125,7 +18125,7 @@ reason = "Structural generated runtime config filename derived from config root;
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''".overlay.toml"'''
-context = '''const PROFILE_OVERLAY_SUFFIX: &str = ".overlay.toml";'''
+context = '''pub const PROFILE_OVERLAY_SUFFIX: &str = ".overlay.toml";'''
 classification = "prod_profile_source_path_derivation"
 reason = "Structural profile overlay filename suffix appended after profile ID validation; this is code-owned layout, not a trading runtime value."
 
@@ -18133,7 +18133,7 @@ reason = "Structural profile overlay filename suffix appended after profile ID v
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''"strategies"'''
-context = '''const STRATEGIES_DIR_NAME: &str = "strategies";'''
+context = '''pub const STRATEGIES_DIR_NAME: &str = "strategies";'''
 classification = "prod_profile_strategy_bundle_path_derivation"
 reason = "Structural strategy-config directory under config root used to fence production profile strategy_files to the reviewed config bundle; not a strategy, venue, market, or runtime trading value."
 
@@ -18141,7 +18141,7 @@ reason = "Structural strategy-config directory under config root used to fence p
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''"toml"'''
-context = '''const STRATEGY_CONFIG_EXTENSION: &str = "toml";'''
+context = '''pub const STRATEGY_CONFIG_EXTENSION: &str = "toml";'''
 classification = "prod_profile_strategy_bundle_path_derivation"
 reason = "Structural file-extension guard for strategy config files selected by production overlays; the strategy contents remain TOML-owned."
 

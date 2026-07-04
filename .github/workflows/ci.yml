@@ -397,7 +397,6 @@ jobs:
             diff_range="${base_ref}...${head_ref}"
           fi
           changed="$(git diff --name-only "$diff_range" -- \
-            .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
             ci/nextest-fingerprint.toml \
             ci/github-actions-runners.toml \

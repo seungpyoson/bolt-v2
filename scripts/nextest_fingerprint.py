@@ -41,6 +41,8 @@ MANDATORY_TRACKED_INPUTS = (
     "gated_source_roots.manifest",
     "src/",
     "tests/",
+    "config/profiles/",
+    "config/strategies/",
     "ci/nextest-fingerprint.toml",
     "scripts/config_validators.py",
     "scripts/nextest_fingerprint.py",

@@ -88,12 +88,12 @@ pub const GENERATOR_FORMAT_VERSION: u32 = 1;
 pub const GENERATED_MARKER_PREFIX: &str = GENERATED_LIVE_CONFIG_MARKER_PREFIX;
 
 const MAX_PROFILE_ID_LEN: usize = 63;
-const PROFILES_DIR_NAME: &str = "profiles";
+pub const PROFILES_DIR_NAME: &str = "profiles";
 const ROOT_CONFIG_FILE_NAME: &str = "root.toml";
 pub const LIVE_CONFIG_FILE_NAME: &str = "live.toml";
-const PROFILE_OVERLAY_SUFFIX: &str = ".overlay.toml";
-const STRATEGIES_DIR_NAME: &str = "strategies";
-const STRATEGY_CONFIG_EXTENSION: &str = "toml";
+pub const PROFILE_OVERLAY_SUFFIX: &str = ".overlay.toml";
+pub const STRATEGIES_DIR_NAME: &str = "strategies";
+pub const STRATEGY_CONFIG_EXTENSION: &str = "toml";
 
 /// Opaque production profile selector. This is not a path: it is the only
 /// operator-controlled input that derives a tracked overlay path.

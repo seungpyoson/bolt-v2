@@ -30,12 +30,19 @@ mod collateral_accounting_source;
 mod fee_behavior_source;
 mod fees;
 mod venue_account_state_source;
+mod venue_truth_runtime_source;
 
 pub use adapter_signing_source::materialize_clob_v2_adapter_signing_source_from_nt_signing_source;
 pub use balance_allowance_cache::sync_clob_v2_balance_allowance_cache_from_configured_account;
 pub use collateral_accounting_source::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance;
 pub use fee_behavior_source::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources;
 pub use venue_account_state_source::materialize_venue_account_state_source_from_configured_account_queries;
+pub use venue_truth_runtime_source::{
+    PolymarketVenueTruthBuildError, PolymarketVenueTruthInput,
+    PolymarketVenueTruthOrderEventMapper, PolymarketVenueTruthRuntimeSource,
+    PolymarketVenueTruthRuntimeSourceConfig, build_polymarket_venue_truth_runtime_source,
+    build_polymarket_venue_truth_snapshot, extract_polymarket_token_id,
+};
 
 use std::{
     any::Any,
@@ -45,7 +52,7 @@ use std::{
 };
 
 use nautilus_core::string::secret::REDACTED;
-use nautilus_model::identifiers::AccountId;
+use nautilus_model::{identifiers::AccountId, types::Currency};
 use nautilus_polymarket::{
     common::consts::{HTTP_RATE_LIMIT, LOT_SIZE_SCALE},
     common::credential::{EvmPrivateKey, Secrets as PolymarketSecrets},
@@ -82,7 +89,8 @@ use crate::{
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
         ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
-        ResolvedClientSecrets, SsmSecretResolver,
+        ProviderVenueTruthRuntimeSource, ProviderVenueTruthSourceContext, ResolvedClientSecrets,
+        SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     bolt_v3_wire_boundary::TransportBackend,
@@ -233,6 +241,7 @@ pub struct PolymarketExecutionConfig {
     pub retry_delay_max_ms: u64,
     pub ack_timeout_secs: u64,
     pub fee_cache_ttl_secs: u64,
+    pub venue_truth_poll_interval_ms: Option<u64>,
     pub transport_backend: TransportBackend,
     pub on_chain_collateral: Option<PolymarketOnChainCollateralConfig>,
 }
@@ -508,6 +517,11 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
                 "clients.{key}.execution.{field} must be a positive integer"
             ));
         }
+    }
+    if execution.venue_truth_poll_interval_ms == Some(0) {
+        errors.push(format!(
+            "clients.{key}.execution.venue_truth_poll_interval_ms must be a positive integer"
+        ));
     }
     if execution.retry_delay_initial_ms > execution.retry_delay_max_ms {
         errors.push(format!(
@@ -788,6 +802,71 @@ pub fn build_fee_provider(
         client,
         Duration::from_secs(cfg.fee_cache_ttl_secs),
     )))
+}
+
+pub fn build_venue_truth_runtime_source(
+    context: ProviderVenueTruthSourceContext<'_>,
+) -> Result<ProviderVenueTruthRuntimeSource, anyhow::Error> {
+    let execution = context.client.execution.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "clients.{}.execution is required for venue truth",
+            context.client_key
+        )
+    })?;
+    let cfg = execution
+        .clone()
+        .try_into::<PolymarketExecutionConfig>()
+        .map_err(|message| {
+            anyhow::anyhow!(
+                "clients.{}.execution invalid for venue truth: {message}",
+                context.client_key
+            )
+        })?;
+    let poll_interval_ms = cfg.venue_truth_poll_interval_ms.ok_or_else(|| {
+        anyhow::anyhow!(
+            "clients.{}.execution.venue_truth_poll_interval_ms must be configured when venue truth is enforced",
+            context.client_key
+        )
+    })?;
+    if poll_interval_ms == 0 {
+        return Err(anyhow::anyhow!(
+            "clients.{}.execution.venue_truth_poll_interval_ms must be a positive integer when venue truth is enforced",
+            context.client_key
+        ));
+    }
+    let resolved = context
+        .resolved
+        .get_as::<ResolvedBoltV3PolymarketSecrets>(context.client_key)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "clients.{}.secrets are required for venue truth",
+                context.client_key
+            )
+        })?;
+    let collateral_currency = polymarket_venue_truth_collateral_currency(
+        context.client_key,
+        context.collateral_currency,
+    )?;
+    let source = build_polymarket_venue_truth_runtime_source(&cfg, resolved, collateral_currency)?;
+    Ok(ProviderVenueTruthRuntimeSource {
+        source: Arc::new(source),
+        order_event_mapper: Arc::new(PolymarketVenueTruthOrderEventMapper),
+        poll_interval_ms,
+    })
+}
+
+fn polymarket_venue_truth_collateral_currency(
+    client_key: &str,
+    configured: &str,
+) -> Result<Currency, anyhow::Error> {
+    let collateral_currency = Currency::pUSD();
+    if configured.eq_ignore_ascii_case(collateral_currency.code.as_str()) {
+        return Ok(collateral_currency);
+    }
+    Err(anyhow::anyhow!(
+        "clients.{client_key}.execution venue truth collateral currency must be `{}`, got `{configured}`",
+        collateral_currency.code
+    ))
 }
 
 fn map_data(

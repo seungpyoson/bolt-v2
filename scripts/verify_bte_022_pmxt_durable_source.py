@@ -760,6 +760,21 @@ def check_bte_status_artifact(bte_status: dict, findings: list[str]) -> None:
     check_bte_status_durable_guard_block(bte_status, findings)
 
 
+def check_justfile(justfile: str, findings: list[str]) -> None:
+    for recipe in JUSTFILE_RECIPES:
+        recipe_commands = just_recipe_commands(justfile, recipe)
+        for command in JUSTFILE_COMMANDS:
+            if command not in recipe_commands:
+                findings.append(f"{JUSTFILE}: {recipe} must run {command}")
+    source_fence_commands = just_recipe_commands(justfile, "source-fence-static-inner")
+    if not source_fence_commands:
+        findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
+        return
+    if tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS:
+        expected = " && ".join(SOURCE_FENCE_STATIC_COMMANDS)
+        findings.append(f"{JUSTFILE}: source-fence-static-inner must contain only {expected}")
+
+
 def scan_root(root: Path) -> list[str]:
     root = root.resolve()
     findings: list[str] = []
@@ -958,18 +973,7 @@ def scan_root(root: Path) -> list[str]:
             findings.append(
                 f"{GITIGNORE}: PMXT generated-artifact eviction pattern `{pattern}` must effectively ignore representative `{PMXT_EVICTION_REPRESENTATIVES[pattern]}`"
             )
-    for recipe in JUSTFILE_RECIPES:
-        recipe_commands = just_recipe_commands(justfile, recipe)
-        for command in JUSTFILE_COMMANDS:
-            if command not in recipe_commands:
-                findings.append(f"{JUSTFILE}: {recipe} must run {command}")
-    source_fence_commands = just_recipe_commands(justfile, "source-fence-static-inner")
-    if not source_fence_commands:
-        findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
-        return findings
-    if tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS:
-        expected = " && ".join(SOURCE_FENCE_STATIC_COMMANDS)
-        findings.append(f"{JUSTFILE}: source-fence-static-inner must contain only {expected}")
+    check_justfile(justfile, findings)
 
     return findings
 

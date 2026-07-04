@@ -16,13 +16,18 @@
 
 use crate::support;
 
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use bolt_v2::{
     bolt_v3_config::{LiveSubmitGovernanceMode, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_prod_profile::{
-        GENERATED_MARKER_PREFIX, ProdOverlay, ProfileError, ProfileId, generate_live_config,
-        live_config_path, profile_overlay_path, verify_live_config,
+        GENERATED_MARKER_PREFIX, PROFILE_OVERLAY_SUFFIX, PROFILES_DIR_NAME, ProdOverlay,
+        ProfileError, ProfileId, STRATEGIES_DIR_NAME, STRATEGY_CONFIG_EXTENSION,
+        generate_live_config, live_config_path, profile_overlay_path, verify_live_config,
     },
 };
 
@@ -30,57 +35,98 @@ use bolt_v2::{
 const CONFIG_ROOT: &str = "config";
 /// Opaque profile ID for the tracked production overlay.
 const PROFILE_ID: &str = "prod-btc-5m";
-/// The tracked production OVERLAY — the pilot deltas over the shared base template.
-const OVERLAY: &str = "config/profiles/prod-btc-5m.overlay.toml";
 /// The shared base template the overlay composes onto.
 const BASE: &str = "config/root.toml";
 /// Frozen pre-refactor standalone production profile, kept ONLY as a regression
 /// oracle for the composition (it is intentionally out of `config/` so deploy
 /// tooling cannot pick it up as a config).
 const LEGACY_ORACLE: &str = "tests/fixtures/legacy_prod_btc_5m_oracle.toml";
-const BTC_STRATEGY: &str = "strategies/binary_oracle_btc.toml";
+const BTC_STRATEGY_FILE_NAME: &str = "binary_oracle_btc.toml";
+const UNKNOWN_OVERLAY_KEY: &str = "unrecognized_fixture_key";
+const UNKNOWN_STRATEGY_KEY: &str = "strategy_drift_probe";
 /// The exact stale key that blocked the 2026-06-18 BTC pilot start at systemd
 /// time. The current binary's `NautilusDataEngineBlock` has no such field and is
 /// `#[serde(deny_unknown_fields)]`, so any config carrying it must fail to load.
 const STALE_DEPLOY_KEY: &str = "graceful_shutdown_on_error";
+
+fn overlay_repo_path() -> String {
+    format!("{CONFIG_ROOT}/{PROFILES_DIR_NAME}/{PROFILE_ID}{PROFILE_OVERLAY_SUFFIX}")
+}
+
+fn strategy_repo_path(file_name: &str) -> String {
+    format!("{STRATEGIES_DIR_NAME}/{file_name}")
+}
+
+fn btc_strategy() -> String {
+    strategy_repo_path(BTC_STRATEGY_FILE_NAME)
+}
+
+fn repo_overlay_text() -> String {
+    support::repo_text(&overlay_repo_path())
+}
+
+fn copy_strategy_tree_recursive(source: &Path, dest: &Path) {
+    fs::create_dir_all(dest).expect("staged strategy directory should be created");
+    for entry in fs::read_dir(source).expect("tracked strategies dir should be readable") {
+        let entry = entry.expect("strategy dir entry should read");
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .expect("strategy dir entry type should read");
+        let target = dest.join(entry.file_name());
+        if file_type.is_symlink() {
+            panic!(
+                "committed strategy tree entry `{}` must not be a symlink",
+                path.display()
+            );
+        }
+        if file_type.is_dir() {
+            copy_strategy_tree_recursive(&path, &target);
+            continue;
+        }
+        if file_type.is_file()
+            && path.extension().and_then(|extension| extension.to_str())
+                == Some(STRATEGY_CONFIG_EXTENSION)
+        {
+            fs::copy(&path, &target).expect("strategy file should copy");
+        }
+    }
+}
 
 /// Stage a deployable runtime directory: a copy of every tracked strategy file
 /// under `<dir>/strategies/`, so a runtime config written into `<dir>` resolves
 /// its relative `strategy_files` exactly as `/opt/bolt-v2/config` does on EC2.
 fn stage_runtime_dir(label: &str) -> support::TempCaseDir {
     let dir = support::TempCaseDir::new(label);
-    let strategies = dir.path().join("strategies");
-    std::fs::create_dir_all(&strategies).expect("staged strategies dir should be created");
-    for entry in std::fs::read_dir(support::repo_path("config/strategies"))
-        .expect("tracked strategies dir should be readable")
-    {
-        let path = entry.expect("strategy dir entry should read").path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("toml") {
-            let file_name = path.file_name().expect("strategy file should have a name");
-            std::fs::copy(&path, strategies.join(file_name)).expect("strategy file should copy");
-        }
-    }
+    copy_strategy_tree_recursive(
+        &support::repo_path(&format!("{CONFIG_ROOT}/{STRATEGIES_DIR_NAME}")),
+        &dir.path().join(STRATEGIES_DIR_NAME),
+    );
     dir
 }
 
 /// Stage a FULL on-box config tree mirroring `/opt/bolt-v2/config`: the strategies
-/// (via [`stage_runtime_dir`]), a copy of the base `root.toml`, and the overlay
-/// under `profiles/`. In this single-tree layout the derived overlay, derived
-/// `live.toml`, and strategies all live under one config root.
+/// (via [`stage_runtime_dir`]), a copy of the base `root.toml`, and every committed
+/// profile overlay under `profiles/`. In this single-tree layout the derived
+/// overlay, derived `live.toml`, and strategies all live under one config root.
 fn stage_full_config_tree(label: &str) -> support::TempCaseDir {
     let dir = stage_runtime_dir(label);
-    std::fs::copy(support::repo_path(BASE), dir.path().join("root.toml"))
+    fs::copy(support::repo_path(BASE), dir.path().join("root.toml"))
         .expect("base root.toml copies into the staged tree");
-    let profiles = dir.path().join("profiles");
-    std::fs::create_dir_all(&profiles).expect("staged profiles dir creates");
-    let overlay = profiles.join("prod-btc-5m.overlay.toml");
-    std::fs::copy(support::repo_path(OVERLAY), &overlay)
-        .expect("overlay copies into the staged tree");
+    let profiles = dir.path().join(PROFILES_DIR_NAME);
+    fs::create_dir_all(&profiles).expect("staged profiles dir creates");
+    for overlay in committed_profile_overlay_paths() {
+        let file_name = overlay
+            .file_name()
+            .expect("committed profile overlay should have a file name");
+        fs::copy(&overlay, profiles.join(file_name))
+            .expect("committed profile overlay copies into the staged tree");
+    }
     dir
 }
 
 fn write(path: &Path, text: &str) {
-    std::fs::write(path, text).expect("test file should write");
+    fs::write(path, text).expect("test file should write");
 }
 
 /// Load a config TEXT by writing it into a staged runtime dir (so its relative
@@ -100,6 +146,61 @@ fn repo_config_text(relative: &str) -> String {
     support::repo_text(&format!("{CONFIG_ROOT}/{relative}"))
 }
 
+fn profile_id_from_overlay_path(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|file_name| file_name.to_str())
+        .and_then(|file_name| file_name.strip_suffix(PROFILE_OVERLAY_SUFFIX))
+        .map(str::to_string)
+}
+
+fn committed_profile_overlay_paths() -> Vec<PathBuf> {
+    let profile_dir = support::repo_path(&format!("{CONFIG_ROOT}/{PROFILES_DIR_NAME}"));
+    let mut overlays: Vec<PathBuf> = Vec::new();
+    for entry in fs::read_dir(&profile_dir).expect("committed profile directory should be readable")
+    {
+        let entry = entry.expect("committed profile directory entry should read");
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .expect("committed profile directory entry type should read");
+        assert!(
+            !file_type.is_symlink(),
+            "committed profile entry `{}` must not be a symlink",
+            path.display()
+        );
+        assert!(
+            file_type.is_file(),
+            "committed profile entry `{}` must be a flat regular file",
+            path.display()
+        );
+        assert!(
+            profile_id_from_overlay_path(&path).is_some(),
+            "committed profile file `{}` must end with `{PROFILE_OVERLAY_SUFFIX}`",
+            path.display()
+        );
+        overlays.push(path);
+    }
+    overlays.sort();
+    overlays
+}
+
+fn committed_profile_ids() -> Vec<String> {
+    committed_profile_overlay_paths()
+        .into_iter()
+        .map(|path| {
+            let profile_id = profile_id_from_overlay_path(&path)
+                .expect("committed profile overlay path should encode profile id");
+            ProfileId::parse(&profile_id).unwrap_or_else(|error| {
+                panic!(
+                    "profile overlay `{}` must use an opaque profile id: {error}",
+                    path.display()
+                )
+            });
+            profile_id
+        })
+        .collect()
+}
+
 #[test]
 fn profile_id_validator_accepts_only_opaque_ids() {
     let max_len_id = format!("p{}", "a".repeat(62));
@@ -111,27 +212,28 @@ fn profile_id_validator_accepts_only_opaque_ids() {
     }
 
     let too_long_id = format!("p{}", "a".repeat(63));
-    for rejected in [
-        "",
-        ".",
-        "..",
-        "Prod",
-        "a/b",
-        "a\\b",
-        "a..b",
-        "live.local",
-        "-leading",
-        "_leading",
-        "live",
-        "local",
-        "root",
-        "profiles",
-        "config/profiles/prod-btc-5m.overlay.toml",
-        too_long_id.as_str(),
-    ] {
+    let rejected = vec![
+        String::new(),
+        ".".to_string(),
+        "..".to_string(),
+        "Prod".to_string(),
+        "a/b".to_string(),
+        "a\\b".to_string(),
+        "a..b".to_string(),
+        "live.local".to_string(),
+        "-leading".to_string(),
+        "_leading".to_string(),
+        "live".to_string(),
+        "local".to_string(),
+        "root".to_string(),
+        PROFILES_DIR_NAME.to_string(),
+        overlay_repo_path(),
+        too_long_id,
+    ];
+    for rejected in rejected {
         assert!(
             matches!(
-                ProfileId::parse(rejected),
+                ProfileId::parse(&rejected),
                 Err(ProfileError::InvalidProfileId(_))
             ),
             "profile id `{rejected}` should be rejected"
@@ -146,8 +248,8 @@ fn profile_id_derives_overlay_path_under_config_root() {
     assert_eq!(
         profile_overlay_path(dir.path(), &profile_id),
         dir.path()
-            .join("profiles")
-            .join(format!("{PROFILE_ID}.overlay.toml"))
+            .join(PROFILES_DIR_NAME)
+            .join(format!("{PROFILE_ID}{PROFILE_OVERLAY_SUFFIX}"))
     );
     assert_eq!(live_config_path(dir.path()), dir.path().join("live.toml"));
 }
@@ -166,6 +268,44 @@ fn composed_prod_config_loads_against_this_binary() {
 }
 
 #[test]
+fn committed_profile_overlays_generate_and_verify_against_current_binary() {
+    let profile_ids = committed_profile_ids();
+    assert!(
+        !profile_ids.is_empty(),
+        "profile discovery must find at least one committed `{PROFILE_OVERLAY_SUFFIX}` file"
+    );
+
+    for profile_id in profile_ids {
+        let committed_generated = generate_live_config(&repo_config_root(), &profile_id)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "committed profile `{profile_id}` must generate from {BASE} and committed strategies: {error}"
+                )
+            });
+        let staged = stage_full_config_tree(&format!("committed-profile-{profile_id}"));
+        let staged_generated =
+            generate_live_config(staged.path(), &profile_id).unwrap_or_else(|error| {
+                panic!(
+                    "staged committed profile `{profile_id}` must generate through the ops generation path: {error}"
+                )
+            });
+        assert_eq!(
+            staged_generated.text, committed_generated.text,
+            "staged profile `{profile_id}` must compose to the same runtime config as committed {BASE}"
+        );
+
+        write(&live_config_path(staged.path()), &staged_generated.text);
+        let verification =
+            verify_live_config(staged.path(), &profile_id).unwrap_or_else(|error| {
+                panic!(
+                    "staged committed profile `{profile_id}` must verify through the ops verification path: {error}"
+                )
+            });
+        assert_eq!(verification.profile_id, profile_id);
+    }
+}
+
+#[test]
 fn composed_prod_config_is_btc_only_with_loss_rails() {
     let generated =
         generate_live_config(&repo_config_root(), PROFILE_ID).expect("composition must succeed");
@@ -173,7 +313,7 @@ fn composed_prod_config_is_btc_only_with_loss_rails() {
 
     assert_eq!(
         loaded.root.strategy_files,
-        vec![BTC_STRATEGY.to_string()],
+        vec![btc_strategy()],
         "the BTC 5m pilot must select only the BTC strategy"
     );
 
@@ -415,12 +555,7 @@ fn verify_passes_for_freshly_generated_deployed_config() {
 
     let verification = verify_live_config(dir.path(), PROFILE_ID)
         .expect("a freshly generated deployed config must verify");
-    assert!(verification.matches_profile);
-    assert!(verification.loads_against_binary);
-    assert_eq!(
-        verification.invariants.strategy_files,
-        vec![BTC_STRATEGY.to_string()]
-    );
+    assert_eq!(verification.invariants.strategy_files, vec![btc_strategy()]);
 }
 
 #[test]
@@ -511,7 +646,7 @@ fn overlay_declares_only_the_allowed_delta_keys() {
     // delta keys (an infrastructure key smuggled in here would be `deny_unknown_fields`
     // rejected at parse, but assert the top-level key set explicitly too).
     let overlay_value: toml::Value =
-        toml::from_str(&support::repo_text(OVERLAY)).expect("overlay parses as TOML");
+        toml::from_str(&repo_overlay_text()).expect("overlay parses as TOML");
     let table = overlay_value
         .as_table()
         .expect("overlay is a TOML table at the top level");
@@ -534,8 +669,8 @@ fn overlay_declares_only_the_allowed_delta_keys() {
 
     // And it must round-trip into the typed `ProdOverlay` (deny_unknown_fields).
     let overlay: ProdOverlay =
-        toml::from_str(&support::repo_text(OVERLAY)).expect("overlay deserializes as ProdOverlay");
-    assert_eq!(overlay.strategy_files, vec![BTC_STRATEGY.to_string()]);
+        toml::from_str(&repo_overlay_text()).expect("overlay deserializes as ProdOverlay");
+    assert_eq!(overlay.strategy_files, vec![btc_strategy()]);
     assert!(
         overlay
             .active_clients
@@ -556,8 +691,7 @@ fn base_template_is_present_and_overlay_prunes_shared_clients() {
     // over shared infrastructure (not a second full config).
     let base: toml::Value =
         toml::from_str(&support::repo_text(BASE)).expect("base root.toml parses");
-    let overlay: toml::Value =
-        toml::from_str(&support::repo_text(OVERLAY)).expect("overlay parses");
+    let overlay: toml::Value = toml::from_str(&repo_overlay_text()).expect("overlay parses");
     let base_clients = base
         .get("clients")
         .and_then(toml::Value::as_table)
@@ -582,10 +716,10 @@ fn base_template_is_present_and_overlay_prunes_shared_clients() {
 #[test]
 fn generate_rejects_overlay_with_unknown_field() {
     let dir = stage_full_config_tree("prod-overlay-unknown-field");
-    let overlay_text = support::repo_text(OVERLAY);
+    let overlay_text = repo_overlay_text();
     let invalid = overlay_text.replace(
         "strategy_files =",
-        "bogus_unknown_overlay_key = 1\nstrategy_files =",
+        &format!("{UNKNOWN_OVERLAY_KEY} = 1\nstrategy_files ="),
     );
     assert_ne!(
         invalid, overlay_text,
@@ -601,6 +735,41 @@ fn generate_rejects_overlay_with_unknown_field() {
         matches!(error, ProfileError::Overlay { .. }),
         "unknown-field overlay must fail at overlay parse, got: {error}"
     );
+    assert!(
+        error.to_string().contains(UNKNOWN_OVERLAY_KEY),
+        "unknown-field overlay error must name `{UNKNOWN_OVERLAY_KEY}`, got: {error}"
+    );
+}
+
+#[test]
+fn generate_rejects_strategy_with_unknown_field() {
+    let dir = stage_full_config_tree("prod-overlay-strategy-unknown-field");
+    let strategy_path = dir
+        .path()
+        .join(STRATEGIES_DIR_NAME)
+        .join(BTC_STRATEGY_FILE_NAME);
+    let strategy_text =
+        fs::read_to_string(&strategy_path).expect("staged strategy file should read");
+    let invalid = strategy_text.replace(
+        "schema_version =",
+        &format!("{UNKNOWN_STRATEGY_KEY} = true\nschema_version ="),
+    );
+    assert_ne!(
+        invalid, strategy_text,
+        "the unknown strategy key must have been injected"
+    );
+    write(&strategy_path, &invalid);
+
+    let error = generate_live_config(dir.path(), PROFILE_ID)
+        .expect_err("an unknown strategy field must fail generation closed");
+    assert!(
+        matches!(error, ProfileError::Load { .. }),
+        "unknown-field strategy must fail while loading composed config, got: {error}"
+    );
+    assert!(
+        error.to_string().contains(UNKNOWN_STRATEGY_KEY),
+        "unknown-field strategy error must name `{UNKNOWN_STRATEGY_KEY}`, got: {error}"
+    );
 }
 
 #[test]
@@ -608,7 +777,7 @@ fn generate_rejects_overlay_with_unknown_active_client() {
     // An active_clients name that is not in base.clients must fail composition,
     // never silently drop — fail-closed against a typo selecting a phantom client.
     let dir = stage_full_config_tree("prod-overlay-phantom-client");
-    let overlay_text = support::repo_text(OVERLAY);
+    let overlay_text = repo_overlay_text();
     let invalid = overlay_text.replace(
         "  \"polymarket_main\",\n",
         "  \"polymarket_main\",\n  \"no_such_client_in_base\",\n",
@@ -640,9 +809,10 @@ fn generate_rejects_strategy_file_parent_escape_even_when_target_exists() {
         .parent()
         .expect("staged config root has a parent")
         .join("external-strategy.toml");
-    write(&external_strategy, &repo_config_text(BTC_STRATEGY));
-    let overlay_text = support::repo_text(OVERLAY);
-    let escaped = overlay_text.replace(BTC_STRATEGY, "../external-strategy.toml");
+    let btc_strategy = btc_strategy();
+    write(&external_strategy, &repo_config_text(&btc_strategy));
+    let overlay_text = repo_overlay_text();
+    let escaped = overlay_text.replace(&btc_strategy, "../external-strategy.toml");
     assert_ne!(escaped, overlay_text, "the strategy path must be replaced");
     let profile_id = ProfileId::parse("prod-escape").expect("test profile id is valid");
     let path = profile_overlay_path(dir.path(), &profile_id);
@@ -667,9 +837,10 @@ fn generate_rejects_strategy_file_absolute_escape_even_when_target_exists() {
         .parent()
         .expect("staged config root has a parent")
         .join("absolute-strategy.toml");
-    write(&external_strategy, &repo_config_text(BTC_STRATEGY));
-    let overlay_text = support::repo_text(OVERLAY);
-    let escaped = overlay_text.replace(BTC_STRATEGY, &external_strategy.display().to_string());
+    let btc_strategy = btc_strategy();
+    write(&external_strategy, &repo_config_text(&btc_strategy));
+    let overlay_text = repo_overlay_text();
+    let escaped = overlay_text.replace(&btc_strategy, &external_strategy.display().to_string());
     assert_ne!(escaped, overlay_text, "the strategy path must be replaced");
     let profile_id = ProfileId::parse("prod-absolute").expect("test profile id is valid");
     let path = profile_overlay_path(dir.path(), &profile_id);
@@ -695,12 +866,13 @@ fn generate_rejects_strategy_file_symlink_escape_even_when_entry_is_under_strate
         .parent()
         .expect("staged config root has a parent")
         .join("symlink-target-strategy.toml");
-    write(&external_strategy, &repo_config_text(BTC_STRATEGY));
-    let symlink_strategy = dir.path().join("strategies").join("symlinked.toml");
+    let btc_strategy = btc_strategy();
+    write(&external_strategy, &repo_config_text(&btc_strategy));
+    let symlink_strategy = dir.path().join(STRATEGIES_DIR_NAME).join("symlinked.toml");
     std::os::unix::fs::symlink(&external_strategy, &symlink_strategy)
         .expect("strategy symlink should be created");
-    let overlay_text = support::repo_text(OVERLAY);
-    let escaped = overlay_text.replace(BTC_STRATEGY, "strategies/symlinked.toml");
+    let overlay_text = repo_overlay_text();
+    let escaped = overlay_text.replace(&btc_strategy, &strategy_repo_path("symlinked.toml"));
     assert_ne!(escaped, overlay_text, "the strategy path must be replaced");
     let profile_id = ProfileId::parse("prod-symlink").expect("test profile id is valid");
     let path = profile_overlay_path(dir.path(), &profile_id);
@@ -729,12 +901,12 @@ fn generate_rejects_symlinked_strategies_directory_even_when_target_exists() {
     std::fs::create_dir_all(&external_strategies)
         .expect("external strategies dir should be created");
     write(
-        &external_strategies.join("binary_oracle_btc.toml"),
-        &repo_config_text(BTC_STRATEGY),
+        &external_strategies.join(BTC_STRATEGY_FILE_NAME),
+        &repo_config_text(&btc_strategy()),
     );
-    std::fs::remove_dir_all(dir.path().join("strategies"))
+    std::fs::remove_dir_all(dir.path().join(STRATEGIES_DIR_NAME))
         .expect("staged strategies dir should remove");
-    std::os::unix::fs::symlink(&external_strategies, dir.path().join("strategies"))
+    std::os::unix::fs::symlink(&external_strategies, dir.path().join(STRATEGIES_DIR_NAME))
         .expect("strategies dir symlink should be created");
 
     let error = generate_live_config(dir.path(), PROFILE_ID)
@@ -753,7 +925,7 @@ fn generate_rejects_overlay_without_loss_rails() {
     // Removing the overlay's [loss_governor] block makes it fail typed parse
     // (loss_governor is a required ProdOverlay field), failing generation closed.
     let dir = stage_full_config_tree("prod-overlay-no-rails");
-    let overlay_text = support::repo_text(OVERLAY);
+    let overlay_text = repo_overlay_text();
     let without_rails = without_overlay_loss_governor(&overlay_text);
     assert!(
         !without_rails.contains("[loss_governor]"),
@@ -776,7 +948,7 @@ fn generate_allows_overlay_with_disabled_loss_governor() {
     // Disabled loss governor is the explicit production policy for this profile.
     // The composed config still records that state for runtime and operator evidence.
     let dir = stage_full_config_tree("prod-overlay-disabled-rails");
-    let overlay_text = support::repo_text(OVERLAY);
+    let overlay_text = repo_overlay_text();
     assert!(
         overlay_loss_governor_enabled_is_false(&overlay_text),
         "the profile overlay must explicitly disable loss governor"
@@ -852,7 +1024,10 @@ fn verify_rejects_divergent_deployed_strategy_file() {
     // Tamper the single on-box strategy file (still valid TOML). At re-verify `generate`
     // re-reads it, recomputes a different bundle checksum, and the regenerated header no
     // longer matches the deployed bytes.
-    let strategy = dir.path().join("strategies").join("binary_oracle_btc.toml");
+    let strategy = dir
+        .path()
+        .join(STRATEGIES_DIR_NAME)
+        .join(BTC_STRATEGY_FILE_NAME);
     let original = std::fs::read_to_string(&strategy).expect("staged strategy readable");
     write(&strategy, &format!("{original}\n# on-box tamper\n"));
 

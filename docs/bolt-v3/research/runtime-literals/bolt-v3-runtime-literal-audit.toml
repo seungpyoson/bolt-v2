@@ -14380,14 +14380,6 @@ reason = "Evidence source label for startup account sizing components seeded fro
 [[allowed]]
 path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
-literal = '''"nt_account_free_collateral"'''
-context = '''const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";'''
-classification = "capital_admission_evidence_source_label"
-reason = "Evidence source label for spendable collateral derived from NT account free collateral; the value remains NT-owned."
-
-[[allowed]]
-path = "src/bolt_v3_capital_admission_runtime_feed.rs"
-kind = "string"
 literal = '''"nt_open_order_cache"'''
 context = '''source: "nt_open_order_cache".to_string(),'''
 classification = "capital_admission_evidence_source_label"
@@ -14429,7 +14421,7 @@ reason = "Evidence source label for the empty startup lifecycle seed before NT c
 path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_portfolio_snapshot"'''
-context = '''source: "nt_portfolio_snapshot".to_string(),'''
+context = '''const NT_PORTFOLIO_SNAPSHOT_SOURCE: &str = "nt_portfolio_snapshot";'''
 classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for portfolio/account sizing components derived from NT account and portfolio events."
 
@@ -18109,7 +18101,7 @@ reason = "Maximum opaque profile ID length accepted before deriving a profile ov
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''"profiles"'''
-context = '''const PROFILES_DIR_NAME: &str = "profiles";'''
+context = '''pub const PROFILES_DIR_NAME: &str = "profiles";'''
 classification = "prod_profile_source_path_derivation"
 reason = "Structural directory name under config root for reviewed deploy profile overlays; the operator supplies only an opaque profile ID, not this path."
 
@@ -18133,7 +18125,7 @@ reason = "Structural generated runtime config filename derived from config root;
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''".overlay.toml"'''
-context = '''const PROFILE_OVERLAY_SUFFIX: &str = ".overlay.toml";'''
+context = '''pub const PROFILE_OVERLAY_SUFFIX: &str = ".overlay.toml";'''
 classification = "prod_profile_source_path_derivation"
 reason = "Structural profile overlay filename suffix appended after profile ID validation; this is code-owned layout, not a trading runtime value."
 
@@ -18141,7 +18133,7 @@ reason = "Structural profile overlay filename suffix appended after profile ID v
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''"strategies"'''
-context = '''const STRATEGIES_DIR_NAME: &str = "strategies";'''
+context = '''pub const STRATEGIES_DIR_NAME: &str = "strategies";'''
 classification = "prod_profile_strategy_bundle_path_derivation"
 reason = "Structural strategy-config directory under config root used to fence production profile strategy_files to the reviewed config bundle; not a strategy, venue, market, or runtime trading value."
 
@@ -18149,7 +18141,7 @@ reason = "Structural strategy-config directory under config root used to fence p
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''"toml"'''
-context = '''const STRATEGY_CONFIG_EXTENSION: &str = "toml";'''
+context = '''pub const STRATEGY_CONFIG_EXTENSION: &str = "toml";'''
 classification = "prod_profile_strategy_bundle_path_derivation"
 reason = "Structural file-extension guard for strategy config files selected by production overlays; the strategy contents remain TOML-owned."
 
@@ -19689,3 +19681,371 @@ literal = "0"
 context = '''|| envelope.ranges.max_quantity_policy_versions == 0'''
 classification = "policy_epoch_envelope_zero_bound_reject"
 reason = "A safety-policy envelope with zero quantity-policy versions cannot approve any prepared quantity-policy bundle; the bound is envelope-owned, while zero is the structural empty-bound rejection sentinel."
+
+[[allowed]]
+path = "src/bolt_v3_capital_admission_state.rs"
+kind = "string"
+literal = '''"polymarket_venue_truth_rest"'''
+context = '''pub const POLYMARKET_VENUE_TRUTH_REST_SOURCE: &str = "polymarket_venue_truth_rest";'''
+classification = "capital_admission_evidence_source_label"
+reason = "Evidence source label for Polymarket venue-truth snapshots promoted into submit-capital admission after causal reconciliation; balances, allowances, and order state remain venue-owned facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.venue_truth_capture_failure"'''
+context = '''pub const BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID: &str = "bolt_v3.venue_truth_capture_failure";'''
+classification = "decision_evidence_gate_label"
+reason = "Stable decision-evidence gate id for degraded venue REST capture authority records; it names evidence schema routing and does not configure venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"venue_truth_capture_failure"'''
+context = '''pub const BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND: &str = "venue_truth_capture_failure";'''
+classification = "decision_evidence_record_kind"
+reason = "Stable decision-evidence record kind for degraded venue REST capture authority records; it names the JSONL envelope and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.venue_truth_divergence"'''
+context = '''pub const BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID: &str = "bolt_v3.venue_truth_divergence";'''
+classification = "decision_evidence_gate_label"
+reason = "Stable decision-evidence gate id for durable venue-truth divergence records; it names evidence schema routing and does not configure venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"venue_truth_divergence"'''
+context = '''pub const BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND: &str = "venue_truth_divergence";'''
+classification = "decision_evidence_record_kind"
+reason = "Stable decision-evidence record kind for durable venue-truth divergence records; it names the JSONL envelope and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"venue_truth_capture_failure"'''
+context = '''const VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE: &str = "venue_truth_capture_failure";'''
+classification = "capital_admission_reservation_evidence_source"
+reason = "Reservation-snapshot source label used while venue REST capture authority is degraded; it marks suspension evidence and does not configure a threshold, cap, or venue value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "number"
+literal = "0_u64"
+context = '''let mut captures_missed = 0_u64;'''
+classification = "venue_truth_capture_failure_counter_identity"
+reason = "Structural identity for consecutive failed venue REST captures before any miss has occurred; it feeds evidence only and is not a tolerance or retry threshold."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "number"
+literal = "1"
+context = '''captures_missed = captures_missed.saturating_add(1);'''
+classification = "venue_truth_capture_failure_counter_increment"
+reason = "Structural unit increment for each failed venue REST capture evidence record; it counts observed failures and is not a configurable tolerance."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "number"
+literal = "0"
+context = '''captures_missed = 0;'''
+classification = "venue_truth_capture_failure_counter_reset"
+reason = "Structural reset of consecutive failed venue REST captures after a REST capture succeeds; it does not permit failures and does not configure a retry budget."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "string"
+literal = '''"clob_balance_allowance"'''
+context = '''pub const POLYMARKET_VENUE_TRUTH_BALANCE_ALLOWANCE_ENDPOINT: &str = "clob_balance_allowance";'''
+classification = "venue_truth_capture_failure_endpoint_label"
+reason = "Evidence endpoint label for the Polymarket CLOB balance-allowance REST leg; the actual base URL, credentials, and cadence remain configured elsewhere."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "string"
+literal = '''"clob_open_orders"'''
+context = '''pub const POLYMARKET_VENUE_TRUTH_OPEN_ORDERS_ENDPOINT: &str = "clob_open_orders";'''
+classification = "venue_truth_capture_failure_endpoint_label"
+reason = "Evidence endpoint label for the Polymarket CLOB open-orders REST leg; the actual base URL, credentials, and cadence remain configured elsewhere."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "string"
+literal = '''"data_api_positions"'''
+context = '''pub const POLYMARKET_VENUE_TRUTH_POSITIONS_ENDPOINT: &str = "data_api_positions";'''
+classification = "venue_truth_capture_failure_endpoint_label"
+reason = "Evidence endpoint label for the Polymarket Data API positions REST leg; the actual base URL, credentials, and cadence remain configured elsewhere."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "string"
+literal = '''"transport_or_decode"'''
+context = '''pub const POLYMARKET_VENUE_TRUTH_TRANSPORT_OR_DECODE_ERROR_CLASS: &str = "transport_or_decode";'''
+classification = "venue_truth_capture_failure_error_class"
+reason = "Evidence error-class label for a failed venue REST leg where transport or decode prevented capture completion; it classifies degraded authority evidence and is not a retry policy."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"account_id"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_FIELD_ACCOUNT_ID: &str = "account_id";'''
+classification = "venue_truth_divergence_evidence_field"
+reason = "Stable evidence field label for account-id venue-truth divergence records; it labels evidence payloads and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"collateral_allowance"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_ALLOWANCE: &str = "collateral_allowance";'''
+classification = "venue_truth_divergence_evidence_field"
+reason = "Stable evidence field label for collateral-allowance venue-truth divergence records; it labels evidence payloads and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"collateral_balance"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_BALANCE: &str = "collateral_balance";'''
+classification = "venue_truth_divergence_evidence_field"
+reason = "Stable evidence field label for collateral-balance venue-truth divergence records; it labels evidence payloads and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"open_orders"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_FIELD_OPEN_ORDERS: &str = "open_orders";'''
+classification = "venue_truth_divergence_evidence_field"
+reason = "Stable evidence field label for open-order venue-truth divergence records; it labels evidence payloads and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"order_event_observed_at_ns"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_FIELD_ORDERING: &str = "order_event_observed_at_ns";'''
+classification = "venue_truth_divergence_evidence_field"
+reason = "Stable evidence field label for order-event ordering venue-truth divergence records; it labels evidence payloads and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"positions_by_product_id"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_FIELD_POSITIONS: &str = "positions_by_product_id";'''
+classification = "venue_truth_divergence_evidence_field"
+reason = "Stable evidence field label for position venue-truth divergence records; it labels evidence payloads and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"no_prior_accepted_snapshot"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_PRIOR_ACCEPTED_VALUE_MISSING: &str = "no_prior_accepted_snapshot";'''
+classification = "venue_truth_divergence_evidence_sentinel"
+reason = "Stable evidence sentinel for the defensive case where divergence evidence is built without a prior accepted venue snapshot; it marks missing evidence context and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"account_changed"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_REASON_ACCOUNT_CHANGED: &str = "account_changed";'''
+classification = "venue_truth_divergence_evidence_reason"
+reason = "Stable evidence reason code for account-id venue-truth divergence records; it classifies evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"unexplained_collateral_allowance_delta"'''
+context = '''"unexplained_collateral_allowance_delta";'''
+classification = "venue_truth_divergence_evidence_reason"
+reason = "Stable evidence reason code for unexplained collateral-allowance venue-truth divergence records; it classifies evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"unexplained_collateral_balance_delta"'''
+context = '''"unexplained_collateral_balance_delta";'''
+classification = "venue_truth_divergence_evidence_reason"
+reason = "Stable evidence reason code for unexplained collateral-balance venue-truth divergence records; it classifies evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"unexplained_open_order_delta"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_REASON_OPEN_ORDERS: &str = "unexplained_open_order_delta";'''
+classification = "venue_truth_divergence_evidence_reason"
+reason = "Stable evidence reason code for unexplained open-order venue-truth divergence records; it classifies evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"ordering_violation"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_REASON_ORDERING: &str = "ordering_violation";'''
+classification = "venue_truth_divergence_evidence_reason"
+reason = "Stable evidence reason code for same-domain ordering violation venue-truth divergence records; it classifies evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"unexplained_position_delta"'''
+context = '''pub const VENUE_TRUTH_DIVERGENCE_REASON_POSITIONS: &str = "unexplained_position_delta";'''
+classification = "venue_truth_divergence_evidence_reason"
+reason = "Stable evidence reason code for unexplained position venue-truth divergence records; it classifies evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"venue_truth_snapshot"'''
+context = '''pub const VENUE_TRUTH_CAPTURE_AGGREGATE_ENDPOINT: &str = "venue_truth_snapshot";'''
+classification = "venue_truth_capture_failure_endpoint_fallback"
+reason = "Fallback evidence endpoint label when a venue REST capture failure lacks a typed endpoint; it labels evidence only and does not configure an endpoint."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "number"
+literal = "0"
+context = '''event_count: 0,'''
+classification = "venue_truth_event_projection_counter_identity"
+reason = "Structural identity for a fresh in-memory order-event projection before recorded events are consumed; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "number"
+literal = "0"
+context = '''venue_event_count: 0,'''
+classification = "venue_truth_event_projection_counter_identity"
+reason = "Structural identity for a fresh in-memory venue-domain order-event projection before recorded venue events are consumed; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "number"
+literal = "0"
+context = '''local_event_count: 0,'''
+classification = "venue_truth_event_projection_counter_identity"
+reason = "Structural identity for a fresh in-memory local-domain order-event projection before recorded local events are consumed; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "number"
+literal = "1"
+context = '''self.event_count += 1;'''
+classification = "venue_truth_event_projection_counter_increment"
+reason = "Structural unit increment for each consumed recorded order event in the reconciler projection; it counts evidence ordering and is not a threshold."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "number"
+literal = "1"
+context = '''self.venue_event_count += 1;'''
+classification = "venue_truth_event_projection_counter_increment"
+reason = "Structural unit increment for each consumed recorded venue-domain order event in the reconciler projection; it counts evidence ordering and is not a threshold."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "number"
+literal = "1"
+context = '''self.local_event_count += 1;'''
+classification = "venue_truth_event_projection_counter_increment"
+reason = "Structural unit increment for each consumed recorded local-domain order event in the reconciler projection; it counts evidence ordering and is not a threshold."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "number"
+literal = "1"
+context = '''next_capture_number: 1,'''
+classification = "venue_truth_capture_sequence_initial"
+reason = "First per-account venue capture sequence value for the capture-fence state machine; it is a structural ordinal, not a runtime knob."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "number"
+literal = "1"
+context = '''self.next_capture_number += 1;'''
+classification = "venue_truth_capture_sequence_increment"
+reason = "Structural unit increment assigning the next per-account venue capture ordinal; capture cadence remains TOML-owned and no tolerance is introduced."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch.rs"
+kind = "string"
+literal = '''b"venue_truth_divergence"'''
+context = '''KillSwitchHaltTriggerKind::VenueTruthDivergence => b"venue_truth_divergence".as_slice(),'''
+classification = "kill_switch_trigger_kind_hash_label"
+reason = "Stable trigger-kind label included in halt-id derivation for venue-truth divergence halts; not a venue, size, timeout, or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"venue truth divergence: {:?} alarm_class={:?}"'''
+context = '''"venue truth divergence: {:?} alarm_class={:?}",'''
+classification = "venue_truth_divergence_halt_reason_template"
+reason = "Static durable halt reason template for venue-truth divergence evidence; it records already-classified divergence/alarm values and does not configure halt policy."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "number"
+literal = "0"
+context = '''0,'''
+classification = "venue_truth_clock_failure_absent_timestamp_sentinel"
+reason = "Absent-source-timestamp sentinel used only when the local clock fails before a Polymarket venue-truth poll can be timestamped; it is fail-closed halt evidence shape, not a runtime knob."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"bolt-v3-venue-truth-runtime"'''
+context = '''.name("bolt-v3-venue-truth-runtime".to_string())'''
+classification = "venue_truth_runtime_thread_label"
+reason = "Static diagnostic thread name for the owned Polymarket venue-truth runtime thread; cadence, endpoints, credentials, and halt behavior remain configured or structural."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''", "'''
+context = '''.join(", ")'''
+classification = "venue_truth_diagnostic_list_separator"
+reason = "Static separator for rendering ambiguous venue-truth execution-client diagnostics; it does not select a client or configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/transport_scope.rs"
+kind = "string"
+literal = '''", "'''
+context = '''matching_client_keys.join(", ")'''
+classification = "capital_admission_transport_diagnostic_list_separator"
+reason = "Static separator for rendering ambiguous capital-admission execution-client diagnostics; it does not select a client or configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "number"
+literal = "1"
+context = '''Decimal::new(1, USDC_DECIMALS)'''
+classification = "polymarket_usdc_wire_unit_scale_numerator"
+reason = "Fixed numerator for converting Polymarket CLOB integer USDC wire units using the canonical USDC decimal exponent; the exponent is adapter-owned currency metadata, not operator policy."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "string"
+literal = '''"resolve Polymarket credentials for venue-truth runtime source"'''
+context = '''.context("resolve Polymarket credentials for venue-truth runtime source")?;'''
+classification = "provider_runtime_diagnostic_context"
+reason = "Static error context for fail-closed construction of the Polymarket venue-truth source; it does not configure credentials, endpoints, sizing, or timing."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "string"
+literal = '''"construct Polymarket CLOB venue-truth client"'''
+context = '''.context("construct Polymarket CLOB venue-truth client")?;'''
+classification = "provider_runtime_diagnostic_context"
+reason = "Static error context for fail-closed construction of the Polymarket CLOB client; endpoints and timeouts remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "string"
+literal = '''"construct Polymarket Data API venue-truth client"'''
+context = '''.context("construct Polymarket Data API venue-truth client")?;'''
+classification = "provider_runtime_diagnostic_context"
+reason = "Static error context for fail-closed construction of the Polymarket Data API client; endpoints and timeouts remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs"
+kind = "string"
+literal = '''"poll Polymarket venue-truth endpoints"'''
+context = '''.context("poll Polymarket venue-truth endpoints")?;'''
+classification = "provider_runtime_diagnostic_context"
+reason = "Static error context for fail-closed venue-truth REST polling; cadence, endpoints, account, and credentials remain TOML or SSM-owned."

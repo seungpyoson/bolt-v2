@@ -68,6 +68,7 @@ pub enum BoundaryFeeder {
     ReferenceLiveProbe,
     DeployTargetHostFacts,
     SecretResolution,
+    PolymarketVenueTruthRuntime,
 }
 pub struct BoundaryRegistryEntry {
     pub adapter_id: &'static str,
@@ -81,6 +82,7 @@ pub const BOUNDARY_REGISTRY: &[BoundaryRegistryEntry] = &[
     BoundaryRegistryEntry { adapter_id: polyresearch::KEY, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::ReferenceLiveProbe },
     BoundaryRegistryEntry { adapter_id: IMDS_METADATA_ADAPTER_ID, class: BoundaryEvidenceClass::ImdsMetadata, feeder: BoundaryFeeder::DeployTargetHostFacts },
     BoundaryRegistryEntry { adapter_id: AWS_SSM_SECRET_SOURCE_ADAPTER_ID, class: BoundaryEvidenceClass::AwsSdkResponse, feeder: BoundaryFeeder::SecretResolution },
+    BoundaryRegistryEntry { adapter_id: polymarket::KEY, class: BoundaryEvidenceClass::HttpResponseBody, feeder: BoundaryFeeder::PolymarketVenueTruthRuntime },
 ];
 """,
     )
@@ -195,6 +197,13 @@ class = "AwsSdkResponse"
 feeder = "SecretResolution"
 issue = 991
 expires_on = "2026-07-31"
+reason = "test"
+[[evidence_deferred]]
+adapter_id = "POLYMARKET"
+class = "HttpResponseBody"
+feeder = "PolymarketVenueTruthRuntime"
+issue = 1179
+expires_on = "2026-08-31"
 reason = "test"
 """,
     )

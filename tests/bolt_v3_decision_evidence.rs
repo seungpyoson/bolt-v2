@@ -1816,6 +1816,46 @@ fn binary_oracle_edge_taker_exit_submit_threads_managed_position_id_to_shared_po
 }
 
 #[test]
+fn exit_fast_venue_availability_is_not_position_spot_coupled() {
+    let exit_decision_source =
+        support::repo_text("src/strategies/binary_oracle_edge_taker/exit_decision.rs");
+    let strategy_source = support::repo_text("src/strategies/binary_oracle_edge_taker/mod.rs");
+
+    assert!(
+        !exit_decision_source.contains("fast_venue_available: fields.spot_price.is_some()"),
+        "exit-decision evidence still derives fast_venue_available from position-coupled spot_price"
+    );
+    assert!(
+        !strategy_source.contains("fast_venue_available: log_fields.spot_price.is_some()"),
+        "exit-evaluation evidence still derives fast_venue_available from position-coupled spot_price"
+    );
+}
+
+#[test]
+fn exit_evaluation_optional_number_serialization_uses_finite_option_path() {
+    let strategy_source = support::repo_text("src/strategies/binary_oracle_edge_taker/mod.rs");
+    for field in [
+        "spot_price",
+        "reference_current_price",
+        "interval_open",
+        "fair_probability_up",
+        "fair_probability_down",
+        "uncertainty_band_probability",
+        "up_fee_bps",
+        "down_fee_bps",
+        "hold_ev_bps",
+        "exit_ev_bps",
+        "submission_price",
+    ] {
+        let forbidden = format!("{field}: log_fields.{field}.map(evidence_number)");
+        assert!(
+            !strategy_source.contains(&forbidden),
+            "exit-evaluation optional numeric field `{field}` still bypasses finite filtering"
+        );
+    }
+}
+
+#[test]
 fn strategy_build_context_requires_decision_evidence_value() {
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),

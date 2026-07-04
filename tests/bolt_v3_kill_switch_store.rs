@@ -4,6 +4,9 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use bolt_v2::{
     bolt_v3_config::BoltV3RootConfig,
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
@@ -386,6 +389,7 @@ fn persisted_state_round_trips_with_schema_version() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn write_state_logs_when_manual_recovery_history_cannot_be_preserved() {
     let _logger_guard = CAPTURING_LOGGER_OBSERVERS
@@ -427,7 +431,8 @@ fn write_state_logs_when_manual_recovery_history_cannot_be_preserved() {
             .len(),
         1
     );
-    fs::write(&path, b"{not-json").expect("store should be corrupted in place");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o200))
+        .expect("store should be made unreadable while parent remains writable");
 
     store
         .write_state_with_loss_snapshot(&KillSwitchState::Armed, Some(&loss_snapshot))

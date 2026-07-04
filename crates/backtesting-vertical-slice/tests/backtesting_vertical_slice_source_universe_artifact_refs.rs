@@ -71,13 +71,7 @@ fn collect_artifact_refs(
             if let Some(candidate) = artifact_ref_from_object(object, location) {
                 artifact_refs.push(candidate);
             }
-            if let Some(committed_input_hashes) = object.get("committed_input_hashes") {
-                collect_committed_input_hash_refs(
-                    committed_input_hashes,
-                    &format!("{location}.committed_input_hashes"),
-                    artifact_refs,
-                );
-            }
+            collect_flat_sibling_hash_refs(object, location, artifact_refs);
             for (key, child) in object {
                 collect_artifact_refs(child, &format!("{location}.{key}"), artifact_refs);
             }
@@ -90,44 +84,135 @@ fn artifact_ref_from_object(
     object: &Map<String, Value>,
     location: &str,
 ) -> Option<ArtifactRefCandidate> {
+    let role = string_field(object, "role").map(str::to_string);
+    let path = string_field(object, "path")?;
+    if role.is_none() && normalize_repo_path(path).is_err() {
+        return None;
+    }
+
     Some(ArtifactRefCandidate {
-        role: string_field(object, "role")?.to_string(),
-        path: string_field(object, "path")?.to_string(),
+        role: role.unwrap_or_else(|| inferred_role_from_location(location)),
+        path: path.to_string(),
         sha256: string_field(object, "sha256")?.to_string(),
         location: location.to_string(),
     })
 }
 
-fn collect_committed_input_hash_refs(
-    value: &Value,
+fn collect_flat_sibling_hash_refs(
+    object: &Map<String, Value>,
     location: &str,
     artifact_refs: &mut Vec<ArtifactRefCandidate>,
 ) {
-    let Some(object) = value.as_object() else {
-        return;
-    };
-
-    for (role, input_hash) in object {
-        let Some(input_hash) = input_hash.as_object() else {
+    for (key, path) in object {
+        let Some(role) = key.strip_suffix("_path") else {
             continue;
         };
-        let (Some(path), Some(sha256)) = (
-            string_field(input_hash, "path"),
-            string_field(input_hash, "sha256"),
-        ) else {
+        if role.is_empty() {
+            continue;
+        }
+        let Some(path) = path.as_str() else {
+            continue;
+        };
+        if normalize_repo_path(path).is_err() {
+            continue;
+        }
+        let sha256_key = format!("{role}_sha256");
+        let hash_key = format!("{role}_hash");
+        let Some((hash_key, sha256)) = string_field(object, &sha256_key)
+            .map(|sha256| (sha256_key.as_str(), sha256))
+            .or_else(|| string_field(object, &hash_key).map(|sha256| (hash_key.as_str(), sha256)))
+        else {
             continue;
         };
         artifact_refs.push(ArtifactRefCandidate {
-            role: format!("committed_input_hashes.{role}"),
+            role: role.to_string(),
             path: path.to_string(),
             sha256: sha256.to_string(),
-            location: format!("{location}.{role}"),
+            location: format!("{location}.{hash_key}"),
         });
     }
 }
 
+fn inferred_role_from_location(location: &str) -> String {
+    location
+        .strip_prefix("$.")
+        .and_then(|location| location.strip_prefix("committed_input_hashes."))
+        .map(|role| format!("committed_input_hashes.{role}"))
+        .unwrap_or_else(|| {
+            location
+                .rsplit_once('.')
+                .map(|(_, role)| role)
+                .unwrap_or(location)
+                .to_string()
+        })
+}
+
 fn string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
     object.get(key)?.as_str()
+}
+
+#[test]
+fn artifact_ref_collector_treats_named_path_sha256_objects_as_pins() {
+    let json = serde_json::json!({
+        "source_proof_admissibility_status": {
+            "admissibility_contract": {
+                "path": "repo://crates/backtesting-vertical-slice/src/source_proof_admissibility.rs",
+                "sha256": "b52df4d20d6c8b5e656294ee331758c648f1cb1eb27c0c1b6fbb7e2c021fcf12"
+            }
+        }
+    });
+    let mut artifact_refs = Vec::new();
+
+    collect_artifact_refs(&json, "$", &mut artifact_refs);
+
+    assert!(
+        artifact_refs.iter().any(|candidate| {
+            candidate.role == "admissibility_contract"
+                && candidate.location
+                    == "$.source_proof_admissibility_status.admissibility_contract"
+                && candidate.path
+                    == "repo://crates/backtesting-vertical-slice/src/source_proof_admissibility.rs"
+                && candidate.sha256
+                    == "b52df4d20d6c8b5e656294ee331758c648f1cb1eb27c0c1b6fbb7e2c021fcf12"
+        }),
+        "collector should include named-key path/sha256 pins: {artifact_refs:?}"
+    );
+}
+
+#[test]
+fn artifact_ref_collector_treats_flat_path_hash_siblings_as_pins() {
+    let json = serde_json::json!({
+        "object_gates_path": "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json",
+        "object_gates_hash": "8e5f68118c05e12f5f533305694fdd071140748b5aeb7db6afaa67937e2c148e",
+        "conversion_queue_path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/binance-data-vision-trades-2026-03-01-all-instruments/queue/source-universe-conversion-queue.json",
+        "conversion_queue_sha256": "3c6b000f781712930c90189a2131f419cf2822d3ec06083fdf06c53c67c59d77"
+    });
+    let mut artifact_refs = Vec::new();
+
+    collect_artifact_refs(&json, "$", &mut artifact_refs);
+
+    assert!(
+        artifact_refs.iter().any(|candidate| {
+            candidate.role == "object_gates"
+                && candidate.location == "$.object_gates_hash"
+                && candidate.path
+                    == "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json"
+                && candidate.sha256
+                    == "8e5f68118c05e12f5f533305694fdd071140748b5aeb7db6afaa67937e2c148e"
+        }),
+        "collector should include flat sibling path/hash pins: {artifact_refs:?}"
+    );
+    assert!(
+        artifact_refs.iter().any(|candidate| {
+            candidate.role == "conversion_queue"
+                && candidate.location == "$.conversion_queue_sha256"
+                && candidate.path
+                    == "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/binance-data-vision-trades-2026-03-01-all-instruments/queue/source-universe-conversion-queue.json"
+                && candidate.sha256
+                    == "3c6b000f781712930c90189a2131f419cf2822d3ec06083fdf06c53c67c59d77"
+        }),
+        "collector should include flat sibling path/sha256 pins: {artifact_refs:?}"
+    );
 }
 
 fn check_artifact_ref(

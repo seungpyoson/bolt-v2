@@ -59,7 +59,7 @@
         {
           "role": "source_universe_execution_pack",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/execution-pack/source-universe-execution-pack.json",
-          "sha256": "1af3250104470877c7c3fe3ec8ce14ea0aec4fbdcb453f5699477428d9660b43"
+          "sha256": "c6ab13343b15d9c830561a243ebdeda4d68273af49db8d7fd81471edb0f2ad83"
         }
       ],
       "blocking_reasons": [
@@ -108,7 +108,7 @@
         {
           "role": "source_universe_execution_pack",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/source-universe-execution-pack.json",
-          "sha256": "a2a2da68c079a0497a4608ac92874a393b2f2b3bbbb0c26f5e73ca3c25a8344f"
+          "sha256": "2a812905f461e362fd06e281e62f43784e879baeeb9f3b66a06ee3113ad9fbea"
         }
       ],
       "blocking_reasons": []

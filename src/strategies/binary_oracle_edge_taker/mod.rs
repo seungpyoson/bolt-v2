@@ -3485,7 +3485,7 @@ impl BinaryOracleEdgeTaker {
         });
         exit_pending.pending_exit.terminal_received = true;
         if let Some(residual_position) = exit_pending.residual_position_after_terminal() {
-            let filled_quantity = exit_pending.pending_exit.filled_quantity.clone();
+            let filled_quantity = exit_pending.pending_exit.filled_quantity;
             let residual_quantity = residual_position.quantity;
             let origin = exit_pending
                 .position

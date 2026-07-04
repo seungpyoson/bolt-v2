@@ -394,6 +394,11 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         realized_volatility_max_source_age_ms: None,
         pricing_kurtosis: 0.25,
     };
+    let quote_set_at_reference_evaluation = || {
+        let mut quote_set = quote_set_inputs();
+        quote_set.now_ms = 1_500;
+        quote_set
+    };
     let expected_fair_probability_up = updown::fair_probability_up(&FairProbabilityInputs {
         spot_price: 100.05,
         strike_price: fair_input.strike_price.expect("fixture strike"),
@@ -415,7 +420,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
             BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
                 reference_fair_value: fair_input,
                 quote_plan: quote_plan_inputs(updown::KEY),
-                quote_set: quote_set_inputs(),
+                quote_set: quote_set_at_reference_evaluation(),
                 order_plan: order_plan_inputs(),
                 submit_template: &maker_limit_post_only_template(),
                 price_precision: 2,
@@ -504,7 +509,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                     ..fair_input
                 },
                 quote_plan: quote_plan_inputs(updown::KEY),
-                quote_set: quote_set_inputs(),
+                quote_set: quote_set_at_reference_evaluation(),
                 order_plan: order_plan_inputs(),
                 submit_template: &maker_limit_post_only_template(),
                 price_precision: 2,
@@ -581,7 +586,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
                     reference_fair_value,
                     quote_plan: quote_plan_inputs(reference_fair_value.family_key),
-                    quote_set: quote_set_inputs(),
+                    quote_set: quote_set_at_reference_evaluation(),
                     order_plan: order_plan_inputs(),
                     submit_template: &maker_limit_post_only_template(),
                     price_precision: 2,
@@ -638,7 +643,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                     ..fair_input
                 },
                 quote_plan: quote_plan_inputs(updown::KEY),
-                quote_set: quote_set_inputs(),
+                quote_set: quote_set_at_reference_evaluation(),
                 order_plan: order_plan_inputs(),
                 submit_template: &maker_limit_post_only_template(),
                 price_precision: 2,

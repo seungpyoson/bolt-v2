@@ -540,6 +540,32 @@ fn selector_rejects_quote_observed_after_interval_end() {
 }
 
 #[test]
+fn selector_accepts_venue_leading_quote_inside_interval_as_fresh() {
+    let mut selector =
+        ReferencePriceSelector::new("BTC", ["chainlink_primary".to_string()], 1, 2000, 25)
+            .expect("selector config should be valid");
+
+    let selected = selector
+        .select(
+            1774672089000,
+            1774672389000,
+            1774672089500,
+            &[quote(
+                "chainlink_primary",
+                66300.25,
+                1774672089600,
+                1774672089650,
+            )],
+        )
+        .expect("venue-leading quote inside the interval should not be false-stale");
+
+    assert_eq!(
+        selected,
+        ReferencePriceSelection::selected("chainlink_primary", 66300.25, false)
+    );
+}
+
+#[test]
 fn selector_observes_cross_source_drift_without_blocking_by_default() {
     let mut selector = ReferencePriceSelector::new(
         "BTC",

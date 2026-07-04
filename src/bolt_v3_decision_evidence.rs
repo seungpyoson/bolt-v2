@@ -805,8 +805,10 @@ pub enum BoltV3ExitRvSnapshotBlocker {
 pub enum BoltV3ExitRvGateResult {
     Accepted,
     RejectedFutureDated,
+    RejectedStale,
     RejectedNotReady,
     MissingSnapshot,
+    MissingEvaluationEventTime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1469,7 +1471,9 @@ pub struct BoltV3BasketAdmissionDecisionEvidence {
 pub enum BoltV3RvGateResult {
     Accepted,
     MissingSnapshot,
+    MissingEvaluationEventTime,
     RejectedFutureDated,
+    RejectedStale,
     RejectedNotReady,
 }
 

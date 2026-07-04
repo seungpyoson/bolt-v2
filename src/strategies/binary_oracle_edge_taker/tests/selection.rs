@@ -46,9 +46,16 @@ fn switch_resets_only_active_market_state() {
         strategy.pricing.selected_pricing_spot().cloned(),
         Some(fast_spot("bybit", 3_100.5, 1_200))
     );
-    assert_eq!(strategy.pricing.current_realized_vol_at(1_200), Some(1.5));
     assert_eq!(
-        strategy.pricing.current_realized_vol_source_at(1_200),
+        strategy
+            .pricing
+            .current_realized_vol_at(Some(VenueEventMs::new(1_200)), None),
+        Some(1.5)
+    );
+    assert_eq!(
+        strategy
+            .pricing
+            .current_realized_vol_source_at(Some(VenueEventMs::new(1_200)), None),
         (Some("<SOURCE_ID>".to_string()), Some(1_200))
     );
 }

@@ -13,6 +13,7 @@ use crate::{
     },
     bolt_v3_feed_health::ForcedFlatReason,
     bolt_v3_market_families::OutcomeSide,
+    bolt_v3_timestamp_domain::VenueEventMs,
 };
 
 use super::{
@@ -81,8 +82,20 @@ impl ExitEvaluationTriggerContext {
         }
     }
 
+    #[cfg(test)]
     pub(super) const fn unknown(now_ms: u64) -> Self {
         Self::new(BoltV3ExitTriggerSource::Unknown, now_ms, None)
+    }
+
+    pub(super) const fn venue_event_ms(self) -> Option<VenueEventMs> {
+        match self.source {
+            BoltV3ExitTriggerSource::SignalQuote
+            | BoltV3ExitTriggerSource::ReferenceUpdate
+            | BoltV3ExitTriggerSource::BookDelta => Some(VenueEventMs::new(self.ts_event_ms)),
+            BoltV3ExitTriggerSource::SelectionUpdate
+            | BoltV3ExitTriggerSource::Unknown
+            | BoltV3ExitTriggerSource::Other => None,
+        }
     }
 }
 
@@ -165,7 +178,6 @@ pub(super) struct ExitEvaluationLogFields {
 pub(super) enum ExitDecision {
     Hold,
     Exit,
-    ExitFailClosed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,7 +205,6 @@ impl BoltV3ExitDecisionEvidence {
             match fields.exit_decision {
                 Some(ExitDecision::Hold) => BoltV3ExitDecisionOutcome::Hold,
                 Some(ExitDecision::Exit) => BoltV3ExitDecisionOutcome::Exit,
-                Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionOutcome::ExitFailClosed,
                 None => BoltV3ExitDecisionOutcome::Blocked,
             }
         };
@@ -326,7 +337,6 @@ pub(super) fn exit_decision_evidence_from_optional(
     match decision {
         Some(ExitDecision::Hold) | None => BoltV3ExitDecisionOutcome::Hold,
         Some(ExitDecision::Exit) => BoltV3ExitDecisionOutcome::Exit,
-        Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionOutcome::ExitFailClosed,
     }
 }
 
@@ -336,16 +346,16 @@ pub(super) fn evaluate_exit_decision(
     exit_hysteresis_bps: f64,
 ) -> ExitDecision {
     let Some(hold_ev_bps) = hold_ev_bps.filter(|value| value.is_finite()) else {
-        return ExitDecision::ExitFailClosed;
+        return ExitDecision::Hold;
     };
     let Some(exit_ev_bps) = exit_ev_bps.filter(|value| value.is_finite()) else {
-        return ExitDecision::ExitFailClosed;
+        return ExitDecision::Hold;
     };
     if !exit_hysteresis_bps.is_finite() {
-        return ExitDecision::ExitFailClosed;
+        return ExitDecision::Hold;
     }
 
-    if exit_ev_bps >= hold_ev_bps - exit_hysteresis_bps {
+    if exit_ev_bps > hold_ev_bps + exit_hysteresis_bps {
         ExitDecision::Exit
     } else {
         ExitDecision::Hold

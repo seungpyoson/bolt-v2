@@ -58,6 +58,10 @@ impl NtStrategyClockMs {
     pub const fn saturating_duration_since(self, earlier: Self) -> u64 {
         self.0.saturating_sub(earlier.0)
     }
+
+    pub const fn saturating_duration_since_venue_event(self, earlier: VenueEventMs) -> u64 {
+        self.0.saturating_sub(earlier.0)
+    }
 }
 
 #[cfg(test)]
@@ -82,5 +86,16 @@ mod tests {
         assert_eq!(event.value(), 1_000);
         assert_eq!(receive.value(), 1_001);
         assert_eq!(strategy.value(), 1_002);
+    }
+
+    #[test]
+    fn strategy_clock_age_from_venue_event_clamps_venue_leading_skew() {
+        let venue_leading_event = VenueEventMs::new(1_005);
+        let strategy_clock = NtStrategyClockMs::new(1_000);
+
+        assert_eq!(
+            strategy_clock.saturating_duration_since_venue_event(venue_leading_event),
+            0
+        );
     }
 }

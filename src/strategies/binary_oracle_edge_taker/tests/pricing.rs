@@ -677,22 +677,30 @@ fn spike_cooldown_deadline_only_extends_never_retracts() {
 }
 
 #[test]
-fn task5_exit_decision_uses_hysteresis_boundary_and_fails_closed() {
+fn task5_exit_decision_uses_exit_favoring_hysteresis_and_holds_on_missing_inputs() {
     assert_eq!(
-        evaluate_exit_decision(Some(12.0), Some(11.0), 1.0),
+        evaluate_exit_decision(Some(12.0), Some(13.1), 1.0),
         ExitDecision::Exit
     );
     assert_eq!(
-        evaluate_exit_decision(Some(12.0), Some(10.5), 1.0),
+        evaluate_exit_decision(Some(12.0), Some(13.0), 1.0),
+        ExitDecision::Hold
+    );
+    assert_eq!(
+        evaluate_exit_decision(Some(12.0), Some(12.0), 1.0),
         ExitDecision::Hold
     );
     assert_eq!(
         evaluate_exit_decision(None, Some(10.0), 1.0),
-        ExitDecision::ExitFailClosed
+        ExitDecision::Hold
     );
     assert_eq!(
         evaluate_exit_decision(Some(12.0), Some(f64::NAN), 1.0),
-        ExitDecision::ExitFailClosed
+        ExitDecision::Hold
+    );
+    assert_eq!(
+        evaluate_exit_decision(Some(12.0), Some(14.0), f64::NAN),
+        ExitDecision::Hold
     );
 }
 
@@ -1695,7 +1703,7 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
 }
 
 #[test]
-fn task6_exit_decision_requires_live_uncertainty_components() {
+fn exit_hold_ev_does_not_require_uncertainty_band_components() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     let open_position = OpenPositionState {
         market_id: Some("MKT-1".to_string()),
@@ -1729,18 +1737,54 @@ fn task6_exit_decision_requires_live_uncertainty_components() {
 
     let decision = strategy.exit_submission_decision_at(1_200);
 
-    assert_eq!(decision.evaluation.hold_ev_bps, None);
+    assert!(decision.evaluation.hold_ev_bps.is_some());
     assert!(decision.evaluation.exit_ev_bps.is_some());
-    assert_eq!(
-        decision.evaluation.exit_decision,
-        Some(ExitDecision::ExitFailClosed)
+}
+
+#[test]
+fn exit_hold_ev_uses_raw_fair_probability_symmetrically_with_exit_ev() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let open_position = OpenPositionState {
+        market_id: Some("MKT-1".to_string()),
+        instrument_id: strategy.active.books.up.instrument_id.unwrap(),
+        position_id: PositionId::from("P-UP-SYMMETRIC-HOLD"),
+        outcome_side: Some(OutcomeSide::Up),
+        outcome_fees: strategy.active.outcome_fees.clone(),
+        historical_entry_fee_bps: Some(0.0),
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(10.0, 2),
+        avg_px_open: 0.450,
+        interval_open: Some(3_100.0),
+        selection_published_at_ms: Some(1_000),
+        seconds_to_expiry_at_selection: Some(300),
+        book: strategy.active.books.up.clone(),
+    };
+    set_managed_position(
+        &mut strategy,
+        open_position,
+        ManagedPositionOrigin::StrategyEntry,
     );
-    assert_eq!(decision.order_side, Some(OrderSide::Sell));
-    assert_eq!(
-        decision.instrument_id,
-        strategy.active.books.up.instrument_id
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_101.0, 1_200)));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+
+    let fair_probability_up = strategy
+        .current_position_fair_probability_up_at(1_200)
+        .expect("ready position should produce fair probability")
+        .value();
+    let hold_ev_bps = strategy
+        .current_hold_ev_bps_at(1_200, OutcomeSide::Up)
+        .expect("ready position should produce hold EV");
+    let expected_hold_ev_bps = ((fair_probability_up - 0.450) / 0.450) * BPS_DENOMINATOR;
+
+    assert!(
+        (hold_ev_bps - expected_hold_ev_bps).abs() < 1e-9,
+        "hold EV must use the same raw fair value basis as exit EV; hold={hold_ev_bps} expected={expected_hold_ev_bps}"
     );
-    assert_eq!(decision.blocked_reason, None);
 }
 
 #[test]

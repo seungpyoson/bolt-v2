@@ -21,6 +21,7 @@ use crate::{
         ReferencePriceSubscriptionRequest,
         reference_price_subscription_requests as build_reference_price_subscription_requests,
     },
+    bolt_v3_timestamp_domain::{NtStrategyClockMs, VenueEventMs},
     bolt_v3_trade_flow::SignedTradeFlow,
 };
 
@@ -89,7 +90,12 @@ impl BinaryOracleEdgeTaker {
             .collect::<Vec<_>>();
 
         !reference_price_selector
-            .source_liveness_quorum_at(interval_start_ms, interval_end_ms, now_ms, &quotes)
+            .source_liveness_quorum_at(
+                VenueEventMs::new(interval_start_ms),
+                VenueEventMs::new(interval_end_ms),
+                NtStrategyClockMs::new(now_ms),
+                &quotes,
+            )
             .is_satisfied()
     }
 

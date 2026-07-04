@@ -21,6 +21,7 @@ use crate::{
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
     bolt_v3_requote_budget::RequoteBudgetPair,
+    bolt_v3_timestamp_domain::VenueEventMs,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +61,7 @@ pub struct MakerRuntimeReferenceFairValueInput<'a> {
     pub strike_price: Option<f64>,
     pub seconds_to_market_end: Option<u64>,
     pub realized_volatility_snapshot: &'a RealizedVolSnapshot,
+    pub realized_volatility_max_source_age_ms: Option<u64>,
     pub pricing_kurtosis: f64,
 }
 
@@ -155,11 +157,13 @@ pub fn maker_reference_current_price_fair_value_decision(
     pricing.observe_realized_vol_snapshot((*input.realized_volatility_snapshot).clone());
     let config = FairValuePricingConfig {
         realized_volatility_surface_id: input.realized_volatility_snapshot.surface_id.as_str(),
+        realized_volatility_max_source_age_ms: input.realized_volatility_max_source_age_ms,
         pricing_kurtosis: input.pricing_kurtosis,
         market_family: input.family_key,
     };
     let request = FairValuePricingRequest {
         now_ms: input.now_ms,
+        realized_vol_gate_event_ms: Some(VenueEventMs::new(selected_quote.observed_ts_ms())),
         strike_price: input.strike_price,
         seconds_to_market_end: input.seconds_to_market_end,
     };
@@ -206,10 +210,10 @@ fn selected_reference_quote_for_selection<'a>(
         .reference_quotes
         .iter()
         .filter(|quote| {
+            let observed_ts_ms = VenueEventMs::new(quote.observed_ts_ms());
             quote.source_id() == source_id
-                && quote.observed_ts_ms() >= input.interval_start_ms
-                && quote.observed_ts_ms() <= input.interval_end_ms
-                && quote.observed_ts_ms() <= input.now_ms
+                && observed_ts_ms >= VenueEventMs::new(input.interval_start_ms)
+                && observed_ts_ms <= VenueEventMs::new(input.interval_end_ms)
         })
         .max_by_key(|quote| quote.observed_ts_ms())
 }

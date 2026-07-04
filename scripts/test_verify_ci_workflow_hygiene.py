@@ -366,7 +366,6 @@ jobs:
             diff_range="${base_ref}...${head_ref}"
           fi
           changed="$(git diff --name-only "$diff_range" -- \
-            .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
             ci/nextest-fingerprint.toml \
             ci/github-actions-runners.toml \
@@ -1306,7 +1305,7 @@ permissions:
 jobs:
   coverage-enforcer:
     name: coverage-enforcer
-    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -7135,9 +7134,9 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n",
                     "    if: ${{ github.event_name == 'pull_request' }}\n"
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n",
                 )
             },
         ),
@@ -7157,8 +7156,8 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n"
                     "    'if': ${{ github.event_name == 'pull_request' }}\n",
                 )
             },
@@ -7168,8 +7167,8 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n"
                     "    continue-on-error: true\n",
                 )
             },
@@ -7179,8 +7178,8 @@ def assert_coverage_enforcer_workflow_gaps_are_reported() -> None:
             {
                 workflow_name: replace_once(
                     BASE_COVERAGE_ENFORCER_WORKFLOW,
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n",
-                    "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n",
+                    "    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}\n"
                     "    permissions:\n"
                     "      contents: write\n"
                     "      checks: write\n"
@@ -9487,6 +9486,20 @@ def assert_nextest_fingerprint_reuse_governance_covers_sidecar_helper() -> None:
     missing = [path for path in required_paths if path not in verifier.FINGERPRINT_REUSE_GOVERNANCE_PATHS]
     if missing:
         raise AssertionError(f"fingerprint-reuse governance pathspec must include root sidecar helper files: {missing}")
+
+
+def assert_nextest_fingerprint_reuse_governance_excludes_whole_ci_workflow() -> None:
+    verifier = load_verifier()
+    if ".github/workflows/ci.yml" in verifier.FINGERPRINT_REUSE_GOVERNANCE_PATHS:
+        raise AssertionError("fingerprint-reuse governance pathspec must not include whole ci.yml")
+
+    whole_workflow_detector = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Detect fingerprint-reuse governance changes",
+        """          changed="$(git diff --name-only "$diff_range" --             .github/actions/setup-environment/action.yml""",
+        """          changed="$(git diff --name-only "$diff_range" --             .github/workflows/ci.yml             .github/actions/setup-environment/action.yml""",
+    )
+    assert_error("detector must detect fingerprint-reuse governance changes", whole_workflow_detector)
 
 
 def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
@@ -14583,9 +14596,9 @@ git() {
     narrowed_pathspec = replace_once_after(
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
-        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/config_validators.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
-        """.github/workflows/ci.yml)
-          echo "decoy paths: .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/config_validators.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py\"""",
+        """.github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/config_validators.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/actions/setup-environment/action.yml)
+          echo "decoy paths: .github/workflows/ci.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/config_validators.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py\"""",
     )
     assert_error(
         "detector must detect fingerprint-reuse governance changes",
@@ -14594,15 +14607,15 @@ git() {
     git_diff_decoy_pathspec = replace_once_after(
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
-        """          changed="$(git diff --name-only "$diff_range" --             .github/workflows/ci.yml""",
+        """          changed="$(git diff --name-only "$diff_range" --             .github/actions/setup-environment/action.yml""",
         """          echo "$(git diff --name-only "$diff_range" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/config_validators.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
-          changed="$(git diff --name-only "$diff_range" --             .github/workflows/ci.yml""",
+          changed="$(git diff --name-only "$diff_range" --             .github/actions/setup-environment/action.yml""",
     )
     git_diff_decoy_pathspec = replace_once_after(
         git_diff_decoy_pathspec,
         "      - name: Detect fingerprint-reuse governance changes",
-        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/config_validators.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
-        """.github/workflows/ci.yml)""",
+        """.github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/config_validators.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/actions/setup-environment/action.yml)""",
     )
     assert_error("detector must detect fingerprint-reuse governance changes", git_diff_decoy_pathspec)
 
@@ -17697,6 +17710,7 @@ def main() -> int:
     assert_source_fence_static_ignores_comments()
     assert_local_verification_gate_recipes_are_enforced()
     assert_nextest_fingerprint_reuse_governance_covers_sidecar_helper()
+    assert_nextest_fingerprint_reuse_governance_excludes_whole_ci_workflow()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
     assert_ci_policy_matrix()
     assert_ci_policy_resolvers_agree()

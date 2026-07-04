@@ -577,7 +577,6 @@ else
   diff_range="${base_ref}...${head_ref}"
 fi
 changed="$(git diff --name-only "$diff_range" -- \\
-  .github/workflows/ci.yml \\
   .github/actions/setup-environment/action.yml \\
   ci/nextest-fingerprint.toml \\
   ci/github-actions-runners.toml \\
@@ -651,7 +650,6 @@ if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
 fi
 echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}\""""
 FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
-    ".github/workflows/ci.yml",
     ".github/actions/setup-environment/action.yml",
     "ci/nextest-fingerprint.toml",
     "ci/github-actions-runners.toml",

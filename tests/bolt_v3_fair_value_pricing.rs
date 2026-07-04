@@ -9,6 +9,7 @@ use bolt_v2::{
         RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
         RealizedVolSnapshot,
     },
+    bolt_v3_timestamp_domain::VenueEventMs,
 };
 
 const TARGET_SURFACE_ID: &str = "<TARGET_SURFACE_ID>";
@@ -23,6 +24,7 @@ const OTHER_REALIZED_VOL: f64 = 3.0;
 fn pricing_config() -> FairValuePricingConfig<'static> {
     FairValuePricingConfig {
         realized_volatility_surface_id: TARGET_SURFACE_ID,
+        realized_volatility_max_source_age_ms: None,
         pricing_kurtosis: 0.0,
         market_family: "updown",
     }
@@ -31,6 +33,7 @@ fn pricing_config() -> FairValuePricingConfig<'static> {
 fn pricing_request() -> FairValuePricingRequest {
     FairValuePricingRequest {
         now_ms: TARGET_READY_TS_MS,
+        realized_vol_gate_event_ms: Some(VenueEventMs::new(TARGET_READY_TS_MS)),
         strike_price: Some(3_100.0),
         seconds_to_market_end: Some(300),
     }
@@ -131,7 +134,7 @@ fn different_surface_snapshot_does_not_evict_active_realized_volatility() {
         Some(TARGET_SURFACE_ID)
     );
     assert_eq!(
-        state.current_realized_vol_at(OTHER_NEWER_TS_MS),
+        state.current_realized_vol_at(Some(VenueEventMs::new(OTHER_NEWER_TS_MS)), None),
         Some(TARGET_REALIZED_VOL)
     );
     // Differential vs #755 filter-at-observe: the foreign snapshot is RETAINED under its own
@@ -156,6 +159,7 @@ fn fair_value_inputs_report_all_missing_input_blockers_in_stable_order() {
             &pricing_config(),
             FairValuePricingRequest {
                 now_ms: TARGET_READY_TS_MS,
+                realized_vol_gate_event_ms: Some(VenueEventMs::new(TARGET_READY_TS_MS)),
                 strike_price: None,
                 seconds_to_market_end: None,
             },
@@ -226,7 +230,7 @@ fn fair_value_pricing_reports_no_source_venue_when_snapshot_sources_are_empty() 
     assert_eq!(result.realized_vol_source_venue, None);
     assert_eq!(result.realized_vol_source_ts_ms, Some(TARGET_READY_TS_MS));
     assert_eq!(
-        state.current_realized_vol_source_at(TARGET_READY_TS_MS),
+        state.current_realized_vol_source_at(Some(VenueEventMs::new(TARGET_READY_TS_MS)), None),
         (None, Some(TARGET_READY_TS_MS))
     );
 }
@@ -250,13 +254,17 @@ fn newer_same_surface_unready_snapshot_blocks_pricing_fail_closed() {
             )),
         Some((TARGET_SURFACE_ID, OTHER_NEWER_TS_MS, false))
     );
-    assert_eq!(state.current_realized_vol_at(OTHER_NEWER_TS_MS), None);
+    assert_eq!(
+        state.current_realized_vol_at(Some(VenueEventMs::new(OTHER_NEWER_TS_MS)), None),
+        None
+    );
 
     let blocked_by = state
         .fair_value_inputs_at(
             &pricing_config(),
             FairValuePricingRequest {
                 now_ms: OTHER_NEWER_TS_MS,
+                realized_vol_gate_event_ms: Some(VenueEventMs::new(OTHER_NEWER_TS_MS)),
                 ..pricing_request()
             },
         )

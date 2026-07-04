@@ -702,6 +702,50 @@ fn accepted_order_during_in_flight_capture_explains_next_capture_without_false_h
 }
 
 #[test]
+fn accepted_order_before_snapshot_completion_survives_current_capture_boundary() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_000, Decimal::new(50_000_000, 0)))
+        .expect("baseline should be accepted");
+
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Accepted(order_accepted_event(
+            "client-order-1",
+            "venue-order-1",
+            "condition-token123.POLYMARKET",
+            1_150,
+        )),
+    );
+    let empty_capture_results = reconciler
+        .record_snapshot_completion(empty_snapshot(1_200, Decimal::new(50_000_000, 0)))
+        .expect("empty capture must not prune the in-flight Accepted event");
+    let open_capture_results = reconciler
+        .record_snapshot_completion(snapshot_with_order(
+            1_300,
+            Decimal::new(50_000_000, 0),
+            Decimal::ZERO,
+            0.0,
+        ))
+        .expect("next capture containing the order must explain it from the retained event");
+
+    assert!(
+        empty_capture_results
+            .iter()
+            .any(|result| result.capture_number == 2
+                && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 2 must accept the empty venue snapshot"
+    );
+    assert!(
+        open_capture_results
+            .iter()
+            .any(|result| result.capture_number == 3
+                && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 3 must accept the new open order explained by the retained Accepted event"
+    );
+}
+
+#[test]
 fn accepted_partial_fill_during_in_flight_capture_explains_next_capture_without_false_halt() {
     let mut reconciler = VenueTruthReconciler::new();
     reconciler

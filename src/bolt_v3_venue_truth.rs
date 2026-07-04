@@ -329,6 +329,8 @@ impl VenueTruthReconciler {
     }
 
     pub fn record_order_event(&mut self, event: VenueTruthOrderEvent) {
+        // `next_capture_number` names the in-flight capture until completion records it.
+        // Pruning keeps same-sequence entries through that capture's acceptance.
         self.event_projection
             .record_order_event(event, self.next_capture_number);
     }
@@ -623,12 +625,12 @@ impl VenueTruthEventProjection {
         self.terminal_venue_order_ids
             .retain(|venue_order_id, capture_number| {
                 open_venue_order_ids.contains(venue_order_id)
-                    || *capture_number > accepted_capture_number
+                    || *capture_number >= accepted_capture_number
             });
         self.accepted_venue_order_ids
             .retain(|venue_order_id, capture_number| {
                 open_venue_order_ids.contains(venue_order_id)
-                    || *capture_number > accepted_capture_number
+                    || *capture_number >= accepted_capture_number
             });
         let fill_capture_numbers = self.fill_capture_number_by_venue_order_id.clone();
         self.fill_quantity_by_venue_order_id
@@ -636,7 +638,7 @@ impl VenueTruthEventProjection {
                 open_venue_order_ids.contains(venue_order_id)
                     || fill_capture_numbers
                         .get(venue_order_id)
-                        .is_some_and(|capture_number| *capture_number > accepted_capture_number)
+                        .is_some_and(|capture_number| *capture_number >= accepted_capture_number)
             });
         self.fill_capture_number_by_venue_order_id
             .retain(|venue_order_id, _| {
@@ -1161,29 +1163,57 @@ mod tests {
             reconciler
                 .event_projection
                 .terminal_venue_order_ids
+                .contains_key(&venue_order_id),
+            "first accepted boundary gives same-sequence terminal state one boundary of grace"
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .accepted_venue_order_ids
+                .contains_key(&venue_order_id),
+            "first accepted boundary gives same-sequence accepted state one boundary of grace"
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .fill_quantity_by_venue_order_id
+                .contains_key(&venue_order_id),
+            "first accepted boundary gives same-sequence fill state one boundary of grace"
+        );
+
+        assert_eq!(
+            reconciler
+                .reconcile_snapshot(empty_snapshot(5))
+                .expect("next empty snapshot should reconcile"),
+            VenueTruthReconciliation::DeltaExplained
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .terminal_venue_order_ids
                 .is_empty(),
-            "accepted capture boundary should clear terminal markers for non-open venue orders"
+            "second accepted capture boundary should clear terminal markers for non-open venue orders"
         );
         assert!(
             !reconciler
                 .event_projection
                 .client_to_venue_order_id
                 .contains_key("client-order-1"),
-            "accepted capture boundary should clear stale client-to-venue projection"
+            "second accepted capture boundary should clear stale client-to-venue projection"
         );
         assert!(
             !reconciler
                 .event_projection
                 .accepted_venue_order_ids
                 .contains_key(&venue_order_id),
-            "accepted capture boundary should clear stale accepted-order projection"
+            "second accepted capture boundary should clear stale accepted-order projection"
         );
         assert!(
             !reconciler
                 .event_projection
                 .fill_quantity_by_venue_order_id
                 .contains_key(&venue_order_id),
-            "accepted capture boundary should clear stale fill-quantity projection"
+            "second accepted capture boundary should clear stale fill-quantity projection"
         );
     }
 
@@ -1223,22 +1253,50 @@ mod tests {
             reconciler
                 .event_projection
                 .accepted_venue_order_ids
+                .contains_key(&venue_order_id),
+            "FOK accepted-order projection should survive the same-sequence accepted boundary"
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .fill_quantity_by_venue_order_id
+                .contains_key(&venue_order_id),
+            "FOK fill-quantity projection should survive the same-sequence accepted boundary"
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .client_to_venue_order_id
+                .contains_key("client-order-1"),
+            "FOK client mapping should survive the same-sequence accepted boundary"
+        );
+
+        assert_eq!(
+            reconciler
+                .reconcile_snapshot(snapshot_with_position(5))
+                .expect("next unchanged snapshot should reconcile"),
+            VenueTruthReconciliation::DeltaExplained
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .accepted_venue_order_ids
                 .is_empty(),
-            "FOK accepted-order projection must not leak after the accepted snapshot boundary"
+            "FOK accepted-order projection must not leak after the following accepted boundary"
         );
         assert!(
             reconciler
                 .event_projection
                 .fill_quantity_by_venue_order_id
                 .is_empty(),
-            "FOK fill-quantity projection must not leak after the accepted snapshot boundary"
+            "FOK fill-quantity projection must not leak after the following accepted boundary"
         );
         assert!(
             reconciler
                 .event_projection
                 .client_to_venue_order_id
                 .is_empty(),
-            "FOK client mapping must not leak after the accepted snapshot boundary"
+            "FOK client mapping must not leak after the following accepted boundary"
         );
     }
 
@@ -1301,15 +1359,36 @@ mod tests {
             reconciler
                 .event_projection
                 .accepted_venue_order_ids
+                .contains_key(&venue_order_id),
+            "FOK accepted-order projection must survive the capture where its effect becomes visible"
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .fill_quantity_by_venue_order_id
+                .contains_key(&venue_order_id),
+            "FOK fill-quantity projection must survive the capture where its effect becomes visible"
+        );
+
+        assert_eq!(
+            reconciler
+                .reconcile_snapshot(snapshot_with_position(6))
+                .expect("unchanged post-visibility capture should reconcile"),
+            VenueTruthReconciliation::DeltaExplained
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .accepted_venue_order_ids
                 .is_empty(),
-            "FOK accepted-order projection must prune after the following accepted boundary"
+            "FOK accepted-order projection must prune one accepted boundary after visibility"
         );
         assert!(
             reconciler
                 .event_projection
                 .fill_quantity_by_venue_order_id
                 .is_empty(),
-            "FOK fill-quantity projection must prune after the following accepted boundary"
+            "FOK fill-quantity projection must prune one accepted boundary after visibility"
         );
     }
 

@@ -107,11 +107,56 @@ pub(super) fn trade_transport_client_keys(
             client_keys.insert(resolution.data_client_id.to_string());
         }
     }
+    insert_capital_admission_execution_client_keys(&mut client_keys, loaded)?;
     insert_outcome_group_source_client_keys(&mut client_keys, loaded)?;
     insert_gate_provider_client_keys(&mut client_keys, loaded)?;
     insert_realized_volatility_surface_client_keys(&mut client_keys, loaded, rv_scope);
     insert_iv_source_client_keys(&mut client_keys, loaded);
     Ok(client_keys)
+}
+
+fn insert_capital_admission_execution_client_keys(
+    client_keys: &mut BTreeSet<String>,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3LiveNodeError> {
+    let Some(pools) = loaded.root.risk.capital_pools.as_ref() else {
+        return Ok(());
+    };
+    for pool in pools.iter().filter(|pool| pool.enforce_submit_admission) {
+        let matching_client_keys = loaded
+            .root
+            .clients
+            .iter()
+            .filter(|(_, client)| {
+                client.venue.as_str() == pool.venue_id && client.execution.is_some()
+            })
+            .map(|(client_key, _)| client_key.clone())
+            .collect::<Vec<_>>();
+        match matching_client_keys.as_slice() {
+            [] => {
+                return Err(BoltV3LiveNodeError::LiveTransportScope {
+                    reason: format!(
+                        "capital admission pool `{}` requires one execution client for venue `{}`",
+                        pool.pool_id, pool.venue_id
+                    ),
+                });
+            }
+            [client_key] => {
+                client_keys.insert(client_key.clone());
+            }
+            _ => {
+                return Err(BoltV3LiveNodeError::LiveTransportScope {
+                    reason: format!(
+                        "capital admission pool `{}` has multiple execution clients for venue `{}`: {}; one venue-truth source must be unambiguous",
+                        pool.pool_id,
+                        pool.venue_id,
+                        matching_client_keys.join(", ")
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn insert_iv_source_client_keys(client_keys: &mut BTreeSet<String>, loaded: &LoadedBoltV3Config) {

@@ -654,13 +654,17 @@ fn basket_submit_slots_enforce_kill_switch_and_risk_reducing_proof_binding() {
     ));
 
     let latched_risk_reducing_claim = risk_reducing_claim(first_leg, valid_exit_proof(first_leg));
-    submit_gate
+    let latched_risk_reducing = submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",
             &[latched_risk_reducing_claim],
             &basket_slot_evidence("risk-reducing", &group),
         )
-        .expect("risk-reducing repair/unwind claims with valid proof may admit while latched");
+        .expect_err("risk-reducing repair/unwind claims must obey the kill-switch latch");
+    assert!(matches!(
+        latched_risk_reducing,
+        BoltV3SubmitAdmissionError::KillSwitchLatched { .. }
+    ));
 
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
     let submit_gate = submit_state(writer, 2, dec!(10));

@@ -1,6 +1,6 @@
 //! Boundary evidence registry for deploy/readiness feeder surfaces.
 
-use super::{chainlink_reference, polyresearch};
+use super::{chainlink_reference, polymarket, polyresearch};
 
 pub const AWS_SSM_SECRET_SOURCE_ADAPTER_ID: &str = stringify!(AwsSsmSecretSource);
 pub const IMDS_METADATA_ADAPTER_ID: &str = stringify!(Imdsv2HostFactsSource);
@@ -19,6 +19,7 @@ pub enum BoundaryFeeder {
     ReferenceLiveProbe,
     DeployTargetHostFacts,
     SecretResolution,
+    PolymarketVenueTruthRuntime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,5 +59,10 @@ pub const BOUNDARY_REGISTRY: &[BoundaryRegistryEntry] = &[
         adapter_id: AWS_SSM_SECRET_SOURCE_ADAPTER_ID,
         class: BoundaryEvidenceClass::AwsSdkResponse,
         feeder: BoundaryFeeder::SecretResolution,
+    },
+    BoundaryRegistryEntry {
+        adapter_id: polymarket::KEY,
+        class: BoundaryEvidenceClass::HttpResponseBody,
+        feeder: BoundaryFeeder::PolymarketVenueTruthRuntime,
     },
 ];

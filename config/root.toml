@@ -256,6 +256,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
+venue_truth_poll_interval_ms = 1000
 transport_backend = "sockudo"
 
 

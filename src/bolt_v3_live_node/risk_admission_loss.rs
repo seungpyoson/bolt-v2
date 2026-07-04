@@ -437,18 +437,24 @@ fn durably_halt_for_venue_truth_trigger(
                 &trigger,
                 format!("kill switch recovery failed without state: {reason:?}"),
             );
-            let _ = kill_switch_store.write_state(&failed);
-            submit_admission.replace_kill_switch_state(failed.clone());
-            return failed;
+            return persist_venue_truth_failed_state(
+                submit_admission,
+                kill_switch_store,
+                failed,
+                "kill switch recovery failed without state",
+            );
         }
         Err(error) => {
             let failed = venue_truth_failed_manual_intervention_state(
                 &trigger,
                 format!("kill switch recovery load failed: {error:?}"),
             );
-            let _ = kill_switch_store.write_state(&failed);
-            submit_admission.replace_kill_switch_state(failed.clone());
-            return failed;
+            return persist_venue_truth_failed_state(
+                submit_admission,
+                kill_switch_store,
+                failed,
+                "kill switch recovery load failed",
+            );
         }
     };
     if current.kind() != KillSwitchStateKind::Armed {
@@ -467,17 +473,23 @@ fn durably_halt_for_venue_truth_trigger(
                 &trigger,
                 format!("venue truth halt transition failed: {error:?}"),
             );
-            let _ = kill_switch_store.write_state(&failed);
-            submit_admission.replace_kill_switch_state(failed.clone());
-            return failed;
+            return persist_venue_truth_failed_state(
+                submit_admission,
+                kill_switch_store,
+                failed,
+                "venue truth halt transition failed",
+            );
         }
     };
 
     if let Some(error) = evidence_write_error {
         let failed = venue_truth_failed_from_halting(halting, error);
-        let _ = kill_switch_store.write_state(&failed);
-        submit_admission.replace_kill_switch_state(failed.clone());
-        return failed;
+        return persist_venue_truth_failed_state(
+            submit_admission,
+            kill_switch_store,
+            failed,
+            "venue truth evidence write failed",
+        );
     }
 
     if let Err(error) = kill_switch_store.write_state(&halting) {
@@ -485,9 +497,12 @@ fn durably_halt_for_venue_truth_trigger(
             halting,
             format!("kill switch state write failed: {error:?}"),
         );
-        let _ = kill_switch_store.write_state(&failed);
-        submit_admission.replace_kill_switch_state(failed.clone());
-        return failed;
+        return persist_venue_truth_failed_state(
+            submit_admission,
+            kill_switch_store,
+            failed,
+            "kill switch halting state write failed",
+        );
     }
 
     let halted = match transition_kill_switch_state(
@@ -501,9 +516,12 @@ fn durably_halt_for_venue_truth_trigger(
                 &trigger,
                 format!("venue truth halt transition failed: {error:?}"),
             );
-            let _ = kill_switch_store.write_state(&failed);
-            submit_admission.replace_kill_switch_state(failed.clone());
-            return failed;
+            return persist_venue_truth_failed_state(
+                submit_admission,
+                kill_switch_store,
+                failed,
+                "venue truth halted transition failed",
+            );
         }
     };
     if let Err(error) = kill_switch_store.write_state(&halted) {
@@ -514,12 +532,52 @@ fn durably_halt_for_venue_truth_trigger(
             halt_id,
             reason: format!("kill switch state write failed: {error:?}"),
         };
-        let _ = kill_switch_store.write_state(&failed);
-        submit_admission.replace_kill_switch_state(failed.clone());
-        return failed;
+        return persist_venue_truth_failed_state(
+            submit_admission,
+            kill_switch_store,
+            failed,
+            "kill switch halted state write failed",
+        );
     }
     submit_admission.replace_kill_switch_state(halted.clone());
     halted
+}
+
+fn persist_venue_truth_failed_state(
+    submit_admission: &BoltV3SubmitAdmissionState,
+    kill_switch_store: &KillSwitchStore,
+    failed: KillSwitchState,
+    context: &str,
+) -> KillSwitchState {
+    let state = match kill_switch_store.write_state(&failed) {
+        Ok(()) => failed,
+        Err(error) => {
+            log::error!(
+                "failed to persist venue truth fail-closed kill switch state after {context}: {error:#}"
+            );
+            venue_truth_failed_state_with_persist_error(failed, context, &error)
+        }
+    };
+    submit_admission.replace_kill_switch_state(state.clone());
+    state
+}
+
+fn venue_truth_failed_state_with_persist_error(
+    state: KillSwitchState,
+    context: &str,
+    error: &impl std::fmt::Debug,
+) -> KillSwitchState {
+    match state {
+        KillSwitchState::FailedManualIntervention { halt_id, reason } => {
+            KillSwitchState::FailedManualIntervention {
+                halt_id,
+                reason: format!(
+                    "{reason}; fail-closed kill switch state write failed after {context}: {error:?}"
+                ),
+            }
+        }
+        other => other,
+    }
 }
 
 fn venue_truth_failed_from_halting(state: KillSwitchState, reason: String) -> KillSwitchState {
@@ -1424,13 +1482,17 @@ mod tests {
         let recovered = store
             .load_recovery_state()
             .expect("fail-closed venue truth halt should load");
-        assert!(matches!(
-            recovered,
-            KillSwitchRecoveryState::FailClosed {
-                state: Some(KillSwitchState::FailedManualIntervention { .. }),
-                ..
-            }
-        ));
+        let KillSwitchRecoveryState::FailClosed {
+            state: Some(KillSwitchState::FailedManualIntervention { reason, .. }),
+            ..
+        } = recovered
+        else {
+            panic!("evidence write failure should persist a fail-closed state");
+        };
+        assert!(
+            reason.contains("decision evidence unavailable"),
+            "persisted fail-closed state should carry the evidence persistence failure: {reason}"
+        );
     }
 
     #[test]
@@ -1488,9 +1550,28 @@ mod tests {
         );
 
         assert_eq!(state.kind(), KillSwitchStateKind::FailedManualIntervention);
+        let KillSwitchState::FailedManualIntervention { reason, .. } = &state else {
+            panic!("write failure should return failed manual intervention");
+        };
+        assert!(
+            reason.contains("kill switch state write failed"),
+            "returned state should carry the original halted-state persistence failure: {reason}"
+        );
+        assert!(
+            reason.contains("fail-closed kill switch state write failed"),
+            "returned state should also carry the failed fail-closed persistence attempt: {reason}"
+        );
         assert_eq!(
             admission.kill_switch_state_kind(),
             KillSwitchStateKind::FailedManualIntervention
+        );
+        let recovered = bootstrap_store
+            .load_recovery_state()
+            .expect("preexisting armed state should remain readable");
+        assert_eq!(
+            recovered,
+            KillSwitchRecoveryState::Recovered(KillSwitchState::Armed),
+            "when nothing can persist, the store must not pretend a durable halt exists"
         );
     }
 

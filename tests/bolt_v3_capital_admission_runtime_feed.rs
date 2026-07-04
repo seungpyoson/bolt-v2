@@ -343,6 +343,61 @@ fn accepted_venue_truth_survives_later_nt_cache_seed_and_reservation_rebuild() {
 }
 
 #[test]
+fn accepted_venue_truth_portfolio_survives_later_nt_portfolio_and_account_seed() {
+    let admission = Arc::new(capital_admission_configured_admission());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    let components = feed
+        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
+            1_200,
+            Decimal::new(45_000_000, 0),
+            Decimal::new(40_000_000, 0),
+        ))
+        .expect("initial venue truth baseline should be explainable")
+        .expect("accepted venue truth should publish components");
+    assert_eq!(
+        components.portfolio.source,
+        POLYMARKET_VENUE_TRUTH_REST_SOURCE
+    );
+    assert_eq!(components.portfolio.free_collateral, Decimal::new(45, 0));
+
+    let portfolio_components = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_300,
+            99.0,
+        ))
+        .expect("advisory NT portfolio should republish accepted venue truth");
+    assert_eq!(
+        portfolio_components.portfolio.source,
+        POLYMARKET_VENUE_TRUTH_REST_SOURCE
+    );
+    assert_eq!(
+        portfolio_components.portfolio.free_collateral,
+        Decimal::new(45, 0)
+    );
+
+    let seeded_components = feed
+        .seed_account_portfolio_snapshot(Decimal::new(88, 0), Decimal::new(88, 0), 1_400)
+        .expect("advisory account seed should republish accepted venue truth");
+    assert_eq!(
+        seeded_components.portfolio.source,
+        POLYMARKET_VENUE_TRUTH_REST_SOURCE
+    );
+    assert_eq!(
+        seeded_components.portfolio.free_collateral,
+        Decimal::new(45, 0)
+    );
+
+    let state = admission
+        .capital_admission_state_snapshot()
+        .expect("accepted venue truth should remain published");
+    assert_eq!(state.portfolio.source, POLYMARKET_VENUE_TRUTH_REST_SOURCE);
+    assert_eq!(state.portfolio.free_collateral, Decimal::new(45, 0));
+}
+
+#[test]
 fn polymarket_venue_truth_allowance_is_not_min_clamped_by_nt_account_free_collateral() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission);
@@ -461,6 +516,54 @@ fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes()
     .expect("successful venue-truth capture should reconcile")
     .expect("accepted venue truth should publish components");
 
+    assert_eq!(admission.capital_admission_reconciled(), Some(true));
+}
+
+#[test]
+fn accepted_capture_at_failure_watermark_does_not_clear_capture_failure_suspension() {
+    let admission = Arc::new(capital_admission_configured_admission());
+    arm_default(&admission);
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
+        1_000,
+        Decimal::new(100_000_000, 0),
+        Decimal::new(100_000_000, 0),
+    ))
+    .expect("initial venue-truth baseline should reconcile")
+    .expect("accepted venue truth should publish components");
+
+    admission.suspend_capital_admission_for_venue_truth_capture_failure(
+        VenueTruthCaptureFailureEvidence {
+            source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
+            observed_at_ns: 1_100,
+            endpoint: "clob_balance_allowance".to_string(),
+            error_class: "transport".to_string(),
+            captures_missed: 1,
+        },
+    );
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+
+    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
+        1_100,
+        Decimal::new(100_000_000, 0),
+        Decimal::new(100_000_000, 0),
+    ))
+    .expect("equal-watermark capture should reconcile")
+    .expect("accepted venue truth should publish components");
+    assert_eq!(
+        admission.capital_admission_reconciled(),
+        Some(false),
+        "accepted_capture == failure_observed must not clear degraded-authority suspension"
+    );
+
+    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
+        1_101,
+        Decimal::new(100_000_000, 0),
+        Decimal::new(100_000_000, 0),
+    ))
+    .expect("strictly later capture should reconcile")
+    .expect("accepted venue truth should publish components");
     assert_eq!(admission.capital_admission_reconciled(), Some(true));
 }
 

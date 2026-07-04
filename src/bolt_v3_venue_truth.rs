@@ -254,6 +254,7 @@ struct VenueTruthEventProjection {
     fill_quantity_by_venue_order_id: BTreeMap<VenueOrderId, Decimal>,
     fill_collateral_lots: Vec<VenueTruthFillCollateralLot>,
     drainable_collateral_balance_delta: Decimal,
+    drainable_collateral_allowance_delta: Decimal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,7 +262,8 @@ struct VenueTruthFillCollateralLot {
     product_id: String,
     side: OrderSide,
     remaining_quantity: Decimal,
-    remaining_collateral_delta: Decimal,
+    remaining_collateral_balance_delta: Decimal,
+    remaining_collateral_allowance_delta: Decimal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,6 +425,8 @@ impl VenueTruthReconciler {
     ) -> Result<VenueTruthReconciliationResult, VenueTruthDivergenceKind> {
         let snapshot = capture.snapshot.clone();
         let Some(previous) = &self.previous_snapshot else {
+            self.event_projection
+                .prune_after_capture_acceptance(&snapshot);
             self.previous_snapshot = Some(snapshot.clone());
             return Ok(VenueTruthReconciliationResult {
                 capture_number: capture.capture_number,
@@ -447,6 +451,7 @@ impl VenueTruthReconciler {
             return Err(VenueTruthDivergenceKind::OrderingViolation);
         }
 
+        projection.prune_after_capture_acceptance(&snapshot);
         self.event_projection = projection;
         self.previous_snapshot = Some(snapshot.clone());
         Ok(VenueTruthReconciliationResult {
@@ -493,6 +498,7 @@ impl VenueTruthEventProjection {
             fill_quantity_by_venue_order_id: BTreeMap::new(),
             fill_collateral_lots: Vec::new(),
             drainable_collateral_balance_delta: Decimal::ZERO,
+            drainable_collateral_allowance_delta: Decimal::ZERO,
         }
     }
 
@@ -539,9 +545,13 @@ impl VenueTruthEventProjection {
                         product_id,
                         side,
                         remaining_quantity: quantity,
-                        remaining_collateral_delta: collateral_balance_delta_for_fill_event(
+                        remaining_collateral_balance_delta: collateral_balance_delta_for_fill_event(
                             side, quantity, fill_price, fee,
                         ),
+                        remaining_collateral_allowance_delta:
+                            collateral_allowance_delta_for_fill_event(
+                                side, quantity, fill_price, fee,
+                            ),
                     });
                 }
             }
@@ -554,9 +564,35 @@ impl VenueTruthEventProjection {
                     .or_else(|| self.client_to_venue_order_id.get(&client_order_id).copied())
                 {
                     self.terminal_venue_order_ids.insert(venue_order_id);
+                    self.accepted_venue_order_ids.remove(&venue_order_id);
+                    self.fill_quantity_by_venue_order_id.remove(&venue_order_id);
                 }
+                self.client_to_venue_order_id.remove(&client_order_id);
             }
         }
+    }
+
+    fn prune_after_capture_acceptance(&mut self, snapshot: &VenueTruthSnapshot) {
+        let open_venue_order_ids = snapshot
+            .open_orders
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        self.terminal_venue_order_ids
+            .retain(|venue_order_id| open_venue_order_ids.contains(venue_order_id));
+        let retained_terminal_venue_order_ids = self.terminal_venue_order_ids.clone();
+        let accepted_venue_order_ids = self.accepted_venue_order_ids.clone();
+        let fill_venue_order_ids = self
+            .fill_quantity_by_venue_order_id
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        self.client_to_venue_order_id.retain(|_, venue_order_id| {
+            open_venue_order_ids.contains(venue_order_id)
+                || retained_terminal_venue_order_ids.contains(venue_order_id)
+                || accepted_venue_order_ids.contains(venue_order_id)
+                || fill_venue_order_ids.contains(venue_order_id)
+        });
     }
 
     fn consume_position_fill(
@@ -584,19 +620,47 @@ impl VenueTruthEventProjection {
             } else {
                 remaining
             };
-            let consumed_collateral_delta = if consumed_quantity == lot.remaining_quantity {
-                lot.remaining_collateral_delta
+            let consumed_collateral_balance_delta = if consumed_quantity == lot.remaining_quantity {
+                lot.remaining_collateral_balance_delta
             } else {
-                lot.remaining_collateral_delta * consumed_quantity / lot.remaining_quantity
+                lot.remaining_collateral_balance_delta * consumed_quantity / lot.remaining_quantity
+            };
+            let consumed_collateral_allowance_delta = if consumed_quantity == lot.remaining_quantity
+            {
+                lot.remaining_collateral_allowance_delta
+            } else {
+                lot.remaining_collateral_allowance_delta * consumed_quantity
+                    / lot.remaining_quantity
             };
             lot.remaining_quantity -= consumed_quantity;
-            lot.remaining_collateral_delta -= consumed_collateral_delta;
+            lot.remaining_collateral_balance_delta -= consumed_collateral_balance_delta;
+            lot.remaining_collateral_allowance_delta -= consumed_collateral_allowance_delta;
             remaining -= consumed_quantity;
-            self.drainable_collateral_balance_delta += consumed_collateral_delta;
+            self.drainable_collateral_balance_delta += consumed_collateral_balance_delta;
+            self.drainable_collateral_allowance_delta += consumed_collateral_allowance_delta;
         }
         self.fill_collateral_lots
             .retain(|lot| lot.remaining_quantity > Decimal::ZERO);
         remaining == Decimal::ZERO
+    }
+
+    fn consume_collateral_allowance_delta(&mut self, amount: Decimal) -> bool {
+        if amount == Decimal::ZERO {
+            return true;
+        }
+        let available = self.drainable_collateral_allowance_delta;
+        if available == Decimal::ZERO {
+            return false;
+        }
+        if available > Decimal::ZERO {
+            if amount < Decimal::ZERO || amount > available {
+                return false;
+            }
+        } else if amount > Decimal::ZERO || amount < available {
+            return false;
+        }
+        self.drainable_collateral_allowance_delta -= amount;
+        true
     }
 
     fn consume_collateral_balance_delta(
@@ -748,14 +812,20 @@ fn explain_collateral_delta(
     projection: &mut VenueTruthEventProjection,
     allow_deferred_collateral: bool,
 ) -> Result<(), VenueTruthDivergenceKind> {
-    if previous.collateral_allowance != current.collateral_allowance {
-        return Err(VenueTruthDivergenceKind::UnexplainedCollateralDelta);
-    }
     let collateral_balance_delta =
         current.collateral_balance.as_decimal() - previous.collateral_balance.as_decimal();
     if !projection
         .consume_collateral_balance_delta(collateral_balance_delta, allow_deferred_collateral)
     {
+        return Err(VenueTruthDivergenceKind::UnexplainedCollateralDelta);
+    }
+    // Allowance is an operator-changeable on-chain approval, not a venue-invariant fact.
+    // The 2026-07-04 evidence search found no captured allowance-spanning-fill artifact,
+    // so this path is assumption-free: consumed fills may explain bounded allowance
+    // decreases, zero deltas are no-ops, and any unexplained increase or re-approval halts.
+    let collateral_allowance_delta =
+        current.collateral_allowance.as_decimal() - previous.collateral_allowance.as_decimal();
+    if !projection.consume_collateral_allowance_delta(collateral_allowance_delta) {
         return Err(VenueTruthDivergenceKind::UnexplainedCollateralDelta);
     }
     Ok(())
@@ -770,6 +840,18 @@ fn collateral_balance_delta_for_fill_event(
     match side {
         OrderSide::Buy => -(quantity * fill_price) - fee,
         OrderSide::Sell => (quantity * fill_price) - fee,
+        _ => Decimal::ZERO,
+    }
+}
+
+fn collateral_allowance_delta_for_fill_event(
+    side: OrderSide,
+    quantity: Decimal,
+    fill_price: Decimal,
+    fee: Decimal,
+) -> Decimal {
+    match side {
+        OrderSide::Buy => -(quantity * fill_price) - fee,
         _ => Decimal::ZERO,
     }
 }
@@ -908,4 +990,112 @@ where
         map.remove(key);
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use nautilus_model::types::Currency;
+
+    #[test]
+    fn terminal_and_capture_acceptance_prune_projection_maps() {
+        let mut reconciler = VenueTruthReconciler::new();
+        let venue_order_id = VenueOrderId::from("venue-order-1");
+        reconciler.record_order_event(VenueTruthOrderEvent::Accepted {
+            client_order_id: "client-order-1".to_string(),
+            venue_order_id,
+            observed_at_ns: UnixNanos::from(1),
+        });
+        reconciler.record_order_event(VenueTruthOrderEvent::Filled {
+            venue_order_id,
+            product_id: "product-1".to_string(),
+            side: OrderSide::Buy,
+            quantity: Decimal::new(1, 0),
+            fill_price: Decimal::new(5, 1),
+            fee: Decimal::ZERO,
+            observed_at_ns: UnixNanos::from(2),
+        });
+
+        assert!(
+            reconciler
+                .event_projection
+                .client_to_venue_order_id
+                .contains_key("client-order-1")
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .accepted_venue_order_ids
+                .contains(&venue_order_id)
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .fill_quantity_by_venue_order_id
+                .contains_key(&venue_order_id)
+        );
+
+        reconciler.record_order_event(VenueTruthOrderEvent::Terminal {
+            client_order_id: "client-order-1".to_string(),
+            venue_order_id: None,
+            observed_at_ns: UnixNanos::from(3),
+            timestamp_domain: VenueTruthOrderEventTimestampDomain::Venue,
+        });
+
+        assert!(
+            !reconciler
+                .event_projection
+                .client_to_venue_order_id
+                .contains_key("client-order-1"),
+            "terminal observation should clear the client-to-venue projection"
+        );
+        assert!(
+            !reconciler
+                .event_projection
+                .accepted_venue_order_ids
+                .contains(&venue_order_id),
+            "terminal observation should clear stale accepted-order projection"
+        );
+        assert!(
+            !reconciler
+                .event_projection
+                .fill_quantity_by_venue_order_id
+                .contains_key(&venue_order_id),
+            "terminal observation should clear stale fill-quantity projection"
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .terminal_venue_order_ids
+                .contains(&venue_order_id),
+            "terminal marker remains until a structural venue snapshot boundary"
+        );
+
+        assert_eq!(
+            reconciler
+                .reconcile_snapshot(empty_snapshot(4))
+                .expect("baseline snapshot should reconcile"),
+            VenueTruthReconciliation::BaselineAccepted
+        );
+        assert!(
+            reconciler
+                .event_projection
+                .terminal_venue_order_ids
+                .is_empty(),
+            "accepted capture boundary should clear terminal markers for non-open venue orders"
+        );
+    }
+
+    fn empty_snapshot(captured_at: u64) -> VenueTruthSnapshot {
+        let currency = Currency::from("USD");
+        VenueTruthSnapshot {
+            captured_at: UnixNanos::from(captured_at),
+            account_id: AccountId::from("ACCOUNT-001"),
+            collateral_balance: Money::new(100.0, currency),
+            collateral_allowance: Money::new(100.0, currency),
+            open_orders: BTreeMap::new(),
+            positions_by_product_id: BTreeMap::new(),
+        }
+    }
 }

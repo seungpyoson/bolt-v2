@@ -228,15 +228,22 @@ impl CapitalAdmissionRuntimeFeed {
             .iter()
             .find(|money| money.currency.code.as_str() == self.config.collateral_currency)
             .map(|money| money.as_decimal())?;
-        self.component_builder.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
-            source: NT_PORTFOLIO_SNAPSHOT_SOURCE.to_string(),
-            observed_at_ns: portfolio_snapshot.ts_event.as_u64(),
-            venue_id: self.config.venue_id.clone(),
-            account_id: self.config.account_id.to_string(),
-            collateral_currency: self.config.collateral_currency.clone(),
-            free_collateral: Decimal::ZERO,
-            total_equity,
-        });
+        if !self
+            .component_builder
+            .latest_portfolio
+            .as_ref()
+            .is_some_and(|current| source_is_accepted_venue_truth(&current.source))
+        {
+            self.component_builder.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
+                source: NT_PORTFOLIO_SNAPSHOT_SOURCE.to_string(),
+                observed_at_ns: portfolio_snapshot.ts_event.as_u64(),
+                venue_id: self.config.venue_id.clone(),
+                account_id: self.config.account_id.to_string(),
+                collateral_currency: self.config.collateral_currency.clone(),
+                free_collateral: Decimal::ZERO,
+                total_equity,
+            });
+        }
         self.publish_components_if_ready()
     }
 
@@ -698,6 +705,13 @@ impl CapitalAdmissionRuntimeComponentBuilder {
         total_equity: Decimal,
         observed_at_ns: u64,
     ) {
+        if self
+            .latest_portfolio
+            .as_ref()
+            .is_some_and(|current| source_is_accepted_venue_truth(&current.source))
+        {
+            return;
+        }
         self.latest_account_free_collateral = Some((free_collateral, observed_at_ns));
         self.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
             source: NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE.to_string(),

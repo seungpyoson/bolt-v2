@@ -306,6 +306,133 @@ fn filled_order_event_uses_actual_fill_price_and_fee_for_collateral() {
 }
 
 #[test]
+fn allowance_decrease_is_explained_by_consumed_fills() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .reconcile_snapshot(empty_snapshot_with_allowance(
+            1_000,
+            Decimal::new(50_000_000, 0),
+            Decimal::new(40_000_000, 0),
+        ))
+        .expect("initial venue truth establishes the baseline");
+
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_100,
+        )),
+    );
+
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(snapshot_with_position_and_allowance(
+                1_200,
+                Decimal::new(48_400_000, 0),
+                Decimal::new(38_400_000, 0),
+                4.0,
+            ))
+            .expect("finite allowance decrease should be explained by the consumed buy fill"),
+        VenueTruthReconciliation::DeltaExplained
+    );
+}
+
+#[test]
+fn allowance_increase_is_unexplained_and_halts_at_fence() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .reconcile_snapshot(empty_snapshot_with_allowance(
+            1_000,
+            Decimal::new(50_000_000, 0),
+            Decimal::new(40_000_000, 0),
+        ))
+        .expect("initial venue truth establishes the baseline");
+
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_100,
+        )),
+    );
+
+    assert_eq!(
+        reconciler
+            .record_snapshot_completion(snapshot_with_position_and_allowance(
+                1_200,
+                Decimal::new(48_400_000, 0),
+                Decimal::new(41_000_000, 0),
+                4.0,
+            ))
+            .expect("allowance top-up should pend until the capture fence")[0]
+            .outcome,
+        VenueTruthReconciliation::DeltaPending
+    );
+
+    let divergence = reconciler
+        .record_snapshot_completion(snapshot_with_position_and_allowance(
+            1_300,
+            Decimal::new(48_400_000, 0),
+            Decimal::new(41_000_000, 0),
+            4.0,
+        ))
+        .expect_err("allowance top-up must halt loudly at its fence");
+
+    assert_eq!(
+        divergence.kind,
+        VenueTruthDivergenceKind::UnexplainedCollateralDelta
+    );
+    assert_eq!(divergence.field, "collateral_allowance");
+}
+
+#[test]
+fn zero_allowance_delta_after_fill_is_no_op() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .reconcile_snapshot(empty_snapshot_with_allowance(
+            1_000,
+            Decimal::new(50_000_000, 0),
+            Decimal::new(40_000_000, 0),
+        ))
+        .expect("initial venue truth establishes the baseline");
+
+    record_order_event(
+        &mut reconciler,
+        OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            "venue-order-1",
+            "trade-1",
+            "condition-token123.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from("4"),
+            1_100,
+        )),
+    );
+
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(snapshot_with_position_and_allowance(
+                1_200,
+                Decimal::new(48_400_000, 0),
+                Decimal::new(40_000_000, 0),
+                4.0,
+            ))
+            .expect("infinite-approval behavior leaves allowance unchanged"),
+        VenueTruthReconciliation::DeltaExplained
+    );
+}
+
+#[test]
 fn taker_fill_without_resting_open_order_explains_position_and_collateral() {
     let mut reconciler = VenueTruthReconciler::new();
     reconciler
@@ -732,13 +859,21 @@ fn open_order(
 }
 
 fn empty_snapshot(captured_at: u64, collateral_balance: Decimal) -> VenueTruthSnapshot {
+    empty_snapshot_with_allowance(captured_at, collateral_balance, Decimal::new(40_000_000, 0))
+}
+
+fn empty_snapshot_with_allowance(
+    captured_at: u64,
+    collateral_balance: Decimal,
+    collateral_allowance: Decimal,
+) -> VenueTruthSnapshot {
     build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
         captured_at: UnixNanos::from(captured_at),
         account_id: AccountId::from("POLYMARKET-001"),
         collateral_currency: Currency::pUSD(),
         collateral: BalanceAllowance {
             balance: collateral_balance,
-            allowance: Some(Decimal::new(40_000_000, 0)),
+            allowance: Some(collateral_allowance),
         },
         open_orders: Vec::new(),
         positions: Vec::new(),
@@ -782,13 +917,27 @@ fn snapshot_with_position(
     collateral_balance: Decimal,
     venue_position_quantity: f64,
 ) -> VenueTruthSnapshot {
+    snapshot_with_position_and_allowance(
+        captured_at,
+        collateral_balance,
+        Decimal::new(40_000_000, 0),
+        venue_position_quantity,
+    )
+}
+
+fn snapshot_with_position_and_allowance(
+    captured_at: u64,
+    collateral_balance: Decimal,
+    collateral_allowance: Decimal,
+    venue_position_quantity: f64,
+) -> VenueTruthSnapshot {
     build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
         captured_at: UnixNanos::from(captured_at),
         account_id: AccountId::from("POLYMARKET-001"),
         collateral_currency: Currency::pUSD(),
         collateral: BalanceAllowance {
             balance: collateral_balance,
-            allowance: Some(Decimal::new(40_000_000, 0)),
+            allowance: Some(collateral_allowance),
         },
         open_orders: Vec::new(),
         positions: vec![DataApiPosition {

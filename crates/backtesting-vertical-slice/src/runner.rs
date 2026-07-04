@@ -2810,13 +2810,25 @@ mod tests {
             "maker smoke must iterate the two catalog trade ticks, got {}",
             output.result.iterations
         );
+        let guard = output
+            .run_guard_report
+            .as_ref()
+            .context("missing binary-oracle maker run guard report")?;
         ensure!(
-            output.config_override_report.is_none(),
-            "inline maker config must not produce a taker config-overlay report"
+            !guard.armed,
+            "maker smoke must remain not armed until the quote cycle is wired; guard={guard:?}"
         );
         ensure!(
-            output.run_guard_report.is_some(),
-            "maker registration must retain the shared decision-evidence/run-guard writer"
+            output.result.total_orders == 0,
+            "unwired maker quote cycle must not submit orders, got {}",
+            output.result.total_orders
+        );
+        ensure!(
+            guard
+                .did_not_arm_reason
+                .as_deref()
+                .is_some_and(|reason| !reason.trim().is_empty()),
+            "unwired maker quote cycle must report why it did not arm; guard={guard:?}"
         );
         Ok(())
     }

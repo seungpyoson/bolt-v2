@@ -380,6 +380,46 @@ mod tests {
     }
 
     #[test]
+    fn validate_config_rejects_trade_flow_window_secs_wrong_type() {
+        let mut raw = valid_raw();
+        raw.as_table_mut().expect("config is a table").insert(
+            TRADE_FLOW_WINDOW_SECS_FIELD.to_string(),
+            Value::String("abc".to_string()),
+        );
+        let mut errors = Vec::new();
+
+        validate_config(&raw, "strategy", &mut errors);
+
+        assert!(
+            errors.iter().any(|error| {
+                error.field == format!("strategy.{TRADE_FLOW_WINDOW_SECS_FIELD}")
+                    && error.code == WRONG_TYPE_CODE
+            }),
+            "trade_flow_window_secs string must fail registry validation: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_config_rejects_zero_market_portfolio_max_active_markets() {
+        let mut raw = valid_raw();
+        raw.as_table_mut().expect("config is a table").insert(
+            MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD.to_string(),
+            Value::Integer(0),
+        );
+        let mut errors = Vec::new();
+
+        validate_config(&raw, "strategy", &mut errors);
+
+        assert!(
+            errors.iter().any(|error| {
+                error.field == format!("strategy.{MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD}")
+                    && error.code == WRONG_TYPE_CODE
+            }),
+            "zero market_portfolio_max_active_markets must fail registry validation: {errors:?}"
+        );
+    }
+
+    #[test]
     fn parse_config_rejects_missing_mu_knob() {
         // The flat config requires every μ knob (non-Option, deny_unknown_fields);
         // a table missing one fails loud at parse rather than building a maker

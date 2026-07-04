@@ -1553,7 +1553,7 @@ fn stale_attempt_timestamp_survives_later_status_refresh() {
 }
 
 #[test]
-fn future_stale_attempt_status_survives_refresh_when_accepted_quote_is_still_fresh() {
+fn venue_leading_reference_attempt_refreshes_when_accepted_quote_is_still_fresh() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();
     reference_price
@@ -1581,7 +1581,7 @@ fn future_stale_attempt_status_survives_refresh_when_accepted_quote_is_still_fre
     DataActor::on_data(&mut strategy, &fresh_primary)
         .expect("fresh primary quote should be handled");
 
-    let future_primary_attempt = reference_price_update(
+    let venue_leading_primary_attempt = reference_price_update(
         CHAINLINK_PRIMARY_SOURCE_ID,
         CHAINLINK_REFERENCE_PROVIDER,
         CHAINLINK_REFERENCE_INSTRUMENT,
@@ -1589,16 +1589,20 @@ fn future_stale_attempt_status_survives_refresh_when_accepted_quote_is_still_fre
         1_180,
         1_185,
     );
-    DataActor::on_data(&mut strategy, &future_primary_attempt)
-        .expect("future primary attempt should be handled");
+    DataActor::on_data(&mut strategy, &venue_leading_primary_attempt)
+        .expect("venue-leading primary attempt should be handled");
 
     let primary_health = strategy
         .reference_price_source_health
         .get(CHAINLINK_PRIMARY_SOURCE_ID)
         .expect("primary health should exist");
-    assert_eq!(primary_health.status(), ReferencePriceSourceStatus::Stale);
+    assert_eq!(
+        primary_health.status(),
+        ReferencePriceSourceStatus::Available
+    );
     assert_eq!(primary_health.observed_ts_ms(), Some(1_180));
     assert_eq!(primary_health.received_ts_ms(), Some(1_185));
+    assert_eq!(strategy.active.reference_current_price, Some(100.5));
 }
 
 #[test]

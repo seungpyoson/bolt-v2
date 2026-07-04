@@ -44,8 +44,9 @@ const FORBIDDEN_RV_CONCRETE_LITERALS: &[&str] = &[
 ];
 
 const FORBIDDEN_RAW_RV_CONSUMER_PATTERNS: &[&str] = &[
-    "current_realized_vol_at(now_ms)\n            .filter(|value| is_non_negative_finite(*value))",
-    "current_realized_vol_at(now_ms)\n            .filter(|value| is_positive_finite(*value))",
+    "current_realized_vol_at(now_ms)",
+    "current_realized_vol_source_at(now_ms)",
+    "classify_realized_vol_gate(&self.config.realized_volatility_surface_id, now_ms)",
     "current_realized_vol_for_config_at(config, request.now_ms)\n            .filter(|value| is_non_negative_finite(*value))",
     "annualized_realized_vol_decimal\n                .is_some_and(is_non_negative_finite)",
 ];

@@ -1051,7 +1051,7 @@ fn non_resting_entry_fill_does_not_keep_pending_entry_from_cache_state() {
     );
     assert_eq!(
         strategy.exit_submission_decision_at(1_200).blocked_reason,
-        None
+        Some(EXIT_BLOCK_REASON_EXIT_HOLD)
     );
 }
 
@@ -2517,17 +2517,14 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
     assert_eq!(fields.seconds_to_expiry, Some(299));
     assert_eq!(fields.fair_probability_up, None);
     assert_eq!(fields.hold_ev_bps, None);
-    assert_eq!(
-        fields.realized_vol_source_venue.as_deref(),
-        Some("<SOURCE_ID>")
-    );
-    assert_eq!(fields.realized_vol_source_ts_ms, Some(2_000));
+    assert_eq!(fields.realized_vol_source_venue, None);
+    assert_eq!(fields.realized_vol_source_ts_ms, None);
     assert_eq!(fields.up_fee_bps, Some(1.0));
     assert_eq!(fields.down_fee_bps, Some(2.0));
 }
 
 #[test]
-fn unknown_recovered_position_side_exits_fail_closed_using_tracked_book() {
+fn unknown_recovered_position_side_holds_instead_of_liquidating_by_default() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     let instrument_id = InstrumentId::from("0xcondition-222.POLYMARKET");
     let mut tracked_book = OutcomeBookState::from_instrument_id(instrument_id);
@@ -2558,15 +2555,12 @@ fn unknown_recovered_position_side_exits_fail_closed_using_tracked_book() {
 
     let decision = strategy.exit_submission_decision_at(2_000);
 
-    assert_eq!(
-        decision.evaluation.exit_decision,
-        Some(ExitDecision::ExitFailClosed)
-    );
-    assert_eq!(decision.instrument_id, Some(instrument_id));
-    assert_eq!(decision.order_side, Some(OrderSide::Sell));
-    assert_eq!(decision.price, Some(0.520));
-    assert_eq!(decision.quantity, Some(Quantity::new(5.0, 2)));
-    assert_eq!(decision.blocked_reason, None);
+    assert_eq!(decision.evaluation.exit_decision, Some(ExitDecision::Hold));
+    assert_eq!(decision.instrument_id, None);
+    assert_eq!(decision.order_side, None);
+    assert_eq!(decision.price, None);
+    assert_eq!(decision.quantity, None);
+    assert_eq!(decision.blocked_reason, Some(EXIT_BLOCK_REASON_EXIT_HOLD));
 }
 
 #[test]

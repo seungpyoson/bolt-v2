@@ -56,6 +56,7 @@ class FingerprintError(Exception):
 
 require_table = functools.partial(_cv.require_table, error_cls=FingerprintError)
 require_string = functools.partial(_cv.require_string, error_cls=FingerprintError)
+require_positive_int = functools.partial(_cv.require_positive_int, error_cls=FingerprintError)
 
 
 @dataclass(frozen=True)
@@ -139,13 +140,6 @@ def load_toml(path: pathlib.Path, label: str) -> dict[str, object]:
         raise FingerprintError(f"{label} missing: {path}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise FingerprintError(f"{label} invalid TOML: {exc}") from exc
-
-
-def require_positive_int(parent: dict[str, object], key: str, label: str) -> int:
-    value = parent.get(key)
-    if not isinstance(value, int) or value <= 0:
-        raise FingerprintError(f"{label}.{key} must be a positive integer")
-    return value
 
 
 def require_string_list(parent: dict[str, object], key: str, label: str) -> tuple[str, ...]:

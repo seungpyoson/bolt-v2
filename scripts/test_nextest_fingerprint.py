@@ -695,6 +695,7 @@ def assert_invalid_shards_fail_closed() -> None:
         "missing": FINGERPRINT_CONFIG_TEXT.replace("shards = 4\n", ""),
         "zero": FINGERPRINT_CONFIG_TEXT.replace("shards = 4", "shards = 0"),
         "non-numeric": FINGERPRINT_CONFIG_TEXT.replace("shards = 4", 'shards = "4"'),
+        "boolean": FINGERPRINT_CONFIG_TEXT.replace("shards = 4", "shards = true"),
     }
     for label, text in cases.items():
         with temporary_git_directory() as tmp:

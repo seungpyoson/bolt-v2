@@ -1,11 +1,16 @@
-use std::{collections::BTreeMap, fs};
+use std::{
+    collections::BTreeMap,
+    fs,
+    sync::{Mutex, OnceLock},
+};
 
 use bolt_v2::{
     bolt_v3_config::BoltV3RootConfig,
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
     bolt_v3_kill_switch_store::{
-        KILL_SWITCH_STORE_SCHEMA_VERSION, KillSwitchLossProtectionSnapshot,
-        KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore, KillSwitchStoreError,
+        KILL_SWITCH_STORE_SCHEMA_VERSION, KillSwitchLossGovernorManualRecoveryRecord,
+        KillSwitchLossProtectionSnapshot, KillSwitchRecoveryReason, KillSwitchRecoveryState,
+        KillSwitchStore, KillSwitchStoreError,
     },
 };
 use rust_decimal::Decimal;
@@ -19,6 +24,69 @@ fn fixture_without_kill_switch() -> String {
         .expect("fixture should have a risk table")
         .remove("kill_switch");
     toml::to_string(&fixture).expect("fixture without kill switch should serialize")
+}
+
+#[derive(Default)]
+struct CapturingLogger {
+    records: Mutex<Vec<(log::Level, String)>>,
+}
+
+impl log::Log for CapturingLogger {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .push((record.level(), record.args().to_string()));
+    }
+
+    fn flush(&self) {}
+}
+
+impl CapturingLogger {
+    fn reset(&self) {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .clear();
+    }
+
+    fn records(&self) -> Vec<(log::Level, String)> {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .clone()
+    }
+}
+
+static CAPTURING_LOGGER: OnceLock<&'static CapturingLogger> = OnceLock::new();
+static CAPTURING_LOGGER_OBSERVERS: Mutex<()> = Mutex::new(());
+
+fn install_capturing_logger() -> &'static CapturingLogger {
+    static INSTALL_OUTCOME: OnceLock<bool> = OnceLock::new();
+    let logger = CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
+    let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
+    assert!(
+        installed,
+        "capturing logger could not claim the global log slot; another logger is installed"
+    );
+    log::set_max_level(log::LevelFilter::Trace);
+    logger
+}
+
+fn zero_loss_snapshot() -> KillSwitchLossProtectionSnapshot {
+    KillSwitchLossProtectionSnapshot {
+        daily_bucket: None,
+        daily_realized_pnl: Decimal::ZERO,
+        settlement_currency: None,
+        cumulative_position_pnl: BTreeMap::new(),
+        closed_position_pnl: BTreeMap::new(),
+        adjusted_position_pnl: BTreeMap::new(),
+        pending_halt_actions: None,
+    }
 }
 
 #[test]
@@ -315,6 +383,77 @@ fn persisted_state_round_trips_with_schema_version() {
     assert_eq!(
         persisted["schema_version"],
         KILL_SWITCH_STORE_SCHEMA_VERSION
+    );
+}
+
+#[test]
+fn write_state_logs_when_manual_recovery_history_cannot_be_preserved() {
+    let _logger_guard = CAPTURING_LOGGER_OBSERVERS
+        .lock()
+        .expect("capturing logger observer mutex poisoned");
+    let logger = install_capturing_logger();
+    logger.reset();
+
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    let store = KillSwitchStore::new(path.clone(), 65_536);
+    let loss_snapshot = zero_loss_snapshot();
+    store
+        .bootstrap_initial_armed_loss_snapshot()
+        .expect("initial armed store should bootstrap");
+    let previous_record = store
+        .load_recovery_record()
+        .expect("bootstrapped record should load");
+    store
+        .write_loss_governor_manual_recovery(
+            &previous_record,
+            &KillSwitchState::Armed,
+            &loss_snapshot,
+            KillSwitchLossGovernorManualRecoveryRecord {
+                operator_id: "operator-primary".to_string(),
+                evidence_path: "loss-governor/manual-recovery.json".to_string(),
+                evidence_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+                observed_at_ns: 2_500,
+                recorded_at_ns: 2_600,
+            },
+        )
+        .expect("manual recovery audit should persist");
+    assert_eq!(
+        store
+            .load_recovery_record()
+            .expect("manual recovery record should load")
+            .loss_governor_manual_recoveries
+            .len(),
+        1
+    );
+    fs::write(&path, b"{not-json").expect("store should be corrupted in place");
+
+    store
+        .write_state_with_loss_snapshot(&KillSwitchState::Armed, Some(&loss_snapshot))
+        .expect("state write must still succeed when history preservation read fails");
+
+    let recovered = store
+        .load_recovery_record()
+        .expect("rewritten store should recover");
+    assert_eq!(
+        recovered.recovery_state,
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Armed)
+    );
+    assert!(
+        recovered.loss_governor_manual_recoveries.is_empty(),
+        "read-error fallback writes the explicit empty audit list"
+    );
+    let records = logger.records();
+    assert!(
+        records.iter().any(|(level, message)| {
+            *level == log::Level::Error
+                && message.contains(&path.display().to_string())
+                && message.contains("loss_governor_manual_recoveries=[]")
+                && message
+                    .contains("failed to preserve loss-governor manual recovery audit history")
+        }),
+        "expected loud manual recovery history drop log, got: {records:?}"
     );
 }
 

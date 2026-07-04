@@ -139,7 +139,14 @@ impl KillSwitchStore {
     ) -> Vec<KillSwitchLossGovernorManualRecoveryRecord> {
         match self.load_recovery_record() {
             Ok(record) => record.loss_governor_manual_recoveries,
-            Err(_) => Vec::new(),
+            Err(error) => {
+                let manual_recoveries = Vec::new();
+                log::error!(
+                    "failed to preserve loss-governor manual recovery audit history from {}; writing state with loss_governor_manual_recoveries={manual_recoveries:?}: {error}",
+                    self.path.display()
+                );
+                manual_recoveries
+            }
         }
     }
 

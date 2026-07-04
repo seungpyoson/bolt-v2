@@ -85,8 +85,9 @@ use super::{
     },
     run_manifest::{
         BacktestingRunManifest, NtSurfaceClassification, STRATEGY_BINARY_ORACLE_EDGE_TAKER,
-        STRATEGY_HURST_VPIN_DIRECTIONAL, STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
-        STRATEGY_PARAM_ORDER_EXECUTION_MODE,
+        STRATEGY_BINARY_ORACLE_MAKER, STRATEGY_HURST_VPIN_DIRECTIONAL,
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_ORDER_EXECUTION_MODE,
+        StrategySource,
     },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
 };
@@ -615,6 +616,80 @@ fn effective_taker_subscription_data_client_ids(
     client_ids
 }
 
+fn manifest_binary_oracle_execution_controls(
+    strategy: &StrategySource,
+) -> Result<(Decimal, BoltV3OrderExecutionMode)> {
+    let fee_bps_raw = strategy
+        .parameters
+        .get(PARAM_FEE_BPS)
+        .with_context(|| format!("strategy parameter {PARAM_FEE_BPS} is required"))?;
+    let fee_bps = Decimal::from_str(fee_bps_raw)
+        .with_context(|| format!("invalid {PARAM_FEE_BPS} {fee_bps_raw:?}"))?;
+    ensure!(
+        fee_bps >= Decimal::ZERO,
+        "strategy parameter {PARAM_FEE_BPS} must be non-negative"
+    );
+    let order_execution_mode_raw = strategy
+        .parameters
+        .get(STRATEGY_PARAM_ORDER_EXECUTION_MODE)
+        .with_context(|| {
+            format!("strategy parameter {STRATEGY_PARAM_ORDER_EXECUTION_MODE} is required")
+        })?;
+    let order_execution_mode: BoltV3OrderExecutionMode =
+        toml::Value::String(order_execution_mode_raw.clone())
+            .try_into()
+            .with_context(|| {
+                format!(
+                    "invalid {STRATEGY_PARAM_ORDER_EXECUTION_MODE} {order_execution_mode_raw:?}"
+                )
+            })?;
+    Ok((fee_bps, order_execution_mode))
+}
+
+fn inline_manifest_strategy_config(strategy: &StrategySource) -> Result<toml::Value> {
+    let raw_config = strategy
+        .parameters
+        .get(PARAM_CONFIG_TOML)
+        .with_context(|| format!("strategy parameter {PARAM_CONFIG_TOML} is required"))?;
+    toml::from_str::<toml::Value>(raw_config)
+        .with_context(|| format!("invalid {PARAM_CONFIG_TOML}"))
+}
+
+fn register_manifest_binary_oracle_strategy(
+    engine: &mut BacktestEngine,
+    manifest: &BacktestingRunManifest,
+    registry_key: &str,
+    raw_config: &toml::Value,
+    fee_bps: Decimal,
+    order_execution_mode: BoltV3OrderExecutionMode,
+    realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
+) -> Result<Arc<BacktestDecisionEvidenceWriter>> {
+    let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::default());
+    let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = run_guard_writer.clone();
+    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
+    let fee_provider: Arc<dyn FeeProvider> = Arc::new(ManifestFeeProvider { fee_bps });
+    let mut build_context = StrategyBuildContext::new(
+        fee_provider,
+        decision_evidence,
+        submit_admission,
+        BoltV3OrderExecutionPolicy::from_mode(order_execution_mode),
+        Venue::from(manifest.venue.nt_venue.as_str()),
+    );
+    if let Some(runtime) = realized_volatility_runtime {
+        build_context = build_context.with_realized_volatility_runtime(runtime);
+    }
+    let registry = production_strategy_registry().context("build production strategy registry")?;
+    registry
+        .register_strategy(
+            registry_key,
+            raw_config,
+            &build_context,
+            engine.kernel().trader(),
+        )
+        .with_context(|| format!("register {registry_key} strategy through production registry"))?;
+    Ok(run_guard_writer)
+}
+
 /// Add the manifest-selected compiled Rust strategy to the engine.
 ///
 /// Only registered compiled Rust strategies are admissible; the manifest is
@@ -763,6 +838,28 @@ fn add_manifest_strategy(
                 )?;
             Ok(AddedManifestStrategy {
                 config_override_report,
+                run_guard_writer: Some(run_guard_writer),
+            })
+        }
+        STRATEGY_BINARY_ORACLE_MAKER => {
+            ensure!(
+                strategy.config_overlay.is_none(),
+                "strategy.config_overlay is not supported for strategy {STRATEGY_BINARY_ORACLE_MAKER:?}"
+            );
+            let (fee_bps, order_execution_mode) =
+                manifest_binary_oracle_execution_controls(strategy)?;
+            let raw_config = inline_manifest_strategy_config(strategy)?;
+            let run_guard_writer = register_manifest_binary_oracle_strategy(
+                engine,
+                manifest,
+                STRATEGY_BINARY_ORACLE_MAKER,
+                &raw_config,
+                fee_bps,
+                order_execution_mode,
+                None,
+            )?;
+            Ok(AddedManifestStrategy {
+                config_override_report: None,
                 run_guard_writer: Some(run_guard_writer),
             })
         }
@@ -2113,9 +2210,9 @@ mod tests {
         ManifestArtifactStore, ManifestBacktestConfigOverride, ManifestCatalogInput,
         ManifestInstrumentSettlementInput, ManifestRealizedVolatilitySourceSelector,
         ManifestReferenceCurrentPriceInput, ManifestVenueConfig, MarketStructureFixture,
-        RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_PARAM_FEE_BPS,
-        STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource, StrategySource,
-        StrategySourceKind,
+        RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_BINARY_ORACLE_MAKER,
+        STRATEGY_PARAM_FEE_BPS, STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource,
+        StrategySource, StrategySourceKind,
     };
     use crate::seeded_l2_quotes::{
         SeededL2QuoteAction, SeededL2QuoteMappingConfig, SeededL2QuoteProvenance,
@@ -2124,7 +2221,6 @@ mod tests {
     use crate::source_proof::{SourceProofFidelityClass, SourceProofUsageScope};
 
     const TEST_INSTRUMENT: &str = "BTCUSDT.BYBIT";
-    const TEST_BINARY_ORACLE_MAKER_KEY: &str = "binary_oracle_maker";
     const MAKER_SMOKE_VENUE: &str = "POLYMARKET";
     const MAKER_SMOKE_YES_INSTRUMENT: &str = "SAMPLE-EVENT-YES.POLYMARKET";
     const MAKER_SMOKE_NO_INSTRUMENT: &str = "SAMPLE-EVENT-NO.POLYMARKET";
@@ -2656,7 +2752,7 @@ mod tests {
             proof_pin_reason_detail: None,
             strategy: StrategySource {
                 source_kind: StrategySourceKind::CompiledRustRegistry,
-                registry_key: TEST_BINARY_ORACLE_MAKER_KEY.to_string(),
+                registry_key: STRATEGY_BINARY_ORACLE_MAKER.to_string(),
                 parameters: BTreeMap::from([
                     ("config_toml".to_string(), maker_smoke_config_toml()),
                     (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),

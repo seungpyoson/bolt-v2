@@ -32,6 +32,7 @@ const CONVERSION_OVERFLOW_CODE: &str = "conversion_overflow";
 const UNSATISFIABLE_WARMUP_CODE: &str = "unsatisfiable_warmup";
 const BANKROLL_BELOW_MIN_SLOT_CODE: &str = "bankroll_below_min_slot";
 const MARKETS_ABOVE_ACTIVE_CAP_CODE: &str = "markets_above_active_cap";
+const EMPTY_MARKETS_CODE: &str = "empty_markets";
 
 fn valid_raw() -> Value {
     toml::toml! {
@@ -379,6 +380,14 @@ fn maker_config_and_archetype_reject_the_same_mirrored_scalar_bounds() {
             "parameters.runtime.mu_min_floor (1) must be finite and in the open interval (0, 1)"
         ),
         (
+            "mu_min_floor negative",
+            set_raw(MU_MIN_FLOOR_FIELD, Value::Float(-0.1)),
+            set_runtime("mu_min_floor", Value::Float(-0.1)),
+            MU_MIN_FLOOR_FIELD,
+            VALUE_OUT_OF_RANGE_CODE,
+            "parameters.runtime.mu_min_floor (-0.1) must be finite and in the open interval (0, 1)"
+        ),
+        (
             "mu_min_floor NaN",
             set_raw(MU_MIN_FLOOR_FIELD, Value::Float(f64::NAN)),
             set_runtime("mu_min_floor", Value::Float(f64::NAN)),
@@ -393,6 +402,14 @@ fn maker_config_and_archetype_reject_the_same_mirrored_scalar_bounds() {
             MU_MIN_FLOOR_FIELD,
             VALUE_OUT_OF_RANGE_CODE,
             "parameters.runtime.mu_min_floor (inf) must be finite and in the open interval (0, 1)"
+        ),
+        (
+            "mu_min_floor negative infinity",
+            set_raw(MU_MIN_FLOOR_FIELD, Value::Float(f64::NEG_INFINITY)),
+            set_runtime("mu_min_floor", Value::Float(f64::NEG_INFINITY)),
+            MU_MIN_FLOOR_FIELD,
+            VALUE_OUT_OF_RANGE_CODE,
+            "parameters.runtime.mu_min_floor (-inf) must be finite and in the open interval (0, 1)"
         ),
         (
             "zero requote_min_interval_ms",
@@ -433,6 +450,28 @@ fn maker_config_and_archetype_reject_the_same_mirrored_scalar_bounds() {
             "parameters.market_portfolio.max_active_markets must be > 0"
         ),
         (
+            "market_portfolio_total_bankroll_notional zero",
+            set_raw(
+                MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD,
+                Value::Float(0.0),
+            ),
+            set_market_portfolio("total_bankroll_notional", Value::Float(0.0)),
+            MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD,
+            VALUE_OUT_OF_RANGE_CODE,
+            "parameters.market_portfolio.total_bankroll_notional must be a positive finite bankroll notional"
+        ),
+        (
+            "market_portfolio_total_bankroll_notional negative",
+            set_raw(
+                MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD,
+                Value::Float(-1.0),
+            ),
+            set_market_portfolio("total_bankroll_notional", Value::Float(-1.0)),
+            MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD,
+            VALUE_OUT_OF_RANGE_CODE,
+            "parameters.market_portfolio.total_bankroll_notional must be a positive finite bankroll notional"
+        ),
+        (
             "market_portfolio_total_bankroll_notional NaN",
             set_raw(
                 MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD,
@@ -455,6 +494,22 @@ fn maker_config_and_archetype_reject_the_same_mirrored_scalar_bounds() {
             "parameters.market_portfolio.total_bankroll_notional must be a positive finite bankroll notional"
         ),
         (
+            "market_portfolio_min_slot_notional zero",
+            set_raw(MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD, Value::Float(0.0),),
+            set_market_portfolio("min_slot_notional", Value::Float(0.0)),
+            MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD,
+            VALUE_OUT_OF_RANGE_CODE,
+            "parameters.market_portfolio.min_slot_notional must be a positive finite per-market slot notional"
+        ),
+        (
+            "market_portfolio_min_slot_notional negative",
+            set_raw(MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD, Value::Float(-1.0),),
+            set_market_portfolio("min_slot_notional", Value::Float(-1.0)),
+            MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD,
+            VALUE_OUT_OF_RANGE_CODE,
+            "parameters.market_portfolio.min_slot_notional must be a positive finite per-market slot notional"
+        ),
+        (
             "market_portfolio_min_slot_notional NaN",
             set_raw(
                 MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD,
@@ -475,6 +530,21 @@ fn maker_config_and_archetype_reject_the_same_mirrored_scalar_bounds() {
             MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD,
             VALUE_OUT_OF_RANGE_CODE,
             "parameters.market_portfolio.min_slot_notional must be a positive finite per-market slot notional"
+        ),
+        (
+            "empty markets",
+            |raw: &mut Value| {
+                raw.as_table_mut()
+                    .expect("config is a table")
+                    .insert(MARKETS_FIELD.to_string(), Value::Array(Vec::new()));
+            },
+            |strategy: &mut BoltV3StrategyConfig| {
+                table_mut(&mut strategy.parameters, &[])
+                    .insert("markets".to_string(), Value::Array(Vec::new()));
+            },
+            MARKETS_FIELD,
+            EMPTY_MARKETS_CODE,
+            "parameters.markets must declare at least one market"
         ),
         (
             "markets over active cap",
@@ -506,6 +576,28 @@ fn maker_config_and_archetype_reject_the_same_mirrored_scalar_bounds() {
     ];
 
     let root = valid_root();
+    let mut baseline_config_errors = Vec::new();
+    validate_config(&valid_raw(), "strategy", &mut baseline_config_errors);
+    assert!(
+        baseline_config_errors.is_empty(),
+        "unmutated manifest fixture must be accepted by validate_config; errors={baseline_config_errors:?}"
+    );
+
+    // The canonical maker config-hash bridge is private to the archetype module,
+    // so this integration test cannot build a matching hash without widening
+    // production API. Keep the unavoidable baseline debt explicit and exact.
+    let baseline_archetype_errors = archetype::validate_strategy(
+        "strategy `maker-001`",
+        &root,
+        &valid_strategy_config(),
+        None,
+    );
+    assert_eq!(
+        baseline_archetype_errors,
+        vec!["strategy `maker-001`: parameters.backtest.strategy_config_hash must match the canonical maker strategy config hash for this loaded strategy".to_string()],
+        "unmutated archetype fixture must have exactly the known hash-binding baseline error"
+    );
+
     for case in cases {
         let mut raw = valid_raw();
         (case.mutate_config)(&mut raw);

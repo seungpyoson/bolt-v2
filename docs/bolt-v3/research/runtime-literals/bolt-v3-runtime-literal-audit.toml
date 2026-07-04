@@ -19717,6 +19717,14 @@ reason = "Stable source label for lifecycle evidence emitted when market selecti
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
+literal = '''"entry_fill"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_ENTRY_FILL: &str = "entry_fill";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted when an entry fill materializes a reconciled pending entry into managed exposure; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
 literal = '''"exit_terminal"'''
 context = '''const ORDER_LIFECYCLE_SOURCE_EXIT_TERMINAL: &str = "exit_terminal";'''
 classification = "order_lifecycle_evidence_source_label"

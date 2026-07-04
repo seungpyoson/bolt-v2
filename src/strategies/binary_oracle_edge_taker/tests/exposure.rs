@@ -687,7 +687,13 @@ fn untracked_position_close_keeps_recovery_fail_closed() {
 
 #[test]
 fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
-    let mut strategy = ready_to_trade_strategy();
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
     let entry_client_order_id = ClientOrderId::from("ENTRY-A");
     let position_id = PositionId::from("P-A");
     let pending = pending_entry_state(&mut strategy, entry_client_order_id);
@@ -734,6 +740,19 @@ fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
     let decision = strategy.exit_submission_decision_at(2_000);
     assert_eq!(decision.instrument_id, Some(instrument_a));
     assert_eq!(decision.order_side, Some(OrderSide::Sell));
+    assert!(
+        evidence.events().into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::EntryFillMaterialized
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Managed
+                    && record.client_order_id.as_deref() == Some("ENTRY-A")
+                    && record.position_id.as_deref() == Some("P-A")
+        )),
+        "late entry fill after selection rotation must write managed materialization lifecycle evidence"
+    );
 }
 
 #[test]
@@ -1247,11 +1266,10 @@ fn selection_rotation_reclassifies_unresolved_pending_entry_and_records_lifecycl
 
     assert!(matches!(
         strategy.exposure,
-        ExposureState::BlindRecovery(BlindRecoveryState {
-            reason: BlindRecoveryReason::PendingEntryUnresolvedAtBoundary {
-                instrument_id: recovered_instrument_id,
-            },
-        }) if recovered_instrument_id == instrument_id
+        ExposureState::EntryReconcilePending {
+            pending,
+            reason: EntryReconcileReason::UnresolvedAtSelectionBoundary,
+        } if pending.instrument_id == instrument_id
     ));
     let instrument_id_text = instrument_id.to_string();
     assert!(
@@ -1263,7 +1281,7 @@ fn selection_rotation_reclassifies_unresolved_pending_entry_and_records_lifecycl
                     && record.client_order_id.as_deref() == Some("ENTRY-BOUNDARY-NO-TERMINAL")
                     && record.instrument_id.as_deref() == Some(instrument_id_text.as_str())
                     && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::BlindRecovery
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::EntryReconcilePending
         )),
         "selection-boundary recovery must write distinguishable lifecycle evidence"
     );

@@ -126,6 +126,7 @@ impl ExitPendingState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EntryReconcileReason {
     AwaitingPositionMaterialization,
+    UnresolvedAtSelectionBoundary,
     UnsupportedEntryFillSide {
         order_side: OrderSide,
     },
@@ -154,9 +155,6 @@ pub(super) enum BlindRecoveryReason {
     InvalidLivePosition {
         entry_order_side: OrderSide,
         side: Option<PositionSide>,
-    },
-    PendingEntryUnresolvedAtBoundary {
-        instrument_id: InstrumentId,
     },
     AmbiguousRestartOpenExitOrders {
         instrument_id: InstrumentId,

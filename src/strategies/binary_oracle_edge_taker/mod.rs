@@ -200,6 +200,7 @@ struct ExecutableEntryProbe {
 }
 
 const ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY: &str = "selection_boundary";
+const ORDER_LIFECYCLE_SOURCE_ENTRY_FILL: &str = "entry_fill";
 const ORDER_LIFECYCLE_SOURCE_EXIT_TERMINAL: &str = "exit_terminal";
 const ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP: &str = "restart_bootstrap";
 const ORDER_LIFECYCLE_SOURCE_ORDER_DENIED: &str = "order_denied";
@@ -1944,14 +1945,13 @@ impl BinaryOracleEdgeTaker {
             return;
         }
         let pending = pending.clone();
-        self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-            reason: BlindRecoveryReason::PendingEntryUnresolvedAtBoundary {
-                instrument_id: pending.instrument_id,
-            },
-        });
+        self.exposure = ExposureState::EntryReconcilePending {
+            pending: pending.clone(),
+            reason: EntryReconcileReason::UnresolvedAtSelectionBoundary,
+        };
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
             transition: BoltV3OrderLifecycleTransition::BoundaryReclassification,
-            outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+            outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
             source: ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY,
             market_id: pending.market_id,
             instrument_id: Some(pending.instrument_id),
@@ -6072,6 +6072,8 @@ impl DataActor for BinaryOracleEdgeTaker {
             .is_some_and(|exit| exit.pending_exit.client_order_id == event.client_order_id);
 
         if entry_fill {
+            let entry_reconcile_materialization =
+                matches!(self.exposure, ExposureState::EntryReconcilePending { .. });
             let pending_context = self.pending_entry_context_for(event.instrument_id);
             let keep_pending_entry = self.entry_order_may_remain_working(&event.client_order_id);
             let position_side = self
@@ -6127,6 +6129,25 @@ impl DataActor for BinaryOracleEdgeTaker {
                 });
                 self.sync_exposure_context_from_active();
                 self.refresh_book_subscriptions_for_current_state();
+                if entry_reconcile_materialization {
+                    self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+                        transition: BoltV3OrderLifecycleTransition::EntryFillMaterialized,
+                        outcome: BoltV3OrderLifecycleOutcome::Managed,
+                        source: ORDER_LIFECYCLE_SOURCE_ENTRY_FILL,
+                        market_id: pending_context
+                            .as_ref()
+                            .and_then(|pending| pending.market_id.clone()),
+                        instrument_id: Some(event.instrument_id),
+                        position_id: Some(position_id),
+                        client_order_id: Some(event.client_order_id),
+                        prior_client_order_id: None,
+                        raw_reason_text: None,
+                        order_side: Some(event.order_side),
+                        filled_quantity: Some(event.last_qty),
+                        residual_quantity: None,
+                        ts_event_ns: Some(event.ts_event.as_u64()),
+                    });
+                }
             } else {
                 if let Some(pending) = pending_context.clone() {
                     let reason = if event.position_id.is_none() {

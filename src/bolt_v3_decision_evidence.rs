@@ -1714,6 +1714,7 @@ pub struct BoltV3OrderRejectEvidence {
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3OrderLifecycleTransition {
     BoundaryReclassification,
+    EntryFillMaterialized,
     ResidualRemanaged,
     RestartOpenOrderAdopted,
     RestartOpenOrderRecoveryBlocked,

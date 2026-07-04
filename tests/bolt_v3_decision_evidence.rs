@@ -1135,6 +1135,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         order_side: snapshot.submission_order_side.clone(),
         price: snapshot.submission_price.clone(),
         quantity: snapshot.submission_quantity.clone(),
+        clamp_outcome: None,
         order_fields: BoltV3OrderIntentOrderFields {
             order_type: OrderType::Limit.to_string(),
             time_in_force: TimeInForce::Gtc.to_string(),
@@ -1880,6 +1881,7 @@ fn strategy_build_context_requires_decision_evidence_value() {
                 order_side: OrderSide::Buy.to_string(),
                 price: "0.50".to_string(),
                 quantity: "1".to_string(),
+                clamp_outcome: None,
                 order_fields: BoltV3OrderIntentOrderFields {
                     order_type: OrderType::Limit.to_string(),
                     time_in_force: TimeInForce::Gtc.to_string(),

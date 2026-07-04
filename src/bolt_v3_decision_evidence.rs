@@ -241,6 +241,26 @@ pub enum BoltV3SubmitIntentKind {
     KillSwitchForcedReduction,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3OrderIntentClampNotEvaluatedReason {
+    NoVenueTruth,
+    ForeignInstrument,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum BoltV3OrderIntentClampOutcome {
+    WithinBounds,
+    Clamped {
+        original_quantity: String,
+    },
+    Rejected,
+    NotEvaluated {
+        reason: BoltV3OrderIntentClampNotEvaluatedReason,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3OrderIntentEvidence {
     pub strategy_id: String,
@@ -250,6 +270,7 @@ pub struct BoltV3OrderIntentEvidence {
     pub order_side: String,
     pub price: String,
     pub quantity: String,
+    pub clamp_outcome: Option<BoltV3OrderIntentClampOutcome>,
     pub order_fields: BoltV3OrderIntentOrderFields,
 }
 
@@ -289,6 +310,7 @@ impl BoltV3OrderIntentEvidence {
             order_side: order.order_side().to_string(),
             price: compiled_order_price_source(fallback_price, order),
             quantity: order.quantity().to_string(),
+            clamp_outcome: None,
             order_fields: BoltV3OrderIntentOrderFields::from_order(order),
         }
     }
@@ -3915,6 +3937,7 @@ mod tests {
             order_side: OrderSide::Buy.to_string(),
             price: "0.42".to_string(),
             quantity: "1".to_string(),
+            clamp_outcome: None,
             order_fields: BoltV3OrderIntentOrderFields {
                 order_type: OrderType::Limit.to_string(),
                 time_in_force: TimeInForce::Gtc.to_string(),
@@ -3957,6 +3980,7 @@ mod tests {
         assert_eq!(intent["strategy_id"], "strategy-one");
         assert_eq!(intent["intent_kind"], "entry");
         assert_eq!(intent["order_side"], OrderSide::Buy.to_string());
+        assert_eq!(intent["clamp_outcome"], serde_json::Value::Null);
         assert_eq!(
             intent["order_fields"]["order_type"],
             OrderType::Limit.to_string()

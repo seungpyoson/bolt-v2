@@ -42,7 +42,8 @@ use crate::{
         BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory, BoltV3ExitDecisionEvidence,
         BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker,
         BoltV3ExitTriggerSource, BoltV3ExposureOccupancy, BoltV3ForcedFlatReason,
-        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OutcomeSide,
+        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderLifecycleEvidence,
+        BoltV3OrderLifecycleOutcome, BoltV3OrderLifecycleTransition, BoltV3OutcomeSide,
         BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
         BoltV3StrategyInputEvidenceSnapshot, number_evidence as evidence_number,
         option_number_evidence as option_evidence_number,
@@ -196,6 +197,31 @@ struct ExecutableEntryProbe {
     order_side: OrderSide,
     vwap: ExactSizeVwap,
     fee_bps: f64,
+}
+
+const ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY: &str = "selection_boundary";
+const ORDER_LIFECYCLE_SOURCE_EXIT_TERMINAL: &str = "exit_terminal";
+const ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP: &str = "restart_bootstrap";
+const ORDER_LIFECYCLE_SOURCE_ORDER_DENIED: &str = "order_denied";
+const ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED: &str = "order_rejected";
+const ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED: &str = "order_canceled";
+const ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED: &str = "order_expired";
+
+#[derive(Debug, Clone)]
+struct OrderLifecycleEvidenceInput {
+    transition: BoltV3OrderLifecycleTransition,
+    outcome: BoltV3OrderLifecycleOutcome,
+    source: &'static str,
+    market_id: Option<String>,
+    instrument_id: Option<InstrumentId>,
+    position_id: Option<PositionId>,
+    client_order_id: Option<ClientOrderId>,
+    prior_client_order_id: Option<ClientOrderId>,
+    raw_reason_text: Option<String>,
+    order_side: Option<OrderSide>,
+    filled_quantity: Option<Quantity>,
+    residual_quantity: Option<Quantity>,
+    ts_event_ns: Option<u64>,
 }
 
 /// Project the strategy's trade-flow TOML knobs into the buffer's runtime config
@@ -765,6 +791,7 @@ impl BinaryOracleEdgeTaker {
         }
         self.refresh_current_reference_price_selection_at(now_ms);
         self.sync_exposure_context_from_active();
+        self.reclassify_unreachable_pending_entry_at_selection_boundary(now_ms);
         self.prune_market_lifecycle(now_ms);
         self.refresh_book_subscriptions_for_current_state();
         if self.exposure.managed_position().is_some()
@@ -1475,6 +1502,41 @@ impl BinaryOracleEdgeTaker {
         self.clear_managed_pending_entry_for_client_order(client_order_id, event_instrument_id);
     }
 
+    fn matching_pending_entry_snapshot(
+        &self,
+        client_order_id: ClientOrderId,
+        event_instrument_id: InstrumentId,
+    ) -> Option<PendingEntryState> {
+        let pending = self.pending_entry()?.clone();
+        (pending.client_order_id == client_order_id && pending.instrument_id == event_instrument_id)
+            .then_some(pending)
+    }
+
+    fn record_pending_entry_terminal_evidence(
+        &self,
+        pending: PendingEntryState,
+        transition: BoltV3OrderLifecycleTransition,
+        source: &'static str,
+        raw_reason_text: Option<String>,
+        ts_event_ns: u64,
+    ) {
+        self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+            transition,
+            outcome: Self::lifecycle_outcome_for_exposure(&self.exposure),
+            source,
+            market_id: pending.market_id,
+            instrument_id: Some(pending.instrument_id),
+            position_id: None,
+            client_order_id: Some(pending.client_order_id),
+            prior_client_order_id: None,
+            raw_reason_text,
+            order_side: None,
+            filled_quantity: None,
+            residual_quantity: None,
+            ts_event_ns: Some(ts_event_ns),
+        });
+    }
+
     fn prune_market_lifecycle_at_current_time(&mut self) {
         if self.is_registered() {
             let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
@@ -1563,6 +1625,160 @@ impl BinaryOracleEdgeTaker {
             .expect("checked non-empty recovery position set");
         let exposure = self.bootstrapped_exposure_for(open_position, execution_venue);
         self.exposure = exposure;
+        self.adopt_restart_open_exit_order_from_cache(execution_venue, strategy_id);
+    }
+
+    fn adopt_restart_open_exit_order_from_cache(
+        &mut self,
+        execution_venue: Venue,
+        strategy_id: StrategyId,
+    ) {
+        let Some(managed_position) = self.exposure.managed_position().cloned() else {
+            return;
+        };
+        if managed_position.origin != ManagedPositionOrigin::RecoveryBootstrap {
+            return;
+        }
+        let Ok(contract) = self.configured_position_contract() else {
+            return;
+        };
+        let position = managed_position.position.clone();
+        let open_exit_order_attribution =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let cache = self.cache();
+                cache
+                    .orders_open(
+                        Some(&execution_venue),
+                        Some(&position.instrument_id),
+                        Some(&strategy_id),
+                        None,
+                        Some(contract.exit_order_side),
+                    )
+                    .into_iter()
+                    .map(|order| {
+                        let client_order_id = order.client_order_id();
+                        let attributed_to_position =
+                            cache.position_id(&client_order_id) == Some(&position.position_id);
+                        (client_order_id, attributed_to_position)
+                    })
+                    .collect::<Vec<_>>()
+            }));
+        let open_exit_order_attribution = match open_exit_order_attribution {
+            Ok(open_exit_order_attribution) => open_exit_order_attribution,
+            Err(_) => {
+                self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+                    reason: BlindRecoveryReason::CacheProbeFailed,
+                });
+                self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+                    transition: BoltV3OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
+                    outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+                    source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
+                    market_id: position.market_id,
+                    instrument_id: Some(position.instrument_id),
+                    position_id: Some(position.position_id),
+                    client_order_id: None,
+                    prior_client_order_id: None,
+                    raw_reason_text: Some("cache_probe_failed".to_string()),
+                    order_side: Some(contract.exit_order_side),
+                    filled_quantity: None,
+                    residual_quantity: Some(position.quantity),
+                    ts_event_ns: None,
+                });
+                return;
+            }
+        };
+        let unattributed_open_exit_count = open_exit_order_attribution
+            .iter()
+            .filter(|(_, attributed_to_position)| !*attributed_to_position)
+            .count();
+        let attributed_open_exit_orders = open_exit_order_attribution
+            .into_iter()
+            .filter_map(|(client_order_id, attributed_to_position)| {
+                attributed_to_position.then_some(client_order_id)
+            })
+            .collect::<Vec<_>>();
+        if unattributed_open_exit_count > 0 {
+            self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::UnattributedRestartOpenExitOrder {
+                    instrument_id: position.instrument_id,
+                },
+            });
+            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+                transition: BoltV3OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
+                outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+                source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
+                market_id: position.market_id,
+                instrument_id: Some(position.instrument_id),
+                position_id: Some(position.position_id),
+                client_order_id: None,
+                prior_client_order_id: None,
+                raw_reason_text: Some("unattributed_open_exit_order".to_string()),
+                order_side: Some(contract.exit_order_side),
+                filled_quantity: None,
+                residual_quantity: Some(position.quantity),
+                ts_event_ns: None,
+            });
+            return;
+        }
+        if attributed_open_exit_orders.is_empty() {
+            return;
+        }
+        if attributed_open_exit_orders.len() > 1 {
+            self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::AmbiguousRestartOpenExitOrders {
+                    instrument_id: position.instrument_id,
+                    count: attributed_open_exit_orders.len(),
+                },
+            });
+            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+                transition: BoltV3OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
+                outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+                source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
+                market_id: position.market_id,
+                instrument_id: Some(position.instrument_id),
+                position_id: Some(position.position_id),
+                client_order_id: None,
+                prior_client_order_id: None,
+                raw_reason_text: Some("ambiguous_open_exit_orders".to_string()),
+                order_side: Some(contract.exit_order_side),
+                filled_quantity: None,
+                residual_quantity: Some(position.quantity),
+                ts_event_ns: None,
+            });
+            return;
+        }
+        let client_order_id = attributed_open_exit_orders
+            .into_iter()
+            .next()
+            .expect("checked exactly one attributed open exit order");
+        self.exposure = ExposureState::ExitPending(ExitPendingState {
+            position: Some(managed_position),
+            pending_exit: PendingExitState {
+                client_order_id,
+                market_id: position.market_id.clone(),
+                position_id: Some(position.position_id),
+                fill_received: false,
+                filled_quantity: None,
+                close_received: false,
+                terminal_received: false,
+                residual_position_observed_after_fill: false,
+            },
+        });
+        self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+            transition: BoltV3OrderLifecycleTransition::RestartOpenOrderAdopted,
+            outcome: BoltV3OrderLifecycleOutcome::ExitPending,
+            source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
+            market_id: position.market_id,
+            instrument_id: Some(position.instrument_id),
+            position_id: Some(position.position_id),
+            client_order_id: Some(client_order_id),
+            prior_client_order_id: None,
+            raw_reason_text: None,
+            order_side: Some(contract.exit_order_side),
+            filled_quantity: None,
+            residual_quantity: Some(position.quantity),
+            ts_event_ns: None,
+        });
     }
 
     /// Classify a single recovered open position into the exposure state to adopt.
@@ -1658,11 +1874,102 @@ impl BinaryOracleEdgeTaker {
         self.exposure.occupancy()
     }
 
+    fn lifecycle_outcome_for_exposure(exposure: &ExposureState) -> BoltV3OrderLifecycleOutcome {
+        match exposure {
+            ExposureState::Flat => BoltV3OrderLifecycleOutcome::Flat,
+            ExposureState::PendingEntry(_) => BoltV3OrderLifecycleOutcome::PendingEntry,
+            ExposureState::EntryReconcilePending { .. } => {
+                BoltV3OrderLifecycleOutcome::EntryReconcilePending
+            }
+            ExposureState::Managed(_) => BoltV3OrderLifecycleOutcome::Managed,
+            ExposureState::ExitPending(_) => BoltV3OrderLifecycleOutcome::ExitPending,
+            ExposureState::UnsupportedObserved(_) => {
+                BoltV3OrderLifecycleOutcome::UnsupportedObserved
+            }
+            ExposureState::BlindRecovery(_) => BoltV3OrderLifecycleOutcome::BlindRecovery,
+        }
+    }
+
+    fn record_order_lifecycle_evidence(&self, input: OrderLifecycleEvidenceInput) {
+        let evidence = BoltV3OrderLifecycleEvidence {
+            strategy_id: self.config.strategy_id.clone(),
+            transition: input.transition,
+            outcome: input.outcome,
+            source: input.source.to_string(),
+            market_id: input.market_id,
+            instrument_id: input
+                .instrument_id
+                .map(|instrument_id| instrument_id.to_string()),
+            position_id: input.position_id.map(|position_id| position_id.to_string()),
+            client_order_id: input
+                .client_order_id
+                .map(|client_order_id| client_order_id.to_string()),
+            prior_client_order_id: input
+                .prior_client_order_id
+                .map(|client_order_id| client_order_id.to_string()),
+            raw_reason_text: input.raw_reason_text,
+            order_side: input.order_side.map(|order_side| format!("{order_side:?}")),
+            filled_quantity: input.filled_quantity.map(|quantity| quantity.to_string()),
+            residual_quantity: input.residual_quantity.map(|quantity| quantity.to_string()),
+            ts_event_ns: input.ts_event_ns,
+        };
+        if let Err(error) = self
+            .context
+            .decision_evidence()
+            .record_order_lifecycle(&evidence)
+        {
+            log::error!(
+                "binary_oracle_edge_taker order lifecycle evidence write failed: strategy_id={} transition={:?} source={} error={error:#}",
+                self.config.strategy_id,
+                evidence.transition,
+                evidence.source,
+            );
+        }
+    }
+
     fn clear_pending_entry_state(&mut self) {
         if matches!(self.exposure, ExposureState::PendingEntry(_)) {
             self.exposure = ExposureState::Flat;
             self.prune_market_lifecycle_at_current_time();
         }
+    }
+
+    fn reclassify_unreachable_pending_entry_at_selection_boundary(&mut self, now_ms: u64) {
+        let ExposureState::PendingEntry(pending) = &self.exposure else {
+            return;
+        };
+        if self.active.books.up.instrument_id == Some(pending.instrument_id)
+            || self.active.books.down.instrument_id == Some(pending.instrument_id)
+        {
+            return;
+        }
+        let pending = pending.clone();
+        self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+            reason: BlindRecoveryReason::PendingEntryUnresolvedAtBoundary {
+                instrument_id: pending.instrument_id,
+            },
+        });
+        self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+            transition: BoltV3OrderLifecycleTransition::BoundaryReclassification,
+            outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+            source: ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY,
+            market_id: pending.market_id,
+            instrument_id: Some(pending.instrument_id),
+            position_id: None,
+            client_order_id: Some(pending.client_order_id),
+            prior_client_order_id: None,
+            raw_reason_text: None,
+            order_side: None,
+            filled_quantity: None,
+            residual_quantity: None,
+            ts_event_ns: Some(now_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        });
+        log::error!(
+            "binary_oracle_edge_taker pending entry unresolved at selection boundary: strategy_id={} instrument_id={} client_order_id={} entering fail-closed recovery",
+            self.config.strategy_id,
+            pending.instrument_id,
+            pending.client_order_id,
+        );
     }
 
     fn enforce_one_position_invariant(&self) -> Result<()> {
@@ -2672,28 +2979,31 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn record_entry_reject(&mut self, event: &nautilus_model::events::OrderRejected) {
+    fn record_entry_reject_state(
+        &mut self,
+        client_order_id: ClientOrderId,
+        instrument_id: InstrumentId,
+        raw_reason: &str,
+    ) {
         let Some(pending) = self.pending_entry().cloned() else {
             return;
         };
-        if pending.client_order_id != event.client_order_id
-            || pending.instrument_id != event.instrument_id
-        {
+        if pending.client_order_id != client_order_id || pending.instrument_id != instrument_id {
             return;
         }
 
-        match classify_entry_reject_reason(event.reason.as_str()) {
+        match classify_entry_reject_reason(raw_reason) {
             Some(EntryRejectClass::Malformed) => {
                 self.entry_reject_state
-                    .insert(event.instrument_id, EntryRejectState::Malformed);
+                    .insert(instrument_id, EntryRejectState::Malformed);
             }
             Some(EntryRejectClass::Balance) => {
                 self.entry_reject_state
-                    .insert(event.instrument_id, EntryRejectState::Balance);
+                    .insert(instrument_id, EntryRejectState::Balance);
             }
             Some(EntryRejectClass::Unfillable) => {
                 self.entry_reject_state.insert(
-                    event.instrument_id,
+                    instrument_id,
                     EntryRejectState::Unfillable {
                         book: pending.book.clone(),
                     },
@@ -2701,13 +3011,21 @@ impl BinaryOracleEdgeTaker {
             }
             None => {
                 self.entry_reject_state.insert(
-                    event.instrument_id,
+                    instrument_id,
                     EntryRejectState::Unfillable {
                         book: pending.book.clone(),
                     },
                 );
             }
         }
+    }
+
+    fn record_entry_reject(&mut self, event: &nautilus_model::events::OrderRejected) {
+        self.record_entry_reject_state(
+            event.client_order_id,
+            event.instrument_id,
+            event.reason.as_str(),
+        );
     }
 
     fn preliminary_edge_pricing_notional_for_side(&self, side: OutcomeSide) -> f64 {
@@ -3139,6 +3457,10 @@ impl BinaryOracleEdgeTaker {
         &mut self,
         client_order_id: ClientOrderId,
         event_instrument_id: InstrumentId,
+        transition: BoltV3OrderLifecycleTransition,
+        source: &'static str,
+        raw_reason_text: Option<String>,
+        ts_event_ns: u64,
     ) {
         let Some(mut exit_pending) = self.exposure.exit_pending().cloned() else {
             return;
@@ -3149,8 +3471,71 @@ impl BinaryOracleEdgeTaker {
         if !self.event_instrument_matches_held_exposure(event_instrument_id) {
             return;
         }
+        let terminal_market_id = exit_pending.pending_exit.market_id.clone().or_else(|| {
+            exit_pending
+                .position
+                .as_ref()
+                .and_then(|managed| managed.position.market_id.clone())
+        });
+        let terminal_position_id = exit_pending.pending_exit.position_id.or_else(|| {
+            exit_pending
+                .position
+                .as_ref()
+                .map(|managed| managed.position.position_id)
+        });
         exit_pending.pending_exit.terminal_received = true;
+        if let Some(residual_position) = exit_pending.residual_position_after_terminal() {
+            let filled_quantity = exit_pending.pending_exit.filled_quantity.clone();
+            let residual_quantity = residual_position.quantity;
+            let origin = exit_pending
+                .position
+                .as_ref()
+                .map(|managed| managed.origin)
+                .unwrap_or(ManagedPositionOrigin::RecoveryBootstrap);
+            let pending_entry = exit_pending
+                .position
+                .as_ref()
+                .and_then(|managed| managed.pending_entry.clone());
+            self.exposure = ExposureState::Managed(ManagedPositionState {
+                position: residual_position.clone(),
+                origin,
+                pending_entry,
+            });
+            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+                transition: BoltV3OrderLifecycleTransition::ResidualRemanaged,
+                outcome: BoltV3OrderLifecycleOutcome::Managed,
+                source: ORDER_LIFECYCLE_SOURCE_EXIT_TERMINAL,
+                market_id: residual_position.market_id.clone(),
+                instrument_id: Some(residual_position.instrument_id),
+                position_id: Some(residual_position.position_id),
+                client_order_id: Some(client_order_id),
+                prior_client_order_id: None,
+                raw_reason_text: raw_reason_text.clone(),
+                order_side: None,
+                filled_quantity,
+                residual_quantity: Some(residual_quantity),
+                ts_event_ns: Some(ts_event_ns),
+            });
+            self.sync_exposure_context_from_active();
+            self.refresh_book_subscriptions_for_current_state();
+            return;
+        }
         self.exposure = exit_pending.into_state_after_exit_update();
+        self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+            transition,
+            outcome: Self::lifecycle_outcome_for_exposure(&self.exposure),
+            source,
+            market_id: terminal_market_id,
+            instrument_id: Some(event_instrument_id),
+            position_id: terminal_position_id,
+            client_order_id: Some(client_order_id),
+            prior_client_order_id: None,
+            raw_reason_text,
+            order_side: None,
+            filled_quantity: None,
+            residual_quantity: None,
+            ts_event_ns: Some(ts_event_ns),
+        });
         self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();
     }
@@ -3671,8 +4056,10 @@ impl BinaryOracleEdgeTaker {
             .iter()
             .map(BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic)
             .collect();
+        let snapshot_as_of_ms = VenueEventMs::new(snapshot.as_of_ms);
         let future_dating_delta_ms = realized_vol_gate_event_ms.and_then(|event_ms| {
-            (snapshot.as_of_ms > event_ms.value()).then(|| snapshot.as_of_ms - event_ms.value())
+            let delta_ms = snapshot_as_of_ms.signed_delta_since(event_ms);
+            delta_ms.is_positive().then_some(delta_ms as u64)
         });
         (
             Some(snapshot.as_of_ms),
@@ -4661,6 +5048,7 @@ impl BinaryOracleEdgeTaker {
                 market_id: managed_position.position.market_id.clone(),
                 position_id: Some(managed_position.position.position_id),
                 fill_received: false,
+                filled_quantity: None,
                 close_received: false,
                 terminal_received: false,
                 residual_position_observed_after_fill: false,
@@ -4728,9 +5116,11 @@ impl BinaryOracleEdgeTaker {
         );
         let exit_eval_now_ms = now_ms as i64;
         let rv_as_of_ms = rv_fields.as_of_ms.map(|value| value as i64);
-        let rv_as_of_minus_now_ms = rv_as_of_ms
+        let rv_as_of_minus_now_ms = rv_fields
+            .as_of_ms
+            .map(VenueEventMs::new)
             .zip(rv_gate_event_ms)
-            .map(|(as_of, event_ms)| as_of - event_ms.value() as i64);
+            .map(|(as_of, event_ms)| as_of.signed_delta_since(event_ms));
         let rv_ready = self
             .pricing
             .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id)
@@ -5782,6 +6172,18 @@ impl DataActor for BinaryOracleEdgeTaker {
             }
             if let Some(exit_pending) = self.exposure.exit_pending_mut() {
                 exit_pending.pending_exit.fill_received = true;
+                let cumulative_filled = match exit_pending.pending_exit.filled_quantity.as_ref() {
+                    Some(quantity) => quantity.as_f64() + event.last_qty.as_f64(),
+                    None => event.last_qty.as_f64(),
+                };
+                let precision = exit_pending
+                    .pending_exit
+                    .filled_quantity
+                    .as_ref()
+                    .map(|quantity| quantity.precision.max(event.last_qty.precision))
+                    .unwrap_or(event.last_qty.precision);
+                exit_pending.pending_exit.filled_quantity =
+                    Some(Quantity::new(cumulative_filled, precision));
                 if exit_pending.pending_exit.close_received {
                     self.exposure = ExposureState::Flat;
                 }
@@ -5795,8 +6197,26 @@ impl DataActor for BinaryOracleEdgeTaker {
         &mut self,
         event: &nautilus_model::events::OrderCanceled,
     ) -> anyhow::Result<()> {
+        let pending_entry =
+            self.matching_pending_entry_snapshot(event.client_order_id, event.instrument_id);
         self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
-        self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
+        if let Some(pending_entry) = pending_entry {
+            self.record_pending_entry_terminal_evidence(
+                pending_entry,
+                BoltV3OrderLifecycleTransition::OrderCanceled,
+                ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED,
+                None,
+                event.ts_event.as_u64(),
+            );
+        }
+        self.mark_exit_order_terminal(
+            event.client_order_id,
+            event.instrument_id,
+            BoltV3OrderLifecycleTransition::OrderCanceled,
+            ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED,
+            None,
+            event.ts_event.as_u64(),
+        );
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
         Ok(())
     }
@@ -5804,15 +6224,80 @@ impl DataActor for BinaryOracleEdgeTaker {
 
 nautilus_strategy!(BinaryOracleEdgeTaker, {
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
+        let pending_entry =
+            self.matching_pending_entry_snapshot(event.client_order_id, event.instrument_id);
         self.record_entry_reject(&event);
         self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
-        self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
+        if let Some(pending_entry) = pending_entry {
+            self.record_pending_entry_terminal_evidence(
+                pending_entry,
+                BoltV3OrderLifecycleTransition::OrderRejected,
+                ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED,
+                Some(event.reason.to_string()),
+                event.ts_event.as_u64(),
+            );
+        }
+        self.mark_exit_order_terminal(
+            event.client_order_id,
+            event.instrument_id,
+            BoltV3OrderLifecycleTransition::OrderRejected,
+            ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED,
+            Some(event.reason.to_string()),
+            event.ts_event.as_u64(),
+        );
+        self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
+    }
+
+    fn on_order_denied(&mut self, event: nautilus_model::events::OrderDenied) {
+        let pending_entry =
+            self.matching_pending_entry_snapshot(event.client_order_id, event.instrument_id);
+        self.record_entry_reject_state(
+            event.client_order_id,
+            event.instrument_id,
+            event.reason.as_str(),
+        );
+        self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
+        if let Some(pending_entry) = pending_entry {
+            self.record_pending_entry_terminal_evidence(
+                pending_entry,
+                BoltV3OrderLifecycleTransition::OrderDenied,
+                ORDER_LIFECYCLE_SOURCE_ORDER_DENIED,
+                Some(event.reason.to_string()),
+                event.ts_event.as_u64(),
+            );
+        }
+        self.mark_exit_order_terminal(
+            event.client_order_id,
+            event.instrument_id,
+            BoltV3OrderLifecycleTransition::OrderDenied,
+            ORDER_LIFECYCLE_SOURCE_ORDER_DENIED,
+            Some(event.reason.to_string()),
+            event.ts_event.as_u64(),
+        );
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
     }
 
     fn on_order_expired(&mut self, event: nautilus_model::events::OrderExpired) {
+        let pending_entry =
+            self.matching_pending_entry_snapshot(event.client_order_id, event.instrument_id);
         self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
-        self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
+        if let Some(pending_entry) = pending_entry {
+            self.record_pending_entry_terminal_evidence(
+                pending_entry,
+                BoltV3OrderLifecycleTransition::OrderExpired,
+                ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED,
+                None,
+                event.ts_event.as_u64(),
+            );
+        }
+        self.mark_exit_order_terminal(
+            event.client_order_id,
+            event.instrument_id,
+            BoltV3OrderLifecycleTransition::OrderExpired,
+            ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED,
+            None,
+            event.ts_event.as_u64(),
+        );
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
     }
 

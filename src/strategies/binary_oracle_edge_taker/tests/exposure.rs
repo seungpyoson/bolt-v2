@@ -2,6 +2,7 @@
 
 use super::*;
 use nautilus_trading::Strategy;
+use std::sync::Arc;
 
 #[test]
 fn position_events_update_live_position_state() {
@@ -1181,6 +1182,91 @@ fn malformed_entry_reject_stops_same_instrument_entry_decisions() {
     let decision = strategy.entry_submission_decision_at(1_200);
     assert_eq!(decision.blocked_reason, Some("entry_malformed_rejected"));
     assert!(strategy.pending_entry().is_none());
+}
+
+#[test]
+fn order_denied_clears_matching_pending_entry_and_records_lifecycle_evidence() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.entry_order.order_type = OrderType::Market;
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+    strategy.config.entry_order.is_quote_quantity = true;
+    let entry_client_order_id = ClientOrderId::from("ENTRY-DENIED");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    strategy.exposure = ExposureState::PendingEntry(pending);
+
+    strategy.on_order_denied(order_denied_event_with_reason(
+        entry_client_order_id,
+        instrument_id,
+        "RATE_LIMIT_EXCEEDED",
+    ));
+
+    assert!(strategy.pending_entry().is_none());
+    assert_eq!(
+        strategy.entry_submission_decision_at(1_200).blocked_reason,
+        Some("entry_unfillable_rejected_unchanged_book"),
+        "a local denial must not fall through to immediate resubmit"
+    );
+    assert!(
+        evidence.events().into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::OrderDenied
+                    && record.client_order_id.as_deref() == Some("ENTRY-DENIED")
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Flat
+        )),
+        "denial handling must write distinguishable lifecycle evidence"
+    );
+}
+
+#[test]
+fn selection_rotation_reclassifies_unresolved_pending_entry_and_records_lifecycle_evidence() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    let entry_client_order_id = ClientOrderId::from("ENTRY-BOUNDARY-NO-TERMINAL");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    strategy.exposure = ExposureState::PendingEntry(pending);
+
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-NEXT", 2_000));
+
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::BlindRecovery(BlindRecoveryState {
+            reason: BlindRecoveryReason::PendingEntryUnresolvedAtBoundary {
+                instrument_id: recovered_instrument_id,
+            },
+        }) if recovered_instrument_id == instrument_id
+    ));
+    let instrument_id_text = instrument_id.to_string();
+    assert!(
+        evidence.events().into_iter().any(|event| matches!(
+            event,
+            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+                if record.transition
+                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::BoundaryReclassification
+                    && record.client_order_id.as_deref() == Some("ENTRY-BOUNDARY-NO-TERMINAL")
+                    && record.instrument_id.as_deref() == Some(instrument_id_text.as_str())
+                    && record.outcome
+                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::BlindRecovery
+        )),
+        "selection-boundary recovery must write distinguishable lifecycle evidence"
+    );
 }
 
 #[test]
@@ -2623,6 +2709,7 @@ fn exposure_exit_pending_requires_both_fill_and_close_to_become_flat() {
             market_id: Some("MKT-1".to_string()),
             position_id: Some(PositionId::from("P-EXIT-STATE-001")),
             fill_received: false,
+            filled_quantity: None,
             close_received: false,
             terminal_received: false,
             residual_position_observed_after_fill: false,
@@ -2665,6 +2752,7 @@ fn exposure_exit_pending_terminal_with_residual_position_restores_managed_state(
             market_id: open_position.market_id.clone(),
             position_id: Some(open_position.position_id),
             fill_received: true,
+            filled_quantity: Some(Quantity::new(4.0, 2)),
             close_received: false,
             terminal_received: true,
             residual_position_observed_after_fill: true,

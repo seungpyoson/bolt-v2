@@ -387,7 +387,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         family_key: updown::KEY,
         interval_start_ms: 1_000,
         interval_end_ms: 2_000,
-        now_ms: 1_500,
         reference_quotes: &quotes,
         strike_price: Some(100.0),
         seconds_to_market_end: Some(300),

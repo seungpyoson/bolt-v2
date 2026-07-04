@@ -499,6 +499,7 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     ExitDecision(crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence),
     ExitEvaluation(Box<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence>),
     LossGovernorHalt(crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence),
+    OrderLifecycle(crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleEvidence),
     RequoteThrottle(crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence),
     /// Production settlement evidence (Lane 3, #1179) must map into this
     /// variant carrying realized_pnl; until that mapping exists this variant is
@@ -656,6 +657,19 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
     ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_order_lifecycle(
+        &self,
+        evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::OrderLifecycle(
+                evidence.clone(),
+            ));
         Ok(())
     }
 
@@ -1477,6 +1491,7 @@ pub(super) fn set_exit_pending(
             market_id: position.market_id.clone(),
             position_id: Some(position.position_id),
             fill_received,
+            filled_quantity: fill_received.then_some(position.quantity),
             close_received,
             terminal_received: false,
             residual_position_observed_after_fill: false,
@@ -1919,6 +1934,23 @@ pub(super) fn order_rejected_event_with_reason(
         nautilus_core::UnixNanos::from(1_000_u64),
         false,
         false,
+    )
+}
+
+pub(super) fn order_denied_event_with_reason(
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+    reason: &'static str,
+) -> nautilus_model::events::OrderDenied {
+    nautilus_model::events::OrderDenied::new(
+        nautilus_model::identifiers::TraderId::from("TRADER-001"),
+        StrategyId::from("BINARYORACLEEDGETAKER-001"),
+        instrument_id,
+        client_order_id,
+        reason.into(),
+        nautilus_core::UUID4::new(),
+        nautilus_core::UnixNanos::from(1_000_u64),
+        nautilus_core::UnixNanos::from(1_000_u64),
     )
 }
 

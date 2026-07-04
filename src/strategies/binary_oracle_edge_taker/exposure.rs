@@ -64,6 +64,7 @@ pub(super) struct PendingExitState {
     pub(super) market_id: Option<String>,
     pub(super) position_id: Option<PositionId>,
     pub(super) fill_received: bool,
+    pub(super) filled_quantity: Option<Quantity>,
     pub(super) close_received: bool,
     pub(super) terminal_received: bool,
     pub(super) residual_position_observed_after_fill: bool,
@@ -91,6 +92,18 @@ pub(super) struct ExitPendingState {
 impl ExitPendingState {
     pub(super) fn is_terminal(&self) -> bool {
         self.pending_exit.fill_received && self.pending_exit.close_received
+    }
+
+    pub(super) fn residual_position_after_terminal(&self) -> Option<OpenPositionState> {
+        let position = self.position.as_ref()?;
+        let filled_quantity = self.pending_exit.filled_quantity.as_ref()?;
+        let residual = position.position.quantity.as_f64() - filled_quantity.as_f64();
+        if !is_positive_finite(residual) {
+            return None;
+        }
+        let mut residual_position = position.position.clone();
+        residual_position.quantity = Quantity::new(residual, position.position.quantity.precision);
+        Some(residual_position)
     }
 
     pub(super) fn into_state_after_exit_update(self) -> ExposureState {
@@ -141,6 +154,16 @@ pub(super) enum BlindRecoveryReason {
     InvalidLivePosition {
         entry_order_side: OrderSide,
         side: Option<PositionSide>,
+    },
+    PendingEntryUnresolvedAtBoundary {
+        instrument_id: InstrumentId,
+    },
+    AmbiguousRestartOpenExitOrders {
+        instrument_id: InstrumentId,
+        count: usize,
+    },
+    UnattributedRestartOpenExitOrder {
+        instrument_id: InstrumentId,
     },
     ForeignVenuePosition {
         instrument_venue: Venue,

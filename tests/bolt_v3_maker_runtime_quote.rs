@@ -170,11 +170,11 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
 
     let fair = maker_reference_current_price_fair_value(
         &mut selector,
+        1_000,
         MakerRuntimeReferenceFairValueInput {
             family_key: static_binary_event::KEY,
             interval_start_ms: 1_000,
             interval_end_ms: 2_000,
-            now_ms: 1_000,
             reference_quotes: &quotes,
             strike_price: Some(0.50),
             seconds_to_market_end: Some(0),
@@ -253,7 +253,6 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
         family_key: updown::KEY,
         interval_start_ms: 1_000,
         interval_end_ms: 2_000,
-        now_ms: 1_500,
         reference_quotes: &quotes,
         strike_price: Some(100.0),
         seconds_to_market_end: Some(300),
@@ -262,7 +261,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
         pricing_kurtosis: 0.25,
     };
 
-    let decision = maker_reference_current_price_fair_value_decision(&mut selector, input);
+    let decision = maker_reference_current_price_fair_value_decision(&mut selector, 1_500, input);
 
     assert_eq!(decision.blocked_by, None);
     let fair = decision
@@ -315,11 +314,11 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
     .expect("selector fixture should be valid");
     let blocked = maker_reference_current_price_fair_value_decision(
         &mut blocked_selector,
+        1_500,
         MakerRuntimeReferenceFairValueInput {
             family_key: updown::KEY,
             interval_start_ms: 1_000,
             interval_end_ms: 2_000,
-            now_ms: 1_500,
             reference_quotes: &[],
             strike_price: input.strike_price,
             seconds_to_market_end: input.seconds_to_market_end,
@@ -346,6 +345,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
     .expect("selector fixture should be valid");
     let rv_blocked = maker_reference_current_price_fair_value_decision(
         &mut rv_blocked_selector,
+        1_500,
         MakerRuntimeReferenceFairValueInput {
             realized_volatility_snapshot: &unready_snapshot,
             ..input
@@ -369,6 +369,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
     .expect("selector fixture should be valid");
     let stale_rv = maker_reference_current_price_fair_value_decision(
         &mut stale_rv_selector,
+        1_500,
         MakerRuntimeReferenceFairValueInput {
             realized_volatility_snapshot: &stale_snapshot,
             realized_volatility_max_source_age_ms: Some(50),
@@ -392,6 +393,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
     .expect("selector fixture should be valid");
     let missing_strike = maker_reference_current_price_fair_value_decision(
         &mut missing_strike_selector,
+        1_500,
         MakerRuntimeReferenceFairValueInput {
             strike_price: None,
             ..input
@@ -414,6 +416,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
     .expect("selector fixture should be valid");
     let missing_expiry = maker_reference_current_price_fair_value_decision(
         &mut missing_expiry_selector,
+        1_500,
         MakerRuntimeReferenceFairValueInput {
             seconds_to_market_end: None,
             ..input

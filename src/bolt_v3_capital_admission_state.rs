@@ -8,6 +8,11 @@ use crate::bolt_v3_loss_governor::LossSnapshot;
 
 pub const VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION: u32 = 1;
 pub const VENUE_SPENDABILITY_SOURCE_RECORD_KIND: &str = "bolt_v3.venue_spendability_source.v1";
+pub const POLYMARKET_VENUE_TRUTH_REST_SOURCE: &str = "polymarket_venue_truth_rest";
+
+pub fn capital_admission_source_is_accepted_venue_truth(source: &str) -> bool {
+    source == POLYMARKET_VENUE_TRUTH_REST_SOURCE
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapitalAdmissionStateError {

@@ -74,12 +74,26 @@ impl KillSwitchHaltTrigger {
             reason: reason.into(),
         }
     }
+
+    pub fn venue_truth_divergence(
+        source: impl Into<String>,
+        source_timestamp_unix_nanos: u64,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: KillSwitchHaltTriggerKind::VenueTruthDivergence,
+            source: source.into(),
+            source_timestamp_unix_nanos,
+            reason: reason.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KillSwitchHaltTriggerKind {
     LossGovernorBreach,
     BasketExecutionStuck,
+    VenueTruthDivergence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,13 +323,14 @@ fn require_clean_reconciliation(
     Ok(())
 }
 
-fn halt_id_for_trigger(trigger: &KillSwitchHaltTrigger) -> String {
+pub(crate) fn halt_id_for_trigger(trigger: &KillSwitchHaltTrigger) -> String {
     let mut hasher = Sha256::new();
     hasher.update(HALT_ID_DOMAIN);
     hasher.update([0]);
     hasher.update(match trigger.kind {
         KillSwitchHaltTriggerKind::LossGovernorBreach => b"loss_governor_breach".as_slice(),
         KillSwitchHaltTriggerKind::BasketExecutionStuck => b"basket_execution_stuck".as_slice(),
+        KillSwitchHaltTriggerKind::VenueTruthDivergence => b"venue_truth_divergence".as_slice(),
     });
     hasher.update([0]);
     hasher.update(trigger.source.as_bytes());

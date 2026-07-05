@@ -180,14 +180,19 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
 
 ## Installation — `just setup`
 
-- Keep `.githooks/` as tracked hook source and generate active hooks under the
-  untracked git-common hooks directory (`$(git rev-parse --git-common-dir)/hooks`).
+- Keep direct tracked `.githooks/<hook-name>` files as repo hook source and
+  generate active hooks under the untracked git-common hooks directory
+  (`$(git rev-parse --git-common-dir)/hooks`).
   `just setup` points `core.hooksPath` at that generated directory so agent
   hook installers can mutate active hooks without dirtying tracked repo files.
   During that move, setup copies repo hook sources plus existing hooks from the
-  previous active hook directory when those names are not owned by `.githooks/`,
-  so local/global agent hooks keep firing after the path changes. Setup records
-  hook source path, Git config scope, and byte hashes in
+  previous active hook directory when those names are not owned by tracked repo
+  hook sources, so local/global agent hooks keep firing after the path changes.
+  Later setup runs refresh adopted external hooks and shadowed-hook records from
+  their manifest source paths, and remove manifest-owned runtime copies whose
+  source file disappeared. Same-name external hooks are shadowed by the repo
+  hook source and recorded in the manifest instead of guessed, merged, or
+  dispatched. Setup records hook source path, Git config scope, and byte hashes in
   `$(git rev-parse --git-common-dir)/clean-merged.hooks-manifest.json`.
   Runtime overwrites are allowed only for exact byte matches or entries whose
   current runtime hash matches that installer manifest; otherwise setup refuses.
@@ -226,9 +231,9 @@ The "always-on" contract has two precise limits:
   points `core.hooksPath` at that generated directory. Git cannot auto-run
   hooks on clone without local config; there is no in-tree bootstrap.
   `just clean-merged-doctor` reports an unset hooksPath as a problem.
-  Re-run `just setup` after changing tracked `.githooks/` sources; doctor
-  reports stale runtime copies that no longer match tracked source or manifest
-  provenance.
+  Re-run `just setup` after changing tracked `.githooks/` sources or adopted
+  external hook sources; doctor reports stale runtime copies and source drift
+  that no longer match manifest provenance.
 - **Always-on for branch ref cleanup (Lane H + Lane R).** Every `git pull`
   (incl. FF — empirically verified) and checkout of the configured trunk fires
   the hooks and cleans eligible branches automatically.

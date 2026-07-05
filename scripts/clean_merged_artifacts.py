@@ -490,7 +490,7 @@ def _tracked_hook_source_paths(repo_root: pathlib.Path) -> list[str]:
         return []
     return sorted(
         path for path in proc.stdout.split("\0")
-        if path.startswith(".githooks/") and path
+        if pathlib.PurePosixPath(path).parent == pathlib.PurePosixPath(".githooks")
     )
 
 
@@ -528,6 +528,13 @@ def _load_hook_manifest(common_dir: pathlib.Path) -> dict[str, Any]:
         manifest["hooks"] = {}
     elif not isinstance(hooks, dict):
         raise CleanMergedError(f"hook manifest invalid at {manifest_path}: hooks must be object")
+    shadowed = manifest.get("shadowed_hooks")
+    if shadowed is None:
+        manifest["shadowed_hooks"] = {}
+    elif not isinstance(shadowed, dict):
+        raise CleanMergedError(
+            f"hook manifest invalid at {manifest_path}: shadowed_hooks must be object"
+        )
     return manifest
 
 
@@ -536,16 +543,23 @@ def _hook_manifest_hooks(manifest: dict[str, Any]) -> dict[str, Any]:
     return hooks if isinstance(hooks, dict) else {}
 
 
+def _hook_manifest_shadowed(manifest: dict[str, Any]) -> dict[str, Any]:
+    shadowed = manifest.get("shadowed_hooks")
+    return shadowed if isinstance(shadowed, dict) else {}
+
+
 def _write_hook_manifest(
     common_dir: pathlib.Path,
     *,
     runtime_hooks_dir: pathlib.Path,
     hooks: dict[str, Any],
+    shadowed_hooks: dict[str, Any],
 ) -> None:
     manifest = {
         "version": 1,
         "runtime_hooks_dir": str(runtime_hooks_dir),
         "hooks": hooks,
+        "shadowed_hooks": shadowed_hooks,
     }
     _atomic_write_text(
         _hook_manifest_path(common_dir),
@@ -627,6 +641,67 @@ def _copy_hook_with_provenance(
         "source_sha256": source_sha,
         "runtime_sha256": _file_sha256(destination),
     }
+
+
+def _remove_hook_with_provenance(
+    *,
+    runtime_hooks_dir: pathlib.Path,
+    hook_name: str,
+    entry: dict[str, Any],
+) -> None:
+    destination = runtime_hooks_dir / hook_name
+    if not destination.exists():
+        return
+    if not destination.is_file():
+        raise CleanMergedError(f"refusing to remove non-file hook at {destination}")
+    if entry.get("runtime_sha256") != _file_sha256(destination):
+        raise CleanMergedError(
+            f"refusing to remove hook {hook_name} without "
+            f"installer provenance at {destination}"
+        )
+    destination.unlink()
+
+
+def _manifest_source_file(repo_root: pathlib.Path, entry: Any) -> pathlib.Path | None:
+    if not isinstance(entry, dict):
+        return None
+    raw = entry.get("source_path")
+    if not isinstance(raw, str) or not raw:
+        return None
+    path = pathlib.Path(raw)
+    return path if path.is_absolute() else repo_root / path
+
+
+def _record_shadowed_hook(
+    *,
+    hook_file: pathlib.Path,
+    repo_source_file: pathlib.Path,
+    source_scope: str,
+    shadowed_hooks: dict[str, Any],
+) -> None:
+    if not hook_file.is_file() or not repo_source_file.is_file():
+        return
+    if hook_file.read_bytes() == repo_source_file.read_bytes():
+        return
+    entries = shadowed_hooks.setdefault(hook_file.name, [])
+    if not isinstance(entries, list):
+        entries = []
+        shadowed_hooks[hook_file.name] = entries
+    source_path = str(hook_file)
+    source_sha = _file_sha256(hook_file)
+    replacement = {
+        "source_kind": "active-hook",
+        "source_scope": source_scope,
+        "source_path": source_path,
+        "source_sha256": source_sha,
+        "shadowed_by": _repo_relative_path(repo_source_file.parent.parent, repo_source_file),
+    }
+    for index, entry in enumerate(entries):
+        if isinstance(entry, dict) and entry.get("source_path") == source_path:
+            entries[index] = replacement
+            break
+    else:
+        entries.append(replacement)
 
 
 def _configured_hooks_path(
@@ -735,7 +810,14 @@ def install_hooks(
     if not source_root.is_dir():
         raise CleanMergedError(f"source worktree does not exist: {source_root}")
     source_hooks_dir = source_root / ".githooks"
-    missing = [name for name in CLEAN_MERGED_HOOKS if not (source_hooks_dir / name).is_file()]
+    tracked_hook_paths = set(_tracked_hook_source_paths(source_root))
+    missing = [
+        name for name in CLEAN_MERGED_HOOKS
+        if (
+            not (source_hooks_dir / name).is_file()
+            or f".githooks/{name}" not in tracked_hook_paths
+        )
+    ]
     if missing:
         raise CleanMergedError(
             "missing tracked clean-merged hook source(s): " + ", ".join(missing)
@@ -753,6 +835,7 @@ def install_hooks(
     runtime_hooks_dir.mkdir(parents=True, exist_ok=True)
     manifest = _load_hook_manifest(common_dir)
     manifest_hooks = dict(_hook_manifest_hooks(manifest))
+    shadowed_hooks: dict[str, Any] = {}
 
     active_hook_dirs = _active_hook_dirs(
         invoke_root=invoke_root,
@@ -761,7 +844,11 @@ def install_hooks(
         home_dir=home_dir,
     )
     source_hook_files = sorted(
-        (hook_file for hook_file in source_hooks_dir.iterdir() if hook_file.is_file()),
+        (
+            source_root / rel_path
+            for rel_path in tracked_hook_paths
+            if (source_root / rel_path).is_file()
+        ),
         key=lambda path: path.name,
     )
     source_hook_names = {hook_file.name for hook_file in source_hook_files}
@@ -776,12 +863,103 @@ def install_hooks(
             manifest_hooks=manifest_hooks,
         )
 
+    for hook_name, entry in sorted(_hook_manifest_hooks(manifest).items()):
+        if (
+            not isinstance(entry, dict)
+            or entry.get("source_kind") != "repo-source"
+            or hook_name in source_hook_names
+        ):
+            continue
+        _remove_hook_with_provenance(
+            runtime_hooks_dir=runtime_hooks_dir,
+            hook_name=hook_name,
+            entry=entry,
+        )
+        manifest_hooks.pop(hook_name, None)
+
+    adopted_source_paths: set[str] = set()
+    for hook_name, entries in sorted(_hook_manifest_shadowed(manifest).items()):
+        if not isinstance(entries, list):
+            raise CleanMergedError(f"shadowed hook manifest entry for {hook_name} is invalid")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise CleanMergedError(
+                    f"shadowed hook manifest entry for {hook_name} is invalid"
+                )
+            source_file = _manifest_source_file(source_root, entry)
+            if source_file is None:
+                raise CleanMergedError(
+                    f"shadowed hook manifest entry for {hook_name} has invalid source_path"
+                )
+            if not source_file.is_file():
+                continue
+            adopted_source_paths.add(str(source_file))
+            source_scope = str(entry.get("source_scope") or "manifest")
+            if hook_name in source_hook_names:
+                _record_shadowed_hook(
+                    hook_file=source_file,
+                    repo_source_file=source_hooks_dir / hook_name,
+                    source_scope=source_scope,
+                    shadowed_hooks=shadowed_hooks,
+                )
+                continue
+            destination = runtime_hooks_dir / hook_name
+            _copy_hook_with_provenance(
+                source_file=source_file,
+                destination=destination,
+                source_kind="active-hook",
+                source_scope=source_scope,
+                source_path=str(source_file),
+                manifest_hooks=manifest_hooks,
+            )
+
+    for hook_name, entry in sorted(_hook_manifest_hooks(manifest).items()):
+        if not isinstance(entry, dict) or entry.get("source_kind") != "active-hook":
+            continue
+        source_file = _manifest_source_file(source_root, entry)
+        if source_file is None:
+            raise CleanMergedError(f"hook manifest entry for {hook_name} has invalid source_path")
+        if not source_file.is_file():
+            _remove_hook_with_provenance(
+                runtime_hooks_dir=runtime_hooks_dir,
+                hook_name=hook_name,
+                entry=entry,
+            )
+            manifest_hooks.pop(hook_name, None)
+            continue
+        adopted_source_paths.add(str(source_file))
+        if hook_name in source_hook_names:
+            _record_shadowed_hook(
+                hook_file=source_file,
+                repo_source_file=source_hooks_dir / hook_name,
+                source_scope=str(entry.get("source_scope") or "manifest"),
+                shadowed_hooks=shadowed_hooks,
+            )
+            continue
+        destination = runtime_hooks_dir / hook_name
+        _copy_hook_with_provenance(
+            source_file=source_file,
+            destination=destination,
+            source_kind="active-hook",
+            source_scope=str(entry.get("source_scope") or "manifest"),
+            source_path=str(source_file),
+            manifest_hooks=manifest_hooks,
+        )
+
     for active_hooks in active_hook_dirs:
         active_hooks_dir = active_hooks.path
         if not active_hooks_dir.is_dir() or _same_path(active_hooks_dir, runtime_hooks_dir):
             continue
         for hook_file in sorted(active_hooks_dir.iterdir(), key=lambda path: path.name):
-            if hook_file.name in source_hook_names or not hook_file.is_file():
+            if not hook_file.is_file() or str(hook_file) in adopted_source_paths:
+                continue
+            if hook_file.name in source_hook_names:
+                _record_shadowed_hook(
+                    hook_file=hook_file,
+                    repo_source_file=source_hooks_dir / hook_file.name,
+                    source_scope=active_hooks.source_scope,
+                    shadowed_hooks=shadowed_hooks,
+                )
                 continue
             destination = runtime_hooks_dir / hook_file.name
             _copy_hook_with_provenance(
@@ -803,6 +981,7 @@ def install_hooks(
         common_dir,
         runtime_hooks_dir=runtime_hooks_dir,
         hooks=manifest_hooks,
+        shadowed_hooks=shadowed_hooks,
     )
     return runtime_hooks_dir
 
@@ -2882,9 +3061,12 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     expected_hooks_dir = common / "hooks"
     source_hooks_dir = repo_root / ".githooks"
     try:
-        manifest_hooks = _hook_manifest_hooks(_load_hook_manifest(common))
+        hook_manifest = _load_hook_manifest(common)
+        manifest_hooks = _hook_manifest_hooks(hook_manifest)
+        manifest_shadowed = _hook_manifest_shadowed(hook_manifest)
     except CleanMergedError as exc:
         manifest_hooks = {}
+        manifest_shadowed = {}
         problems.append(str(exc))
 
     # hooks install
@@ -2932,6 +3114,48 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
             "tracked hook source(s) have local changes: "
             + ", ".join(dirty_sources)
         )
+
+    for hook_name, entry in sorted(manifest_hooks.items()):
+        if not isinstance(entry, dict):
+            problems.append(f"hook {hook_name} manifest entry is invalid")
+            continue
+        hook_file = expected_hooks_dir / hook_name
+        runtime_match = (
+            hook_file.is_file()
+            and entry.get("runtime_sha256") == _file_sha256(hook_file)
+        )
+        source_file = _manifest_source_file(repo_root, entry)
+        source_match = (
+            source_file is not None
+            and source_file.is_file()
+            and entry.get("source_sha256") == _file_sha256(source_file)
+        )
+        print(
+            f"  manifest hook {hook_name:14s} runtime_match={runtime_match} "
+            f"source_match={source_match}"
+        )
+        if not runtime_match:
+            problems.append(f"hook {hook_name} runtime changed since install")
+        if not source_match:
+            problems.append(f"hook {hook_name} source changed since install")
+
+    for hook_name, entries in sorted(manifest_shadowed.items()):
+        if not isinstance(entries, list):
+            problems.append(f"shadowed hook {hook_name} manifest entry is invalid")
+            continue
+        for entry in entries:
+            source_file = _manifest_source_file(repo_root, entry)
+            source_match = (
+                source_file is not None
+                and source_file.is_file()
+                and isinstance(entry, dict)
+                and entry.get("source_sha256") == _file_sha256(source_file)
+            )
+            print(
+                f"  shadowed hook {hook_name:14s} source_match={source_match}"
+            )
+            if not source_match:
+                problems.append(f"shadowed hook {hook_name} source changed since install")
 
     # remote.<remote>.prune must follow the configured remote name.
     prune_key = f"remote.{config.remote_name}.prune"

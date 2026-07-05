@@ -3312,7 +3312,6 @@ fn flat_terminal_override_is_not_consumed_when_exposure_is_not_flat() {
         instrument_id,
         ClientOrderId::from("ENTRY-NON-FLAT-001"),
     );
-    strategy.remember_flat_terminal_entry_override(&pending);
     let position = materialize_configured_position(
         &mut strategy,
         instrument_id,
@@ -3325,6 +3324,7 @@ fn flat_terminal_override_is_not_consumed_when_exposure_is_not_flat() {
         position,
         ManagedPositionOrigin::StrategyEntry,
     );
+    strategy.remember_flat_terminal_entry_override(&pending);
 
     assert!(
         strategy

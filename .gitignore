@@ -32,7 +32,7 @@ __pycache__/
 .mcp.json
 # Generated SpecKit agent adapters are NOT committed; .specify/ templates are
 # the source of truth. Regenerate locally: `specify integration install
-# <agent>` (--force for a second agent), then `git restore AGENTS.md CLAUDE.md
+# <agent>` (--force if the tool asks), then `git restore AGENTS.md CLAUDE.md
 # GEMINI.md` — the tool appends a SPECKIT block to the agent's context file
 # (codex/opencode/pi -> AGENTS.md, claude -> CLAUDE.md, gemini -> GEMINI.md).
 # SpecKit integration state is machine-local:

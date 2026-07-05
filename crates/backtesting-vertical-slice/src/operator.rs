@@ -4988,7 +4988,7 @@ table_families = ["trades", "bars"]
             serde_json::from_str(COMMITTED_CATALOG_METADATA).expect("catalog metadata parses");
         assert_eq!(
             contract.catalog_metadata_hash,
-            metadata.content_hash().unwrap()
+            sha256_hex(COMMITTED_CATALOG_METADATA.as_bytes())
         );
         assert_eq!(
             contract.artifact_uris.catalog_metadata_uri,

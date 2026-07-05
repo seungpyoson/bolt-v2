@@ -273,7 +273,7 @@ pub fn write_source_proof_migration_preflight_report(
     }
     Ok(SourceProofMigrationPreflightArtifact {
         path,
-        content_hash: content_hash(report)?,
+        content_hash: format!("{:x}", Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
     })
 }
@@ -453,12 +453,4 @@ fn is_backfillable_evidence_state(evidence_state: EvidenceState) -> bool {
         evidence_state,
         EvidenceState::DirectlyBackfillable | EvidenceState::OwnerArchiveBackfillable
     )
-}
-
-fn content_hash(
-    report: &SourceProofMigrationPreflightReport,
-) -> Result<String, SourceProofMigrationPreflightError> {
-    let bytes = serde_json::to_vec(report)
-        .map_err(|error| SourceProofMigrationPreflightError::Serialize(error.to_string()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }

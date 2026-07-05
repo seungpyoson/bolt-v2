@@ -538,7 +538,7 @@ pub fn write_backfill_conversion_completion_ledger(
     }
     Ok(BackfillConversionCompletionLedgerArtifact {
         path,
-        content_hash: content_hash(ledger)?,
+        content_hash: format!("{:x}", Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
         record_count: ledger.record_count,
     })
@@ -889,14 +889,6 @@ fn resolve_path(base: &Path, path: &Path) -> PathBuf {
     } else {
         base.join(path)
     }
-}
-
-fn content_hash(
-    ledger: &BackfillConversionCompletionLedger,
-) -> Result<String, BackfillConversionCompletionLedgerError> {
-    let bytes = serde_json::to_vec(ledger)
-        .map_err(|error| BackfillConversionCompletionLedgerError::Serialize(error.to_string()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

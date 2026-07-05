@@ -347,7 +347,7 @@ impl SourceProofLegacyDerivabilityReport {
     }
 
     pub fn content_hash(&self) -> Result<String, SourceProofLegacyDerivabilityReportError> {
-        let bytes = serde_json::to_vec(self).map_err(|error| {
+        let bytes = serde_json::to_vec_pretty(self).map_err(|error| {
             SourceProofLegacyDerivabilityReportError::Serialize(error.to_string())
         })?;
         let mut hasher = Sha256::new();
@@ -443,9 +443,7 @@ pub fn write_source_proof_legacy_derivability_report(
             }
         })?;
     }
-    let content_hash = report
-        .content_hash()
-        .map_err(|error| SourceProofLegacyDerivabilityWriteError::Serialize(error.to_string()))?;
+    let content_hash = hex::encode(Sha256::digest(&bytes));
     Ok(SourceProofLegacyDerivabilityArtifact {
         path,
         content_hash,

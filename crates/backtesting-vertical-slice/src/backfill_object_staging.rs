@@ -479,10 +479,7 @@ fn write_manifest(
             error: error.to_string(),
         })?;
     }
-    let manifest_hash = hex::encode(Sha256::digest(
-        serde_json::to_vec(manifest)
-            .map_err(|error| BackfillObjectStagingError::Serialize(error.to_string()))?,
-    ));
+    let manifest_hash = hex::encode(Sha256::digest(&bytes));
     Ok((path, manifest_hash, bytes.len() as u64))
 }
 

@@ -500,7 +500,7 @@ pub fn write_source_catalog_mapping_readiness_report(
     }
     Ok(SourceCatalogMappingReadinessArtifact {
         path,
-        content_hash: content_hash(report)?,
+        content_hash: sha256_hex(&bytes),
         bytes: bytes.len() as u64,
     })
 }
@@ -508,12 +508,4 @@ pub fn write_source_catalog_mapping_readiness_report(
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct SourceCatalogMappingEvaluation {
     source_sample_mapping_status: Vec<SourceCatalogMappingStatusEntry>,
-}
-
-fn content_hash(
-    report: &SourceCatalogMappingReadinessReport,
-) -> Result<String, SourceCatalogMappingReadinessError> {
-    let bytes = serde_json::to_vec(report)
-        .map_err(|error| SourceCatalogMappingReadinessError::Serialize(error.to_string()))?;
-    Ok(sha256_hex(&bytes))
 }

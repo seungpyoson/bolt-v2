@@ -3,6 +3,9 @@ use std::{
     path::{Component, Path},
 };
 
+use backtesting_vertical_slice::reference_fixture_index::{
+    EvictedFixtureIndex, TIER1_PMXT_CONVERSION_QUEUE_PATH, repo_root_from_manifest_dir,
+};
 use backtesting_vertical_slice::source_universe_conversion_queue::{
     SourceUniverseConversionQueue, SourceUniverseConversionQueueStatus,
     SourceUniverseConversionWorkState, write_source_universe_conversion_queue_from_spec_file,
@@ -351,7 +354,7 @@ output_prefix_template = "source-universe={{universe_id}}/category={{category}}/
 }
 
 #[test]
-fn source_universe_conversion_queue_materializes_every_pmxt_archive_index_object_without_sha256_claim()
+fn source_universe_conversion_queue_materializes_every_pmxt_archive_index_object_with_evicted_sha256_claim()
  {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
@@ -370,6 +373,17 @@ fn source_universe_conversion_queue_materializes_every_pmxt_archive_index_object
 
     let artifact = write_source_universe_conversion_queue_from_spec_file(&spec_path)
         .expect("PMXT queue remains reproducible");
+    let evicted_index =
+        EvictedFixtureIndex::load(&repo_root_from_manifest_dir()).expect("load eviction index");
+    assert_eq!(
+        artifact.content_hash,
+        evicted_index
+            .sha256_for(TIER1_PMXT_CONVERSION_QUEUE_PATH)
+            .unwrap_or_else(|| {
+                panic!("evicted fixture index does not contain {TIER1_PMXT_CONVERSION_QUEUE_PATH}")
+            }),
+        "regenerated PMXT conversion queue bytes must match the evicted fixture index"
+    );
     let queue: SourceUniverseConversionQueue =
         serde_json::from_slice(&fs::read(&artifact.path).expect("read queue"))
             .expect("queue parses");

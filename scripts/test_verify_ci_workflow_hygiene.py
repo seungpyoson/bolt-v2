@@ -272,11 +272,30 @@ jobs:
             --ref "${{ github.ref }}" \
             | tee -a "$GITHUB_OUTPUT"
 
+      - name: Summarize CI classification
+        if: always()
+        shell: bash
+        env:
+          CI_POLICY_PATH: ${{ steps.policy.outputs.ci_policy_path }}
+          FULL_CI_REQUIRED: ${{ steps.policy.outputs.full_ci_required }}
+          FULL_CI_DEFERRED: ${{ steps.policy.outputs.full_ci_deferred }}
+          EXPECTED_EVENT_CLASS: ${{ steps.policy.outputs.expected_event_class }}
+          POLICY_REASON: ${{ steps.policy.outputs.reason }}
+        run: |
+          class="promoted-cheap"
+          if [[ "$FULL_CI_REQUIRED" == "true" ]]; then
+            class="heavy proof"
+          elif [[ "$CI_POLICY_PATH" == "iteration" ]]; then
+            class="iteration lane"
+          fi
+          echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} event_class=${EXPECTED_EVENT_CLASS:-unknown} reason=${POLICY_REASON:-missing}" >> "$GITHUB_STEP_SUMMARY"
+
   detector:
     name: detector
     outputs:
       build_required: ${{ steps.build_required.outputs.value }}
       fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}
+      fingerprint_reuse_reason: ${{ steps.fingerprint_reuse_allowed.outputs.reason }}
       docs_only: ${{ steps.docs_only.outputs.docs_only }}
     runs-on: ubuntu-latest
     steps:
@@ -445,10 +464,13 @@ jobs:
         run: |
           if [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=false" >> "$GITHUB_OUTPUT"
+            echo "reason=governance-changed" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
+            echo "reason=consumer-event" >> "$GITHUB_OUTPUT"
           else
             echo "value=false" >> "$GITHUB_OUTPUT"
+            echo "reason=non-consumer-event" >> "$GITHUB_OUTPUT"
           fi
 
   deny:
@@ -740,6 +762,8 @@ jobs:
           fi
           aws s3 cp "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}" "$NEXTEST_ARCHIVE_PATH"
           echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          echo "restore-result=miss" >> "$GITHUB_OUTPUT"
+          echo "restore-reason=fixture-miss" >> "$GITHUB_OUTPUT"
           exit 0
       - name: Restore root binary sidecars from S3
         id: root-bin-sidecars-cache
@@ -756,7 +780,49 @@ jobs:
           fi
           aws s3 cp "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}" "$ROOT_BIN_SIDECARS_PATH"
           echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          echo "restore-result=miss" >> "$GITHUB_OUTPUT"
+          echo "restore-reason=fixture-miss" >> "$GITHUB_OUTPUT"
           exit 0
+      - name: Summarize nextest archive S3 state
+        if: always()
+        shell: bash
+        env:
+          S3_ELIGIBLE: ${{ steps.nextest-artifact-cache.outputs.eligible || 'false' }}
+          S3_CACHE_MODE: ${{ steps.nextest-artifact-cache.outputs.cache_mode || 'none' }}
+          S3_AWS_OUTCOME: ${{ steps.nextest-artifact-cache-aws.outcome }}
+          NEXTEST_RESTORE_OUTCOME: ${{ steps.nextest-archive-cache.outcome }}
+          NEXTEST_RESTORE_HIT: ${{ steps.nextest-archive-cache.outputs.cache-hit || '' }}
+          NEXTEST_RESTORE_RESULT: ${{ steps.nextest-archive-cache.outputs.restore-result || '' }}
+          NEXTEST_RESTORE_REASON: ${{ steps.nextest-archive-cache.outputs.restore-reason || '' }}
+          SIDECAR_RESTORE_OUTCOME: ${{ steps.root-bin-sidecars-cache.outcome }}
+          SIDECAR_RESTORE_HIT: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit || '' }}
+          SIDECAR_RESTORE_RESULT: ${{ steps.root-bin-sidecars-cache.outputs.restore-result || '' }}
+          SIDECAR_RESTORE_REASON: ${{ steps.root-bin-sidecars-cache.outputs.restore-reason || '' }}
+        run: |
+          restore_state() {
+            local eligible="$1" aws="$2" outcome="$3" result="$4" hit="$5"
+            if [[ "$eligible" != "true" ]]; then echo "ineligible"; return; fi
+            if [[ "$aws" != "success" ]]; then echo "skipped"; return; fi
+            if [[ "$outcome" == "failure" || "$result" == "error" ]]; then echo "error"; return; fi
+            if [[ "$result" == "hit" || "$hit" == "true" ]]; then echo "hit"; return; fi
+            if [[ "$result" == "miss" || "$hit" == "false" ]]; then echo "miss"; return; fi
+            echo "skipped"
+          }
+          restore_reason() {
+            local eligible="$1" aws="$2" outcome="$3" reason="$4"
+            if [[ "$eligible" != "true" ]]; then echo "eligible=false"; return; fi
+            if [[ "$aws" != "success" ]]; then echo "aws=${aws:-skipped}"; return; fi
+            if [[ -n "$reason" ]]; then echo "$reason"; return; fi
+            echo "outcome=${outcome:-skipped}"
+          }
+          archive_restore="$(restore_state "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$NEXTEST_RESTORE_OUTCOME" "$NEXTEST_RESTORE_RESULT" "$NEXTEST_RESTORE_HIT")"
+          archive_reason="$(restore_reason "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$NEXTEST_RESTORE_OUTCOME" "$NEXTEST_RESTORE_REASON")"
+          sidecar_restore="$(restore_state "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$SIDECAR_RESTORE_OUTCOME" "$SIDECAR_RESTORE_RESULT" "$SIDECAR_RESTORE_HIT")"
+          sidecar_reason="$(restore_reason "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$SIDECAR_RESTORE_OUTCOME" "$SIDECAR_RESTORE_REASON")"
+          {
+            echo "Root nextest archive S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${archive_restore} reason=${archive_reason}"
+            echo "Root binary sidecars S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${sidecar_restore} reason=${sidecar_reason}"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Restore archive build target cache
         id: test-target-cache
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
@@ -859,8 +925,16 @@ jobs:
           for shard in $(seq 1 "$shards"); do
             echo "::group::nextest archive partition ${shard}/${shards}"
             echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <extract-root> --partition count:${shard}/${shards}"
-            if ! just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/${shards}"; then
+            partition_log="$RUNNER_TEMP/nextest-archive-partition-${shard}.log"
+            set +e
+            just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/${shards}" 2>&1 | tee "$partition_log"
+            rc="${PIPESTATUS[0]}"
+            set -e
+            if [[ "$rc" -ne 0 ]]; then
               status=1
+              echo "::error title=nextest archive partition failed::shard=${shard}/${shards} exit=${rc}"
+              echo "last relevant log lines for nextest archive partition ${shard}/${shards}:"
+              tail -80 "$partition_log"
             fi
             echo "::endgroup::"
           done
@@ -905,6 +979,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
+          detector_allowed="${{ needs.detector.outputs.fingerprint_reuse_allowed || 'false' }}"
+          detector_reason="${{ needs.detector.outputs.fingerprint_reuse_reason || 'non-consumer-event' }}"
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}"
+          source_run="${{ needs.nextest-fingerprint-reuse.outputs.source_run_id || 'none' }}"
+          source_sha="${{ needs.nextest-fingerprint-reuse.outputs.source_sha || 'none' }}"
+          artifact="${{ needs.nextest-fingerprint-reuse.outputs.source_artifact_id || 'none' }}"
+          reason="${{ needs.nextest-fingerprint-reuse.outputs.reason || '' }}"
+          decision="not-applicable"
+          if [[ "$detector_allowed" == "true" ]]; then
+            if [[ "$reuse_found" == "true" ]]; then
+              decision="allowed"
+            else
+              decision="refused"
+            fi
+            [[ -n "$reason" ]] || reason="no-reusable-fingerprint"
+          elif [[ "$detector_reason" == "governance-changed" ]]; then
+            decision="refused"
+            reason="$detector_reason"
+          else
+            reason="$detector_reason"
+          fi
+          echo "Nextest reuse: decision=${decision} detector_allowed=${detector_allowed} reuse_found=${reuse_found} source_run=${source_run:-none} source_sha=${source_sha:-none} artifact=${artifact:-none} reason=${reason:-none}" >> "$GITHUB_STEP_SUMMARY"
           if [[ "${{ needs.nextest-fingerprint.result }}" != "success" ]]; then
             exit 1
           fi
@@ -13536,6 +13632,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           fi
           aws s3 cp "$uri" "$BVS_NEXTEST_ARCHIVE_PATH" --only-show-errors || true
           echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          echo "restore-result=miss" >> "$GITHUB_OUTPUT"
+          echo "restore-reason=fixture-miss" >> "$GITHUB_OUTPUT"
           exit 0
       - name: Restore BVS binary sidecars from S3
         id: bvs-bin-sidecars-cache
@@ -13552,7 +13650,49 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           fi
           aws s3 cp "$uri" "$BVS_BIN_SIDECARS_PATH" --only-show-errors || true
           echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          echo "restore-result=miss" >> "$GITHUB_OUTPUT"
+          echo "restore-reason=fixture-miss" >> "$GITHUB_OUTPUT"
           exit 0
+      - name: Summarize BVS nextest archive S3 state
+        if: always()
+        shell: bash
+        env:
+          S3_ELIGIBLE: ${{ steps.bvs-nextest-artifact-cache.outputs.eligible || 'false' }}
+          S3_CACHE_MODE: ${{ steps.bvs-nextest-artifact-cache.outputs.cache_mode || 'none' }}
+          S3_AWS_OUTCOME: ${{ steps.bvs-nextest-artifact-cache-aws.outcome }}
+          BVS_NEXTEST_RESTORE_OUTCOME: ${{ steps.bvs-nextest-archive-cache.outcome }}
+          BVS_NEXTEST_RESTORE_HIT: ${{ steps.bvs-nextest-archive-cache.outputs.cache-hit || '' }}
+          BVS_NEXTEST_RESTORE_RESULT: ${{ steps.bvs-nextest-archive-cache.outputs.restore-result || '' }}
+          BVS_NEXTEST_RESTORE_REASON: ${{ steps.bvs-nextest-archive-cache.outputs.restore-reason || '' }}
+          BVS_SIDECAR_RESTORE_OUTCOME: ${{ steps.bvs-bin-sidecars-cache.outcome }}
+          BVS_SIDECAR_RESTORE_HIT: ${{ steps.bvs-bin-sidecars-cache.outputs.cache-hit || '' }}
+          BVS_SIDECAR_RESTORE_RESULT: ${{ steps.bvs-bin-sidecars-cache.outputs.restore-result || '' }}
+          BVS_SIDECAR_RESTORE_REASON: ${{ steps.bvs-bin-sidecars-cache.outputs.restore-reason || '' }}
+        run: |
+          restore_state() {
+            local eligible="$1" aws="$2" outcome="$3" result="$4" hit="$5"
+            if [[ "$eligible" != "true" ]]; then echo "ineligible"; return; fi
+            if [[ "$aws" != "success" ]]; then echo "skipped"; return; fi
+            if [[ "$outcome" == "failure" || "$result" == "error" ]]; then echo "error"; return; fi
+            if [[ "$result" == "hit" || "$hit" == "true" ]]; then echo "hit"; return; fi
+            if [[ "$result" == "miss" || "$hit" == "false" ]]; then echo "miss"; return; fi
+            echo "skipped"
+          }
+          restore_reason() {
+            local eligible="$1" aws="$2" outcome="$3" reason="$4"
+            if [[ "$eligible" != "true" ]]; then echo "eligible=false"; return; fi
+            if [[ "$aws" != "success" ]]; then echo "aws=${aws:-skipped}"; return; fi
+            if [[ -n "$reason" ]]; then echo "$reason"; return; fi
+            echo "outcome=${outcome:-skipped}"
+          }
+          bvs_nextest_restore="$(restore_state "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$BVS_NEXTEST_RESTORE_OUTCOME" "$BVS_NEXTEST_RESTORE_RESULT" "$BVS_NEXTEST_RESTORE_HIT")"
+          bvs_nextest_reason="$(restore_reason "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$BVS_NEXTEST_RESTORE_OUTCOME" "$BVS_NEXTEST_RESTORE_REASON")"
+          bvs_sidecar_restore="$(restore_state "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$BVS_SIDECAR_RESTORE_OUTCOME" "$BVS_SIDECAR_RESTORE_RESULT" "$BVS_SIDECAR_RESTORE_HIT")"
+          bvs_sidecar_reason="$(restore_reason "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$BVS_SIDECAR_RESTORE_OUTCOME" "$BVS_SIDECAR_RESTORE_REASON")"
+          {
+            echo "BVS nextest archive S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${bvs_nextest_restore} reason=${bvs_nextest_reason}"
+            echo "BVS binary sidecars S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${bvs_sidecar_restore} reason=${bvs_sidecar_reason}"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Resolve crate managed target dir
         id: crate_target
       - uses: Swatinem/rust-cache@example
@@ -13628,9 +13768,26 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: test
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
+          failures=0
           for shard in $(seq 1 "$BVS_NEXTEST_SHARDS"); do
-            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl
+            echo "::group::bvs-test partition ${shard}/${BVS_NEXTEST_SHARDS}"
+            partition_log="$RUNNER_TEMP/bvs-nextest-archive-partition-${shard}.log"
+            set +e
+            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"
+            rc="${PIPESTATUS[0]}"
+            set -e
+            if [[ "$rc" -ne 0 ]]; then
+              failures=$((failures + 1))
+              echo "::error title=BVS nextest archive partition failed::shard=${shard}/${BVS_NEXTEST_SHARDS} exit=${rc}"
+              echo "last relevant log lines for BVS nextest archive partition ${shard}/${BVS_NEXTEST_SHARDS}:"
+              tail -80 "$partition_log"
+            fi
+            echo "::endgroup::"
           done
+          if [[ "$failures" != "0" ]]; then
+            echo "$failures BVS test partitions failed"
+            exit 1
+          fi
   issue_789:
     name: bvs-test issue-789
     needs: [ci-policy, detect, gate]
@@ -13801,6 +13958,51 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "backtester bvs-test archive must summarize BVS S3 save outcomes" in error
         for error in missing_bvs_save_outcome_summary_errors
     ), missing_bvs_save_outcome_summary_errors
+
+    missing_bvs_restore_output = replace_once_after(
+        good,
+        "      - name: Restore BVS nextest archive from S3",
+        '          echo "restore-result=miss" >> "$GITHUB_OUTPUT"\n',
+        "",
+    )
+    missing_bvs_restore_output_errors = bvs_cache_errors(missing_bvs_restore_output)
+    assert any(
+        "backtester bvs-test archive must emit restore result and reason outputs" in error
+        for error in missing_bvs_restore_output_errors
+    ), missing_bvs_restore_output_errors
+
+    missing_bvs_nextest_restore_summary = replace_once(
+        good,
+        '            echo "BVS nextest archive S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${bvs_nextest_restore} reason=${bvs_nextest_reason}"\n',
+        "",
+    )
+    missing_bvs_nextest_restore_summary_errors = bvs_cache_errors(missing_bvs_nextest_restore_summary)
+    assert any(
+        "backtester bvs-test archive must summarize BVS nextest archive S3 restore state" in error
+        for error in missing_bvs_nextest_restore_summary_errors
+    ), missing_bvs_nextest_restore_summary_errors
+
+    missing_bvs_sidecar_restore_summary = replace_once(
+        good,
+        '            echo "BVS binary sidecars S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${bvs_sidecar_restore} reason=${bvs_sidecar_reason}"\n',
+        "",
+    )
+    missing_bvs_sidecar_restore_summary_errors = bvs_cache_errors(missing_bvs_sidecar_restore_summary)
+    assert any(
+        "backtester bvs-test archive must summarize BVS binary sidecars S3 restore state" in error
+        for error in missing_bvs_sidecar_restore_summary_errors
+    ), missing_bvs_sidecar_restore_summary_errors
+
+    missing_bvs_partition_annotation = replace_once(
+        good,
+        '              echo "::error title=BVS nextest archive partition failed::shard=${shard}/${BVS_NEXTEST_SHARDS} exit=${rc}"\n',
+        "",
+    )
+    missing_bvs_partition_annotation_errors = bvs_cache_errors(missing_bvs_partition_annotation)
+    assert any(
+        "backtester bvs-test partition failures must emit shard error annotations" in error
+        for error in missing_bvs_partition_annotation_errors
+    ), missing_bvs_partition_annotation_errors
 
     missing_bvs_archive_save_status = replace_once(
         good,
@@ -15732,6 +15934,47 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, '          mkdir -p "$RUNNER_TEMP/nextest-archive-extract"\n', ""),
     )
     assert_error(
+        "ci-policy must summarize CI classification",
+        replace_once(
+            BASE_WORKFLOW,
+            '          echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} event_class=${EXPECTED_EVENT_CLASS:-unknown} reason=${POLICY_REASON:-missing}" >> "$GITHUB_STEP_SUMMARY"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "test must summarize nextest fingerprint reuse decision",
+        replace_once(
+            BASE_WORKFLOW,
+            '          echo "Nextest reuse: decision=${decision} detector_allowed=${detector_allowed} reuse_found=${reuse_found} source_run=${source_run:-none} source_sha=${source_sha:-none} artifact=${artifact:-none} reason=${reason:-none}" >> "$GITHUB_STEP_SUMMARY"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must emit restore result and reason outputs",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Restore nextest archive from S3",
+            '          echo "restore-result=miss" >> "$GITHUB_OUTPUT"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must summarize nextest archive S3 restore state",
+        replace_once(
+            BASE_WORKFLOW,
+            '            echo "Root nextest archive S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${archive_restore} reason=${archive_reason}"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must summarize root binary sidecars S3 restore state",
+        replace_once(
+            BASE_WORKFLOW,
+            '            echo "Root binary sidecars S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${sidecar_restore} reason=${sidecar_reason}"\n',
+            "",
+        ),
+    )
+    assert_error(
         "test-archive must log partition diagnostics",
         replace_once(
             BASE_WORKFLOW,
@@ -15744,16 +15987,19 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, "              status=1\n", ""),
     )
     assert_error(
-        "test-archive must aggregate partition failures",
+        "test-archive partition failures must preserve shard exit codes",
         replace_once(
             BASE_WORKFLOW,
-            """            if ! just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/${shards}"; then
-              status=1
-            fi""",
-            """            just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/${shards}"
-            if [[ "${shard}" == "never" ]]; then
-              status=1
-            fi""",
+            '            rc="${PIPESTATUS[0]}"\n',
+            '            rc="0"\n',
+        ),
+    )
+    assert_error(
+        "test-archive partition failures must emit shard error annotations",
+        replace_once(
+            BASE_WORKFLOW,
+            '              echo "::error title=nextest archive partition failed::shard=${shard}/${shards} exit=${rc}"\n',
+            "",
         ),
     )
     assert_error(
@@ -16346,6 +16592,23 @@ def main() -> int:
             BASE_WORKFLOW,
             "      - name: Determine fingerprint reuse allowance",
             '            echo "value=true" >> "$GITHUB_OUTPUT"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "detector must expose fingerprint_reuse_reason",
+        replace_once(
+            BASE_WORKFLOW,
+            "      fingerprint_reuse_reason: ${{ steps.fingerprint_reuse_allowed.outputs.reason }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        "detector must explain fingerprint_reuse_allowed decisions",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            '            echo "reason=governance-changed" >> "$GITHUB_OUTPUT"\n',
             "",
         ),
     )

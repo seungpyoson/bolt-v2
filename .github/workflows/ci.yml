@@ -254,6 +254,24 @@ jobs:
             --ref "${{ github.ref }}" \
             | tee -a "$GITHUB_OUTPUT"
 
+      - name: Summarize CI classification
+        if: always()
+        shell: bash
+        env:
+          CI_POLICY_PATH: ${{ steps.policy.outputs.ci_policy_path }}
+          FULL_CI_REQUIRED: ${{ steps.policy.outputs.full_ci_required }}
+          FULL_CI_DEFERRED: ${{ steps.policy.outputs.full_ci_deferred }}
+          EXPECTED_EVENT_CLASS: ${{ steps.policy.outputs.expected_event_class }}
+          POLICY_REASON: ${{ steps.policy.outputs.reason }}
+        run: |
+          class="promoted-cheap"
+          if [[ "$FULL_CI_REQUIRED" == "true" ]]; then
+            class="heavy proof"
+          elif [[ "$CI_POLICY_PATH" == "iteration" ]]; then
+            class="iteration lane"
+          fi
+          echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} event_class=${EXPECTED_EVENT_CLASS:-unknown} reason=${POLICY_REASON:-missing}" >> "$GITHUB_STEP_SUMMARY"
+
   # Host-health observability slice (#884): stdlib-Python sampler + dependency-free
   # HTML viewer + their test suites. These suites are the ONLY proof of the two hard
   # contracts (sampler never hangs/leaks on a degraded host; viewer never renders a
@@ -289,6 +307,7 @@ jobs:
     outputs:
       build_required: ${{ steps.build_required.outputs.value }}
       fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}
+      fingerprint_reuse_reason: ${{ steps.fingerprint_reuse_allowed.outputs.reason }}
       docs_only: ${{ steps.docs_only.outputs.docs_only }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
@@ -481,10 +500,13 @@ jobs:
         run: |
           if [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=false" >> "$GITHUB_OUTPUT"
+            echo "reason=governance-changed" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
+            echo "reason=consumer-event" >> "$GITHUB_OUTPUT"
           else
             echo "value=false" >> "$GITHUB_OUTPUT"
+            echo "reason=non-consumer-event" >> "$GITHUB_OUTPUT"
           fi
 
   deny:
@@ -901,11 +923,17 @@ jobs:
               echo "cache-hit=false"
               echo "restore-bytes=0"
               echo "restore-seconds=$elapsed"
+              echo "restore-result=miss"
+              echo "restore-reason=head-miss-or-metadata-unavailable"
             } >> "$GITHUB_OUTPUT"
             echo "::notice::nextest archive S3 cache miss or metadata unavailable for digest ${DIGEST}; building locally"
             exit 0
           fi
           if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            {
+              echo "restore-result=error"
+              echo "restore-reason=digest-mismatch"
+            } >> "$GITHUB_OUTPUT"
             echo "::error::nextest archive S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
             exit 1
           fi
@@ -916,6 +944,8 @@ jobs:
               echo "cache-hit=true"
               echo "restore-bytes=$bytes"
               echo "restore-seconds=$elapsed"
+              echo "restore-result=hit"
+              echo "restore-reason=downloaded"
             } >> "$GITHUB_OUTPUT"
             {
               echo "nextest archive S3 restore: hit"
@@ -929,6 +959,8 @@ jobs:
               echo "cache-hit=false"
               echo "restore-bytes=0"
               echo "restore-seconds=$elapsed"
+              echo "restore-result=miss"
+              echo "restore-reason=copy-failed-or-unavailable"
             } >> "$GITHUB_OUTPUT"
             echo "::notice::nextest archive S3 cache miss or restore unavailable for digest ${DIGEST}; building locally"
           fi
@@ -954,11 +986,17 @@ jobs:
               echo "cache-hit=false"
               echo "restore-bytes=0"
               echo "restore-seconds=$elapsed"
+              echo "restore-result=miss"
+              echo "restore-reason=head-miss-or-metadata-unavailable"
             } >> "$GITHUB_OUTPUT"
             echo "::notice::root binary sidecar S3 cache miss or metadata unavailable for digest ${DIGEST}; rebuilding sidecars"
             exit 0
           fi
           if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            {
+              echo "restore-result=error"
+              echo "restore-reason=digest-mismatch"
+            } >> "$GITHUB_OUTPUT"
             echo "::error::root binary sidecar S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
             exit 1
           fi
@@ -969,6 +1007,8 @@ jobs:
               echo "cache-hit=true"
               echo "restore-bytes=$bytes"
               echo "restore-seconds=$elapsed"
+              echo "restore-result=hit"
+              echo "restore-reason=downloaded"
             } >> "$GITHUB_OUTPUT"
             {
               echo "root binary sidecars S3 restore: hit"
@@ -982,10 +1022,53 @@ jobs:
               echo "cache-hit=false"
               echo "restore-bytes=0"
               echo "restore-seconds=$elapsed"
+              echo "restore-result=miss"
+              echo "restore-reason=copy-failed-or-unavailable"
             } >> "$GITHUB_OUTPUT"
             echo "::notice::root binary sidecar S3 cache miss or restore unavailable for digest ${DIGEST}; rebuilding sidecars"
           fi
           exit 0
+
+      - name: Summarize nextest archive S3 state
+        if: always()
+        shell: bash
+        env:
+          S3_ELIGIBLE: ${{ steps.nextest-artifact-cache.outputs.eligible || 'false' }}
+          S3_CACHE_MODE: ${{ steps.nextest-artifact-cache.outputs.cache_mode || 'none' }}
+          S3_AWS_OUTCOME: ${{ steps.nextest-artifact-cache-aws.outcome }}
+          NEXTEST_RESTORE_OUTCOME: ${{ steps.nextest-archive-cache.outcome }}
+          NEXTEST_RESTORE_HIT: ${{ steps.nextest-archive-cache.outputs.cache-hit || '' }}
+          NEXTEST_RESTORE_RESULT: ${{ steps.nextest-archive-cache.outputs.restore-result || '' }}
+          NEXTEST_RESTORE_REASON: ${{ steps.nextest-archive-cache.outputs.restore-reason || '' }}
+          SIDECAR_RESTORE_OUTCOME: ${{ steps.root-bin-sidecars-cache.outcome }}
+          SIDECAR_RESTORE_HIT: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit || '' }}
+          SIDECAR_RESTORE_RESULT: ${{ steps.root-bin-sidecars-cache.outputs.restore-result || '' }}
+          SIDECAR_RESTORE_REASON: ${{ steps.root-bin-sidecars-cache.outputs.restore-reason || '' }}
+        run: |
+          restore_state() {
+            local eligible="$1" aws="$2" outcome="$3" result="$4" hit="$5"
+            if [[ "$eligible" != "true" ]]; then echo "ineligible"; return; fi
+            if [[ "$aws" != "success" ]]; then echo "skipped"; return; fi
+            if [[ "$outcome" == "failure" || "$result" == "error" ]]; then echo "error"; return; fi
+            if [[ "$result" == "hit" || "$hit" == "true" ]]; then echo "hit"; return; fi
+            if [[ "$result" == "miss" || "$hit" == "false" ]]; then echo "miss"; return; fi
+            echo "skipped"
+          }
+          restore_reason() {
+            local eligible="$1" aws="$2" outcome="$3" reason="$4"
+            if [[ "$eligible" != "true" ]]; then echo "eligible=false"; return; fi
+            if [[ "$aws" != "success" ]]; then echo "aws=${aws:-skipped}"; return; fi
+            if [[ -n "$reason" ]]; then echo "$reason"; return; fi
+            echo "outcome=${outcome:-skipped}"
+          }
+          archive_restore="$(restore_state "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$NEXTEST_RESTORE_OUTCOME" "$NEXTEST_RESTORE_RESULT" "$NEXTEST_RESTORE_HIT")"
+          archive_reason="$(restore_reason "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$NEXTEST_RESTORE_OUTCOME" "$NEXTEST_RESTORE_REASON")"
+          sidecar_restore="$(restore_state "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$SIDECAR_RESTORE_OUTCOME" "$SIDECAR_RESTORE_RESULT" "$SIDECAR_RESTORE_HIT")"
+          sidecar_reason="$(restore_reason "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$SIDECAR_RESTORE_OUTCOME" "$SIDECAR_RESTORE_REASON")"
+          {
+            echo "Root nextest archive S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${archive_restore} reason=${archive_reason}"
+            echo "Root binary sidecars S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${sidecar_restore} reason=${sidecar_reason}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -1257,8 +1340,16 @@ jobs:
           for shard in $(seq 1 "$shards"); do
             echo "::group::nextest archive partition ${shard}/${shards}"
             echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <extract-root> --partition count:${shard}/${shards}"
-            if ! just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/${shards}"; then
+            partition_log="$RUNNER_TEMP/nextest-archive-partition-${shard}.log"
+            set +e
+            just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/${shards}" 2>&1 | tee "$partition_log"
+            rc="${PIPESTATUS[0]}"
+            set -e
+            if [[ "$rc" -ne 0 ]]; then
               status=1
+              echo "::error title=nextest archive partition failed::shard=${shard}/${shards} exit=${rc}"
+              echo "last relevant log lines for nextest archive partition ${shard}/${shards}:"
+              tail -80 "$partition_log"
             fi
             echo "::endgroup::"
           done
@@ -1306,6 +1397,28 @@ jobs:
       - name: Check nextest archive tests
         shell: bash
         run: |
+          detector_allowed="${{ needs.detector.outputs.fingerprint_reuse_allowed || 'false' }}"
+          detector_reason="${{ needs.detector.outputs.fingerprint_reuse_reason || 'non-consumer-event' }}"
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}"
+          source_run="${{ needs.nextest-fingerprint-reuse.outputs.source_run_id || 'none' }}"
+          source_sha="${{ needs.nextest-fingerprint-reuse.outputs.source_sha || 'none' }}"
+          artifact="${{ needs.nextest-fingerprint-reuse.outputs.source_artifact_id || 'none' }}"
+          reason="${{ needs.nextest-fingerprint-reuse.outputs.reason || '' }}"
+          decision="not-applicable"
+          if [[ "$detector_allowed" == "true" ]]; then
+            if [[ "$reuse_found" == "true" ]]; then
+              decision="allowed"
+            else
+              decision="refused"
+            fi
+            [[ -n "$reason" ]] || reason="no-reusable-fingerprint"
+          elif [[ "$detector_reason" == "governance-changed" ]]; then
+            decision="refused"
+            reason="$detector_reason"
+          else
+            reason="$detector_reason"
+          fi
+          echo "Nextest reuse: decision=${decision} detector_allowed=${detector_allowed} reuse_found=${reuse_found} source_run=${source_run:-none} source_sha=${source_sha:-none} artifact=${artifact:-none} reason=${reason:-none}" >> "$GITHUB_STEP_SUMMARY"
           if [[ "${{ needs.nextest-fingerprint.result }}" != "success" ]]; then
             echo "nextest fingerprint did not succeed"
             exit 1

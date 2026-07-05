@@ -3203,7 +3203,7 @@ mod tests {
             &path,
             ISSUE_789_RESULT_ARTIFACT_ROLE,
             &payload,
-            crate::reference_artifact::ReferenceArtifactRewrite::Overwrite,
+            crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
         )
         .with_context(|| format!("write issue #789 result artifact {}", path.display()))?;
         Ok(())

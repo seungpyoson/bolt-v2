@@ -441,7 +441,7 @@ pub fn write_backfill_execution_plan_with_overwrite(
     })?;
     let path = output_dir.join(BACKFILL_EXECUTION_PLAN_FILE);
     let rewrite = if overwrite_existing {
-        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
     } else {
         crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
     };

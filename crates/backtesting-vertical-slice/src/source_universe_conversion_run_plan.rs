@@ -228,7 +228,7 @@ pub fn write_source_universe_conversion_run_plan(
     })?;
     let path = output_dir.join(SOURCE_UNIVERSE_CONVERSION_RUN_PLAN_FILE);
     let rewrite = if spec.overwrite_existing_artifacts {
-        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
     } else {
         crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
     };

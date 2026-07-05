@@ -621,7 +621,7 @@ mod tests {
             &path,
             BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
             &plan,
-            backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::Overwrite,
+            backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
         )
         .unwrap();
         path
@@ -1015,7 +1015,7 @@ table_families = ["trades"]
             &execution_plan_path,
             BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
             &execution_plan,
-            backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::Overwrite,
+            backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
         )
         .unwrap();
         let cli = Cli {
@@ -1056,7 +1056,7 @@ table_families = ["trades"]
             &execution_plan_path,
             BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
             &execution_plan,
-            backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::Overwrite,
+            backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
         )
         .unwrap();
         let cli = Cli {

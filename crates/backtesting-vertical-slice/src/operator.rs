@@ -1511,7 +1511,7 @@ where
         &artifacts.contract_path,
         crate::result_contract::RESULT_CONTRACT_VERSION,
         &artifacts.output.contract,
-        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite,
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
     )
     .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
     persist_durable_contract_artifacts(&writer, &artifact_root, &artifacts).await?;

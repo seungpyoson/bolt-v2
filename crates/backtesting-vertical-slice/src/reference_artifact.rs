@@ -27,7 +27,8 @@ pub struct ReferenceArtifactWrite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReferenceArtifactRewrite {
     FailOnDirty,
-    Overwrite,
+    OverwriteIfChanged,
+    OverwriteAlways,
 }
 
 pub struct ReferenceArtifactErrorMappers<
@@ -97,36 +98,32 @@ pub fn write_reference_artifact_with_len<T: Serialize>(
 ) -> Result<ReferenceArtifactWrite> {
     let path = path.as_ref();
     let bytes = canonical_json_bytes(value)?;
-    if path.exists() {
-        let existing = fs::read(path).map_err(|error| ReferenceArtifactError::ReadExisting {
-            path: path.display().to_string(),
-            error: error.to_string(),
-        })?;
-        if existing != bytes {
-            match rewrite {
-                ReferenceArtifactRewrite::FailOnDirty => {
-                    return Err(ReferenceArtifactError::ExistingArtifactMismatch {
-                        path: path.display().to_string(),
-                    });
-                }
-                ReferenceArtifactRewrite::Overwrite => {
-                    atomic_write(path, &bytes).map_err(|error| ReferenceArtifactError::Write {
+    match rewrite {
+        ReferenceArtifactRewrite::OverwriteAlways => write_artifact_bytes(path, &bytes)?,
+        ReferenceArtifactRewrite::FailOnDirty | ReferenceArtifactRewrite::OverwriteIfChanged => {
+            if path.exists() {
+                let existing =
+                    fs::read(path).map_err(|error| ReferenceArtifactError::ReadExisting {
                         path: path.display().to_string(),
                         error: error.to_string(),
                     })?;
+                if existing != bytes {
+                    match rewrite {
+                        ReferenceArtifactRewrite::FailOnDirty => {
+                            return Err(ReferenceArtifactError::ExistingArtifactMismatch {
+                                path: path.display().to_string(),
+                            });
+                        }
+                        ReferenceArtifactRewrite::OverwriteIfChanged => {
+                            write_artifact_bytes(path, &bytes)?;
+                        }
+                        ReferenceArtifactRewrite::OverwriteAlways => unreachable!(),
+                    }
                 }
+            } else {
+                write_artifact_bytes(path, &bytes)?;
             }
-        } else if rewrite == ReferenceArtifactRewrite::Overwrite {
-            atomic_write(path, &bytes).map_err(|error| ReferenceArtifactError::Write {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            })?;
         }
-    } else {
-        atomic_write(path, &bytes).map_err(|error| ReferenceArtifactError::Write {
-            path: path.display().to_string(),
-            error: error.to_string(),
-        })?;
     }
     let sha256 = sha256_hex(&bytes);
     Ok(ReferenceArtifactWrite {
@@ -136,6 +133,13 @@ pub fn write_reference_artifact_with_len<T: Serialize>(
             sha256,
         },
         bytes: bytes.len() as u64,
+    })
+}
+
+fn write_artifact_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write(path, bytes).map_err(|error| ReferenceArtifactError::Write {
+        path: path.display().to_string(),
+        error: error.to_string(),
     })
 }
 
@@ -204,54 +208,166 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn fail_on_dirty_rejects_mismatched_existing_artifact() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("artifact.json");
-        write_reference_artifact_with_len(
-            &path,
-            "test-role",
-            &json!({"value": "first"}),
-            ReferenceArtifactRewrite::FailOnDirty,
-        )
-        .unwrap();
-        fs::write(&path, br#"{"dirty":true}"#).unwrap();
+    #[cfg(unix)]
+    fn rewrite_policy_matrix_pins_write_and_read_behavior() {
+        use std::os::unix::fs::MetadataExt;
 
-        let err = write_reference_artifact_with_len(
-            &path,
-            "test-role",
-            &json!({"value": "second"}),
-            ReferenceArtifactRewrite::FailOnDirty,
-        )
-        .unwrap_err();
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum ExistingState {
+            Fresh,
+            Clean,
+            Dirty,
+        }
 
-        assert_eq!(
-            err,
-            ReferenceArtifactError::ExistingArtifactMismatch {
-                path: path.display().to_string()
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Expected {
+            Write,
+            NoOp,
+            Mismatch,
+        }
+
+        let cases = [
+            (
+                ReferenceArtifactRewrite::FailOnDirty,
+                ExistingState::Fresh,
+                Expected::Write,
+            ),
+            (
+                ReferenceArtifactRewrite::FailOnDirty,
+                ExistingState::Clean,
+                Expected::NoOp,
+            ),
+            (
+                ReferenceArtifactRewrite::FailOnDirty,
+                ExistingState::Dirty,
+                Expected::Mismatch,
+            ),
+            (
+                ReferenceArtifactRewrite::OverwriteIfChanged,
+                ExistingState::Fresh,
+                Expected::Write,
+            ),
+            (
+                ReferenceArtifactRewrite::OverwriteIfChanged,
+                ExistingState::Clean,
+                Expected::NoOp,
+            ),
+            (
+                ReferenceArtifactRewrite::OverwriteIfChanged,
+                ExistingState::Dirty,
+                Expected::Write,
+            ),
+            (
+                ReferenceArtifactRewrite::OverwriteAlways,
+                ExistingState::Fresh,
+                Expected::Write,
+            ),
+            (
+                ReferenceArtifactRewrite::OverwriteAlways,
+                ExistingState::Clean,
+                Expected::Write,
+            ),
+            (
+                ReferenceArtifactRewrite::OverwriteAlways,
+                ExistingState::Dirty,
+                Expected::Write,
+            ),
+        ];
+
+        for (rewrite, existing_state, expected) in cases {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir
+                .path()
+                .join(format!("{rewrite:?}-{existing_state:?}.json"));
+            let value = json!({"value": "target"});
+            let expected_bytes = canonical_json_bytes(&value).unwrap();
+            let dirty_bytes = br#"{"dirty":true}"#;
+            match existing_state {
+                ExistingState::Fresh => {}
+                ExistingState::Clean => {
+                    crate::atomic_artifact_write::atomic_write(&path, &expected_bytes).unwrap();
+                }
+                ExistingState::Dirty => {
+                    crate::atomic_artifact_write::atomic_write(&path, dirty_bytes).unwrap();
+                }
             }
-        );
+            let before_inode = path.metadata().ok().map(|metadata| metadata.ino());
+
+            let result = write_reference_artifact_with_len(&path, "test-role", &value, rewrite);
+
+            match expected {
+                Expected::Write => {
+                    let written = result.unwrap();
+                    assert_eq!(
+                        fs::read(&path).unwrap(),
+                        expected_bytes,
+                        "case {rewrite:?} / {existing_state:?}"
+                    );
+                    assert_eq!(written.pin.sha256, sha256_hex(&expected_bytes));
+                    assert_eq!(written.bytes, expected_bytes.len() as u64);
+                    if let Some(before_inode) = before_inode {
+                        let after_inode = path.metadata().unwrap().ino();
+                        assert_ne!(
+                            after_inode, before_inode,
+                            "case {rewrite:?} / {existing_state:?} must rewrite"
+                        );
+                    }
+                }
+                Expected::NoOp => {
+                    let written = result.unwrap();
+                    assert_eq!(
+                        fs::read(&path).unwrap(),
+                        expected_bytes,
+                        "case {rewrite:?} / {existing_state:?}"
+                    );
+                    assert_eq!(written.pin.sha256, sha256_hex(&expected_bytes));
+                    assert_eq!(written.bytes, expected_bytes.len() as u64);
+                    assert_eq!(
+                        path.metadata().unwrap().ino(),
+                        before_inode.unwrap(),
+                        "case {rewrite:?} / {existing_state:?} must skip write"
+                    );
+                }
+                Expected::Mismatch => {
+                    let err = result.unwrap_err();
+                    assert_eq!(
+                        err,
+                        ReferenceArtifactError::ExistingArtifactMismatch {
+                            path: path.display().to_string()
+                        }
+                    );
+                    assert_eq!(fs::read(&path).unwrap(), dirty_bytes);
+                    assert_eq!(
+                        path.metadata().unwrap().ino(),
+                        before_inode.unwrap(),
+                        "case {rewrite:?} / {existing_state:?} must skip write"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
-    fn overwrite_refreshes_bytes_and_returns_new_pin_hash() {
+    #[cfg(unix)]
+    fn overwrite_always_replaces_unreadable_existing_file_without_preread() {
+        use std::os::unix::fs::PermissionsExt;
+
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("artifact.json");
-        write_reference_artifact_with_len(
-            &path,
-            "test-role",
-            &json!({"value": "first"}),
-            ReferenceArtifactRewrite::Overwrite,
-        )
-        .unwrap();
         fs::write(&path, br#"{"dirty":true}"#).unwrap();
-        let replacement = json!({"value": "second"});
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&path).is_ok() {
+            eprintln!("skip unreadable-file assertion: platform/user can still read mode 000");
+            return;
+        }
+        let replacement = json!({"value": "replacement"});
         let expected_bytes = canonical_json_bytes(&replacement).unwrap();
 
         let written = write_reference_artifact_with_len(
             &path,
             "test-role",
             &replacement,
-            ReferenceArtifactRewrite::Overwrite,
+            ReferenceArtifactRewrite::OverwriteAlways,
         )
         .unwrap();
 

@@ -243,7 +243,7 @@ pub fn write_source_universe_object_gate_materialization(
     })?;
     let path = output_dir.join(SOURCE_UNIVERSE_OBJECT_GATES_FILE);
     let rewrite = if spec.overwrite_existing_artifacts {
-        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
     } else {
         crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
     };

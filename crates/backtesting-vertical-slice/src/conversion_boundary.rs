@@ -553,7 +553,7 @@ pub fn write_conversion_tables_index(
         &path,
         CONVERSION_TABLES_FILE,
         &records,
-        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite,
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
     )
     .with_context(|| format!("write {}", path.display()))?;
     Ok(path)
@@ -732,7 +732,7 @@ pub fn write_conversion_checkpoint(
         &path,
         CONVERSION_CHECKPOINT_FILE,
         checkpoint,
-        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite,
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
     )
     .with_context(|| format!("write {}", path.display()))?;
     Ok(path)
@@ -751,7 +751,7 @@ pub fn write_completed_conversion_artifacts(
         &checkpoint_path,
         CONVERSION_CHECKPOINT_FILE,
         checkpoint,
-        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite,
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
     )
     .with_context(|| format!("write {}", checkpoint_path.display()))?;
     let manifest_path = output_dir.join(CONVERSION_MANIFEST_FILE);
@@ -759,7 +759,7 @@ pub fn write_completed_conversion_artifacts(
         &manifest_path,
         CONVERSION_MANIFEST_FILE,
         manifest,
-        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite,
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
     )
     .with_context(|| format!("write {}", manifest_path.display()))?;
     let metadata_path = output_dir.join(CATALOG_METADATA_FILE);
@@ -767,7 +767,7 @@ pub fn write_completed_conversion_artifacts(
         &metadata_path,
         CATALOG_METADATA_FILE,
         metadata,
-        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite,
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
     )
     .with_context(|| format!("write {}", metadata_path.display()))?;
     Ok(())

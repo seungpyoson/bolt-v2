@@ -363,7 +363,7 @@ pub fn write_source_universe_execution_pack(
             accepted_tranche_for_record(record, proof, &operator_inputs.table_family, gate);
         let accepted_tranche_path = run_dir.join(BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE);
         let rewrite = if spec.overwrite_existing_artifacts {
-            crate::reference_artifact::ReferenceArtifactRewrite::Overwrite
+            crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
         } else {
             crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
         };
@@ -537,7 +537,7 @@ pub fn write_source_universe_execution_pack(
 
     let pack_path = output_dir.join(SOURCE_UNIVERSE_EXECUTION_PACK_FILE);
     let rewrite = if spec.overwrite_existing_artifacts {
-        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
     } else {
         crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
     };

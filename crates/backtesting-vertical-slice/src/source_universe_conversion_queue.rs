@@ -193,7 +193,7 @@ pub fn write_source_universe_conversion_queue(
     })?;
     let path = output_dir.join(SOURCE_UNIVERSE_CONVERSION_QUEUE_FILE);
     let rewrite = if spec.overwrite_existing_artifacts {
-        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite
+        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
     } else {
         crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
     };

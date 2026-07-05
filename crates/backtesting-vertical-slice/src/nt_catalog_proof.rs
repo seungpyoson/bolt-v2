@@ -540,11 +540,6 @@ fn write_report(
         atomic_write(&path, &bytes)
             .with_context(|| format!("write NT catalog proof report {}", path.display()))?;
     }
-    let hash = content_hash(report)?;
+    let hash = format!("{:x}", Sha256::digest(&bytes));
     Ok((path, hash, bytes.len() as u64))
-}
-
-fn content_hash(report: &NtCatalogProofReport) -> Result<String> {
-    let bytes = serde_json::to_vec(report).context("serialize NT catalog proof report for hash")?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }

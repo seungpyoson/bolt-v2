@@ -351,7 +351,7 @@ pub fn write_backfill_readiness_report(
     }
     Ok(BackfillReadinessArtifact {
         path,
-        content_hash: content_hash(report)?,
+        content_hash: format!("{:x}", Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
     })
 }
@@ -435,10 +435,4 @@ fn read_backfill_binding_coverage(
             error: error.to_string(),
         }
     })
-}
-
-fn content_hash(report: &BackfillReadinessReport) -> Result<String, BackfillReadinessError> {
-    let bytes = serde_json::to_vec(report)
-        .map_err(|error| BackfillReadinessError::Serialize(error.to_string()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }

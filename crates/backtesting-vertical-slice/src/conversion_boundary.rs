@@ -755,7 +755,8 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 }
 
 fn content_hash<T: Serialize>(value: &T) -> Result<String> {
-    let bytes = serde_json::to_vec(value).context("serialize conversion artifact for hash")?;
+    let bytes =
+        serde_json::to_vec_pretty(value).context("serialize conversion artifact for hash")?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     Ok(hex::encode(hasher.finalize()))

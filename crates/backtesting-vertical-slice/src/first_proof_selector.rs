@@ -650,7 +650,7 @@ pub fn write_first_proof_event_count_ledger(
     }
     Ok(FirstProofEventCountLedgerArtifact {
         path: output_path.to_path_buf(),
-        content_hash: event_count_ledger_report_hash(report)?,
+        content_hash: hex::encode(Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
         source_rows: report.source_rows,
         event_count_rows: report.event_counts.len() as u64,
@@ -686,7 +686,7 @@ pub fn write_first_proof_selector_report(
     }
     Ok(FirstProofSelectorArtifact {
         path,
-        content_hash: content_hash(report)?,
+        content_hash: hex::encode(Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
         selected_asset_count: report.selected_assets.len() as u64,
     })
@@ -782,24 +782,6 @@ fn selected_asset_ids_hash(selected_assets: &[SelectedFirstProofAsset]) -> Strin
         hasher.update(asset.asset_id.as_bytes());
     }
     hex::encode(hasher.finalize())
-}
-
-fn content_hash(report: &FirstProofSelectorReport) -> Result<String, FirstProofSelectorError> {
-    let bytes = serde_json::to_vec(report)
-        .map_err(|error| FirstProofSelectorError::Serialize(error.to_string()))?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    Ok(hex::encode(hasher.finalize()))
-}
-
-fn event_count_ledger_report_hash(
-    report: &FirstProofEventCountLedgerReport,
-) -> Result<String, FirstProofSelectorError> {
-    let bytes = serde_json::to_vec(report)
-        .map_err(|error| FirstProofSelectorError::Serialize(error.to_string()))?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    Ok(hex::encode(hasher.finalize()))
 }
 
 fn event_count_ledger_hash(event_counts: &[AssetEventCount]) -> String {

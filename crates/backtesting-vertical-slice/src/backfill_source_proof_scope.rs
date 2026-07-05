@@ -312,7 +312,7 @@ pub fn write_backfill_source_proof_scope_report(
     }
     Ok(BackfillSourceProofScopeArtifact {
         path,
-        content_hash: content_hash(report)?,
+        content_hash: format!("{:x}", Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
     })
 }
@@ -499,12 +499,4 @@ fn default_source_usage_scope() -> SourceProofUsageScope {
 
 fn is_canonical_backfill_input(value: &SourceProofUsageScope) -> bool {
     *value == SourceProofUsageScope::CanonicalBackfillInput
-}
-
-fn content_hash(
-    report: &BackfillSourceProofScopeReport,
-) -> Result<String, BackfillSourceProofScopeError> {
-    let bytes = serde_json::to_vec(report)
-        .map_err(|error| BackfillSourceProofScopeError::Serialize(error.to_string()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }

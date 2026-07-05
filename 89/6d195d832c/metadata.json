@@ -4,10 +4,13 @@
   "checkpoint_id": "896d195d832c",
   "strategy": "manual-commit",
   "branch": "codex/ws6-debug-test-lane",
-  "checkpoints_count": 3,
+  "checkpoints_count": 13,
   "files_touched": [
+    "ci/github-actions-runners.toml",
+    "justfile",
     "scripts/test_ci_provenance.py",
-    "scripts/test_verify_ci_workflow_hygiene.py"
+    "scripts/test_verify_ci_workflow_hygiene.py",
+    "scripts/verify_ci_workflow_hygiene.py"
   ],
   "sessions": [
     {
@@ -23,13 +26,20 @@
       "compact_transcript": "/89/6d195d832c/1/transcript.jsonl",
       "content_hash": "/89/6d195d832c/1/content_hash.txt",
       "prompt": "/89/6d195d832c/1/prompt.txt"
+    },
+    {
+      "metadata": "/89/6d195d832c/2/metadata.json",
+      "transcript": "/89/6d195d832c/2/full.jsonl",
+      "compact_transcript": "/89/6d195d832c/2/transcript.jsonl",
+      "content_hash": "/89/6d195d832c/2/content_hash.txt",
+      "prompt": "/89/6d195d832c/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 49875,
-    "cache_creation_tokens": 1131229,
-    "cache_read_tokens": 15215918,
-    "output_tokens": 327260,
-    "api_call_count": 106
+    "input_tokens": 191375,
+    "cache_creation_tokens": 4179912,
+    "cache_read_tokens": 189888906,
+    "output_tokens": 1238574,
+    "api_call_count": 765
   }
 }

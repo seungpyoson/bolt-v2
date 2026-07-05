@@ -1,0 +1,2847 @@
+ok what can we do to improve build + clippy? and loop count? it's partly solved by removing all the complexities so that it's basically O(1) to debug
+
+---
+
+explain the situation in plain english but make this concise
+
+---
+
+ok - with the decision but we should not be doing things so that we again make sessions compete with local cargo CPU - that was a big hang on the development speed
+
+---
+
+3. The lane governor stays the arbiter: one local compile at a time per machine. A second session wanting the lane waits its bounded turn or goes back to remote — no parallel compile storms, which is exactly the historical hang you're pointing at. -> but this makes development speed slow. so don't think this is the best decision. after all, we need to parallelize, and use ubicloud as much as possible
+
+---
+
+so serial is not good - what I need is - if I have, say, 10 agents working in parallel - how can we build a sustainable, stable system that can run without clobbering my local computer while making CI very fast, under control, without unnecessary frequency?
+
+---
+
+so what's next
+
+---
+
+• P1a is delivered.
+
+  PR: https://github.com/seungpyoson/bolt-v2/pull/1220
+  Commit: e65cc5b40
+  State: ready for review, sp-reviewer requested, mergeable.
+  Ready-state remote checks: green for CI, Backtester CI, Coverage Enforcer,
+  actionlint, Kimi, and GLM.
+
+  Evidence:
+
+  - just source-fence-static: 194.00s -> 32.43s
+  - just ci-lint-workflow: passed unsandboxed, real 664.58
+  - Runner/self-tests and affected pin tests passed
+  - Lane governance and workflow hygiene passed
+
+  I stopped before P1b because it also edits justfile, and the brief says
+  sequential PRs from current main. Next step is human approval/merge of #1220;
+  then P1b should branch from the updated main.
+
+ Pushed one normal commit to codex/1215-p0-fixes.
+
+  New head SHA: ffa5a62835c5afcc138f04a4acafe9614c5a7b1a
+
+  Changed:
+
+  - scripts/rust_verification.py: stale holder metadata now reports dead PIDs
+    as stale; cache-lock wait timing recomputes deadline around diagnostics/
+    sleep.
+
+  - scripts/test_rust_verification_cache_retention.py: added regressions for
+    stale holder metadata and timeout precision.
+
+  - scripts/test_ci_provenance.py: added the requested fresh_load_script()
+    guidance comment.
+
+  Verified:
+
+  - python3.12 scripts/test_rust_verification_cache_retention.py
+  - python3.12 scripts/test_ci_provenance.py
+  - just ci-lint-workflow
+  - gh pr checks 1217 --watch exited 0 at the new head; non-skipped checks are
+    green. sp-reviewer is already requested and resolves to node ID
+    U_kgDOEZMFhA.
+
+
+• Done.
+
+  Filed and updated child issue #1213 under #1068:
+  https://github.com/seungpyoson/bolt-v2/issues/1213
+
+  Posted the Phase 1 findings comment here:
+  https://github.com/seungpyoson/bolt-v2/issues/1213#issuecomment-4881546334
+
+  What’s in it:
+
+  - Pillar 1 debuggability inventory and small PR sequence.
+  - Governance-suite timing and top-20 slow checks.
+  - Full-proof CI run timeline for 28697183134.
+  - Date-windowed runner contention data.
+  - Duration × runner-rate cost comparison vs 2026-07-02, using Ubicloud public
+    pricing: https://www.ubicloud.com/docs/about/pricing.md
+
+  - Explicit caveats for historical unknown runner labels and GitHub API
+    throttling.
+
+  Verification:
+
+  - #1213 is open, titled CI DX: debuggable, faster, cheaper, with the new
+    comment as latest.
+
+  - Worktree is clean on codex/1068-ci-dx-phase1, currently behind origin/main
+    by 2.
+
+  - No implementation PRs or workflow changes were made.
+
+  Goal usage: 720,976 tokens, about 90m elapsed.
+
+---
+
+don't we need to get external model review on 1217?
+
+---
+
+1217:
+
+Claude: Verification complete. Every review ask traced through the actual bytes at the head SHA, with personally-fetched anchors for CI state. Here's the review.
+
+  ---
+  Adversarial Review — PR #1217 Round 2 — APPROVE
+
+  Range reviewed: 53c5b0b6f74015308737b6bf5a6bdff9f041699c..ffa5a62835c5afcc138f04a4acafe9614c5a7b1a (full PR; round-2 delta e78201a96..ffa5a6283 weighted). Merge-base == base == main tip → zero main drift. Scope confirmed: exactly the 7 named files, no others. All code citations are at head ffa5a6283.
+
+  No blocking findings. Every round-1 claim still holds and both round-2 reworks are correct and pinned by non-vacuous tests.
+
+  Review ask 1 — deadline_reached flow in cache_lock (rust_verification.py:888)
+
+  Invariant holds: a timeout is never raised without a final flock attempt. The only raise CacheLockTimeoutError (line 914) lives inside except OSError, which is entered only when the fcntl.flock(...LOCK_NB) at the top of the while (line ~900) fails. Every raise is therefore preceded by a fresh flock attempt in the same iteration — including after a sleep: post-sleep the code sets deadline_reached = waited >= timeout and continues to re-attempt flock before any raise. deadline_reached is only ever set from waited >= timeout, so it can never fire a premature timeout.
+
+  Lock acquired on the final attempt after deadline_reached=True is accepted cleanly — the success path (if exclusive: … break) never consults deadline_reached; it writes the holder payload and breaks. No inconsistency.
+
+  Robustness: validate_local_lane_policy (line 450) enforces poll_interval_seconds > 0, poll ≤ heartbeat, and heartbeat < acquire_timeout_seconds, so time.sleep(min(poll, timeout-waited)) always sleeps a positive, deadline-capped amount — no busy-spin, no hang.
+
+  Review ask 2 — process_is_running signal-0 probe (rust_verification.py:859)
+
+  Correct: ProcessLookupError→False, PermissionError→True (running but unsignalable), else True. It cannot mislead anything beyond message text. cache_lock_holder_description is only invoked when flock fails (lock still held) and its result is interpolated solely into the heartbeat/timeout strings; the lock decision is made by flock, which is authoritative. Zombie holders are impossible in that path (a terminated/zombie process has already released its flock, so the waiter acquires immediately and never computes the description).
+
+  Review ask 3 — round-1 core claims re-verified at head
+
+  - Redirect adoption: cancel_obsolete_dispatch_runs.py:110 calls _ci_provenance.open_github_api_request(request, timeout=30); no urlopen remains. open_github_api_request (ci_provenance.py:1484) builds the opener with SafeGitHubRedirectHandler, which strips Authorization-class headers on cross-host redirect. Its differential test assert_github_client_uses_safe_redirect_opener is non-vacuous: pre-adoption code (direct urlopen) never calls build_opener, so captured_handlers stays empty and the SafeGitHubRedirectHandler assertion raises.
+  - Bool guard: local require_positive_int is gone; nextest_fingerprint.py:57 binds the shared _cv.require_positive_int, which rejects bools (isinstance(value, bool) or …, config_validators.py:40). Call site shards = require_positive_int(archive,"shards",…) (line 160). The new "boolean": shards = true case is differential — the old local guard returned True (=1) since isinstance(True,int) and True<=0 is False.
+  - TCP fast-fail restore-on-all-paths: assert_github_api_bytes_strips_authorization_on_cross_host_redirect builds servers via local_tcp_server (OSError→AssertionError fast-fail), tracks servers/started_servers, sets a 5s timeout, and the finally restores module.open_github_api_request and closes every created server even on partial-construction failure.
+  - Module-cache hygiene: all three cached-module mutation sites in test_ci_provenance.py restore in finally — POLICY_ROWS (3400→3406), open_github_api_request TCP (3500→3516), open_github_api_request BadUtf8 (3587→3594).
+
+  Review ask 4 — new regression tests genuinely pin (1) and (2) — not vacuous
+
+  - assert_cache_lock_holder_description_marks_dead_pid_metadata_stale: writes a lock file naming a dead PID, expects "stale metadata: pid N (no longer running), last cmdline 'held-cache-lock'". Pre-round-2 code (no process_is_running branch) returns "pid N cmdline 'held-cache-lock'" → assertion fails. Differential. unused_pid() only returns a PID that raised ProcessLookupError, so it's reliably dead.
+  - assert_cache_lock_recomputes_remaining_wait_after_holder_diagnostics: with a fake clock where holder diagnostics burn 0.75s, round-2 recomputes waited post-diagnostics and lands the 2nd flock attempt at exactly t=1.0 (the deadline); the assertion attempts[1] > 1.000001 passes. Traced against round-1 code (which slept a full poll interval off a stale waited=0.0): 2nd attempt lands at t=1.25 > 1.000001 → assertion fails. Differential, deterministic (no wall-clock dependence).
+
+  Review ask 5 — scope / no weakened assertions
+
+  diff --stat = exactly the 7 files. The round-2 delta is purely additive (new process_is_running, new deadline_reached logic, isolation comment, two new tests) plus tightening if waited >= timeout → if deadline_reached or waited >= timeout. No existing assertion removed or loosened in either round. New CacheLockTimeoutError is caught at every enter-point: cmd_cargo (both sites), cmd_run, and cache_prune_payload's with lock_context propagates to cache_prune_command_result's handler (line 4757, backed by a catch-all except Exception). No unhandled-timeout traceback path.
+
+  Evidence anchors
+
+  - CI at ffa5a6283 — personally fetched via gh api …/check-runs: 30 checks, 10 success / 20 skipped / 0 failing/pending. PR head confirmed ffa5a628…; BLOCKED / REVIEW_REQUIRED is only the required separate-reviewer gate, not a check failure.
+- Per the review instruction I did not re-execute the Python suites; the two new tests' differential behavior above is confirmed by hand-trace against both round-1 and round-2 code, not by trusting the green checks.
+
+Informational (non-blocking, no change requested)
+
+1. process_is_running shares the classic PID-reuse limitation and treats a corrupt lock file with pid ≤ 0 as "running" — but impact is confined to the diagnostic string (never lock behavior, timing, or refusal codes), on a file the tool itself writes. Noting the boundary, not requesting a guard.
+2. The wait loop recomputes now/waited twice around the raise-check — defensive (covers a scheduler pause crossing the deadline between reads), harmless, not worth churn.
+
+Verdict: APPROVE at ffa5a62835c5afcc138f04a4acafe9614c5a7b1a.
+
+Kimi: Review-ask responses
+
+   1. cache_lock deadline semantics — REFUTED the failure scenarios.
+       • A CacheLockTimeoutError is raised only inside the except OSError
+         block, i.e. only after a failed fcntl.flock(... | LOCK_NB) attempt
+         (scripts/rust_verification.py:888 loop).
+       • deadline_reached=True does not force a raise on the current
+         iteration; it causes a continue, so the next loop iteration performs
+         the “final” flock attempt. If that final attempt succeeds, the
+         success path runs normally (metadata write, break, yield). This is
+         consistent with the stated invariant: “timeout raised only AFTER a
+         final flock attempt.”
+       • The round-2 recomputation of waited after
+         cache_lock_holder_description(path)
+         (scripts/rust_verification.py:907-910) prevents slow diagnostics from
+         pushing the effective wait past the deadline undetected before sleep.
+
+   2. process_is_running signal-0 correctness — CONFIRMED the zombie concern.
+       • os.kill(pid, 0) returns successfully for zombie processes because the
+         PID still exists in the process table
+         (scripts/rust_verification.py:859).
+       • Consequently cache_lock_holder_description reports a zombie holder as
+         live (pid N cmdline ...) instead of “stale metadata.” This misleads
+         only the diagnostic text/operator message; it does not affect lock
+         acquisition, timeout timing, or refusal behavior, because fcntl.flock
+          is authoritative and the kernel releases file locks when the owning
+         fd is closed on process exit.
+
+   3. Round-1 core claims at new head — all hold:
+       • cancel_obsolete_dispatch_runs.py:_request_json routes through
+         _ci_provenance.open_github_api_request(..., timeout=30)
+         (scripts/cancel_obsolete_dispatch_runs.py:110), and
+         assert_github_client_uses_safe_redirect_opener verifies
+         SafeGitHubRedirectHandler is in the opener
+         (scripts/test_cancel_obsolete_dispatch_runs.py:340-383).
+       • nextest_fingerprint.py now uses the shared require_positive_int from
+         config_validators.py, which explicitly rejects bool
+         (scripts/config_validators.py:22); test_nextest_fingerprint.py adds
+         the boolean case (scripts/test_nextest_fingerprint.py:653).
+       • The TCP cross-host redirect test uses
+         LocalTCPServer.allow_reuse_address = True, short-timeout wrapper, and
+         restores module.open_github_api_request in finally
+         (scripts/test_ci_provenance.py:3456-3527).
+       • Module-cache hygiene: fresh_load_script() exists, load_script()
+         caches, the isolation comment is present
+         (scripts/test_ci_provenance.py:476), and the three mutation sites
+         restore patched attributes in try/finally.
+
+   4. New regression tests are not vacuous — verified by tracing against the
+      pre-round-2 code at e78201a96b:
+       • assert_cache_lock_holder_description_marks_dead_pid_metadata_stale
+         would fail pre-round-2 because process_is_running did not exist and
+         dead-PID metadata was reported as live.
+       • assert_cache_lock_recomputes_remaining_wait_after_holder_diagnostics
+         would fail pre-round-2: with the old logic, the first slow diagnostic
+         (0.75 s) is not subtracted before computing sleep, so the second
+         flock attempt lands at ~1.25 s, violating the attempts[1] <= 1.000001
+          assertion (scripts/test_rust_verification_cache_retention.py:1419).
+
+   5. Scope / assertion integrity — unchanged 7 files, no weakened assertions
+      between rounds. The round-2 delta adds only process_is_running, the
+      deadline_reached rework, the isolation comment, and the two new tests.
+
+   Ranked findings
+
+   ┌──────┬────────────────────────────┬─────────────────┬──────────┬────────┐
+   │ Rank │ File:line (pinned SHA)     │ Finding         │ Failure  │ Severi │
+   │      │                            │                 │ scenario │ ty     │
+   ├──────┼────────────────────────────┼─────────────────┼──────────┼────────┤
+   │ 1    │ scripts/rust_verification. │ process_is_runn │ A        │        │
+   │      │ py:859                     │ ing returns     │ cache-lo │        │
+   │      │                            │ True for zombie │ ck       │        │
+   │      │                            │ processes.      │ holder   │        │
+   │      │                            │                 │ that has │        │
+   │      │                            │                 │ exited   │        │
+   │      │                            │                 │ but is   │        │
+   │      │                            │                 │ not yet  │        │
+   │      │                            │                 │ reaped   │        │
+   │      │                            │                 │ by its   │        │
+   │      │                           │                │ as a live  │        │
+   │      │                           │                │ holder     │        │
+   │      │                           │                │ (pid N     │        │
+   │      │                           │                │ cmdline    │        │
+   │      │                           │                │ ...)       │        │
+   │      │                           │                │ instead of │        │
+   │      │                           │                │ “stale     │        │
+   │      │                           │                │ metadata,” │        │
+   │      │                           │                │ misleading │        │
+   │      │                           │                │ an         │        │
+   │      │                           │                │ operator   │        │
+   │      │                           │                │ investigat │        │
+   │      │                           │                │ ing a slow │        │
+   │      │                           │                │ or wedged  │        │
+   │      │                           │                │ lock. Does │        │
+   │      │                           │                │ not change │        │
+   │      │                           │                │ lock/timeo │        │
+   │      │                           │                │ ut         │        │
+   │      │                          │                │ that checks │        │
+   │      │                          │                │ for a       │        │
+   │      │                          │                │ leaked      │        │
+   │      │                          │                │ Accept      │        │
+   │      │                          │                │ header      │        │
+   │      │                          │                │ raises with │        │
+   │      │                          │                │ message     │        │
+   │      │                          │                │ “redirected │        │
+   │      │                          │                │ request     │        │
+   │      │                          │                │ leaked      │        │
+   │      │                          │                │ authorizati │        │
+   │      │                          │                │ on.”        │        │
+   │      │                          │                │ Harmless    │        │
+   │      │                          │                │ but         │        │
+   │      │                          │                │ confusing   │        │
+   │      │                          │                │ test        │        │
+   │      │                          │                │ diagnostics │        │
+   │      │                          │                │ .           │        │
+   │      │                         │               │ be assigned   │        │
+   │      │                         │               │ that PID;     │        │
+   │      │                         │               │ process_is_ru │        │
+   │      │                         │               │ nning would   │        │
+   │      │                         │               │ then return   │        │
+   │      │                         │               │ True and the  │        │
+   │      │                         │               │ stale-metadat │        │
+   │      │                         │               │ a assertion   │        │
+   │      │                         │               │ would fail.   │        │
+   │      │                         │               │ Probability   │        │
+   │      │                         │               │ is negligible │        │
+   │      │                         │               │ on a normal   │        │
+   │      │                         │               │ system.       │        │
+   └──────┴─────────────────────────┴───────────────┴───────────────┴────────┘
+
+   Evidence
+
+   • Verified code at exact head ffa5a62835c5afcc138f04a4acafe9614c5a7b1a via
+     git fetch and git show.
+   • Cited PR-record evidence: all non-skipped checks green at ffa5a6283;
+     local suites pass per PR record. No local test re-runs performed per
+     instructions.
+
+GPT:APPROVE
+
+  Findings: none.
+
+  I reviewed 53c5b0b6..ffa5a6283 and verified the changed-file boundary is
+  exactly the 7 files listed. Round-2 delta is limited to scripts/
+  rust_verification.py, scripts/test_ci_provenance.py, and scripts/
+  test_rust_verification_cache_retention.py.
+
+  Key checks:
+
+  - Cache lock timeout: ffa5a6283:scripts/rust_verification.py:901-930 only
+    raises timeout after a failed nonblocking flock; slow diagnostics and sleep
+    both force a loop back to another flock attempt before raising. If the
+    final attempt succeeds after deadline_reached=True, it proceeds cleanly
+    through :932-938.
+
+  - process_is_running: zombies can report live via os.kill(pid, 0) at :859-
+    866, but that only affects holder text from :869-884; lock safety is still
+    governed by flock, not PID metadata.
+
+  - Redirect adoption holds: dispatch canceller uses
+    _ci_provenance.open_github_api_request at scripts/
+    cancel_obsolete_dispatch_runs.py:110; safe redirect stripping is in
+    scripts/ci_provenance.py:1472-1486.
+
+  - Bool guard holds: scripts/nextest_fingerprint.py:55-57 uses the shared
+    positive-int validator, and the boolean shard regression is pinned at
+    scripts/test_nextest_fingerprint.py:648-664.
+
+  - TCP and cached-module hygiene hold: local TCP test cleanup restores patched
+    opener and closes servers in scripts/test_ci_provenance.py:3492-3520;
+    cached-module mutations are restored at :3400-3406, :3492-3516, and :3586-
+    3594.
+
+  Regression-test quality: the new precision test at scripts/
+  test_rust_verification_cache_retention.py:1419-1476 is not vacuous; the
+  round-1 loop would make the second attempt after the deadline because it
+  slept from stale pre-diagnostic timing.
+
+  Verification: I did not rerun tests, per instruction. gh pr view confirmed
+  head ffa5a62835c5afcc138f04a4acafe9614c5a7b1a and no failed/pending checks;
+  many heavy CI jobs are skipped, and Mergify Merge Queue is neutral.
+  UNVERIFIED: local suite pass is only as recorded in the PR, not independently
+  rerun.
+GLM: VERDICT: APPROVE
+Reviewed the full PR at ffa5a6283 (merge-base 53c5b0b6, confirmed = main tip). Scope verified: exactly the 7 declared files, no drift. Round-2 delta (e78201a96..ffa5a6283) is 3 files, all additive except the cache_lock deadline rework. I independently simulated the lock loop (not just hand-traced) to validate the discriminating power of the new tests.
+Ask 1 — deadline_reached flow: HOLDS
+(a) Timeout never raised without a flock attempt in the same iteration. The raise at rust_verification.py:914 is inside the except OSError block, reachable only after flock(...|LOCK_NB) at :907 failed. deadline_reached is set at :920/:930 and always followed by continue → top of loop → flock. Simulation: round-2 produces attempts=[0.0, 1.0] (≥2 attempts). ✓
+(b) Lock acquired after deadline_reached=True accepted cleanly. The success path (:932 exclusive-write, :937 break, :938 yield) never consults deadline_reached. If the post-deadline flock succeeds, acquisition proceeds normally. ✓ No inconsistent-flag path exists (flag is monotonic False→True, never reset).
+Ask 2 — process_is_running signal-0: benign
+rust_verification.py:859. Zombies (defunct, unreaped) do report True and the message looks live — but a zombie still holds its open fds until reaped, so the flock IS genuinely held and "running" is operationally accurate. A fully-reaped process releases the flock and raises ProcessLookupError → correct "stale metadata" branch (:875). The description feeds only the timeout/heartbeat message text, never control flow. No misleading beyond cosmetics. (Finding F2 below.)
+Ask 3 — Round-1 claims hold at new head
+- Token-leak fix: cancel_obsolete_dispatch_runs.py:110 routes through _ci_provenance.open_github_api_request → build_opener(SafeGitHubRedirectHandler()) (ci_provenance.py:1484-1486), which strips Authorization on cross-host redirect (:1472-1483). Differential test assert_github_client_uses_safe_redirect_opener is non-vacuous (pre-fix empty-handlers → fails).
+- Bool guard: nextest_fingerprint.py:57 uses shared _cv.require_positive_int, which rejects bool first (config_validators.py:38). New "boolean": shards=true case pins it.
+- TCP fast-fail: test_ci_provenance.py:3500 sets short-timeout opener, restored at :3516; local_tcp_server raises AssertionError on bind failure instead of hanging.
+- Module-cache hygiene: exactly 3 module-attribute mutation sites (POLICY_ROWS :3402/:3406; open_github_api_request :3500/:3516 and :3587/:3594) — all try/finally-restored. Caching pinned by assert_load_script_reuses_module.
+Ask 4 — New regression tests are NON-VACUOUS
+I simulated both new tests' fakes against the pre-polish (round-1) loop:
+- assert_cache_lock_recomputes_remaining_wait_after_holder_diagnostics: round-1 FAILS (attempts=[0.0, 1.25], attempts[1]=1.25 > deadline), round-2 PASSES (attempts=[0.0, 1.0]). The stale-waited over-sleep in round-1 (0.5s vs corrected 0.25s) is exactly what the assertion catches.
+- assert_cache_lock_holder_description_marks_dead_pid_metadata_stale: round-1 lacks process_is_running → emits "pid N cmdline...", not "stale metadata..." → fails. Pins the new branch.
+Ask 5 — Scope & integrity
+7 files, matches declaration. Round-2 only added tests/logic; if waited >= timeout → if deadline_reached or waited >= timeout is strictly more aggressive. No assertion weakened between rounds.
+Findings (ranked)
+F1 — Low / Informational: timeout message under-reports actual wait by one holder_description call. rust_verification.py:913-915: {waited} is computed at :910-911 before cache_lock_holder_description(path) (:912), which may run a ps subprocess (≤2s, process_command_for_pid). By the time the raise executes, real elapsed exceeds waited by that duration. Failure scenario: a wedged lock whose holder needs ps resolution reports "timed out after 1800s" when 1802s actually passed. Harmless (diagnostic only; :.0f rounding; no test asserts the number) — flagging for completeness, not blocking.
+F2 — Informational: signal-0 reports unreaped zombies as live. rust_verification.py:859-866. UNVERIFIED as a real-world concern for this deployment — requires a holder that crashed into zombie state, which is precisely when its flock is still legitimately held, so the "looks live" message is not operationally wrong. No action needed; documenting the known signal-0 limitation.
+No blocking findings. The reworked live-lock logic is correct, the invariant ("timeout only after a final flock attempt; late acquisition accepted cleanly") is provably upheld, and the two new tests genuinely distinguish round-2 from round-1.
+
+---
+
+what about  Pushed one normal commit to codex/1215-p0-fixes.
+
+  New head SHA: ffa5a62835c5afcc138f04a4acafe9614c5a7b1a
+
+  Changed:
+
+  - scripts/rust_verification.py: stale holder metadata now reports dead PIDs
+    as stale; cache-lock wait timing recomputes deadline around diagnostics/
+    sleep.
+
+  - scripts/test_rust_verification_cache_retention.py: added regressions for
+    stale holder metadata and timeout precision.
+
+  - scripts/test_ci_provenance.py: added the requested fresh_load_script()
+    guidance comment.
+
+  Verified:
+
+  - python3.12 scripts/test_rust_verification_cache_retention.py
+  - python3.12 scripts/test_ci_provenance.py
+  - just ci-lint-workflow
+  - gh pr checks 1217 --watch exited 0 at the new head; non-skipped checks are
+    green. sp-reviewer is already requested and resolves to node ID
+    U_kgDOEZMFhA.
+
+---
+
+we need to reslve pr comments
+
+---
+
+you own 1220 right
+
+---
+
+#1220 round 2 is done and pushed.
+
+  Commit: 71435ffd5 (Restore source fence test coverage)
+
+  What changed:
+
+  - Restored the dropped test coverage into scripts/run_fences.py: paired
+    test_verify_*.py suites plus standalone migration/runtime-capture/local-
+    gate/lane-governor suites.
+
+  - Scoped filesystem caching to repo-root paths and verifier execution only;
+    tests run uncached.
+
+  - Updated lane-governor discovery/policy labels for the harness.
+  - Covered and resolved the bot threads: SystemExit(None), ignored root,
+    resolve() overhead, and PMXT parser malformed-block tests.
+
+  - Updated the PR body with old-command mapping and corrected timing evidence.
+  - Added a round-two PR comment:
+    https://github.com/seungpyoson/bolt-v2/pull/1220#issuecomment-4882038715
+
+  Verification:
+
+  - just source-fence-static passed: real 106.79
+  - just ci-lint-workflow passed outside sandbox: real 364.32
+  - Targeted runner/lane/hygiene/parser tests passed.
+  - Exact-head GitHub checks are green/skipped at 71435ffd5.
+  - All five review threads are resolved.
+  - PR remains ready, with sp-reviewer requested and REVIEW_REQUIRED.
+
+---
+
+GLM:VERDICT: APPROVE (code) — with non-blocking findings + one merge-readiness blocker
+Adversarial review of the full diff at 71435ffd5fb66fca8ee71621bf39fcf6b8c19993 vs base 53c5b0b6f74015308737b6bf5a6bdff9f041699c. I tried to break each of the five claims; all five hold. No blocking code defect. The merge-readiness note at the end is a process gate, not a code finding.
+1. COVERAGE COMPLETENESS — round-1 sin is fixed. Refuted.
+Reconstructed the base recipe (justfile:336-432 at base SHA) and diffed it against discovery. Exact mapping:
+Old (93 invocations)    New home
+44 verify_*.py    discover_fence_paths (run_fences.py:166) — identical 44-element set
+44 paired test_verify_*.py    auto-pair (run_fences.py:170)
+5 standalone (test_migrate_* ×2, test_verify_runtime_capture_yaml, test_local_verification_gate, test_lane_governor)    STANDALONE_TEST_FILENAMES (run_fences.py:34)
+—    + test_run_fences.py (new harness self-test; appropriate)
+Net: 44 fences (unchanged set) + 50 tests (49 old + 1 new self-test). Nothing dropped; nothing inappropriate added. Exclusion prefixes (run_fences.py:29 verify_ai_/verify_ci_/verify_runtime_capture_yaml) match exactly the lanes that own them. The round-1 "unscoped cache" is also fixed: cache is repo-root-scoped (run_fences.py:62 cacheable_path) and outside-root reads bypass it (proven by test_run_fences.py::assert_filesystem_cache_skips_paths_outside_root).
+2. CACHE SAFETY — sound for the actual battery.
+- Monkeypatch restore is in finally (run_fences.py:151-152) — no permanent pathlib mutation, even on exception.
+- glob/rglob return iter(tuple) — fresh iterator each call, kwargs passed through (run_fences.py:70-74,113-118). Iterator/kwargs semantics preserved.
+- Stale-serve / write-then-reread: I grepped every discovered fence for file mutation (write_text/open('w')/json.dump/shutil/mkdir/subprocess). The only hits were dataclasses.replace (in-memory), json.dumps (in-memory), and read-only git show/git rev-parse (verify_bolt_v3_boundary_evidence.py:469, verify_bolt_v3_dependency_direction.py:890). No fence writes a repo-root path → the shared read cache cannot serve stale data today. Test phase runs uncached (run_fences.py:283), so cross-phase staleness is impossible.
+3. EXECUTION SEMANTICS — equivalent.
+- All 44 fences define def main() with no required params → call_module always takes the main() branch (run_fences.py:201); the main([]) and unittest/bare-fallback paths are untriggered for fences.
+- Of 50 test modules, 37 have main(); the 13 without split into unittest.TestCase modules (fallback TextTestRunner.run(loadTestsFromModule) ≡ their unittest.main()) and bare-test_* modules whose __main__ collects sorted(globals().items()) — the fallback mirrors that identically (run_fences.py:222-235 vs e.g. test_verify_bolt_v3_boundary_evidence.py __main__).
+- SystemExit(None)→0 is correct (run_fences.py:257-258) and tested.
+- Every fence __main__ is the standard acquire; SystemExit(main()) with no extra setup → importing + call_module(main()) is exactly equivalent (verified all 44).
+- sys.argv is reset to [path] per module (run_fences.py:247-254); sys.modules keys are unique (_source_fence_{phase}_{index}_{stem}, run_fences.py:191).
+4. GOVERNANCE INTEGRITY — pin is tight; resolver scope is narrow.
+- The pin uses exact list equality: if static_lines != list(SOURCE_FENCE_STATIC_INNER_REQUIRED_COMMANDS) (verify_ci_workflow_hygiene.py:6835). Adding any direct python3 scripts/verify_foo.py line fails the gate — confirmed by new test test_verify_ci_workflow_hygiene.py extra_inner_work case. A newly added verify_*.py (non-excluded prefix) is auto-discovered → cannot escape.
+- _CodeExecutionEdgeResolver._handle_loader_call special-case is scoped to path == scripts/run_fences.py AND call_name ending in spec_from_file_location only (test_lane_governor.py:2257); any other loader call falls through to default handling. run_fences has exactly one spec_from_file_location (run_fences.py:192), and _run_fences_discovered_targets (test_lane_governor.py:2659) imports the real discoverers — so the edge set is accurate.
+5. CHEAP-LANE CLASSIFICATION — correct.
+cheap_lane_max_concurrent = 0 means unbounded, no flock (lane_governor.py:286-287). "Cheap" denotes resource class (Python vs Rust-compile), not wall-clock. I confirmed no discovered fence invokes cargo — the two cargo hits (verify_bolt_v3_legacy_default_fence.py:91, verify_bte_022_pmxt_broad_backfill_efficiency.py:100) are a comment and a guidance string. So labeling run_fences.py cheap (and the local-gate:source-fence-static recipe it runs under) is sound; it does not bypass heavy-lane serialization.
+Non-blocking findings (ranked)
+F1 — Low / latent. SharedFenceCache has no write-invalidation and the read-only invariant is undocumented. run_fences.py:132 / SharedFenceCache. Safe today (proven: zero fences write repo-root paths), but if a future fence writes a repo-root file that a later fence reads/globs, and an earlier fence already cached that path, it serves stale data with no guard or test. The test-phase and outside-root cases are handled; the intra-fence-phase repo-root write case is not. Suggest a one-line docstring on SharedFenceCache asserting "fences must be read-only w.r.t. repo-root paths" (or a dev-mode write-tripwire). Not blocking: source fences are read-only verifiers by nature and the current battery is clean.
+F2 — Low / latent. STANDALONE_TEST_FILENAMES is a manual list with no completeness check. run_fences.py:34. The auto-pair fail-loud rule covers fences (missing test_<fence> fails at import_module_from_path's is_file() check, run_fences.py:189). But a future standalone test (no fence pair) added to scripts/ that belongs in source-fence-static would be silently dropped unless manually appended here — the one place the round-1 "silent drop" failure mode could recur. Same shape as the old recipe (not a regression), but worth a meta-check or explicit comment.
+F3 — Low / latent. Resolver trusts the discovered set for all spec_from_file_location in run_fences. test_lane_governor.py:2257. Currently exact (one such call, discovered set covers it), but a future hardcoded spec_from_file_location(literal_path) in run_fences would be under-counted by the cheap-lane edge resolver without failing. Narrow present scope.
+Merge-readiness blocker (process, not code)
+The PR is draft; on 71435ffd5 the merge-gating source-fence job (and clippy/test/build/deny) are SKIPPED (gh pr checks 1220). So there is no exact-head remote-CI evidence for the very battery this PR rewrites. The local source-fence-static 106.79s figure is USER-REPORTED — I did not independently run it (instructed not to re-run; I cite it as unverified). Per repo policy, merge requires: mark ready → just verify-remote for the exact-head source-fence/gate. Code verdict stands as APPROVE; do not merge until that gate is green.
+Kimi: VERDICT: REQUEST_CHANGES
+
+   The round‑1 coverage drop is fixed: every old source-fence-static-inner
+   invocation maps to the new harness, and nothing outside the intended
+   static‑fence set is discovered. The remaining problem is governance: the
+   in-band source-fence wiring checks were retargeted to run_fences.py but
+   they still only check presence, not onlyness. Because the merge-gating
+   source-fence CI job does not run the stronger verify_ci_workflow_hygiene.py
+    check, the recipe can be silently expanded and the source-fence job will
+   pass.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   1. GOVERNANCE INTEGRITY — in-band wiring checks do not forbid extra
+   commands (BLOCKING)
+
+   The source-fence battery’s own justfile-wiring checks verify that python3
+   scripts/run_fences.py is present, but they do not fail if additional
+   commands are appended.
+
+   • verify_fail_closed_contracts.py:26-27 defines
+     REQUIRED_SOURCE_FENCE_COMMANDS = ("python3 scripts/run_fences.py",) and
+     verify_fail_closed_contracts.py:268-278 returns findings only for missing
+      required commands.
+   • The BTE source-fence guards do the same, e.g.
+     verify_bte_022_pmxt_durable_source.py:966-972 and
+     verify_bte_022_binary_option_bar_catalog.py:30-34,323-329, as does
+     verify_outcome_group_nt_reuse.py:391-395.
+
+   I reproduced this: a synthetic source-fence-static-inner running the
+   required run_fences.py plus python3 scripts/extra.py passes
+   verify_fail_closed_contracts.py (return code 0, no findings).
+
+   By contrast, the out-of-band check in
+   verify_ci_workflow_hygiene.py:6835-6836 does enforce static_lines ==
+   ["python3 scripts/run_fences.py"]. But the source-fence CI job runs just
+   source-fence-static without lint-workflow-contract
+   (.github/workflows/ci.yml:645-652), so verify_ci_workflow_hygiene.py is not
+   executed in that lane. A maintainer can append commands to
+   source-fence-static-inner and the merge-gating source-fence job will
+   execute them and pass.
+
+   Required fix: make the in-band wiring checks
+   (verify_fail_closed_contracts.py and the BTE/source-fence wiring checks)
+   assert commands == required_commands, not required_commands ⊆ commands, and
+   add negative tests for extra commands.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   2. COVERAGE COMPLETENESS — round-1 drop is fixed (VERIFIED)
+
+   • Old source-fence-static-inner had 93 command lines
+     (justfile:336-428@53c5b0b6).
+   • New recipe is python3 scripts/run_fences.py (justfile:336-337@71435ffd).
+   • run_fences.py:166-167 discovers every scripts/verify_*.py except the
+     intentionally excluded verify_ai_*, verify_ci_*, and
+     verify_runtime_capture_yaml families (run_fences.py:29-33).
+   • run_fences.py:170-185 auto-pairs each discovered fence with
+     test_<fence>.py and appends the six standalone suites
+     (run_fences.py:34-41).
+
+   I compared the old command list against the new discovery set: every old
+   script is covered, and the only new script executed is the expected
+   test_run_fences.py. No unauthorized verifier is pulled in.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   3. _CodeExecutionEdgeResolver extension is sound (VERIFIED)
+
+   test_lane_governor.py:2258-2261 special-cases run_fences.py so that dynamic
+   spec_from_file_location(..., path) calls are resolved by invoking
+   run_fences’ own discovery (_run_fences_discovered_targets at
+   test_lane_governor.py:2659-2662). This does not trust arbitrary loader
+   calls: the special-case only fires for calls already recognized as
+   spec_from_file_location aliases (test_lane_governor.py:2557-2567), and it
+   always returns the harness’s discovered set rather than the literal loader
+   argument. Other loader forms in run_fences.py would fall through to the
+   normal unresolved-path handling and fail closed.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   4. ISOLATION SAFETY — mostly correct, with minor caveats (VERIFIED)
+
+   • The monkeypatch is scoped to pathlib.Path.glob / rglob / read_text and
+     only caches paths under REPO_ROOT (run_fences.py:54-68).
+   • Tests run without the cache (run_fences.py:281-283), so write-then-read
+     test patterns are not stale (test_run_fences.py:178-215 proves this).
+   • The wrappers restore originals in a finally (run_fences.py:131-154), and
+     run_module restores sys.argv in its own finally (run_fences.py:245-256),
+     so exceptions do not leave pathlib patched.
+   • Caveats: (a) glob/rglob results are materialized into tuples, changing
+     lazy-iterator semantics and memory profile; (b) Path.read_bytes,
+     open(...), and non-path IO are not wrapped, so the cache is not a
+     complete filesystem abstraction. These are acceptable because the PR only
+     promises caching for the three wrapped methods.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   5. EXECUTION SEMANTICS — single-process import is equivalent for current
+   fences (VERIFIED)
+
+   • Verifiers are imported under synthetic module names
+     (run_fences.py:188-198), so if __name__ == "__main__" guards are bypassed
+     and main() is invoked explicitly by call_module (run_fences.py:201-235).
+   • sys.argv is reset to [str(path)] for each module (run_fences.py:247-249).
+   • SystemExit(None) is treated as success (run_fences.py:257-258), matching
+     subprocess behavior.
+   • The main residual risk is global-state leakage across fences/tests
+     (sys.path, sys.modules, module-level caches). All current fences are
+     read-only, so this is not blocking, but it is a semantic change from the
+     previous per-process isolation.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   6. LANE CLASSIFICATION — consistent with policy, though arguably heavy
+   (VERIFIED)
+
+   • run_fences.py is added to cheap_lane_labels (ci/rust-verification.toml:40
+      and test_lane_governor.py:167).
+   • cheap_lane_max_concurrent = 0 means the lane is unbounded
+     (lane_governor.py:146-150,284-296).
+   • This is consistent with the pre-existing classification of
+     local-gate:source-fence-static and the listed test_verify_*.py scripts.
+     However, a 107-second CPU-bound battery running as an unbounded “cheap”
+     lane strains the docstring intent that the governor serializes CPU-heavy
+     work. The policy has no duration threshold, so this is not a rule
+     violation.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Summary: coverage is restored and the harness mechanics are sound, but the
+   source-fence lane is not self-policing against recipe expansion. Request
+   changes to make the in-band wiring checks enforce that
+   source-fence-static-inner contains only python3 scripts/run_fences.py.
+GPT:
+• REQUEST_CHANGES
+
+  Blocking Finding
+
+  1. 71435ffd5fb66fca8ee71621bf39fcf6b8c19993:scripts/
+     test_lane_governor.py:2258
+
+  _CodeExecutionEdgeResolver special-cases every spec_from_file_location call
+  in run_fences.py by checking only the file path and call name, then blindly
+  substituting _run_fences_discovered_targets() from scripts/
+  test_lane_governor.py:2659. It does not inspect the actual loader target.
+
+  Concrete failure mode: someone can add another spec_from_file_location(...)
+  inside run_fences.py that loads an arbitrary script. source-fence-static-
+  inner still contains only python3 scripts/run_fences.py at justfile:335-336,
+  and the recipe pin still passes via scripts/
+  verify_ci_workflow_hygiene.py:6737 / :6835. The cheap-lane closure also stays
+  green because the resolver reports the normal fence/test set for any such
+  loader call. That reopens an untracked execution path inside the single-
+  command harness.
+
+  Fix: make the resolver fail closed for extra loader calls in run_fences.py.
+  Either validate the exact intended import helper at scripts/run_fences.py:188
+  and its call sites, or resolve each loader target normally and only allow the
+  known dynamic fence/test path with a targeted proof. Add a red test where an
+  extra spec_from_file_location in run_fences.py must fail discovery.
+
+  Checked Non-Findings
+
+  - Coverage completeness: I mechanically compared the base source-fence-
+    static-inner command list at
+    53c5b0b6f74015308737b6bf5a6bdff9f041699c:justfile:335 through :428 with the
+    new discovery rules at scripts/run_fences.py:157 through :184. No old
+    command is missing; the only added command is test_run_fences.py.
+
+  - Cache scope: current static verifier files do not appear to write repo
+    files before rereading them. The cache is restored with finally at scripts/
+    run_fences.py:131 through :154, and tests run outside the cache at :281
+    through :283.
+
+  - Lane classification: local-gate:source-fence-static was already cheap in
+    the base policy; adding run_fences.py mirrors that direct-run label. I did
+    not find a new lane-policy blocker separate from the resolver hole.
+
+  Evidence Note
+  I did not rerun the checks per request. gh pr diff/view was blocked here with
+  GitHub GraphQL Forbidden, so PR-record check status is UNVERIFIED by me; I
+  reviewed the exact local objects for base
+  53c5b0b6f74015308737b6bf5a6bdff9f041699c and head
+  71435ffd5fb66fca8ee71621bf39fcf6b8c19993.
+Claude: 
+All five review asks are now closed with personally-reproduced evidence, including an empirical probe: call_module's unittest, bare, and fail-loud paths all execute assertions non-vacuously at HEAD (failing synthetic tests → rc=1; empty module → fail-loud rc=1). The round-1 "silent skip" cannot recur through call_module.
+
+---
+Verdict: APPROVE — PR #1220 @ 71435ffd5fb66fca8ee71621bf39fcf6b8c19993
+
+Both round-1 sins are definitively fixed, and the deeper attack surface (cache, import-vs-__main__ semantics, governance pin, lane class) holds up under adversarial checking. Residuals below are all LOW / non-blocking — the verdict does not depend on them.
+
+Ask 1 — Coverage completeness (the round-1 sin): PROVEN COMPLETE
+
+Reconstructed the base 93-line recipe (justfile.base:336–428) and set-diffed it against run_fences.py discovery:
+
+Axis: Fences: old-ran → discovery drops (GAP A)
+Result: ∅ (0)
+────────────────────────────────────────
+Axis: Fences: discovery r
+Axis: Fence count
+Result: old 44 = discovered 44 (bijective); 5 excluded are exactly
+  verify_ai_/verify_ci_/verify_runtime_capture_yaml
+────────────────────────────────────────
+Axis: Tests: old-ran → new mechanism drops (GAP C)
+Result: ∅ (0)
+────────────────────────────────────────
+Axis: Tests added
+Result: only test_run_fences.py
+────────────────────────────────────────
+Axis: Auto-pair/standalone test files missing at HEAD (spurious fail-loud)
+Result: 0 of 50
+
+Discovery (run_fences.py:157–185) globs verify_*.py, excludes 3 owner-prefixes, auto-pairs test_<fence>, adds 6 standalones. The 5 non-auto-pairable old tests (2× test_migrate_*, test_verify_runtime_capture_yaml, test_local_verification_gate, test_lane_governor) are exactly the standalone list. A missing test pair fails loud (run_fences.py:189 → caught :259–262).
+
+Ask 2 — Cache correctness: SOUND
+
+- Monkeypatch is a try/finally contextmanager (run_fences.py:149–154) → pathlib always restored, even on fence exception. Not nestable in practice.
+- Scoped to repo-root only (cacheable_path :62–68) and to the verify phase only — the test loop passes no cache= (run_fences.py:282–283), so tests run uncached. Empirically confirmed: self-test assert_tests_run_without_filesystem_cache writes 'after' and asserts no stale 'before' leak.
+- No discovered verify fence writes/mutates repo files (grepped write_text|open(...,'w/a/x')|mkdir|os.remove|rename|shutil|touch) → the write-then-reread staleness attack has no surface.
+- glob/rglob return iter(
+Ask 3 — Execution semantics (import vs __main__): SOUND
+
+- All 44 fences define main() and their __main__ is uniformly just import lane_governor / acquire() / raise SystemExit(main()) — zero real work in __main__. Enumerated all 44. So calling main() runs each full check; nothing silently skipped. (This uniformity is itself enforced by verify_lane_governance.py.)
+- Per-fence acquire() is bypassed; replaced by run_fences' single acquire() (run_fences.py:312) — the intended "one acquire."
+- argv isolated to [str(path)] (:247–256, self-test assert_runner_argv_does_not_leak_to_fences); SystemExit(None)→0 (:257–258, self-tested).
+- Test-suite parity, empiassertions (failing synthetics → rc=1); the bare path is byte-identical to the real bare file's own __main__ (sorted(vars/globals()) test_*). No battery file mixes TestCase + top-level def test_ (scanned all 50), so the either/or heuristic never drops tests.
+
+Ask 4 — Governance integrity: SOUND (and differentially tested)
+
+- Hygiene fence now pins the recipe to exact-list equality ["python3 scripts/run_fences.py"] (verify_ci_workflow_hygiene.py:6837–6839) — can't drop the runner or add extra ad-hoc commands. test_verify_ci_workflow_hygiene.py proves this fails loud on a removed runner, an extra command ("must contain only…"), and a commented-out runner.
+- The resolver special-case (test_lane_governor.py:2259) derives run_fences' reachable set from the same discover_fence_paths/discover_test_paths the runtime uses (_run_fences_discovered_targets, :2659) — single source of truth, so the governance graph = what actually runs, by construction. The "arbitrary loader" concern (R3 below) is real but non-escalating.
+
+Ask 5 — Cheap-lane classification: CORRECT and NECESSARY
+
+label = Path(sys.argv[0]).name = run_fences.py (lane_governor.py:285). Because it's in cheap_lane_labels, _cheap_lane_config returns 0 → _acquire_unbounded_cheap_lane (no heavy single-flight, no queueing behind cargo). Without the toml add, _cheap_lane_config returns None → it would acquire as a heavy lane and wrongly single-flight against Rust builds. The same work (local-gate:source-fence-static + every individual fence) was already cheap-classified, so this is consistency, not a heavy→cheap downgrade. Duration ≠ heaviness here (heavy = cargo build/test resource contention). CI bypasses lane governance entirely (:allowed_ci_env).
+
+---
+Residual notes (LOW — none blocking)
+
+1. R1 call_module either/or heuristic (run_fences.py:222–233): if a future test file mixes a TestCase with top-level def test_*, the bare ones are silently skipped (countTestCases()>0 short-circuits). No current battery file does this. Consider a guard.
+2. R3 resolver coupling (test_lane_governor.py:2259): any spec_from_file_location in run_fences.py resolves to the discovery set and returns; a future rogue second loader call in run_fences.py would be under-reported (not escalated). Reviewable-only risk.
+3. R2 read_text cache key omits newline (run_fences.py:104): same file read with differing newline= would serve stale content. No fence does this; negligible.
+4. R4 main-signature heuristic (run_fences.py:204–215): a hypothetical required keyword-only main param would get positional [] → TypeError → fail-loud (not silent). No current fence triggers it.
+
+Honest CI caveat (verified, not from the prompt)
+
+gh pr checks 1220 at head: 14 pass, 0 fail, 0 pending, 22 skipping. But the merge-gating source-fence job itself shows skipping at PR-time — it runs in the merge queue, so this PR's green checks do not exercise the new battery in CI yet. Current battery evidence = author's local 106.79s run + my HEAD self-test (RC=0) + call_module probe (all paths non-vacuous). Watch the first merge-queue run.
+
+Reproduction anchors (all at 71435ffd5): git diff 53c5b0b6f..71435ffd5 -- justfile scripts/run_fences.py; the set-diff of sed -n '336,428p' justfile vs discover_fence_paths; python3 test_run_fences.py; the synthetic call_module probe.
+
+---
+
+so which PRs do you own?
+
+---
+
+• Round 3 is complete on PR #1220 as one commit:
+
+  5ad340ff728872dabe30a6c2cf8404ec184f7519
+
+  Implemented:
+
+  - Exact source-fence-static-inner body checks for fail-closed, six BTE
+    fences, and outcome-group, with appended-command negative tests.
+
+  - run_fences.py loader exception pinned to the single legitimate import site,
+    with lane-governor regression for a second loader call.
+
+  - Runner docs/comments and mixed unittest.TestCase plus bare test_* fail-loud
+    behavior.
+
+  Evidence:
+
+  - Full in-process harness: python3 scripts/run_fences.py passed.
+  - Targeted self-tests and lane-governance checks passed.
+  - Exact-head full-CI dispatch:
+    https://github.com/seungpyoson/bolt-v2/actions/runs/28707781023
+
+  - source-fence job green:
+
+    https://github.com/seungpyoson/bolt-v2/actions/runs/28707781023/job/85136249380
+
+  PR body is updated with the run URL. I did not wait on checks beyond the
+  requested source-fence dispatch evidence.
+
+---
+
+1217 is in merge queue right now - do we not need to get another review for 1220?
+
+---
+
+Claude: 
+Worktree removed cleanly. All five asks empirically verified at head 5ad340ff7. Writing the verdict.
+
+---
+Verdict: APPROVE — PR #1220 @ 5ad340ff728872dabe30a6c2cf8404ec184f7519
+
+Round 3 correctly implements every round-2 panel finding, and I verified the full battery is green in CI at this exact head (dispatch run 28707781023: source-fence job = success, headSha 5ad340ff7) — the end-to-end gap I flagged in round 2 is now closed. All five asks pass under adversarial testing. One LOW residual (ask 1), non-blocking and pre-existing.
+
+Ask 1 — AST loader pin: sound for its scope; residual is pre-existing, not PR-introduced
+
+Attacked the resolver empirically in an isolated HEAD worktree. Every direct spec_from_file_location deviation fails loud:
+
+├───────────────────────────────────────┼────────────────────────────────┤
+│ V1 loader outside                     │ LOUD ("may only use            │
+│ import_module_from_path               │ spec_from_file_location in     │
+│                                       │ import_module_from_path")      │
+├───────────────────────────────────────┼────────────────────────────────┤
+│ V2 literal-path arg / V3 keyword args │ LOUD (all reject)              │
+│  / V4 starred args                    │                                │
+├───────────────────────────────────────┼────────────────────────────────┤
+│ V8 rogue direct                       │ LOUD                           │
+│ spec_from_file_location+exec_module   │                                │
+└───────────────────────────────────────┴────────────────────────────────┘
+
+The pin (test_lane_governor.py:2314 _is_run_fences_discovery_loader_call) requires the call inside a function named import_module_from_path with exactly (Name module_name, Name path), else _fail. It does its job.
+
+F1 (LOW, non-blocking, pre-existinPR (round-3 delta never touched the general handler). Concrete scenario: a future editor aliases the loader in run_fences.py and exec's an off-discovery script → governance under-reports that edge. Requires a reviewable edit to run_fences.py; not externally exploitable. Also V6 (a second def import_module_from_path reproducing the exact arg-name shape) is silently trusted — the pin checks arg names, not bindings. Recommendation: accept as documented residual, or (optional, arguably its own change) reject any binding/alias of importlib loader APIs in run_fences.py. The self-test test_run_fences_loader_special_case_is_single_site covers only the direct-call shape (V1).
+
+Ask 2 — Exact-equality wiring: SATISFIED (non-vacuous)
+
+All 9 source-fence-static-inner enforcers are now exact !=, none subset-based: verify_ci_workflow_hygiene.py:6835, verify_fail_closed_contracts.py:274, verify_outcome_group_nt_reuse.py:394, and all six verify_bte_022_* (e.g. pmxt_storage_proof.py:520, binary_option_bar_catalog.py:327) via tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS. just_recipe_commands was switched set→list to make it order/count-sensitive. Byte-exact against the real recipe (head justfile source-fence-static-inner body = the single python3 scripts/run_fences.py). Empirically non-vacuous: source_fence_wiring_findings returns [] on the exact recipe and flags "must contain only python3 scripts/run_fences.py" when evil.py is appended.
+
+Ask 3 — Mixed TestCase+bare guard: SATISFIED
+
+run_fences.py:232–239 raises "mixes unittest TestCase classes and top-level test_* functions" when both are present. Empirically fires on a synthetic mixed module (rc=1, correct message); tested by assert_mixed_unittest_and_bare_tests_fail_loud; and silent on all 50 real battery files (AST-scanned for TestCase-with-cases + module-level test_* binding → NONE).
+
+Ask 4 — Round 1–2 regression sweep at this head: ALL INTACT
+
+- Coverage still bijective: GAP A/B/C empty, only test_run_fences.py added (44 fences = 44 discovered).
+- Cache repo-root + verify-phase-only, try/finally restore, SystemExit(None)→0, argv isolation: the round-3 run_fences.py delta is only the mixed-guard + docstrings — those code paths are untouched, and the self-test passes at head (RC=0), which exercises all of them.
+
+Ask 5 — Round-3 collateral (19 files): CLEAN
+
+All six bte fence edits are only the subset→exact wiring conversion (raw diffs of binary_option_bar_catalog and pmxt_durable_source confirm: set→list + !=); no BTE invariant (status-hash, gitignore, source-proof, tick-size) assertion weakened. fail_closed/outcome likewise wiring-only.
+
+Persisting round-2 residuals (unchanged, LOW, non-blocking)
+
+call_module's main-signature heuristic (run_fences.py) would main([]) a hypothetical required keyword-only param → TypeError → fail-loud, not silent (no fence triggers it); read_text cache key omits newline. Neither changed in round 3.
+
+Reproduction anchors (all at 5ad340ff7): the V0–V13 resolver attack harness + non-run_fences control; python3 test_run_fences.py (RC=0); source_fence_wiring_findings exact-vs-appended; coverage set-diff; gh run view 28707781023.
+Kimi: VERDICT: REQUEST_CHANGES
+
+   I reviewed the full PR at 5ad340ff728872dabe30a6c2cf8404ec184f7519 (fetched
+   into a clean worktree), re-ran the local source-fence battery, and verified
+   the cited CI run via gh. The wiring and regression fixes are solid, but the
+   AST pin for run_fences.py does not satisfy its stated contract.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Finding 1 — AST pin fails-open on aliased / name-colliding loader calls
+   (rank: highest)
+
+   The special-case in scripts/test_lane_governor.py:2262-2326 only trusts a
+   call when:
+   • path == scripts/run_fences.py,
+   • call_name ends with spec_from_file_location,
+   • function_stack[-1] == "import_module_from_path",
+   • the call has exactly two positional Name args module_name and path.
+
+   It never verifies that the function is the real import_module_from_path at
+   scripts/run_fences.py:197-207, nor that the callable is actually
+   importlib.util.spec_from_file_location.
+
+   Concrete failure scenarios verified locally:
+
+   1. Variable alias of the loader — replace the real call with:
+      ```python
+        loader = importlib.util.spec_from_file_location
+        spec = loader(module_name, path)
+      ```
+      Result: resolver returns 0 targets and zero failures. This is both an
+      evasion and a silent loss of the discovered set. (Verified by editing
+      run_fences.py source and re-running _CodeExecutionEdgeResolver.)
+
+   2. Same-named module-level decoy — append:
+      ```python
+        def import_module_from_path(module_name, path):
+            return importlib.util.spec_from_file_location(module_name, path)
+      ```
+      Result: no failure, targets still 94. The existing test only catches the
+      case where the decoy uses a different first argument ("unexpected").
+
+   3. Nested same-named helper — a nested def import_module_from_path(...) or
+      a class method named import_module_from_path with the same arg names
+      also passes silently.
+
+   The round-3 test test_run_fences_loader_special_case_is_single_site
+   (scripts/test_lane_governor.py:3034) covers only the trivial module-level
+   decoy with mismatched args. It does not cover aliases, nested functions,
+   class methods, or duplicate same-name/same-arg functions.
+
+   Required fix direction: Pin the trusted call by the specific function
+   node/line of the real import_module_from_path in scripts/run_fences.py, or
+   additionally require that the call is a direct
+   importlib.util.spec_from_file_location attribute access in that exact
+   function scope. Any other loader-shaped call in run_fences.py must emit the
+   existing failure message.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Finding 2 — Exact-equality wiring checks are present and non-vacuous (rank:
+   satisfied)
+
+   No changes requested here; documenting for the record.
+
+   • scripts/verify_fail_closed_contracts.py:268-277 compares commands !=
+     REQUIRED_SOURCE_FENCE_COMMANDS (tuple).
+   • scripts/verify_ci_workflow_hygiene.py:6835 compares static_lines !=
+     list(SOURCE_FENCE_STATIC_INNER_REQUIRED_COMMANDS).
+   • All six BTE verifiers now compare tuple(source_fence_commands) !=
+     SOURCE_FENCE_STATIC_COMMANDS (e.g.
+     scripts/verify_bte_022_binary_option_bar_catalog.py:324-329).
+
+   Negative tests for appended commands exist and fail as intended:
+   • scripts/test_verify_fail_closed_contracts.py:608-628
+   • scripts/test_verify_ci_workflow_hygiene.py:9306-9313
+   • plus new BTE appended-command tests.
+
+   None of the eight wiring checks are subset-based anymore.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Finding 3 — Mixed TestCase + bare-test guard works as claimed (rank:
+   satisfied)
+
+   • Synthetic guard fires: scripts/test_run_fences.py:248-277.
+   • Real battery stays silent: run_fences.py discovered 44 verifier + 50 test
+     modules and all passed locally. I confirmed via the worktree run that no
+     loaded module mixes unittest.TestCase classes with top-level test_*
+     functions.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Finding 4 — Regression sweep passes (rank: satisfied)
+
+   • Coverage mapping: the old source-fence-static-inner listed 93 commands;
+     the new discovery set contains all 93 plus the new test_run_fences.py.
+   • Cache remains repo-root-only and used only in the verify phase
+     (scripts/run_fences.py:291 passes cache=cache only for phase="verify").
+   • pathlib.Path.glob/read_text/rglob are restored in a finally block
+     (scripts/run_fences.py:160-163), and sys.argv is restored similarly
+     (scripts/run_fences.py:267).
+   • SystemExit(None) maps to success (scripts/run_fences.py:269).
+   • argv isolation test passes (scripts/test_run_fences.py:129-155).
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Finding 5 — BTE fence edits did not weaken non-wiring assertions (rank:
+   satisfied)
+
+   The six BTE verifier/test pairs were changed from subset-style source-fence
+   checks to exact-equality checks, and they gained negative tests for
+   appended commands and malformed recipe headers. No other assertions were
+   removed or relaxed.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Evidence cited
+
+   • Local: full python3 scripts/run_fences.py battery green at 5ad340ff7;
+     test_lane_governor.py, test_verify_fail_closed_contracts.py, and
+     test_verify_ci_workflow_hygiene.py all self-passed.
+   • Remote CI: GitHub dispatch run 28707781023 — conclusion: success,
+     headSha: 5ad340ff728872dabe30a6c2cf8404ec184f7519, source-fence job
+     success (verified via gh run view).
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Recommendation: Fix the AST pin before approval. The current pin gives a
+   false sense of security because an attacker can evade it with a variable
+   alias or a same-named helper/method while keeping the rest of run_fences.py
+    unchanged.
+GPT: 
+• REQUEST_CHANGES
+
+  Findings
+
+  1. HIGH: run_fences.py loader pin is not fail-closed for alias/same-name
+     helper shapes.
+     5ad340ff7:scripts/test_lane_governor.py:2262 only special-cases calls
+     whose name ends with spec_from_file_location, and 5ad340ff7:scripts/
+     test_lane_governor.py:2317 accepts any innermost function named
+     import_module_from_path.
+
+     Concrete bypasses I probed at 5ad340ff7:
+
+     other_loader = importlib.util.spec_from_file_location
+     def unexpected_alias_loader(module_name, path):
+         return other_loader(module_name, path)
+
+     Result: failures=[], target_count=94. The canonical discovered set remains
+     trusted while the extra loader call is invisible.
+
+     Also:
+
+     def wrapper():
+         def import_module_from_path(module_name, path):
+             return importlib.util.spec_from_file_location(module_name, path)
+
+     Result: failures=[], target_count=94.
+
+     Fix: pin the exception to the exact canonical FunctionDef/call site,
+     reject duplicate or nested import_module_from_path definitions in
+     run_fences.py, and either track assignment aliases to
+     spec_from_file_location or fail on them.
+
+  Other Checks
+
+  No additional blocking findings found. I verified the exact-equality wiring
+  checks by inspection: the real justfile at 5ad340ff7:justfile:331 has source-
+  fence-static-inner containing only python3 scripts/run_fences.py, and the
+  touched verifier tests include appended-command negatives.
+
+  Coverage mapping: old base justfile had 93 removed commands; runner discovery
+  at head maps all 93, with only one added command: scripts/test_run_fences.py.
+
+  Mixed TestCase/bare guard: 5ad340ff7:scripts/run_fences.py:237 fires for
+  mixed modules; static sweep of the 50 discovered real test files found
+  mixed=[].
+
+  UNVERIFIED: I did not rerun CI or the local battery. GitHub app showed
+  successful commit-associated runs for 5ad340ff7, including CI run
+  28708089232, but I could not independently read the prompt’s named dispatch
+  run 28707781023 because local gh run view returned Forbidden.
+GLM:VERDICT: REQUEST_CHANGES
+One substantive finding — the AST pin still fail-opens on aliased/indirect loader calls. The other four review asks pass at this head.
+FINDING 1 (MEDIUM — contract violation, fail-open in the run_fences.py AST pin)
+Location: scripts/test_lane_governor.py:2262-2266 at 5ad340ff
+The PR's stated contract (review ask 1, and the round-2 GPT finding it claims to close): "ANY other loader call in run_fences.py fails the analysis loudly." The pin only enforces this for call shapes whose call_name literally ends with spec_from_file_location. Loader calls dispatched through aliases or attribute references fall through to the general loader handler, which silently returns when the path argument is a function parameter (_PARAMETER) — scripts/test_lane_governor.py _handle_loader_call line ~2305: if target_value is _PARAMETER: return.
+Verified silent-trust shapes (probed directly against _CodeExecutionEdgeResolver at this head, all return targets=set(), failures=[]):
+#    Shape    Why it slips past
+1    from importlib.util import spec_from_file_location as loader; loader("evil", path)    loader is added to self.spec_loader_names by visit_ImportFrom (line 1679-1681), so _is_loader_call returns True; but call_name.endswith("spec_from_file_location") is False at line 2262 → falls through to general handler → _PARAMETER return
+2    f = importlib.util.spec_from_file_location; f("evil", path)    f(...) — f not in any loader-name set, so _is_loader_call is False; the call is invisible to the resolver entirely
+3    getattr(importlib.util, "spec_from_file_location")("evil", path)    Same as #2 — Call(func=Call(Name('getattr'))) never matches a loader name
+The red test test_run_fences_loader_special_case_is_single_site (line 3034) only appends a canonical importlib.util.spec_from_file_location("unexpected", path) in a wrong-named function — it does not cover any of the three shapes above. So the test passes while the contract is broken.
+Concrete failure scenario: A future refactor changes run_fences.py's import to from importlib.util import spec_from_file_location as _loader (idiomatic Python) and calls _loader(module_name, path) inside import_module_from_path. The pin silently trusts it; the cheap-lane discovery under-reports whatever that call loads; no red test fires. The cheap-lane manifest floor is the only remaining backstop.
+Fix: make the special-case condition if self.path == SCRIPTS_DIR / "run_fences.py" and self._is_loader_call(call_name) (not just endswith), and add three red tests covering the shapes above. The general handler's if target_value is _PARAMETER: return must not be reachable for any loader call originating in run_fences.py.
+Exploitability is gated by future review of run_fences.py, hence MEDIUM not HIGH — but the contract this PR claims to satisfy is violated, and the round-2 finding should not be considered closed by this head.
+Asks 2–5 — PASS (verified at 5ad340ff)
+- Ask 2 (exact-equality wiring): All eight checks now byte-exact. verify_outcome_group_nt_reuse.py:392-397, verify_fail_closed_contracts.py:274-279, verify_ci_workflow_hygiene.py:6835-6836, and the six BTE fences (tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS). I verified with a tampered justfile that an appended python3 scripts/verify_outcome_group_nt_reuse.py line genuinely produces the finding (not vacuous). just_recipe_commands correctly switched set[str]→list[str] to make order significant. No subset-based checks remain.
+- Ask 3 (mixed TestCase+bare-test guard): run_fences.py:222-224 raises on the mix; assert_mixed_unittest_and_bare_tests_fail_loud covers it. AST scan of all 94 discovered battery files at head shows 0 mixers (12 case-only, 35 bare-only, 47 neither). Full local python3 scripts/run_fences.py runs green end-to-end.
+- Ask 4 (rounds 1–2 regression): All intact in code — coverage mapping (94 discovered), cacheable_path rejects outside-root paths, cache=cache only on verify phase (line 286), cache=None on test phase (line 290), restore-in-finally at shared_filesystem_cache (line 156), SystemExit None→0 / non-int→1 at run_module:264, argv isolation at run_module:257-261.
+- Ask 5 (collateral damage): Six BTE fence diffs only tighten (set→list, subset→exact-equality, removed source-fence-static-inner from the per-recipe JUSTFILE_RECIPES since it's now byte-exact elsewhere). No non-wiring assertion weakened. Minor cosmetic nit: verify_bte_022_pmxt_durable_source.py:967-972 and verify_bte_022_pmxt_storage_proof.py:517-522 omit return after the missing-recipe finding, so a missing recipe emits two findings (the second being misleading) — not a bug, just noisier than the four sibling files that do return.
+Evidence cited — VERIFIED
+gh run view 28707781023 → headSha=5ad340ff…, conclusion=success, source-fence job success. Head-exact, full CI, green. Valid — but it does not contradict Finding 1: the battery passes at head because run_fences.py today uses only the canonical form; the hole is a latent fail-open in the static-analysis pin itself, not in the runtime battery.
+Ranking
+1. FINDING 1 (blocker for the round-2 GPT closeout claim) — REQUEST_CHANGES
+2. Cosmetic: missing return in two BTE missing-recipe branches (defer or fix in same PR)
+
+---
+
+• Round 4 is pushed as one commit.
+
+  Head SHA: 50915589e6e6ee5b7cf537defb52d6e57886b91b
+
+  Implemented:
+
+  - run_fences.py loader special-case is now fail-closed for all resolver-
+    recognized loader calls.
+
+  - Canonical site is structurally pinned to one module-level
+    import_module_from_path with direct
+    importlib.util.spec_from_file_location(module_name, path).
+
+  - Added red tests for variable alias, from-import alias, getattr, duplicate
+    module-level function, nested helper, plus method duplicate.
+
+  - Added the two missing-recipe early returns in PMXT durable/storage
+    verifiers.
+
+  Verification:
+
+  - python3 scripts/test_lane_governor.py passed.
+  - python3 scripts/run_fences.py passed.
+  - git diff --check passed.
+
+  No CI waiting done.
+
+---
+
+PR 1220 
+
+Claude:All verified. Cleaning up done (both worktrees removed). Every ask empirically settled at head 50915589e.
+
+---
+Verdict: APPROVE — PR #1220 @ 50915589e6e6ee5b7cf537defb52d6e57886b91b
+
+Round 4 closes all five round-3 panel bypasses with node-identity pinning + exhaustive occurrence checks, proven by non-vacuous red tests. I attacked the pin with 20 shapes in an isolated HEAD worktree: no silent trust exists anywhere (the reviewer's blocking condition). One LOW residual (__import__ blind spot) is pre-existing, general-resolver-wide, and control-proven not PR-introduced.
+
+Ask 1 — Break the pin: every reachable-loader shape via spec_from_file_location fails LOUD; no silent trust
+
+Empirical matrix against run_fences.py (canonical baseline → 0 failures, exactly 94 discovered targets):
+
+┌─────────────────────────┬───────┬──────────────────────────────┬───────┐
+│          Shape          │ Resul │            Shape             │ Resul │
+│                         │   t   │                              │   t   │
+├──────────────────
+│                         │       │ .attr (N2)                   │       │
+├─────────────────────────┼───────┼──────────────────────────────┼───────┤
+│ getattr string (P3)     │ LOUD  │ __import__+getattr string    │ LOUD  │
+│                         │       │ (N3)                         │       │
+├─────────────────────────┼───────┼──────────────────────────────┼───────┤
+│ module dup def (P4)     │ LOUD  │ exec(computed str) (N4)      │ LOUD  │
+├─────────────────────────┼───────┼──────────────────────────────┼───────┤
+│ nested dup def (P5)     │ LOUD  │ walrus / lambda (N5/N6)      │ LOUD  │
+├─────────────────────────┼───────┼──────────────────────────────┼───────┤
+│ method dup def (P6)     │ LOUD  │ decorated dup def (N8)       │ LOUD  │
+├─────────────────────────┼───────┼──────────────────────────────┼───────┤
+│ import_module(var)      │ LOUD  │ runpy.run_module(var) (N12)  │ LOUD  │
+│ (N11)                   │       │                              │       │
+├─────────────────────────┼───────┼──────────────────────────────┼───────┤
+│ SourceFileLoader.exec_m │ LOUD  │ reassign→spec_from_file_loca │ LOUD  │
+│ odule (N13)             │       │ tion lambda                  │       │
+└─────────────────────────┴───────┴──────────────────────────────┴───────┘
+
+Mechanism (test_lane_governor.py): _validate_run_fences_loader_contract (runs pre-visit) requires exactly one module-level import_module_from_path, no nested/method ones (_runtime_nodes excludes lambdas/nested defs), exactly one _is_direct_importlib_spec_call inside it; _validate_run_fences_spec_occurrences then walks the whole AST and fails on any other spec_from_file_location Attribute, from-import alias, or string Constant; _handle_loader_call trusts only node is self.run_fences_canonical_loader_call. Verified no rogue trust: N7/N9/N10 add zero targets beyond the discovered set.
+
+F1 (LOW, non-blocking, pre-existing): __import__ is not in the resolver's recognized-loader set — __import__(var) and __import__('os') are silent on both run_fences and a control non-run_fences path (verify_bolt_v3_naming.py), so this is general-resolver undecidable-target behavior, not PR-introduced (round 4 actually newly catches import_module(var)/runpy.run_module(var) here). Consequence: def e(n): __import__(n) in run_fences.py, or reassigning import_module_from_spec_from_file_location), and every route requires a glaring reviewable edit to run_fences.py. Optional hardening (own change, not required here): add __import__ to the recognized-exec set and have the structural check reject Assign/ImportFrom that rebinds import_module_from_path.
+
+Ask 2 — False positives / scope: clean
+
+The occurrence check is gated on self.path == SCRIPTS_DIR / "run_fences.py" only — other files (incl. scripts/ test files naming the symbol) are unaffected. Comments aren't AST nodes (no false trigger); only a string Constant exactly "spec_from_file_location" fires. Pristine run_fences.py has exactly one occurrence (:201, canonical) → resolves with 0 failures; loader tests pass at head.
+
+Ask 3 — Red-test quality: non-vacuous, verified differentially
+
+All 6 fixtures in test_run_fences_loader_special_case_rejects_reproduced_bypasses (variable/from/getattr/module-dup/nested-dup/method-dup) produce zero run_fences.py failures on the round-3 resolver (I ran them in an R3 worktree) → each test genuinely fails on the old code. Round-4 pristine: both loader tests + test_run_fences.py self-test PASS at head. (Note "module dup def" was round-3's silent-trust hole — now LOUD and tested.)
+
+Ask 4 — Regression sweep at this head: all intact
+
+Coverage bijective green → cache repo-root+verify-only, try/finally restore, SystemExit(None)→0, argv isolation, mixed-test guard all intact (run_fences.py unchanged since R3). Exact-equality wiring ×9 unchanged. PMXT early returns are safe: in both fences the wiring block is the last block, so return only skips the redundant "must contain only" when the recipe is entirely missing; with a present-but-appended recipe the exact check still flags (verified: ('run_fences.py','evil.py') != SOURCE_FENCE_STATIC_COMMANDS → True). No legitimate second finding suppressed.
+
+Ask 5 — R4 delta (3 files): nothing weakened
+
+test_lane_governor.py −16 lines are entirely the replaced round-3 pin impl + the refactored single test (no unrelated assertion removed); the 2 PMXT one-liners are the verified-safe early returns. run_fences.py/justfile/toml/wiring-fences unchanged since the green dispatch.
+
+Merge-readiness note (not a code finding)
+
+PR state is BEHIND (main advanced past the merge-base via #1185/#1216/#1217). Branch needs an update/rebase before merge; the prior full-CI dispatch (run 28707781023) was at 5ad340ff7, and since then only analyzer tests + 2 fence one-liners changed (no recipe/harness-flow change) — but the merge-queue will re-run the gate on the updated head.
+
+Reproduction anchors (at 50915589e): the 20-shape attack matrix + non-run_fences control + rogue-target check; the 6-fixture differential against an R3 worktree; test_run_fences.py (RC 0); coverage set-diff; PMXT present-vs-missing recipe probe.
+
+GPT:  REQUEST_CHANGES
+
+  Findings
+
+  1. HIGH: run_fences.py loader pin still fails open for computed-string
+     getattr indirection.
+     50915589:scripts/test_lane_governor.py:2379 only rejects an exact string
+     constant equal to "spec_from_file_location", and 50915589:scripts/
+     test_lane_governor.py:2664 only recognizes syntactic loader call names. A
+     computed getattr(...)(...) has no recognized call name and avoids the
+     exact-string check.
+
+     Reproduced at 50915589:
+
+     def unexpected_loader(path):
+         return getattr(importlib.util, "spec_from_file_" + "location")
+         ("unexpected", path)
+
+     Result: failures=0 targets=94.
+
+     Also reproduced:
+
+     def unexpected_loader(module_name, path):
+         return getattr(importlib.util, "spec_from_file_" + "location")
+         (module_name, path)
+
+     import_module_from_path = unexpected_loader
+
+     Result: failures=0 targets=94.
+
+     That violates the stated contract: a noncanonical shape can reach the
+     loader while the resolver still silently trusts the discovered target set.
+
+  Checks Performed
+
+  - R4 pristine local checks: python3 scripts/test_lane_governor.py passed;
+    python3 scripts/test_run_fences.py passed.
+
+  - R4 red-test quality: replayed the six new reproduced-bypass fixtures
+    against R3 5ad340ff7; all had failures=0, so those tests are not vacuous.
+
+  - Regression sweep: old 93 justfile commands map with missing=[]; new runner
+    discovers 94 targets, only added scripts/test_run_fences.py. Real
+    discovered test files: mixed=[].
+
+  - Exact recipe checks remain tuple/list exact against python3 scripts/
+    run_fences.py across the nine wiring guards I inspected.
+
+  - False-positive spot check: comment in run_fences.py and a non-run_fences.py
+    test-file string mention did not fail; the string-indirection guard is
+    scoped to run_fences.py.
+
+  - PMXT early returns: no additional issue found; durable returns after the
+    remaining justfile checks, storage returns only from
+    check_guard_verification.
+
+  UNVERIFIED: I did not rerun the full scripts/run_fences.py battery. GitHub
+  app shows commit-associated CI success for 50915589 including CI run
+  28709143115, but I did not inspect individual job logs.
+GLM: VERDICT: REQUEST_CHANGES
+R4 closed the six literal shapes from R3 (verified — test_run_fences_loader_special_case_rejects_reproduced_bypasses is non-vacuous and the pristine suite is green). But the pin still fail-opens on an entire class: dynamic attribute dispatch. Per the stated contract ("silent trust anywhere is a blocking finding"), this is blocking.
+FINDING 1 (BLOCKING — dynamic-dispatch class bypass)
+Location: scripts/test_lane_governor.py:2363-2374 at 50915589e — _validate_run_fences_spec_occurrences only matches three AST shapes: ImportFrom(module='importlib.util'), Attribute(attr=='spec_from_file_location'), and Constant(value=='spec_from_file_location') (exact equality). Any dynamic-dispatch primitive that reaches spec_from_file_location without producing one of those three literal shapes is invisible to the pin.
+Confirmed silent-trust shapes (probed against _CodeExecutionEdgeResolver at this head; every probe returned targets=94, failures=[] with the canonical call present, so the structural check passes AND the discovery misreports):
+#    Shape
+B1    getattr(importlib.util, 'spec_' + '_from_file_location')(...)
+B2    importlib.util.__dict__['spec_' + '_from_file_location'](...)
+B3    vars(importlib.util)['spec_' + '_from_file_location'](...)
+B4    getattr(importlib.util, chr(115)+chr(112)+...)
+B5    operator.attrgetter('spec_' + '_from_file_location')(importlib.util)(...)
+B6    globals()['import_module_from_path'] = lambda …: getattr(...)
+B7    import_module_from_path = lambda *a, **k: None
+B8    def _evil(p): … then import_module_from_path = _evil where _evil uses B1
+Why the R4 red tests miss this: the "getattr string" fixture in test_run_fences_loader_special_case_rejects_reproduced_bypasses uses the LITERAL "spec_from_file_location", which the Constant check catches. No fixture covers computed strings or alternative dispatch primitives.
+Concrete failure scenario: a future PR adds a helper to run_fences.py:
+def _safe_load(path, name='spec_' + '_from_file_location'):
+    return getattr(importlib.util, name)('evil', path)
+The pin silently trusts it; discovery reports 94 legitimate scripts from the (now-dead) canonical call while _safe_load runs untracked scripts. The cheap-lane manifest floor is the only backstop.
+Fix (close the class, not the instance — Rule 7): in _validate_run_fences_loader_contract, walk the tree and fail loud on ANY call to getattr / vars / dir / __getattribute__ / operator.attrgetter / globals / locals / setattr / __import__ / exec / eval, and on ANY subscript of __dict__, and on ANY Assign/AnnAssign/NamedExpr whose target is import_module_from_path. The legitimate run_fences.py uses none of these. Add red tests for B1–B8.
+Asks 2–5 — PASS (verified at 50915589e)
+- Ask 2 (false positives / scope): the string-indirection guard is gated on self.path == SCRIPTS_DIR / "run_fences.py" inside _validate_run_fences_loader_contract (line 2631-2632). Other scripts/*.py files (incl. test_run_fences.py, test_lane_governor.py which mention the symbol dozens of times) are unaffected. Comments are not AST nodes; docstrings use exact-equality so any non-identical string is safe. Pristine run_fences.py produces targets=94, failures=[] and python3 scripts/run_fences.py exits 0 end-to-end. No false positives on current code or plausible benign edits.
+- Ask 3 (red-test quality): the new test is non-vacuous — my R3 probe matrix showed all six R3 shapes produced 0 failures, so asserting any("run_fences.py" in f for f in failures) would have failed on R3 for the alias/getattr/module-duplicate/nested-duplicate/method-duplicate fixtures. Pristine R4 suite green (lane governor + full run_fences battery, exit 0). Minor quality nit (non-blocking): the assertion any("run_fences.py" in failure …) is nearly tautological since every failure from this path is prefixed scripts/run_fences.py: — it would pass on any unrelated failure. Tightening to assert the specific message substring would be more honest.
+- Ask 4 (regression sweep): intact. Coverage bijection (94 discovered), cache scoping (cache=cache on verify phase only, cache=None on test phase, line 286/290), restore-in-finally (shared_filesystem_cache:156), exact-equality wiring ×9 (all eight BTE fences + workflow-hygiene use tuple(...) != CONSTANT / static_lines != list(...)), mixed-test guard (run_fences.py:222-224), SystemExit None→0 (run_module:264), argv isolation (run_module:257-261). Verified by full local run_fences.py exit 0.
+- Ask 5 (R4 delta weakening): the two PMXT early returns (verify_bte_022_pmxt_durable_source.py:969 return findings, verify_bte_022_pmxt_storage_proof.py:520 return) only fire when source_fence_commands is empty. They suppress the redundant "must contain only run_fences.py" finding that would otherwise accompany the "missing recipe" finding — an improvement, not a weakening. No legitimate second finding is suppressed (the byte-exact check on an empty tuple is redundant with the missing-recipe finding). The other R4 file (test_lane_governor.py) only adds the structural pin and red tests; it does not modify any existing assertion.
+Evidence cited — VERIFIED, does not contradict Finding 1
+Dispatch run 28707781023 (head 5ad340ff, success, source-fence green) remains valid for the recipe/harness-flow; R4 changed only analyzer tests + 2 fence one-liners, no recipe or harness-flow changes since. The battery is green because run_fences.py today uses only the canonical call — Finding 1 is a latent fail-open in the static pin, not a runtime regression.
+Ranking
+1. FINDING 1 (BLOCKING) — dynamic-dispatch class bypass; 8 confirmed silent-trust shapes; contract explicitly forbids silent trust.
+2. (Non-blocking nit) red-test assertion is near-tautological; tighten to specific message.
+3. (Non-blocking nit) two PMXT early returns are cosmetically inconsistent (return findings vs bare return) — both correct, just stylistic.
+Kimi:VERDICT: REQUEST_CHANGES
+
+   I reviewed the R4 head 50915589e6e6ee5b7cf537defb52d6e57886b91b in a clean
+   worktree, ran the full local source-fence battery, and probed the hardened
+   loader pin. R4 closes every reproduced R3 bypass, but a new
+   computed-indirection bypass still reaches a loader silently.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Finding 1 — Loader pin bypassed by computed attribute/string indirection
+   (blocking)
+
+   The R4 structural pin (scripts/test_lane_governor.py:2325-2413) is much
+   stronger:
+
+   • exactly one module-level import_module_from_path,
+   • no nested/method duplicates,
+   • only one direct importlib.util.spec_from_file_location(module_name, path)
+      call,
+   • any other spec_from_file_location Attribute or exact-string Constant in
+     run_fences.py fails loud.
+
+   The weakness is that the guard only recognizes the literal Attribute
+   spec_from_file_location and the exact Constant "spec_from_file_location".
+   Any computed access avoids both checks, and getattr itself is not treated
+   as a loader/dynamic-code call.
+
+   Verified bypass — append to run_fences.py:
+
+   ```python
+     def _evil_load(module_name, path):
+         name = "spec_from_file_" + "location"
+         return getattr(importlib.util, name)(module_name, path)
+   ```
+
+   and call it from inside import_module_from_path:
+
+   ```python
+      EvilLoader().load(module_name, path)   # class method variant
+      # or
+      (lambda: getattr(importlib.util, "spec_from_file_" +
+   "location")(module_name, path))()
+   ```
+
+   Result from _CodeExecutionEdgeResolver: 0 failures, 94 targets (the
+   canonical discovered set is still produced). The hidden call can load an
+   arbitrary path while the analyzer stays green.
+
+   Other equivalent shapes that also bypass:
+
+   • importlib.util.__dict__["spec_from_file_" + "location"](module_name,
+     path)
+   • operator.attrgetter("spec_from_file_" +
+     "location")(importlib.util)(module_name, path)
+   • getattr(__import__("importlib.util"), "spec_from_file_" +
+     "location")(module_name, path)
+
+   These are all non-canonical ways to reach spec_from_file_location; under
+   the stated contract they must fail loudly.
+
+   Files/lines at 50915589e:
+   • pin contract: scripts/test_lane_governor.py:2325-2367
+   • spec-occurrence guard: scripts/test_lane_governor.py:2369-2380
+   • canonical-call check: scripts/test_lane_governor.py:2394-2413
+
+   Suggested fix direction: treat any getattr, __dict__ subscript,
+   operator.attrgetter, or similar reflective access that could resolve to
+   spec_from_file_location as suspicious in run_fences.py; the simplest robust
+   fix is to forbid reflective attribute access in that file, since
+   run_fences.py has no legitimate need for it.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Finding 2 — False-positive scope is correctly narrow (satisfied)
+
+   The tightened checks are gated by self.path == SCRIPTS_DIR /
+   "run_fences.py" (scripts/test_lane_governor.py:1632, :2265). Comments are
+   AST-ignored, and the string guard targets only ast.Constant nodes equal to
+   "spec_from_file_location". Other scripts are unaffected. A benign docstring
+   or constant with that exact text in run_fences.py would trip it, but that
+   is consistent with the contract.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Finding 3 — Red tests are non-vacuous and the suite is green (satisfied)
+
+   • scripts/test_lane_governor.py:3144-3186 adds red tests for all five R3
+     bypass shapes.
+   • I ran each fixture against the R3 pin (5ad340ff7) — every fixture
+     produced no failure and 94 targets, confirming the tests would have
+     failed on R3 code.
+   • On R4 pristine, python3 scripts/test_lane_governor.py passes, and the
+     full python3 scripts/run_fences.py battery is green.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Finding 4 — Regression sweep intact (satisfied)
+
+   • Coverage bijection: old source-fence-static-inner had 93 commands; R4
+     discovery set contains all 93 plus test_run_fences.py (44 verifier + 50
+     test modules).
+   • Cache still repo-root-only and only in the verify phase
+     (scripts/run_fences.py:291).
+   • pathlib.Path methods and sys.argv restored in finally blocks;
+     SystemExit(None) maps to success.
+   • Exact-equality wiring checks remain in place across all central and BTE
+     verifiers; no subset checks remain.
+   • Mixed unittest.TestCase + bare test_* guard fires on the synthetic case
+     and stays silent on the real 50-test battery.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Finding 5 — R4 delta does not weaken prior assertions (satisfied)
+
+   Only three files changed in R4:
+
+   • scripts/test_lane_governor.py — hardens the loader pin.
+   • scripts/verify_bte_022_pmxt_durable_source.py — adds the missing-recipe
+     early return and exact-equality source-fence check.
+   • scripts/verify_bte_022_pmxt_storage_proof.py — same.
+
+   The two PMXT early returns fire only after recording the missing-recipe
+   finding and before the less informative exact-equality finding, so no
+   legitimate second finding is suppressed.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Evidence cited
+
+   • Local R4: python3 scripts/test_lane_governor.py and python3
+     scripts/run_fences.py both green at 50915589e.
+   • Vacuity check: the six R4 red-test fixtures all bypassed the R3 resolver
+     (5ad340ff7) with no failures.
+   • Prior CI: exact-head full-CI dispatch 28707781023 was green on 5ad340ff7;
+     R4 changed only analyzer tests and two PMXT one-liners, with no
+     recipe/harness-flow changes since that dispatch.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Recommendation: Block merge until computed loader indirection is caught.
+   The current R4 pin is a big improvement, but getattr/__dict__/attrgetter
+   with split or formatted strings can still reach spec_from_file_location
+   without triggering any finding.
+
+---
+
+─────────────────────────────────────────────────
+
+• Pushed PR #1220 round 5.
+
+  Head SHA: cc826edfc044723a03b5f0d5a927d97c8951ade7
+
+  What changed:
+
+  - Merged origin/main into the branch.
+  - Added run_fences.py source digest pin in lane-governor analysis.
+  - Added fail-closed reflection and import_module_from_path rebinding checks.
+  - Added specific red tests plus pristine-source pass checks.
+  - Normalized PMXT durable justfile guard style through a helper.
+
+  Verification:
+
+  - python3 scripts/test_lane_governor.py passed.
+  - python3 scripts/run_fences.py passed.
+  - Local and remote branch heads match at the SHA above.
+
+---
+
+PR 1220:
+
+Claude: All verified; worktree cleaned up. Final merge integrity confirmed: head keeps main's EXPECTED_HARNESS_COUNT=12 (not reverted), the PR diff shows only recipe-pin additions (no phantom revert), and the diff is exactly the 24 scoped files.
+
+  ---
+  Verdict: APPROVE — PR #1220 @ cc826edfc044723a03b5f0d5a927d97c8951ade7
+
+  The round-5 digest model is sound, and it correctly ends the shape-enumeration arms race: I proved empirically that any byte change to run_fences.py fails loud. No blocking findings. Arguing against the model (per the reviewer's mandate), its only boundary is human review of the pin-bump commit — inherent and correctly scoped, not a defect.
+
+  Ask 1 — The pin's trust model: verified; run_fences.py cannot be silently modified
+
+  - RUN_FENCES_SOURCE_SHA256 (test_lane_governor.py:124) is a hardcoded hex literal, not derived. It equals sha256(run_fences.py bytes) at this head exactly (recomputed: f2822613…).
+  - _validate_run_fences_source_digest (:2390) computes hashlib.sha256(self.path.read_bytes()) on live full bytes and compares to the literal; it is called first and unconditionally in _validate_run_fences_loader_contract (:2342).
+  - Decisive empirical proof: pristine → 0 failures; +"# comment", +single trailing space, any 1-byte edit → LOUD digest fail. Full-bytes hash, no normalization → no semantic-preserving edit slips. The only way to change the file is a delibe the gate independently of run_fences.py's own flow.
+  - Answer to the model question: No — modulo SHA-256 preimage resistance, which is cryptographically sound.
+
+  Ask 2 — Pin-bump path + single source: verified
+
+  - The failure message says "update RUN_FENCES_SOURCE_SHA256 with reviewed run_fences.py changes" (:2396), and test_run_fences_source_digest_pin_matches_pristine_source (:3270) asserts pin == sha256(pristine) → a stale pin fails the suite. Update path is self-explanatory.
+  - Single source: the hex value and constant name appear only in test_lane_governor.py (definition + 4 uses); nothing else in the repo hardcodes the digest.
+
+  Ask 3 — Reflection rule: pristine allowances pass, panel shapes fail loud
+
+  - Pristine passes (0 failures): getattr(module, "main", None) (literal, non-forbidden), module.__name__ (plain attribute, not a checked call), vars(module) — all allowed.
+  - _validate_run_fences_reflection_name (:2461) fails any reflective name that is non-literal (decidability) or in _RUN_FENCES_REFLECTIVE_FORBIDDEN_NAMES = _LOADER_CALLS | {__import__, eval, exec, import_module_from_path} (:125). Empirically: computed/chr-built getattr, __import__, attrgetter, globals()/Assign/from-import rebindings all fail loud (via reflection/bindings and digest — two layers). The R4 __import__ gap is now closed.
+  - Red tests test_run_fences_reflection_contract_rejects_panel_bypasses (:3349) and ..._rebinding_forms_fail_closed (:3401) pass at head; non-vacuous by construction — they exercise _validate_run_fences_reflection_contract/_validate_..._bindings, methods that don't exist in the R4 analyzer.
+
+  Ask 4 — The origin/main merge: clean, both sides preserved
+
+  - No conflict markers in any of the 24 files.
+  - Main independently modified two PR files (verify_ci_workflow_hygiene.py + test): only EXPECTED_HARNESS_COUNT 11→12. Head keeps 12 (not reverted), and the PR's recipe pin (SOURCE_FENCE_STATIC_INNER_REQUIRED_COMMANDS, exact static_lines != … check, :6835) is intact. Both sides survived.
+  - #1217's rust_verification.py changes are purely additive (cache_lock_holder_payload, read_cache_lock_holder, process_is_running, …). The PR's code uses only resolve_cheap_lane_labels/load_policy (lane_governor.py:154,270), which #1217 left untouched → no interaction; tests import and run at head. Reviewer's flagged concern refuted.
+  - PR diff vs merge-base = exactly 24 fence-runner files, 1386/259; no phantom deletions.
+
+  Ask 5 — Regression sweep: intact
+
+  Coverage bijective (44 = 44, GAP A/B empty); run_fences.py byte-identical since R4 (digest = matching constant) → self-test green (cache scoping, try/finally, SystemExit(None)→0, argv isolation, mixed-guard all intact); exact-equality wiring preserved; the PMXT change is a pure extract-method (check_justfile) with identical behavior (exact recipe passes, appended command flags — verified for both durable + storage).
+
+  Model boundary & caveats (not findings)
+
+  - The pin lives in test_lane_governor.py, so a malicious run_fences.py change requires also bumping the pin in the same commit — maximally visible, and still subject to the retained reflection/structural diagnostics. The trust regress terminates at human review of that combined commit; this is the correct, standard scope of a source-digest pin, not a hole.
+- Operational cost (intended): every future run_fences.py edit now requires a pin bump — well-signposted by the message + test.
+- CI caveat (learning #13): checks at head are 14 pass / 0 fail / 21 skipping, but the merge-gating source-fence job skips at PR-event (runs in merge queue); the last head-exact full-CI dispatch (run 28707781023) was at 5ad340ff7. Since run_fences.py is byte-identical since then, the harness flow is unchanged; the R5 analyzer/PMXT/merge changes I verified locally (all red tests + self-test green), but a head-exact full-CI dispatch on the merged tree is not yet on record. State is BLOCKED/BEHIND — the merge queue will re-run the gate on merge.
+
+Reproduction anchors (at cc826edfc): recomputed sha256 vs pin; repo-wide single-source grep; the pristine-vs-1-byte-edit digest probe + reflection/bindings shape matrix; the 6 red-test functions + self-test; merge-integrity checks (conflict markers, EXPECTED_HARNESS_COUNT, rust_verification API surface, PMXT equivalence).
+GPT: 
+• APPROVE
+
+  No blocking findings.
+
+  Verified at cc826edf:
+
+  - Digest model is sound for the stated trust boundary.
+    RUN_FENCES_SOURCE_SHA256 is a hardcoded single source in cc826edf:scripts/
+    test_lane_governor.py:124; it matches the exact scripts/run_fences.py bytes
+    (f2822613...fe05c). The check reads live file bytes at cc826edf:scripts/
+    test_lane_governor.py:2390 and fails with an explicit update message
+    at :2395-2397.
+
+  - Pin-update drift is covered by
+    test_run_fences_source_digest_pin_matches_pristine_source at
+    cc826edf:scripts/test_lane_governor.py:3270.
+
+  - Under this model, I do not see a way to edit run_fences.py silently: any
+    byte change requires a same-commit digest bump in reviewed code.
+
+  - Reflection diagnostics pass pristine code and fail the panel shapes. I
+    replayed computed getattr, __dict__, attrgetter, chr-built names, lambda/
+    annotated/named-expression/decorated rebindings; all fail loud at R5. The
+    same matrix is silent on R4 except the decorated duplicate, so the new
+    tests are non-vacuous.
+
+  - False positives: pristine getattr(module, "main", None) and module.__name__
+    pass via the full runner; comment/non-run_fences.py string mentions do not
+    fail. The reflection/string guard is scoped to self.path == SCRIPTS_DIR /
+    "run_fences.py".
+
+  Regression sweep:
+
+  - Full local python3 scripts/run_fences.py passed at cc826edf.
+  - python3 scripts/test_lane_governor.py and python3 scripts/
+    test_run_fences.py passed.
+
+  - Coverage mapping remains complete: old 93 justfile commands, new 94
+    discovered targets, missing=[], only added scripts/test_run_fences.py.
+
+  - Mixed-test guard remains clean: 50 discovered test files, mixed=[].
+  - Exact source-fence wiring remains tuple/list exact against python3 scripts/
+    run_fences.py across the inspected guards.
+
+  - PMXT durable/storage style normalization does not suppress later findings;
+    durable calls check_justfile(...) before returning from scan_root, storage
+    returns only from the guard helper.
+
+  UNVERIFIED: I did not inspect individual CI job logs. GitHub app shows
+  commit-associated CI success for cc826edf, including CI run 28710569052 and
+  Backtester CI run 28710569026.
+GLM: VERDICT: APPROVE
+The digest model terminates the shape-enumeration arms race. Under this model, a new bypass SHAPE is not a finding unless it evades the digest itself — and the digest covers all bytes. I could not break the model.
+Ask 1 — Trust model: SOUND
+scripts/test_lane_governor.py:124 defines RUN_FENCES_SOURCE_SHA256 = "f2822613f4fe7c46afe158c6dc7ead78f88cbb6c5a9cf64ea12e2687488fe05c" as a hardcoded string literal (not derived from the file). _validate_run_fences_source_digest (line 2390) computes hashlib.sha256(self.path.read_bytes()).hexdigest() against the live bytes of the real file and compares to the constant. I verified the hash matches the pristine file at this head.
+Can run_fences.py be modified in a way the analysis silently accepts? No. Any byte change → digest mismatch → loud failure. The only acceptance paths are:
+1. Update both run_fences.py AND the constant in the same commit — visible in the diff, a deliberate reviewed event.
+2. Modify the resolver code (test_lane_governor.py) to skip the check — attack on the analyzer itself, equally visible in review.
+3. SHA-256 preimage/collision — computationally infeasible.
+I probed hashlib shadowing within the analyzed source (M3) — the resolver uses test_lane_governor.py's own hashlib import, immune to in-source monkey-patching. BOM-prefixed source → ast.parse rejects before the resolver runs. TOCTOU between read_text (for parsing) and read_bytes (for digest) requires the file to change mid-analysis — not realistic in CI.
+Ask 2 — Update path: SELF-EXPLANATORY, SINGLE SOURCE
+Failure message: "run_fences.py source digest changed: expected X, got Y; update RUN_FENCES_SOURCE_SHA256 with reviewed run_fences.py changes" (line 2394-2397). test_run_fences_source_digest_pin_matches_pristine_source (line 3270) independently asserts the constant matches the file, making stale-pin states impossible to miss. git grep confirms the digest value and constant name appear only in test_lane_governor.py — single source. ✓
+Ask 3 — Reflection rule: PASSES PRISTINE, CATCHES ALL B1–B8, RED TESTS NON-VACUOUS
+Verified by probe at this head:
+- Pristine allowances pass: getattr(module, "main", None) (line 211) — "main" is a literal string not in _RUN_FENCES_REFLECTIVE_FORBIDDEN_NAMES; module.__name__ — Attribute access, not a Call; vars(module).items() — .items() is an attribute call, not a subscript on a reflective mapping. test_run_fences_loader_contract_accepts_pristine_source confirms 0 failures.
+- All R4 panel bypasses caught: B1 (computed getattr) → "reflective access must use literal string names"; B2 (globals override) → rebinding + reflection failures; B3 (simple reassignment) → "must not rebind import_module_from_path"; B4 (decorator) → 6 failures; B5 (dict subscript) → reflection failure; B6 (operator.attrgetter) → reflection failure. Additionally E1 (getattr keyword name), E2 (3-arg computed), E4 (getattribute computed) all fail loud.
+- Red tests non-vacuous: the reflection/rebinding guards don't exist in R4's analyzer, so test_run_fences_reflection_contract_rejects_panel_bypasses and test_run_fences_import_module_from_path_rebinding_forms_fail_closed would produce 0 failures on R4 → assertions fail. Non-vacuous. ✓
+Ask 4 — Merge: NO SEMANTIC SURPRISES
+Merge commit cc826edfc (parents 50915589e + f57df1916). Main advanced with #1185/#1216/#1217:
+- justfile: correctly resolved to python3 scripts/run_fences.py in source-fence-static-inner. ✓
+- test_verify_ci_workflow_hygiene.py: merge preserved both #1185's bolt_v3_polymarket_venue_truth harness name (line 1545) AND the PR's run_fences recipe tests (lines 9251+). ✓
+- rust_verification.py (#1217, 159 lines): no overlap with PR files; full run_fences.py battery exits 0 at head, confirming no interaction. ✓
+- ci/rust-verification.toml: only change is adding "run_fences.py" to cheap_lane_labels — scoped to fence-runner work. ✓
+Ask 5 — Regression sweep: ALL INTACT
+- Coverage bijection: 94 targets from pristine (verified by probe). ✓
+- Cache scoping: cache=cache verify-phase only, cache=None test phase (run_fences.py:286/290); cacheable_path rejects outside-root; restore-in-finally. ✓
+- Exact-equality wiring ×9: all eight BTE fences + workflow-hygiene use tuple(...) != CONSTANT / static_lines != list(...) (byte-exact, not subset). ✓
+- Mixed-test guard: call_module raises on TestCase + bare-test mix; 0 mixers in 94 battery files. ✓
+- PMXT early returns: both verify_bte_022_pmxt_durable_source.py:772 (check_justfile, void return) and verify_bte_022_pmxt_storage_proof.py:520 (check_guard_verification, void return) correctly use bare return in void functions, consistent with the other four sibling BTE files. The merge restructured durable_source (moved the check into check_justfile, called from scan_root:976) — semantics unchanged, early return suppresses only the redundant "must contain only" finding on a missing recipe. ✓
+Evidence cited — VERIFIED
+- python3 scripts/test_lane_governor.py → "OK: lane governor self-tests passed" (includes all R5 red tests + pristine acceptance + digest match). ✓
+- python3 scripts/run_fences.py → exit 0, full battery green. ✓
+- Dispatch run 28707781023 (head 5ad340ff) — recipe/harness flow unchanged since; R5 changed analyzer tests, digest constant, two PMXT style edits, and the merge. ✓
+Non-blocking observation (not a finding under the digest model)
+The vars(module).get('spec_' + '_from_file_location') shape evades the reflection contract's secondary guard (.get() is a Call, not a Subscript; not in the checked call-name set). Under the digest model this is irrelevant — the digest catches any real-file modification regardless of shape. Noting only for completeness; the secondary guard's coverage gap does not weaken the primary trust anchor.
+Kimi: 
+ ● VERDICT: APPROVE
+
+   I reviewed the R5 head cc826edfc044723a03b5f0d5a927d97c8951ade7 against
+   merge-base f57df191682ef6384dc9b3b6eb98098189947456. Under the digest trust
+   model, the loader pin is sound and the PR is ready.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   1. Digest pin trust model — verified
+
+   • RUN_FENCES_SOURCE_SHA256 =
+     "f2822613f4fe7c46afe158c6dc7ead78f88cbb6c5a9cf64ea12e2687488fe05c" at
+     scripts/test_lane_governor.py:124 matches the live bytes of
+     scripts/run_fences.py at this head (verified via sha256sum and Python
+     hashlib).
+   • The comparison is against self.path.read_bytes() at analysis time
+     (scripts/test_lane_governor.py:2391), not derived from the AST, so every
+     byte is covered.
+   • I appended a comment to run_fences.py and re-ran
+     scripts/test_lane_governor.py; it failed closed with:
+     ```
+       run_fences.py source digest changed: expected f2822613..., got
+     bcf45367...; update RUN_FENCES_SOURCE_SHA256 with reviewed run_fences.py
+     changes
+     ```
+   • The stale-pin test
+     test_run_fences_source_digest_pin_matches_pristine_source
+     (scripts/test_lane_governor.py:3270-3272) makes the mismatch impossible
+     to miss.
+   • The digest constant appears only in scripts/test_lane_governor.py; no
+     other file hardcodes it.
+
+   Answer to the trust-model question: run_fences.py cannot be modified
+   silently. Any byte change without a matching RUN_FENCES_SOURCE_SHA256
+   update fails loudly. The only way the analysis accepts a modified file is
+   if the digest constant is deliberately updated in the same reviewed commit
+   — which is the intended house trust pattern.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   2. Update path — verified
+
+   The failure message tells the operator exactly what to do: update
+   RUN_FENCES_SOURCE_SHA256 with reviewed run_fences.py changes. The digest
+   test and the resolver use the same constant, so there is one source of
+   truth. Nothing else in the repo references that value.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   3. Reflection contract and red tests — verified
+
+   • Pristine allowances pass:
+       • getattr(module, "main", None) at scripts/run_fences.py:211 — literal
+         "main" is not in the forbidden set.
+       • module.__name__ at scripts/run_fences.py:228 — direct attribute, not
+         a reflective call.
+   • The R5 red tests cover the panel shapes:
+       • test_run_fences_reflection_contract_rejects_panel_bypasses
+         (scripts/test_lane_governor.py:3349-3398) tests computed getattr,
+         __dict__ subscript, attrgetter, chr-built names, and lambda
+         rebinding.
+       • test_run_fences_import_module_from_path_rebinding_forms_fail_closed
+         (scripts/test_lane_governor.py:3401-3428) tests annotated assignment,
+         named expression, global, and decorated replacement.
+   • These tests are non-vacuous: each of the computed-indirection shapes
+     bypassed the R4 analyzer (confirmed in Round 4), and the R5 reflection
+     rule now rejects them with shape-specific messages.
+   • Full local suite passes: python3 scripts/test_lane_governor.py and
+     python3 scripts/run_fences.py are both green at this head.
+
+   Reflection guard locations at cc826edfc:
+   • binding guard: scripts/test_lane_governor.py:2400-2423
+   • reflection contract: scripts/test_lane_governor.py:2425-2459
+   • forbidden names / mapping calls: scripts/test_lane_governor.py:125-138
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   4. Main merge scope — verified
+
+   • Merge-base is f57df1916 ([codex] harden CI P0 automation (#1217)).
+   • gh pr diff 1220 --name-only shows only fence-runner-related files;
+     scripts/rust_verification.py is not in the diff, so #1217's cache-lock
+     changes do not overlap with this PR's files.
+   • The merge commit cc826edfc is a clean Merge remote-tracking branch
+     'origin/main' into codex/1215-p1a-fence-runner.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   5. Regression sweep — verified
+
+   • Coverage bijection: old source-fence-static-inner at merge-base lists 93
+     commands; R4/R5 discovery set contains all 93 plus the new
+     test_run_fences.py (44 verifier + 50 test modules).
+   • Cache remains repo-root-only and used only in the verify phase.
+   • pathlib.Path patches and sys.argv are restored in finally blocks;
+     SystemExit(None) maps to success.
+   • Exact-equality wiring checks remain in place across all central and BTE
+     verifiers.
+   • PMXT guard style normalization in
+     scripts/verify_bte_022_pmxt_durable_source.py:760-774 and the
+     corresponding storage-proof refactor extracted check_justfile without
+     changing semantics; the early-return behavior for a missing
+     source-fence-static-inner recipe is preserved.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Non-blocking observation (not a finding under the digest model)
+
+   The binding guard does not catch setattr(sys.modules[__name__],
+   "import_module_from_path", ...) or del import_module_from_path. Because any
+   such edit changes run_fences.py bytes, the digest pin fails unless the
+   constant is deliberately updated, so this is not a silent bypass. It could
+   be tightened later if desired, but it is not required for the chosen trust
+   model.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Evidence cited
+
+   • Local: python3 scripts/test_lane_governor.py and python3
+     scripts/run_fences.py green at cc826edfc044723a03b5f0d5a927d97c8951ade7.
+   • Digest match verified independently.
+   • Prior exact-head full-CI dispatch 28707781023 succeeded at 5ad340ff7; R5
+     changed only analyzer tests, the digest constant, two PMXT style
+     refactors, and the merge commit, with no recipe/harness-flow changes
+     since that dispatch.
+
+---
+
+what about non blocking observations?
+
+---
+
+so what's the status
+
+---
+
+1220 merged
+
+---
+
+so how many tasks do we have left
+
+---
+
+I thought we were going to have fewer PRs
+
+---
+
+no I'm not asking you to do anything fewer just because - but I do remember discussing this with you - did you forget
+
+---
+
+so what can I expect after those 8-10 PRs are completed?
+
+---
+
+explain very concisely
+
+---
+
+what were as is? vs. to be
+
+---
+
+no I think the to be should be closer to $1 / day
+
+---
+
+I don't understand - we are spending 10 Prs - how is it realistic to spend $150-200 per month
+
+---
+
+so we need to reduce the CI debugging time as the top priority for now - that's slowing down the development speed
+
+---
+
+yeah p1b is in progress - we should just let it finish
+
+---
+
+• Created and pushed draft PR:
+  https://github.com/seungpyoson/bolt-v2/pull/1228
+
+  Branch: codex/1215-ci-lint-workflow-parallel
+  Head SHA: 743c5913acd22dfc6d4d8d0c830940de903ace8d
+
+  Local evidence:
+
+  - just ci-lint-workflow: 28 suites passed, real 179.60s
+  - BOLT_CI_LINT_WORKFLOW_WORKERS=1 just ci-lint-workflow: 28
+    suites passed, real 368.31s
+
+  - python3 scripts/test_run_ci_lint_suites.py
+  - python3 scripts/test_verify_ci_workflow_hygiene.py
+  - python3 scripts/verify_ci_workflow_hygiene.py
+  - python3 -m pytest scripts/test_cargo_shim.py -q: 51 passed
+  - policy validation, lane governance checks, and git diff
+    --check
+
+  I did not wait on CI, per the brief. Worktree is clean.
+
+  Goal usage: 840,746 tokens, about 1h 42m.
+
+---
+
+PR 1228:
+Claude: 
+Verification complete. I ran every refutation angle against the head SHA; here's the review.
+
+---
+Review — PR #1228 "Parallelize ci-lint workflow suites"
+
+Verdict: APPROVE (2 non-blocking findings). Compared 177d8038 → 743c5913. Every load-bearing claim below was verified at the head SHA, not from the PR body.
+
+The cardinal sin (coverage equality) — holds
+
+- Base recipe ran 27 suites; CI_LINT_SUITES has 28, and the set difference is exactly {test_run_ci_lint_suites.py} — nothing dropped, no duplicate basenames (verified programmatically by parsing the head runner table vs. the base ci-lint-workflow-inner body). Deterministic report order matches the old sequential order with the self-test appended.
+- Single-source lock is airtight. Dropping a suite → the runner self-test test_default_suite_table_covers_the_ci_lint_contract pins the exact 28-command set (missing/extra both asserted) and is itself in the table. Adding a suite command straight to the justfile → the verifier's new "must not run CI lint suite commands outside scripts/run_ci_lint_suites.py" check fires (verify_ci_workflow_hygiene.py:6799-6806, iterating run_ci_lint_suites.CI_LINT_SUITES). Missing/duplicate/commented runner all caught — active_recipe_lines runs strip_comment(...).strip(), so # python3 …run_ci_lint_suites.py collapses to empty and fails the "must run" pin (non-vacuous).
+
+Concurrency safety (4–6 subprocess suites) — sound
+
+- No suite can grab the heavy single-flset-membership). Label = Path(sys.argv[0]).name (lane_governor.acquire), i.e. the basename, so the cheap labels are the right key. With cheap_lane_max_concurrent = 0, _acquire_unbounded_cheap_lane takes no flock and writes no holder JSON — lock-free, so cheap suites never serialize or contend. All 28 confirmed to call acquire() in __main__.
+- No other shared state. Grep across all 28: no socket/bind/fixed port (the only server, test_ci_provenance's LocalTCPServer, binds ("127.0.0.1", 0) — ephemeral), no hardcoded /tmp paths, no cwd=REPO_ROOT git, no writes into the real repo tree. Everything else (env/module/cwd mutation) is subprocess-isolated by construction. Output can't interleave: each suite's stdout/stderr is captured and printed grouped, in table order, single-threaded after collection.
+- Both TOMLs are byte-identical (122 labels each) and test_lane_governor.py:290-291 enforces subcrate_labels == labels.
+
+Verifier coupling (import run_ci_lint_suites) — robust
+(sys.path[0]=scripts/); imported by the hygiene test (test runs from scripts/, plus ci_lint_suite_commands() uses absolute-path spec_from_file_location); and the base-tree archive run early-returns — cli() dispatches self-authorizing-governance to self_authorizing_governance_cli before main()/verify_local_verification_gate_recipes, and that archived copy is the old base-tree verifier with no such import anyway. AGENTS.md changed here, so that detector does fire — and is provably inert. Importing the runner executes only definitions (the __main__ guard blocks execution).
+
+Fixtures refactor — byte-equivalent / hardened, nothing weakened
+
+- set_local_lane_timing strict mode is correct and non-vacuous: defaults 2/1/0.05 all differ from canonical 1800/15/1, so if updated == text: raise never false-fires on the 3 default call sites yet catches real fixture drift (old unbounded replace silently no-op'd).
+- cargo-shim's parents=True→mkdir() drop is harmless: all 22 _init_repo callers do repo.mkdir() first. write_justfile=False correctly preserves cargo-shim's no-justfile setup.
+- cache_retention's new default write_justfile=True is aligned, not a regression — that suite already writes/uses a justfile (:1516, and rust_verification can just -f justfile); the explicit write is now merely redundant, and the fixture sets no cheap_lane_just_recipes so an empty justfile is inert. load_owner_module/write_executable bodies are byte-identical to the originals.
+- New test_fixtures.py correctly carries the import lane_governor; acquire() __main__ block that verify_lane_governance.py requires of every test_*.py; its (unlabeled) heavy-lane label is irrelevant since it's an import-only module, never a concurrent battery suite. Manifest edit is required and correct: the check is a floor (manifest − live_discovered_unlabeled must be empty), so labeling test_nextest_fingerprint.py forces its removal — the only manifest line touched.
+
+Findings (ranked)
+
+F1 — LOW / non-blocking (diagnosability regression on the hang path). scripts/run_ci_lint_suites.py:120-135 (run_suites). All results are collected inside the with ThreadPoolExecutor(...) block (for future in as_completed(futures), :122) and printed only after it exits (:127-135). If one suite hangs, the as_completed loop and the executor's __exit__(wait=True) block on that future forever, so nothing is printed at all — not even the 27 completed suites — and there's no indication which suite is outstanding. Because output is captured (subprocess.PIPE), even a merely-slow suite streams nothing until it finishes. The old sequential recipe invoked python3 scripts/foo.py directly, streaming each suite live, so a hang was visible at the stuck suite. No per-suite timeout exists in either model (pre-existing), so a true infinite loop blocks until killed both ways — but the new model loses hang attribution. Failure scenario: a suite deadlocks after a future edit; the battery goes silent for the full run and the developer can't tell which of 28 suites is stuck. Given this PR is part of the CI-DX epic, worth fixing: emit a per-suite start/finish breadcrumb to stderr as futures are submitted/complete (keeps the grouped table-order final output intact, restores "which suite is outstanding"). Not a merge blocker — no correctness, coverage, or safety impact.
+
+F2 — MINOR (narrow exception catch). scripts/run_ci_lint_suites.py:83 — run_one_suite catches only OSError. Any other exception from subprocess.run (e.g. UnicodeDecodeError if a suite emits non-UTF-8 to the text=True PIPE) propagates out of future.result() (:123) and aborts the entire battery with an unattributed traceback instead of failing just that suite. Low likelihood (Python self-tests on a UTF-8 locale), but it undercuts the "all failures reported, attributed" goal. Broadening to except Exception in run_one_suite (mapping to a nonzero SuiteResult) would close it.
+
+Not independently reproduced
+
+The 368.3s→179.6s timings and "28 green both modes" I take from the PR record (cite, not re-run) — the battery is heavy and unchanged suites aren't in scope. Everything structural above is verified at 743c5913. Merge remains subject to the branch's own CI/external gates (mergeStateStatus: BLOCKED at review time) — that's separate from this verdict.
+
+GPT: VERDICT: REQUEST_CHANGES
+
+  Findings:
+
+  1. HIGH: scripts/verify_ci_workflow_hygiene.py:6793-6802 @
+     743c591
+     The ci-lint runner lock is substring-based, not command-
+     based. active_recipe_lines() strips comments, but then
+     runner_count only checks whether "python3 scripts/
+     run_ci_lint_suites.py" appears anywhere in an active line.
+     A line like:
+     echo python3 scripts/run_ci_lint_suites.py
+     would satisfy “exactly once” while running zero suites.
+     The new negative tests cover missing, duplicate,
+     commented, and direct-suite additions at scripts/
+     test_verify_ci_workflow_hygiene.py:9344-9373, but not non-
+     executing text. Fix: require an actual command shape,
+     ideally the exact justfile invocation or tokenized shell
+     command, and add an echo/assignment negative.
+
+  2. MEDIUM: scripts/run_ci_lint_suites.py:120-129 @ 743c591
+     A hung suite makes diagnostics worse than the old
+     sequential recipe. The runner waits for every future
+     before printing any captured result, so if one subprocess
+     hangs, completed suites’ output is withheld and the log
+     does not identify the pending suite. Sequential execution
+     at least left prior suite output in the log. Fix: print
+     suite start lines before submission and/or emit completed
+     results as they finish while preserving a final
+     deterministic summary; a per-suite timeout would be
+     stronger.
+
+  3. LOW: scripts/run_ci_lint_suites.py:96-104 and scripts/
+     test_run_ci_lint_suites.py:43-58 @ 743c591
+     The grouping test passes the same StringIO as stdout and
+     stderr, but production writes them to different file
+     descriptors. CI log collection can reorder stdout/stderr,
+     so the “grouped output” property is not fully tested.
+     Failure summaries remain attributed, so this is diagnostic
+     rather than coverage loss.
+
+  Checks I performed:
+
+  - Fetched pinned head with git fetch origin 743c591....
+  - gh pr diff 1228 --name-only was UNVERIFIED due GitHub API
+    Forbidden; I used git diff 177d8038..743c591 --name-only.
+
+  - Mechanically compared old 27 justfile suite commands to new
+    CI_LINT_SUITES: no missing old commands, no duplicates,
+    only added python3 scripts/test_run_ci_lint_suites.py.
+
+  - Verified all 28 suite basenames are cheap-labeled in both
+    TOMLs and both label lists are identical.
+
+  - Did not rerun the 28-suite battery or timing evidence.
+Kimi: VERDICT: REQUEST_CHANGES
+
+   Verified the core claims, but the buffered-output design
+   materially worsens hang observability in a merge-gating
+   lane. That is the only issue I would block merge on.
+
+   ───────────────────────────────────────────────────────────
+
+   Blockers
+
+   None.
+
+   ───────────────────────────────────────────────────────────
+
+   Major
+
+   1. Buffered, deterministic-order output makes a hung suite
+   harder to diagnose than the old sequential recipe
+   scripts/run_ci_lint_suites.py:95-113 waits for every future
+   via as_completed, stores the results, and only then prints
+   each suite's output in table order.
+   • Concrete failure: if one of the 28 suites hangs, the
+     other 27 may finish quickly, but none of their output is
+     emitted because printing is deferred until the hung
+     future returns. The log shows only the initial python3
+     scripts/run_ci_lint_suites.py invocation and then silence
+     until the CI job's global timeout kills everything. In
+     the old sequential recipe, output streamed
+     suite-by-suite, so you knew exactly which invocation was
+     stuck.
+   • The PR correctly notes there is no per-suite timeout
+     (pre-existing), but the combination of parallel execution
+     + deferred printing makes that gap worse, not neutral.
+   • Suggested fix (smallest scope): print a per-suite
+     completion/failure marker immediately as each future
+     completes in the as_completed loop, while still emitting
+     the full grouped output in deterministic order
+     afterwards. Alternatively, add a per-suite timeout.
+
+   2. An unhandled exception in a worker aborts the entire
+   battery rather than being attributed to one suite
+   scripts/run_ci_lint_suites.py:57-73 catches only OSError in
+   run_one_suite; scripts/run_ci_lint_suites.py:97-98 calls
+   future.result() without an enclosing try/except. If
+   subprocess.run raises a ValueError, or if a latent bug in
+   run_one_suite raises anything other than OSError, the
+   exception propagates out of run_suites and the whole runner
+   crashes. The crash traceback does not attribute the failure
+   to a specific suite name unless the exception message
+   happens to include it.
+
+   ───────────────────────────────────────────────────────────
+
+   Minor
+
+   3. write_executable is not byte-equivalent for
+   test_cargo_shim.py
+   Old helper at merge-base scripts/test_cargo_shim.py:38-40
+   preserved existing mode bits and added only S_IXUSR
+   (typically 0o644 → 0o744). New shared helper at
+   scripts/test_fixtures.py:25-27 forces 0o755. For temp-dir
+   executables this is benign, but it is not the claimed
+   byte-equivalent refactor.
+
+   4. write_policy default now creates an empty justfile that
+   the old cache-retention helper never created
+   Old scripts/test_rust_verification_cache_retention.py
+   (merge-base) wrote only ci/rust-verification.toml. New
+   shared helper at scripts/test_fixtures.py:69-82 writes an
+   empty justfile whenever write_justfile=True (the default),
+   and scripts/test_rust_verification_cache_retention.py calls
+   it with that default. No current assertion appears to care,
+   but it is a behavioral drift.
+
+   5. write_policy lost parents=True from the old cargo-shim
+   helper
+   Old scripts/test_cargo_shim.py:44 used (path /
+   "ci").mkdir(parents=True). New scripts/test_fixtures.py:76
+   uses (repo / "ci").mkdir(). Current adopters pass one-level
+   temp paths, so it does not break today; a future nested
+   caller would get FileNotFoundError.
+
+   6. verify_ci_workflow_hygiene.py import of the runner is
+   fail-open on missing/broken runner
+   scripts/verify_ci_workflow_hygiene.py:6798-6800 does import
+   run_ci_lint_suites inside the verifier function. If the
+   runner file is missing, renamed, or syntactically broken,
+   the verifier raises
+   ImportError/ModuleNotFoundError/SyntaxError instead of
+   emitting a governed hygiene error. It works in the three
+   known invocation contexts (direct script, importlib-loaded
+   by tests, BASE-TREE archive run) because scripts/ is on
+   sys.path and the archive includes scripts/, but the failure
+   mode is a crash, not a clean invariant report.
+
+   ───────────────────────────────────────────────────────────
+
+   Nit
+
+   7. Suite stdout/stderr are captured entirely in memory
+   scripts/run_ci_lint_suites.py:60-63 uses
+   subprocess.run(..., stdout=subprocess.PIPE,
+   stderr=subprocess.PIPE) with no streaming. For the small
+   output of these Python self-tests this is fine, but it
+   delays all output and changes real-time debugging behavior
+   compared with the old sequential recipe.
+
+   ───────────────────────────────────────────────────────────
+
+   Verified claims
+
+   • Coverage equality: the old ci-lint-workflow-inner recipe
+     at merge-base justfile:411-497 lists exactly 27 python3
+     scripts/... invocations. The new CI_LINT_SUITES table at
+     scripts/run_ci_lint_suites.py:37-69 contains those same
+     27 commands plus python3
+     scripts/test_run_ci_lint_suites.py (28 total), in the
+     same order.
+   • Single-source lock:
+     scripts/test_run_ci_lint_suites.py:95-145 hard-codes the
+     expected 28-command set;
+     scripts/verify_ci_workflow_hygiene.py:6791-6807 rejects
+     missing/duplicate runner commands and direct suite
+     commands in the inner recipe;
+     scripts/test_verify_ci_workflow_hygiene.py:9344-9372
+     asserts those negatives.
+   • Cheap-lane concurrency safety: all 28 suite script names
+     are present in cheap_lane_labels of both
+     ci/rust-verification.toml:40 and
+     crates/backtesting-vertical-slice/ci/rust-verification.to
+     ml:45; the two arrays are identical (122 entries each);
+     cheap_lane_max_concurrent = 0 in both files gives
+     unbounded cheap lanes. The lane governor deliberately
+     avoids metadata writes for unbounded cheap lanes
+     (scripts/lane_governor.py:174-186), so concurrent
+     cheap-lane acquisitions do not race on holder JSON. No
+     fixed temp paths or static ports were found in the
+     suites.
+   • Failure semantics for OSError/nonzero: OSError is caught
+     and reported as exit 127 at
+     scripts/run_ci_lint_suites.py:65-70; nonzero exits are
+     captured and aggregate-failing at
+     scripts/run_ci_lint_suites.py:103-113.
+   • Verifier coupling:
+     scripts/verify_ci_workflow_hygiene.py:19-21 puts scripts/
+      on sys.path; the BASE-TREE archive at
+     scripts/verify_ci_workflow_hygiene.py:627 includes
+     scripts/; importing run_ci_lint_suites executes only
+     definitions (its __main__ block is guarded).
+   • Fixtures refactor: the trio (load_owner_module,
+     write_executable, write_policy) is deduped into
+     scripts/test_fixtures.py;
+     scripts/test_rust_verification_cache_retention.py:79-91
+     asserts each set_local_lane_timing replacement actually
+     changed the text, so the strict mode is non-vacuous.
+   • AGENTS.md + TOML: exactly one sentence added to
+     AGENTS.md:41; the cheap_lane_labels arrays are identical
+     across both rust-verification.toml files.
+
+   ───────────────────────────────────────────────────────────
+
+   Unverified
+
+   • Runtime wall-clock speedup (368s → 179.6s): not
+     verifiable from static code; I did not execute the
+     suites.
+   • Exhaustive absence of shared mutable state between suites
+     under parallel load: I inspected temp-dir usage, port
+     binding, git operations, and lane-lock usage and found no
+     conflicts, but a full runtime race proof would require
+     executing the parallel battery under load.
+
+GLM: VERDICT: APPROVE
+Verified at head 743c5913 (worktree, not PR body). Coverage equality holds, locks fire, concurrency is safe. Three low-severity findings below — none blocking.
+Ask 1 — Coverage Equality ✓
+Reconstructed the old recipe (git show 177d8038:justfile): 27 suites. New CI_LINT_SUITES table: 28 = same 27 + test_run_ci_lint_suites.py. Exact diff of the two sorted script sets confirms the only delta is the self-test addition.
+Single-source lock — all four mechanisms fire (simulated at head):
+Attack    Caught by
+Drop a suite from table    test_default_suite_table_covers_the_ci_lint_contract (hardcodes all 28) + 7 assert_ci_lint_runs_* read live table
+Add suite cmd directly to justfile    verifier import run_ci_lint_suites → substring match on all 28 cmds
+Comment-out runner    active_recipe_lines excludes comments
+Duplicate / missing runner    runner_count check
+Ask 2 — Concurrency Safety ✓
+- All 28 suites cheap-labeled in BOTH TOMLs (verified programmatically; 113 labels each, sorted(a)==sorted(b)).
+- cheap_lane_max_concurrent=0 → unbounded → _acquire_unbounded_cheap_lane takes no flock, writes no holder JSON → zero contention.
+- /tmp/rust-verification-lanes refs in test_verify_remote:51 + test_verify_ci_workflow_hygiene:1672 are fixture TOML strings, not lock acquisition.
+- test_ci_provenance TCP server binds ("127.0.0.1", 0) → ephemeral port; test_rust_verification_cache_retention /tmp/repo is a mocked function arg (subprocess.run faked); all os.environ/os.chdir mutations are process-local (each suite is its own subprocess).
+- test_cheap_lanes_do_not_write_repo_root_shared_state PASS (scans all 9 newly-labeled scripts).
+- Output: collected into results_by_index then printed in table order — no cross-suite interleaving.
+Ask 3 — Failure Semantics ✓ (one nit)
+OSError→127, nonzero→attributed+aggregate-fail, all loud. Nit F1 (low): no per-suite timeout= (pre-existing) + PIPE capture means a hung suite now emits zero output until job-level kill — strictly worse diagnosability than the old streaming-foreground model where you could see the last partial output. Same-commit evidence shows no hangs; consider subprocess.run(timeout=N) catching TimeoutExpired→124. Nit F2 (theoretical): a non-OSError raise in run_one_suite would propagate via future.result(), skip printing un-collected results, and block on executor.shutdown(wait=True) — currently impossible (static command tuples) but undefended.
+Ask 4 — Verifier Coupling ✓
+verify_ci_workflow_hygiene.py inserts SCRIPT_DIR on sys.path at module top → the mid-function import run_ci_lint_suites resolves in all three contexts. Confirmed by loading the verifier via importlib and triggering the import (succeeded). Runner module is import-pure (only dataclass/constant/function defs; sole dispatch under __name__=="__main__"). Archive: git archive base_ref carries the runner once committed; base tree is always self-consistent with its own verifier.
+Ask 5 — Fixtures Refactor ✓ (one benign note)
+load_owner_module: SCRIPT→RUST_VERIFICATION_SCRIPT + comment, behavior-identical. write_executable: cargo_shim's stat.S_IXUSR|current→0o755 (more permissive, functionally equivalent; import stat correctly dropped). write_policy: cargo_shim passes write_justfile=False matching old _init_repo; every _init_repo/write_policy caller is preceded by repo.mkdir(). F3 (benign): cache_retention's old write_policy wrote no justfile; shared default write_justfile=True now writes one — no test asserts absence, the explicit write at :1516 is a harmless double-write, suites green. set_local_lane_timing strict mode is non-vacuous (asserts each text.replace(old,new,1) mutated; 3 fragments don't overlap).
+Ask 6 — AGENTS.md + TOML ✓
+Exactly one sentence added to AGENTS.md. Both TOML cheap_lane_labels identical. manifest removal of test_nextest_fingerprint.py is required (now labeled → would fail _manifest_floor_missing); test_cheap_lane_discovery_manifest_floor_and_required_edges PASS.
+Findings ranked
+- F1 (low) scripts/run_ci_lint_suites.py:226 — no per-suite timeout; PIPE capture degrades hang attribution under parallelism vs old streaming model. Pre-existing gap, compounded. Suggest timeout= + TimeoutExpired→124.
+- F2 (nit/UNVERIFIED) scripts/run_ci_lint_suites.py:274 — future.result() uncaught; theoretical only.
+- F3 (benign) scripts/test_fixtures.py:443 — write_justfile=True default changes cache_retention fixture surface; inert today.
+No coverage regression, no single-source bypass, no concurrency hazard.
+
+---
+
+• Pushed round 2 to PR #1228.
+
+  Head SHA: 41a66ecb55af1e97b87cf1a4c2a3fd7cff3cff65
+  Commit: 41a66ecb5 Address ci-lint runner review feedback
+
+  Implemented:
+
+  - Per-suite start/finish stderr breadcrumbs.
+  - 900s per-suite timeout with attributed exit 124.
+  - Broadened suite exception attribution and guarded
+    future.result().
+
+  - Exact active runner line pin plus echo-decoy negative test.
+  - Guarded verifier import of run_ci_lint_suites.
+  - Restored parents=True in write_policy.
+  - Tightened grouping test with separate stdout/stderr
+    streams.
+
+  Verification:
+
+  - python3 scripts/test_run_ci_lint_suites.py
+  - python3 scripts/test_verify_ci_workflow_hygiene.py
+  - python3 -m py_compile ...
+  - git diff --check
+  - just ci-lint-workflow: 28 suites passed, real 240.47s
+
+  Worktree is clean. I did not wait on CI.
+
+---
+
+Claude: 
+Verification complete across all five asks at head 41a66ecb5. Writing the review.
+
+---
+Review — PR #1228 Round 2 (full re-review at 41a66ecb5)
+
+Verdict: APPROVE (2 residual observations, neither blocking). Compared 177d8038 → 41a66ecb5; round-2 delta 743c5913..41a66ecb5 touches 5 files. Every claim below is anchored at the head SHA — verified, not taken from the PR body. All three round-1 findings are resolved with differential tests.
+
+Round-1 findings — resolved
+
+- R1-F1 (hang diagnosability) → fixed. run_ci_lint_suites.py:159-171: all 28 START: breadcrumbs are written+flushed to stderr at submission, FINISH: … exited N per completion, and a DEFAULT_TIMEOUT_SECONDS = 900 (L19) converts a hang into an attributed exit 124 preserving partial output. A hung suite now shows a START with no matching FINISH, and self-resolves after 900s. Proven by test_runner_timeout_is_attributed_to_suite (L98-114) and test_runner_emits_start_finish_breadcrumbs_to_stderr (L72-95).
+- R1-F2 (narrow OSError catch) → fixed. run_one_suite now except Exception → attributed 127 (L119-120), and future.result() is guarded (L165-168) → "worker raised" 127, battery continues. Proven by test_run_one_suite_turns_unexpected_exceptions (L117-137) and test_runner_future_crashes_are_attributed_and_do_not_abort_battery (L140-174, asserts "ok still ran" survives).
+- R1 GPT-HIGH (echo-decoy pin hole) → fixed. Runner pin is now exact-line equality: runner_count = sum(1 for line in ci_lint_inner_lines if line == CI_LINT_WORKFLOW_RUNNER_LINE) (verify_ci_workflow_hygiene.py:6804). Negative test echo python3 scripts/run_ci_lint_suite
+Ask 1 — exact-line pin: holds, fails closed
+
+- CONST CI_LINT_WORKFLOW_RUNNER_LINE (verify:6731) == the real stripped recipe line justfile:416 (verified programmatically — equality True). active_recipe_lines strips each line (L6719) and just_recipe_blocks already stores candidate.strip() (L6712), so the indented recipe line matches the un-indented CONST.
+- Whitespace/tab/line-continuation variants all fail closed: any internal reformat (if !  python3…, tab, \-split) yields a stripped line != CONST → runner_count == 0 → must run error. The pin is brittle by design (that's the lock); it cannot be bypassed by reformatting.
+- Second differently-shaped runner line (python3 scripts/run_ci_lint_suites.py --workers 2 as a bare line): not caught — it's != CONST (so runner_count stays 1) and contains no suite command (so the anti-bypass loop L6811-6817 skips it). Impact is benign: the runner exposes no subset flag (--workers/--timeout-seconds/--repo-root/--list only), so the worst case is a redundant full 28-suite re-run — extra cost, zero coverage loss. → F2 below (informational).
+- Fixture now mirrors the real multi-line recipe body (test delta L10-17), and its positive path asserts zero errors. Fixture-vs-real equality holds for the pinned line (both strip to the identical CONST).
+
+Ask 2 — timeout/breadcrumb path: sound
+
+- exc.stdout bytes-vs-str is real and correctly handled. Empirically proven on python3.12.13 (CI) and 3.14.6 (local): with text=True, TimeoutExpired.stdout/.stderr are bytes (b'partial-out'), not str. Without timeout_output() the f-string would embed literal b'…' (corrupt attribution, not a crash); timeout_output() (L80-85) decodes None→"" / bytes→decode(errors="replace") / str→passthrough correctly. The fix is necessary and correct.
+- exit-124 survives the executor-crash guard. TimeoutExpired is caught inside run_one_suite and returned as SuiteResult(returncode=124) (L112-118), not raised — so future.result() returns it normally; the guard's except (L167) is only for a worker that actually raises. 124 attribution flows intact.
+- No breadcrumb interleaving under 6 workers. Worker threads run only run_one_suite and return data; every stream write (START, FINISH, grouped output) happens on the main thread (L160/170/176), each flushed. Concurrency cannot garble output regardless of worker count.
+- Timed-out suite holds no reclaimable lock. All 28 suites are cheap-labeled unbounded lanes → _acquire_unbounded_cheap_lane is lock-free (no flock, no holder record), so SIGKILL on timeout leaves no lock residue. (Orphaned grandchildren are theoretically possible but these are in-process Python lint suites — pre-existing, not delta-introduced, negligible.)
+
+Ask 3 — round-1 conclusions re-verified at this head
+table (both set-diffs empty). Both TOMLs 122 labels, byte-identical, all 28 basenames present in each. AGENTS.md = exactly one sentence added (L41). test_fixtures.py delta is mkdir() → mkdir(parents=True) — harmless hardening (no exist_ok, so the fresh-repo invariant is preserved; no existing caller breaks).
+
+Ask 4 — governed-import error: gate fails closed
+
+Import failure in ci_lint_suite_commands (verify:6784-6791) appends "ci-lint workflow runner suite table must be importable: …" to errors and returns (). That error is returned by verify_local_verification_gate_recipes and fails the gate regardless of the now-vacuous anti-bypass loop (suite_commands == () → loop checks nothing, but the gate is already red). Proven by the broken-module negative test (test delta L75-86, with sys.modules restored in finally). The governed error alone is sufficienself-reference in the coverage lock. The only mechanism that pins the exact 28-suite set is test_default_suite_table_covers_the_ci_lint_contract, which runs only as suite #28 via the runner table itself (run_ci_lint_suites.py:64). Nothing outside the table asserts the table's content: the verifier checks recipe wiring + import-ability (verify:6794-6818), not table membership; ACTIONLINT_WORKFLOW_REQUIRED_COMMANDS (verify:6727, used at :13774) guards actionlint.yml, not the runner; and no workflow invokes the suites independently of the runner (grep of .github/workflows/*.yml for run_ci_lint_suites/just ci-lint is empty — the lane is driven only through the runner). Failure scenario: dropping any single real suite is still caught (the contract test runs and reports missing); but removing the run-ci-lint-suites table entry itself disarms the contract, after which further suites can be dropped silently (runner runs fewer, exits 0). This is the same "checker inside the checked set" property the old inline design had, and this PR strictly strengthens the pin — so it's not grounds to block. Class-fix for epic #1215: assert the table content against a canonical set outside the runner (verifier-side, since it already imports CI_LINT_SUITES, or a runner startup self-check). Worth folding in as a residual; not this PR's job.
+
+F2 — INFORMATIONAL, benign: second differently-shaped runner line tolerated. verify:6804 + :6811-6817 don't flag a bare python3 scripts/run_ci_lint_suites.py --workers 2 added alongside the pinned line. Because the runner has no subset capability, the only consequence is a redundant full re-run (extra CI minutes), never coverage loss. Noting only because alongside the pinned line. Because the runner has no subset capability, the only consequence is a redundant full re-run (extra CI minutes), never coverage loss. Noting only because Ask 1 probed it.
+
+Not independently reproduced (Ask 5)
+
+Timings (368.3s sequential / 179.6s r1 / 240.5s r2) I did not re-run — it's the heavy full battery and re-running isn't warranted. UNVERIFIED, but affirmatively: the delta adds nothing that could cost ~60s — the 4 new self-tests use short timeouts (0.01s) or patched subprocess.run/run_one_suite (so the 900 default never waits), and the 56 breadcrumb flushes are trivial. The self-test is 1 of 28 parallel suites spawning a handful of sub-second subprocesses. 240.5s is still ~1.5× over the 368.3s sequential baseline; the 60s gap vs r1 is consistent with CI runner load variance, not a structural regression.
+
+Merge remains subject to the branch's own CI/external review gates — separate from this verdict. 
+GPT:  VERDICT: REQUEST_CHANGES
+
+  Findings
+
+  HIGH: scripts/verify_ci_workflow_hygiene.py:6804 only counts
+  the canonical runner line by exact equality, while :6811-6812
+  only rejects direct suite commands. A second runner
+  invocation in a different shape is silently tolerated.
+
+  Concrete failing case I verified against the head verifier
+  logic:
+
+  if ! python3 scripts/run_ci_lint_suites.py "$@"; then
+      failed=1
+  fi
+  python3 scripts/run_ci_lint_suites.py --workers 2
+
+  verify_local_verification_gate_recipes() returns [] for that.
+  The echo decoy is fixed, but the “runner exactly once” lock
+  is still not true for noncanonical runner lines. Fix by
+  rejecting any active ci-lint-workflow-inner line containing
+  python3 scripts/run_ci_lint_suites.py unless it equals
+  CI_LINT_WORKFLOW_RUNNER_LINE, and add this negative.
+
+  Verified Clean
+
+  Coverage equality: old recipe had 27 unique suite commands;
+  head table has 28 unique commands, with only python3 scripts/
+  test_run_ci_lint_suites.py added. No missing old suites.
+
+  Cheap-lane coverage: every suite basename is present in both
+  TOMLs; both have cheap_lane_max_concurrent = 0; label lists
+  are identical at ci/rust-verification.toml:40 and crates/
+  backtesting-vertical-slice/ci/rust-verification.toml:45.
+
+  Timeout/exception path: TimeoutExpired output handles None,
+  bytes, and str at scripts/run_ci_lint_suites.py:80-85;
+  timeout returns attributed 124 at :112-118; worker exceptions
+  become attributed 127 at :165-168. START/FINISH breadcrumbs
+  flush on stderr at :159-171.
+
+  Governed import error: fail-closed. If runner import breaks,
+  ci_lint_suite_commands() appends an error at scripts/
+  verify_ci_workflow_hygiene.py:6784-6791; skipping the direct-
+  suite loop in that state weakens diagnostics, not pass/fail.
+
+  Fixtures: cargo-shim preserves write_justfile=False; cache-
+  retention gains an empty justfile from the shared default,
+  but the affected fixture policy has no
+  cheap_lane_just_recipes, so I do not see behavior weakened.
+  set_local_lane_timing() is now non-vacuous.
+
+  AGENTS/TOML: AGENTS.md:41 is the only doc sentence added.
+
+  Unverified
+
+  gh pr diff 1228 --name-only is UNVERIFIED: gh returned GitHub
+  GraphQL Forbidden; I used the exact git diff between the
+  supplied SHAs.
+
+  Timing evidence is UNVERIFIED locally. The r2 delta does not
+  plausibly add 60s by itself: four tiny self-tests plus
+  breadcrumb flushes are negligible, so 179.6s to 240.5s reads
+  like load variance unless CI artifacts show repeated r2
+  regression.
+GLM:VERDICT: APPROVE
+Verified at head 41a66ecb5 via worktree + empirical attacks. No blocking findings. All round-1 issues addressed correctly. Coverage equality intact — no cardinal sin.
+Ask 1 — Exact-Line Pin ✓ (one low finding)
+The pin is line == CI_LINT_WORKFLOW_RUNNER_LINE where the constant is 'if ! python3 scripts/run_ci_lint_suites.py "$@"; then'. active_recipe_lines does .strip() so indentation is normalized. Fixture-vs-real byte equality confirmed: the real justfile's runner block at justfile:408-417 parses to exactly the pinned line after strip (verified programmatically — 1 reference, == pinned: True).
+Attack    Result    Evidence
+Echo decoy (echo python3 scripts/run_ci_lint_suites.py "$@")    CAUGHT — "must run" fires    _attack_test.py case 2
+Commented runner    CAUGHT    case 5
+Missing runner    CAUGHT    case 6
+Duplicate pinned line    CAUGHT — "exactly once"    case 7
+Extra suite command (test_ci_storage_audit.py)    CAUGHT — "must not run ... outside"    case 8
+Tab-indented    Normalized by .strip() — matches    case 4
+Second bare invocation (python3 scripts/run_ci_lint_suites.py --workers 2 alongside pinned line)    NOT CAUGHT    case 3 — runner_count stays 1 (bare line != pinned); suite_commands loop doesn't match (run_ci_lint_suites.py is the runner, not a suite entry)
+F1 (low) verify_ci_workflow_hygiene.py:6807 — A second bare run_ci_lint_suites.py invocation in a different shape is silently tolerated alongside the pinned line. The old substring check (CI_LINT_WORKFLOW_RUNNER_COMMAND in line) would have flagged this as duplicate. The round-2 fix traded the echo-decoy bypass (cardinal sin — silently drops all 28 suites) for bare-invocation tolerance (waste — runs battery twice, drops nothing). Net improvement, but a detection gap remains. Concrete fix: add elif any("run_ci_lint_suites.py" in line and line != CI_LINT_WORKFLOW_RUNNER_LINE for line in ci_lint_inner_lines): errors.append(...).
+Ask 2 — Timeout/Breadcrumb Path ✓
+timeout_output is correct and NECESSARY — not dead code. On POSIX, subprocess.TimeoutExpired.stdout is always bytes even with text=True (confirmed empirically on Python 3.14.6: exc.stdout type: bytes). The CPython source shows POSIX _communicate populates the exception with b''.join(stdout_seq) before the text-decode step. The timeout_output function handles all three cases (None→"", bytes→decode with errors="replace", str→passthrough).
+End-to-end verified with a suite producing partial output then sleeping:
+returncode: 124, stdout type: str, stdout: 'partial-stdout\n'
+stderr contains partial-stderr: True, stderr contains timeout msg: True
+Breadcrumb flush discipline: all START/FINISH writes are from the main thread only (submission loop is sequential, as_completed loop is also main thread). Workers run run_one_suite which captures to PIPE — no direct stderr writes from workers. Zero interleaving risk. stderr.flush() after each breadcrumb ensures visibility.
+Exit-124 vs executor-crash guard: timeout is caught inside run_one_suite:112 → returns normal SuiteResult(returncode=124) → future.result() returns it normally → never reaches the except Exception crash guard at :167. Clean separation.
+F2 (nit) test_run_ci_lint_suites.py:100 — The timeout test command (time.sleep(60)) produces no output, so partial-output preservation under timeout is untested. Implementation is correct (verified manually), but no regression guard.
+
+F3 (low/nit) run_ci_lint_suites.py:103 — subprocess.run(timeout=...) sends SIGKILL to the direct child only, not the process group. Grandchild processes (if any suite spawns subprocesses) may survive as orphans. No ci-lint suite currently creates subprocesses that would survive SIGKILL, so this is theoretical. start_new_session=True + os.killpg would be more robust.
+Ask 3 — Round-1 Conclusions at This Head ✓
+All confirmed at 41a66ecb5:
+Check
+Suite count
+Self-test pins all 28 commands
+All 28 suite scripts in cheap_lane_labels (both TOMLs)
+Both TOMLs identical
+Manifest floor + required edges
+Shared-state-write guard
+Fixture-using tests (cargo_shim, rust_verification, cache_retention)
+AGENTS.md
+Runner NOT in cheap_lane_labels (correct — it's invoked by justfile, not a suite)
+Ask 4 — Broken-Runner-Yields-Passing-Verifier ✓
+No. Empirically confirmed: injecting sys.modules["run_ci_lint_suites"] = object() yields 3 errors including "ci-lint workflow runner suite table must be importable: AttributeError: ...". The verifier returns non-empty errors → fails.
+The suite_commands = () neutering of the anti-bypass loop is benign: the import error is already in the errors list before the loop runs, so the verifier fails regardless. The anti-bypass loop checking nothing doesn't matter — the gate is already failed by the governed import error.
+The test at test_verify_ci_workflow_hygiene.py:9418-9429 verifies this: it injects a broken runner object and asserts the governed error appears.
+F4 (nit/benign) verify_ci_workflow_hygiene.py:6784 — If CI_LINT_SUITES = () (empty but importable), ci_lint_suite_commands returns () with no error, and the anti-bypass loop checks nothing. However, the self-test (test_default_suite_table_covers_the_ci_lint_contract) hardcodes all 28 entries and would fail if still in the table. This is the fundamental "who watches the watchmen" property — not a PR bug.
+Ask 5 — Timing ✓
+The delta adds < 2s of cost:
+4 new self-tests, all sub-second (the timeout test fires at 0.01s, not 60s)
+56 stderr.flush() calls across the battery — microsecond each
+timeout=900 parameter — zero added overhead (just a deadline in the poll loop)
+A 60s increase (179.6s → 240.5s) is not explained by the delta. Plausible causes: CI runner load variance, scheduling jitter, I/O contention. UNVERIFIED — I did not run the full 28-suite battery.
+F5 (UNVERIFIED) — r2 timing (240.5s) vs r1 (179.6s). Nothing in the delta plausibly costs 60s. Assess as load variance; re-run for confirmation.
+Findings Ranked
+#    Severity    Location    Summary
+F1    Low    verify_ci_workflow_hygiene.py:6807    Second bare run_ci_lint_suites.py invocation alongside pinned line silently tolerated — net improvement over echo-decoy, but gap remains
+F2    Nit    test_run_ci_lint_suites.py:100    Partial-output preservation under timeout untested (impl correct, verified manually)
+F3    Low/nit    run_ci_lint_suites.py:103    SIGKILL doesn't kill process group; theoretical orphan risk
+F4    Nit/benign    verify_ci_workflow_hygiene.py:6784    Empty-but-importable suite table bypasses anti-bypass loop; caught by self-test
+F5    UNVERIFIED    timing    60s r1→r2 increase unexplained by delta; likely load variance
+No coverage regression. No cardinal sin. All round-1 concerns addressed. APPROVE.
+Kimi:  VERDICT: APPROVE — the round-2 revision resolves every
+   round-1 blocking finding. I have two low-severity hardening
+   notes below, neither of which blocks the merge-gating lane.
+
+   Evidence I ran at 41a66ecb55af1e97b87cf1a4c2a3fd7cff3cff65
+   (in a clean /tmp worktree, now removed):
+
+   • python3 scripts/test_run_ci_lint_suites.py → passed
+   • python3 scripts/test_fixtures.py → passed
+   • python3 scripts/test_verify_ci_workflow_hygiene.py →
+     passed
+   • python3 -m pytest scripts/test_cargo_shim.py
+     scripts/test_rust_verification.py
+     scripts/test_rust_verification_cache_retention.py -q → 51
+     passed
+   • time python3 scripts/run_ci_lint_suites.py --workers 4 →
+     all 28 suites passed, real 3m43.609s
+
+   ───────────────────────────────────────────────────────────
+
+   1. Exact-line pin and single-source lock
+
+   What is pinned: verify_ci_workflow_hygiene.py:6731 defines:
+
+   ```python
+     CI_LINT_WORKFLOW_RUNNER_LINE = 'if ! python3
+   scripts/run_ci_lint_suites.py "$@"; then'
+   ```
+
+   and at verify_ci_workflow_hygiene.py:6804 the verifier
+   requires that exact active line exactly once, plus an
+   anti-extra loop (6810-6815) that rejects any active
+   inner-recipe line containing one of the 28 table commands.
+
+   Attacks I tried:
+
+   ┌────────────────────────────┬────────────────────────────┐
+   │ Variant                    │ Result                     │
+   ├────────────────────────────┼────────────────────────────┤
+   │ Missing runner line        │ justfile                   │
+   │                            │ ci-lint-workflow-inner     │
+   │                            │ must run python3           │
+   │                            │ scripts/run_ci_lint_suites │
+   │                            │ .py                        │
+   ├────────────────────────────┼────────────────────────────┤
+   │ Duplicate exact runner     │ ...exactly once            │
+   │ line                       │                            │
+   ├────────────────────────────┼────────────────────────────┤
+   │ Commented runner (# if !   │ missing-runner error       │
+   │ python3 ...)               │                            │
+   ├────────────────────────────┼────────────────────────────┤
+   │ Echo decoy (echo python3   │ missing-runner error       │
+   │ scripts/run_ci_lint_suites │                            │
+   │ .py "$@")                  │                            │
+   ├────────────────────────────┼────────────────────────────┤
+   │ Tab-indented runner line   │ tolerated (active-line     │
+   │                            │ .strip() normalizes) —     │
+   │                            │ fine                       │
+   ├────────────────────────────┼────────────────────────────┤
+   │ Line-continued runner (\ + │ missing-runner error       │
+   │ "$@" ; then)               │                            │
+   ├────────────────────────────┼────────────────────────────┤
+   │ Bare runner with args      │ missing-runner error       │
+   │ replacing the pinned line  │                            │
+   │ (python3                   │                            │
+   │ scripts/run_ci_lint_suites │                            │
+   │ .py --workers 2)           │                            │
+   └────────────────────────────┴────────────────────────────┘
+
+   Residual gaps (low severity):
+
+   • Extra runner invocation with a different shape is
+     silently tolerated. If the pinned line stays in place and
+     an additional line python3 scripts/run_ci_lint_suites.py
+     --workers 2 is added, runner_count stays 1 and the
+     anti-extra loop does not flag it because the runner
+     command itself is not in suite_commands. I verified this
+     ad-hoc in a Python shell against the verifier: base
+     recipe → []; same recipe plus the extra line → [].
+       • File: scripts/verify_ci_workflow_hygiene.py:6804-6815
+       • Concrete failure: maintainer accidentally adds a
+         second runner call; battery runs twice, CI minutes
+         are wasted, gate stays green.
+       • Hardening: count active lines containing
+         run_ci_lint_suites.py and require exactly one.
+
+   • Direct invocation of a suite script not currently in the
+     28-entry table is also silently tolerated. The anti-extra
+     loop only knows the current table entries. A new python3
+     scripts/new_suite.py line in ci-lint-workflow-inner would
+     not be flagged.
+       • This is the same gap in a different shape; closing it
+         generically is harder because the inner recipe
+         legitimately contains python3
+         scripts/rust_verification.py for policy validation.
+
+   Neither gap drops coverage; both are dual-path issues. The
+   claimed coverage lock itself is solid.
+
+   Coverage equality is intact. Old justfile inner body had 27
+   sequential if ! python3 scripts/... lines (base 177d8038).
+   New scripts/run_ci_lint_suites.py:22-67 table has those
+   same 27 plus test_run_ci_lint_suites.py = 28. Four
+   independent locks enforce this:
+   1. runner table (run_ci_lint_suites.py:22-67);
+   2. runner self-test expected set
+      (test_run_ci_lint_suites.py:194-228);
+   3. hygiene verifier anti-extra loop + exact-line pin
+      (verify_ci_workflow_hygiene.py:6804-6815);
+   4. hygiene assert_ci_lint_runs_* helpers now consult the
+      live table
+      (test_verify_ci_workflow_hygiene.py:15148-15205).
+
+   ───────────────────────────────────────────────────────────
+
+   2. Timeout / breadcrumb / concurrency safety
+
+   Timeout path is correct. run_ci_lint_suites.py:112-116
+   catches TimeoutExpired, returns returncode=124, and
+   timeout_output() handles None/bytes/str. My full battery
+   run showed every FINISH: breadcrumb emitted with the right
+   exit code.
+
+   Breadcrumbs are attributed and flushed.
+   run_ci_lint_suites.py:160-161 writes START: before
+   submission and flushes; 170-171 writes FINISH: on
+   completion and flushes. Because suite stdout/stderr are
+   piped and printed only after all futures complete
+   (run_suites.py:176-181), START/FINISH markers cannot
+   interleave with suite output.
+
+   Per-suite timeout = 900s. A hung suite blocks only one
+   worker, is killed after 900s, and is attributed as exit
+   124. This is strictly better than sequential, where a hang
+   blocked the whole battery.
+
+   Exception path is safe. run_one_suite catches Exception →
+   returncode 127 (run_ci_lint_suites.py:119-120). The
+   as_completed loop wraps future.result() in its own
+   try/except → "worker raised" 127 without aborting the
+   battery (run_ci_lint_suites.py:166-169). Tests cover both
+   paths (test_run_ci_lint_suites.py:117-138, 140-174).
+
+   Cheap-lane concurrency is correct. Both TOMLs have
+   identical 122-entry cheap_lane_labels lists
+   (ci/rust-verification.toml:40,
+   crates/backtesting-vertical-slice/ci/rust-verification.toml
+   :40), cheap_lane_max_concurrent = 0 on both, and all 28
+   suite basenames are present. lane_governor.py:174-186
+   deliberately skips holder metadata for unbounded cheap
+   lanes, so concurrent acquisitions are race-free.
+
+   ───────────────────────────────────────────────────────────
+
+   3. Round-1 conclusions re-verified at this head
+
+   • 28/28 coverage: confirmed above.
+   • Single-source lock: exact-line pin + anti-extra loop +
+     runner self-test + hygiene assert helpers — all present
+     and tested.
+   • Cheap-lane completeness: both TOMLs identical, all suite
+     scripts labeled, max concurrent 0.
+   • Fixture equivalence: test_fixtures.py:25-83 dedupes
+     load_owner_module/write_executable/write_policy.
+     write_executable is now 0o755 everywhere (was
+     stat.S_IXUSR OR for cargo-shim, i.e. ~`0o744).
+     set_local_lane_timing now asserts every replacement
+     changed the text
+     (test_rust_verification_cache_retention.py:84-87).
+     write_policynow usesparents=Trueand defaults to creating
+     an emptyjustfile; cargo-shim opts out with
+     write_justfile=False`, cache-retention accepts the
+     default, and no test asserts the absence of that file.
+   • AGENTS.md: exactly one added sentence at AGENTS.md:41.
+
+   ───────────────────────────────────────────────────────────
+
+   4. Verifier import coupling
+
+   verify_ci_workflow_hygiene.py:6784-6791 does import
+   run_ci_lint_suites inside ci_lint_suite_commands(errors)
+   and appends a governed error on any exception. If the
+   import fails, suite_commands becomes () and the anti-extra
+   loop skips, but the governed error is appended to the same
+   errors list that main() checks at
+   verify_ci_workflow_hygiene.py:15916. I confirmed ad-hoc
+   that a broken module object in
+   sys.modules["run_ci_lint_suites"] produces ci-lint workflow
+   runner suite table must be importable and would cause
+   main() to return 1.
+
+   The three import contexts all work because the script's
+   directory is on sys.path when Python runs a file directly,
+   and the test harnesses use the same file-location loading
+   pattern.
+
+   ───────────────────────────────────────────────────────────
+
+   5. Timing
+
+   I measured the full 28-suite battery at 223.6s real with
+   --workers 4 on this machine. The PR's r2 figure of 240.5s
+   vs r1 179.6s is consistent with normal load variance plus
+   the one added self-test suite and extra breadcrumb writes.
+   No algorithmic O(n) regression is present in the delta.
+
+   ───────────────────────────────────────────────────────────
+
+   Summary
+
+   All six review asks are refuted for the claimed scope. The
+   only residual risks are the two dual-path tolerances noted
+   in §1 (extra runner invocation, direct invocation of a
+   non-table suite script). They do not affect coverage
+   equality, do not break the merge-gating lane, and are
+   straightforward post-merge hardening. Approve.
+
+---
+
+Pushed round 3 to PR #1228.
+
+  Head SHA: 4f453a64426eb4285496d8d94fa7a10436d55ad3
+  Commit: 4f453a644 Close ci-lint runner pin gaps
+
+  Verification:
+
+  - python3 scripts/test_run_ci_lint_suites.py
+  - python3 scripts/test_verify_ci_workflow_hygiene.py
+  - python3 -m py_compile ...
+  - git diff --check
+
+  Worktree is clean.
+
+---
+
+• Pushed the amendment to PR #1228.
+
+  Head SHA: 6dd0e61f04b1afaa75c3b5c8d9cdec4f37b3c30d
+
+  Verification:
+
+  - python3 scripts/test_run_ci_lint_suites.py
+  - python3 -m py_compile scripts/test_run_ci_lint_suites.py
+  - git diff --check
+
+  Worktree is clean.
+
+---
+
+1225 merged
+
+---
+
+didn't you need 1225 to be merged quickly
+
+---
+
+we need to resolve pr comments
+
+---
+
+• Pushed the final micro-commit to PR #1228.
+
+  Head SHA: ce3818544fff42cd71dc824703a40b5ee5e1fc9e
+
+  Verification:
+
+  - python3 scripts/test_run_ci_lint_suites.py
+  - python3 scripts/test_verify_ci_workflow_hygiene.py
+  - python3 -m py_compile scripts/run_ci_lint_suites.py
+    scripts/test_run_ci_lint_suites.py scripts/
+    test_verify_ci_workflow_hygiene.py
+
+  - git diff --check
+
+  Worktree is clean.
+
+---
+
+can we do these now relay the debuggability brief to Codex (top priority per your call), then the debug-lane implementation. or are they dependent on 1228
+
+---
+
+PR 1228
+
+Claude: 
+⏺ I've completed the full-PR review with every one of the 13 changed files read at HEAD and the concurrency-safety question chased to ground. Here's my verdict.
+
+  ---
+  PR #1228 round 4 — APPROVE
+
+  Range reviewed: 177d8038f..ce3818544 (full PR, 13 files). Merge-base confirmed = stated BASE. Delta matches the packet exactly — no undisclosed scope.
+
+  What I verified
+
+  Core runner (run_ci_lint_suites.py) — sound. Results keyed by suite index (not name) so the duplicate-name masking bug can't recur; output printed in submission order (deterministic) after as_completed collects everything; timeout→124, worker exception→127, both attributed to the named suite; subprocess.run(timeout=) kills the child so no orphan. Fail-loud aggregation returns 1 with a per-suite failure list.
+
+  Parallel safety (the crux of this PR) — traced end to end, no hazard:
+  - Mechanically confirmed all 28 suites are in cheap_lane_labels (28/28), 28 unique names, no duplicate scripts, no duplicate labels. With cheap_lane_max_concurrent = 0 these take the unbounded cheap lane — no flock, no serialization.
+  - In CI (GITHUB_ACTIONS=true) lane_governor.acquire() returns early — lanes fully bypassed.
+  - rust_verification.py (the owner the rust/cache suites spawn) never calls acquire() — it only touches the cache lock, which is temp-isolated via RUS
+
+  Round-3 fixes landed correctly:
+  - Non-canonical runner-line rejection: strict line == CI_LINT_WORKFLOW_RUNNER_LINE equality works because active_recipe_lines strips comments+whitespace — the echo/extra/commented decoy tests all trip it.
+  - Governed suite-table import: verifier derives the suite list from run_ci_lint_suites.CI_LINT_SUITES (SSOT, no duplication) and fails loud if unimportable (broken_runner test).
+
+  Round-4 fixes — differential property proven empirically (loaded mutated runner copies, ran the actual tests):
+  - Per-suite flush: mutating flush_streams→no-op makes test_runner_flushes_grouped_blocks_and_final_summary fail ("not flushed: 0"). ✓
+  - Timeout 50ms→1s: mutating timeout_output→"" makes the partial-output test fail. ✓
+  - Memoized @functools.cache load: this refactor was required, not cosmetic — the suite commands left the justfile, so the old substring-in-justfile checks had to switch to the runner table.
+
+  Fixture extraction — behavior-preserving (0o755 vs st_mode|S_IXUSR both yield executable; write_justfile kwarg replicates each caller). The set_local_lane_timing strict guard (raise if anchor fragment absent) is a genuine fail-loud hardening against shared-fixture drift.
+
+  Justfile wiring — set -- --workers "$X" / set -- is clean under the recipe's bash -euo pipefail shebang; nothing before/after uses positional params; the runner failure feeds the existing failed/exit 1 path.
+
+Ran at HEAD, all green: runner self-tests, verify_ci_workflow_hygiene, test_verify_ci_workflow_hygiene (exit 0), test_ci_test_manifest (test_fixtures.py doesn't break the 95-test manifest), verify_lane_governance, test_rust_verification, test_cargo_shim (51 passed), test_rust_verification_cache_retention, test_lane_governor.
+
+Non-blocking observations (no change required)
+
+- The 1.0s child budget in the partial-output timeout test is timing-dependent (Python cold-start under concurrent load), but it's 20× the old flaky 50ms with ample margin — a reasonable de-flake, not a defect.
+- The AGENTS.md "agents do not wait on CI" line is tangential to parallelization but consistent with repo direction.
+
+No open findings. CI-green at head and separate-reviewer merge authority remain the gates — those aren't mine to assert.
+GPT:  APPROVE.
+
+  No file-anchored findings in the 177d8038..ce381854 diff.
+
+  Verification run:
+
+  - git diff --check 177d8038..ce381854
+  - Changed-path tests, including runner, workflow hygiene,
+    lane governor, Rust verification/cache retention, cargo
+    shim
+
+  - Full python3 scripts/run_ci_lint_suites.py: passed, 28 ci-
+    lint suite(s) passed
+
+  Note: the first full runner attempt failed only because the
+  sandbox denied a local 127.0.0.1 TCP bind in
+  test_ci_provenance.py; that suite and the full runner passed
+  after allowing local TCP. An unrelated existing .githooks/
+  post-rewrite worktree modification was ignored.
+GLM:Verdict: APPROVE
+Verified at HEAD ce3818544 against the real repo justfile (not just synthetic fixtures):
+Round-3 fixes confirmed sound:
+- verify_ci_workflow_hygiene.py:6810-6812 — non-canonical runner-line rejection (run_ci_lint_suites.py substring + != pinned line) correctly fires on a duplicate --workers 2 call and is silent on the canonical line.
+- verify_ci_workflow_hygiene.py:6782-6789 — ci_lint_suite_commands(errors) wraps the import run_ci_lint_suites in try/except, appends a governed error on broken import (fail-closed), and the test mutates sys.modules to prove it.
+- Pinned-line exact match works because active_recipe_lines strips each line (verify_ci_workflow_hygiene.py:6718-6719).
+Round-4 fixes confirmed sound:
+- flush_streams after every grouped block + final summary (run_ci_lint_suites.py:143,190,193); differential test test_runner_flushes_grouped_blocks_and_final_summary asserts stdout≥3, stderr≥7 flushes — counts match the 2-suite success path exactly.
+- @functools.cache on the test-side ci_lint_suite_commands() (test_verify_ci_workflow_hygiene.py:15121) uses a different module name (run_ci_lint_suites_under_hygiene_test) than the verifier's import run_ci_lint_suites, so no collision with the broken-runner sys.modules mutation test.
+- 50ms→1s partial-timeout fix eliminates the flush race; flush=True in the child print + 1s budget is safe.
+Fail-closed verified: --workers 8 → exit 1; BOLT_CI_LINT_WORKFLOW_WORKERS=9 → exit 2. --list → 28 suites, matching the table.
+Evidence green at exact HEAD: test_run_ci_lint_suites, test_verify_ci_workflow_hygiene, test_rust_verification, test_rust_verification_cache_retention, test_cargo_shim (51 passed).
+Only nit (non-blocking, cosmetic): the non-canonical check loop at verify_ci_workflow_hygiene.py:6810 appends one error per offending line without break, unlike the suite-command check which breaks. Both are fail-closed; dedup would just tidy repeated messages.
+No file-anchored findings. Ship it.
+Kimi: APPROVE
+
+---
+
+• Implemented and published as draft PR:
+  https://github.com/seungpyoson/bolt-v2/pull/1232
+
+  Branch: codex/1213-ci-debuggability
+  Head SHA: 0fb1e0f2727b76f333cfd6d3995c7d874fa4fed3
+  Worktree: .worktrees/codex-1213-ci-debuggability, clean and
+  preserved for PR feedback.
+
+  Changes cover the requested CI observability slice: root/
+  backtester S3 restore summaries, root CI classification and
+  nextest reuse summaries, partition failure annotations with
+  log tails, plus verifier/self-test pins. I did not request
+  review because exact-head remote CI has not been run green;
+  the PR is draft for head verification.
+
+  Verification passed:
+
+  - python3 scripts/verify_ci_workflow_hygiene.py
+  - python3 scripts/test_verify_ci_workflow_hygiene.py
+  - just fmt-check
+  - just source-fence-static
+  - just ci-lint-workflow
+  - git diff --check
+
+  Note: the GitHub connector could not fetch PR #1213 comments
+  due 403, so I used the pasted brief as the source for the
+  required summary formats.
+
+---
+
+just ci-lint-workflow is green after escalation. I’m running
+  just source-fence-static next.
+
+───────────────────────────────────────────────────────────────
+
+• source-fence-static has passed the core fence scripts so far
+  and is still running the remaining static checks.
+
+• Working (49m 43s • esc to interrupt) · 1 background terminal…
+
+Ran just verify-remote
+  └ python3 "/Users/spson/Projects/Claude/
+    bolt-v2-wt-loss-recovery/scripts/rust_verification.py"
+    … +9 lines (ctrl + t to view transcript)
+    error: recipe `verify-remote` failed on line 310 with exit
+    code 2
+
+───────────────────────────────────────────────────────────────
+
+• just verify-remote also hit the sandbox network tunnel. I’m
+  rerunning it with escalation so it can reach GitHub and
+  dispatch the exact-head workflow.
+
+• Running just verify-remote
+
+⚠ Automatic approval review approved (risk: medium,
+  authorization: high): Dispatching and monitoring the user-
+  requested exact-head remote CI for the pushed PR branch is a
+  scoped remote workflow action on the expected repository with
+  no destructive side effects.
+
+✔ Auto-reviewer approved codex to run just verify-remote this
+  time
+
+• Working (1h 14m 46s • esc to interrupt)
+
+so what was the reason for long cargo runs or CI?
+
+---
+
+so are we already addressing them?
+
+---
+
+PR #1232 updated and pushed.
+
+  Head SHA: 722521d17f543aa1bd822ad84baa7bc731097d74
+
+  What changed:
+
+  - Added detector to jobs.test.needs in .github/workflows/
+    ci.yml.
+
+  - Added verifier enforcement: test needs detector.
+  - Added the negative self-test assertion for that regression.
+  - Folded in NB1 env-style reuse summary inputs.
+  - Folded in NB2 partition-wrapper pin including partition_log
+    and set +e.
+
+  Verification:
+
+  - Red check failed before verifier fix: missing test needs
+    detector.
+
+  - python3 scripts/verify_ci_workflow_hygiene.py passed.
+  - python3 scripts/test_verify_ci_workflow_hygiene.py passed.
+  - python3 -m py_compile ... passed.
+  - git diff --check passed.
+
+  Worktree is clean and local HEAD matches origin/codex/1213-
+  ci-debuggability.
+
+---
+
+PR 1232:
+
+Claude: 
+---
+PR #1232 — Round 1 external review — APPROVE @ 722521d17
+
+Range reviewed: 73de51be8 → 722521d17 (merge-base verified identical to the packet). Full-PR scope. No blocking findings.
+
+Focus areas — all three verified clean
+
+1. Real-outcome fidelity (no recomputed/assumed values)
+- Every restore-result/restore-reason is written in the branch that decides the outcome inside Restore nextest archive from S3 / Restore root binary sidecars from S3 (and the BVS mirrors) — miss, digest-mismatch→error, hit, copy-failed each emit their own pair. No post-hoc guessing.
+- Summarize nextest archive S3 state's restore_state() applies its guards in the same order as the restore step's own if: (eligible → aws → outcome/result → hit/miss). Because the guards mirror the gate exactly, it structurally cannot misclassify — and the defensive skipped tail is only reachable in states the restore step never produces.
+- Nextest reuse decision derives only from real upstream outputs. decision=allowed ⟺ reuse_found==true, and the nextest-fingerprint-reuse job's if: already requires detector_allowed=='true', so the label can't contradict what actually happened. The reason on the allowed path comes from ci_provenance.py resolve-fingerprint's matched prior … run … (confirmed at its match branch), so it never falls back to the contradictory no-reusable-fingerprint.
+
+2. The fabricated-summary fix is complete and pinned
+test now declares detector in needs, so needs.detector.outputs.fingerprint_reuse_allowed / fingerprint_reuse_reason resolve to real values instead of the empty strings the earlier revision silently read. detector.fingerprint_reuse_reason is a new output emitted in the same branch as value. Pinned by test needs detector + detector must expose/explain … with matching differential tests.
+
+3. bash -eo pipefail semantics in the partition wrappers — correct
+Run nextest archive partitions and the BVS partition loop wrap just … | tee in set +e / rc="${PIPESTATUS[0]}" / set -e, capturing just's real exit (not tee's) under GitHub's default -eo pipefail; failures aggregate across all shards (status/failures) and the loop exits nonzero via exit "$status". The restore steps run under set +e but keep explicit exit 1 at digest-mismatch — an explicit exit overrides set +e, so fail-closed is preserved and the if: always() summary still reports restore=error reason=digest-mismatch.
+
+Pin completeness / bypass — comprehensive
+
+Every new surface is pinned in verify_ci_workflow_hygiene.py and covered by a differential test. Two stand out as more than string-presence checks: the semantic rc="${PIPESTATUS[0]}" → rc="0" mutation (proves the exit-code capture, not just the text) and the exact-count count('echo "reason=') != 3. Proven at HEAD in an isolated worktree:
+- self-test differential harness → OK … self-tests passed (rc=0)
+- verifier against the real HEAD workflows → OK: CI workflow hygiene verifier passed (rc=0)
+
+Two non-blocking nits (label semantics only — ground truth is co-located, so no fidelity loss)
+
+- N1 — Summarize CI classification: class collapses every non-heavy, non-iteration lane (docs, tag_reuse, promoted) into promoted-cheap, which reads slightly off for the docs/tag-reuse lanes. It's printed right next to the authoritative policy= / event_class= raw fields, so it can't mislead — optional to map those explicitly or drop the catch-all.
+- N2 — Nextest reuse: decision=refused covers both policy-refused (governance-changed) and allowed-but-none-found (no-reusable-fingerprint); the reason= field plus raw detector_allowed=/reuse_found= disambiguate. Pure wording.
+
+Recommendation: APPROVE — the fabricated-summary class of bug is closed at the boundary (needs-declaration + pin), fidelity holds because summaries read the deciding branch's own outputs, and the pipefail handling is right. N1/N2 are optional polish, not merge blockers.
+Kimi: ● Verdict: APPROVE
+
+   I fetched the PR head, ran the hygiene verifier and its
+   self-tests, and inspected the diff. Both local checks pass:
+
+   • python3 scripts/verify_ci_workflow_hygiene.py → OK
+   • python3 scripts/test_verify_ci_workflow_hygiene.py → OK
+
+   The PR does what it claims: it adds always-run summary
+         lines for CI classification and nextest reuse, emits real      S3 restore outcomes from step outputs, and wraps the           root/BVS archive partition runners with tee’d logs and
+   shard-specific ::error annotations. The verifier pins are      comprehensive and symmetric between ci.yml and                 backtester-ci.yml.                                                                                                            File-anchored findings (non-blocking):
+   • .github/workflows/ci.yml:1401 — DETECTOR_REASON: ${{
+     needs.detector.outputs.fingerprint_reuse_reason ||
+     'non-consumer-event' }} defaults to an assumed reason          when the detector output is absent. For the events where       detector is skipped this happens to be correct, but if         detector ever fails while test still runs via always(),        the summary will misreport the reason.                       • .github/workflows/ci.yml:1415–1427 — decision stays
+     not-applicable whenever detector_allowed=false for a           reason other than governance-changed (e.g.                     non-consumer-event). That’s a computed label that doesn’t      reflect the actual refusal; using decision="refused" for       all disallowed cases would be more faithful.                 • .github/workflows/ci.yml:1345 and
+     .github/workflows/backtester-ci.yml:724 — set +e disables
+     exit-on-error but leaves GitHub’s default pipefail             active. PIPESTATUS[0] correctly captures the just recipe       exit code, but a failing tee would not be reported.            Acceptable given tee is fail-open here.                      • Real-outcome fidelity is otherwise good: every summary         field reads from real step/job outputs; the reuse summary
+     derives its decision from detector_allowed/reuse_found
+     rather than re-inventing the logic; and the S3 restore         state uses actual outcome/restore-result/restore-reason        values.                                                                                                                     No blocking issues. APPROVE.
+GLM: External Review — PR #1232 "CI debuggability: archive/classification/reuse summaries + partition failure annotations"
+HEAD 722521d ← BASE 73de51b · 4 files · +641/−22
+Verdict: REQUEST_CHANGES
+One substantive finding (pin-completeness). Everything in the three focus areas is otherwise sound and I verified it with evidence. The fix is small and surgical.
+F1 (Medium) — Backtester partition wrapper's set +e/set -e bracket is unpinned; root lane pins it (pin-parity gap)
+Location
+- backtester-ci.yml:786-789 — the BVS test partition loop.
+- ci.yml:1344-1347 — the root Run nextest archive partitions loop (correctly pinned).
+- Verifier: root pin at verify_ci_workflow_hygiene.py:11815-11823 (TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER, defined :794-803, includes set +e/set -e); backtester pin at backtester_test_shard_errors (the fragment checks) — no bracket check.
+Problem Both partition loops run under bash -e -o pipefail (ci.yml step declares shell: bash; backtester uses the Actions default). The wrapper depends on the set +e/PIPESTATUS[0]/set -e bracket so a failing just … | tee pipeline doesn't abort before the ::error/tail annotation runs. The root lane pins the entire contiguous wrapper; the backtester lane pins only fragment strings (partition_log, 2>&1 | tee, tail -80, rc="${PIPESTATUS[0]}", the ::error line) and omits set +e/set -e.
+Evidence (run against the head verifier module, not asserted):
+- Strip set +e/set -e from ci.yml → verifier emits test-archive must aggregate partition failures. Root lane: pinned.
+- Strip set +e/set -e from backtester-ci.yml → verifier emits nothing. Backtester lane: bypassable.
+Impact A future edit that drops set +e from the BVS test step would, under errexit, abort at the failing pipeline — the per-shard ::error + log-tail debuggability this PR introduces would never execute (only the first failing shard aborts the step), and the hygiene verifier stays green. That silently defeats the PR's core purpose for the backtester lane.
+Fix (mirror the root lane) Add a contiguous BVS_PARTITION_FAILURE_WRAPPER pin to backtester_test_shard_errors requiring the set +e / pipeline / rc="${PIPESTATUS[0]}" / set -e sequence (i.e. one block match, not five independent fragments), and add a self-test mutation in test_verify_ci_workflow_hygiene.py that strips set +e and expects the new error. Low-cost; brings the backtester lane to parity with the root lane and closes the class of regression.
+Verified sound (no changes needed)
+Real-outcome fidelity (focus 1) — solid.
+- All three summaries read real step/job outputs only. CI classification (ci.yml:261-273) reads steps.policy.outputs.*, all of which ci-policy actually emits (ci.yml:172-178). Nextest reuse (ci.yml:1394-1429) reads needs.detector.outputs.* and needs.nextest-fingerprint-reuse.outputs.*. restore=/reason= come from steps.*.outputs and steps.*.outcome.
+- The class/decision/restore= labels are projections of real outputs; the raw fields (policy=, full_ci_required=, source_run=, eligible=, aws=, …) are emitted verbatim alongside. No recomputed/assumed values.
+- restore-result/restore-reason are set at the point-of-decision on all four branches of each restore step (ci.yml:913-967, 969-1026; backtester :440-…/503-…). No path falls through unset; the steps run set +e at top so every branch completes and writes outputs.
+- Fabricated-summary bug fixed and pin-enforced: test.needs now includes detector (ci.yml:1393); fingerprint_reuse_reason is exposed (ci.yml:174/backtester :124) and read. Pinned by test needs detector, detector must expose fingerprint_reuse_reason, and detector must explain fingerprint_reuse_allowed decisions (count-of-3 reason echoes).
+bash -e -o pipefail (focus 3) — correct in both files. set +e → just … 2>&1 | tee "$log" → rc="${PIPESTATUS[0]}" → set -e is correct (ci.yml:1344-1347; backtester-ci.yml:786-789). Aggregation intact: root uses status/exit "$status" (ci.yml:1339,1356); backtester uses failures/exit 1 (backtester-ci.yml:782,798-801).
+Verifier + self-test green at head. verify_workflow clean on ci.yml; backtester_test_shard_errors clean on backtester-ci.yml; test_verify_ci_workflow_hygiene.py → "OK: CI workflow hygiene verifier self-tests passed." The new differential mutations (rc hardcode→0, missing annotation, missing restore outputs/summaries, missing detector declaration) all fire their intended errors.
+Summary: approve-quality except for F1 — please add the contiguous set +e/set -e pin to the backtester lane (and its self-test mutation) so the partition-debuggability contract is enforced symmetrically with the root lane.
+GPT:  Verdict: APPROVE
+
+  Findings: none.
+
+  I reviewed the full 73de51b..722521d diff for PR #1232. The
+  fixed needs.detector dependency is present and pinned, the
+  summaries read step outputs/outcomes rather than recomputing
+  hidden state, and the partition wrappers preserve the command
+  exit code with PIPESTATUS[0] while still emitting tails and
+  shard annotations.
+
+  Verification run at PR head
+  722521d17f543aa1bd822ad84baa7bc731097d74:
+
+  git diff --check 73de51b..722521d: clean
+  python3 scripts/verify_ci_workflow_hygiene.py: passed
+  python3 scripts/test_verify_ci_workflow_hygiene.py: passed
+  python3 scripts/test_ci_provenance.py: passed after rerun
+  outside sandbox; sandbox blocked local TCP bind only.
+
+---
+
+if we are doing another code change - why are we not addressing other non blocking notes
+
+---
+
+• PR #1232 updated and pushed.
+
+  Head SHA: 7039992133ff2de02440055fcf41d08979cc123d
+
+  Changes:
+
+  - Added contiguous BVS_PARTITION_FAILURE_WRAPPER verifier pin
+    for the full set +e -> just ... | tee ->
+    rc="${PIPESTATUS[0]}" -> set -e sequence.
+
+  - Added the BVS self-test mutation that strips set +e and
+    expects the new wrapper error.
+
+  - Changed reuse-summary DETECTOR_REASON fallback from non-
+    consumer-event to unknown, with verifier/test pins updated.
+
+  Verification:
+
+  - Targeted red checks failed before verifier fix, then
+    passed.
+
+  - python3 scripts/verify_ci_workflow_hygiene.py passed.
+  - python3 scripts/test_verify_ci_workflow_hygiene.py passed.
+  - python3 -m py_compile ... passed.
+  - git diff --check passed.
+
+  Worktree is clean and local HEAD matches origin/codex/1213-
+  ci-debuggability.
+
+---
+
+GLM:External Review — PR #1232 (Round 2, final)
+HEAD 7039992 ← BASE 73de51b
+Verdict: APPROVE
+Round-1 F1 is closed correctly, the detector-reason change is faithful, and both hygiene gates are green at head. No new findings.
+F1 (round 1) — CLOSED
+The BVS partition wrapper now has a contiguous pin mirroring the root lane:
+- verify_ci_workflow_hygiene.py:839 defines BVS_PARTITION_FAILURE_WRAPPER (set +e → BVS_PARTITION_TEE → rc="${PIPESTATUS[0]}" → set -e); checked at :13026 ("must use contiguous failure wrapper").
+- Self-test strip-mutation present (test_verify_ci_workflow_hygiene.py:~14022 removes the set +e line → expects the contiguous-wrapper error).
+- Proven at head: backtester_test_shard_errors returns [] on the head workflow; stripping the bracket now yields backtester bvs-test partition failures must use contiguous failure wrapper. Root-lane parity achieved. No regression.
+Detector-reason fallback (non-consumer-event → unknown) — sound
+- ci.yml:1401 env || 'unknown' and :1409 bash :-unknown. The r1→r2 ci.yml delta is exactly these two lines (verified by diff) — nothing else changed.
+- More faithful than round 1: 'unknown' truthfully flags "no reason value available" (detector skipped/failed) and is distinct from the detector's own real reason=non-consumer-event output (verify.py:609, still emitted by the detector step itself). No assumed value; raw fields (detector_allowed, decision, reason) remain co-located.
+- The decline of decision=refused for non-consumer events is correct — reuse doesn't apply to push runs, so decision=not-applicable avoids misreporting. The class= 3-class vocabulary rationale is fine; the truth fields policy=/event_class= sit alongside it.
+- Verifier pins updated consistently (NEXTEST_REUSE_SUMMARY_ENV_LINES/..._ASSIGNMENTS → 'unknown').
+Gates at head (worktree 7039992)
+- verify_ci_workflow_hygiene.py → OK: CI workflow hygiene verifier passed.
+- test_verify_ci_workflow_hygiene.py → OK: CI workflow hygiene verifier self-tests passed.
+Round-1 verified-sound items (fidelity of all three summaries; restore-result/restore-reason on all 4 restore branches; fabricated-summary fix + its pins; partition wrapper correctness in both files) carry forward unchanged — backtester-ci.yml is byte-identical to round 1.
+Approve.
+GPT: 
+• REQUEST_CHANGES
+
+  Finding:
+
+  - scripts/verify_ci_workflow_hygiene.py:839: The BVS
+    partition wrapper guard still does not pin the if [[ "$rc"
+    -ne 0 ]] branch that consumes the captured exit code.
+    BVS_PARTITION_FAILURE_WRAPPER ends at set -e, so a mutation
+    changing the branch to if [[ "${shard}" == "never" ]]; then
+    still passes backtester_test_shard_errors() with NO_ERRORS.
+    That means the verifier can accept a BVS workflow that tees
+    output and captures PIPESTATUS[0] but never increments
+    failures, reopening the round-1 class of issue.
+
+  Evidence:
+
+  - Reviewed 73de51b..7039992.
+  - git diff --check 73de51b 7039992 passed.
+  - python3 scripts/verify_ci_workflow_hygiene.py passed in a
+    detached temp worktree at 7039992.
+
+  - Targeted in-memory mutation of .github/workflows/
+    backtester-ci.yml produced NO_ERRORS, confirming the guard
+    gap.
+
+  - Could not verify live PR checks: gh pr checks failed with
+    GitHub GraphQL Forbidden.
+
+---
+
+so why are we keep having new findings?
+
+---
+
+so this does not sound right in the right direction

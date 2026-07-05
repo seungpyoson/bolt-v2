@@ -13795,6 +13795,30 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     )
     if bvs_job_body_boundary_errors:
         raise AssertionError(f"backtester job body edit must not trip top-level boundary, got: {bvs_job_body_boundary_errors}")
+    bvs_duplicate_env_path = replace_once(
+        real_backtester_workflow,
+        "permissions:\n",
+        "env:\n  PATH: /tmp/shim\npermissions:\n",
+    )
+    bvs_duplicate_env_path_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_duplicate_env_path}
+    )
+    assert any(
+        "backtester-ci.yml duplicate top-level key 'env'" in error
+        for error in bvs_duplicate_env_path_errors
+    ), bvs_duplicate_env_path_errors
+    bvs_duplicate_jobs = replace_once(
+        real_backtester_workflow,
+        "permissions:\n",
+        "jobs: {}\npermissions:\n",
+    )
+    bvs_duplicate_jobs_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_duplicate_jobs}
+    )
+    assert any(
+        "backtester-ci.yml duplicate top-level key 'jobs'" in error
+        for error in bvs_duplicate_jobs_errors
+    ), bvs_duplicate_jobs_errors
     bad = """jobs:
   test-archive:
     name: bvs-test archive
@@ -15960,6 +15984,18 @@ def main() -> int:
     )
     if root_job_body_boundary_errors:
         raise AssertionError(f"root job body edit must not trip top-level boundary, got: {root_job_body_boundary_errors}")
+    root_duplicate_env_path = replace_once(
+        real_ci_workflow,
+        "permissions:\n",
+        "env:\n  PATH: /tmp/shim\npermissions:\n",
+    )
+    assert_error("ci.yml duplicate top-level key 'env'", root_duplicate_env_path)
+    root_duplicate_jobs = replace_once(
+        real_ci_workflow,
+        "permissions:\n",
+        "jobs: {}\npermissions:\n",
+    )
+    assert_error("ci.yml duplicate top-level key 'jobs'", root_duplicate_jobs)
     if "  test-archive:\n" not in BASE_WORKFLOW or "      - name: Run nextest archive partitions\n" not in BASE_WORKFLOW:
         raise AssertionError("BASE_WORKFLOW must include the root test-archive partition fixture")
     real_ci_errors = load_verifier().verify_text(

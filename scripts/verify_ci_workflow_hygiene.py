@@ -12624,6 +12624,7 @@ PARTITION_WORKFLOW_TOP_LEVEL_KEYS = frozenset(
 def partition_workflow_top_level_key_errors(workflow_text: str, workflow_name: str) -> list[str]:
     errors: list[str] = []
     allowed_keys = ", ".join(sorted(PARTITION_WORKFLOW_TOP_LEVEL_KEYS))
+    seen_keys: set[str] = set()
     for line in workflow_text.splitlines():
         structural = workflow_yaml_structural_line(line).rstrip()
         if not structural.strip() or structural.startswith((" ", "\t")):
@@ -12632,6 +12633,10 @@ def partition_workflow_top_level_key_errors(workflow_text: str, workflow_name: s
         entry = structural
         if match is not None:
             entry = unquote_yaml_scalar(match.group(1))
+            if entry in seen_keys:
+                errors.append(f"{workflow_name} duplicate top-level key {entry!r} is not allowed")
+            else:
+                seen_keys.add(entry)
         if entry not in PARTITION_WORKFLOW_TOP_LEVEL_KEYS:
             errors.append(
                 f"{workflow_name} top-level entry {entry!r} is not allowed; "

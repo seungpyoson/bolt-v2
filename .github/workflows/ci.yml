@@ -883,7 +883,7 @@ jobs:
 
       - name: Restore nextest archive from S3
         id: nextest-archive-cache
-        if: steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success'
+        if: ${{ false && steps.nextest-artifact-cache.outputs.eligible == 'true' && steps.nextest-artifact-cache-aws.outcome == 'success' }}
         env:
           CACHE_KEY: ${{ steps.root-nextest-cache-keys.outputs.nextest_archive_cache_key }}
           DIGEST: ${{ needs.nextest-fingerprint.outputs.nextest_digest }}

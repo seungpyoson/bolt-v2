@@ -767,6 +767,29 @@ fn manual_recovery_refuses_store_fail_closed_state_and_audits() {
 }
 
 #[test]
+fn manual_recovery_refuses_store_load_io_error_and_audits() {
+    let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    store
+        .write_state_with_loss_snapshot(
+            &loss_governor_halted_state_with_reason_at(2_000, LossHaltReason::DailyLossLimit),
+            Some(&zero_loss_snapshot()),
+        )
+        .expect("initial state should persist before IO fault");
+    fs::remove_file(store.path()).expect("state file should be removable");
+    fs::create_dir(store.path()).expect("directory at state path should force a read IO error");
+
+    let error = recover_loss_governor_manual_halt(&loaded, valid_command())
+        .expect_err("hard store-load IO error should refuse recovery");
+
+    assert!(
+        matches!(error, LossGovernorManualRecoveryError::StoreLoad(_)),
+        "hard store-load IO should remain the command error, got: {error}"
+    );
+    assert_single_refused_audit(&store, "kill-switch store load failed");
+}
+
+#[test]
 fn manual_recovery_refuses_missing_store_without_bootstrapping() {
     let (loaded, _temp) = loaded_with_enabled_loss_governor("state/missing-kill-switch.json");
 

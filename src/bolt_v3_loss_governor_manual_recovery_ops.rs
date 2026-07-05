@@ -15,7 +15,11 @@
 //! Operators rotate that audit file externally. The last audit record for a
 //! given attempt is authoritative: `attempted` is written before the state write,
 //! followed by `recovered` after a successful state write or `write-failed` when
-//! the write fails.
+//! the write fails. An audit trail ending in `attempted` while the state file is
+//! `Armed` means recovery succeeded but the terminal audit append was
+//! interrupted; the state file is authoritative, so cross-check it.
+//! `FailedManualIntervention` is terminal for this command, routes to
+//! `UnsupportedState`, and needs out-of-band repair.
 //!
 //! Refusals after config and store-path resolution are audited when the audit
 //! path is appendable. Pre-config failures and an unwritable audit path are the
@@ -366,9 +370,19 @@ pub fn recover_loss_governor_manual_halt(
         });
     }
 
-    let record = store
-        .load_recovery_record()
-        .map_err(LossGovernorManualRecoveryError::StoreLoad)?;
+    let record = match store.load_recovery_record() {
+        Ok(record) => record,
+        Err(error) => {
+            let error = LossGovernorManualRecoveryError::StoreLoad(error);
+            record_refused_manual_recovery_attempt(
+                &store,
+                &evidence,
+                command.now_ns,
+                &error.to_string(),
+            )?;
+            return Err(error);
+        }
+    };
     let current_state = match recoverable_current_state(&record, store.path().to_path_buf()) {
         Ok(current_state) => current_state,
         Err(error) => {
@@ -531,6 +545,9 @@ fn persist_manual_recovery_attempt(
             ..write_failed_manual_recovery
         };
         if let Err(audit_error) = store.append_loss_governor_manual_recovery(write_failed) {
+            if let Some(error) = repair_manual_recovery_audit_error(&audit_error) {
+                return Err(error);
+            }
             log::error!(
                 "failed to append write-failed loss-governor manual recovery audit line for {}: {audit_error}",
                 store.path().display()
@@ -767,20 +784,34 @@ mod tests {
     use crate::bolt_v3_kill_switch::KillSwitchHaltTrigger;
     use rust_decimal::Decimal;
 
+    enum FakeAppendResult {
+        Ok(usize),
+        TornAudit,
+    }
+
     struct FakeManualRecoveryStore {
         path: PathBuf,
         append_calls: RefCell<usize>,
         appended_records: RefCell<Vec<KillSwitchLossGovernorManualRecoveryRecord>>,
+        append_results: RefCell<VecDeque<FakeAppendResult>>,
         write_results: RefCell<VecDeque<bool>>,
         written_states: RefCell<Vec<KillSwitchState>>,
     }
 
     impl FakeManualRecoveryStore {
         fn new(write_results: impl IntoIterator<Item = bool>) -> Self {
+            Self::with_append_results(write_results, [])
+        }
+
+        fn with_append_results(
+            write_results: impl IntoIterator<Item = bool>,
+            append_results: impl IntoIterator<Item = FakeAppendResult>,
+        ) -> Self {
             Self {
                 path: PathBuf::from("state/kill-switch.json"),
                 append_calls: RefCell::new(0),
                 appended_records: RefCell::new(Vec::new()),
+                append_results: RefCell::new(append_results.into_iter().collect()),
                 write_results: RefCell::new(write_results.into_iter().collect()),
                 written_states: RefCell::new(Vec::new()),
             }
@@ -806,7 +837,17 @@ mod tests {
         ) -> Result<usize, KillSwitchStoreError> {
             *self.append_calls.borrow_mut() += 1;
             self.appended_records.borrow_mut().push(manual_recovery);
-            Ok(1)
+            match self.append_results.borrow_mut().pop_front() {
+                Some(FakeAppendResult::Ok(count)) => Ok(count),
+                None => Ok(1),
+                Some(FakeAppendResult::TornAudit) => {
+                    Err(KillSwitchStoreError::TornManualRecoveryAudit {
+                        path: self
+                            .path
+                            .with_file_name("kill-switch-manual-recoveries.jsonl"),
+                    })
+                }
+            }
         }
 
         fn write_state_with_loss_snapshot(
@@ -933,5 +974,48 @@ mod tests {
             written_states[1],
             KillSwitchState::FailedManualIntervention { .. }
         ));
+    }
+
+    #[test]
+    fn failed_recovery_state_write_with_torn_write_failed_audit_requires_repair_only() {
+        let store = FakeManualRecoveryStore::with_append_results(
+            [false],
+            [FakeAppendResult::Ok(1), FakeAppendResult::TornAudit],
+        );
+
+        let error = persist_manual_recovery_attempt(
+            &store,
+            &recovery_state(),
+            &loss_snapshot(),
+            manual_recovery_record(),
+        )
+        .expect_err("torn write-failed audit line should require audit repair");
+
+        assert!(
+            matches!(
+                error,
+                LossGovernorManualRecoveryError::RepairManualRecoveryAudit { .. }
+            ),
+            "torn write-failed audit append should not downgrade the halt, got: {error}"
+        );
+        assert_eq!(*store.append_calls.borrow(), 2);
+        let appended_records = store.appended_records();
+        assert_eq!(
+            appended_records[0].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Attempted)
+        );
+        assert_eq!(
+            appended_records[1].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::WriteFailed)
+        );
+        let written_states = store.written_states();
+        assert_eq!(written_states.len(), 1);
+        assert_eq!(written_states[0], KillSwitchState::Armed);
+        assert!(
+            !written_states
+                .iter()
+                .any(|state| matches!(state, KillSwitchState::FailedManualIntervention { .. })),
+            "torn write-failed audit must leave the original halt latched: {written_states:?}"
+        );
     }
 }

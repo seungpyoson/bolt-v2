@@ -209,10 +209,16 @@ pub fn write_backfill_accepted_tranche_manifest(
         &path,
         BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE,
         manifest,
-        BackfillAcceptedTrancheError::Serialize,
-        |path, error| BackfillAcceptedTrancheError::ReadExisting { path, error },
-        |path| BackfillAcceptedTrancheError::ExistingArtifactMismatch { path },
-        |path, error| BackfillAcceptedTrancheError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillAcceptedTrancheError::Serialize,
+            read_existing_error: |path, error| BackfillAcceptedTrancheError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| BackfillAcceptedTrancheError::ExistingArtifactMismatch { path },
+            write_error: |path, error| BackfillAcceptedTrancheError::Write { path, error },
+        },
     )?;
     Ok(BackfillAcceptedTrancheArtifact {
         path,

@@ -227,11 +227,16 @@ pub fn write_source_universe_conversion_run_plan(
         )
     })?;
     let path = output_dir.join(SOURCE_UNIVERSE_CONVERSION_RUN_PLAN_FILE);
-    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped_overwrite(
+    let rewrite = if spec.overwrite_existing_artifacts {
+        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite
+    } else {
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
+    };
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
         &path,
         SOURCE_UNIVERSE_CONVERSION_RUN_PLAN_FILE,
         &plan,
-        spec.overwrite_existing_artifacts,
+        rewrite,
         crate::reference_artifact::ReferenceArtifactErrorMappers {
             serialize_error: |error| {
                 anyhow::anyhow!("serialize source-universe conversion run-plan: {error}")

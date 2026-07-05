@@ -529,6 +529,7 @@ fn write_report(
         &path,
         NT_CATALOG_PROOF_REPORT_FILE,
         report,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
     )
     .with_context(|| format!("write NT catalog proof report {}", path.display()))?;
     Ok((path, written.pin.sha256, written.bytes))

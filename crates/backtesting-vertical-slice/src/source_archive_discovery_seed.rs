@@ -139,6 +139,7 @@ pub fn write_source_archive_discovery_seed(
         &path,
         SOURCE_ARCHIVE_DISCOVERY_SEED_FILE,
         &seed,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
     )
     .with_context(|| format!("write source archive discovery seed {}", path.display()))?;
 

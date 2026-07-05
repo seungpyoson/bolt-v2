@@ -647,10 +647,16 @@ pub fn write_coverage_ledger_artifact(
         &path,
         BACKFILL_COVERAGE_LEDGER_FILE,
         ledger,
-        BackfillCoverageWriteError::Serialize,
-        |path, error| BackfillCoverageWriteError::ReadExisting { path, error },
-        |path| BackfillCoverageWriteError::ExistingArtifactMismatch { path },
-        |path, error| BackfillCoverageWriteError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillCoverageWriteError::Serialize,
+            read_existing_error: |path, error| BackfillCoverageWriteError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| BackfillCoverageWriteError::ExistingArtifactMismatch { path },
+            write_error: |path, error| BackfillCoverageWriteError::Write { path, error },
+        },
     )?;
     Ok(BackfillCoverageLedgerArtifact {
         path,

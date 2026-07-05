@@ -841,6 +841,7 @@ fn write_report(
         &path,
         ARTIFACT_INDEX_COMMIT_PROOF_REPORT_FILE,
         report,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
     )
     .with_context(|| {
         format!(

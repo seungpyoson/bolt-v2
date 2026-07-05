@@ -333,10 +333,16 @@ pub fn write_backfill_readiness_report(
         &path,
         BACKFILL_READINESS_REPORT_FILE,
         report,
-        BackfillReadinessError::Serialize,
-        |path, error| BackfillReadinessError::ReadExisting { path, error },
-        |path| BackfillReadinessError::ExistingArtifactMismatch { path },
-        |path, error| BackfillReadinessError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillReadinessError::Serialize,
+            read_existing_error: |path, error| BackfillReadinessError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| BackfillReadinessError::ExistingArtifactMismatch { path },
+            write_error: |path, error| BackfillReadinessError::Write { path, error },
+        },
     )?;
     Ok(BackfillReadinessArtifact {
         path,

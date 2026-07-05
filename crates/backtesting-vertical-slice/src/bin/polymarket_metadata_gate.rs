@@ -49,6 +49,7 @@ fn main() -> Result<()> {
         &file_spec.output_path,
         POLYMARKET_METADATA_GATE_REPORT_SCHEMA_VERSION,
         &report,
+        backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::Overwrite,
     )
     .with_context(|| {
         format!(

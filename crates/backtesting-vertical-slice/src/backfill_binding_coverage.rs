@@ -231,10 +231,16 @@ pub fn write_backfill_binding_coverage_report(
         &path,
         BACKFILL_BINDING_COVERAGE_REPORT_FILE,
         report,
-        BackfillBindingCoverageError::Serialize,
-        |path, error| BackfillBindingCoverageError::ReadExisting { path, error },
-        |path| BackfillBindingCoverageError::ExistingArtifactMismatch { path },
-        |path, error| BackfillBindingCoverageError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillBindingCoverageError::Serialize,
+            read_existing_error: |path, error| BackfillBindingCoverageError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| BackfillBindingCoverageError::ExistingArtifactMismatch { path },
+            write_error: |path, error| BackfillBindingCoverageError::Write { path, error },
+        },
     )?;
     Ok(BackfillBindingCoverageArtifact {
         path,

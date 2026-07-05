@@ -440,11 +440,16 @@ pub fn write_backfill_execution_plan_with_overwrite(
         error: error.to_string(),
     })?;
     let path = output_dir.join(BACKFILL_EXECUTION_PLAN_FILE);
-    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped_overwrite(
+    let rewrite = if overwrite_existing {
+        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite
+    } else {
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
+    };
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
         &path,
         BACKFILL_EXECUTION_PLAN_FILE,
         plan,
-        overwrite_existing,
+        rewrite,
         crate::reference_artifact::ReferenceArtifactErrorMappers {
             serialize_error: BackfillExecutionPlanError::Serialize,
             read_existing_error: |path, error| BackfillExecutionPlanError::ReadExisting {

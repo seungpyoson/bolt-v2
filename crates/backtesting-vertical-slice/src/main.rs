@@ -621,6 +621,7 @@ mod tests {
             &path,
             BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
             &plan,
+            backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::Overwrite,
         )
         .unwrap();
         path
@@ -1010,11 +1011,11 @@ table_families = ["trades"]
             }],
             "blocking_issues": []
         });
-        backtesting_vertical_slice::reference_artifact::write_reference_artifact_with_len_overwrite(
+        backtesting_vertical_slice::reference_artifact::write_reference_artifact_with_len(
             &execution_plan_path,
             BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
             &execution_plan,
-            true,
+            backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::Overwrite,
         )
         .unwrap();
         let cli = Cli {
@@ -1051,11 +1052,11 @@ table_families = ["trades"]
             serde_json::from_slice(&fs::read(&execution_plan_path).unwrap()).unwrap();
         execution_plan["table_family"] =
             serde_json::Value::String(format!("{}-mismatch", spec.source_proof.table_family));
-        backtesting_vertical_slice::reference_artifact::write_reference_artifact_with_len_overwrite(
+        backtesting_vertical_slice::reference_artifact::write_reference_artifact_with_len(
             &execution_plan_path,
             BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
             &execution_plan,
-            true,
+            backtesting_vertical_slice::reference_artifact::ReferenceArtifactRewrite::Overwrite,
         )
         .unwrap();
         let cli = Cli {

@@ -318,10 +318,16 @@ pub fn write_source_proof_shortlist_report(
         &path,
         SOURCE_PROOF_SHORTLIST_REPORT_FILE,
         report,
-        SourceProofShortlistError::Serialize,
-        |path, error| SourceProofShortlistError::ReadExisting { path, error },
-        |path| SourceProofShortlistError::ExistingArtifactMismatch { path },
-        |path, error| SourceProofShortlistError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: SourceProofShortlistError::Serialize,
+            read_existing_error: |path, error| SourceProofShortlistError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| SourceProofShortlistError::ExistingArtifactMismatch { path },
+            write_error: |path, error| SourceProofShortlistError::Write { path, error },
+        },
     )?;
     Ok(SourceProofShortlistArtifact {
         path,

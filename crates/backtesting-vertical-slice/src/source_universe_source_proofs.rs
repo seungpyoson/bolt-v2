@@ -266,6 +266,7 @@ pub fn write_source_universe_source_proof_set(
         &path,
         SOURCE_UNIVERSE_SOURCE_PROOF_SET_FILE,
         &proof_set,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
     )
     .with_context(|| format!("write source-universe source-proof set {}", path.display()))?;
     Ok(SourceUniverseSourceProofSetArtifact {
@@ -464,6 +465,7 @@ fn evaluate_and_write_source_universe_source_proofs(
             &proof_path,
             SOURCE_PROOF_SCHEMA_VERSION,
             &proof,
+            crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
         )
         .with_context(|| format!("write source proof {}", proof_path.display()))?;
         let proof_artifact_path = portable_artifact_path_for_spec(&proof_path, &spec.output_dir)?;

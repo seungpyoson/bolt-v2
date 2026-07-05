@@ -293,10 +293,18 @@ pub fn write_backfill_source_proof_scope_report(
         &path,
         BACKFILL_SOURCE_PROOF_SCOPE_REPORT_FILE,
         report,
-        BackfillSourceProofScopeError::Serialize,
-        |path, error| BackfillSourceProofScopeError::ReadExisting { path, error },
-        |path| BackfillSourceProofScopeError::ExistingArtifactMismatch { path },
-        |path, error| BackfillSourceProofScopeError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillSourceProofScopeError::Serialize,
+            read_existing_error: |path, error| BackfillSourceProofScopeError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| BackfillSourceProofScopeError::ExistingArtifactMismatch {
+                path,
+            },
+            write_error: |path, error| BackfillSourceProofScopeError::Write { path, error },
+        },
     )?;
     Ok(BackfillSourceProofScopeArtifact {
         path,

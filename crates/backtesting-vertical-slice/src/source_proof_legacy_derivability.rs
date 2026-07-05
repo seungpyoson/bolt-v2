@@ -417,10 +417,20 @@ pub fn write_source_proof_legacy_derivability_report(
         &path,
         SOURCE_PROOF_LEGACY_DERIVABILITY_REPORT_FILE,
         report,
-        SourceProofLegacyDerivabilityWriteError::Serialize,
-        |path, error| SourceProofLegacyDerivabilityWriteError::ReadExisting { path, error },
-        |path| SourceProofLegacyDerivabilityWriteError::ExistingArtifactMismatch { path },
-        |path, error| SourceProofLegacyDerivabilityWriteError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: SourceProofLegacyDerivabilityWriteError::Serialize,
+            read_existing_error: |path, error| {
+                SourceProofLegacyDerivabilityWriteError::ReadExisting { path, error }
+            },
+            mismatch_error: |path| {
+                SourceProofLegacyDerivabilityWriteError::ExistingArtifactMismatch { path }
+            },
+            write_error: |path, error| SourceProofLegacyDerivabilityWriteError::Write {
+                path,
+                error,
+            },
+        },
     )?;
     Ok(SourceProofLegacyDerivabilityArtifact {
         path,

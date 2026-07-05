@@ -156,6 +156,7 @@ pub fn write_source_archive_index_source_universe_manifest(
         &path,
         SOURCE_ARCHIVE_INDEX_SOURCE_UNIVERSE_FILE,
         &manifest,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
     )
     .with_context(|| {
         format!(
@@ -178,6 +179,7 @@ pub fn write_source_archive_index_source_universe_manifest(
             &category_path,
             SOURCE_ARCHIVE_INDEX_SOURCE_UNIVERSE_SCHEMA_VERSION,
             &category_manifest,
+            crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
         )
         .with_context(|| {
             format!(

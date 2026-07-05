@@ -898,6 +898,7 @@ pub fn write_source_universe_batch_execution_report(
         &path,
         SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE,
         report,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
     )
     .with_context(|| format!("write batch execution report {}", path.display()))?;
     Ok(SourceUniverseBatchExecutionReportArtifact {

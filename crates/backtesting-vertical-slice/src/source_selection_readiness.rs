@@ -380,10 +380,18 @@ pub fn write_source_selection_readiness_report(
         &path,
         SOURCE_SELECTION_READINESS_REPORT_FILE,
         report,
-        SourceSelectionReadinessError::Serialize,
-        |path, error| SourceSelectionReadinessError::ReadExisting { path, error },
-        |path| SourceSelectionReadinessError::ExistingArtifactMismatch { path },
-        |path, error| SourceSelectionReadinessError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: SourceSelectionReadinessError::Serialize,
+            read_existing_error: |path, error| SourceSelectionReadinessError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| SourceSelectionReadinessError::ExistingArtifactMismatch {
+                path,
+            },
+            write_error: |path, error| SourceSelectionReadinessError::Write { path, error },
+        },
     )?;
 
     Ok(SourceSelectionReadinessArtifact {

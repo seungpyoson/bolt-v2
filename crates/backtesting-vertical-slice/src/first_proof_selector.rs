@@ -631,10 +631,16 @@ pub fn write_first_proof_event_count_ledger(
         output_path,
         FIRST_PROOF_EVENT_COUNT_LEDGER_SCHEMA_VERSION,
         report,
-        FirstProofSelectorError::Serialize,
-        |path, error| FirstProofSelectorError::ReadExisting { path, error },
-        |path| FirstProofSelectorError::ExistingArtifactMismatch { path },
-        |path, error| FirstProofSelectorError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: FirstProofSelectorError::Serialize,
+            read_existing_error: |path, error| FirstProofSelectorError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| FirstProofSelectorError::ExistingArtifactMismatch { path },
+            write_error: |path, error| FirstProofSelectorError::Write { path, error },
+        },
     )?;
     Ok(FirstProofEventCountLedgerArtifact {
         path: output_path.to_path_buf(),
@@ -658,10 +664,16 @@ pub fn write_first_proof_selector_report(
         &path,
         FIRST_PROOF_SELECTOR_REPORT_FILE,
         report,
-        FirstProofSelectorError::Serialize,
-        |path, error| FirstProofSelectorError::ReadExisting { path, error },
-        |path| FirstProofSelectorError::ExistingArtifactMismatch { path },
-        |path, error| FirstProofSelectorError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: FirstProofSelectorError::Serialize,
+            read_existing_error: |path, error| FirstProofSelectorError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| FirstProofSelectorError::ExistingArtifactMismatch { path },
+            write_error: |path, error| FirstProofSelectorError::Write { path, error },
+        },
     )?;
     Ok(FirstProofSelectorArtifact {
         path,

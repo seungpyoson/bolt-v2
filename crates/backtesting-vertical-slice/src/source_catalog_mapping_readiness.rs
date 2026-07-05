@@ -480,10 +480,17 @@ pub fn write_source_catalog_mapping_readiness_report(
         &path,
         SOURCE_CATALOG_MAPPING_READINESS_REPORT_FILE,
         report,
-        SourceCatalogMappingReadinessError::Serialize,
-        |path, error| SourceCatalogMappingReadinessError::ReadExisting { path, error },
-        |path| SourceCatalogMappingReadinessError::ExistingArtifactMismatch { path },
-        |path, error| SourceCatalogMappingReadinessError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: SourceCatalogMappingReadinessError::Serialize,
+            read_existing_error: |path, error| {
+                SourceCatalogMappingReadinessError::ReadExisting { path, error }
+            },
+            mismatch_error: |path| {
+                SourceCatalogMappingReadinessError::ExistingArtifactMismatch { path }
+            },
+            write_error: |path, error| SourceCatalogMappingReadinessError::Write { path, error },
+        },
     )?;
     Ok(SourceCatalogMappingReadinessArtifact {
         path,

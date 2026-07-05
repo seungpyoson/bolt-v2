@@ -252,10 +252,18 @@ pub fn write_source_proof_migration_preflight_report(
         &path,
         SOURCE_PROOF_MIGRATION_PREFLIGHT_REPORT_FILE,
         report,
-        SourceProofMigrationPreflightError::Serialize,
-        |path, error| SourceProofMigrationPreflightError::ReadExisting { path, error },
-        |path| SourceProofMigrationPreflightError::ExistingArtifactMismatch { path },
-        |path, error| SourceProofMigrationPreflightError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: SourceProofMigrationPreflightError::Serialize,
+            read_existing_error: |path, error| SourceProofMigrationPreflightError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| {
+                SourceProofMigrationPreflightError::ExistingArtifactMismatch { path }
+            },
+            write_error: |path, error| SourceProofMigrationPreflightError::Write { path, error },
+        },
     )?;
     Ok(SourceProofMigrationPreflightArtifact {
         path,

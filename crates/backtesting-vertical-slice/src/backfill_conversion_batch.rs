@@ -376,10 +376,18 @@ pub fn write_backfill_conversion_batch_plan(
         &path,
         BACKFILL_CONVERSION_BATCH_PLAN_FILE,
         plan,
-        BackfillConversionBatchPlanError::Serialize,
-        |path, error| BackfillConversionBatchPlanError::ReadExisting { path, error },
-        |path| BackfillConversionBatchPlanError::ExistingArtifactMismatch { path },
-        |path, error| BackfillConversionBatchPlanError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillConversionBatchPlanError::Serialize,
+            read_existing_error: |path, error| BackfillConversionBatchPlanError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| {
+                BackfillConversionBatchPlanError::ExistingArtifactMismatch { path }
+            },
+            write_error: |path, error| BackfillConversionBatchPlanError::Write { path, error },
+        },
     )?;
     Ok(BackfillConversionBatchPlanArtifact {
         path,

@@ -277,6 +277,7 @@ pub fn write_selected_source_slice(
         &spec.report_path,
         SELECTED_SOURCE_SLICE_REPORT_SCHEMA_VERSION,
         &report,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
     )
     .with_context(|| {
         format!(

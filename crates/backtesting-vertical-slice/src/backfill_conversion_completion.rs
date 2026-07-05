@@ -515,10 +515,20 @@ pub fn write_backfill_conversion_completion_ledger(
         &path,
         BACKFILL_CONVERSION_COMPLETION_LEDGER_FILE,
         ledger,
-        BackfillConversionCompletionLedgerError::Serialize,
-        |path, error| BackfillConversionCompletionLedgerError::ReadExisting { path, error },
-        |path| BackfillConversionCompletionLedgerError::ExistingArtifactMismatch { path },
-        |path, error| BackfillConversionCompletionLedgerError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillConversionCompletionLedgerError::Serialize,
+            read_existing_error: |path, error| {
+                BackfillConversionCompletionLedgerError::ReadExisting { path, error }
+            },
+            mismatch_error: |path| {
+                BackfillConversionCompletionLedgerError::ExistingArtifactMismatch { path }
+            },
+            write_error: |path, error| BackfillConversionCompletionLedgerError::Write {
+                path,
+                error,
+            },
+        },
     )?;
     Ok(BackfillConversionCompletionLedgerArtifact {
         path,

@@ -242,11 +242,16 @@ pub fn write_source_universe_object_gate_materialization(
         )
     })?;
     let path = output_dir.join(SOURCE_UNIVERSE_OBJECT_GATES_FILE);
-    let written = crate::reference_artifact::write_reference_artifact_with_len_overwrite(
+    let rewrite = if spec.overwrite_existing_artifacts {
+        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite
+    } else {
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
+    };
+    let written = crate::reference_artifact::write_reference_artifact_with_len(
         &path,
         SOURCE_UNIVERSE_OBJECT_GATES_FILE,
         &materialization,
-        spec.overwrite_existing_artifacts,
+        rewrite,
     )
     .with_context(|| {
         format!(

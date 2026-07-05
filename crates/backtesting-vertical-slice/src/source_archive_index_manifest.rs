@@ -136,6 +136,7 @@ pub fn write_source_archive_index_manifest(
         &path,
         SOURCE_ARCHIVE_INDEX_MANIFEST_FILE,
         &manifest,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
     )
     .with_context(|| format!("write source archive index manifest {}", path.display()))?;
 

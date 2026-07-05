@@ -191,6 +191,7 @@ pub fn write_source_universe_execution_acceptance_ledger(
         &path,
         SOURCE_UNIVERSE_EXECUTION_ACCEPTANCE_FILE,
         &ledger,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
     )
     .with_context(|| {
         format!(

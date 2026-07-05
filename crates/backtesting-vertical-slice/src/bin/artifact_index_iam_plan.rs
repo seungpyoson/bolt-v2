@@ -5,9 +5,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use backtesting_vertical_slice::artifact_index_iam_policy::{
-    ARTIFACT_INDEX_PRODUCER_IAM_PROVISIONING_PLAN_ROLE, ArtifactIndexProducerIamProvisioningPlan,
-    ArtifactIndexProducerIamProvisioningPlanSpec, artifact_index_producer_iam_provisioning_plan,
+    ArtifactIndexProducerIamProvisioningPlan, ArtifactIndexProducerIamProvisioningPlanSpec,
+    artifact_index_producer_iam_provisioning_plan,
 };
+use backtesting_vertical_slice::atomic_write;
 use clap::Parser;
 use serde::Deserialize;
 
@@ -70,11 +71,8 @@ fn write_plan(path: &Path, plan: &ArtifactIndexProducerIamProvisioningPlan) -> R
         fs::create_dir_all(parent)
             .with_context(|| format!("create provisioning plan directory {}", parent.display()))?;
     }
-    backtesting_vertical_slice::reference_artifact::write_reference_artifact(
-        path,
-        ARTIFACT_INDEX_PRODUCER_IAM_PROVISIONING_PLAN_ROLE,
-        plan,
-    )
-    .map(|_| ())
-    .with_context(|| format!("write provisioning plan {}", path.display()))
+    let mut bytes = serde_json::to_vec_pretty(plan).context("serialize provisioning plan")?;
+    bytes.push(b'\n');
+    atomic_write(path, &bytes)
+        .with_context(|| format!("write provisioning plan {}", path.display()))
 }

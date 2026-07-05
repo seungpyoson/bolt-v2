@@ -235,10 +235,16 @@ pub fn write_backfill_preflight_report(
         &path,
         BACKFILL_PREFLIGHT_REPORT_FILE,
         report,
-        BackfillPreflightError::Serialize,
-        |path, error| BackfillPreflightError::ReadExisting { path, error },
-        |path| BackfillPreflightError::ExistingArtifactMismatch { path },
-        |path, error| BackfillPreflightError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillPreflightError::Serialize,
+            read_existing_error: |path, error| BackfillPreflightError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| BackfillPreflightError::ExistingArtifactMismatch { path },
+            write_error: |path, error| BackfillPreflightError::Write { path, error },
+        },
     )?;
     Ok(BackfillPreflightReportArtifact {
         path,

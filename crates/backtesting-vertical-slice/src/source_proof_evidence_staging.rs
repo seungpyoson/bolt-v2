@@ -503,10 +503,20 @@ fn write_manifest(
         &path,
         SOURCE_PROOF_EVIDENCE_STAGING_MANIFEST_FILE,
         manifest,
-        SourceProofEvidenceStagingError::Serialize,
-        |path, error| SourceProofEvidenceStagingError::ReadExistingManifest { path, error },
-        |path| SourceProofEvidenceStagingError::ExistingManifestMismatch { path },
-        |path, error| SourceProofEvidenceStagingError::WriteManifest { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: SourceProofEvidenceStagingError::Serialize,
+            read_existing_error: |path, error| {
+                SourceProofEvidenceStagingError::ReadExistingManifest { path, error }
+            },
+            mismatch_error: |path| {
+                SourceProofEvidenceStagingError::ExistingManifestMismatch { path }
+            },
+            write_error: |path, error| SourceProofEvidenceStagingError::WriteManifest {
+                path,
+                error,
+            },
+        },
     )?;
     Ok((path, written.pin.sha256, written.bytes))
 }

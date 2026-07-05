@@ -86,6 +86,16 @@ const COMPACT_VEC_HASH_ALLOWLIST: &[&str] = &[
 // and assertions inside src-resident test modules.
 const COMPACT_STRING_HASH_ALLOWLIST: &[&str] = &["catalog_projection", "operator", "source_proof"];
 const REFERENCE_ARTIFACT_FACILITY_MODULE: &str = "reference_artifact";
+// These modules intentionally use the facility's canonical bytes for
+// object-store/create-only or one-off semantic artifacts. New direct
+// canonical_json_bytes + hash combinations must either move behind the facility
+// or be named here with a non-reference-artifact justification.
+const CANONICAL_BYTES_HASH_ALLOWLIST: &[&str] = &[
+    "artifact_index_commit_proof",
+    "artifact_store",
+    "nt_catalog_capability",
+    "pmxt_one_off_backfill_projection",
+];
 // PR-A cannot rewrite source-fenced contracts because committed `specs/` pins
 // their source bytes and data reconciliation belongs to PR-B.
 const SOURCE_FENCED_REFERENCE_ARTIFACT_ALLOWLIST: &[&str] = &["source_proof_admissibility"];
@@ -242,6 +252,10 @@ fn reference_json_artifact_hashing_is_centralized() -> Result<()> {
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
+    let canonical_bytes_allowlist = CANONICAL_BYTES_HASH_ALLOWLIST
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
     let mut offenders = Vec::new();
 
     for path in rust_source_files_under(&src_root)? {
@@ -251,13 +265,15 @@ fn reference_json_artifact_hashing_is_centralized() -> Result<()> {
         if module == REFERENCE_ARTIFACT_FACILITY_MODULE
             || compact_vec_allowlist.contains(module.as_str())
             || compact_string_allowlist.contains(module.as_str())
+            || canonical_bytes_allowlist.contains(module.as_str())
             || source_fenced_allowlist.contains(module.as_str())
         {
             continue;
         }
         let serializes_json = source.contains("serde_json::to_vec")
             || source.contains("serde_json::to_string")
-            || source.contains("serde_json::to_writer");
+            || source.contains("serde_json::to_writer")
+            || source.contains("canonical_json_bytes");
         let computes_sha256 = source.contains("Sha256") || source.contains("sha256_hex");
         if serializes_json && computes_sha256 {
             offenders.push(module);

@@ -24,6 +24,12 @@ pub struct ReferenceArtifactWrite {
     pub bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceArtifactRewrite {
+    FailOnDirty,
+    Overwrite,
+}
+
 pub struct ReferenceArtifactErrorMappers<
     SerializeError,
     ReadExistingError,
@@ -78,23 +84,16 @@ pub fn write_reference_artifact<T: Serialize>(
     path: impl AsRef<Path>,
     role: impl Into<String>,
     value: &T,
+    rewrite: ReferenceArtifactRewrite,
 ) -> Result<ReferenceArtifactPin> {
-    Ok(write_reference_artifact_with_len(path, role, value)?.pin)
+    Ok(write_reference_artifact_with_len(path, role, value, rewrite)?.pin)
 }
 
 pub fn write_reference_artifact_with_len<T: Serialize>(
     path: impl AsRef<Path>,
     role: impl Into<String>,
     value: &T,
-) -> Result<ReferenceArtifactWrite> {
-    write_reference_artifact_with_len_overwrite(path, role, value, false)
-}
-
-pub fn write_reference_artifact_with_len_overwrite<T: Serialize>(
-    path: impl AsRef<Path>,
-    role: impl Into<String>,
-    value: &T,
-    overwrite_existing: bool,
+    rewrite: ReferenceArtifactRewrite,
 ) -> Result<ReferenceArtifactWrite> {
     let path = path.as_ref();
     let bytes = canonical_json_bytes(value)?;
@@ -104,16 +103,24 @@ pub fn write_reference_artifact_with_len_overwrite<T: Serialize>(
             error: error.to_string(),
         })?;
         if existing != bytes {
-            if overwrite_existing {
-                atomic_write(path, &bytes).map_err(|error| ReferenceArtifactError::Write {
-                    path: path.display().to_string(),
-                    error: error.to_string(),
-                })?;
-            } else {
-                return Err(ReferenceArtifactError::ExistingArtifactMismatch {
-                    path: path.display().to_string(),
-                });
+            match rewrite {
+                ReferenceArtifactRewrite::FailOnDirty => {
+                    return Err(ReferenceArtifactError::ExistingArtifactMismatch {
+                        path: path.display().to_string(),
+                    });
+                }
+                ReferenceArtifactRewrite::Overwrite => {
+                    atomic_write(path, &bytes).map_err(|error| ReferenceArtifactError::Write {
+                        path: path.display().to_string(),
+                        error: error.to_string(),
+                    })?;
+                }
             }
+        } else if rewrite == ReferenceArtifactRewrite::Overwrite {
+            atomic_write(path, &bytes).map_err(|error| ReferenceArtifactError::Write {
+                path: path.display().to_string(),
+                error: error.to_string(),
+            })?;
         }
     } else {
         atomic_write(path, &bytes).map_err(|error| ReferenceArtifactError::Write {
@@ -143,40 +150,7 @@ pub fn write_reference_artifact_with_len_mapped<
     path: impl AsRef<Path>,
     role: impl Into<String>,
     value: &T,
-    serialize_error: SerializeError,
-    read_existing_error: ReadExistingError,
-    mismatch_error: MismatchError,
-    write_error: WriteError,
-) -> std::result::Result<ReferenceArtifactWrite, E>
-where
-    T: Serialize,
-    SerializeError: FnOnce(String) -> E,
-    ReadExistingError: FnOnce(String, String) -> E,
-    MismatchError: FnOnce(String) -> E,
-    WriteError: FnOnce(String, String) -> E,
-{
-    let mappers = ReferenceArtifactErrorMappers {
-        serialize_error,
-        read_existing_error,
-        mismatch_error,
-        write_error,
-    };
-    write_reference_artifact_with_len(path, role, value)
-        .map_err(|error| map_reference_artifact_error(error, mappers))
-}
-
-pub fn write_reference_artifact_with_len_mapped_overwrite<
-    T,
-    E,
-    SerializeError,
-    ReadExistingError,
-    MismatchError,
-    WriteError,
->(
-    path: impl AsRef<Path>,
-    role: impl Into<String>,
-    value: &T,
-    overwrite_existing: bool,
+    rewrite: ReferenceArtifactRewrite,
     mappers: ReferenceArtifactErrorMappers<
         SerializeError,
         ReadExistingError,
@@ -191,7 +165,7 @@ where
     MismatchError: FnOnce(String) -> E,
     WriteError: FnOnce(String, String) -> E,
 {
-    write_reference_artifact_with_len_overwrite(path, role, value, overwrite_existing)
+    write_reference_artifact_with_len(path, role, value, rewrite)
         .map_err(|error| map_reference_artifact_error(error, mappers))
 }
 
@@ -221,5 +195,68 @@ where
         ReferenceArtifactError::ReadExisting { path, error } => read_existing_error(path, error),
         ReferenceArtifactError::ExistingArtifactMismatch { path } => mismatch_error(path),
         ReferenceArtifactError::Write { path, error } => write_error(path, error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn fail_on_dirty_rejects_mismatched_existing_artifact() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("artifact.json");
+        write_reference_artifact_with_len(
+            &path,
+            "test-role",
+            &json!({"value": "first"}),
+            ReferenceArtifactRewrite::FailOnDirty,
+        )
+        .unwrap();
+        fs::write(&path, br#"{"dirty":true}"#).unwrap();
+
+        let err = write_reference_artifact_with_len(
+            &path,
+            "test-role",
+            &json!({"value": "second"}),
+            ReferenceArtifactRewrite::FailOnDirty,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            ReferenceArtifactError::ExistingArtifactMismatch {
+                path: path.display().to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn overwrite_refreshes_bytes_and_returns_new_pin_hash() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("artifact.json");
+        write_reference_artifact_with_len(
+            &path,
+            "test-role",
+            &json!({"value": "first"}),
+            ReferenceArtifactRewrite::Overwrite,
+        )
+        .unwrap();
+        fs::write(&path, br#"{"dirty":true}"#).unwrap();
+        let replacement = json!({"value": "second"});
+        let expected_bytes = canonical_json_bytes(&replacement).unwrap();
+
+        let written = write_reference_artifact_with_len(
+            &path,
+            "test-role",
+            &replacement,
+            ReferenceArtifactRewrite::Overwrite,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), expected_bytes);
+        assert_eq!(written.pin.sha256, sha256_hex(&expected_bytes));
+        assert_eq!(written.bytes, expected_bytes.len() as u64);
     }
 }

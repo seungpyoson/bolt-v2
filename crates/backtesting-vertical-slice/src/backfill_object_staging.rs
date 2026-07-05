@@ -463,10 +463,15 @@ fn write_manifest(
         &path,
         BACKFILL_OBJECT_STAGING_MANIFEST_FILE,
         manifest,
-        BackfillObjectStagingError::Serialize,
-        |path, error| BackfillObjectStagingError::ReadExistingManifest { path, error },
-        |path| BackfillObjectStagingError::ExistingManifestMismatch { path },
-        |path, error| BackfillObjectStagingError::WriteManifest { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillObjectStagingError::Serialize,
+            read_existing_error: |path, error| {
+                BackfillObjectStagingError::ReadExistingManifest { path, error }
+            },
+            mismatch_error: |path| BackfillObjectStagingError::ExistingManifestMismatch { path },
+            write_error: |path, error| BackfillObjectStagingError::WriteManifest { path, error },
+        },
     )?;
     Ok((path, written.pin.sha256, written.bytes))
 }

@@ -326,6 +326,7 @@ pub fn write_venue_scale_conversion_acceptance_ledger(
         &path,
         VENUE_SCALE_CONVERSION_ACCEPTANCE_LEDGER_FILE,
         &ledger,
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
     )
     .with_context(|| {
         format!(

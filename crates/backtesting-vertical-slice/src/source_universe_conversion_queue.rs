@@ -192,11 +192,16 @@ pub fn write_source_universe_conversion_queue(
         )
     })?;
     let path = output_dir.join(SOURCE_UNIVERSE_CONVERSION_QUEUE_FILE);
-    let written = crate::reference_artifact::write_reference_artifact_with_len_overwrite(
+    let rewrite = if spec.overwrite_existing_artifacts {
+        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite
+    } else {
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
+    };
+    let written = crate::reference_artifact::write_reference_artifact_with_len(
         &path,
         SOURCE_UNIVERSE_CONVERSION_QUEUE_FILE,
         &queue,
-        spec.overwrite_existing_artifacts,
+        rewrite,
     )
     .with_context(|| format!("write source-universe conversion queue {}", path.display()))?;
 

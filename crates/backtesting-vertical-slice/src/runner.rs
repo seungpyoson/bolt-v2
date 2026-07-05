@@ -3199,11 +3199,11 @@ mod tests {
                 "did_not_arm_reason": guard.did_not_arm_reason.clone()
             }
         });
-        crate::reference_artifact::write_reference_artifact_with_len_overwrite(
+        crate::reference_artifact::write_reference_artifact_with_len(
             &path,
             ISSUE_789_RESULT_ARTIFACT_ROLE,
             &payload,
-            true,
+            crate::reference_artifact::ReferenceArtifactRewrite::Overwrite,
         )
         .with_context(|| format!("write issue #789 result artifact {}", path.display()))?;
         Ok(())

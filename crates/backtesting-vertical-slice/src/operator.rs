@@ -1507,11 +1507,11 @@ where
         .contract
         .validate()
         .map_err(|error| anyhow::anyhow!("durable result contract validation failed: {error}"))?;
-    crate::reference_artifact::write_reference_artifact_with_len_overwrite(
+    crate::reference_artifact::write_reference_artifact_with_len(
         &artifacts.contract_path,
         crate::result_contract::RESULT_CONTRACT_VERSION,
         &artifacts.output.contract,
-        true,
+        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite,
     )
     .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
     persist_durable_contract_artifacts(&writer, &artifact_root, &artifacts).await?;

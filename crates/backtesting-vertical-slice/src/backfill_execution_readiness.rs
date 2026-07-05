@@ -635,10 +635,18 @@ pub fn write_backfill_execution_readiness_report(
         &path,
         BACKFILL_EXECUTION_READINESS_REPORT_FILE,
         report,
-        BackfillExecutionReadinessError::Serialize,
-        |path, error| BackfillExecutionReadinessError::ReadExisting { path, error },
-        |path| BackfillExecutionReadinessError::ExistingArtifactMismatch { path },
-        |path, error| BackfillExecutionReadinessError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillExecutionReadinessError::Serialize,
+            read_existing_error: |path, error| BackfillExecutionReadinessError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| {
+                BackfillExecutionReadinessError::ExistingArtifactMismatch { path }
+            },
+            write_error: |path, error| BackfillExecutionReadinessError::Write { path, error },
+        },
     )?;
     Ok(BackfillExecutionReadinessArtifact {
         path,

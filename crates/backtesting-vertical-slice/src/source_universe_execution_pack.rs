@@ -362,19 +362,23 @@ pub fn write_source_universe_execution_pack(
         let accepted_tranche =
             accepted_tranche_for_record(record, proof, &operator_inputs.table_family, gate);
         let accepted_tranche_path = run_dir.join(BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE);
-        let accepted_tranche_artifact =
-            crate::reference_artifact::write_reference_artifact_with_len_overwrite(
-                &accepted_tranche_path,
-                BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE,
-                &accepted_tranche,
-                spec.overwrite_existing_artifacts,
+        let rewrite = if spec.overwrite_existing_artifacts {
+            crate::reference_artifact::ReferenceArtifactRewrite::Overwrite
+        } else {
+            crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
+        };
+        let accepted_tranche_artifact = crate::reference_artifact::write_reference_artifact_with_len(
+            &accepted_tranche_path,
+            BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE,
+            &accepted_tranche,
+            rewrite,
+        )
+        .with_context(|| {
+            format!(
+                "write source-universe accepted tranche {}",
+                accepted_tranche_path.display()
             )
-            .with_context(|| {
-                format!(
-                    "write source-universe accepted tranche {}",
-                    accepted_tranche_path.display()
-                )
-            })?;
+        })?;
         let accepted_tranche_hash = accepted_tranche_artifact.pin.sha256.clone();
 
         let execution_plan = evaluate_backfill_execution_plan(
@@ -531,11 +535,16 @@ pub fn write_source_universe_execution_pack(
     };
 
     let pack_path = output_dir.join(SOURCE_UNIVERSE_EXECUTION_PACK_FILE);
-    let pack_artifact = crate::reference_artifact::write_reference_artifact_with_len_overwrite(
+    let rewrite = if spec.overwrite_existing_artifacts {
+        crate::reference_artifact::ReferenceArtifactRewrite::Overwrite
+    } else {
+        crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty
+    };
+    let pack_artifact = crate::reference_artifact::write_reference_artifact_with_len(
         &pack_path,
         SOURCE_UNIVERSE_EXECUTION_PACK_FILE,
         &pack,
-        spec.overwrite_existing_artifacts,
+        rewrite,
     )
     .with_context(|| {
         format!(

@@ -18,6 +18,7 @@ import sys
 import tempfile
 import textwrap
 import time
+from typing import Callable
 
 from ci_test_manifest import CiTestManifest
 
@@ -275,11 +276,30 @@ jobs:
             --ref "${{ github.ref }}" \
             | tee -a "$GITHUB_OUTPUT"
 
+      - name: Summarize CI classification
+        if: always()
+        shell: bash
+        env:
+          CI_POLICY_PATH: ${{ steps.policy.outputs.ci_policy_path }}
+          FULL_CI_REQUIRED: ${{ steps.policy.outputs.full_ci_required }}
+          FULL_CI_DEFERRED: ${{ steps.policy.outputs.full_ci_deferred }}
+          EXPECTED_EVENT_CLASS: ${{ steps.policy.outputs.expected_event_class }}
+          POLICY_REASON: ${{ steps.policy.outputs.reason }}
+        run: |
+          class="promoted-cheap"
+          if [[ "$FULL_CI_REQUIRED" == "true" ]]; then
+            class="heavy proof"
+          elif [[ "$CI_POLICY_PATH" == "iteration" ]]; then
+            class="iteration lane"
+          fi
+          echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} event_class=${EXPECTED_EVENT_CLASS:-unknown} reason=${POLICY_REASON:-missing}" >> "$GITHUB_STEP_SUMMARY"
+
   detector:
     name: detector
     outputs:
       build_required: ${{ steps.build_required.outputs.value }}
       fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}
+      fingerprint_reuse_reason: ${{ steps.fingerprint_reuse_allowed.outputs.reason }}
       docs_only: ${{ steps.docs_only.outputs.docs_only }}
     runs-on: ubuntu-latest
     steps:
@@ -448,10 +468,13 @@ jobs:
         run: |
           if [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=false" >> "$GITHUB_OUTPUT"
+            echo "reason=governance-changed" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
+            echo "reason=consumer-event" >> "$GITHUB_OUTPUT"
           else
             echo "value=false" >> "$GITHUB_OUTPUT"
+            echo "reason=non-consumer-event" >> "$GITHUB_OUTPUT"
           fi
 
   deny:
@@ -743,6 +766,8 @@ jobs:
           fi
           aws s3 cp "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}" "$NEXTEST_ARCHIVE_PATH"
           echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          echo "restore-result=miss" >> "$GITHUB_OUTPUT"
+          echo "restore-reason=fixture-miss" >> "$GITHUB_OUTPUT"
           exit 0
       - name: Restore root binary sidecars from S3
         id: root-bin-sidecars-cache
@@ -759,7 +784,49 @@ jobs:
           fi
           aws s3 cp "s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}" "$ROOT_BIN_SIDECARS_PATH"
           echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          echo "restore-result=miss" >> "$GITHUB_OUTPUT"
+          echo "restore-reason=fixture-miss" >> "$GITHUB_OUTPUT"
           exit 0
+      - name: Summarize nextest archive S3 state
+        if: always()
+        shell: bash
+        env:
+          S3_ELIGIBLE: ${{ steps.nextest-artifact-cache.outputs.eligible || 'false' }}
+          S3_CACHE_MODE: ${{ steps.nextest-artifact-cache.outputs.cache_mode || 'none' }}
+          S3_AWS_OUTCOME: ${{ steps.nextest-artifact-cache-aws.outcome }}
+          NEXTEST_RESTORE_OUTCOME: ${{ steps.nextest-archive-cache.outcome }}
+          NEXTEST_RESTORE_HIT: ${{ steps.nextest-archive-cache.outputs.cache-hit || '' }}
+          NEXTEST_RESTORE_RESULT: ${{ steps.nextest-archive-cache.outputs.restore-result || '' }}
+          NEXTEST_RESTORE_REASON: ${{ steps.nextest-archive-cache.outputs.restore-reason || '' }}
+          SIDECAR_RESTORE_OUTCOME: ${{ steps.root-bin-sidecars-cache.outcome }}
+          SIDECAR_RESTORE_HIT: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit || '' }}
+          SIDECAR_RESTORE_RESULT: ${{ steps.root-bin-sidecars-cache.outputs.restore-result || '' }}
+          SIDECAR_RESTORE_REASON: ${{ steps.root-bin-sidecars-cache.outputs.restore-reason || '' }}
+        run: |
+          restore_state() {
+            local eligible="$1" aws="$2" outcome="$3" result="$4" hit="$5"
+            if [[ "$eligible" != "true" ]]; then echo "ineligible"; return; fi
+            if [[ "$aws" != "success" ]]; then echo "skipped"; return; fi
+            if [[ "$outcome" == "failure" || "$result" == "error" ]]; then echo "error"; return; fi
+            if [[ "$result" == "hit" || "$hit" == "true" ]]; then echo "hit"; return; fi
+            if [[ "$result" == "miss" || "$hit" == "false" ]]; then echo "miss"; return; fi
+            echo "skipped"
+          }
+          restore_reason() {
+            local eligible="$1" aws="$2" outcome="$3" reason="$4"
+            if [[ "$eligible" != "true" ]]; then echo "eligible=false"; return; fi
+            if [[ "$aws" != "success" ]]; then echo "aws=${aws:-skipped}"; return; fi
+            if [[ -n "$reason" ]]; then echo "$reason"; return; fi
+            echo "outcome=${outcome:-skipped}"
+          }
+          archive_restore="$(restore_state "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$NEXTEST_RESTORE_OUTCOME" "$NEXTEST_RESTORE_RESULT" "$NEXTEST_RESTORE_HIT")"
+          archive_reason="$(restore_reason "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$NEXTEST_RESTORE_OUTCOME" "$NEXTEST_RESTORE_REASON")"
+          sidecar_restore="$(restore_state "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$SIDECAR_RESTORE_OUTCOME" "$SIDECAR_RESTORE_RESULT" "$SIDECAR_RESTORE_HIT")"
+          sidecar_reason="$(restore_reason "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$SIDECAR_RESTORE_OUTCOME" "$SIDECAR_RESTORE_REASON")"
+          {
+            echo "Root nextest archive S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${archive_restore} reason=${archive_reason}"
+            echo "Root binary sidecars S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${sidecar_restore} reason=${sidecar_reason}"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Restore archive build target cache
         id: test-target-cache
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
@@ -862,8 +929,16 @@ jobs:
           for shard in $(seq 1 "$shards"); do
             echo "::group::nextest archive partition ${shard}/${shards}"
             echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <extract-root> --partition count:${shard}/${shards}"
-            if ! just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/${shards}"; then
+            partition_log="$RUNNER_TEMP/nextest-archive-partition-${shard}.log"
+            set +e
+            just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/${shards}" 2>&1 | tee "$partition_log"
+            rc="${PIPESTATUS[0]}"
+            set -e
+            if [[ "$rc" -ne 0 ]]; then
               status=1
+              echo "::error title=nextest archive partition failed::shard=${shard}/${shards} exit=${rc}"
+              echo "last relevant log lines for nextest archive partition ${shard}/${shards}:"
+              tail -80 "$partition_log"
             fi
             echo "::endgroup::"
           done
@@ -903,11 +978,41 @@ jobs:
 
   test:
     name: test
-    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]
+    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - run: |
+      - env:
+          DETECTOR_ALLOWED: ${{ needs.detector.outputs.fingerprint_reuse_allowed || 'false' }}
+          DETECTOR_REASON: ${{ needs.detector.outputs.fingerprint_reuse_reason || 'unknown' }}
+          REUSE_FOUND: ${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}
+          REUSE_SOURCE_RUN: ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id || 'none' }}
+          REUSE_SOURCE_SHA: ${{ needs.nextest-fingerprint-reuse.outputs.source_sha || 'none' }}
+          REUSE_ARTIFACT: ${{ needs.nextest-fingerprint-reuse.outputs.source_artifact_id || 'none' }}
+          REUSE_REASON: ${{ needs.nextest-fingerprint-reuse.outputs.reason || '' }}
+        run: |
+          detector_allowed="${DETECTOR_ALLOWED:-false}"
+          detector_reason="${DETECTOR_REASON:-unknown}"
+          reuse_found="${REUSE_FOUND:-false}"
+          source_run="${REUSE_SOURCE_RUN:-none}"
+          source_sha="${REUSE_SOURCE_SHA:-none}"
+          artifact="${REUSE_ARTIFACT:-none}"
+          reason="${REUSE_REASON:-}"
+          decision="not-applicable"
+          if [[ "$detector_allowed" == "true" ]]; then
+            if [[ "$reuse_found" == "true" ]]; then
+              decision="allowed"
+            else
+              decision="refused"
+            fi
+            [[ -n "$reason" ]] || reason="no-reusable-fingerprint"
+          elif [[ "$detector_reason" == "governance-changed" ]]; then
+            decision="refused"
+            reason="$detector_reason"
+          else
+            reason="$detector_reason"
+          fi
+          echo "Nextest reuse: decision=${decision} detector_allowed=${detector_allowed} reuse_found=${reuse_found} source_run=${source_run:-none} source_sha=${source_sha:-none} artifact=${artifact:-none} reason=${reason:-none}" >> "$GITHUB_STEP_SUMMARY"
           if [[ "${{ needs.nextest-fingerprint.result }}" != "success" ]]; then
             exit 1
           fi
@@ -1747,6 +1852,8 @@ def assert_clean(
 ) -> None:
     verifier = load_verifier()
     errors = verifier.verify_text(workflow, action, nextest_config)
+    if workflow != repo_workflow_text(".github/workflows/ci.yml"):
+        errors = [error for error in errors if "ROOT_TEST_ARCHIVE_JOB_SHA256" not in error]
     if errors:
         raise AssertionError(f"expected no errors, got: {errors}")
 
@@ -2865,6 +2972,46 @@ def replace_once_after(text: str, anchor: str, old: str, new: str) -> str:
     before = text[:index]
     after = text[index:]
     return before + replace_once(after, old, new)
+
+
+def mutate_named_step_after(
+    text: str,
+    anchor: str,
+    step_name: str,
+    mutator: Callable[[list[str]], list[str]],
+) -> str:
+    index = text.find(anchor)
+    if index == -1:
+        raise AssertionError(f"fixture anchor not found: {anchor!r}")
+    before = text[:index]
+    lines = text[index:].splitlines(keepends=True)
+    start: int | None = None
+    end = len(lines)
+    step_indent = 0
+    for line_index, line in enumerate(lines):
+        if line.strip() != f"- name: {step_name}":
+            continue
+        start = line_index
+        step_indent = len(line) - len(line.lstrip(" "))
+        break
+    if start is None:
+        raise AssertionError(f"fixture step not found after {anchor!r}: {step_name!r}")
+    for line_index in range(start + 1, len(lines)):
+        line = lines[line_index]
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent < step_indent or (indent == step_indent and line.lstrip().startswith("- ")):
+            end = line_index
+            break
+    return before + "".join(lines[:start] + mutator(lines[start:end]) + lines[end:])
+
+
+def insert_step_before_named_step_after(text: str, anchor: str, step_name: str, step: str) -> str:
+    step_lines = step.splitlines(keepends=True)
+    if not step.endswith("\n"):
+        step_lines.append("\n")
+    return mutate_named_step_after(text, anchor, step_name, lambda block: step_lines + block)
 
 
 def without_once_after(text: str, anchor: str, old: str) -> str:
@@ -5959,8 +6106,8 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "test needs ci-policy",
             replace_once(
                 workflow,
-                "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
-                "  test:\n    name: test\n    needs: [nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+                "  test:\n    name: test\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+                "  test:\n    name: test\n    needs: [detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
             ),
         ),
         (
@@ -13704,6 +13851,58 @@ def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
 
 def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     verifier = load_verifier()
+    real_backtester_workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    real_backtester_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": real_backtester_workflow}
+    )
+    if real_backtester_errors:
+        raise AssertionError(f"real backtester-ci.yml must be clean, got: {real_backtester_errors}")
+    bvs_just_version_bump = replace_once(
+        real_backtester_workflow,
+        '  JUST_VERSION: "1.49.0"\n',
+        '  JUST_VERSION: "1.49.1"\n',
+    )
+    bvs_just_version_bump_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_just_version_bump}
+    )
+    if bvs_just_version_bump_errors:
+        raise AssertionError(f"backtester JUST_VERSION bump must be boundary-clean, got: {bvs_just_version_bump_errors}")
+    bvs_job_body_edit = replace_once_after(
+        real_backtester_workflow,
+        "  test-archive:",
+        '          echo "BVS nextest archive S3 save outcome:',
+        '          echo "BVS nextest archive S3 save outcome: probe ',
+    )
+    bvs_job_body_boundary_errors = verifier.partition_workflow_boundary_errors(
+        bvs_job_body_edit,
+        "backtester-ci.yml",
+    )
+    if bvs_job_body_boundary_errors:
+        raise AssertionError(f"backtester job body edit must not trip top-level boundary, got: {bvs_job_body_boundary_errors}")
+    bvs_duplicate_env_path = replace_once(
+        real_backtester_workflow,
+        "permissions:\n",
+        "env:\n  PATH: /tmp/shim\npermissions:\n",
+    )
+    bvs_duplicate_env_path_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_duplicate_env_path}
+    )
+    assert any(
+        "backtester-ci.yml duplicate top-level key 'env'" in error
+        for error in bvs_duplicate_env_path_errors
+    ), bvs_duplicate_env_path_errors
+    bvs_duplicate_jobs = replace_once(
+        real_backtester_workflow,
+        "permissions:\n",
+        "jobs: {}\npermissions:\n",
+    )
+    bvs_duplicate_jobs_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_duplicate_jobs}
+    )
+    assert any(
+        "backtester-ci.yml duplicate top-level key 'jobs'" in error
+        for error in bvs_duplicate_jobs_errors
+    ), bvs_duplicate_jobs_errors
     bad = """jobs:
   test-archive:
     name: bvs-test archive
@@ -13792,6 +13991,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           fi
           aws s3 cp "$uri" "$BVS_NEXTEST_ARCHIVE_PATH" --only-show-errors || true
           echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          echo "restore-result=miss" >> "$GITHUB_OUTPUT"
+          echo "restore-reason=fixture-miss" >> "$GITHUB_OUTPUT"
           exit 0
       - name: Restore BVS binary sidecars from S3
         id: bvs-bin-sidecars-cache
@@ -13808,7 +14009,49 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           fi
           aws s3 cp "$uri" "$BVS_BIN_SIDECARS_PATH" --only-show-errors || true
           echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          echo "restore-result=miss" >> "$GITHUB_OUTPUT"
+          echo "restore-reason=fixture-miss" >> "$GITHUB_OUTPUT"
           exit 0
+      - name: Summarize BVS nextest archive S3 state
+        if: always()
+        shell: bash
+        env:
+          S3_ELIGIBLE: ${{ steps.bvs-nextest-artifact-cache.outputs.eligible || 'false' }}
+          S3_CACHE_MODE: ${{ steps.bvs-nextest-artifact-cache.outputs.cache_mode || 'none' }}
+          S3_AWS_OUTCOME: ${{ steps.bvs-nextest-artifact-cache-aws.outcome }}
+          BVS_NEXTEST_RESTORE_OUTCOME: ${{ steps.bvs-nextest-archive-cache.outcome }}
+          BVS_NEXTEST_RESTORE_HIT: ${{ steps.bvs-nextest-archive-cache.outputs.cache-hit || '' }}
+          BVS_NEXTEST_RESTORE_RESULT: ${{ steps.bvs-nextest-archive-cache.outputs.restore-result || '' }}
+          BVS_NEXTEST_RESTORE_REASON: ${{ steps.bvs-nextest-archive-cache.outputs.restore-reason || '' }}
+          BVS_SIDECAR_RESTORE_OUTCOME: ${{ steps.bvs-bin-sidecars-cache.outcome }}
+          BVS_SIDECAR_RESTORE_HIT: ${{ steps.bvs-bin-sidecars-cache.outputs.cache-hit || '' }}
+          BVS_SIDECAR_RESTORE_RESULT: ${{ steps.bvs-bin-sidecars-cache.outputs.restore-result || '' }}
+          BVS_SIDECAR_RESTORE_REASON: ${{ steps.bvs-bin-sidecars-cache.outputs.restore-reason || '' }}
+        run: |
+          restore_state() {
+            local eligible="$1" aws="$2" outcome="$3" result="$4" hit="$5"
+            if [[ "$eligible" != "true" ]]; then echo "ineligible"; return; fi
+            if [[ "$aws" != "success" ]]; then echo "skipped"; return; fi
+            if [[ "$outcome" == "failure" || "$result" == "error" ]]; then echo "error"; return; fi
+            if [[ "$result" == "hit" || "$hit" == "true" ]]; then echo "hit"; return; fi
+            if [[ "$result" == "miss" || "$hit" == "false" ]]; then echo "miss"; return; fi
+            echo "skipped"
+          }
+          restore_reason() {
+            local eligible="$1" aws="$2" outcome="$3" reason="$4"
+            if [[ "$eligible" != "true" ]]; then echo "eligible=false"; return; fi
+            if [[ "$aws" != "success" ]]; then echo "aws=${aws:-skipped}"; return; fi
+            if [[ -n "$reason" ]]; then echo "$reason"; return; fi
+            echo "outcome=${outcome:-skipped}"
+          }
+          bvs_nextest_restore="$(restore_state "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$BVS_NEXTEST_RESTORE_OUTCOME" "$BVS_NEXTEST_RESTORE_RESULT" "$BVS_NEXTEST_RESTORE_HIT")"
+          bvs_nextest_reason="$(restore_reason "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$BVS_NEXTEST_RESTORE_OUTCOME" "$BVS_NEXTEST_RESTORE_REASON")"
+          bvs_sidecar_restore="$(restore_state "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$BVS_SIDECAR_RESTORE_OUTCOME" "$BVS_SIDECAR_RESTORE_RESULT" "$BVS_SIDECAR_RESTORE_HIT")"
+          bvs_sidecar_reason="$(restore_reason "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$BVS_SIDECAR_RESTORE_OUTCOME" "$BVS_SIDECAR_RESTORE_REASON")"
+          {
+            echo "BVS nextest archive S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${bvs_nextest_restore} reason=${bvs_nextest_reason}"
+            echo "BVS binary sidecars S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${bvs_sidecar_restore} reason=${bvs_sidecar_reason}"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Resolve crate managed target dir
         id: crate_target
       - uses: Swatinem/rust-cache@example
@@ -13882,11 +14125,29 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: List scoped BVS archive tests
         run: nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH"
       - name: test
+        shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
+          failures=0
           for shard in $(seq 1 "$BVS_NEXTEST_SHARDS"); do
-            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl
+            echo "::group::bvs-test partition ${shard}/${BVS_NEXTEST_SHARDS}"
+            partition_log="$RUNNER_TEMP/bvs-nextest-archive-partition-${shard}.log"
+            set +e
+            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"
+            rc="${PIPESTATUS[0]}"
+            set -e
+            if [[ "$rc" -ne 0 ]]; then
+              failures=$((failures + 1))
+              echo "::error title=BVS nextest archive partition failed::shard=${shard}/${BVS_NEXTEST_SHARDS} exit=${rc}"
+              echo "last relevant log lines for BVS nextest archive partition ${shard}/${BVS_NEXTEST_SHARDS}:"
+              tail -80 "$partition_log"
+            fi
+            echo "::endgroup::"
           done
+          if [[ "$failures" != "0" ]]; then
+            echo "$failures BVS test partitions failed"
+            exit 1
+          fi
   issue_789:
     name: bvs-test issue-789
     needs: [ci-policy, detect, gate]
@@ -13910,12 +14171,15 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
 """
-    def bvs_cache_errors(workflow: str) -> list[str]:
-        return verifier.backtester_test_shard_errors(
+    def bvs_cache_errors(workflow: str, *, include_job_digest: bool = False) -> list[str]:
+        errors = verifier.backtester_test_shard_errors(
             ".github/workflows/backtester-ci.yml", workflow
         ) + verifier.backtester_managed_target_cache_errors(
             ".github/workflows/backtester-ci.yml", workflow
         )
+        if include_job_digest:
+            return errors
+        return [error for error in errors if "BVS_TEST_ARCHIVE_JOB_SHA256" not in error]
 
     good_errors = bvs_cache_errors(good)
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
@@ -14057,6 +14321,235 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "backtester bvs-test archive must summarize BVS S3 save outcomes" in error
         for error in missing_bvs_save_outcome_summary_errors
     ), missing_bvs_save_outcome_summary_errors
+
+    missing_bvs_restore_output = replace_once_after(
+        good,
+        "      - name: Restore BVS nextest archive from S3",
+        '          echo "restore-result=miss" >> "$GITHUB_OUTPUT"\n',
+        "",
+    )
+    missing_bvs_restore_output_errors = bvs_cache_errors(missing_bvs_restore_output)
+    assert any(
+        "backtester bvs-test archive must emit restore result and reason outputs" in error
+        for error in missing_bvs_restore_output_errors
+    ), missing_bvs_restore_output_errors
+
+    missing_bvs_nextest_restore_summary = replace_once(
+        good,
+        '            echo "BVS nextest archive S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${bvs_nextest_restore} reason=${bvs_nextest_reason}"\n',
+        "",
+    )
+    missing_bvs_nextest_restore_summary_errors = bvs_cache_errors(missing_bvs_nextest_restore_summary)
+    assert any(
+        "backtester bvs-test archive must summarize BVS nextest archive S3 restore state" in error
+        for error in missing_bvs_nextest_restore_summary_errors
+    ), missing_bvs_nextest_restore_summary_errors
+
+    missing_bvs_sidecar_restore_summary = replace_once(
+        good,
+        '            echo "BVS binary sidecars S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${bvs_sidecar_restore} reason=${bvs_sidecar_reason}"\n',
+        "",
+    )
+    missing_bvs_sidecar_restore_summary_errors = bvs_cache_errors(missing_bvs_sidecar_restore_summary)
+    assert any(
+        "backtester bvs-test archive must summarize BVS binary sidecars S3 restore state" in error
+        for error in missing_bvs_sidecar_restore_summary_errors
+    ), missing_bvs_sidecar_restore_summary_errors
+
+    missing_bvs_partition_annotation = replace_once(
+        good,
+        '              echo "::error title=BVS nextest archive partition failed::shard=${shard}/${BVS_NEXTEST_SHARDS} exit=${rc}"\n',
+        "",
+    )
+    missing_bvs_partition_annotation_errors = bvs_cache_errors(missing_bvs_partition_annotation)
+    assert any(
+        "backtester bvs-test partition failures must emit shard error annotations" in error
+        for error in missing_bvs_partition_annotation_errors
+    ), missing_bvs_partition_annotation_errors
+
+    missing_bvs_partition_set_e_disable = replace_once(
+        good,
+        """            set +e
+            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"
+""",
+        '            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"\n',
+    )
+    missing_bvs_partition_set_e_disable_errors = bvs_cache_errors(missing_bvs_partition_set_e_disable)
+    assert any(
+        "backtester bvs-test partition failures must use contiguous failure wrapper" in error
+        for error in missing_bvs_partition_set_e_disable_errors
+    ), missing_bvs_partition_set_e_disable_errors
+
+    missing_bvs_partition_rc_condition = replace_once(
+        real_backtester_workflow,
+        '            if [[ "$rc" -ne 0 ]]; then\n',
+        '            if [[ "$rc" == 0 ]]; then\n',
+    )
+    missing_bvs_partition_rc_condition_errors = bvs_cache_errors(
+        missing_bvs_partition_rc_condition,
+        include_job_digest=True,
+    )
+    assert any(
+        "BVS_TEST_ARCHIVE_JOB_SHA256" in error
+        for error in missing_bvs_partition_rc_condition_errors
+    ), missing_bvs_partition_rc_condition_errors
+
+    bvs_partition_github_path_probe = insert_step_before_named_step_after(
+        real_backtester_workflow,
+        "  test-archive:",
+        "test",
+        """      - name: Install BVS partition shim
+        shell: bash
+        run: printf '%s\\n' "$GITHUB_WORKSPACE/.ci-shims" | tee -a "$GITHUB_PATH"
+""",
+    )
+    bvs_partition_github_path_errors = bvs_cache_errors(
+        bvs_partition_github_path_probe,
+        include_job_digest=True,
+    )
+    assert any(
+        "BVS_TEST_ARCHIVE_JOB_SHA256"
+        in error
+        for error in bvs_partition_github_path_errors
+    ), bvs_partition_github_path_errors
+    bvs_partition_job_continue_on_error_probe = replace_once_after(
+        real_backtester_workflow,
+        "  test-archive:",
+        "    name: bvs-test archive\n",
+        "    name: bvs-test archive\n    continue-on-error: true\n",
+    )
+    bvs_partition_job_continue_on_error_errors = bvs_cache_errors(
+        bvs_partition_job_continue_on_error_probe,
+        include_job_digest=True,
+    )
+    assert any(
+        "BVS_TEST_ARCHIVE_JOB_SHA256"
+        in error
+        for error in bvs_partition_job_continue_on_error_errors
+    ), bvs_partition_job_continue_on_error_errors
+    bvs_partition_job_defaults_probe = replace_once_after(
+        real_backtester_workflow,
+        "  test-archive:",
+        "    steps:\n",
+        "    defaults:\n      run:\n        shell: sh\n    steps:\n",
+    )
+    bvs_partition_job_defaults_errors = bvs_cache_errors(
+        bvs_partition_job_defaults_probe,
+        include_job_digest=True,
+    )
+    assert any(
+        "BVS_TEST_ARCHIVE_JOB_SHA256"
+        in error
+        for error in bvs_partition_job_defaults_errors
+    ), bvs_partition_job_defaults_errors
+    bvs_partition_run_body_probe = replace_once_after(
+        real_backtester_workflow,
+        "      - name: test",
+        '            if [[ "$rc" -ne 0 ]]; then\n',
+        '            if [[ "$rc" == 0 ]]; then\n',
+    )
+    bvs_partition_run_body_errors = bvs_cache_errors(
+        bvs_partition_run_body_probe,
+        include_job_digest=True,
+    )
+    assert any(
+        "BVS_TEST_ARCHIVE_JOB_SHA256"
+        in error
+        for error in bvs_partition_run_body_errors
+    ), bvs_partition_run_body_errors
+    bvs_top_level_path_env = replace_once(
+        real_backtester_workflow,
+        "env:\n  JUST_VERSION: \"1.49.0\"\n",
+        "env:\n  PATH: /tmp/partition-shim\n  JUST_VERSION: \"1.49.0\"\n",
+    )
+    bvs_top_level_path_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_top_level_path_env}
+    )
+    assert any(
+        "top-level env.PATH must be classified as reuse-scoped or build-neutral" in error
+        for error in bvs_top_level_path_errors
+    ), bvs_top_level_path_errors
+    bvs_top_level_ld_preload_env = replace_once(
+        real_backtester_workflow,
+        "env:\n  JUST_VERSION: \"1.49.0\"\n",
+        "env:\n  LD_PRELOAD: /tmp/partition-shim.so\n  JUST_VERSION: \"1.49.0\"\n",
+    )
+    bvs_top_level_ld_preload_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_top_level_ld_preload_env}
+    )
+    assert any(
+        "top-level env.LD_PRELOAD must be classified as reuse-scoped or build-neutral" in error
+        for error in bvs_top_level_ld_preload_errors
+    ), bvs_top_level_ld_preload_errors
+    bvs_top_level_arbitrary_env = replace_once(
+        real_backtester_workflow,
+        "env:\n  JUST_VERSION: \"1.49.0\"\n",
+        "env:\n  EVIL_INJECT: x\n  JUST_VERSION: \"1.49.0\"\n",
+    )
+    bvs_top_level_arbitrary_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_top_level_arbitrary_env}
+    )
+    assert any(
+        "top-level env.EVIL_INJECT must be classified as reuse-scoped or build-neutral" in error
+        for error in bvs_top_level_arbitrary_errors
+    ), bvs_top_level_arbitrary_errors
+    bvs_top_level_flow_env = replace_once(
+        real_backtester_workflow,
+        """env:
+  JUST_VERSION: "1.49.0"
+  CARGO_TERM_COLOR: always
+  # Same single base as ci.yml — one base, two namespaces. The crate's namespace
+  # (backtesting-vertical-slice) is selected by --repo, not by a second base.
+  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
+permissions:
+""",
+        """env: {"PATH": "/tmp/partition-shim:${{ env.PATH }}", JUST_VERSION: "1.49.0", CARGO_TERM_COLOR: always, RUST_VERIFICATION_ROOT_BASE: "${{ github.workspace }}/.rust-verification"}
+permissions:
+""",
+    )
+    bvs_top_level_flow_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_top_level_flow_env}
+    )
+    assert any(
+        "top-level env reuse scope could not parse backtester-ci.yml" in error
+        for error in bvs_top_level_flow_errors
+    ), bvs_top_level_flow_errors
+    for defaults_probe in (
+        "defaults:\n  run:\n    shell: sh\n",
+        'defaults: {"run": {shell: bash}}\n',
+        "? defaults\n: {run: {working-directory: scripts}}\n",
+        "? defaults : {run: {shell: bash}}\n",
+        "!!map defaults: {run: {shell: bash}}\n",
+        "defaults: &defaults_probe {run: {shell: bash}}\n",
+        '"defaults":\n  run:\n    shell: sh\n',
+        "evil_top: {a: b}\n",
+    ):
+        bvs_top_level_defaults = replace_once(
+            real_backtester_workflow,
+            "permissions:\n",
+            f"{defaults_probe}permissions:\n",
+        )
+        bvs_top_level_defaults_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/backtester-ci.yml": bvs_top_level_defaults}
+        )
+        assert any(
+            "backtester-ci.yml top-level entry" in error
+            for error in bvs_top_level_defaults_errors
+        ), bvs_top_level_defaults_errors
+    bvs_partition_step_rename_probe = replace_once_after(
+        real_backtester_workflow,
+        "  test-archive:",
+        "      - name: test\n",
+        "      - name: renamed test\n",
+    )
+    bvs_partition_step_rename_errors = bvs_cache_errors(
+        bvs_partition_step_rename_probe,
+        include_job_digest=True,
+    )
+    assert any(
+        "backtester bvs-test archive must define test partition step" in error
+        for error in bvs_partition_step_rename_errors
+    ), bvs_partition_step_rename_errors
 
     missing_bvs_archive_save_status = replace_once(
         good,
@@ -14928,14 +15421,20 @@ git() {
             "",
         ),
     )
-    assert_error(
-        "top-level defaults must not be used in ci.yml while nextest reuse is enabled",
-        replace_once(BASE_WORKFLOW, "permissions:\n", "defaults:\n  run:\n    shell: sh\n\npermissions:\n"),
-    )
-    assert_error(
-        "top-level defaults must not be used in ci.yml while nextest reuse is enabled",
-        replace_once(BASE_WORKFLOW, "permissions:\n", "defaults: { run: { shell: sh } }\npermissions:\n"),
-    )
+    for defaults_probe in (
+        "defaults:\n  run:\n    shell: sh\n\n",
+        'defaults: {"run": {shell: bash}}\n',
+        "? defaults\n: {run: {working-directory: scripts}}\n",
+        "? defaults : {run: {shell: bash}}\n",
+        "!!map defaults: {run: {shell: bash}}\n",
+        "defaults: &defaults_probe {run: {shell: bash}}\n",
+        '"defaults":\n  run:\n    shell: sh\n',
+        "evil_top: {a: b}\n",
+    ):
+        assert_error(
+            "ci.yml top-level entry",
+            replace_once(BASE_WORKFLOW, "permissions:\n", f"{defaults_probe}permissions:\n"),
+        )
     assert_error(
         "YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled",
         replace_once(
@@ -15543,8 +16042,54 @@ def main() -> int:
     test_ci_test_manifest_self_tests_are_gated()
     assert_github_scripts_are_repo_automation_fenced()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
-    assert_clean()
-    assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
+    real_ci_workflow = repo_workflow_text(".github/workflows/ci.yml")
+    assert_clean(workflow=real_ci_workflow)
+    root_just_version_bump = replace_once(
+        real_ci_workflow,
+        '  JUST_VERSION: "1.49.0"\n',
+        '  JUST_VERSION: "1.49.1"\n',
+    )
+    root_just_version_bump_errors = load_verifier().verify_text(
+        root_just_version_bump,
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    if root_just_version_bump_errors:
+        raise AssertionError(f"root JUST_VERSION bump must be boundary-clean, got: {root_just_version_bump_errors}")
+    root_job_body_edit = replace_once_after(
+        real_ci_workflow,
+        "      - name: Run nextest archive partitions",
+        '            echo "reproduce locally: just test-archive-run',
+        '            echo "probe reproduce locally: just test-archive-run',
+    )
+    root_job_body_boundary_errors = load_verifier().partition_workflow_boundary_errors(
+        root_job_body_edit,
+        "ci.yml",
+    )
+    if root_job_body_boundary_errors:
+        raise AssertionError(f"root job body edit must not trip top-level boundary, got: {root_job_body_boundary_errors}")
+    root_duplicate_env_path = replace_once(
+        real_ci_workflow,
+        "permissions:\n",
+        "env:\n  PATH: /tmp/shim\npermissions:\n",
+    )
+    assert_error("ci.yml duplicate top-level key 'env'", root_duplicate_env_path)
+    root_duplicate_jobs = replace_once(
+        real_ci_workflow,
+        "permissions:\n",
+        "jobs: {}\npermissions:\n",
+    )
+    assert_error("ci.yml duplicate top-level key 'jobs'", root_duplicate_jobs)
+    if "  test-archive:\n" not in BASE_WORKFLOW or "      - name: Run nextest archive partitions\n" not in BASE_WORKFLOW:
+        raise AssertionError("BASE_WORKFLOW must include the root test-archive partition fixture")
+    real_ci_errors = load_verifier().verify_text(
+        real_ci_workflow,
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    if real_ci_errors:
+        raise AssertionError(f"real ci.yml must be clean, got: {real_ci_errors}")
+    assert_workflows_clean({"ci.yml": real_ci_workflow, "advisory.yml": BASE_ADVISORY_WORKFLOW})
     assert_ci_workflow_run_name_matches_dispatch_config()
     assert_pin_consistency_cross_file_mismatch_errors()
     assert_pin_consistency_same_sha_no_error()
@@ -16003,6 +16548,47 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, '          mkdir -p "$RUNNER_TEMP/nextest-archive-extract"\n', ""),
     )
     assert_error(
+        "ci-policy must summarize CI classification",
+        replace_once(
+            BASE_WORKFLOW,
+            '          echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} event_class=${EXPECTED_EVENT_CLASS:-unknown} reason=${POLICY_REASON:-missing}" >> "$GITHUB_STEP_SUMMARY"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "test must summarize nextest fingerprint reuse decision",
+        replace_once(
+            BASE_WORKFLOW,
+            '          echo "Nextest reuse: decision=${decision} detector_allowed=${detector_allowed} reuse_found=${reuse_found} source_run=${source_run:-none} source_sha=${source_sha:-none} artifact=${artifact:-none} reason=${reason:-none}" >> "$GITHUB_STEP_SUMMARY"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must emit restore result and reason outputs",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Restore nextest archive from S3",
+            '          echo "restore-result=miss" >> "$GITHUB_OUTPUT"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must summarize nextest archive S3 restore state",
+        replace_once(
+            BASE_WORKFLOW,
+            '            echo "Root nextest archive S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${archive_restore} reason=${archive_reason}"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must summarize root binary sidecars S3 restore state",
+        replace_once(
+            BASE_WORKFLOW,
+            '            echo "Root binary sidecars S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${sidecar_restore} reason=${sidecar_reason}"\n',
+            "",
+        ),
+    )
+    assert_error(
         "test-archive must log partition diagnostics",
         replace_once(
             BASE_WORKFLOW,
@@ -16018,13 +16604,95 @@ def main() -> int:
         "test-archive must aggregate partition failures",
         replace_once(
             BASE_WORKFLOW,
-            """            if ! just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/${shards}"; then
-              status=1
-            fi""",
-            """            just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/${shards}"
-            if [[ "${shard}" == "never" ]]; then
-              status=1
-            fi""",
+            '            if [[ "$rc" -ne 0 ]]; then\n',
+            '            if [[ "$rc" == 0 ]]; then\n',
+        ),
+    )
+    root_partition_rc_condition_probe = replace_once_after(
+        real_ci_workflow,
+        "      - name: Run nextest archive partitions",
+        '            if [[ "$rc" -ne 0 ]]; then\n',
+        '            if [[ "$rc" == 0 ]]; then\n',
+    )
+    assert_error("ROOT_TEST_ARCHIVE_JOB_SHA256", root_partition_rc_condition_probe)
+    root_partition_comment_probe = replace_once_after(
+        real_ci_workflow,
+        "      - name: Run nextest archive partitions",
+        '            set +e\n',
+        '            #\n            set +e\n',
+    )
+    assert_error("ROOT_TEST_ARCHIVE_JOB_SHA256", root_partition_comment_probe)
+    root_partition_github_path_probe = insert_step_before_named_step_after(
+        real_ci_workflow,
+        "  test-archive:",
+        "Run nextest archive partitions",
+        """      - name: Install partition shim
+        shell: bash
+        run: printf '%s\\n' "$GITHUB_WORKSPACE/.ci-shims" | tee -a "$GITHUB_PATH"
+""",
+    )
+    assert_error("ROOT_TEST_ARCHIVE_JOB_SHA256", root_partition_github_path_probe)
+    root_partition_job_continue_on_error_probe = replace_once_after(
+        real_ci_workflow,
+        "  test-archive:",
+        "    name: nextest archive\n",
+        "    name: nextest archive\n    continue-on-error: true\n",
+    )
+    assert_error("ROOT_TEST_ARCHIVE_JOB_SHA256", root_partition_job_continue_on_error_probe)
+    root_partition_job_defaults_probe = replace_once_after(
+        real_ci_workflow,
+        "  test-archive:",
+        "    steps:\n",
+        "    defaults:\n      run:\n        shell: sh\n    steps:\n",
+    )
+    assert_error("ROOT_TEST_ARCHIVE_JOB_SHA256", root_partition_job_defaults_probe)
+    root_top_level_path_env = replace_once(
+        real_ci_workflow,
+        "env:\n  JUST_VERSION: \"1.49.0\"\n",
+        "env:\n  PATH: /tmp/partition-shim\n  JUST_VERSION: \"1.49.0\"\n",
+    )
+    assert_error("top-level env.PATH must be classified as reuse-scoped or build-neutral", root_top_level_path_env)
+    for defaults_probe in (
+        "defaults:\n  run:\n    shell: sh\n",
+        'defaults: {"run": {shell: bash}}\n',
+        "? defaults\n: {run: {working-directory: scripts}}\n",
+        "? defaults : {run: {shell: bash}}\n",
+        "!!map defaults: {run: {shell: bash}}\n",
+        "defaults: &defaults_probe {run: {shell: bash}}\n",
+        '"defaults":\n  run:\n    shell: sh\n',
+        "evil_top: {a: b}\n",
+    ):
+        root_top_level_defaults = replace_once(
+            real_ci_workflow,
+            "permissions:\n",
+            f"{defaults_probe}permissions:\n",
+        )
+        assert_error("ci.yml top-level entry", root_top_level_defaults)
+    root_partition_step_rename_probe = replace_once_after(
+        real_ci_workflow,
+        "  test-archive:",
+        "      - name: Run nextest archive partitions\n",
+        "      - name: Run renamed nextest archive partitions\n",
+    )
+    root_partition_step_rename_errors = load_verifier().verify_workflow(root_partition_step_rename_probe)
+    assert (
+        "test-archive must define Run nextest archive partitions step"
+        in root_partition_step_rename_errors
+    ), root_partition_step_rename_errors
+    assert_error(
+        "test-archive partition failures must preserve shard exit codes",
+        replace_once(
+            BASE_WORKFLOW,
+            '            rc="${PIPESTATUS[0]}"\n',
+            '            rc="0"\n',
+        ),
+    )
+    assert_error(
+        "test-archive partition failures must emit shard error annotations",
+        replace_once(
+            BASE_WORKFLOW,
+            '              echo "::error title=nextest archive partition failed::shard=${shard}/${shards} exit=${rc}"\n',
+            "",
         ),
     )
     assert_error(
@@ -16621,6 +17289,23 @@ def main() -> int:
         ),
     )
     assert_error(
+        "detector must expose fingerprint_reuse_reason",
+        replace_once(
+            BASE_WORKFLOW,
+            "      fingerprint_reuse_reason: ${{ steps.fingerprint_reuse_allowed.outputs.reason }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        "detector must explain fingerprint_reuse_allowed decisions",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            '            echo "reason=governance-changed" >> "$GITHUB_OUTPUT"\n',
+            "",
+        ),
+    )
+    assert_error(
         "nextest-fingerprint-reuse needs detector",
         replace_once(
             BASE_WORKFLOW,
@@ -16653,10 +17338,18 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, " && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'", ""),
     )
     assert_error(
+        "test needs detector",
+        replace_once(
+            BASE_WORKFLOW,
+            "  test:\n    name: test\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+            "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+        ),
+    )
+    assert_error(
         "test needs nextest-fingerprint",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+            "  test:\n    name: test\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
             "  test:\n    name: test\n    needs: ci-policy",
         ),
     )
@@ -16680,8 +17373,8 @@ def main() -> int:
         "test must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
-            "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+            "  test:\n    name: test\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  test:\n    name: test\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
         ),
     )
     assert_error(

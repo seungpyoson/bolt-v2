@@ -4,7 +4,7 @@
   "checkpoint_id": "896d195d832c",
   "strategy": "manual-commit",
   "branch": "codex/ws6-debug-test-lane",
-  "checkpoints_count": 41,
+  "checkpoints_count": 32,
   "files_touched": [
     ".github/workflows/debug-test.yml",
     "ci/github-actions-runners.toml",
@@ -65,11 +65,11 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 434252,
-    "cache_creation_tokens": 11673332,
-    "cache_read_tokens": 790050379,
-    "output_tokens": 3086319,
-    "api_call_count": 2126
+    "input_tokens": 293012,
+    "cache_creation_tokens": 8635316,
+    "cache_read_tokens": 616479129,
+    "output_tokens": 2181049,
+    "api_call_count": 1473
   },
   "combined_attribution": {
     "calculated_at": "2026-07-05T07:16:04.293496Z",

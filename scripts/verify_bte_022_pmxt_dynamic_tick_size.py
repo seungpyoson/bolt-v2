@@ -49,7 +49,8 @@ JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py",
     "python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py",
 )
-JUSTFILE_RECIPES = ("verify-bte-022-pmxt-dynamic-tick-size", "source-fence-static-inner")
+SOURCE_FENCE_STATIC_COMMANDS = ("python3 scripts/run_fences.py",)
+JUSTFILE_RECIPES = ("verify-bte-022-pmxt-dynamic-tick-size",)
 STATUS_HASH_TARGETS = (
     (("committed_input_hashes", "tick_size_change_status"), PMXT_TICK_STATUS),
     (("committed_input_hashes", "timed_instrument_replay_audit"), PMXT_TIMED_AUDIT),
@@ -633,6 +634,13 @@ def check_justfile(root: Path, findings: list[str]) -> None:
         for command in JUSTFILE_COMMANDS:
             if command not in recipe_commands:
                 findings.append(f"{JUSTFILE}: {recipe} must run {command}")
+    source_fence_commands = just_recipe_commands(justfile, "source-fence-static-inner")
+    if not source_fence_commands:
+        findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
+        return
+    if tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS:
+        expected = " && ".join(SOURCE_FENCE_STATIC_COMMANDS)
+        findings.append(f"{JUSTFILE}: source-fence-static-inner must contain only {expected}")
 
 
 def scan_root(root: Path) -> list[str]:

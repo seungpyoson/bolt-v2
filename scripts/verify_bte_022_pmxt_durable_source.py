@@ -89,7 +89,8 @@ JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_pmxt_durable_source.py",
     "python3 scripts/verify_bte_022_pmxt_durable_source.py",
 )
-JUSTFILE_RECIPES = ("verify-bte-022-pmxt-durable-source", "source-fence-static-inner")
+SOURCE_FENCE_STATIC_COMMANDS = ("python3 scripts/run_fences.py",)
+JUSTFILE_RECIPES = ("verify-bte-022-pmxt-durable-source",)
 STATUS_HASH_TARGETS = (
     (("source_proof_set_spec",), PMXT_SOURCE_PROOF_SPEC),
     (("committed_input_hashes", "source_universe_manifest"), PMXT_SOURCE_MANIFEST),
@@ -475,8 +476,8 @@ def active_gitignore_patterns(gitignore: str) -> tuple[set[str], dict[str, bool]
     return patterns, representative_ignored
 
 
-def just_recipe_commands(justfile: str, recipe_name: str) -> set[str]:
-    commands: set[str] = set()
+def just_recipe_commands(justfile: str, recipe_name: str) -> list[str]:
+    commands: list[str] = []
     in_recipe = False
     for line in justfile.splitlines():
         stripped = line.strip()
@@ -488,7 +489,7 @@ def just_recipe_commands(justfile: str, recipe_name: str) -> set[str]:
             break
         if not stripped or stripped.startswith("#"):
             continue
-        commands.add(stripped)
+        commands.append(stripped)
     return commands
 
 
@@ -759,6 +760,21 @@ def check_bte_status_artifact(bte_status: dict, findings: list[str]) -> None:
     check_bte_status_durable_guard_block(bte_status, findings)
 
 
+def check_justfile(justfile: str, findings: list[str]) -> None:
+    for recipe in JUSTFILE_RECIPES:
+        recipe_commands = just_recipe_commands(justfile, recipe)
+        for command in JUSTFILE_COMMANDS:
+            if command not in recipe_commands:
+                findings.append(f"{JUSTFILE}: {recipe} must run {command}")
+    source_fence_commands = just_recipe_commands(justfile, "source-fence-static-inner")
+    if not source_fence_commands:
+        findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
+        return
+    if tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS:
+        expected = " && ".join(SOURCE_FENCE_STATIC_COMMANDS)
+        findings.append(f"{JUSTFILE}: source-fence-static-inner must contain only {expected}")
+
+
 def scan_root(root: Path) -> list[str]:
     root = root.resolve()
     findings: list[str] = []
@@ -957,11 +973,7 @@ def scan_root(root: Path) -> list[str]:
             findings.append(
                 f"{GITIGNORE}: PMXT generated-artifact eviction pattern `{pattern}` must effectively ignore representative `{PMXT_EVICTION_REPRESENTATIVES[pattern]}`"
             )
-    for recipe in JUSTFILE_RECIPES:
-        recipe_commands = just_recipe_commands(justfile, recipe)
-        for command in JUSTFILE_COMMANDS:
-            if command not in recipe_commands:
-                findings.append(f"{JUSTFILE}: {recipe} must run {command}")
+    check_justfile(justfile, findings)
 
     return findings
 

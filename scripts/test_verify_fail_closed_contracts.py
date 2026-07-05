@@ -32,12 +32,11 @@ def write_file(root: Path, rel_path: str, text: str) -> None:
     path.write_text(textwrap.dedent(text).lstrip(), encoding="utf-8")
 
 
-def write_justfile(root: Path, *, include_test: bool = True, include_verifier: bool = True) -> None:
+def write_justfile(root: Path, *, include_harness: bool = True, extra_commands: tuple[str, ...] = ()) -> None:
     commands = []
-    if include_test:
-        commands.append("python3 scripts/test_verify_fail_closed_contracts.py")
-    if include_verifier:
-        commands.append("python3 scripts/verify_fail_closed_contracts.py")
+    if include_harness:
+        commands.append("python3 scripts/run_fences.py")
+    commands.extend(extra_commands)
     command_block = "\n".join(f"    {command}" for command in commands)
     write_file(
         root,
@@ -584,31 +583,49 @@ def test_repo_config_excludes_nested_script_test_files() -> None:
 
 
 def test_source_fence_static_wiring_is_required() -> None:
-    cases = (
-        (False, True, "python3 scripts/test_verify_fail_closed_contracts.py"),
-        (True, False, "python3 scripts/verify_fail_closed_contracts.py"),
-    )
-    for include_test, include_verifier, expected_command in cases:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_config(root)
-            write_justfile(root, include_test=include_test, include_verifier=include_verifier)
-            write_file(
-                root,
-                "pkg/precise.py",
-                """
-                def load_contract(value):
-                    try:
-                        return int(value)
-                    except ValueError:
-                        return None
-                """,
-            )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_justfile(root, include_harness=False)
+        write_file(
+            root,
+            "pkg/precise.py",
+            """
+            def load_contract(value):
+                try:
+                    return int(value)
+                except ValueError:
+                    return None
+            """,
+        )
 
-            findings = collect(root)
+        findings = collect(root)
 
-        expected = f"source-fence-static-inner must run {expected_command}"
-        assert findings == [expected], findings
+    expected = "source-fence-static-inner must contain only python3 scripts/run_fences.py"
+    assert findings == [expected], findings
+
+
+def test_source_fence_static_wiring_rejects_appended_command() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_config(root)
+        write_justfile(root, extra_commands=("python3 scripts/verify_fail_closed_contracts.py",))
+        write_file(
+            root,
+            "pkg/precise.py",
+            """
+            def load_contract(value):
+                try:
+                    return int(value)
+                except ValueError:
+                    return None
+            """,
+        )
+
+        findings = collect(root)
+
+    expected = "source-fence-static-inner must contain only python3 scripts/run_fences.py"
+    assert findings == [expected], findings
 
 
 def test_repo_source_fence_static_wiring_is_current() -> None:
@@ -623,57 +640,53 @@ def test_source_fence_static_parser_requires_indented_commands() -> None:
     verifier = load_verifier()
     justfile_text = """
     source-fence-static-inner:
-        python3 scripts/test_verify_fail_closed_contracts.py
+        python3 scripts/run_fences.py
     python3 scripts/verify_fail_closed_contracts.py
     """
 
     commands = verifier.source_fence_static_commands(textwrap.dedent(justfile_text).lstrip())
 
-    assert commands == ("python3 scripts/test_verify_fail_closed_contracts.py",), commands
+    assert commands == ("python3 scripts/run_fences.py",), commands
 
 
 def test_source_fence_static_parser_ignores_inline_comments() -> None:
     verifier = load_verifier()
     justfile_text = """
     source-fence-static-inner:
-        python3 scripts/test_verify_fail_closed_contracts.py  # self-test guard
-        python3 scripts/verify_fail_closed_contracts.py  # verifier guard
+        python3 scripts/run_fences.py  # static fence harness
     """
 
     commands = verifier.source_fence_static_commands(textwrap.dedent(justfile_text).lstrip())
 
-    assert commands == (
-        "python3 scripts/test_verify_fail_closed_contracts.py",
-        "python3 scripts/verify_fail_closed_contracts.py",
-    ), commands
+    assert commands == ("python3 scripts/run_fences.py",), commands
 
 
 def test_source_fence_static_parser_stops_at_top_level_non_recipe_lines() -> None:
     verifier = load_verifier()
     justfile_text = """
     source-fence-static-inner:
-        python3 scripts/test_verify_fail_closed_contracts.py
+        python3 scripts/run_fences.py
     import "other.just"
         python3 scripts/verify_fail_closed_contracts.py
     """
 
     commands = verifier.source_fence_static_commands(textwrap.dedent(justfile_text).lstrip())
 
-    assert commands == ("python3 scripts/test_verify_fail_closed_contracts.py",), commands
+    assert commands == ("python3 scripts/run_fences.py",), commands
 
 
 def test_source_fence_static_parser_ignores_malformed_top_level_colon_lines() -> None:
     verifier = load_verifier()
     justfile_text = """
     source-fence-static-inner:
-        python3 scripts/test_verify_fail_closed_contracts.py
+        python3 scripts/run_fences.py
     := value
         python3 scripts/verify_fail_closed_contracts.py
     """
 
     commands = verifier.source_fence_static_commands(textwrap.dedent(justfile_text).lstrip())
 
-    assert commands == ("python3 scripts/test_verify_fail_closed_contracts.py",), commands
+    assert commands == ("python3 scripts/run_fences.py",), commands
 
 
 def test_classified_degradation_requires_central_exception() -> None:
@@ -1113,6 +1126,7 @@ def main() -> int:
         test_config_excludes_nested_test_files,
         test_repo_config_excludes_nested_script_test_files,
         test_source_fence_static_wiring_is_required,
+        test_source_fence_static_wiring_rejects_appended_command,
         test_repo_source_fence_static_wiring_is_current,
         test_source_fence_static_parser_requires_indented_commands,
         test_source_fence_static_parser_ignores_inline_comments,

@@ -19883,6 +19883,126 @@ classification = "policy_epoch_envelope_zero_bound_reject"
 reason = "A safety-policy envelope with zero quantity-policy versions cannot approve any prepared quantity-policy bundle; the bound is envelope-owned, while zero is the structural empty-bound rejection sentinel."
 
 [[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.order_lifecycle"'''
+context = '''pub const BOLT_V3_ORDER_LIFECYCLE_GATE_ID: &str = "bolt_v3.order_lifecycle";'''
+classification = "decision_evidence_gate_id"
+reason = "Stable gate identifier stamped on durable order-lifecycle evidence records; part of the JSONL audit schema, not operator runtime configuration."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_lifecycle"'''
+context = '''pub const BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND: &str = "order_lifecycle";'''
+classification = "decision_evidence_record_kind"
+reason = "JSONL envelope discriminator for order-lifecycle evidence records; it is a stable audit schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"selection_boundary"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY: &str = "selection_boundary";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted when market selection rotation reclassifies unresolved pending entry state; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"entry_fill"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_ENTRY_FILL: &str = "entry_fill";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted when an entry fill materializes a reconciled pending entry into managed exposure; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"position_event"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_POSITION_EVENT: &str = "position_event";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted when venue position events resolve or reclassify entry reconciliation; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"exit_terminal"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_EXIT_TERMINAL: &str = "exit_terminal";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted when an exit terminal event reclassifies residual or terminal order state; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"restart_bootstrap"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP: &str = "restart_bootstrap";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted during restart cache bootstrap adoption or fail-closed recovery; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"order_denied"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_ORDER_DENIED: &str = "order_denied";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted from the strategy order-denied handler; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"order_rejected"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED: &str = "order_rejected";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted from the strategy order-rejected handler; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"order_canceled"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED: &str = "order_canceled";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted from the strategy order-canceled handler; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"order_expired"'''
+context = '''const ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED: &str = "order_expired";'''
+classification = "order_lifecycle_evidence_source_label"
+reason = "Stable source label for lifecycle evidence emitted from the strategy order-expired handler; it classifies evidence and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"preserved fail-closed: fill observed, awaiting position truth"'''
+context = '''"preserved fail-closed: fill observed, awaiting position truth";'''
+classification = "order_lifecycle_recovery_reason_label"
+reason = "Stable recovery evidence reason for preserving entry reconciliation after a terminal order event when fill evidence has already been observed; it distinguishes the fail-closed lifecycle class and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"cache_probe_failed"'''
+context = '''raw_reason_text: Some("cache_probe_failed".to_string()),'''
+classification = "order_lifecycle_recovery_reason_label"
+reason = "Stable recovery evidence reason for restart cache probe failure; it distinguishes the fail-closed recovery class and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"unattributed_open_exit_order"'''
+context = '''raw_reason_text: Some("unattributed_open_exit_order".to_string()),'''
+classification = "order_lifecycle_recovery_reason_label"
+reason = "Stable recovery evidence reason for restart open exit orders that cannot be attributed to the recovered position; it distinguishes the fail-closed recovery class and does not configure strategy behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"ambiguous_open_exit_orders"'''
+context = '''raw_reason_text: Some("ambiguous_open_exit_orders".to_string()),'''
+classification = "order_lifecycle_recovery_reason_label"
+reason = "Stable recovery evidence reason for multiple attributed restart open exit orders; it distinguishes the fail-closed recovery class and does not configure strategy behavior."
+
+[[allowed]]
 path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"polymarket_venue_truth_rest"'''

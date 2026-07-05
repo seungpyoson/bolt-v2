@@ -17,8 +17,8 @@ policy path.
 | forbidden legacy rust-verification config | `.claude/rust-verification.toml` | full-ci | full CI runs |
 | lockfile change | `Cargo.lock` | full-ci | full CI runs |
 | mixed docs and source | `AGENTS.md` + `src/lib.rs` | full-ci | full CI runs |
-| ignored Claude agent dir | `.claude/skills/speckit-plan/SKILL.md` | docs | heavy Rust lanes skip; `host-health` runs; `gate` records docs proof |
-| ignored config dir | `.codex/config.toml` | docs | heavy Rust lanes skip; `host-health` runs; `gate` records docs proof |
+| ignored Claude agent dir | `.claude/settings.local.json` | docs | heavy Rust lanes skip; `host-health` runs; `gate` records docs proof |
+| ignored config dir | `.codex/hooks.json` | docs | heavy Rust lanes skip; `host-health` runs; `gate` records docs proof |
 
 The classifier runs from the trusted PR base tree. A PR cannot edit the classifier or safe-path
 registry and classify itself as docs-only. The docs proof is accepted only when every heavy lane

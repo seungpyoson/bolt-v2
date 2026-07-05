@@ -4,12 +4,13 @@ use backtesting_vertical_slice::{
         BackfillAcceptedTrancheObject, BackfillAcceptedTrancheStatus,
     },
     backfill_execution_plan::{
-        BACKFILL_EXECUTION_PLAN_FILE, BackfillExecutionPlanIssue, BackfillExecutionPlanStatus,
-        BackfillExecutionRunBinding, BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
-        write_backfill_execution_plan,
+        BACKFILL_EXECUTION_PLAN_FILE, BackfillExecutionPlan, BackfillExecutionPlanIssue,
+        BackfillExecutionPlanStatus, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
+        evaluate_backfill_execution_plan, write_backfill_execution_plan,
     },
     source_proof::SourceProofUsageScope,
 };
+use sha2::{Digest, Sha256};
 
 #[test]
 fn execution_plan_is_ready_only_for_matching_accepted_tranche_and_run_spec_binding() {
@@ -219,6 +220,28 @@ fn execution_plan_writer_is_idempotent_and_refuses_dirty_existing_artifact() {
     std::fs::write(&first.path, b"not the same plan").expect("dirty plan");
     let err = write_backfill_execution_plan(dir.path(), &plan).expect_err("dirty existing plan");
     assert!(err.to_string().contains("existing file content differs"));
+}
+
+#[test]
+fn retained_execution_plan_artifact_hash_matches_written_file_bytes() {
+    let retained_plan_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../specs/023-nt-research-analytics-platform/reference/",
+        "source-universe-execution-packs/",
+        "binance-data-vision-trades-2026-03-01-all-instruments/",
+        "execution-pack/runs/",
+        "00000-source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00000/",
+        BACKFILL_EXECUTION_PLAN_FILE
+    );
+    let plan_bytes = std::fs::read(retained_plan_path).expect("read retained execution plan");
+    let plan: BackfillExecutionPlan =
+        serde_json::from_slice(&plan_bytes).expect("parse retained execution plan");
+    let dir = tempfile::TempDir::new().expect("temp dir");
+
+    let artifact = write_backfill_execution_plan(dir.path(), &plan).expect("write retained plan");
+    let written = std::fs::read(&artifact.path).expect("read written execution plan");
+
+    assert_eq!(artifact.content_hash, hex::encode(Sha256::digest(&written)));
 }
 
 fn accepted_tranche() -> BackfillAcceptedTrancheManifest {

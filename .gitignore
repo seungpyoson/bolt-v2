@@ -19,17 +19,25 @@ __pycache__/
 .entire/
 .worktrees/
 .devin/
+# .githooks/ is enumerated (not wholesale) because it ships tracked shared
+# hooks; only agent-installed machine-local hooks are ignored:
 .githooks/commit-msg
 .githooks/post-commit
 .githooks/pre-push
 .githooks/prepare-commit-msg
 .githooks/*.pre-entire
+# Reserved suffix: `.local.` marks machine-local, never-committed files.
 *.local.md
 .sc/
 .mcp.json
-# Generated SpecKit agent adapters are NOT committed; .specify/ is the
-# source of truth — regenerate locally with the spec-kit `specify` CLI
-# (options recorded in .specify/init-options.json).
+# Generated SpecKit agent adapters are NOT committed; .specify/ templates are
+# the source of truth. Regenerate locally: `specify integration install
+# <agent>`, then `git restore CLAUDE.md GEMINI.md` (the tool appends a SPECKIT
+# block to context files). SpecKit integration state is machine-local:
+.specify/integration.json
+.specify/init-options.json
+.specify/integrations/*
+!.specify/integrations/speckit.manifest.json
 **/.claude/
 .gemini/
 .opencode/
@@ -43,9 +51,10 @@ __pycache__/
 .superpowers/
 # Fail-closed: coding-agent state DIRS are ignored by default, including
 # agents not yet in use here (names verified against vendor docs 2026-07-05);
-# allowlist shared content explicitly on adoption (dir/* plus !dir/path).
-# Conventional root instruction FILES (AGENTS.md style,
-# .clinerules/.goosehints single-file forms) stay trackable.
+# To allowlist shared content on adoption, replace the wholesale `dir/` rule
+# with `dir/*` plus `!dir/path` — nothing can be re-included under a
+# trailing-slash dir rule. Conventional root instruction FILES (AGENTS.md
+# style, .clinerules/.goosehints single-file forms) stay trackable.
 .cursor/
 .windsurf/
 .clinerules/

@@ -12,6 +12,7 @@ use bolt_v2::{
     },
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState, KillSwitchStateKind},
     bolt_v3_kill_switch_store::{
+        KillSwitchLossGovernorManualRecoveryOutcome, KillSwitchLossGovernorManualRecoveryRecord,
         KillSwitchLossProtectionSnapshot, KillSwitchRecoveryReason, KillSwitchRecoveryState,
         KillSwitchStore,
     },
@@ -130,6 +131,31 @@ fn assert_single_refused_audit(store: &KillSwitchStore, expected_reason_fragment
         "refused audit must carry `{expected_reason_fragment}`, got: {}",
         audit_lines[0]
     );
+}
+
+fn manual_recovery_audit_record(
+    outcome: KillSwitchLossGovernorManualRecoveryOutcome,
+    outcome_reason: Option<&str>,
+) -> KillSwitchLossGovernorManualRecoveryRecord {
+    KillSwitchLossGovernorManualRecoveryRecord {
+        operator_id: "operator-primary".to_string(),
+        evidence_path: "loss-governor/manual-recovery.json".to_string(),
+        evidence_sha256: VALID_EVIDENCE_SHA256.to_string(),
+        observed_at_ns: 2_500,
+        recorded_at_ns: 2_600,
+        outcome: Some(outcome),
+        outcome_reason: outcome_reason.map(str::to_string),
+    }
+}
+
+fn append_manual_recovery_audit(
+    store: &KillSwitchStore,
+    outcome: KillSwitchLossGovernorManualRecoveryOutcome,
+    outcome_reason: Option<&str>,
+) {
+    store
+        .append_loss_governor_manual_recovery(manual_recovery_audit_record(outcome, outcome_reason))
+        .expect("test audit seed should append");
 }
 
 fn zero_loss_snapshot() -> KillSwitchLossProtectionSnapshot {
@@ -303,6 +329,233 @@ fn valid_manual_recovery_records_armed_state_and_append_only_audit_history() {
     assert_eq!(
         read_manual_recovery_audit_lines(&store)[1]["evidence_sha256"],
         VALID_EVIDENCE_SHA256
+    );
+}
+
+#[test]
+fn manual_recovery_after_crash_before_attempted_append_recovers_from_original_halt() {
+    let (loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halt_observed_at_ns = 10 * NANOS_PER_UTC_DAY + 1_000;
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        loss_governor_halted_state_at(halt_observed_at_ns),
+        &zero_loss_snapshot(),
+        LossHaltReason::DailyLossLimit,
+    );
+
+    let outcome =
+        recover_loss_governor_manual_halt(&loaded, command_at(11 * NANOS_PER_UTC_DAY + 1_000))
+            .expect("no prior durable operation should retry as a normal recovery");
+
+    assert_eq!(outcome.manual_recovery_count, 2);
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("store should recover after retry"),
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Armed)
+    );
+}
+
+#[test]
+fn manual_recovery_after_crash_after_attempted_append_retries_and_recovers() {
+    let (loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halt_observed_at_ns = 10 * NANOS_PER_UTC_DAY + 1_000;
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        loss_governor_halted_state_at(halt_observed_at_ns),
+        &zero_loss_snapshot(),
+        LossHaltReason::DailyLossLimit,
+    );
+    append_manual_recovery_audit(
+        &store,
+        KillSwitchLossGovernorManualRecoveryOutcome::Attempted,
+        None,
+    );
+
+    let outcome =
+        recover_loss_governor_manual_halt(&loaded, command_at(11 * NANOS_PER_UTC_DAY + 1_000))
+            .expect("attempt-only audit should not block retry");
+
+    assert_eq!(outcome.manual_recovery_count, 3);
+    let audit_lines = read_manual_recovery_audit_lines(&store);
+    assert_eq!(audit_lines.len(), 3);
+    assert_eq!(
+        audit_lines[0]["outcome"],
+        serde_json::Value::String("attempted".to_string())
+    );
+    assert_eq!(
+        audit_lines[1]["outcome"],
+        serde_json::Value::String("attempted".to_string())
+    );
+    assert_eq!(
+        audit_lines[2]["outcome"],
+        serde_json::Value::String("recovered".to_string())
+    );
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("store should recover after retry"),
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Armed)
+    );
+}
+
+#[test]
+fn manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative() {
+    let (loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    store
+        .write_state_with_loss_snapshot(&KillSwitchState::Armed, Some(&zero_loss_snapshot()))
+        .expect("Armed state should represent durable state-write success");
+    append_manual_recovery_audit(
+        &store,
+        KillSwitchLossGovernorManualRecoveryOutcome::Attempted,
+        None,
+    );
+
+    let error = recover_loss_governor_manual_halt(&loaded, valid_command())
+        .expect_err("Armed state should be authoritative after crash");
+
+    assert!(
+        matches!(
+            error,
+            LossGovernorManualRecoveryError::UnsupportedState {
+                state: KillSwitchStateKind::Armed
+            }
+        ),
+        "Armed state should route to unsupported state, got: {error}"
+    );
+    let audit_lines = read_manual_recovery_audit_lines(&store);
+    assert_eq!(audit_lines.len(), 2);
+    assert_eq!(
+        audit_lines[1]["outcome"],
+        serde_json::Value::String("refused-with-reason".to_string())
+    );
+}
+
+#[test]
+fn manual_recovery_after_crash_after_write_failed_append_retries_from_original_halt() {
+    let (loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halt_observed_at_ns = 10 * NANOS_PER_UTC_DAY + 1_000;
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        loss_governor_halted_state_at(halt_observed_at_ns),
+        &zero_loss_snapshot(),
+        LossHaltReason::DailyLossLimit,
+    );
+    append_manual_recovery_audit(
+        &store,
+        KillSwitchLossGovernorManualRecoveryOutcome::Attempted,
+        None,
+    );
+    append_manual_recovery_audit(
+        &store,
+        KillSwitchLossGovernorManualRecoveryOutcome::WriteFailed,
+        Some("loss governor manual recovery write failed: synthetic"),
+    );
+
+    let outcome =
+        recover_loss_governor_manual_halt(&loaded, command_at(11 * NANOS_PER_UTC_DAY + 1_000))
+            .expect("write-failed audit without failed state should retry original halt");
+
+    assert_eq!(outcome.manual_recovery_count, 4);
+    let audit_lines = read_manual_recovery_audit_lines(&store);
+    assert_eq!(audit_lines.len(), 4);
+    assert_eq!(
+        audit_lines[1]["outcome"],
+        serde_json::Value::String("write-failed".to_string())
+    );
+    assert_eq!(
+        audit_lines[3]["outcome"],
+        serde_json::Value::String("recovered".to_string())
+    );
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("store should recover after retry"),
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Armed)
+    );
+}
+
+#[test]
+fn manual_recovery_after_failed_manual_intervention_is_terminal_and_audits() {
+    let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let failed = KillSwitchState::FailedManualIntervention {
+        halt_id: "halt-loss-governor-1".to_string(),
+        reason: "loss governor manual recovery write failed: synthetic".to_string(),
+    };
+    store
+        .write_state_with_loss_snapshot(&failed, Some(&zero_loss_snapshot()))
+        .expect("failed manual intervention state should persist");
+    append_manual_recovery_audit(
+        &store,
+        KillSwitchLossGovernorManualRecoveryOutcome::Attempted,
+        None,
+    );
+    append_manual_recovery_audit(
+        &store,
+        KillSwitchLossGovernorManualRecoveryOutcome::WriteFailed,
+        Some("loss governor manual recovery write failed: synthetic"),
+    );
+
+    let error = recover_loss_governor_manual_halt(&loaded, valid_command())
+        .expect_err("failed manual intervention is terminal for this command");
+
+    assert!(
+        matches!(
+            error,
+            LossGovernorManualRecoveryError::UnsupportedState {
+                state: KillSwitchStateKind::FailedManualIntervention
+            }
+        ),
+        "terminal failed intervention should route to unsupported state, got: {error}"
+    );
+    let audit_lines = read_manual_recovery_audit_lines(&store);
+    assert_eq!(audit_lines.len(), 3);
+    assert_eq!(
+        audit_lines[2]["outcome"],
+        serde_json::Value::String("refused-with-reason".to_string())
+    );
+}
+
+#[test]
+fn manual_recovery_after_crash_after_recovered_append_refuses_as_armed_and_audits() {
+    let (loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halt_observed_at_ns = 10 * NANOS_PER_UTC_DAY + 1_000;
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        loss_governor_halted_state_at(halt_observed_at_ns),
+        &zero_loss_snapshot(),
+        LossHaltReason::DailyLossLimit,
+    );
+    recover_loss_governor_manual_halt(&loaded, command_at(11 * NANOS_PER_UTC_DAY + 1_000))
+        .expect("first recovery should complete");
+
+    let error = recover_loss_governor_manual_halt(&loaded, valid_command())
+        .expect_err("recovered Armed state should not run recovery again");
+
+    assert!(
+        matches!(
+            error,
+            LossGovernorManualRecoveryError::UnsupportedState {
+                state: KillSwitchStateKind::Armed
+            }
+        ),
+        "second invocation should treat Armed as authoritative, got: {error}"
+    );
+    let audit_lines = read_manual_recovery_audit_lines(&store);
+    assert_eq!(audit_lines.len(), 3);
+    assert_eq!(
+        audit_lines[1]["outcome"],
+        serde_json::Value::String("recovered".to_string())
+    );
+    assert_eq!(
+        audit_lines[2]["outcome"],
+        serde_json::Value::String("refused-with-reason".to_string())
     );
 }
 
@@ -844,5 +1097,36 @@ fn manual_recovery_torn_audit_requires_repair_without_touching_halt() {
         fs::read_to_string(manual_recovery_audit_path(&store))
             .expect("audit file should remain readable"),
         "{\"torn\":true}"
+    );
+}
+
+#[test]
+fn manual_recovery_torn_audit_blocks_armed_refusal_until_repaired() {
+    let (loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    store
+        .write_state_with_loss_snapshot(&KillSwitchState::Armed, Some(&zero_loss_snapshot()))
+        .expect("Armed state should persist");
+    fs::write(
+        manual_recovery_audit_path(&store),
+        b"{\"outcome\":\"attempted\"}",
+    )
+    .expect("test should create a torn final audit line");
+
+    let error = recover_loss_governor_manual_halt(&loaded, valid_command())
+        .expect_err("torn audit should be repaired before recording Armed refusal");
+
+    assert!(
+        matches!(
+            error,
+            LossGovernorManualRecoveryError::RepairManualRecoveryAudit { .. }
+        ),
+        "torn audit should require repair before Armed refusal append, got: {error}"
+    );
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("Armed state should remain readable"),
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Armed)
     );
 }

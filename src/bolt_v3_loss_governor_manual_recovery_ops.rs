@@ -21,6 +21,16 @@
 //! `FailedManualIntervention` is terminal for this command, routes to
 //! `UnsupportedState`, and needs out-of-band repair.
 //!
+//! Interleaving completeness matrix:
+//!
+//! | Durable operation | Crash before operation | Crash after operation | Torn audit at operation | Non-torn IO error at operation |
+//! | --- | --- | --- | --- | --- |
+//! | `attempted` append | Store remains the original halt and the audit has no new line; the next invocation runs a normal recovery. Test: `manual_recovery_after_crash_before_attempted_append_recovers_from_original_halt`. | Store remains the original halt and the audit ends in `attempted`; the next invocation retries and can recover, appending a new `attempted`/`recovered` pair. Test: `manual_recovery_after_crash_after_attempted_append_retries_and_recovers`. | Store remains the original halt and the audit has a torn final line; the next invocation returns `RepairManualRecoveryAudit` until the audit is repaired. Test: `manual_recovery_torn_audit_requires_repair_without_touching_halt`. | Store is downgraded to `FailedManualIntervention` and no attempted line is durable; the next invocation treats that state as terminal. Tests: `attempted_audit_non_torn_error_persists_failed_manual_intervention`, `manual_recovery_after_failed_manual_intervention_is_terminal_and_audits`. |
+//! | `Armed` state write | Store remains the original halt and the audit ends in `attempted`; the next invocation retries and can recover. Test: `manual_recovery_after_crash_after_attempted_append_retries_and_recovers`. | Store is `Armed` and the audit ends in `attempted`; the next invocation treats `Armed` as authoritative and records an `UnsupportedState` refusal when the audit is appendable. Test: `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`. | The state write does not inspect the audit file; a pre-existing torn audit is caught by the preceding `attempted` append, leaving the halt untouched and the next invocation returning `RepairManualRecoveryAudit`. Test: `manual_recovery_torn_audit_requires_repair_without_touching_halt`. | Store remains the original halt until fallback runs; with a successful write-failed audit and failed-state write, it becomes `FailedManualIntervention` and the next invocation is terminal. Tests: `failed_recovery_state_write_persists_failed_manual_intervention`, `manual_recovery_after_failed_manual_intervention_is_terminal_and_audits`. |
+//! | `write-failed` append | Store remains the original halt and the audit ends in `attempted`; the next invocation retries and can recover. Test: `manual_recovery_after_crash_after_attempted_append_retries_and_recovers`. | Store remains the original halt and the audit ends in `write-failed`; the next invocation retries from the original halt and can recover. Test: `manual_recovery_after_crash_after_write_failed_append_retries_from_original_halt`. | Store remains the original halt and the audit must be repaired before any failed-state write; the next invocation returns `RepairManualRecoveryAudit`. Tests: `failed_recovery_state_write_with_torn_write_failed_audit_requires_repair_only`, `manual_recovery_torn_audit_requires_repair_without_touching_halt`. | Store is downgraded to `FailedManualIntervention` after logging the audit error; the next invocation treats that state as terminal. Tests: `write_failed_audit_io_error_persists_failed_manual_intervention`, `manual_recovery_after_failed_manual_intervention_is_terminal_and_audits`. |
+//! | `FailedManualIntervention` state write | Store remains the original halt and the audit ends in `write-failed`; the next invocation retries from the original halt. Test: `manual_recovery_after_crash_after_write_failed_append_retries_from_original_halt`. | Store is `FailedManualIntervention` and the audit ends in `write-failed`; the next invocation routes to `UnsupportedState` and records a refusal when the audit is appendable. Test: `manual_recovery_after_failed_manual_intervention_is_terminal_and_audits`. | The failed-state write does not inspect the audit file; a torn write-failed audit is detected before this write and leaves the halt untouched, so the next invocation returns `RepairManualRecoveryAudit`. Test: `failed_recovery_state_write_with_torn_write_failed_audit_requires_repair_only`. | Store remains the original halt while the audit ends in `write-failed`; the command returns `FailedStateWriteFailed`, and the next invocation retries from the original halt. Tests: `failed_recovery_state_write_reports_when_failed_state_also_fails`, `manual_recovery_after_crash_after_write_failed_append_retries_from_original_halt`. |
+//! | `recovered` append | Store is `Armed` and the audit ends in `attempted`; the next invocation treats `Armed` as authoritative and records an `UnsupportedState` refusal when the audit is appendable. Test: `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`. | Store is `Armed` and the audit ends in `recovered`; the next invocation treats `Armed` as authoritative and records an `UnsupportedState` refusal when the audit is appendable. Test: `manual_recovery_after_crash_after_recovered_append_refuses_as_armed_and_audits`. | Store is already `Armed`; the command reports success, the audit tail must be repaired before the next refusal can be audited, and the next invocation returns `RepairManualRecoveryAudit`. Tests: `recovered_audit_torn_error_reports_success_after_armed_state_wins`, `manual_recovery_torn_audit_blocks_armed_refusal_until_repaired`. | Store is already `Armed`; the command reports success after logging, the audit may end at `attempted`, and the next invocation treats `Armed` as authoritative when the audit is appendable. Tests: `recovered_audit_non_torn_error_reports_success_after_armed_state_wins`, `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`. |
+//!
 //! Refusals after config and store-path resolution are audited when the audit
 //! path is appendable. Pre-config failures and an unwritable audit path are the
 //! non-auditable boundary because no durable audit line can be written there.
@@ -786,6 +796,7 @@ mod tests {
 
     enum FakeAppendResult {
         Ok(usize),
+        Io,
         TornAudit,
     }
 
@@ -840,6 +851,7 @@ mod tests {
             match self.append_results.borrow_mut().pop_front() {
                 Some(FakeAppendResult::Ok(count)) => Ok(count),
                 None => Ok(1),
+                Some(FakeAppendResult::Io) => Err(synthetic_store_error(&self.path)),
                 Some(FakeAppendResult::TornAudit) => {
                     Err(KillSwitchStoreError::TornManualRecoveryAudit {
                         path: self
@@ -907,6 +919,31 @@ mod tests {
     }
 
     #[test]
+    fn attempted_audit_non_torn_error_persists_failed_manual_intervention() {
+        let store = FakeManualRecoveryStore::with_append_results([true], [FakeAppendResult::Io]);
+
+        let error = persist_manual_recovery_attempt(
+            &store,
+            &recovery_state(),
+            &loss_snapshot(),
+            manual_recovery_record(),
+        )
+        .expect_err("attempted audit IO failure should persist failed intervention");
+
+        assert!(matches!(
+            error,
+            LossGovernorManualRecoveryError::StoreWriteFailed { .. }
+        ));
+        assert_eq!(*store.append_calls.borrow(), 1);
+        let written_states = store.written_states();
+        assert_eq!(written_states.len(), 1);
+        assert!(matches!(
+            written_states[0],
+            KillSwitchState::FailedManualIntervention { .. }
+        ));
+    }
+
+    #[test]
     fn failed_recovery_state_write_persists_failed_manual_intervention() {
         let store = FakeManualRecoveryStore::new([false, true]);
 
@@ -932,6 +969,35 @@ mod tests {
             appended_records[1].outcome,
             Some(KillSwitchLossGovernorManualRecoveryOutcome::WriteFailed)
         );
+        let written_states = store.written_states();
+        assert_eq!(written_states.len(), 2);
+        assert_eq!(written_states[0], KillSwitchState::Armed);
+        assert!(matches!(
+            written_states[1],
+            KillSwitchState::FailedManualIntervention { .. }
+        ));
+    }
+
+    #[test]
+    fn write_failed_audit_io_error_persists_failed_manual_intervention() {
+        let store = FakeManualRecoveryStore::with_append_results(
+            [false, true],
+            [FakeAppendResult::Ok(1), FakeAppendResult::Io],
+        );
+
+        let error = persist_manual_recovery_attempt(
+            &store,
+            &recovery_state(),
+            &loss_snapshot(),
+            manual_recovery_record(),
+        )
+        .expect_err("non-torn write-failed audit error should still downgrade failed write");
+
+        assert!(matches!(
+            error,
+            LossGovernorManualRecoveryError::StoreWriteFailed { .. }
+        ));
+        assert_eq!(*store.append_calls.borrow(), 2);
         let written_states = store.written_states();
         assert_eq!(written_states.len(), 2);
         assert_eq!(written_states[0], KillSwitchState::Armed);
@@ -1017,5 +1083,45 @@ mod tests {
                 .any(|state| matches!(state, KillSwitchState::FailedManualIntervention { .. })),
             "torn write-failed audit must leave the original halt latched: {written_states:?}"
         );
+    }
+
+    #[test]
+    fn recovered_audit_torn_error_reports_success_after_armed_state_wins() {
+        let store = FakeManualRecoveryStore::with_append_results(
+            [true],
+            [FakeAppendResult::Ok(1), FakeAppendResult::TornAudit],
+        );
+
+        let count = persist_manual_recovery_attempt(
+            &store,
+            &recovery_state(),
+            &loss_snapshot(),
+            manual_recovery_record(),
+        )
+        .expect("recovered audit torn error should not reverse durable Armed state");
+
+        assert_eq!(count, 1);
+        assert_eq!(*store.append_calls.borrow(), 2);
+        assert_eq!(store.written_states(), vec![KillSwitchState::Armed]);
+    }
+
+    #[test]
+    fn recovered_audit_non_torn_error_reports_success_after_armed_state_wins() {
+        let store = FakeManualRecoveryStore::with_append_results(
+            [true],
+            [FakeAppendResult::Ok(1), FakeAppendResult::Io],
+        );
+
+        let count = persist_manual_recovery_attempt(
+            &store,
+            &recovery_state(),
+            &loss_snapshot(),
+            manual_recovery_record(),
+        )
+        .expect("recovered audit IO error should not reverse durable Armed state");
+
+        assert_eq!(count, 1);
+        assert_eq!(*store.append_calls.borrow(), 2);
+        assert_eq!(store.written_states(), vec![KillSwitchState::Armed]);
     }
 }

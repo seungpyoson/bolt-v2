@@ -457,6 +457,70 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             "the same cancel-all names must be rejected from strategy code",
         )
 
+    def test_shared_order_execution_can_attach_kill_switch_flatten_claim(self) -> None:
+        source = """
+        use crate::bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand;
+        fn route(command: &BoltV3KillSwitchFlattenCommand) {
+            request.intent_kind = BoltV3SubmitIntentKind::KillSwitchForcedReduction;
+            let _ = command.forced_reduction_claim();
+        }
+        """
+
+        self.assertEqual(
+            self.violations_for(source, path="src/bolt_v3_order_execution.rs"),
+            [],
+            "shared execution may attach the already-planned kill-switch flatten claim",
+        )
+        labels = {
+            violation.label
+            for violation in self.violations_for(source, path="src/strategies/future.rs")
+        }
+        self.assertIn("strategy-local kill switch policy", labels)
+        self.assertIn("global kill-switch flatten supervisor policy", labels)
+
+    def test_live_node_flatten_sink_exact_nt_submit_surface_is_allowed(self) -> None:
+        source = """
+        messages::execution::{SubmitOrder, TradingCommand},
+        let command = SubmitOrder::new(
+            trader_id,
+            context.client_id,
+        );
+        risk_engine
+            .borrow_mut()
+            .execute(TradingCommand::SubmitOrder(command));
+        """
+
+        self.assertEqual(
+            self.direct_nt_violations_for(
+                source, path="src/bolt_v3_live_node/risk_admission_loss.rs"
+            ),
+            [],
+            "live-node flatten sink may hand already-admitted submit commands to NT",
+        )
+        self.assertEqual(
+            len(self.direct_nt_violations_for(source, path="src/strategies/future.rs")),
+            3,
+            "the same NT submit primitives must remain forbidden in strategy code",
+        )
+
+    def test_live_node_flatten_sink_may_use_shared_execution_policy(self) -> None:
+        source = """
+        fn make(mode: BoltV3OrderExecutionMode) {
+            let _policy = BoltV3OrderExecutionPolicy::from_mode(mode);
+        }
+        """
+
+        self.assertEqual(
+            self.violations_for(
+                source, path="src/bolt_v3_live_node/risk_admission_loss.rs"
+            ),
+            [],
+            "live-node flatten sink may instantiate the shared execution policy",
+        )
+        labels = self.labels_for(source)
+        self.assertIn("strategy-local execution policy construction", labels)
+        self.assertIn("strategy-local execution policy type reference", labels)
+
     def test_mutation_fence_scans_all_production_src_files(self) -> None:
         scanned = {
             str(path.relative_to(VERIFIER.REPO_ROOT))

@@ -298,10 +298,23 @@ ALLOWED_KILL_SWITCH_ACTION_BYPASS_PATHS = frozenset(
     }
 )
 
+ALLOWED_KILL_SWITCH_POLICY_PATHS = frozenset(
+    {
+        "src/bolt_v3_order_execution.rs",
+    }
+)
+
+ALLOWED_KILL_SWITCH_FLATTEN_SUPERVISOR_PATHS = frozenset(
+    {
+        "src/bolt_v3_order_execution.rs",
+    }
+)
+
 ALLOWED_EXECUTION_POLICY_TYPE_REFERENCE_PATHS = frozenset(
     {
         "src/bolt_v3_config.rs",
         "src/bolt_v3_live_node.rs",
+        "src/bolt_v3_live_node/risk_admission_loss.rs",
         "src/bolt_v3_order_execution.rs",
         "src/bolt_v3_strategy_registration.rs",
         "src/bolt_v3_validate/strategy_envelope.rs",
@@ -312,6 +325,7 @@ ALLOWED_EXECUTION_POLICY_TYPE_REFERENCE_PATHS = frozenset(
 ALLOWED_EXECUTION_POLICY_CONSTRUCTION_PATHS = frozenset(
     {
         "src/bolt_v3_live_node.rs",
+        "src/bolt_v3_live_node/risk_admission_loss.rs",
         "src/bolt_v3_order_execution.rs",
     }
 )
@@ -326,6 +340,26 @@ STRATEGY_ROOT_POLICY_EXEMPT_PATHS = frozenset(
     {
         "src/strategies/mod.rs",
         "src/strategies/registry.rs",
+    }
+)
+
+ALLOWED_EXACT_VIOLATIONS = frozenset(
+    {
+        (
+            "src/bolt_v3_live_node/risk_admission_loss.rs",
+            "direct NT venue mutation call",
+            "messages::execution::{SubmitOrder, TradingCommand},",
+        ),
+        (
+            "src/bolt_v3_live_node/risk_admission_loss.rs",
+            "direct NT venue mutation call",
+            "let command = SubmitOrder::new(",
+        ),
+        (
+            "src/bolt_v3_live_node/risk_admission_loss.rs",
+            "direct NT venue mutation call",
+            ".execute(TradingCommand::SubmitOrder(command));",
+        ),
     }
 )
 
@@ -438,6 +472,16 @@ def find_violations_in_text(
         ):
             continue
         if (
+            rule.label == "strategy-local kill switch policy"
+            and path in ALLOWED_KILL_SWITCH_POLICY_PATHS
+        ):
+            continue
+        if (
+            rule.label == "global kill-switch flatten supervisor policy"
+            and path in ALLOWED_KILL_SWITCH_FLATTEN_SUPERVISOR_PATHS
+        ):
+            continue
+        if (
             rule.label == "strategy-local execution policy construction"
             and path in ALLOWED_EXECUTION_POLICY_CONSTRUCTION_PATHS
         ):
@@ -463,14 +507,15 @@ def find_violations_in_text(
             line_end = text.find("\n", match.end())
             if line_end == -1:
                 line_end = len(text)
-            violations.append(
-                Violation(
-                    path=path,
-                    line=line_number(text, match.start()),
-                    label=rule.label,
-                    excerpt=text[line_start:line_end].strip(),
-                )
+            violation = Violation(
+                path=path,
+                line=line_number(text, match.start()),
+                label=rule.label,
+                excerpt=text[line_start:line_end].strip(),
             )
+            if (violation.path, violation.label, violation.excerpt) in ALLOWED_EXACT_VIOLATIONS:
+                continue
+            violations.append(violation)
     return violations
 
 

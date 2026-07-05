@@ -1414,6 +1414,12 @@ mod tests {
                 }
             })
         };
+        let mut baseline = test_venue_truth_snapshot();
+        baseline.captured_at = UnixNanos::from(1_100);
+        reconcile_venue_truth_snapshot(&feed, baseline)
+            .expect("initial venue truth snapshot should seed nominal health");
+        assert_eq!(admission.capital_admission_reconciled(), Some(true));
+
         let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
             "clob_open_orders",
             "transport_or_decode",

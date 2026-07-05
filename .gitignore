@@ -34,8 +34,7 @@ __pycache__/
 .gemini/
 .opencode/
 .pi/
-.codex/*
-!.codex/config.toml
+.codex/
 .aider.chat.history.md
 .aider.input.history
 .aider.tags.cache.v*/
@@ -44,8 +43,8 @@ __pycache__/
 .superpowers/
 # Fail-closed: coding-agent state DIRS are ignored by default, including
 # agents not yet in use here (names verified against vendor docs 2026-07-05);
-# allowlist shared content explicitly on adoption (see the .codex pattern
-# above). Conventional root instruction FILES (AGENTS.md style,
+# allowlist shared content explicitly on adoption (dir/* plus !dir/path).
+# Conventional root instruction FILES (AGENTS.md style,
 # .clinerules/.goosehints single-file forms) stay trackable.
 .cursor/
 .windsurf/

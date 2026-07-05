@@ -14025,6 +14025,29 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         for error in missing_bvs_partition_set_e_disable_errors
     ), missing_bvs_partition_set_e_disable_errors
 
+    missing_bvs_partition_rc_condition = replace_once(
+        good,
+        '            if [[ "$rc" -ne 0 ]]; then\n',
+        '            if [[ "$rc" == 0 ]]; then\n',
+    )
+    missing_bvs_partition_rc_condition_errors = bvs_cache_errors(missing_bvs_partition_rc_condition)
+    assert any(
+        "BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256" in error
+        for error in missing_bvs_partition_rc_condition_errors
+    ), missing_bvs_partition_rc_condition_errors
+
+    bvs_partition_comment_probe = replace_once_after(
+        good,
+        "      - name: test",
+        "            set +e\n",
+        "            #\n            set +e\n",
+    )
+    bvs_partition_comment_probe_errors = bvs_cache_errors(bvs_partition_comment_probe)
+    assert any(
+        "BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256" in error
+        for error in bvs_partition_comment_probe_errors
+    ), bvs_partition_comment_probe_errors
+
     missing_bvs_archive_save_status = replace_once(
         good,
         '            echo "save-status=failed" >> "$GITHUB_OUTPUT"\n',
@@ -16007,6 +16030,28 @@ def main() -> int:
         "test-archive must aggregate partition failures",
         replace_once(BASE_WORKFLOW, "              status=1\n", ""),
     )
+    assert_error(
+        "test-archive must aggregate partition failures",
+        replace_once(
+            BASE_WORKFLOW,
+            '            if [[ "$rc" -ne 0 ]]; then\n',
+            '            if [[ "$rc" == 0 ]]; then\n',
+        ),
+    )
+    root_partition_rc_condition_probe = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Run nextest archive partitions",
+        '            if [[ "$rc" -ne 0 ]]; then\n',
+        '            if [[ "$rc" == 0 ]]; then\n',
+    )
+    assert_error("ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256", root_partition_rc_condition_probe)
+    root_partition_comment_probe = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Run nextest archive partitions",
+        '            set +e\n',
+        '            #\n            set +e\n',
+    )
+    assert_error("ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256", root_partition_comment_probe)
     assert_error(
         "test-archive partition failures must preserve shard exit codes",
         replace_once(

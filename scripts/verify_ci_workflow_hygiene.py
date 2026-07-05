@@ -7,6 +7,7 @@ import argparse
 from collections.abc import Callable, Iterable, Mapping
 import difflib
 import functools
+import hashlib
 import json
 import pathlib
 import re
@@ -800,6 +801,7 @@ TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
     "            if [[ \"$rc\" -ne 0 ]]; then\n"
     "              status=1\n"
 )
+ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256 = "69425e4ae0e0c3b9e02b4d9bfcccb2eaa2b193cf412dcad62844e482ff25c17f"
 CI_CLASSIFICATION_SUMMARY_LINE = (
     'echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} '
     'full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} '
@@ -843,6 +845,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
+BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256 = "651244ea165750beae019a38f53efa4b672a04ca4470caf8159d16feca0b2650"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
     "v${{ needs.nextest-fingerprint.outputs.nextest_schema }}"
@@ -11836,6 +11839,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
             if fragment not in archive_text:
                 errors.append("test-archive must aggregate partition failures")
                 break
+        errors.extend(
+            partition_run_body_digest_errors(
+                label="test-archive Run nextest archive partitions",
+                run_body=named_step_run_block("\n".join(archive_lines), "Run nextest archive partitions"),
+                expected_sha256=ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256,
+                constant_name="ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256",
+            )
+        )
 
     append_cache_persistence_audit_contract_errors(errors, jobs)
 
@@ -12573,6 +12584,28 @@ def named_step_run_block(job_text: str, step_name: str) -> str | None:
     return None
 
 
+def run_body_sha256(run_body: str) -> str:
+    return hashlib.sha256(run_body.encode("utf-8")).hexdigest()
+
+
+def partition_run_body_digest_errors(
+    *,
+    label: str,
+    run_body: str | None,
+    expected_sha256: str,
+    constant_name: str,
+) -> list[str]:
+    if run_body is None:
+        return []
+    actual_sha256 = run_body_sha256(run_body)
+    if actual_sha256 == expected_sha256:
+        return []
+    return [
+        f"{label} full run body digest changed: expected {expected_sha256}, got {actual_sha256}; "
+        f"update {constant_name} with reviewed workflow run body changes"
+    ]
+
+
 class WorkflowJobStep(NamedTuple):
     name: str | None
     run_text: str | None
@@ -13025,6 +13058,14 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester bvs-test archive must log partition diagnostics")
     if BVS_PARTITION_FAILURE_WRAPPER not in archive_text:
         errors.append("backtester bvs-test partition failures must use contiguous failure wrapper")
+    errors.extend(
+        partition_run_body_digest_errors(
+            label="backtester bvs-test archive partition step",
+            run_body=named_step_run_block("\n".join(archive_job), "test"),
+            expected_sha256=BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256,
+            constant_name="BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256",
+        )
+    )
     if 'rc="${PIPESTATUS[0]}"' not in archive_text:
         errors.append("backtester bvs-test partition failures must preserve shard exit codes")
     if 'echo "::error title=BVS nextest archive partition failed::shard=${shard}/${BVS_NEXTEST_SHARDS} exit=${rc}"' not in archive_text:

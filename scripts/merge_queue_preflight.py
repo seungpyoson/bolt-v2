@@ -2306,6 +2306,276 @@ def verifier_block(pr: int, result: VerifierResult, output_policy: OutputPolicy)
     }
 
 
+def unverified_batches_for_ready_prs(
+    *,
+    repo: pathlib.Path,
+    requested: Sequence[int],
+    blocked_numbers: set[int],
+    heads: Mapping[int, ExpectedHead],
+    base_commits: Mapping[int, SyntheticCommit],
+    batch_max_limits: Mapping[str, int],
+    input_timeout_seconds: int,
+) -> tuple[list[dict[str, object]], list[Batch]]:
+    conflicts: list[dict[str, object]] = []
+    batches: list[Batch] = []
+    current: SyntheticCommit | None = None
+    batch_index = 1
+    for pr in requested:
+        if pr in blocked_numbers:
+            continue
+        pr_head = heads[pr]
+        if current is None:
+            current = base_commits[pr]
+            continue
+        candidate_prs = [*current.prs, pr]
+        if batch_would_exceed_max(candidate_prs, batch_max_limits):
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=current.commit,
+                    prs=current.prs,
+                    verifiers=(),
+                )
+            )
+            batch_index += 1
+            current = base_commits[pr]
+            continue
+        synthetic = synthesize_merge(
+            repo,
+            current.commit,
+            pr_head.sha,
+            candidate_prs,
+            input_timeout_seconds,
+        )
+        if isinstance(synthetic, MergeResult):
+            conflicts.append(
+                {
+                    "pr": pr,
+                    "against_batch": list(current.prs),
+                    "files": list(synthetic.files),
+                    "type": "batch_conflict",
+                }
+            )
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=current.commit,
+                    prs=current.prs,
+                    verifiers=(),
+                )
+            )
+            batch_index += 1
+            current = base_commits[pr]
+            continue
+        current = synthetic
+    if current is not None:
+        batches.append(
+            Batch(
+                index=batch_index,
+                commit=current.commit,
+                prs=current.prs,
+                verifiers=(),
+            )
+        )
+    return conflicts, batches
+
+
+@dataclasses.dataclass(frozen=True)
+class VerifiedBatchFallback:
+    blocked_prs: tuple[dict[str, object], ...]
+    conflicts: tuple[dict[str, object], ...]
+    batches: tuple[Batch, ...]
+
+
+def verified_fallback_batches(
+    *,
+    repo: pathlib.Path,
+    prs: Sequence[int],
+    heads: Mapping[int, ExpectedHead],
+    base_commits: Mapping[int, SyntheticCommit],
+    batch_max_limits: Mapping[str, int],
+    verifier_commands: Sequence[str],
+    verifier_timeout_seconds: int,
+    input_timeout_seconds: int,
+    output_policy: OutputPolicy,
+    start_index: int,
+) -> VerifiedBatchFallback:
+    blocked_prs: list[dict[str, object]] = []
+    blocked_numbers: set[int] = set()
+    base_verifiers: dict[int, tuple[VerifierResult, ...]] = {}
+    for pr in prs:
+        synthetic = base_commits[pr]
+        verifier_results = run_verifier_commands(
+            repo,
+            synthetic.commit,
+            verifier_commands,
+            verifier_timeout_seconds,
+            input_timeout_seconds,
+        )
+        failed = first_failed_verifier(verifier_results)
+        if failed is not None:
+            blocked_prs.append(verifier_block(pr, failed, output_policy))
+            blocked_numbers.add(pr)
+            continue
+        base_verifiers[pr] = verifier_results
+
+    conflicts: list[dict[str, object]] = []
+    batches: list[Batch] = []
+    current: SyntheticCommit | None = None
+    current_verifiers: tuple[VerifierResult, ...] = ()
+    batch_index = start_index
+    for pr in prs:
+        if pr in blocked_numbers:
+            continue
+        pr_head = heads[pr]
+        if current is None:
+            current = base_commits[pr]
+            current_verifiers = base_verifiers[pr]
+            continue
+        candidate_prs = [*current.prs, pr]
+        if batch_would_exceed_max(candidate_prs, batch_max_limits):
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=current.commit,
+                    prs=current.prs,
+                    verifiers=current_verifiers,
+                )
+            )
+            batch_index += 1
+            current = base_commits[pr]
+            current_verifiers = base_verifiers[pr]
+            continue
+        synthetic = synthesize_merge(
+            repo,
+            current.commit,
+            pr_head.sha,
+            candidate_prs,
+            input_timeout_seconds,
+        )
+        if isinstance(synthetic, MergeResult):
+            conflicts.append(
+                {
+                    "pr": pr,
+                    "against_batch": list(current.prs),
+                    "files": list(synthetic.files),
+                    "type": "batch_conflict",
+                }
+            )
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=current.commit,
+                    prs=current.prs,
+                    verifiers=current_verifiers,
+                )
+            )
+            batch_index += 1
+            current = base_commits[pr]
+            current_verifiers = base_verifiers[pr]
+            continue
+        candidate_verifiers = run_verifier_commands(
+            repo,
+            synthetic.commit,
+            verifier_commands,
+            verifier_timeout_seconds,
+            input_timeout_seconds,
+        )
+        failed = first_failed_verifier(candidate_verifiers)
+        if failed is not None:
+            conflicts.append(
+                {
+                    "pr": pr,
+                    "against_batch": list(current.prs),
+                    "type": batch_verifier_artifact_type(failed),
+                    **failed.as_public_json(output_policy),
+                }
+            )
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=current.commit,
+                    prs=current.prs,
+                    verifiers=current_verifiers,
+                )
+            )
+            batch_index += 1
+            current = base_commits[pr]
+            current_verifiers = base_verifiers[pr]
+            continue
+        current = synthetic
+        current_verifiers = candidate_verifiers
+    if current is not None:
+        batches.append(
+            Batch(
+                index=batch_index,
+                commit=current.commit,
+                prs=current.prs,
+                verifiers=current_verifiers,
+            )
+        )
+    return VerifiedBatchFallback(
+        blocked_prs=tuple(blocked_prs),
+        conflicts=tuple(conflicts),
+        batches=tuple(batches),
+    )
+
+
+def verify_final_batches_with_fallback(
+    *,
+    repo: pathlib.Path,
+    candidate_batches: Sequence[Batch],
+    heads: Mapping[int, ExpectedHead],
+    base_commits: Mapping[int, SyntheticCommit],
+    batch_max_limits: Mapping[str, int],
+    verifier_commands: Sequence[str],
+    verifier_timeout_seconds: int,
+    input_timeout_seconds: int,
+    output_policy: OutputPolicy,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[Batch]]:
+    blocked_prs: list[dict[str, object]] = []
+    conflicts: list[dict[str, object]] = []
+    batches: list[Batch] = []
+    batch_index = 1
+    for batch in candidate_batches:
+        verifier_results = run_verifier_commands(
+            repo,
+            batch.commit,
+            verifier_commands,
+            verifier_timeout_seconds,
+            input_timeout_seconds,
+        )
+        failed = first_failed_verifier(verifier_results)
+        if failed is None:
+            batches.append(
+                Batch(
+                    index=batch_index,
+                    commit=batch.commit,
+                    prs=batch.prs,
+                    verifiers=verifier_results,
+                )
+            )
+            batch_index += 1
+            continue
+        fallback = verified_fallback_batches(
+            repo=repo,
+            prs=batch.prs,
+            heads=heads,
+            base_commits=base_commits,
+            batch_max_limits=batch_max_limits,
+            verifier_commands=verifier_commands,
+            verifier_timeout_seconds=verifier_timeout_seconds,
+            input_timeout_seconds=input_timeout_seconds,
+            output_policy=output_policy,
+            start_index=batch_index,
+        )
+        blocked_prs.extend(fallback.blocked_prs)
+        conflicts.extend(fallback.conflicts)
+        batches.extend(fallback.batches)
+        batch_index += len(fallback.batches)
+    return blocked_prs, conflicts, batches
+
+
 def gh_json(
     args: Sequence[str],
     *,
@@ -2809,7 +3079,6 @@ def preflight_with_fetch_refs(
     )
     batch_max_limits = mergify_batch_limits(mergify_findings)
     base_commits: dict[int, SyntheticCommit] = {}
-    base_verifiers: dict[int, tuple[VerifierResult, ...]] = {}
     for pr in requested:
         if pr in blocked_numbers:
             continue
@@ -2826,116 +3095,29 @@ def preflight_with_fetch_refs(
             )
             blocked_numbers.add(pr)
             continue
-        verifier_results = run_verifier_commands(
-            repo,
-            synthetic.commit,
-            verifier_commands,
-            verifier_timeout_seconds,
-            input_timeout_seconds,
-        )
-        failed = first_failed_verifier(verifier_results)
-        if failed is not None:
-            blocked_prs.append(verifier_block(pr, failed, output_policy))
-            blocked_numbers.add(pr)
-            continue
         base_commits[pr] = synthetic
-        base_verifiers[pr] = verifier_results
-
-    conflicts: list[dict[str, object]] = []
-    batches: list[Batch] = []
-    current: SyntheticCommit | None = None
-    current_verifiers: tuple[VerifierResult, ...] = ()
-    batch_index = 1
-    for pr in requested:
-        if pr in blocked_numbers:
-            continue
-        pr_head = heads[pr]
-        if current is None:
-            current = base_commits[pr]
-            current_verifiers = base_verifiers[pr]
-            continue
-        candidate_prs = [*current.prs, pr]
-        if batch_would_exceed_max(candidate_prs, batch_max_limits):
-            batches.append(
-                Batch(
-                    index=batch_index,
-                    commit=current.commit,
-                    prs=current.prs,
-                    verifiers=current_verifiers,
-                )
-            )
-            batch_index += 1
-            current = base_commits[pr]
-            current_verifiers = base_verifiers[pr]
-            continue
-        synthetic = synthesize_merge(
-            repo,
-            current.commit,
-            pr_head.sha,
-            candidate_prs,
-            input_timeout_seconds,
-        )
-        if isinstance(synthetic, MergeResult):
-            conflicts.append(
-                {
-                    "pr": pr,
-                    "against_batch": list(current.prs),
-                    "files": list(synthetic.files),
-                    "type": "batch_conflict",
-                }
-            )
-            batches.append(
-                Batch(
-                    index=batch_index,
-                    commit=current.commit,
-                    prs=current.prs,
-                    verifiers=current_verifiers,
-                )
-            )
-            batch_index += 1
-            current = base_commits[pr]
-            current_verifiers = base_verifiers[pr]
-            continue
-        candidate_verifiers = run_verifier_commands(
-            repo,
-            synthetic.commit,
-            verifier_commands,
-            verifier_timeout_seconds,
-            input_timeout_seconds,
-        )
-        failed = first_failed_verifier(candidate_verifiers)
-        if failed is not None:
-            conflicts.append(
-                {
-                    "pr": pr,
-                    "against_batch": list(current.prs),
-                    "type": batch_verifier_artifact_type(failed),
-                    **failed.as_public_json(output_policy),
-                }
-            )
-            batches.append(
-                Batch(
-                    index=batch_index,
-                    commit=current.commit,
-                    prs=current.prs,
-                    verifiers=current_verifiers,
-                )
-            )
-            batch_index += 1
-            current = base_commits[pr]
-            current_verifiers = base_verifiers[pr]
-            continue
-        current = synthetic
-        current_verifiers = candidate_verifiers
-    if current is not None:
-        batches.append(
-            Batch(
-                index=batch_index,
-                commit=current.commit,
-                prs=current.prs,
-                verifiers=current_verifiers,
-            )
-        )
+    conflicts, candidate_batches = unverified_batches_for_ready_prs(
+        repo=repo,
+        requested=requested,
+        blocked_numbers=blocked_numbers,
+        heads=heads,
+        base_commits=base_commits,
+        batch_max_limits=batch_max_limits,
+        input_timeout_seconds=input_timeout_seconds,
+    )
+    fallback_blocked_prs, fallback_conflicts, batches = verify_final_batches_with_fallback(
+        repo=repo,
+        candidate_batches=candidate_batches,
+        heads=heads,
+        base_commits=base_commits,
+        batch_max_limits=batch_max_limits,
+        verifier_commands=verifier_commands,
+        verifier_timeout_seconds=verifier_timeout_seconds,
+        input_timeout_seconds=input_timeout_seconds,
+        output_policy=output_policy,
+    )
+    blocked_prs.extend(fallback_blocked_prs)
+    conflicts.extend(fallback_conflicts)
     contract_findings = (
         *base_identity_findings(
             expected_base_sha=expected_base_sha,

@@ -1479,6 +1479,61 @@ def assert_clean_prs_batch_together() -> None:
         assert_equal(payload["conflicts"], [], "clean conflicts")
 
 
+def assert_clean_prs_verify_final_batch_once() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        first_head = fixture.make_pr(1, {"one.txt": "one\n"})
+        second_head = fixture.make_pr(2, {"two.txt": "two\n"})
+        third_head = fixture.make_pr(3, {"three.txt": "three\n"})
+        counter = root / "verifier-count.txt"
+        verifier = root / "count_verifier.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            f"counter = Path({str(counter)!r})\n"
+            "value = int(counter.read_text(encoding='utf-8')) if counter.exists() else 0\n"
+            "counter.write_text(str(value + 1), encoding='utf-8')\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={first_head}",
+            "--expected-head-sha",
+            f"2={second_head}",
+            "--expected-head-sha",
+            f"3={third_head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            "1",
+            "2",
+            "3",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 3, "clean batch verifier no-gh rc")
+        payload = parse_json(result.stdout)
+        assert_equal([batch["prs"] for batch in payload["batches"]], [[1, 2, 3]], "clean final batch")
+        assert_equal(counter.read_text(encoding="utf-8"), "1", "clean batch verifier runs")
+
+
 def assert_conflicting_pr_starts_later_batch() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
@@ -1703,6 +1758,74 @@ def assert_verifier_failure_blocks_bad_pr_before_batching() -> None:
             raise AssertionError(blocked)
         if "fail.txt is not allowed" not in blocked[0]["stdout_preview"]:
             raise AssertionError(blocked)
+
+
+def assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        first_head = fixture.make_pr(1, {"one.txt": "one\n"})
+        poison_head = fixture.make_pr(2, {"poison.txt": "poison\n"})
+        third_head = fixture.make_pr(3, {"three.txt": "three\n"})
+        log = root / "verifier-log.txt"
+        verifier = root / "reject_poison.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            f"log = Path({str(log)!r})\n"
+            "files = ','.join(sorted(path.name for path in Path('.').glob('*.txt')))\n"
+            "with log.open('a', encoding='utf-8') as stream:\n"
+            "    stream.write(files + '\\n')\n"
+            "if Path('poison.txt').exists():\n"
+            "    print('poison.txt is not allowed')\n"
+            "    sys.exit(7)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={first_head}",
+            "--expected-head-sha",
+            f"2={poison_head}",
+            "--expected-head-sha",
+            f"3={third_head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            "1",
+            "2",
+            "3",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 2, "poison fallback rc")
+        payload = parse_json(result.stdout)
+        assert_equal([batch["prs"] for batch in payload["batches"]], [[1, 3]], "poison fallback batches")
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 2 or blocked[0]["type"] != "verifier_failed":
+            raise AssertionError(blocked)
+        if "poison.txt is not allowed" not in blocked[0]["stdout_preview"]:
+            raise AssertionError(blocked)
+        runs = log.read_text(encoding="utf-8").splitlines()
+        assert_equal(runs[0], "one.txt,poison.txt,shared.txt,three.txt", "initial batch-first verifier run")
+        if "one.txt,shared.txt,three.txt" not in runs:
+            raise AssertionError(runs)
 
 
 def assert_missing_verifier_executable_is_inconclusive() -> None:
@@ -2915,11 +3038,13 @@ def main() -> int:
     assert_unavailable_base_ref_is_inconclusive()
     assert_stale_expected_head_sha_blocks_pr()
     assert_clean_prs_batch_together()
+    assert_clean_prs_verify_final_batch_once()
     assert_conflicting_pr_starts_later_batch()
     assert_ready_batch_conflict_is_split_advised()
     assert_order_dependent_conflict_context_is_reported()
     assert_pr_that_conflicts_with_base_is_blocked()
     assert_verifier_failure_blocks_bad_pr_before_batching()
+    assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder()
     assert_missing_verifier_executable_is_inconclusive()
     assert_unexpected_exception_is_not_split_advised()
     assert_verifier_timeout_is_inconclusive()

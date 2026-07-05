@@ -7,6 +7,7 @@ import argparse
 from collections.abc import Callable, Iterable, Mapping
 import difflib
 import functools
+import hashlib
 import json
 import pathlib
 import re
@@ -489,6 +490,9 @@ FINGERPRINT_REUSE_JOB_IF_VALUE = (
 FINGERPRINT_REUSE_ALLOWED_OUTPUT = (
     "fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}"
 )
+FINGERPRINT_REUSE_REASON_OUTPUT = (
+    "fingerprint_reuse_reason: ${{ steps.fingerprint_reuse_allowed.outputs.reason }}"
+)
 DETECTOR_REFS_STEP_ALLOWED_KEYS = frozenset(("name", "id", "if", "shell", "env", "run"))
 DETECTOR_REFS_STEP_SCALARS = {
     "id": "pr_refs",
@@ -603,10 +607,13 @@ else
 fi"""
 FINGERPRINT_REUSE_ALLOWED_RUN = """if [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
   echo "value=false" >> "$GITHUB_OUTPUT"
+  echo "reason=governance-changed" >> "$GITHUB_OUTPUT"
 elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group" ]]; then
   echo "value=true" >> "$GITHUB_OUTPUT"
+  echo "reason=consumer-event" >> "$GITHUB_OUTPUT"
 else
   echo "value=false" >> "$GITHUB_OUTPUT"
+  echo "reason=non-consumer-event" >> "$GITHUB_OUTPUT"
 fi"""
 SELF_AUTHORIZING_GOVERNANCE_RUN = """set -euo pipefail
 base_ref="${{ steps.pr_refs.outputs.base_ref }}"
@@ -788,11 +795,67 @@ TEST_ARCHIVE_PARTITION_GROUP = 'echo "::group::nextest archive partition ${shard
 TEST_ARCHIVE_PARTITION_STATUS_INIT = "status=0"
 TEST_ARCHIVE_PARTITION_STATUS_MARK = "status=1"
 TEST_ARCHIVE_PARTITION_STATUS_EXIT = 'exit "$status"'
-TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
-    f"if ! {TEST_PARTITION_COMMAND}; then\n"
-    "              status=1\n"
-    "            fi"
+TEST_ARCHIVE_PARTITION_LOG_ASSIGN = 'partition_log="$RUNNER_TEMP/nextest-archive-partition-${shard}.log"'
+TEST_ARCHIVE_PARTITION_TEE = f'{TEST_PARTITION_COMMAND} 2>&1 | tee "$partition_log"'
+TEST_ARCHIVE_PARTITION_RC_CAPTURE = 'rc="${PIPESTATUS[0]}"'
+TEST_ARCHIVE_PARTITION_ERROR_ANNOTATION = (
+    'echo "::error title=nextest archive partition failed::shard=${shard}/${shards} exit=${rc}"'
 )
+TEST_ARCHIVE_PARTITION_LOG_TAIL = 'tail -80 "$partition_log"'
+TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
+    f"            {TEST_ARCHIVE_PARTITION_LOG_ASSIGN}\n"
+    "            set +e\n"
+    f"            {TEST_ARCHIVE_PARTITION_TEE}\n"
+    "            rc=\"${PIPESTATUS[0]}\"\n"
+    "            set -e\n"
+    "            if [[ \"$rc\" -ne 0 ]]; then\n"
+    "              status=1\n"
+)
+ROOT_TEST_ARCHIVE_JOB_SHA256 = "6d0b1df8d8995dbc68cbdf072de322dc7b979783294102acf55a5577811c4439"
+CI_CLASSIFICATION_SUMMARY_LINE = (
+    'echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} '
+    'full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} '
+    'event_class=${EXPECTED_EVENT_CLASS:-unknown} reason=${POLICY_REASON:-missing}" >> "$GITHUB_STEP_SUMMARY"'
+)
+NEXTEST_REUSE_SUMMARY_LINE = (
+    'echo "Nextest reuse: decision=${decision} detector_allowed=${detector_allowed} '
+    'reuse_found=${reuse_found} source_run=${source_run:-none} source_sha=${source_sha:-none} '
+    'artifact=${artifact:-none} reason=${reason:-none}" >> "$GITHUB_STEP_SUMMARY"'
+)
+NEXTEST_REUSE_SUMMARY_ENV_LINES = (
+    "DETECTOR_ALLOWED: ${{ needs.detector.outputs.fingerprint_reuse_allowed || 'false' }}",
+    "DETECTOR_REASON: ${{ needs.detector.outputs.fingerprint_reuse_reason || 'unknown' }}",
+    "REUSE_FOUND: ${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}",
+    "REUSE_SOURCE_RUN: ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id || 'none' }}",
+    "REUSE_SOURCE_SHA: ${{ needs.nextest-fingerprint-reuse.outputs.source_sha || 'none' }}",
+    "REUSE_ARTIFACT: ${{ needs.nextest-fingerprint-reuse.outputs.source_artifact_id || 'none' }}",
+    "REUSE_REASON: ${{ needs.nextest-fingerprint-reuse.outputs.reason || '' }}",
+)
+NEXTEST_REUSE_SUMMARY_ASSIGNMENTS = (
+    'detector_allowed="${DETECTOR_ALLOWED:-false}"',
+    'detector_reason="${DETECTOR_REASON:-unknown}"',
+    'reuse_found="${REUSE_FOUND:-false}"',
+    'source_run="${REUSE_SOURCE_RUN:-none}"',
+    'source_sha="${REUSE_SOURCE_SHA:-none}"',
+    'artifact="${REUSE_ARTIFACT:-none}"',
+    'reason="${REUSE_REASON:-}"',
+)
+BVS_PARTITION_LOG_ASSIGN = 'partition_log="$RUNNER_TEMP/bvs-nextest-archive-partition-${shard}.log"'
+BVS_PARTITION_COMMAND = (
+    'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" '
+    '"$RUNNER_TEMP/bvs-nextest-archive-extract" '
+    '--partition "count:${shard}/${BVS_NEXTEST_SHARDS}" '
+    "-- --skip issue_789_first_real_free_data_taker_pl"
+)
+BVS_PARTITION_TEE = f'{BVS_PARTITION_COMMAND} 2>&1 | tee "$partition_log"'
+BVS_PARTITION_FAILURE_WRAPPER = (
+    f"            {BVS_PARTITION_LOG_ASSIGN}\n"
+    "            set +e\n"
+    f"            {BVS_PARTITION_TEE}\n"
+    "            rc=\"${PIPESTATUS[0]}\"\n"
+    "            set -e\n"
+)
+BVS_TEST_ARCHIVE_JOB_SHA256 = "b8fbabf72fe9547e41fcc52f8790cc62e4b8a7833dd7401096dba3dc026ae76f"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
     "v${{ needs.nextest-fingerprint.outputs.nextest_schema }}"
@@ -1010,6 +1073,21 @@ TEST_ARCHIVE_S3_PREFIX_ENV = "NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEX
 TEST_ARCHIVE_S3_ENABLED_ENV = "NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}"
 TEST_ARCHIVE_S3_BUCKET_ENV = "NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}"
 TEST_ARCHIVE_S3_REGION_ENV = "NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}"
+TEST_ARCHIVE_RESTORE_RESULT_OUTPUT = 'echo "restore-result='
+TEST_ARCHIVE_RESTORE_REASON_OUTPUT = 'echo "restore-reason='
+TEST_ARCHIVE_S3_SUMMARY_STEP = "Summarize nextest archive S3 state"
+TEST_ARCHIVE_S3_SUMMARY_AWS_ENV = "S3_AWS_OUTCOME: ${{ steps.nextest-artifact-cache-aws.outcome }}"
+TEST_ARCHIVE_S3_SUMMARY_RESTORE_STATE = "restore_state()"
+TEST_ARCHIVE_S3_SUMMARY_NEXT_LINE = (
+    'echo "Root nextest archive S3: eligible=${S3_ELIGIBLE:-false} '
+    'mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} '
+    'restore=${archive_restore} reason=${archive_reason}"'
+)
+TEST_ARCHIVE_S3_SUMMARY_SIDECAR_LINE = (
+    'echo "Root binary sidecars S3: eligible=${S3_ELIGIBLE:-false} '
+    'mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} '
+    'restore=${sidecar_restore} reason=${sidecar_reason}"'
+)
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ARTIFACT_SHA_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*([\"']?)actions/upload-artifact@[0-9a-fA-F]{40}\1\s*$")
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
@@ -2112,6 +2190,13 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
             errors.append(f"ci-policy must expose {output}")
     if 'tee -a "$GITHUB_OUTPUT"' not in text:
         errors.append("ci-policy must write script output to GITHUB_OUTPUT")
+    if (
+        CI_CLASSIFICATION_SUMMARY_LINE not in text
+        or 'class="heavy proof"' not in text
+        or 'class="promoted-cheap"' not in text
+        or 'class="iteration lane"' not in text
+    ):
+        errors.append("ci-policy must summarize CI classification")
     for required in (
         "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
         "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
@@ -9669,7 +9754,7 @@ def fingerprint_reuse_gates_on_consumer_events(job_lines: list[str]) -> bool:
     return FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR in job_if_value(job_lines)
 
 
-def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
+def classified_top_level_env_errors(workflow_text: str, workflow_name: str) -> list[str]:
     errors = []
     scoped_keys = set(REUSE_RELEVANT_WORKFLOW_ENV_KEYS)
     overlap = sorted(scoped_keys & REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS)
@@ -9680,7 +9765,7 @@ def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
     try:
         env_lines = top_level_block_lines(workflow_text, "env")
     except ProvenanceError as exc:
-        return errors + [f"top-level env reuse scope could not parse ci.yml: {exc}"]
+        return errors + [f"top-level env reuse scope could not parse {workflow_name}: {exc}"]
 
     entry_lines = [
         structural_line
@@ -9716,20 +9801,9 @@ def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
             )
 
     for key in sorted(scoped_keys - seen_keys):
-        errors.append(f"top-level env.{key} is reuse-scoped but missing from ci.yml")
+        errors.append(f"top-level env.{key} is reuse-scoped but missing from {workflow_name}")
 
     return errors
-
-
-def top_level_defaults_reuse_scope_errors(workflow_text: str) -> list[str]:
-    for line in workflow_text.splitlines():
-        if line.startswith((" ", "\t")):
-            continue
-        key, separator, _value = workflow_yaml_structural_line(line).partition(":")
-        if separator and key.strip().strip("'\"") == "defaults":
-            return ["top-level defaults must not be used in ci.yml while nextest reuse is enabled"]
-    return []
-
 
 def workflow_structural_line_has_yaml_anchor_or_alias(line: str) -> bool:
     quote: str | None = None
@@ -10852,6 +10926,8 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
             allowance_text = block_text
     if FINGERPRINT_REUSE_ALLOWED_OUTPUT not in text:
         errors.append("detector must expose fingerprint_reuse_allowed")
+    if FINGERPRINT_REUSE_REASON_OUTPUT not in text:
+        errors.append("detector must expose fingerprint_reuse_reason")
     if detector_refs_block is None or not block_has_canonical_step_envelope(
         detector_refs_block,
         DETECTOR_REFS_STEP_ALLOWED_KEYS,
@@ -10906,6 +10982,14 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
             ),
             "",
         )
+        or 'echo "reason=governance-changed" >> "$GITHUB_OUTPUT"'
+        not in allowance_chain.get(
+            (
+                "if",
+                '"${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true"',
+            ),
+            "",
+        )
         or 'echo "value=true" >> "$GITHUB_OUTPUT"'
         not in allowance_chain.get(
             (
@@ -10914,11 +10998,22 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
             ),
             "",
         )
+        or 'echo "reason=consumer-event" >> "$GITHUB_OUTPUT"'
+        not in allowance_chain.get(
+            (
+                "elif",
+                '"${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "merge_group"',
+            ),
+            "",
+        )
         or 'echo "value=false" >> "$GITHUB_OUTPUT"' not in allowance_chain.get(("else", ""), "")
+        or 'echo "reason=non-consumer-event" >> "$GITHUB_OUTPUT"' not in allowance_chain.get(("else", ""), "")
         or allowance_text.count('echo "value=false" >> "$GITHUB_OUTPUT"') != 2
         or allowance_text.count('echo "value=true" >> "$GITHUB_OUTPUT"') != 1
     ):
         errors.append("detector must determine fingerprint_reuse_allowed")
+    if allowance_text.count('echo "reason=') != 3:
+        errors.append("detector must explain fingerprint_reuse_allowed decisions")
     return errors
 
 
@@ -11285,6 +11380,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
     errors.extend(raw_rust_storage_errors(workflow_text))
     errors.extend(exact_head_governance_cache_errors(workflow_text))
     errors.extend(base_ref_archive_scripts_directory_errors(workflow_text))
+    errors.extend(partition_workflow_boundary_errors(workflow_text, "ci.yml"))
     for job_lines in jobs.values():
         errors.extend(upload_artifact_pin_errors(job_lines))
 
@@ -11444,6 +11540,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if "test-archive" in jobs:
             errors.extend(nextest_fingerprint_errors(jobs["nextest-fingerprint"], jobs["test-archive"]))
 
+    errors.extend(
+        partition_job_body_digest_errors(
+            label="test-archive",
+            job_lines=jobs.get("test-archive"),
+            expected_sha256=ROOT_TEST_ARCHIVE_JOB_SHA256,
+            constant_name="ROOT_TEST_ARCHIVE_JOB_SHA256",
+        )
+    )
     if "test-archive" in jobs:
         test_archive_needs = extract_needs(jobs["test-archive"])
         if "ci-policy" not in test_archive_needs:
@@ -11466,6 +11570,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must require detector success")
         archive_lines = jobs["test-archive"]
         archive_text = uncommented_text(archive_lines)
+        if named_step_block(archive_lines, "Run nextest archive partitions") is None:
+            errors.append("test-archive must define Run nextest archive partitions step")
         archive_restore_blocks = [
             block
             for block in action_blocks(archive_lines, "actions/cache/restore@")
@@ -11512,6 +11618,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         sidecar_s3_save_block = named_step_block(archive_lines, "Save root binary sidecars to S3")
         s3_eligibility_block = named_step_block(archive_lines, TEST_ARCHIVE_S3_ELIGIBILITY_STEP)
         s3_aws_block = named_step_block(archive_lines, TEST_ARCHIVE_S3_AWS_CONFIG_STEP)
+        s3_summary_block = named_step_block(archive_lines, TEST_ARCHIVE_S3_SUMMARY_STEP)
+        s3_summary_text = uncommented_text(s3_summary_block) if s3_summary_block is not None else ""
         target_cache_keys = [
             block_input_value(block, "key") or ""
             for block in target_restore_blocks + target_save_blocks
@@ -11565,6 +11673,22 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"test-archive must fail closed on {label} S3 digest mismatch")
             if "Delete the object or repopulate it from a main push." not in text:
                 errors.append(f"test-archive must explain recovery for {label} S3 digest mismatch")
+            if TEST_ARCHIVE_RESTORE_RESULT_OUTPUT not in text or TEST_ARCHIVE_RESTORE_REASON_OUTPUT not in text:
+                errors.append("test-archive must emit restore result and reason outputs")
+        if s3_summary_block is None or "if: always()" not in s3_summary_text or TEST_ARCHIVE_S3_SUMMARY_AWS_ENV not in s3_summary_text:
+            errors.append("test-archive must summarize nextest archive S3 restore state")
+            errors.append("test-archive must summarize root binary sidecars S3 restore state")
+        else:
+            if (
+                TEST_ARCHIVE_S3_SUMMARY_RESTORE_STATE not in s3_summary_text
+                or TEST_ARCHIVE_S3_SUMMARY_NEXT_LINE not in s3_summary_text
+            ):
+                errors.append("test-archive must summarize nextest archive S3 restore state")
+            if (
+                TEST_ARCHIVE_S3_SUMMARY_RESTORE_STATE not in s3_summary_text
+                or TEST_ARCHIVE_S3_SUMMARY_SIDECAR_LINE not in s3_summary_text
+            ):
+                errors.append("test-archive must summarize root binary sidecars S3 restore state")
         for block, label, key_output, path_var, object_fragment in (
             (archive_s3_save_block, "nextest archive", TEST_ARCHIVE_CACHE_KEY_OUTPUT, "$NEXTEST_ARCHIVE_PATH", "/nextest-archive/${CACHE_KEY}.tar.zst"),
             (sidecar_s3_save_block, "root binary sidecar", TEST_ARCHIVE_SIDECAR_CACHE_KEY_OUTPUT, "$ROOT_BIN_SIDECARS_PATH", "/root-bin-sidecars/${CACHE_KEY}.tar.gz"),
@@ -11749,6 +11873,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must run partitioned nextest from local archive")
         if TEST_ARCHIVE_EXTRACT_ROOT_INIT not in archive_text:
             errors.append("test-archive must create nextest archive extract root")
+        if TEST_ARCHIVE_PARTITION_LOG_ASSIGN not in archive_text or TEST_ARCHIVE_PARTITION_TEE not in archive_text or TEST_ARCHIVE_PARTITION_LOG_TAIL not in archive_text:
+            errors.append("test-archive must log partition diagnostics")
+        if TEST_ARCHIVE_PARTITION_RC_CAPTURE not in archive_text:
+            errors.append("test-archive partition failures must preserve shard exit codes")
+        if TEST_ARCHIVE_PARTITION_ERROR_ANNOTATION not in archive_text:
+            errors.append("test-archive partition failures must emit shard error annotations")
         for fragment in (
             TEST_ARCHIVE_PARTITION_STATUS_INIT,
             TEST_ARCHIVE_PARTITION_STATUS_MARK,
@@ -11762,8 +11892,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
     append_cache_persistence_audit_contract_errors(errors, jobs)
 
     if "nextest-fingerprint-reuse" in jobs:
-        errors.extend(top_level_env_reuse_scope_errors(workflow_text))
-        errors.extend(top_level_defaults_reuse_scope_errors(workflow_text))
         errors.extend(workflow_yaml_anchor_alias_errors(workflow_text))
         errors.extend(workflow_yaml_unsupported_feature_errors(workflow_text))
         reuse_lines = jobs["nextest-fingerprint-reuse"]
@@ -11804,6 +11932,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         test_text = uncommented_text(jobs["test"])
         if "ci-policy" not in test_needs:
             errors.append("test needs ci-policy")
+        if "detector" not in test_needs:
+            errors.append("test needs detector")
         if not job_gates_on_full_ci_required(jobs["test"]):
             errors.append("test must gate on full_ci_required")
         if "nextest-fingerprint" not in test_needs:
@@ -11820,6 +11950,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test must accept validated nextest fingerprint reuse")
         if not job_if_uses_always(jobs["test"]):
             errors.append("test must use always()")
+        if NEXTEST_REUSE_SUMMARY_LINE not in test_text:
+            errors.append("test must summarize nextest fingerprint reuse decision")
+        if any(fragment not in test_text for fragment in NEXTEST_REUSE_SUMMARY_ENV_LINES):
+            errors.append("test must pass nextest reuse summary inputs through env")
+        if any(fragment not in test_text for fragment in NEXTEST_REUSE_SUMMARY_ASSIGNMENTS):
+            errors.append("test must read nextest reuse summary inputs from env")
 
     if "build" in jobs:
         build_needs = extract_needs(jobs["build"])
@@ -12494,6 +12630,63 @@ def named_step_run_block(job_text: str, step_name: str) -> str | None:
     return None
 
 
+def job_body_sha256(job_lines: list[str]) -> str:
+    return hashlib.sha256("\n".join(job_lines).encode("utf-8")).hexdigest()
+
+
+def partition_job_body_digest_errors(
+    *,
+    label: str,
+    job_lines: list[str] | None,
+    expected_sha256: str,
+    constant_name: str,
+) -> list[str]:
+    if job_lines is None:
+        return [f"{label}: job body digest pin target job not found; update {constant_name} for legitimate edits"]
+    actual_sha256 = job_body_sha256(job_lines)
+    if actual_sha256 == expected_sha256:
+        return []
+    return [
+        f"{label} job body digest changed: expected {expected_sha256}, got {actual_sha256}; "
+        f"update {constant_name} with reviewed workflow job body changes"
+    ]
+
+
+PARTITION_WORKFLOW_TOP_LEVEL_KEYS = frozenset(
+    {"concurrency", "env", "jobs", "name", "on", "permissions", "run-name"}
+)
+
+
+def partition_workflow_top_level_key_errors(workflow_text: str, workflow_name: str) -> list[str]:
+    errors: list[str] = []
+    allowed_keys = ", ".join(sorted(PARTITION_WORKFLOW_TOP_LEVEL_KEYS))
+    seen_keys: set[str] = set()
+    for line in workflow_text.splitlines():
+        structural = workflow_yaml_structural_line(line).rstrip()
+        if not structural.strip() or structural.startswith((" ", "\t")):
+            continue
+        match = re.fullmatch(rf"({YAML_KEY_PATTERN})\s*:.*", structural)
+        entry = structural
+        if match is not None:
+            entry = unquote_yaml_scalar(match.group(1))
+            if entry in seen_keys:
+                errors.append(f"{workflow_name} duplicate top-level key {entry!r} is not allowed")
+            else:
+                seen_keys.add(entry)
+        if entry not in PARTITION_WORKFLOW_TOP_LEVEL_KEYS:
+            errors.append(
+                f"{workflow_name} top-level entry {entry!r} is not allowed; "
+                f"allowed keys: {allowed_keys}; offending line: {structural!r}"
+            )
+    return errors
+
+
+def partition_workflow_boundary_errors(workflow_text: str, workflow_name: str) -> list[str]:
+    errors = classified_top_level_env_errors(workflow_text, workflow_name)
+    errors.extend(partition_workflow_top_level_key_errors(workflow_text, workflow_name))
+    return errors
+
+
 class WorkflowJobStep(NamedTuple):
     name: str | None
     run_text: str | None
@@ -12920,6 +13113,15 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     issue_job = jobs.get("issue_789")
     gate_job = jobs.get("gate")
     errors: list[str] = []
+    errors.extend(partition_workflow_boundary_errors(text, "backtester-ci.yml"))
+    errors.extend(
+        partition_job_body_digest_errors(
+            label="backtester bvs-test archive",
+            job_lines=archive_job,
+            expected_sha256=BVS_TEST_ARCHIVE_JOB_SHA256,
+            constant_name="BVS_TEST_ARCHIVE_JOB_SHA256",
+        )
+    )
     if archive_job is None:
         errors.append("backtester bvs-test must define archive producer job")
     if test_job is not None:
@@ -12938,6 +13140,20 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester bvs-test must not run direct per-shard target builds")
     if "for shard in $(seq 1 \"$BVS_NEXTEST_SHARDS\")" not in archive_text:
         errors.append("backtester bvs-test archive producer must run every BVS partition")
+    if (
+        'partition_log="$RUNNER_TEMP/bvs-nextest-archive-partition-${shard}.log"' not in archive_text
+        or '2>&1 | tee "$partition_log"' not in archive_text
+        or 'tail -80 "$partition_log"' not in archive_text
+    ):
+        errors.append("backtester bvs-test archive must log partition diagnostics")
+    if BVS_PARTITION_FAILURE_WRAPPER not in archive_text:
+        errors.append("backtester bvs-test partition failures must use contiguous failure wrapper")
+    if named_step_block(archive_job, "test") is None:
+        errors.append("backtester bvs-test archive must define test partition step")
+    if 'rc="${PIPESTATUS[0]}"' not in archive_text:
+        errors.append("backtester bvs-test partition failures must preserve shard exit codes")
+    if 'echo "::error title=BVS nextest archive partition failed::shard=${shard}/${BVS_NEXTEST_SHARDS} exit=${rc}"' not in archive_text:
+        errors.append("backtester bvs-test partition failures must emit shard error annotations")
     if "build --locked --bins" in combined_text:
         errors.append("backtester bvs-test sidecars must not build every binary")
     if "find debug -maxdepth 1 -type f -perm -111" in combined_text:
@@ -12976,8 +13192,10 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     bvs_sidecar_s3_restore_block = named_step_block(archive_job, "Restore BVS binary sidecars from S3")
     bvs_archive_s3_save_block = named_step_block(archive_job, "Save BVS nextest archive")
     bvs_sidecar_s3_save_block = named_step_block(archive_job, "Save BVS binary sidecars")
+    bvs_s3_summary_block = named_step_block(archive_job, "Summarize BVS nextest archive S3 state")
     bvs_s3_eligibility_text = uncommented_text(bvs_s3_eligibility_block) if bvs_s3_eligibility_block else ""
     bvs_s3_aws_text = uncommented_text(bvs_s3_aws_block) if bvs_s3_aws_block else ""
+    bvs_s3_summary_text = uncommented_text(bvs_s3_summary_block) if bvs_s3_summary_block else ""
     if bvs_s3_eligibility_block is None or "continue-on-error: true" not in bvs_s3_eligibility_text:
         errors.append("backtester bvs-test archive S3 artifact cache eligibility must be fail-open")
     if (
@@ -13003,6 +13221,24 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         block_text = uncommented_text(block) if block is not None else ""
         if block is None or bvs_restore_guard not in block_text:
             errors.append("backtester bvs-test archive must gate S3 restores on eligibility and AWS credential success")
+        if TEST_ARCHIVE_RESTORE_RESULT_OUTPUT not in block_text or TEST_ARCHIVE_RESTORE_REASON_OUTPUT not in block_text:
+            errors.append("backtester bvs-test archive must emit restore result and reason outputs")
+    if (
+        bvs_s3_summary_block is None
+        or "if: always()" not in bvs_s3_summary_text
+        or "S3_AWS_OUTCOME: ${{ steps.bvs-nextest-artifact-cache-aws.outcome }}" not in bvs_s3_summary_text
+        or "restore_state()" not in bvs_s3_summary_text
+        or 'echo "BVS nextest archive S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${bvs_nextest_restore} reason=${bvs_nextest_reason}"' not in bvs_s3_summary_text
+    ):
+        errors.append("backtester bvs-test archive must summarize BVS nextest archive S3 restore state")
+    if (
+        bvs_s3_summary_block is None
+        or "if: always()" not in bvs_s3_summary_text
+        or "S3_AWS_OUTCOME: ${{ steps.bvs-nextest-artifact-cache-aws.outcome }}" not in bvs_s3_summary_text
+        or "restore_state()" not in bvs_s3_summary_text
+        or 'echo "BVS binary sidecars S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${bvs_sidecar_restore} reason=${bvs_sidecar_reason}"' not in bvs_s3_summary_text
+    ):
+        errors.append("backtester bvs-test archive must summarize BVS binary sidecars S3 restore state")
     for block, label in (
         (bvs_archive_s3_save_block, "nextest archive"),
         (bvs_sidecar_s3_save_block, "binary sidecars"),

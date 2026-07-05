@@ -19,7 +19,8 @@ use backtesting_vertical_slice::{
     backfill_execution_plan as execution_plan, backfill_execution_readiness as execution_readiness,
     backfill_object_staging as object_staging, backfill_preflight as preflight,
     backfill_readiness as readiness, backfill_source_proof_scope as source_scope,
-    conversion_boundary, first_proof_selector as first_proof, nt_catalog_proof,
+    conversion_boundary::{self, ConversionCatalogMetadata},
+    first_proof_selector as first_proof, nt_catalog_proof,
     run_manifest::ManifestArtifactStore,
     selected_source_slice, source_catalog_mapping_readiness as mapping_readiness,
     source_proof::{
@@ -58,11 +59,19 @@ const HASH_WHAT_YOU_WRITE_MODULES: &[&str] = &[
     "source_selection_readiness",
 ];
 
-// This allowlist is intentionally narrow: these compact serializations are
-// semantic hashes, not hashes recorded for pretty JSON artifact bytes. Any new
-// serde_json::to_vec hash outside this list is treated as a regression until it
-// either joins the writer table above or proves it is a distinct semantic hash.
-const COMPACT_SERIALIZATION_HASH_ALLOWLIST: &[&str] = &[
+const COMMITTED_BNBUSDC_CATALOG_METADATA_PATH: &str = "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-catalog-metadata.bnbusdc-2026-03-01.json";
+const COMMITTED_BNBUSDC_CATALOG_METADATA_BYTES_SHA256: &str =
+    "e210155d7ad09c3595999b64f963fa8c8d0f5050913cd923e1f26a26d4632d14";
+const COMMITTED_BNBUSDC_CATALOG_METADATA_COMPACT_SHA256: &str =
+    "f82bd70268d1df4163c1746ad79194fc987082e4b6ab9cdc82d6d8275990e882";
+
+// This allowlist is intentionally narrow: these compact serializations either
+// hash the compact bytes they also write, as artifact_store does, or are
+// explicitly semantic digests rather than pretty JSON artifact byte claims.
+// Any new serde_json::to_vec hash outside this list is treated as a regression
+// until it either joins the writer table above or proves it is self-consistent
+// or semantic.
+const COMPACT_VEC_HASH_ALLOWLIST: &[&str] = &[
     "artifact_index",
     "artifact_store",
     "canonical_trades",
@@ -70,6 +79,12 @@ const COMPACT_SERIALIZATION_HASH_ALLOWLIST: &[&str] = &[
     "result_contract",
     "run_manifest",
 ];
+
+// Compact serde_json::to_string hashes have a separate narrow allowlist because
+// string serialization can reintroduce the same pretty/compact split through a
+// different API. Current exemptions are semantic field-labeled parameter hashes
+// and assertions inside src-resident test modules.
+const COMPACT_STRING_HASH_ALLOWLIST: &[&str] = &["catalog_projection", "operator", "source_proof"];
 
 struct WriterCase {
     module: &'static str,
@@ -129,37 +144,116 @@ fn artifact_writers_record_hashes_for_the_bytes_written_to_disk() -> Result<()> 
 }
 
 #[test]
+fn committed_bnbusdc_catalog_metadata_fixture_claim_is_anchored_to_frozen_bytes() -> Result<()> {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .context("crate path has repo root")?;
+    let metadata_path = repo_root.join(COMMITTED_BNBUSDC_CATALOG_METADATA_PATH);
+    let metadata_bytes = fs::read(&metadata_path)
+        .with_context(|| format!("read committed metadata {}", metadata_path.display()))?;
+
+    // This is a frozen operator-attested historical fixture. The byte pin is
+    // intentional: regeneration is forbidden, and changes require a new
+    // attestation rather than updating this claim in place.
+    let mut failures = Vec::new();
+    let actual_bytes_hash = sha256_hex(&metadata_bytes);
+    if actual_bytes_hash != COMMITTED_BNBUSDC_CATALOG_METADATA_BYTES_SHA256 {
+        failures.push(format!(
+            "raw committed bytes sha256 {actual_bytes_hash} did not equal frozen byte pin {COMMITTED_BNBUSDC_CATALOG_METADATA_BYTES_SHA256}"
+        ));
+    }
+
+    let parsed: ConversionCatalogMetadata =
+        serde_json::from_slice(&metadata_bytes).context("parse committed catalog metadata")?;
+    let compact_bytes =
+        serde_json::to_vec(&parsed).context("compact committed catalog metadata")?;
+    let actual_compact_hash = sha256_hex(&compact_bytes);
+    if actual_compact_hash != COMMITTED_BNBUSDC_CATALOG_METADATA_COMPACT_SHA256 {
+        failures.push(format!(
+            "compact serde_json::to_vec sha256 {actual_compact_hash} did not equal frozen compact-era claim {COMMITTED_BNBUSDC_CATALOG_METADATA_COMPACT_SHA256}"
+        ));
+    }
+    assert!(
+        failures.is_empty(),
+        "committed BNBUSDC catalog metadata fixture drifted:\n{}",
+        failures.join("\n")
+    );
+
+    Ok(())
+}
+
+#[test]
 fn pretty_json_artifact_writers_do_not_use_compact_serialization_for_hash_claims() -> Result<()> {
     let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let allowlist = COMPACT_SERIALIZATION_HASH_ALLOWLIST
+    let vec_allowlist = COMPACT_VEC_HASH_ALLOWLIST
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    let mut unexpected = Vec::new();
+    let string_allowlist = COMPACT_STRING_HASH_ALLOWLIST
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut unexpected_vec = Vec::new();
+    let mut unexpected_string = Vec::new();
 
-    for entry in fs::read_dir(&src_root).context("read crate src directory")? {
-        let entry = entry.context("read src entry")?;
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
-            continue;
-        }
-        let module = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .context("source file stem")?;
+    // Scan the crate source tree for compact-serialization vectors that could
+    // bypass the representative writer table above. This is not a full
+    // data-flow proof; it names every compact serialization API use and requires
+    // an explicit allowlist entry for known self-consistent or semantic cases.
+    for path in rust_source_files_under(&src_root)? {
+        let module = source_module_key(&src_root, &path)?;
         let source = fs::read_to_string(&path)
             .with_context(|| format!("read source file {}", path.display()))?;
-        if source.contains("serde_json::to_vec(") && !allowlist.contains(module) {
-            unexpected.push(module.to_string());
+        if source.contains("serde_json::to_vec(") && !vec_allowlist.contains(module.as_str()) {
+            unexpected_vec.push(module.clone());
+        }
+        if source.contains("serde_json::to_string(") && !string_allowlist.contains(module.as_str())
+        {
+            unexpected_string.push(module);
         }
     }
 
-    unexpected.sort();
+    unexpected_vec.sort();
+    unexpected_string.sort();
     assert!(
-        unexpected.is_empty(),
-        "compact serde_json::to_vec hashing remains outside the semantic allowlist: {unexpected:?}"
+        unexpected_vec.is_empty() && unexpected_string.is_empty(),
+        "compact serialization hashing remains outside named allowlists:\nserde_json::to_vec: {unexpected_vec:?}\nserde_json::to_string: {unexpected_string:?}"
     );
     Ok(())
+}
+
+fn rust_source_files_under(src_root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    collect_rust_source_files(src_root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("read entry under {}", dir.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("read file type for {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_rust_source_files(&path, files)?;
+        } else if path.extension().and_then(|value| value.to_str()) == Some("rs") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn source_module_key(src_root: &Path, path: &Path) -> Result<String> {
+    let relative = path
+        .strip_prefix(src_root)
+        .with_context(|| format!("strip src prefix from {}", path.display()))?;
+    Ok(relative
+        .with_extension("")
+        .to_string_lossy()
+        .replace('\\', "/"))
 }
 
 fn writer_cases() -> Vec<WriterCase> {

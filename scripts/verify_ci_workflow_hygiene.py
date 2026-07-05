@@ -801,7 +801,7 @@ TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
     "            if [[ \"$rc\" -ne 0 ]]; then\n"
     "              status=1\n"
 )
-ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256 = "69425e4ae0e0c3b9e02b4d9bfcccb2eaa2b193cf412dcad62844e482ff25c17f"
+ROOT_TEST_ARCHIVE_JOB_SHA256 = "6d0b1df8d8995dbc68cbdf072de322dc7b979783294102acf55a5577811c4439"
 CI_CLASSIFICATION_SUMMARY_LINE = (
     'echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} '
     'full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} '
@@ -845,7 +845,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256 = "651244ea165750beae019a38f53efa4b672a04ca4470caf8159d16feca0b2650"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "b8fbabf72fe9547e41fcc52f8790cc62e4b8a7833dd7401096dba3dc026ae76f"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
     "v${{ needs.nextest-fingerprint.outputs.nextest_schema }}"
@@ -11352,6 +11352,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
     errors.extend(raw_rust_storage_errors(workflow_text))
     errors.extend(exact_head_governance_cache_errors(workflow_text))
     errors.extend(base_ref_archive_scripts_directory_errors(workflow_text))
+    errors.extend(partition_workflow_boundary_errors(workflow_text, "ci.yml"))
     for job_lines in jobs.values():
         errors.extend(upload_artifact_pin_errors(job_lines))
 
@@ -11503,6 +11504,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if "test-archive" in jobs:
             errors.extend(nextest_fingerprint_errors(jobs["nextest-fingerprint"], jobs["test-archive"]))
 
+    errors.extend(
+        partition_job_body_digest_errors(
+            label="test-archive",
+            job_lines=jobs.get("test-archive"),
+            expected_sha256=ROOT_TEST_ARCHIVE_JOB_SHA256,
+            constant_name="ROOT_TEST_ARCHIVE_JOB_SHA256",
+        )
+    )
     if "test-archive" in jobs:
         test_archive_needs = extract_needs(jobs["test-archive"])
         if "ci-policy" not in test_archive_needs:
@@ -11525,6 +11534,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must require detector success")
         archive_lines = jobs["test-archive"]
         archive_text = uncommented_text(archive_lines)
+        if named_step_block(archive_lines, "Run nextest archive partitions") is None:
+            errors.append("test-archive must define Run nextest archive partitions step")
         archive_restore_blocks = [
             block
             for block in action_blocks(archive_lines, "actions/cache/restore@")
@@ -11839,15 +11850,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
             if fragment not in archive_text:
                 errors.append("test-archive must aggregate partition failures")
                 break
-        errors.extend(
-            partition_step_digest_errors(
-                label="test-archive Run nextest archive partitions",
-                job_lines=archive_lines,
-                step_name="Run nextest archive partitions",
-                expected_sha256=ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256,
-                constant_name="ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256",
-            )
-        )
 
     append_cache_persistence_audit_contract_errors(errors, jobs)
 
@@ -12585,49 +12587,45 @@ def named_step_run_block(job_text: str, step_name: str) -> str | None:
     return None
 
 
-def run_body_sha256(run_body: str) -> str:
-    return hashlib.sha256(run_body.encode("utf-8")).hexdigest()
+def job_body_sha256(job_lines: list[str]) -> str:
+    return hashlib.sha256("\n".join(job_lines).encode("utf-8")).hexdigest()
 
 
-PARTITION_STEP_ENVELOPE_KEYS = frozenset({"name", "shell", "run"})
-GITHUB_FILE_REDIRECT_TARGETS = {
-    "GITHUB_ENV": re.compile(r">{1,2}\s*(?:\"|')?(?:\$\{GITHUB_ENV\}|\$GITHUB_ENV)(?:\"|')?"),
-    "GITHUB_PATH": re.compile(r">{1,2}\s*(?:\"|')?(?:\$\{GITHUB_PATH\}|\$GITHUB_PATH)(?:\"|')?"),
-}
-
-
-def partition_run_body_digest_errors(
+def partition_job_body_digest_errors(
     *,
     label: str,
-    run_body: str | None,
+    job_lines: list[str] | None,
     expected_sha256: str,
     constant_name: str,
 ) -> list[str]:
-    if run_body is None:
-        return [f"{label}: digest pin target step not found"]
-    actual_sha256 = run_body_sha256(run_body)
+    if job_lines is None:
+        return [f"{label}: job body digest pin target job not found; update {constant_name} for legitimate edits"]
+    actual_sha256 = job_body_sha256(job_lines)
     if actual_sha256 == expected_sha256:
         return []
     return [
-        f"{label} full run body digest changed: expected {expected_sha256}, got {actual_sha256}; "
-        f"update {constant_name} with reviewed workflow run body changes"
+        f"{label} job body digest changed: expected {expected_sha256}, got {actual_sha256}; "
+        f"update {constant_name} with reviewed workflow job body changes"
     ]
 
 
-def job_level_mapping_has_child(job_lines: list[str], parent_key: str, child_key: str) -> bool:
-    parent_indent = 4
+def top_level_mapping_has_child(workflow_text: str, parent_key: str, child_key: str) -> bool:
+    parent_indent = 0
     child_indent: int | None = None
-    for index, line in enumerate(job_lines):
+    for index, line in enumerate(workflow_text.splitlines()):
         clean = strip_comment(line).rstrip()
         if not clean.strip():
             continue
-        parent_match = re.match(rf"^\s{{{parent_indent}}}{re.escape(parent_key)}\s*:\s*(.*?)\s*$", clean)
-        if parent_match is None:
+        structural = workflow_yaml_structural_line(clean)
+        if structural.startswith((" ", "\t")):
             continue
-        inline_value = unquote_yaml_scalar(parent_match.group(1))
+        key, separator, inline_value = structural.partition(":")
+        if not separator or key.strip().strip("'\"") != parent_key:
+            continue
+        inline_value = unquote_yaml_scalar(inline_value.strip())
         if inline_value and re.search(rf"(?:^|[{{,]\s*){re.escape(child_key)}\s*:", inline_value):
             return True
-        for child in job_lines[index + 1 :]:
+        for child in workflow_text.splitlines()[index + 1 :]:
             child_clean = strip_comment(child).rstrip()
             if not child_clean.strip():
                 continue
@@ -12645,123 +12643,23 @@ def job_level_mapping_has_child(job_lines: list[str], parent_key: str, child_key
     return False
 
 
-def job_level_env_forbidden_keys(job_lines: list[str]) -> set[str]:
-    forbidden: set[str] = set()
-    parent_indent = 4
-    child_indent: int | None = None
-    for index, line in enumerate(job_lines):
-        clean = strip_comment(line).rstrip()
-        if not clean.strip():
-            continue
-        parent_match = re.match(r"^\s{4}env\s*:\s*(.*?)\s*$", clean)
-        if parent_match is None:
-            continue
-        inline_value = unquote_yaml_scalar(parent_match.group(1))
-        for key in ("PATH", "BASH_ENV"):
-            if inline_value and re.search(rf"(?:^|[{{,]\s*){key}\s*:", inline_value):
-                forbidden.add(key)
-        for child in job_lines[index + 1 :]:
-            child_clean = strip_comment(child).rstrip()
-            if not child_clean.strip():
-                continue
-            indent = len(child_clean) - len(child_clean.lstrip(" "))
-            if indent <= parent_indent:
-                break
-            if child_indent is None:
-                child_indent = indent
-            if indent != child_indent:
-                continue
-            child_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:", child_clean)
-            if child_match is None:
-                continue
-            key = unquote_yaml_scalar(child_match.group(1))
-            if key in {"PATH", "BASH_ENV"}:
-                forbidden.add(key)
-        return forbidden
-    return forbidden
-
-
-def shell_command_writes_github_file(command: str, variable: str) -> bool:
-    return GITHUB_FILE_REDIRECT_TARGETS[variable].search(command) is not None
-
-
-def digest_pinned_partition_trusted_context_errors(
-    *,
-    label: str,
-    job_lines: list[str],
-    blocks: list[list[str]],
-    partition_step_index: int,
-) -> list[str]:
+def partition_workflow_boundary_errors(workflow_text: str, workflow_name: str) -> list[str]:
     errors: list[str] = []
-    job_items = job_top_level_items(job_lines)
-    if job_items is None or "continue-on-error" in job_items:
-        errors.append(
-            f"{label}: digest-pinned partition job must not define job-level continue-on-error"
-        )
-    if job_level_mapping_has_child(job_lines, "defaults", "run"):
-        errors.append(f"{label}: digest-pinned partition job must not define defaults.run")
-    if job_level_env_forbidden_keys(job_lines):
-        errors.append(f"{label}: digest-pinned partition job env must not set PATH or BASH_ENV")
-
-    for block in blocks[:partition_step_index]:
-        command = step_run_command(block)
-        if command is None:
+    try:
+        env_lines = top_level_env_immediate_entry_lines(workflow_text)
+    except ProvenanceError:
+        env_lines = []
+    for line in env_lines:
+        entry = top_level_env_entry_key_value(line)
+        if entry is None:
             continue
-        if shell_command_writes_github_file(command, "GITHUB_PATH"):
-            errors.append(
-                f"{label}: digest-pinned partition job must not let prior steps write GITHUB_PATH"
-            )
+        key, _value = entry
+        if key in {"PATH", "BASH_ENV"}:
+            errors.append(f"{workflow_name} top-level env must not set PATH or BASH_ENV")
             break
-    for block in blocks[:partition_step_index]:
-        command = step_run_command(block)
-        if command is None:
-            continue
-        if shell_command_writes_github_file(command, "GITHUB_ENV"):
-            errors.append(
-                f"{label}: digest-pinned partition job must not let prior steps write GITHUB_ENV"
-            )
-            break
+    if top_level_mapping_has_child(workflow_text, "defaults", "run"):
+        errors.append(f"{workflow_name} top-level defaults.run must not be used")
     return errors
-
-
-def partition_step_digest_errors(
-    *,
-    label: str,
-    job_lines: list[str],
-    step_name: str,
-    expected_sha256: str,
-    constant_name: str,
-) -> list[str]:
-    blocks = step_blocks(job_lines)
-    matching_indices = [
-        index for index, block in enumerate(blocks) if step_name_matches(block, step_name)
-    ]
-    if not matching_indices:
-        return [f"{label}: digest pin target step not found"]
-    if len(matching_indices) != 1:
-        return [f"{label}: digest pin target step matched {len(matching_indices)} steps"]
-    partition_step_index = matching_indices[0]
-    block = blocks[partition_step_index]
-    if not block_has_canonical_step_envelope(
-        block,
-        PARTITION_STEP_ENVELOPE_KEYS,
-        {"name": step_name, "shell": "bash", "run": "|"},
-    ):
-        return [f"{label}: digest pin target step must use canonical name/shell/run envelope"]
-    trusted_context_errors = digest_pinned_partition_trusted_context_errors(
-        label=label,
-        job_lines=job_lines,
-        blocks=blocks,
-        partition_step_index=partition_step_index,
-    )
-    if trusted_context_errors:
-        return trusted_context_errors
-    return partition_run_body_digest_errors(
-        label=label,
-        run_body=named_step_run_block("\n".join(job_lines), step_name),
-        expected_sha256=expected_sha256,
-        constant_name=constant_name,
-    )
 
 
 class WorkflowJobStep(NamedTuple):
@@ -13190,6 +13088,15 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     issue_job = jobs.get("issue_789")
     gate_job = jobs.get("gate")
     errors: list[str] = []
+    errors.extend(partition_workflow_boundary_errors(text, "backtester-ci.yml"))
+    errors.extend(
+        partition_job_body_digest_errors(
+            label="backtester bvs-test archive",
+            job_lines=archive_job,
+            expected_sha256=BVS_TEST_ARCHIVE_JOB_SHA256,
+            constant_name="BVS_TEST_ARCHIVE_JOB_SHA256",
+        )
+    )
     if archive_job is None:
         errors.append("backtester bvs-test must define archive producer job")
     if test_job is not None:
@@ -13216,15 +13123,8 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester bvs-test archive must log partition diagnostics")
     if BVS_PARTITION_FAILURE_WRAPPER not in archive_text:
         errors.append("backtester bvs-test partition failures must use contiguous failure wrapper")
-    errors.extend(
-        partition_step_digest_errors(
-            label="backtester bvs-test archive partition step",
-            job_lines=archive_job,
-            step_name="test",
-            expected_sha256=BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256,
-            constant_name="BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256",
-        )
-    )
+    if named_step_block(archive_job, "test") is None:
+        errors.append("backtester bvs-test archive must define test partition step")
     if 'rc="${PIPESTATUS[0]}"' not in archive_text:
         errors.append("backtester bvs-test partition failures must preserve shard exit codes")
     if 'echo "::error title=BVS nextest archive partition failed::shard=${shard}/${BVS_NEXTEST_SHARDS} exit=${rc}"' not in archive_text:

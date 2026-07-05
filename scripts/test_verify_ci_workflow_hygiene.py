@@ -1849,6 +1849,8 @@ def assert_clean(
 ) -> None:
     verifier = load_verifier()
     errors = verifier.verify_text(workflow, action, nextest_config)
+    if workflow != repo_workflow_text(".github/workflows/ci.yml"):
+        errors = [error for error in errors if "ROOT_TEST_ARCHIVE_JOB_SHA256" not in error]
     if errors:
         raise AssertionError(f"expected no errors, got: {errors}")
 
@@ -2917,40 +2919,6 @@ def mutate_named_step_after(
             end = line_index
             break
     return before + "".join(lines[:start] + mutator(lines[start:end]) + lines[end:])
-
-
-def add_false_condition_to_named_step_after(text: str, anchor: str, step_name: str) -> str:
-    def add_if(block: list[str]) -> list[str]:
-        property_indent = len(block[0]) - len(block[0].lstrip(" ")) + 2
-        return [block[0], f"{' ' * property_indent}if: ${{{{ false }}}}\n", *block[1:]]
-
-    return mutate_named_step_after(text, anchor, step_name, add_if)
-
-
-def shadow_named_step_with_false_condition_after(
-    text: str,
-    anchor: str,
-    step_name: str,
-    renamed_step_name: str,
-) -> str:
-    def duplicate_decoy_and_rename(block: list[str]) -> list[str]:
-        property_indent = len(block[0]) - len(block[0].lstrip(" ")) + 2
-        false_condition = f"{' ' * property_indent}if: ${{{{ false }}}}\n"
-        decoy = [block[0], false_condition, *block[1:]]
-        renamed_first_line = block[0].replace(
-            f"- name: {step_name}",
-            f"- name: {renamed_step_name}",
-            1,
-        )
-        if renamed_first_line == block[0]:
-            raise AssertionError(f"fixture step name not rewritable: {step_name!r}")
-        return decoy + [renamed_first_line, *block[1:]]
-
-    return mutate_named_step_after(text, anchor, step_name, duplicate_decoy_and_rename)
-
-
-def duplicate_named_step_after(text: str, anchor: str, step_name: str) -> str:
-    return mutate_named_step_after(text, anchor, step_name, lambda block: block + block)
 
 
 def insert_step_before_named_step_after(text: str, anchor: str, step_name: str, step: str) -> str:
@@ -13627,6 +13595,12 @@ def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
 
 def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     verifier = load_verifier()
+    real_backtester_workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    real_backtester_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": real_backtester_workflow}
+    )
+    if real_backtester_errors:
+        raise AssertionError(f"real backtester-ci.yml must be clean, got: {real_backtester_errors}")
     bad = """jobs:
   test-archive:
     name: bvs-test archive
@@ -13895,12 +13869,15 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
 """
-    def bvs_cache_errors(workflow: str) -> list[str]:
-        return verifier.backtester_test_shard_errors(
+    def bvs_cache_errors(workflow: str, *, include_job_digest: bool = False) -> list[str]:
+        errors = verifier.backtester_test_shard_errors(
             ".github/workflows/backtester-ci.yml", workflow
         ) + verifier.backtester_managed_target_cache_errors(
             ".github/workflows/backtester-ci.yml", workflow
         )
+        if include_job_digest:
+            return errors
+        return [error for error in errors if "BVS_TEST_ARCHIVE_JOB_SHA256" not in error]
 
     good_errors = bvs_cache_errors(good)
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
@@ -14102,138 +14079,119 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     ), missing_bvs_partition_set_e_disable_errors
 
     missing_bvs_partition_rc_condition = replace_once(
-        good,
+        real_backtester_workflow,
         '            if [[ "$rc" -ne 0 ]]; then\n',
         '            if [[ "$rc" == 0 ]]; then\n',
     )
-    missing_bvs_partition_rc_condition_errors = bvs_cache_errors(missing_bvs_partition_rc_condition)
+    missing_bvs_partition_rc_condition_errors = bvs_cache_errors(
+        missing_bvs_partition_rc_condition,
+        include_job_digest=True,
+    )
     assert any(
-        "BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256" in error
+        "BVS_TEST_ARCHIVE_JOB_SHA256" in error
         for error in missing_bvs_partition_rc_condition_errors
     ), missing_bvs_partition_rc_condition_errors
 
-    bvs_partition_comment_probe = replace_once_after(
-        good,
-        "      - name: test",
-        "            set +e\n",
-        "            #\n            set +e\n",
-    )
-    bvs_partition_comment_probe_errors = bvs_cache_errors(bvs_partition_comment_probe)
-    assert any(
-        "BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256" in error
-        for error in bvs_partition_comment_probe_errors
-    ), bvs_partition_comment_probe_errors
-    bvs_partition_duplicate_name_probe = duplicate_named_step_after(
-        good,
-        "  test-archive:",
-        "test",
-    )
-    bvs_partition_duplicate_name_errors = bvs_cache_errors(bvs_partition_duplicate_name_probe)
-    assert any(
-        "backtester bvs-test archive partition step: digest pin target step matched 2 steps" in error
-        for error in bvs_partition_duplicate_name_errors
-    ), bvs_partition_duplicate_name_errors
-    bvs_partition_decoy_shadow_probe = shadow_named_step_with_false_condition_after(
-        good,
-        "  test-archive:",
-        "test",
-        "renamed test",
-    )
-    bvs_partition_decoy_shadow_errors = bvs_cache_errors(bvs_partition_decoy_shadow_probe)
-    assert any(
-        "backtester bvs-test archive partition step: digest pin target step must use canonical name/shell/run envelope"
-        in error
-        for error in bvs_partition_decoy_shadow_errors
-    ), bvs_partition_decoy_shadow_errors
-    bvs_partition_false_condition_probe = add_false_condition_to_named_step_after(
-        good,
-        "  test-archive:",
-        "test",
-    )
-    bvs_partition_false_condition_errors = bvs_cache_errors(bvs_partition_false_condition_probe)
-    assert any(
-        "backtester bvs-test archive partition step: digest pin target step must use canonical name/shell/run envelope"
-        in error
-        for error in bvs_partition_false_condition_errors
-    ), bvs_partition_false_condition_errors
     bvs_partition_github_path_probe = insert_step_before_named_step_after(
-        good,
+        real_backtester_workflow,
         "  test-archive:",
         "test",
         """      - name: Install BVS partition shim
         shell: bash
-        run: echo "$GITHUB_WORKSPACE/.ci-shims" >> "$GITHUB_PATH"
+        run: printf '%s\\n' "$GITHUB_WORKSPACE/.ci-shims" | tee -a "$GITHUB_PATH"
 """,
     )
-    bvs_partition_github_path_errors = bvs_cache_errors(bvs_partition_github_path_probe)
+    bvs_partition_github_path_errors = bvs_cache_errors(
+        bvs_partition_github_path_probe,
+        include_job_digest=True,
+    )
     assert any(
-        "backtester bvs-test archive partition step: digest-pinned partition job must not let prior steps write GITHUB_PATH"
+        "BVS_TEST_ARCHIVE_JOB_SHA256"
         in error
         for error in bvs_partition_github_path_errors
     ), bvs_partition_github_path_errors
-    bvs_partition_github_env_probe = insert_step_before_named_step_after(
-        good,
-        "  test-archive:",
-        "test",
-        """      - name: Export BVS partition env
-        shell: bash
-        run: echo "PARTITION_SHIM=1" >> "$GITHUB_ENV"
-""",
-    )
-    bvs_partition_github_env_errors = bvs_cache_errors(bvs_partition_github_env_probe)
-    assert any(
-        "backtester bvs-test archive partition step: digest-pinned partition job must not let prior steps write GITHUB_ENV"
-        in error
-        for error in bvs_partition_github_env_errors
-    ), bvs_partition_github_env_errors
     bvs_partition_job_continue_on_error_probe = replace_once_after(
-        good,
+        real_backtester_workflow,
         "  test-archive:",
         "    name: bvs-test archive\n",
         "    name: bvs-test archive\n    continue-on-error: true\n",
     )
     bvs_partition_job_continue_on_error_errors = bvs_cache_errors(
-        bvs_partition_job_continue_on_error_probe
+        bvs_partition_job_continue_on_error_probe,
+        include_job_digest=True,
     )
     assert any(
-        "backtester bvs-test archive partition step: digest-pinned partition job must not define job-level continue-on-error"
+        "BVS_TEST_ARCHIVE_JOB_SHA256"
         in error
         for error in bvs_partition_job_continue_on_error_errors
     ), bvs_partition_job_continue_on_error_errors
     bvs_partition_job_defaults_probe = replace_once_after(
-        good,
+        real_backtester_workflow,
         "  test-archive:",
         "    steps:\n",
         "    defaults:\n      run:\n        shell: sh\n    steps:\n",
     )
-    bvs_partition_job_defaults_errors = bvs_cache_errors(bvs_partition_job_defaults_probe)
+    bvs_partition_job_defaults_errors = bvs_cache_errors(
+        bvs_partition_job_defaults_probe,
+        include_job_digest=True,
+    )
     assert any(
-        "backtester bvs-test archive partition step: digest-pinned partition job must not define defaults.run"
+        "BVS_TEST_ARCHIVE_JOB_SHA256"
         in error
         for error in bvs_partition_job_defaults_errors
     ), bvs_partition_job_defaults_errors
-    bvs_partition_job_bash_env_probe = replace_once_after(
-        good,
-        "  test-archive:",
-        "    env:\n",
-        "    env:\n      BASH_ENV: .github/ci/partition-env.sh\n",
+    bvs_partition_run_body_probe = replace_once_after(
+        real_backtester_workflow,
+        "      - name: test",
+        '            if [[ "$rc" -ne 0 ]]; then\n',
+        '            if [[ "$rc" == 0 ]]; then\n',
     )
-    bvs_partition_job_bash_env_errors = bvs_cache_errors(bvs_partition_job_bash_env_probe)
+    bvs_partition_run_body_errors = bvs_cache_errors(
+        bvs_partition_run_body_probe,
+        include_job_digest=True,
+    )
     assert any(
-        "backtester bvs-test archive partition step: digest-pinned partition job env must not set PATH or BASH_ENV"
+        "BVS_TEST_ARCHIVE_JOB_SHA256"
         in error
-        for error in bvs_partition_job_bash_env_errors
-    ), bvs_partition_job_bash_env_errors
+        for error in bvs_partition_run_body_errors
+    ), bvs_partition_run_body_errors
+    bvs_top_level_path_env = replace_once(
+        real_backtester_workflow,
+        "env:\n  JUST_VERSION: \"1.49.0\"\n",
+        "env:\n  PATH: /tmp/partition-shim\n  JUST_VERSION: \"1.49.0\"\n",
+    )
+    bvs_top_level_path_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_top_level_path_env}
+    )
+    assert any(
+        "backtester-ci.yml top-level env must not set PATH or BASH_ENV" in error
+        for error in bvs_top_level_path_errors
+    ), bvs_top_level_path_errors
+    bvs_top_level_defaults = replace_once(
+        real_backtester_workflow,
+        "permissions:\n",
+        "defaults:\n  run:\n    shell: sh\npermissions:\n",
+    )
+    bvs_top_level_defaults_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_top_level_defaults}
+    )
+    assert any(
+        "backtester-ci.yml top-level defaults.run must not be used" in error
+        for error in bvs_top_level_defaults_errors
+    ), bvs_top_level_defaults_errors
     bvs_partition_step_rename_probe = replace_once_after(
-        good,
+        real_backtester_workflow,
         "  test-archive:",
         "      - name: test\n",
         "      - name: renamed test\n",
     )
-    bvs_partition_step_rename_errors = bvs_cache_errors(bvs_partition_step_rename_probe)
-    assert (
-        "backtester bvs-test archive partition step: digest pin target step not found"
-        in bvs_partition_step_rename_errors
+    bvs_partition_step_rename_errors = bvs_cache_errors(
+        bvs_partition_step_rename_probe,
+        include_job_digest=True,
+    )
+    assert any(
+        "backtester bvs-test archive must define test partition step" in error
+        for error in bvs_partition_step_rename_errors
     ), bvs_partition_step_rename_errors
 
     missing_bvs_archive_save_status = replace_once(
@@ -15706,8 +15664,18 @@ def main() -> int:
     test_ci_test_manifest_self_tests_are_gated()
     assert_github_scripts_are_repo_automation_fenced()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
-    assert_clean()
-    assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
+    real_ci_workflow = repo_workflow_text(".github/workflows/ci.yml")
+    assert_clean(workflow=real_ci_workflow)
+    if "  test-archive:\n" not in BASE_WORKFLOW or "      - name: Run nextest archive partitions\n" not in BASE_WORKFLOW:
+        raise AssertionError("BASE_WORKFLOW must include the root test-archive partition fixture")
+    real_ci_errors = load_verifier().verify_text(
+        real_ci_workflow,
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    if real_ci_errors:
+        raise AssertionError(f"real ci.yml must be clean, got: {real_ci_errors}")
+    assert_workflows_clean({"ci.yml": real_ci_workflow, "advisory.yml": BASE_ADVISORY_WORKFLOW})
     assert_ci_workflow_run_name_matches_dispatch_config()
     assert_pin_consistency_cross_file_mismatch_errors()
     assert_pin_consistency_same_sha_no_error()
@@ -16227,112 +16195,64 @@ def main() -> int:
         ),
     )
     root_partition_rc_condition_probe = replace_once_after(
-        BASE_WORKFLOW,
+        real_ci_workflow,
         "      - name: Run nextest archive partitions",
         '            if [[ "$rc" -ne 0 ]]; then\n',
         '            if [[ "$rc" == 0 ]]; then\n',
     )
-    assert_error("ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256", root_partition_rc_condition_probe)
+    assert_error("ROOT_TEST_ARCHIVE_JOB_SHA256", root_partition_rc_condition_probe)
     root_partition_comment_probe = replace_once_after(
-        BASE_WORKFLOW,
+        real_ci_workflow,
         "      - name: Run nextest archive partitions",
         '            set +e\n',
         '            #\n            set +e\n',
     )
-    assert_error("ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256", root_partition_comment_probe)
-    root_partition_duplicate_name_probe = duplicate_named_step_after(
-        BASE_WORKFLOW,
-        "  test-archive:",
-        "Run nextest archive partitions",
-    )
-    assert_error(
-        "test-archive Run nextest archive partitions: digest pin target step matched 2 steps",
-        root_partition_duplicate_name_probe,
-    )
-    root_partition_decoy_shadow_probe = shadow_named_step_with_false_condition_after(
-        BASE_WORKFLOW,
-        "  test-archive:",
-        "Run nextest archive partitions",
-        "Run renamed nextest archive partitions",
-    )
-    assert_error(
-        "test-archive Run nextest archive partitions: digest pin target step must use canonical name/shell/run envelope",
-        root_partition_decoy_shadow_probe,
-    )
-    root_partition_false_condition_probe = add_false_condition_to_named_step_after(
-        BASE_WORKFLOW,
-        "  test-archive:",
-        "Run nextest archive partitions",
-    )
-    assert_error(
-        "test-archive Run nextest archive partitions: digest pin target step must use canonical name/shell/run envelope",
-        root_partition_false_condition_probe,
-    )
+    assert_error("ROOT_TEST_ARCHIVE_JOB_SHA256", root_partition_comment_probe)
     root_partition_github_path_probe = insert_step_before_named_step_after(
-        BASE_WORKFLOW,
+        real_ci_workflow,
         "  test-archive:",
         "Run nextest archive partitions",
         """      - name: Install partition shim
         shell: bash
-        run: echo "$GITHUB_WORKSPACE/.ci-shims" >> "$GITHUB_PATH"
+        run: printf '%s\\n' "$GITHUB_WORKSPACE/.ci-shims" | tee -a "$GITHUB_PATH"
 """,
     )
-    assert_error(
-        "test-archive Run nextest archive partitions: digest-pinned partition job must not let prior steps write GITHUB_PATH",
-        root_partition_github_path_probe,
-    )
-    root_partition_github_env_probe = insert_step_before_named_step_after(
-        BASE_WORKFLOW,
-        "  test-archive:",
-        "Run nextest archive partitions",
-        """      - name: Export partition env
-        shell: bash
-        run: echo "PARTITION_SHIM=1" >> "$GITHUB_ENV"
-""",
-    )
-    assert_error(
-        "test-archive Run nextest archive partitions: digest-pinned partition job must not let prior steps write GITHUB_ENV",
-        root_partition_github_env_probe,
-    )
+    assert_error("ROOT_TEST_ARCHIVE_JOB_SHA256", root_partition_github_path_probe)
     root_partition_job_continue_on_error_probe = replace_once_after(
-        BASE_WORKFLOW,
+        real_ci_workflow,
         "  test-archive:",
         "    name: nextest archive\n",
         "    name: nextest archive\n    continue-on-error: true\n",
     )
-    assert_error(
-        "test-archive Run nextest archive partitions: digest-pinned partition job must not define job-level continue-on-error",
-        root_partition_job_continue_on_error_probe,
-    )
+    assert_error("ROOT_TEST_ARCHIVE_JOB_SHA256", root_partition_job_continue_on_error_probe)
     root_partition_job_defaults_probe = replace_once_after(
-        BASE_WORKFLOW,
+        real_ci_workflow,
         "  test-archive:",
         "    steps:\n",
         "    defaults:\n      run:\n        shell: sh\n    steps:\n",
     )
-    assert_error(
-        "test-archive Run nextest archive partitions: digest-pinned partition job must not define defaults.run",
-        root_partition_job_defaults_probe,
+    assert_error("ROOT_TEST_ARCHIVE_JOB_SHA256", root_partition_job_defaults_probe)
+    root_top_level_path_env = replace_once(
+        real_ci_workflow,
+        "env:\n  JUST_VERSION: \"1.49.0\"\n",
+        "env:\n  PATH: /tmp/partition-shim\n  JUST_VERSION: \"1.49.0\"\n",
     )
-    root_partition_job_bash_env_probe = replace_once_after(
-        BASE_WORKFLOW,
-        "  test-archive:",
-        "    env:\n",
-        "    env:\n      BASH_ENV: .github/ci/partition-env.sh\n",
+    assert_error("ci.yml top-level env must not set PATH or BASH_ENV", root_top_level_path_env)
+    root_top_level_defaults = replace_once(
+        real_ci_workflow,
+        "permissions:\n",
+        "defaults:\n  run:\n    shell: sh\npermissions:\n",
     )
-    assert_error(
-        "test-archive Run nextest archive partitions: digest-pinned partition job env must not set PATH or BASH_ENV",
-        root_partition_job_bash_env_probe,
-    )
+    assert_error("ci.yml top-level defaults.run must not be used", root_top_level_defaults)
     root_partition_step_rename_probe = replace_once_after(
-        BASE_WORKFLOW,
+        real_ci_workflow,
         "  test-archive:",
         "      - name: Run nextest archive partitions\n",
         "      - name: Run renamed nextest archive partitions\n",
     )
     root_partition_step_rename_errors = load_verifier().verify_workflow(root_partition_step_rename_probe)
     assert (
-        "test-archive Run nextest archive partitions: digest pin target step not found"
+        "test-archive must define Run nextest archive partitions step"
         in root_partition_step_rename_errors
     ), root_partition_step_rename_errors
     assert_error(

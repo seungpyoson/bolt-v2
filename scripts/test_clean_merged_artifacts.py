@@ -1236,6 +1236,22 @@ class CleanupContractTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def _install_post_rewrite_with_clean_marker(self) -> tuple[pathlib.Path, pathlib.Path]:
+        hook = self.work / ".git" / "hooks" / "post-rewrite"
+        shutil.copy2(REPO_ROOT / ".githooks" / "post-rewrite", hook)
+
+        marker = self.tmp / "clean-merged-dispatched"
+        script = self.work / "scripts" / "clean_merged_artifacts.py"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib\n"
+            f"pathlib.Path({json.dumps(str(marker))}).write_text("
+            "'dispatched', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        return hook, marker
+
     def test_lane_summary_prints_full_refusal_reason(self) -> None:
         reason = (
             "detached-HEAD worktree refused "
@@ -1417,7 +1433,115 @@ git config "remote.${{clean_merged_remote}}.prune" true
         source = (REPO_ROOT / ".githooks" / "post-rewrite").read_text(encoding="utf-8")
 
         self.assertNotIn("local main", source)
+        self.assertIn("local configured trunk", source)
         self.assertIn("configured trunk", source)
+
+    def test_post_rewrite_adopts_entire_without_wrapper_split(self) -> None:
+        source = (REPO_ROOT / ".githooks" / "post-rewrite").read_text(encoding="utf-8")
+
+        self.assertIn("# Entire CLI hooks", source)
+        self.assertIn(
+            '_entire_stdin="$(mktemp "${TMPDIR:-/tmp}/entire-post-rewrite.XXXXXX" '
+            '2>/dev/null || true)"',
+            source,
+        )
+        self.assertIn('if [ -n "$_entire_stdin" ]; then', source)
+        self.assertIn('if cat 2>/dev/null > "$_entire_stdin"; then', source)
+        self.assertIn(
+            'entire hooks git post-rewrite "$1" 2>/dev/null < "$_entire_stdin"',
+            source,
+        )
+        self.assertIn("clean-merged Lane H dispatch", source)
+        self.assertNotIn("post-rewrite.pre-entire", source)
+
+    def test_post_rewrite_stays_silent_when_mktemp_fails(self) -> None:
+        hook, clean_marker = self._install_post_rewrite_with_clean_marker()
+
+        fake_bin = self.tmp / "fake-bin"
+        fake_bin.mkdir()
+        failing_mktemp = fake_bin / "mktemp"
+        failing_mktemp.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        failing_mktemp.chmod(0o755)
+
+        proc = _run(
+            [str(hook), "amend"],
+            cwd=self.work,
+            env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            check=False,
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stderr, "")
+        self.assertTrue(clean_marker.is_file())
+
+    def test_post_rewrite_stays_silent_when_stdin_stage_fails(self) -> None:
+        hook, clean_marker = self._install_post_rewrite_with_clean_marker()
+
+        fake_bin = self.tmp / "fake-bin-stage-fails"
+        fake_bin.mkdir()
+        unusable_stdin = self.tmp / "missing-stdin-dir" / "stdin"
+        marker = self.tmp / "entire-invoked"
+        fake_mktemp = fake_bin / "mktemp"
+        fake_mktemp.write_text(
+            "#!/bin/sh\n"
+            'printf "%s\\n" "$FAKE_UNUSABLE_STDIN"\n',
+            encoding="utf-8",
+        )
+        fake_mktemp.chmod(0o755)
+        fake_entire = fake_bin / "entire"
+        fake_entire.write_text(
+            "#!/bin/sh\n"
+            'printf invoked > "$FAKE_ENTIRE_MARKER"\n',
+            encoding="utf-8",
+        )
+        fake_entire.chmod(0o755)
+
+        proc = _run(
+            [str(hook), "amend"],
+            cwd=self.work,
+            env={
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                "FAKE_UNUSABLE_STDIN": str(unusable_stdin),
+                "FAKE_ENTIRE_MARKER": str(marker),
+            },
+            check=False,
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stderr, "")
+        self.assertFalse(marker.exists())
+        self.assertTrue(clean_marker.is_file())
+
+    def test_post_rewrite_suppresses_entire_stderr_and_dispatches_clean_merged(self) -> None:
+        """Verify Entire stderr stays silent and clean-merged still dispatches.
+
+        The `|| true` guard is forward-defense for a future stricter shell mode; with
+        the current hook's no-`set -e` semantics and explicit final `exit 0`, it is
+        inert and therefore not independently testable here.
+        """
+        hook, clean_marker = self._install_post_rewrite_with_clean_marker()
+
+        fake_bin = self.tmp / "fake-bin-entire-errors"
+        fake_bin.mkdir()
+        fake_entire = fake_bin / "entire"
+        fake_entire.write_text(
+            "#!/bin/sh\n"
+            "echo boom >&2\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        fake_entire.chmod(0o755)
+
+        proc = _run(
+            [str(hook), "amend"],
+            cwd=self.work,
+            env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            check=False,
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stderr, "")
+        self.assertTrue(clean_marker.is_file())
 
 
 # ---------------------------------------------------------------------------

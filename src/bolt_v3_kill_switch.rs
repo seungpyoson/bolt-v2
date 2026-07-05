@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path};
 
+use crate::bolt_v3_loss_governor::LossHaltReason;
+
 const HALT_ID_DOMAIN: &[u8] = b"bolt_v3.kill_switch.halt_id.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +48,8 @@ pub struct KillSwitchHaltTrigger {
     pub source: String,
     pub source_timestamp_unix_nanos: u64,
     pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loss_halt_reason: Option<LossHaltReason>,
 }
 
 impl KillSwitchHaltTrigger {
@@ -59,6 +63,22 @@ impl KillSwitchHaltTrigger {
             source: source.into(),
             source_timestamp_unix_nanos,
             reason: reason.into(),
+            loss_halt_reason: None,
+        }
+    }
+
+    pub fn loss_governor_breach_with_reason(
+        source: impl Into<String>,
+        source_timestamp_unix_nanos: u64,
+        reason: impl Into<String>,
+        loss_halt_reason: LossHaltReason,
+    ) -> Self {
+        Self {
+            kind: KillSwitchHaltTriggerKind::LossGovernorBreach,
+            source: source.into(),
+            source_timestamp_unix_nanos,
+            reason: reason.into(),
+            loss_halt_reason: Some(loss_halt_reason),
         }
     }
 
@@ -72,6 +92,21 @@ impl KillSwitchHaltTrigger {
             source: source.into(),
             source_timestamp_unix_nanos,
             reason: reason.into(),
+            loss_halt_reason: None,
+        }
+    }
+
+    pub fn venue_truth_divergence(
+        source: impl Into<String>,
+        source_timestamp_unix_nanos: u64,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: KillSwitchHaltTriggerKind::VenueTruthDivergence,
+            source: source.into(),
+            source_timestamp_unix_nanos,
+            reason: reason.into(),
+            loss_halt_reason: None,
         }
     }
 }
@@ -80,6 +115,7 @@ impl KillSwitchHaltTrigger {
 pub enum KillSwitchHaltTriggerKind {
     LossGovernorBreach,
     BasketExecutionStuck,
+    VenueTruthDivergence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,13 +345,14 @@ fn require_clean_reconciliation(
     Ok(())
 }
 
-fn halt_id_for_trigger(trigger: &KillSwitchHaltTrigger) -> String {
+pub(crate) fn halt_id_for_trigger(trigger: &KillSwitchHaltTrigger) -> String {
     let mut hasher = Sha256::new();
     hasher.update(HALT_ID_DOMAIN);
     hasher.update([0]);
     hasher.update(match trigger.kind {
         KillSwitchHaltTriggerKind::LossGovernorBreach => b"loss_governor_breach".as_slice(),
         KillSwitchHaltTriggerKind::BasketExecutionStuck => b"basket_execution_stuck".as_slice(),
+        KillSwitchHaltTriggerKind::VenueTruthDivergence => b"venue_truth_divergence".as_slice(),
     });
     hasher.update([0]);
     hasher.update(trigger.source.as_bytes());

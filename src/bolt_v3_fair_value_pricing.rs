@@ -275,18 +275,12 @@ impl FairValuePricingState {
         request: FairValuePricingRequest,
     ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
         let inputs = self.fair_value_inputs_at(config, request)?;
-        self.fair_value_pricing_from_inputs(
-            config,
-            request.now_ms,
-            request.realized_vol_gate_event_ms,
-            inputs,
-        )
+        self.fair_value_pricing_from_inputs(config, request.realized_vol_gate_event_ms, inputs)
     }
 
     pub fn fair_value_pricing_from_inputs(
         &self,
         config: &FairValuePricingConfig<'_>,
-        now_ms: u64,
         realized_vol_gate_event_ms: Option<VenueEventMs>,
         inputs: FairValuePricingInputs,
     ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
@@ -307,7 +301,6 @@ impl FairValuePricingState {
         };
         let (realized_vol_surface_id, realized_vol_source_venue, realized_vol_source_ts_ms) =
             self.current_realized_vol_evidence_for_config_at(config, realized_vol_gate_event_ms);
-        let _ = now_ms;
 
         Ok(FairValuePricingResult {
             spot_price: inputs.spot_price,

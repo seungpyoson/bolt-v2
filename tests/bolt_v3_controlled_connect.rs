@@ -629,7 +629,9 @@ fn live_node_module_runs_nt_through_bolt_v3_wrapper() {
     // approved NT runner entrypoint inside `run_bolt_v3_live_node`. The
     // runner call must remain inside the bolt-v3 wrapper that wires runtime
     // capture, and this module must still never select a
-    // market, construct an order, or submit one. The strategy-free helper
+    // market, construct an ordinary strategy order, or route one. The
+    // kill-switch forced-reduction flatten effect is separately fenced through
+    // the shared order-execution/admission path. The strategy-free helper
     // may use its dedicated quote-only reference probe; broader
     // market-data subscription APIs stay forbidden. The forbidden token list lives in
     // this integration test (not in the module's own source) so the

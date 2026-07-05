@@ -148,6 +148,16 @@ impl EvictedFixtureIndex {
         )
     }
 
+    /// Return the indexed entry for an evicted repo-relative fixture path.
+    pub fn entry_for(&self, path: &str) -> Option<&EvictedFixtureEntry> {
+        self.entries.iter().find(|entry| entry.path == path)
+    }
+
+    /// Return the indexed SHA-256 for an evicted repo-relative fixture path.
+    pub fn sha256_for(&self, path: &str) -> Option<&str> {
+        self.entry_for(path).map(|entry| entry.sha256.as_str())
+    }
+
     /// Validate the index is internally well-formed: known schema, a content-addressed
     /// `s3://` root, a non-empty entry list, repo-relative reference paths, valid
     /// lowercase-hex sha256, and strictly-ascending unique paths. Returns `Err` on the
@@ -367,6 +377,17 @@ mod tests {
             index.object_key(&index.entries[0]),
             format!("s3://bucket/reference-fixtures/{}", "a".repeat(64))
         );
+    }
+
+    #[test]
+    fn entry_and_sha_lookup_are_owned_by_index() {
+        let index = sample_index();
+        let path = format!("{REFERENCE_PREFIX}b.json");
+        let expected_sha256 = "b".repeat(64);
+        assert_eq!(index.entry_for(&path).expect("entry exists").bytes, 2);
+        assert_eq!(index.sha256_for(&path), Some(expected_sha256.as_str()));
+        assert_eq!(index.entry_for("missing.json"), None);
+        assert_eq!(index.sha256_for("missing.json"), None);
     }
 
     #[test]

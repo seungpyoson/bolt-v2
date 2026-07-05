@@ -68,7 +68,8 @@ JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_pmxt_storage_proof.py",
     "python3 scripts/verify_bte_022_pmxt_storage_proof.py",
 )
-JUSTFILE_RECIPES = ("verify-bte-022-pmxt-storage-proof", "source-fence-static-inner")
+SOURCE_FENCE_STATIC_COMMANDS = ("python3 scripts/run_fences.py",)
+JUSTFILE_RECIPES = ("verify-bte-022-pmxt-storage-proof",)
 
 TOP_LEVEL_KEYS = (
     "schema_version",
@@ -309,8 +310,8 @@ def find_record(
     return matches[0]
 
 
-def just_recipe_commands(justfile: str, recipe_name: str) -> set[str]:
-    commands: set[str] = set()
+def just_recipe_commands(justfile: str, recipe_name: str) -> list[str]:
+    commands: list[str] = []
     in_recipe = False
     for line in justfile.splitlines():
         stripped = line.strip()
@@ -322,7 +323,7 @@ def just_recipe_commands(justfile: str, recipe_name: str) -> set[str]:
         if not stripped or stripped.startswith("#"):
             continue
         if line.startswith((" ", "\t")):
-            commands.add(stripped)
+            commands.append(stripped)
         else:
             break
     return commands
@@ -513,6 +514,13 @@ def check_guard_verification(status: dict, justfile: str, findings: list[str]) -
         for command in JUSTFILE_COMMANDS:
             if command not in commands:
                 findings.append(f"{JUSTFILE}: {recipe} missing command {command!r}")
+    source_fence_commands = just_recipe_commands(justfile, "source-fence-static-inner")
+    if not source_fence_commands:
+        findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
+        return
+    if tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS:
+        expected = " && ".join(SOURCE_FENCE_STATIC_COMMANDS)
+        findings.append(f"{JUSTFILE}: source-fence-static-inner must contain only {expected}")
 
 
 def artifact_by_id(status: dict, artifact_id: str, findings: list[str]) -> dict:

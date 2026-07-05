@@ -487,25 +487,18 @@ impl TakerPricingState {
         request: TakerPricingRequest,
     ) -> Result<TakerPricingResult, Vec<TakerPricingBlockReason>> {
         let inputs = self.entry_pricing_inputs_at(config, request)?;
-        self.pricing_result_from_inputs(
-            config,
-            request.now_ms,
-            request.realized_vol_gate_event_ms,
-            inputs,
-        )
+        self.pricing_result_from_inputs(config, request.realized_vol_gate_event_ms, inputs)
     }
 
     fn pricing_result_from_inputs(
         &self,
         config: &TakerPricingConfig<'_>,
-        now_ms: u64,
         realized_vol_gate_event_ms: Option<VenueEventMs>,
         inputs: TakerPricingInputs,
     ) -> Result<TakerPricingResult, Vec<TakerPricingBlockReason>> {
         let fair_value = self
             .fair_value_pricing_from_inputs(
                 config,
-                now_ms,
                 realized_vol_gate_event_ms,
                 FairValuePricingInputs {
                     spot_price: inputs.spot_price,
@@ -570,13 +563,11 @@ impl TakerPricingState {
     fn fair_value_pricing_from_inputs(
         &self,
         config: &TakerPricingConfig<'_>,
-        now_ms: u64,
         realized_vol_gate_event_ms: Option<VenueEventMs>,
         inputs: FairValuePricingInputs,
     ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
         self.fair_value.fair_value_pricing_from_inputs(
             &fair_value_config(config),
-            now_ms,
             realized_vol_gate_event_ms,
             inputs,
         )

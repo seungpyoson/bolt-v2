@@ -1047,6 +1047,17 @@ fn halted_kill_switch_state() -> KillSwitchState {
     }
 }
 
+fn venue_truth_halted_kill_switch_state() -> KillSwitchState {
+    KillSwitchState::Halted {
+        halt_id: "venue-truth-halt".to_string(),
+        trigger: KillSwitchHaltTrigger::venue_truth_divergence(
+            "polymarket_venue_truth_rest",
+            1_200,
+            "venue truth divergence: UnexplainedCollateralDelta alarm_class=TrueDivergence",
+        ),
+    }
+}
+
 fn latched_kill_switch_states() -> Vec<KillSwitchState> {
     vec![
         KillSwitchState::Halting {
@@ -2472,26 +2483,15 @@ fn latched_kill_switch_blocks_replace_submit_even_when_lifecycle_policy_allows_r
 }
 
 #[test]
-fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
+fn latched_kill_switch_blocks_risk_reducing_exit_before_normal_admission() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    // Two ordinary slots allow the pre-latch entry and verified exit to consume
-    // normal admission capacity; the second exit, attempted while latched, must
-    // hit that same cap rather than using the forced-reduction bypass.
     let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(5, 0));
     admission
         .admit(&submit_request_with_kind(
             Decimal::new(1, 1),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry submit should consume the only entry slot")
-        .commit_submitted();
-    admission
-        .admit(&submit_request_with_kind_and_exit_proof(
-            Decimal::new(264, 2),
-            BoltV3SubmitIntentKind::RiskReducingExit,
-            Some(valid_risk_reducing_exit_proof()),
-        ))
-        .expect("verified exit should consume the only ordinary exit slot")
+        .expect("entry submit should be admitted before latch")
         .commit_submitted();
     admission.replace_kill_switch_state(halted_kill_switch_state());
 
@@ -2501,11 +2501,11 @@ fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
             BoltV3SubmitIntentKind::RiskReducingExit,
             Some(valid_risk_reducing_exit_proof()),
         ))
-        .expect_err("ordinary exit must not bypass normal count cap");
+        .expect_err("latched kill switch must block risk-reducing exit");
 
     assert!(matches!(
         exit,
-        BoltV3SubmitAdmissionError::CountCapExhausted
+        BoltV3SubmitAdmissionError::KillSwitchLatched { .. }
     ));
     let outcomes: Vec<BoltV3AdmissionOutcome> = writer
         .admission_decisions()
@@ -2516,11 +2516,43 @@ fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
         outcomes,
         vec![
             BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+            BoltV3AdmissionOutcome::RejectedKillSwitchLatched,
         ]
     );
-    assert_eq!(admission.admitted_order_count(), 2);
+    assert_eq!(admission.admitted_order_count(), 1);
+}
+
+#[test]
+fn venue_truth_latch_blocks_all_normal_submit_classes() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 10, Decimal::new(10, 0));
+    admission.replace_kill_switch_state(venue_truth_halted_kill_switch_state());
+
+    for request in [
+        submit_request_with_kind(Decimal::new(1, 1), BoltV3SubmitIntentKind::Entry),
+        submit_request_with_kind(Decimal::new(1, 1), BoltV3SubmitIntentKind::ReplaceSubmit),
+        submit_request_with_kind_and_exit_proof(
+            Decimal::new(264, 2),
+            BoltV3SubmitIntentKind::RiskReducingExit,
+            Some(valid_risk_reducing_exit_proof()),
+        ),
+    ] {
+        let error = admission
+            .admit(&request)
+            .expect_err("venue truth latch must block normal submit class");
+
+        assert!(matches!(
+            error,
+            BoltV3SubmitAdmissionError::KillSwitchLatched { .. }
+        ));
+    }
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert!(
+        writer
+            .admission_decisions()
+            .iter()
+            .all(|decision| decision.outcome == BoltV3AdmissionOutcome::RejectedKillSwitchLatched)
+    );
 }
 
 #[test]
@@ -2659,7 +2691,10 @@ fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
         BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
     ));
 
-    admission.record_kill_switch_forced_reduction_terminal();
+    assert!(
+        admission.record_kill_switch_forced_reduction_terminal("client-order-1"),
+        "terminal release should consume the tracked forced-reduction client order id"
+    );
 
     admission
         .admit(&forced_reduction_request(

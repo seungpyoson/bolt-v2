@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
-import errno
 import ast
+import errno
+import hashlib
 import importlib.util
 import json
 import os
@@ -120,6 +121,22 @@ _LOADER_CALLS = frozenset(
         "run_module",
     }
 )
+RUN_FENCES_SOURCE_SHA256 = "f2822613f4fe7c46afe158c6dc7ead78f88cbb6c5a9cf64ea12e2687488fe05c"
+_RUN_FENCES_REFLECTIVE_FORBIDDEN_NAMES = _LOADER_CALLS | frozenset(
+    {"__import__", "eval", "exec", "import_module_from_path"}
+)
+_RUN_FENCES_REFLECTIVE_MAPPING_CALLS = frozenset(
+    {
+        "builtins.dict",
+        "builtins.globals",
+        "builtins.locals",
+        "builtins.vars",
+        "dict",
+        "globals",
+        "locals",
+        "vars",
+    }
+)
 _DYNAMIC_CODE_CALLS = frozenset(
     {
         "eval",
@@ -164,9 +181,13 @@ def _valid_lane_policy() -> dict:
             "local-gate:fmt-check",
             "local-gate:source-fence-static",
             "local-gate:ci-lint-workflow",
+            "run_fences.py",
             "test_clean_merged_artifacts.py",
             "test_developer_tool_storage_hygiene.py",
+            "test_lane_governor.py",
             "test_leadlag_clock_alignment.py",
+            "test_cargo_shim.py",
+            "verify_lane_governance.py",
             "verify_runtime_capture_yaml.py",
         ],
         "cheap_lane_just_recipes": [
@@ -262,6 +283,7 @@ def test_cheap_lane_labels_resolve_just_recipes() -> None:
     assert "test_lane_governor.py" in labels
     assert "verify_lane_governance.py" in labels
     assert "test_cargo_shim.py" in labels
+    assert "run_fences.py" in labels
     assert "test_developer_tool_storage_hygiene.py" in labels
     assert "test_host_health_sampler.py" not in labels
     assert "local-gate:source-fence-static" in labels
@@ -1590,8 +1612,10 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         self.targets: set[Path] = set()
         self.failures: list[str] = []
         self.scopes: list[dict[str, object]] = [{}]
+        self.function_stack: list[str] = []
         self.functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
         self.active_functions: set[str] = set()
+        self.run_fences_canonical_loader_call: ast.Call | None = None
         self.subprocess_modules = {"subprocess"}
         self.asyncio_modules = {"asyncio"}
         self.os_modules = {"os"}
@@ -1622,6 +1646,8 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
 
     def resolve(self) -> tuple[set[Path], list[str]]:
         self._collect_function_defs(self.tree)
+        if self.path == SCRIPTS_DIR / "run_fences.py":
+            self._validate_run_fences_loader_contract()
         self.visit(self.tree)
         return self.targets, self.failures
 
@@ -1834,10 +1860,12 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         for arg in self._function_parameters(node):
             parent[arg.arg] = bound_args.get(arg.arg, _PARAMETER)
         self.scopes.append(parent)
+        self.function_stack.append(node.name)
         try:
             for statement in node.body:
                 self.visit(statement)
         finally:
+            self.function_stack.pop()
             self.scopes.pop()
 
     def _handle_local_wrapper_call(self, node: ast.Call) -> None:
@@ -2251,6 +2279,12 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         return isinstance(value, str) and value.endswith(".py")
 
     def _handle_loader_call(self, node: ast.Call, call_name: str) -> None:
+        if self.path == SCRIPTS_DIR / "run_fences.py":
+            if self._is_run_fences_discovery_loader_call(node, call_name):
+                self.targets.update(_run_fences_discovered_targets())
+            else:
+                self._fail(node, "run_fences.py may only use its canonical import_module_from_path importlib.util.spec_from_file_location(module_name, path) loader call")
+            return
         if (
             call_name in self.import_module_names
             or call_name in {"importlib.import_module", "runpy.run_module"}
@@ -2297,6 +2331,209 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             return
         self._fail(node, f"loader target is not a resolvable Python script: {target}")
 
+    def _is_run_fences_discovery_loader_call(self, node: ast.Call, call_name: str) -> bool:
+        return (
+            self._is_loader_call(call_name)
+            and node is self.run_fences_canonical_loader_call
+            and call_name == "importlib.util.spec_from_file_location"
+            and self._is_run_fences_canonical_loader_call(node)
+        )
+
+    def _validate_run_fences_loader_contract(self) -> None:
+        self._validate_run_fences_source_digest()
+        self._validate_run_fences_import_module_from_path_bindings()
+        self._validate_run_fences_reflection_contract()
+
+        module_defs = [
+            node
+            for node in getattr(self.tree, "body", [])
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "import_module_from_path"
+        ]
+        all_named_defs = [
+            node
+            for node in ast.walk(self.tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "import_module_from_path"
+        ]
+        if len(module_defs) != 1:
+            target = module_defs[0] if module_defs else self.tree
+            self._fail(target, "run_fences.py must define exactly one module-level import_module_from_path function")
+        for node in all_named_defs:
+            if node not in module_defs:
+                self._fail(node, "run_fences.py must not define nested or method import_module_from_path functions")
+        if len(module_defs) != 1:
+            self._validate_run_fences_spec_occurrences(None)
+            return
+
+        canonical_def = module_defs[0]
+        runtime_calls = [
+            node
+            for node in self._runtime_nodes(canonical_def)
+            if isinstance(node, ast.Call)
+            and self._is_direct_importlib_spec_call(node)
+        ]
+        canonical_calls = [
+            node
+            for node in runtime_calls
+            if self._is_run_fences_canonical_loader_call(node)
+        ]
+        if len(canonical_calls) != 1:
+            self._fail(canonical_def, "run_fences.py import_module_from_path must contain exactly one direct importlib.util.spec_from_file_location(module_name, path) call")
+        else:
+            self.run_fences_canonical_loader_call = canonical_calls[0]
+        for node in runtime_calls:
+            if node is not self.run_fences_canonical_loader_call:
+                self._fail(node, "run_fences.py import_module_from_path contains a noncanonical spec_from_file_location call")
+        self._validate_run_fences_spec_occurrences(self.run_fences_canonical_loader_call)
+
+    def _validate_run_fences_source_digest(self) -> None:
+        actual = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        if actual != RUN_FENCES_SOURCE_SHA256:
+            self._fail(
+                self.tree,
+                "run_fences.py source digest changed: "
+                f"expected {RUN_FENCES_SOURCE_SHA256}, got {actual}; "
+                "update RUN_FENCES_SOURCE_SHA256 with reviewed run_fences.py changes",
+            )
+
+    def _validate_run_fences_import_module_from_path_bindings(self) -> None:
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Assign):
+                if any("import_module_from_path" in self._target_names(target) for target in node.targets):
+                    self._fail(node, "run_fences.py must not rebind import_module_from_path")
+            elif isinstance(node, ast.AnnAssign):
+                if "import_module_from_path" in self._target_names(node.target):
+                    self._fail(node, "run_fences.py must not rebind import_module_from_path")
+            elif isinstance(node, ast.NamedExpr):
+                if "import_module_from_path" in self._target_names(node.target):
+                    self._fail(node, "run_fences.py must not rebind import_module_from_path")
+            elif isinstance(node, ast.Global) and "import_module_from_path" in node.names:
+                self._fail(node, "run_fences.py must not rebind import_module_from_path")
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name == "import_module_from_path" and node.decorator_list:
+                    self._fail(node, "run_fences.py must not decorator-reassign import_module_from_path")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if (alias.asname or alias.name.split(".")[0]) == "import_module_from_path":
+                        self._fail(node, "run_fences.py must not rebind import_module_from_path")
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if (alias.asname or alias.name) == "import_module_from_path":
+                        self._fail(node, "run_fences.py must not rebind import_module_from_path")
+
+    def _validate_run_fences_reflection_contract(self) -> None:
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Call):
+                call_name = self._call_name(node.func)
+                if call_name in {"builtins.getattr", "getattr"}:
+                    self._validate_run_fences_reflection_name(
+                        node,
+                        node.args[1] if len(node.args) > 1 else self._keyword_target(node, {"name"}),
+                    )
+                elif call_name == "attrgetter" or call_name.endswith(".attrgetter"):
+                    for arg in node.args:
+                        self._validate_run_fences_reflection_name(node, arg)
+                    for keyword in node.keywords:
+                        if keyword.arg is not None:
+                            self._validate_run_fences_reflection_name(node, keyword.value)
+                elif call_name in {"__import__", "builtins.__import__"}:
+                    self._validate_run_fences_reflection_name(
+                        node,
+                        node.args[0] if node.args else self._keyword_target(node, {"name"}),
+                    )
+                elif call_name in {"builtins.eval", "builtins.exec", "eval", "exec"}:
+                    if node.args:
+                        self._validate_run_fences_reflection_name(node, node.args[0])
+                elif call_name == "importlib.import_module" or call_name.endswith(".import_module"):
+                    self._validate_run_fences_reflection_name(
+                        node,
+                        node.args[0] if node.args else self._keyword_target(node, {"name"}),
+                    )
+                elif call_name.endswith(".__getattribute__"):
+                    self._validate_run_fences_reflection_name(
+                        node,
+                        self._run_fences_getattribute_name_arg(node),
+                    )
+            elif isinstance(node, ast.Subscript) and self._is_run_fences_reflective_mapping(node.value):
+                self._validate_run_fences_reflection_name(node, node.slice)
+
+    def _validate_run_fences_reflection_name(self, node: ast.AST, name_node: ast.AST | None) -> None:
+        if not isinstance(name_node, ast.Constant) or not isinstance(name_node.value, str):
+            self._fail(node, "run_fences.py reflective access must use literal string names")
+            return
+        if name_node.value in _RUN_FENCES_REFLECTIVE_FORBIDDEN_NAMES:
+            self._fail(node, f"run_fences.py reflective access to loader API name {name_node.value!r} is forbidden")
+
+    def _run_fences_getattribute_name_arg(self, node: ast.Call) -> ast.AST | None:
+        if not node.args:
+            return self._keyword_target(node, {"name"})
+        if (
+            len(node.args) > 1
+            and self._call_name(node.func)
+            in {
+                "builtins.object.__getattribute__",
+                "builtins.type.__getattribute__",
+                "object.__getattribute__",
+                "type.__getattribute__",
+            }
+        ):
+            return node.args[1]
+        return node.args[0]
+
+    def _is_run_fences_reflective_mapping(self, node: ast.AST) -> bool:
+        if isinstance(node, ast.Attribute) and node.attr == "__dict__":
+            return True
+        if isinstance(node, ast.Call):
+            return self._call_name(node.func) in _RUN_FENCES_REFLECTIVE_MAPPING_CALLS
+        return False
+
+    def _validate_run_fences_spec_occurrences(self, canonical_call: ast.Call | None) -> None:
+        allowed_attribute = canonical_call.func if canonical_call is not None else None
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "importlib.util":
+                for alias in node.names:
+                    if alias.name in {"*", "spec_from_file_location"}:
+                        self._fail(node, "run_fences.py must not import spec_from_file_location by alias")
+            elif isinstance(node, ast.Attribute) and node.attr == "spec_from_file_location":
+                if node is not allowed_attribute:
+                    self._fail(node, "run_fences.py spec_from_file_location references must stay at the canonical loader call")
+            elif isinstance(node, ast.Constant) and node.value == "spec_from_file_location":
+                self._fail(node, "run_fences.py must not reference spec_from_file_location by string indirection")
+
+    def _runtime_nodes(self, function: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.AST]:
+        def walk(node: ast.AST) -> Iterator[ast.AST]:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                    continue
+                yield child
+                yield from walk(child)
+
+        for statement in function.body:
+            yield statement
+            yield from walk(statement)
+
+    def _is_run_fences_canonical_loader_call(self, node: ast.Call) -> bool:
+        return (
+            self._is_direct_importlib_spec_call(node)
+            and len(node.args) == 2
+            and not node.keywords
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "module_name"
+            and isinstance(node.args[1], ast.Name)
+            and node.args[1].id == "path"
+        )
+
+    def _is_direct_importlib_spec_call(self, node: ast.Call) -> bool:
+        return (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "spec_from_file_location"
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "util"
+            and isinstance(node.func.value.value, ast.Name)
+            and node.func.value.value.id == "importlib"
+        )
+
     def _module_keyword_target(self, node: ast.Call, keyword_name: str) -> ast.AST | None:
         for keyword in node.keywords:
             if keyword.arg == keyword_name:
@@ -2310,6 +2547,12 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             keyword_names = {"path_name"}
         else:
             keyword_names = {"path"}
+        for keyword in node.keywords:
+            if keyword.arg in keyword_names:
+                return keyword.value
+        return None
+
+    def _keyword_target(self, node: ast.Call, keyword_names: set[str]) -> ast.AST | None:
         for keyword in node.keywords:
             if keyword.arg in keyword_names:
                 return keyword.value
@@ -2648,6 +2891,12 @@ def _discover_cheap_lane_scripts() -> set[Path]:
     return scripts
 
 
+def _run_fences_discovered_targets() -> set[Path]:
+    module = _load("run_fences")
+    fence_paths = module.discover_fence_paths(SCRIPTS_DIR)
+    return {*fence_paths, *module.discover_test_paths(fence_paths, SCRIPTS_DIR)}
+
+
 def _cheap_lane_discovered_unlabeled_manifest() -> set[str]:
     label = _repo_relative_label(_MANIFEST_PATH)
     assert _MANIFEST_PATH.is_file(), f"missing cheap-lane manifest: {label}"
@@ -2755,6 +3004,7 @@ def test_cheap_lane_discovery_manifest_floor_and_required_edges() -> None:
     assert not missing_manifest, f"live discovery dropped committed manifest entries: {sorted(missing_manifest)}"
     required = {
         "scripts/local_verification_gate.py",
+        "scripts/run_fences.py",
         "scripts/rust_verification.py",
         "scripts/test_nextest_fingerprint.py",
         "scripts/nextest_fingerprint.py",
@@ -2994,6 +3244,188 @@ run_async("scripts/test_nextest_fingerprint.py")
         "command_understanding.py",
         "ci_provenance.py",
     } <= rels
+
+
+def _run_fences_loader_failures(extra_source: str) -> list[str]:
+    source = (SCRIPTS_DIR / "run_fences.py").read_text(encoding="utf-8")
+    source += extra_source
+    resolver = _CodeExecutionEdgeResolver(
+        SCRIPTS_DIR / "run_fences.py",
+        ast.parse(source),
+        scan_set={SCRIPTS_DIR / "run_fences.py"},
+    )
+    _targets, failures = resolver.resolve()
+    return failures
+
+
+def _assert_run_fences_loader_failure(label: str, extra_source: str, expected: str) -> None:
+    failures = _run_fences_loader_failures(extra_source)
+    assert any(expected in failure for failure in failures), (label, expected, failures)
+
+
+def test_run_fences_loader_contract_accepts_pristine_source() -> None:
+    assert not _run_fences_loader_failures("")
+
+
+def test_run_fences_source_digest_pin_matches_pristine_source() -> None:
+    actual = hashlib.sha256((SCRIPTS_DIR / "run_fences.py").read_bytes()).hexdigest()
+    assert actual == RUN_FENCES_SOURCE_SHA256
+
+
+def test_run_fences_loader_special_case_is_single_site() -> None:
+    _assert_run_fences_loader_failure(
+        "second loader call",
+        """
+
+def unexpected_loader(path):
+    return importlib.util.spec_from_file_location("unexpected", path)
+""",
+        "may only use its canonical import_module_from_path",
+    )
+
+
+def test_run_fences_loader_special_case_rejects_reproduced_bypasses() -> None:
+    fixtures = {
+        "variable alias": (
+            """
+
+SPEC_LOADER = importlib.util.spec_from_file_location
+
+def unexpected_loader(path):
+    return SPEC_LOADER("unexpected", path)
+""",
+            "spec_from_file_location references must stay at the canonical loader call",
+        ),
+        "from import alias": (
+            """
+
+from importlib.util import spec_from_file_location as SPEC_LOADER
+
+def unexpected_loader(path):
+    return SPEC_LOADER("unexpected", path)
+""",
+            "must not import spec_from_file_location by alias",
+        ),
+        "getattr string": (
+            """
+
+def unexpected_loader(path):
+    return getattr(importlib.util, "spec_from_file_location")("unexpected", path)
+""",
+            "reflective access to loader API name 'spec_from_file_location' is forbidden",
+        ),
+        "module duplicate": (
+            """
+
+def import_module_from_path(module_name, path):
+    return importlib.util.spec_from_file_location(module_name, path)
+""",
+            "must define exactly one module-level import_module_from_path function",
+        ),
+        "nested duplicate": (
+            """
+
+def outer_loader():
+    def import_module_from_path(module_name, path):
+        return importlib.util.spec_from_file_location(module_name, path)
+    return import_module_from_path
+""",
+            "must not define nested or method import_module_from_path functions",
+        ),
+        "method duplicate": (
+            """
+
+class Loader:
+    def import_module_from_path(self, module_name, path):
+        return importlib.util.spec_from_file_location(module_name, path)
+""",
+            "must not define nested or method import_module_from_path functions",
+        ),
+    }
+    for label, (extra_source, expected) in fixtures.items():
+        _assert_run_fences_loader_failure(label, extra_source, expected)
+
+
+def test_run_fences_reflection_contract_rejects_panel_bypasses() -> None:
+    fixtures = {
+        "computed getattr": (
+            """
+
+def unexpected_loader(path):
+    loader_name = "spec_from_" + "file_location"
+    return getattr(importlib.util, loader_name)("unexpected", path)
+""",
+            "reflective access must use literal string names",
+        ),
+        "__dict__ subscript": (
+            """
+
+def unexpected_loader(path):
+    loader_name = "spec_from_" + "file_location"
+    return importlib.util.__dict__[loader_name]("unexpected", path)
+""",
+            "reflective access must use literal string names",
+        ),
+        "attrgetter": (
+            """
+
+import operator
+
+def unexpected_loader(path):
+    loader_name = "spec_from_" + "file_location"
+    return operator.attrgetter(loader_name)(importlib.util)("unexpected", path)
+""",
+            "reflective access must use literal string names",
+        ),
+        "chr-built name": (
+            """
+
+def unexpected_loader(path):
+    loader_name = "spec_from_file_" + chr(108) + "ocation"
+    return getattr(importlib.util, loader_name)("unexpected", path)
+""",
+            "reflective access must use literal string names",
+        ),
+        "rebinding": (
+            """
+
+import_module_from_path = lambda path, index, phase: None
+""",
+            "must not rebind import_module_from_path",
+        ),
+    }
+    for label, (extra_source, expected) in fixtures.items():
+        _assert_run_fences_loader_failure(label, extra_source, expected)
+
+
+def test_run_fences_import_module_from_path_rebinding_forms_fail_closed() -> None:
+    fixtures = {
+        "annotated assignment": """
+
+import_module_from_path: object = None
+""",
+        "named expression": """
+
+def unexpected_rebind():
+    return (import_module_from_path := None)
+""",
+        "global declaration": """
+
+def unexpected_rebind():
+    global import_module_from_path
+""",
+        "decorated replacement": """
+
+def passthrough(func):
+    return func
+
+@passthrough
+def import_module_from_path(path, index, phase):
+    return None
+""",
+    }
+    for label, extra_source in fixtures.items():
+        _assert_run_fences_loader_failure(label, extra_source, "import_module_from_path")
 
 
 def test_subprocess_executable_keyword_process_image_resolves_before_argv0() -> None:
@@ -4221,6 +4653,12 @@ def _registered_self_tests():
         test_repo_origin_detection_is_expression_based,
         test_repo_write_analyzer_catches_extended_mutators,
         test_code_execution_edges_are_static_fixed_point,
+        test_run_fences_loader_contract_accepts_pristine_source,
+        test_run_fences_source_digest_pin_matches_pristine_source,
+        test_run_fences_loader_special_case_is_single_site,
+        test_run_fences_loader_special_case_rejects_reproduced_bypasses,
+        test_run_fences_reflection_contract_rejects_panel_bypasses,
+        test_run_fences_import_module_from_path_rebinding_forms_fail_closed,
         test_subprocess_executable_keyword_process_image_resolves_before_argv0,
         test_subprocess_direct_process_image_resolves_python_by_semantics,
         test_asyncio_subprocess_resolves_python_targets,

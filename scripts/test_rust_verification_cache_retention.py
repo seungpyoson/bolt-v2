@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import io
 import json
-import importlib.util
 import os
 import pathlib
 import subprocess
@@ -15,6 +15,8 @@ import tempfile
 import textwrap
 import time
 import types
+
+from test_fixtures import load_owner_module, write_executable, write_policy
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -34,7 +36,12 @@ def disk_bytes(path: pathlib.Path) -> int:
     return int(result.stdout.split()[0]) * 1024
 
 
-def run_owner(args: list[str], *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def run_owner(
+    args: list[str],
+    *,
+    env: dict[str, str],
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = env.copy()
     env.setdefault("BOLT_ALLOW_LOCAL_RUST", "1")
     return subprocess.run(
@@ -45,64 +52,41 @@ def run_owner(args: list[str], *, env: dict[str, str]) -> subprocess.CompletedPr
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        timeout=timeout,
     )
 
 
-def load_owner_module() -> object:
-    spec = importlib.util.spec_from_file_location("rust_verification_under_test", SCRIPT)
-    if spec is None or spec.loader is None:
-        raise AssertionError("unable to load rust_verification.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def unused_pid() -> int:
+    for pid in range(999_999, 999_000, -1):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return pid
+        except PermissionError:
+            continue
+    raise AssertionError("unable to locate an unused pid for stale metadata coverage")
 
 
-def write_executable(path: pathlib.Path, body: str) -> None:
-    path.write_text(body, encoding="utf-8")
-    path.chmod(0o755)
-
-
-def write_policy(repo: pathlib.Path, *, target_namespace: str = "bolt-v2") -> None:
-    (repo / "ci").mkdir()
-    (repo / "ci" / "rust-verification.toml").write_text(
-        textwrap.dedent(
-            f"""\
-            schema_version = 2
-            project_id = "bolt-v2"
-            target_namespace = "{target_namespace}"
-
-            [local_compile_policy]
-            enabled = true
-            allowed_ci_env = "GITHUB_ACTIONS"
-            break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
-            refused_managed_commands = ["test", "clippy", "build"]
-            refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]
-
-            [local_lane_policy]
-            enabled = true
-            allowed_ci_env = "GITHUB_ACTIONS"
-            lock_dir = "/tmp/rust-verification-lanes"
-            acquire_timeout_seconds = 1800
-            heartbeat_seconds = 15
-            poll_interval_seconds = 1
-
-            [commands]
-
-            [commands.test]
-            recipe = "managed-test"
-
-            [commands.clippy]
-            recipe = "managed-clippy"
-
-            [commands.build]
-            recipe = "managed-build"
-            artifact_layout = "cargo"
-            profile = "release"
-            target = "aarch64-unknown-linux-gnu"
-            """
-        ),
-        encoding="utf-8",
+def set_local_lane_timing(
+    repo: pathlib.Path,
+    *,
+    acquire_timeout_seconds: int = 2,
+    heartbeat_seconds: int = 1,
+    poll_interval_seconds: float = 0.05,
+) -> None:
+    policy_file = repo / "ci" / "rust-verification.toml"
+    text = policy_file.read_text(encoding="utf-8")
+    replacements = (
+        ("acquire_timeout_seconds = 1800", f"acquire_timeout_seconds = {acquire_timeout_seconds}"),
+        ("heartbeat_seconds = 15", f"heartbeat_seconds = {heartbeat_seconds}"),
+        ("poll_interval_seconds = 1", f"poll_interval_seconds = {poll_interval_seconds}"),
     )
+    for old, new in replacements:
+        updated = text.replace(old, new, 1)
+        if updated == text:
+            raise AssertionError(f"canonical policy fixture fragment not found: {old!r}")
+        text = updated
+    policy_file.write_text(text, encoding="utf-8")
 
 
 def write_policy_with_cache(
@@ -1328,12 +1312,128 @@ printf '123 bash -l\\n'
             raise AssertionError("bare `bash -l` produced false-positive refusal")
 
 
+def assert_cache_prune_apply_times_out_for_wedged_cache_lock() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=1, soft_limit_bytes=10**12)
+        set_local_lane_timing(repo)
+
+        root_base = tmp_path / "rust-root"
+        lock_path = root_base / "bolt-v2" / "cache.lock"
+        lock_path.parent.mkdir(parents=True)
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["BOLT_ALLOW_LOCAL_RUST"] = "1"
+
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            handle.seek(0)
+            handle.truncate(0)
+            json.dump({"pid": os.getpid(), "cmdline": "held-cache-lock"}, handle)
+            handle.write("\n")
+            handle.flush()
+            try:
+                result = run_owner(["cache-prune", "--repo", str(repo), "--apply", "--json"], env=env, timeout=5)
+            except subprocess.TimeoutExpired as exc:
+                raise AssertionError("cache-prune must time out waiting for cache lock") from exc
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+        if result.returncode == 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        if payload.get("refusal_code") != "cache_lock_timeout":
+            raise AssertionError(payload)
+        reason = payload.get("refusal_reason", "")
+        if "cache lock wait timed out" not in reason or "held-cache-lock" not in reason:
+            raise AssertionError(payload)
+        if "waiting for cache lock" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
+def assert_cache_lock_holder_description_marks_dead_pid_metadata_stale() -> None:
+    module = load_owner_module()
+    dead_pid = unused_pid()
+    with tempfile.TemporaryDirectory() as tmp:
+        lock_path = pathlib.Path(tmp) / "cache.lock"
+        lock_path.write_text(json.dumps({"pid": dead_pid, "cmdline": "held-cache-lock"}) + "\n", encoding="utf-8")
+
+        description = module.cache_lock_holder_description(lock_path)
+
+    expected = f"stale metadata: pid {dead_pid} (no longer running), last cmdline 'held-cache-lock'"
+    if description != expected:
+        raise AssertionError(description)
+
+
+def assert_cache_lock_recomputes_remaining_wait_after_holder_diagnostics() -> None:
+    module = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        lock_path = pathlib.Path(tmp) / "cache.lock"
+        policy = {
+            "target_namespace": "bolt-v2",
+            "local_lane_policy": {
+                "acquire_timeout_seconds": 1,
+                "heartbeat_seconds": 10,
+                "poll_interval_seconds": 0.5,
+            },
+        }
+        state = {"now": 0.0}
+        attempts: list[float] = []
+        sleeps: list[float] = []
+
+        def fake_monotonic() -> float:
+            return state["now"]
+
+        def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            state["now"] += seconds
+
+        def fake_flock(_fd: int, _mode: int) -> None:
+            attempts.append(state["now"])
+            raise OSError(module.errno.EAGAIN, "busy")
+
+        def slow_holder_description(_path: pathlib.Path) -> str:
+            state["now"] += 0.75
+            return "slow-holder"
+
+        original_cache_lock_path = module.cache_lock_path
+        original_flock = module.fcntl.flock
+        original_monotonic = module.time.monotonic
+        original_sleep = module.time.sleep
+        original_holder_description = module.cache_lock_holder_description
+        module.cache_lock_path = lambda _policy: lock_path
+        module.fcntl.flock = fake_flock
+        module.time.monotonic = fake_monotonic
+        module.time.sleep = fake_sleep
+        module.cache_lock_holder_description = slow_holder_description
+        try:
+            try:
+                with module.cache_lock(policy, exclusive=False):
+                    raise AssertionError("cache lock unexpectedly acquired")
+            except module.CacheLockTimeoutError:
+                pass
+        finally:
+            module.cache_lock_path = original_cache_lock_path
+            module.fcntl.flock = original_flock
+            module.time.monotonic = original_monotonic
+            module.time.sleep = original_sleep
+            module.cache_lock_holder_description = original_holder_description
+
+    if len(attempts) < 2:
+        raise AssertionError(attempts)
+    if attempts[1] > 1.000001:
+        raise AssertionError({"attempts": attempts, "sleeps": sleeps})
+
+
 def assert_cache_prune_apply_waits_for_managed_cargo_lock() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         repo = tmp_path / "repo"
         repo.mkdir()
         write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=1, soft_limit_bytes=10**12)
+        set_local_lane_timing(repo)
 
         root_base = tmp_path / "rust-root"
         target = root_base / "bolt-v2" / "target"
@@ -1352,7 +1452,7 @@ def assert_cache_prune_apply_waits_for_managed_cargo_lock() -> None:
             bin_dir / "cargo",
             """#!/usr/bin/env bash
 printf started > "$MARKER"
-sleep 1
+sleep 0.5
 test -d "$DEBUG_PARENT"
 """,
         )
@@ -1412,6 +1512,7 @@ def assert_cache_prune_apply_waits_for_managed_run_lock() -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
         write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=1, soft_limit_bytes=10**12)
+        set_local_lane_timing(repo)
         (repo / "justfile").write_text("", encoding="utf-8")
 
         root_base = tmp_path / "rust-root"
@@ -1431,7 +1532,7 @@ def assert_cache_prune_apply_waits_for_managed_run_lock() -> None:
             bin_dir / "just",
             """#!/usr/bin/env bash
 printf started > "$MARKER"
-sleep 1
+sleep 0.5
 test -d "$DEBUG_PARENT"
 """,
         )
@@ -3484,6 +3585,9 @@ def main() -> int:
     assert_cache_prune_ignores_pattern_mentions_in_arguments()
     assert_cache_prune_refuses_wrapped_active_processes_by_cwd()
     assert_cache_prune_ignores_bash_login_without_command_by_cwd()
+    assert_cache_prune_apply_times_out_for_wedged_cache_lock()
+    assert_cache_lock_holder_description_marks_dead_pid_metadata_stale()
+    assert_cache_lock_recomputes_remaining_wait_after_holder_diagnostics()
     assert_cache_prune_apply_waits_for_managed_cargo_lock()
     assert_cache_prune_apply_waits_for_managed_run_lock()
     assert_cache_prune_apply_checks_active_process_before_scan()

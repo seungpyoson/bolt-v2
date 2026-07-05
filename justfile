@@ -266,6 +266,24 @@ clippy: check-workspace require-rust-verification-owner
 test *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test {{args}}
 
+debug-test filter package="": check-workspace require-rust-verification-owner
+    #!/usr/bin/env bash
+    set -euo pipefail
+    filter="${DEBUG_TEST_FILTER:-}"
+    package="${DEBUG_TEST_PACKAGE:-}"
+    if [[ -z "$filter" ]]; then filter={{quote(filter)}}; fi
+    if [[ -z "$package" ]]; then package={{quote(package)}}; fi
+    if [[ -z "$filter" ]]; then echo "ERROR: debug-test filter must be non-empty" >&2; exit 2; fi
+    args=(-E "$filter")
+    if [[ -n "$package" ]]; then args=(-p "$package" "${args[@]}"); fi
+    if [[ -s "${NEXTEST_ARCHIVE_PATH:-}" ]]; then
+        extract_root="${RUNNER_TEMP:-/tmp}/debug-nextest-archive-extract"
+        mkdir -p "$extract_root"
+        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "$NEXTEST_ARCHIVE_PATH" --extract-to "$extract_root" --extract-overwrite --workspace-remap "{{repo_root}}" "${args[@]}"
+    else
+        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --locked "${args[@]}"
+    fi
+
 test-archive archive *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest archive --locked --archive-file "{{archive}}" {{args}}
 
@@ -333,99 +351,7 @@ source-fence-static: check-workspace require-rust-verification-owner
 
 [private]
 source-fence-static-inner: require-local-verification-gate check-workspace require-rust-verification-owner
-    python3 scripts/test_verify_bolt_v3_runtime_literals.py
-    python3 scripts/verify_bolt_v3_runtime_literals.py
-    python3 scripts/test_verify_bolt_v3_provider_leaks.py
-    python3 scripts/verify_bolt_v3_provider_leaks.py
-    python3 scripts/test_verify_bolt_v3_core_boundary.py
-    python3 scripts/verify_bolt_v3_core_boundary.py
-    python3 scripts/test_verify_bolt_v3_naming.py
-    python3 scripts/verify_bolt_v3_naming.py
-    python3 scripts/test_verify_bolt_v3_dependency_direction.py
-    python3 scripts/verify_bolt_v3_dependency_direction.py
-    python3 scripts/test_verify_doc_decoupling_residuals.py
-    python3 scripts/verify_doc_decoupling_residuals.py
-    python3 scripts/test_verify_bolt_v3_boundary_evidence.py
-    python3 scripts/verify_bolt_v3_boundary_evidence.py
-    python3 scripts/test_verify_bolt_v3_schema_current.py
-    python3 scripts/verify_bolt_v3_schema_current.py
-    python3 scripts/test_migrate_bolt_v3_decision_evidence_v13_to_v14.py
-    python3 scripts/test_migrate_bolt_v3_capital_admission_config.py
-    python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
-    python3 scripts/verify_bolt_v3_pure_rust_runtime.py
-    python3 scripts/test_verify_ra_single_engine_import_boundary.py
-    python3 scripts/verify_ra_single_engine_import_boundary.py
-    python3 scripts/test_verify_ra_notebook_read_only_boundary.py
-    python3 scripts/verify_ra_notebook_read_only_boundary.py
-    python3 scripts/test_verify_ra_point_in_time_leakage.py
-    python3 scripts/verify_ra_point_in_time_leakage.py
-    python3 scripts/test_verify_ra_thin_reader_helper.py
-    python3 scripts/verify_ra_thin_reader_helper.py
-    python3 scripts/test_verify_ra_gate0_catalog_persistence.py
-    python3 scripts/verify_ra_gate0_catalog_persistence.py
-    python3 scripts/test_verify_ra_bte_phase_prerequisite.py
-    python3 scripts/verify_ra_bte_phase_prerequisite.py
-    python3 scripts/test_verify_ra_leadlag_catalog_lift.py
-    python3 scripts/verify_ra_leadlag_catalog_lift.py
-    python3 scripts/test_verify_ra_sweep_orchestration.py
-    python3 scripts/verify_ra_sweep_orchestration.py
-    python3 scripts/test_verify_ra_cost_realism.py
-    python3 scripts/verify_ra_cost_realism.py
-    python3 scripts/test_verify_ra_domain_metrics.py
-    python3 scripts/verify_ra_domain_metrics.py
-    python3 scripts/test_verify_ra_findings_promotion.py
-    python3 scripts/verify_ra_findings_promotion.py
-    python3 scripts/test_verify_ra_artifact_index_commit.py
-    python3 scripts/verify_ra_artifact_index_commit.py
-    python3 scripts/test_verify_ra_run_pointer_index.py
-    python3 scripts/verify_ra_run_pointer_index.py
-    python3 scripts/test_verify_ra_bi_surface_and_feature_joins.py
-    python3 scripts/verify_ra_bi_surface_and_feature_joins.py
-    python3 scripts/test_verify_bte_022_pmxt_durable_source.py
-    python3 scripts/verify_bte_022_pmxt_durable_source.py
-    python3 scripts/test_verify_bte_022_pmxt_storage_proof.py
-    python3 scripts/verify_bte_022_pmxt_storage_proof.py
-    python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py
-    python3 scripts/verify_bte_022_pmxt_coverage_ledger.py
-    python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py
-    python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py
-    python3 scripts/test_verify_bte_022_binary_option_bar_catalog.py
-    python3 scripts/verify_bte_022_binary_option_bar_catalog.py
-    python3 scripts/test_verify_bte_022_pmxt_broad_backfill_efficiency.py
-    python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py
-    python3 scripts/test_verify_bte_test_topology.py
-    python3 scripts/verify_bte_test_topology.py
-    python3 scripts/test_verify_dashboard_read_only_contract.py
-    python3 scripts/verify_dashboard_read_only_contract.py
-    python3 scripts/test_verify_fail_closed_contracts.py
-    python3 scripts/verify_fail_closed_contracts.py
-    python3 scripts/test_verify_bolt_v3_poison_lock_fence.py
-    python3 scripts/verify_bolt_v3_poison_lock_fence.py
-    python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
-    python3 scripts/verify_bolt_v3_legacy_default_fence.py
-    python3 scripts/test_verify_probability_typed_pilot.py
-    python3 scripts/verify_probability_typed_pilot.py
-    python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
-    python3 scripts/verify_bolt_v3_strategy_policy_fence.py
-    python3 scripts/test_verify_outcome_group_nt_reuse.py
-    python3 scripts/verify_outcome_group_nt_reuse.py
-    python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
-    python3 scripts/verify_bolt_v3_no_exit_market_command.py
-    python3 scripts/test_verify_bolt_v3_usable_mu_sole_mint.py
-    python3 scripts/verify_bolt_v3_usable_mu_sole_mint.py
-    python3 scripts/test_verify_bolt_v3_no_venue_name_branch.py
-    python3 scripts/verify_bolt_v3_no_venue_name_branch.py
-    python3 scripts/test_verify_bolt_v3_requote_construction.py
-    python3 scripts/verify_bolt_v3_requote_construction.py
-    python3 scripts/test_verify_bolt_v3_market_family_coupling.py
-    python3 scripts/verify_bolt_v3_market_family_coupling.py
-    python3 scripts/test_verify_runtime_capture_yaml.py
-    python3 scripts/test_local_verification_gate.py
-    python3 scripts/test_lane_governor.py
-    python3 scripts/test_verify_lane_governance.py
-    python3 scripts/verify_lane_governance.py
-    python3 scripts/test_verify_install_unit_generated.py
-    python3 scripts/verify_install_unit_generated.py
+    python3 scripts/run_fences.py
 
 source-fence: source-fence-static
     git fetch -q origin main 2>/dev/null
@@ -500,85 +426,12 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
     policy_json="$(python3 "{{rust_verification_owner}}" validate-policy --repo "{{repo_root}}")"
     toml_target="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_target"])')"
     toml_profile="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_profile"])')"
-    if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
-        failed=1
+    if [ -n "${BOLT_CI_LINT_WORKFLOW_WORKERS:-}" ]; then
+        set -- --workers "$BOLT_CI_LINT_WORKFLOW_WORKERS"
+    else
+        set --
     fi
-    if ! python3 scripts/test_ci_test_manifest.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_cancel_obsolete_dispatch_runs.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_config_validators.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_run_rust_probe.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_rust_probe_wrapper.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_ci_provenance.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_ci_input_sets.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_rust_test_targets.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_merge_readiness.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_merge_queue_preflight.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_merge_queue_operator.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_coverage_enforcer.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_nextest_fingerprint.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_root_bin_sidecars.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_ci_storage_audit.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_ci_storage_tripwire.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_find_same_sha_main_evidence.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_ubicloud_runner_minutes.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_verify_ci_path_filters.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_rust_verification.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_verify_remote.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_command_understanding.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_rust_verification_decoupling.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_rust_verification_cache_retention.py; then
-        failed=1
-    fi
-    if ! python3 scripts/verify_ci_path_filters.py; then
-        failed=1
-    fi
-    if ! python3 scripts/verify_ci_workflow_hygiene.py; then
+    if ! python3 scripts/run_ci_lint_suites.py "$@"; then
         failed=1
     fi
 

@@ -38,6 +38,7 @@ Repo governance for agents; higher-level standing instructions apply.
 ## Evidence-Driven Verification
 
 - TDD is allowed but not mandatory unless the user, active spec, or risk requires it; `.specify/memory/constitution.md` mirrors this principle.
+- Agents do not wait on CI: push, report the head SHA, detach — verifying results at head belongs to the reviewer.
 - Every claim must map to evidence: tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit user-approved risk acceptance that does not violate a MUST rule. Every plan or task list must name the evidence for each changed requirement or risk: production behavior needs behavior/integration/remote-CI/live artifacts (or user-approved risk acceptance that does not violate a MUST rule); trading, admission, secrets, and config also need fail-closed evidence for invalid or missing inputs plus exact-head proof before any live operation; refactors need existing tests/static checks/source-fence or documented structural-equivalence review proving behavior is unchanged; documentation, prompt, template, and policy changes require targeted text/static checks plus internal adversarial review before completion claims.
 - External review: only after local findings are resolved and exact-head CI or the user-approved equivalent is green.
 

@@ -68,6 +68,25 @@ fn trade_transport_config_prunes_unreferenced_hyperliquid_execution_clients_from
 }
 
 #[test]
+fn trade_transport_config_keeps_capital_admission_execution_client_without_strategy() {
+    let mut loaded = fixture_loaded_config();
+    loaded.strategies.clear();
+    loaded
+        .root
+        .risk
+        .capital_pools
+        .as_mut()
+        .expect("fixture should configure capital pools")[0]
+        .enforce_submit_admission = true;
+
+    let scoped =
+        trade_transport_loaded_config(&loaded, RealizedVolatilityTransportScope::Subscribed)
+            .expect("capital admission venue truth requires the venue execution client");
+
+    assert!(scoped.root.clients.contains_key("polymarket_main"));
+}
+
+#[test]
 fn trade_transport_config_rejects_multiple_referenced_execution_clients_for_same_venue() {
     let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
         "tests/fixtures/bolt_v3/root.toml",

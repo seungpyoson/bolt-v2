@@ -11,7 +11,7 @@ use nautilus_common::msgbus::{
 use nautilus_model::{
     enums::OrderSide,
     events::{AccountState, OrderEventAny, OrderFilled, PortfolioSnapshot, PositionEvent},
-    identifiers::AccountId,
+    identifiers::{AccountId, InstrumentId},
 };
 use rust_decimal::Decimal;
 
@@ -22,10 +22,15 @@ use crate::{
         VenueSpendabilitySnapshot,
     },
     bolt_v3_observed_dedupe::prune_observed_dedupe_entries,
+    bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id,
     bolt_v3_submit_admission::{
         BoltV3CompiledOrderSide, BoltV3SubmitAdmissionState,
         BoltV3SubmitCapitalAdmissionFillUpdate, BoltV3SubmitCapitalAdmissionLifecycleDecision,
         BoltV3SubmitCapitalAdmissionNtComponents,
+    },
+    bolt_v3_venue_truth::{
+        VenueTruthDivergence, VenueTruthOrderEvent, VenueTruthOrderEventMapper,
+        VenueTruthReconciler, VenueTruthSnapshot,
     },
     nt_runtime_capture::{
         account_states_pattern, order_events_pattern, portfolio_snapshots_pattern,
@@ -36,7 +41,8 @@ use crate::{
 const CAPITAL_ADMISSION_ORDER_TERMINAL_SOURCE: &str = stringify!(nt_order_terminal_event);
 const NT_ACCOUNT_STATE_PORTFOLIO_SOURCE: &str = stringify!(nt_account_state);
 const NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE: &str = "nt_account_cache";
-const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";
+const NT_PORTFOLIO_SNAPSHOT_SOURCE: &str = "nt_portfolio_snapshot";
+pub use crate::bolt_v3_capital_admission_state::POLYMARKET_VENUE_TRUTH_REST_SOURCE;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct PositionFillTradeKey {
@@ -63,6 +69,8 @@ pub struct CapitalAdmissionRuntimeFeed {
     seen_known_position_fill_trade_ids: BTreeMap<PositionFillTradeKey, u64>,
     seen_external_position_fill_trade_ids: BTreeMap<PositionFillTradeKey, u64>,
     external_position_fill_trade_id_retention_exhausted: bool,
+    venue_truth_reconciler: VenueTruthReconciler,
+    venue_truth_order_event_mapper: Option<Arc<dyn VenueTruthOrderEventMapper>>,
 }
 
 pub struct CapitalAdmissionRuntimeFeedSubscription {
@@ -161,6 +169,15 @@ impl CapitalAdmissionRuntimeFeed {
         config: CapitalAdmissionRuntimeFeedConfig,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
     ) -> Self {
+        Self::new_with_venue_truth_order_event_mapper(config, submit_admission, None)
+    }
+
+    #[must_use]
+    pub fn new_with_venue_truth_order_event_mapper(
+        config: CapitalAdmissionRuntimeFeedConfig,
+        submit_admission: Arc<BoltV3SubmitAdmissionState>,
+        venue_truth_order_event_mapper: Option<Arc<dyn VenueTruthOrderEventMapper>>,
+    ) -> Self {
         let component_builder = CapitalAdmissionRuntimeComponentBuilder::new(&config);
         Self {
             config,
@@ -170,6 +187,8 @@ impl CapitalAdmissionRuntimeFeed {
             seen_known_position_fill_trade_ids: BTreeMap::new(),
             seen_external_position_fill_trade_ids: BTreeMap::new(),
             external_position_fill_trade_id_retention_exhausted: false,
+            venue_truth_reconciler: VenueTruthReconciler::new(),
+            venue_truth_order_event_mapper,
         }
     }
 
@@ -194,11 +213,6 @@ impl CapitalAdmissionRuntimeFeed {
             total_equity,
             account_state.ts_event.as_u64(),
         );
-        self.component_builder.record_nt_account_spendability(
-            &self.config,
-            free_collateral,
-            account_state.ts_event.as_u64(),
-        );
         self.publish_components_if_ready()
     }
 
@@ -214,15 +228,22 @@ impl CapitalAdmissionRuntimeFeed {
             .iter()
             .find(|money| money.currency.code.as_str() == self.config.collateral_currency)
             .map(|money| money.as_decimal())?;
-        self.component_builder.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
-            observed_at_ns: portfolio_snapshot.ts_event.as_u64(),
-            venue_id: self.config.venue_id.clone(),
-            account_id: self.config.account_id.to_string(),
-            collateral_currency: self.config.collateral_currency.clone(),
-            free_collateral: Decimal::ZERO,
-            total_equity,
-        });
+        if !self
+            .component_builder
+            .latest_portfolio
+            .as_ref()
+            .is_some_and(|current| source_is_accepted_venue_truth(&current.source))
+        {
+            self.component_builder.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
+                source: NT_PORTFOLIO_SNAPSHOT_SOURCE.to_string(),
+                observed_at_ns: portfolio_snapshot.ts_event.as_u64(),
+                venue_id: self.config.venue_id.clone(),
+                account_id: self.config.account_id.to_string(),
+                collateral_currency: self.config.collateral_currency.clone(),
+                free_collateral: Decimal::ZERO,
+                total_equity,
+            });
+        }
         self.publish_components_if_ready()
     }
 
@@ -233,6 +254,26 @@ impl CapitalAdmissionRuntimeFeed {
         self.component_builder
             .record_venue_spendability(&self.config, snapshot);
         self.publish_components_if_ready()
+    }
+
+    pub fn on_venue_truth_snapshot(
+        &mut self,
+        snapshot: VenueTruthSnapshot,
+    ) -> Result<Option<BoltV3SubmitCapitalAdmissionNtComponents>, Box<VenueTruthDivergence>> {
+        let results = self
+            .venue_truth_reconciler
+            .record_snapshot_completion(snapshot)?;
+        let mut published = None;
+        for result in results {
+            if let Some(accepted_snapshot) = result.accepted_snapshot {
+                self.component_builder
+                    .record_accepted_venue_truth_snapshot(&self.config, &accepted_snapshot);
+                published = self.publish_components_if_ready_after_accepted_venue_truth_capture(
+                    accepted_snapshot.captured_at.as_u64(),
+                );
+            }
+        }
+        Ok(published)
     }
 
     pub fn on_position_event(&mut self, _event: &PositionEvent) -> Option<()> {
@@ -316,7 +357,15 @@ impl CapitalAdmissionRuntimeFeed {
         &mut self,
         event: &OrderEventAny,
     ) -> Option<BoltV3SubmitCapitalAdmissionLifecycleDecision> {
+        if let Some(venue_truth_order_event) = self.venue_truth_order_event_from_nt(event) {
+            self.venue_truth_reconciler
+                .record_order_event(venue_truth_order_event);
+        }
         if let OrderEventAny::Filled(fill) = event {
+            if fill.account_id == self.config.account_id {
+                self.submit_admission
+                    .record_kill_switch_forced_reduction_terminal(fill.client_order_id.as_str());
+            }
             return self.on_fill_event(fill);
         }
         if is_live_order_event(event) {
@@ -350,6 +399,8 @@ impl CapitalAdmissionRuntimeFeed {
         }
 
         let observed_at_ns = event.ts_event().as_u64();
+        self.submit_admission
+            .record_kill_switch_forced_reduction_terminal(event.client_order_id().as_str());
         self.component_builder.record_terminal_order_event(
             event.client_order_id().to_string(),
             observed_at_ns,
@@ -461,6 +512,22 @@ impl CapitalAdmissionRuntimeFeed {
         Some(decision)
     }
 
+    fn venue_truth_order_event_from_nt(
+        &self,
+        event: &OrderEventAny,
+    ) -> Option<VenueTruthOrderEvent> {
+        if event.instrument_id().venue.as_str() != self.config.venue_id
+            || event
+                .account_id()
+                .is_some_and(|account_id| account_id != self.config.account_id)
+        {
+            return None;
+        }
+        self.venue_truth_order_event_mapper
+            .as_ref()
+            .and_then(|mapper| mapper.map_order_event(event))
+    }
+
     #[must_use]
     pub const fn latest_terminal_observed_at_ns(&self) -> Option<u64> {
         self.latest_terminal_observed_at_ns
@@ -542,6 +609,24 @@ impl CapitalAdmissionRuntimeFeed {
             .update_capital_admission_nt_components(components.clone());
         Some(components)
     }
+
+    fn publish_components_if_ready_after_accepted_venue_truth_capture(
+        &mut self,
+        accepted_capture_observed_at_ns: u64,
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
+        let submit_admission = Arc::clone(&self.submit_admission);
+        self.component_builder
+            .refresh_live_order_attribution(|client_order_id| {
+                submit_admission.capital_admission_has_live_reservation(client_order_id)
+            });
+        let components = self.component_builder.components(&self.config)?;
+        self.submit_admission
+            .update_capital_admission_nt_components_after_accepted_venue_truth_capture(
+                components.clone(),
+                accepted_capture_observed_at_ns,
+            );
+        Some(components)
+    }
 }
 
 impl CapitalAdmissionRuntimeComponentBuilder {
@@ -599,18 +684,22 @@ impl CapitalAdmissionRuntimeComponentBuilder {
                 (client_order_id.clone(), attributed)
             })
             .collect();
-        self.order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
-            source: "nt_open_order_cache".to_string(),
-            observed_at_ns,
-            open_order_count: self.live_order_attribution.len(),
-            all_open_orders_attributed: self.all_live_orders_attributed(),
-        };
+        if !source_is_accepted_venue_truth(&self.order_lifecycle.source) {
+            self.order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
+                source: "nt_open_order_cache".to_string(),
+                observed_at_ns,
+                open_order_count: self.live_order_attribution.len(),
+                all_open_orders_attributed: self.all_live_orders_attributed(),
+            };
+        }
         match &mut self.product_state {
             ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
-                snapshot.source = "nt_position_cache".to_string();
-                snapshot.observed_at_ns = observed_at_ns;
-                snapshot.yes_position = yes_position;
-                snapshot.no_position = no_position;
+                if !source_is_accepted_venue_truth(&snapshot.source) {
+                    snapshot.source = "nt_position_cache".to_string();
+                    snapshot.observed_at_ns = observed_at_ns;
+                    snapshot.yes_position = yes_position;
+                    snapshot.no_position = no_position;
+                }
             }
         }
     }
@@ -622,6 +711,13 @@ impl CapitalAdmissionRuntimeComponentBuilder {
         total_equity: Decimal,
         observed_at_ns: u64,
     ) {
+        if self
+            .latest_portfolio
+            .as_ref()
+            .is_some_and(|current| source_is_accepted_venue_truth(&current.source))
+        {
+            return;
+        }
         self.latest_account_free_collateral = Some((free_collateral, observed_at_ns));
         self.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
             source: NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE.to_string(),
@@ -632,7 +728,6 @@ impl CapitalAdmissionRuntimeComponentBuilder {
             free_collateral,
             total_equity,
         });
-        self.record_nt_account_spendability(config, free_collateral, observed_at_ns);
     }
 
     fn record_account_state_portfolio(
@@ -686,31 +781,46 @@ impl CapitalAdmissionRuntimeComponentBuilder {
         self.latest_venue_spendability = Some(snapshot);
     }
 
-    fn record_nt_account_spendability(
+    fn record_accepted_venue_truth_snapshot(
         &mut self,
         config: &CapitalAdmissionRuntimeFeedConfig,
-        free_collateral: Decimal,
-        observed_at_ns: u64,
+        snapshot: &VenueTruthSnapshot,
     ) {
-        match self.latest_venue_spendability.as_mut() {
-            Some(current) if current.source != NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE => {}
-            Some(current) => {
-                current.observed_at_ns = observed_at_ns;
-                current.spendable_collateral = free_collateral;
-                current.collateral_allowance = free_collateral;
-            }
-            None => {
-                self.latest_venue_spendability = Some(VenueSpendabilitySnapshot {
-                    source: NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE.to_string(),
-                    observed_at_ns,
-                    venue_id: config.venue_id.clone(),
-                    account_id: config.account_id.to_string(),
-                    collateral_currency: config.collateral_currency.clone(),
-                    spendable_collateral: free_collateral,
-                    collateral_allowance: free_collateral,
-                });
-            }
+        if snapshot.account_id != config.account_id {
+            return;
         }
+        let observed_at_ns = snapshot.captured_at.as_u64();
+        let collateral_balance = snapshot.collateral_balance.as_decimal();
+        let collateral_allowance = snapshot.collateral_allowance.as_decimal();
+        self.record_venue_spendability(
+            config,
+            VenueSpendabilitySnapshot {
+                source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
+                observed_at_ns,
+                venue_id: config.venue_id.clone(),
+                account_id: snapshot.account_id.to_string(),
+                collateral_currency: config.collateral_currency.clone(),
+                spendable_collateral: collateral_balance,
+                collateral_allowance,
+            },
+        );
+        self.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
+            source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
+            observed_at_ns,
+            venue_id: config.venue_id.clone(),
+            account_id: snapshot.account_id.to_string(),
+            collateral_currency: config.collateral_currency.clone(),
+            free_collateral: collateral_balance,
+            total_equity: collateral_balance,
+        });
+        self.live_order_attribution.clear();
+        self.order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
+            source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
+            observed_at_ns,
+            open_order_count: snapshot.open_orders.len(),
+            all_open_orders_attributed: true,
+        };
+        self.record_accepted_venue_truth_product_state(snapshot, collateral_allowance);
     }
 
     fn record_live_order_event(
@@ -819,6 +929,26 @@ impl CapitalAdmissionRuntimeComponentBuilder {
         snapshot.observed_at_ns = observed_at_ns;
     }
 
+    fn record_accepted_venue_truth_product_state(
+        &mut self,
+        snapshot: &VenueTruthSnapshot,
+        collateral_allowance: Decimal,
+    ) {
+        let ProductAdmissionSnapshot::PredictionMarketBinary(product) = &mut self.product_state;
+        product.source = POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string();
+        product.observed_at_ns = snapshot.captured_at.as_u64();
+        product.collateral_allowance = collateral_allowance;
+        product.yes_position = venue_truth_position_for_instrument(
+            &snapshot.positions_by_product_id,
+            &product.yes_instrument_id,
+        );
+        product.no_position = venue_truth_position_for_instrument(
+            &snapshot.positions_by_product_id,
+            &product.no_instrument_id,
+        );
+        product.conditional_token_allowance = product.yes_position + product.no_position;
+    }
+
     fn product_observed_at_ns(&self) -> Option<u64> {
         match &self.product_state {
             ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
@@ -831,26 +961,26 @@ impl CapitalAdmissionRuntimeComponentBuilder {
         &self,
         _config: &CapitalAdmissionRuntimeFeedConfig,
     ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
-        let (free_collateral, account_observed_at_ns) = self.latest_account_free_collateral?;
         let mut portfolio = self.latest_portfolio.clone()?;
         let venue_spendability = self.latest_venue_spendability.clone()?;
-        portfolio.free_collateral = free_collateral;
+        if let Some((free_collateral, account_observed_at_ns)) = self.latest_account_free_collateral
+            && portfolio_accepts_nt_free_collateral(&portfolio.source)
+        {
+            portfolio.free_collateral = free_collateral;
+            portfolio.observed_at_ns = portfolio.observed_at_ns.max(account_observed_at_ns);
+        }
         let mut product_state = self.product_state.clone();
         let product_observed_at_ns = match &mut product_state {
             ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
-                // NT free collateral, venue spendability, and transfer allowance are independent constraints.
-                snapshot.collateral_allowance = free_collateral
-                    .min(venue_spendability.spendable_collateral)
-                    .min(venue_spendability.collateral_allowance);
+                snapshot.collateral_allowance = venue_spendability.collateral_allowance;
                 snapshot.observed_at_ns = snapshot
                     .observed_at_ns
-                    .max(account_observed_at_ns)
                     .max(venue_spendability.observed_at_ns);
                 snapshot.observed_at_ns
             }
         };
-        let observed_at_ns = account_observed_at_ns
-            .max(portfolio.observed_at_ns)
+        let observed_at_ns = portfolio
+            .observed_at_ns
             .max(venue_spendability.observed_at_ns)
             .max(self.order_lifecycle.observed_at_ns)
             .max(product_observed_at_ns);
@@ -864,6 +994,28 @@ impl CapitalAdmissionRuntimeComponentBuilder {
             loss_snapshot: None,
         })
     }
+}
+
+fn portfolio_accepts_nt_free_collateral(source: &str) -> bool {
+    matches!(
+        source,
+        NT_ACCOUNT_STATE_PORTFOLIO_SOURCE
+            | NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE
+            | NT_PORTFOLIO_SNAPSHOT_SOURCE
+    )
+}
+
+fn source_is_accepted_venue_truth(source: &str) -> bool {
+    source == POLYMARKET_VENUE_TRUTH_REST_SOURCE
+}
+
+fn venue_truth_position_for_instrument(
+    positions_by_product_id: &BTreeMap<String, Decimal>,
+    instrument_id: &str,
+) -> Decimal {
+    prediction_market_product_id_from_instrument_id(&InstrumentId::from(instrument_id))
+        .and_then(|product_id| positions_by_product_id.get(&product_id).copied())
+        .unwrap_or(Decimal::ZERO)
 }
 
 fn is_terminal_order_event(event: &OrderEventAny) -> bool {

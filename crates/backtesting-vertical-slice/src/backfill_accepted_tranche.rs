@@ -192,7 +192,7 @@ pub fn write_backfill_accepted_tranche_manifest_from_spec_file(
                 error: error.to_string(),
             }
         })?;
-    let report_hash = source_proof_scope_report_hash(&report)?;
+    let report_hash = format!("{:x}", Sha256::digest(&report_bytes));
     let manifest = evaluate_backfill_accepted_tranche_report(spec.tranche_id, &report, report_hash);
     write_backfill_accepted_tranche_manifest(&spec.output_dir, &manifest)
 }
@@ -227,7 +227,7 @@ pub fn write_backfill_accepted_tranche_manifest(
     }
     Ok(BackfillAcceptedTrancheArtifact {
         path,
-        content_hash: content_hash(manifest)?,
+        content_hash: format!("{:x}", Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
     })
 }
@@ -309,26 +309,10 @@ fn evaluate_backfill_accepted_tranche_report(
     }
 }
 
-fn source_proof_scope_report_hash(
-    report: &BackfillSourceProofScopeReport,
-) -> Result<String, BackfillAcceptedTrancheError> {
-    let bytes = serde_json::to_vec(report)
-        .map_err(|error| BackfillAcceptedTrancheError::Serialize(error.to_string()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
-}
-
 fn default_source_usage_scope() -> SourceProofUsageScope {
     SourceProofUsageScope::CanonicalBackfillInput
 }
 
 fn is_canonical_backfill_input(value: &SourceProofUsageScope) -> bool {
     *value == SourceProofUsageScope::CanonicalBackfillInput
-}
-
-fn content_hash(
-    manifest: &BackfillAcceptedTrancheManifest,
-) -> Result<String, BackfillAcceptedTrancheError> {
-    let bytes = serde_json::to_vec(manifest)
-        .map_err(|error| BackfillAcceptedTrancheError::Serialize(error.to_string()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }

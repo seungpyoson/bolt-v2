@@ -29,6 +29,7 @@ CHECK_SUITE_ID = 65233803543
 NEXTEST_FINGERPRINT = f"nextest-archive-v2-Linux-X64-test-profile-shards-4-{'a' * 64}"
 NEXTEST_FINGERPRINT_ARTIFACT = f"nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-{'a' * 64}"
 CAPTURE_PROVENANCE_CONFIG_DIGEST = "19260091d9871d34cf51fd2fa797ffbb12aa420b5aa059d0829dd7736d409993"
+LOCAL_TCP_PERMISSION_TIMEOUT_SECONDS = 5
 
 CONFIG_TOML = """
 schema_version = 1
@@ -466,7 +467,11 @@ fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
 """
 
 
-def load_script():
+_SCRIPT_MODULE = None
+
+
+# load_script() returns a cached module. Any test that mutates module attributes MUST restore them in try/finally, or use fresh_load_script() for an isolated copy.
+def fresh_load_script():
     if not SCRIPT_PATH.exists():
         raise AssertionError(f"missing script: {SCRIPT_PATH}")
     spec = importlib.util.spec_from_file_location("ci_provenance", SCRIPT_PATH)
@@ -476,6 +481,20 @@ def load_script():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def load_script():
+    global _SCRIPT_MODULE
+    if _SCRIPT_MODULE is None:
+        _SCRIPT_MODULE = fresh_load_script()
+    return _SCRIPT_MODULE
+
+
+def assert_load_script_reuses_module() -> None:
+    first = load_script()
+    second = load_script()
+    if first is not second:
+        raise AssertionError("load_script must cache ci_provenance module")
 
 
 def write_config(
@@ -1131,6 +1150,32 @@ def assert_fingerprint_reuse_rejects_failed_cancelled_and_wrong_workflow_runs() 
             result = resolve_fingerprint_with_fake(module, config, FakeGitHub(runs_pages=[[run]]))
             if result.reuse_found is not False:
                 raise AssertionError((label, result))
+
+
+def assert_debug_test_workflow_is_not_fingerprint_reuse_source() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = record_with_fingerprint(module, config)
+        debug_run = run_payload(path=".github/workflows/debug-test.yml", event="workflow_dispatch", head_branch="feature/ws6")
+        fake = FakeGitHub(
+            runs_pages=[[debug_run]],
+            artifacts_by_run_id={
+                RUN_ID: {
+                    "artifacts": [
+                        fingerprint_artifact(id=11),
+                        provenance_artifact(id=12),
+                    ]
+                }
+            },
+            records_by_artifact_id={12: record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(f"debug-test workflow must not be a fingerprint reuse source: {result}")
+        if len(fake.queries) != 1 or fake.queries[0][0] != "actions/workflows/ci.yml/runs":
+            raise AssertionError(f"debug-test run must be excluded before artifact lookup, got: {fake.queries}")
 
 
 def assert_fingerprint_reuse_rejects_ambiguous_and_expired_artifacts() -> None:
@@ -3438,6 +3483,9 @@ def assert_github_api_bytes_strips_authorization_on_cross_host_redirect() -> Non
     module = load_script()
     seen_headers: queue.Queue[dict[str, str]] = queue.Queue()
 
+    class LocalTCPServer(socketserver.TCPServer):
+        allow_reuse_address = True
+
     class ArtifactHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             seen_headers.put(dict(self.headers))
@@ -3459,25 +3507,47 @@ def assert_github_api_bytes_strips_authorization_on_cross_host_redirect() -> Non
         def log_message(self, _format: str, *args: object) -> None:
             pass
 
-    artifact_server = socketserver.TCPServer(("127.0.0.1", 0), ArtifactHandler)
-    redirect_server = socketserver.TCPServer(("127.0.0.1", 0), RedirectHandler)
-    artifact_thread = threading.Thread(target=artifact_server.serve_forever, daemon=True)
-    redirect_thread = threading.Thread(target=redirect_server.serve_forever, daemon=True)
+    def local_tcp_server(handler):
+        try:
+            server = LocalTCPServer(("127.0.0.1", 0), handler)
+        except OSError as exc:
+            raise AssertionError(f"requires local TCP permission: {exc}") from exc
+        server.timeout = LOCAL_TCP_PERMISSION_TIMEOUT_SECONDS
+        return server
+
+    original_open = module.open_github_api_request
+
+    def open_with_short_timeout(request, *, timeout):
+        del timeout
+        return original_open(request, timeout=LOCAL_TCP_PERMISSION_TIMEOUT_SECONDS)
+
+    servers = []
+    started_servers = []
+    module.open_github_api_request = open_with_short_timeout
     try:
+        artifact_server = local_tcp_server(ArtifactHandler)
+        servers.append(artifact_server)
+        redirect_server = local_tcp_server(RedirectHandler)
+        servers.append(redirect_server)
+        artifact_thread = threading.Thread(target=artifact_server.serve_forever, daemon=True)
+        redirect_thread = threading.Thread(target=redirect_server.serve_forever, daemon=True)
         artifact_thread.start()
+        started_servers.append(artifact_server)
         redirect_thread.start()
+        started_servers.append(redirect_server)
         RedirectHandler.redirect_target = f"http://127.0.0.1:{artifact_server.server_address[1]}/artifact"
         start_url = f"http://localhost:{redirect_server.server_address[1]}/artifact"
         payload = module.github_api_bytes("owner/repo", "secret-token", start_url)
     finally:
-        redirect_server.shutdown()
-        artifact_server.shutdown()
-        redirect_server.server_close()
-        artifact_server.server_close()
+        module.open_github_api_request = original_open
+        for server in reversed(started_servers):
+            server.shutdown()
+        for server in reversed(servers):
+            server.server_close()
 
     if payload != b"artifact":
         raise AssertionError(f"unexpected payload: {payload!r}")
-    redirected_headers = seen_headers.get(timeout=5)
+    redirected_headers = seen_headers.get(timeout=LOCAL_TCP_PERMISSION_TIMEOUT_SECONDS)
     if "Authorization" in redirected_headers:
         raise AssertionError(f"redirected request leaked authorization: {redirected_headers}")
     if "Accept" in redirected_headers:
@@ -5132,6 +5202,7 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
 
 
 def main() -> int:
+    assert_load_script_reuses_module()
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
     assert_positive_int_config_rejects_booleans()
@@ -5145,6 +5216,7 @@ def main() -> int:
     assert_fingerprint_reuse_prior_green_returns_reuse()
     assert_fingerprint_reuse_no_prior_run_returns_no_reuse()
     assert_fingerprint_reuse_rejects_failed_cancelled_and_wrong_workflow_runs()
+    assert_debug_test_workflow_is_not_fingerprint_reuse_source()
     assert_fingerprint_reuse_rejects_ambiguous_and_expired_artifacts()
     assert_fingerprint_reuse_requires_exact_fingerprint_components()
     assert_fingerprint_reuse_rejects_source_record_workflow_digest_mismatch()

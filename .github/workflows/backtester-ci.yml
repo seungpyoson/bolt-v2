@@ -450,11 +450,17 @@ jobs:
               echo "cache-hit=false"
               echo "restore-bytes=0"
               echo "restore-seconds=$elapsed"
+              echo "restore-result=miss"
+              echo "restore-reason=head-miss-or-metadata-unavailable"
             } >> "$GITHUB_OUTPUT"
             echo "::notice::BVS nextest archive S3 cache miss or metadata unavailable for digest ${DIGEST}; building locally"
             exit 0
           fi
           if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            {
+              echo "restore-result=error"
+              echo "restore-reason=digest-mismatch"
+            } >> "$GITHUB_OUTPUT"
             echo "::error::BVS nextest archive S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
             exit 1
           fi
@@ -465,6 +471,8 @@ jobs:
               echo "cache-hit=true"
               echo "restore-bytes=$bytes"
               echo "restore-seconds=$elapsed"
+              echo "restore-result=hit"
+              echo "restore-reason=downloaded"
             } >> "$GITHUB_OUTPUT"
             {
               echo "BVS nextest archive S3 restore: hit"
@@ -478,6 +486,8 @@ jobs:
               echo "cache-hit=false"
               echo "restore-bytes=0"
               echo "restore-seconds=$elapsed"
+              echo "restore-result=miss"
+              echo "restore-reason=copy-failed-or-unavailable"
             } >> "$GITHUB_OUTPUT"
             echo "::notice::BVS nextest archive S3 cache miss or restore unavailable for digest ${DIGEST}; building locally"
           fi
@@ -503,11 +513,17 @@ jobs:
               echo "cache-hit=false"
               echo "restore-bytes=0"
               echo "restore-seconds=$elapsed"
+              echo "restore-result=miss"
+              echo "restore-reason=head-miss-or-metadata-unavailable"
             } >> "$GITHUB_OUTPUT"
             echo "::notice::BVS binary sidecar S3 cache miss or metadata unavailable for digest ${DIGEST}; rebuilding sidecars"
             exit 0
           fi
           if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            {
+              echo "restore-result=error"
+              echo "restore-reason=digest-mismatch"
+            } >> "$GITHUB_OUTPUT"
             echo "::error::BVS binary sidecar S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
             exit 1
           fi
@@ -518,6 +534,8 @@ jobs:
               echo "cache-hit=true"
               echo "restore-bytes=$bytes"
               echo "restore-seconds=$elapsed"
+              echo "restore-result=hit"
+              echo "restore-reason=downloaded"
             } >> "$GITHUB_OUTPUT"
             {
               echo "BVS binary sidecars S3 restore: hit"
@@ -531,10 +549,53 @@ jobs:
               echo "cache-hit=false"
               echo "restore-bytes=0"
               echo "restore-seconds=$elapsed"
+              echo "restore-result=miss"
+              echo "restore-reason=copy-failed-or-unavailable"
             } >> "$GITHUB_OUTPUT"
             echo "::notice::BVS binary sidecar S3 cache miss or restore unavailable for digest ${DIGEST}; rebuilding sidecars"
           fi
           exit 0
+
+      - name: Summarize BVS nextest archive S3 state
+        if: always()
+        shell: bash
+        env:
+          S3_ELIGIBLE: ${{ steps.bvs-nextest-artifact-cache.outputs.eligible || 'false' }}
+          S3_CACHE_MODE: ${{ steps.bvs-nextest-artifact-cache.outputs.cache_mode || 'none' }}
+          S3_AWS_OUTCOME: ${{ steps.bvs-nextest-artifact-cache-aws.outcome }}
+          BVS_NEXTEST_RESTORE_OUTCOME: ${{ steps.bvs-nextest-archive-cache.outcome }}
+          BVS_NEXTEST_RESTORE_HIT: ${{ steps.bvs-nextest-archive-cache.outputs.cache-hit || '' }}
+          BVS_NEXTEST_RESTORE_RESULT: ${{ steps.bvs-nextest-archive-cache.outputs.restore-result || '' }}
+          BVS_NEXTEST_RESTORE_REASON: ${{ steps.bvs-nextest-archive-cache.outputs.restore-reason || '' }}
+          BVS_SIDECAR_RESTORE_OUTCOME: ${{ steps.bvs-bin-sidecars-cache.outcome }}
+          BVS_SIDECAR_RESTORE_HIT: ${{ steps.bvs-bin-sidecars-cache.outputs.cache-hit || '' }}
+          BVS_SIDECAR_RESTORE_RESULT: ${{ steps.bvs-bin-sidecars-cache.outputs.restore-result || '' }}
+          BVS_SIDECAR_RESTORE_REASON: ${{ steps.bvs-bin-sidecars-cache.outputs.restore-reason || '' }}
+        run: |
+          restore_state() {
+            local eligible="$1" aws="$2" outcome="$3" result="$4" hit="$5"
+            if [[ "$eligible" != "true" ]]; then echo "ineligible"; return; fi
+            if [[ "$aws" != "success" ]]; then echo "skipped"; return; fi
+            if [[ "$outcome" == "failure" || "$result" == "error" ]]; then echo "error"; return; fi
+            if [[ "$result" == "hit" || "$hit" == "true" ]]; then echo "hit"; return; fi
+            if [[ "$result" == "miss" || "$hit" == "false" ]]; then echo "miss"; return; fi
+            echo "skipped"
+          }
+          restore_reason() {
+            local eligible="$1" aws="$2" outcome="$3" reason="$4"
+            if [[ "$eligible" != "true" ]]; then echo "eligible=false"; return; fi
+            if [[ "$aws" != "success" ]]; then echo "aws=${aws:-skipped}"; return; fi
+            if [[ -n "$reason" ]]; then echo "$reason"; return; fi
+            echo "outcome=${outcome:-skipped}"
+          }
+          bvs_nextest_restore="$(restore_state "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$BVS_NEXTEST_RESTORE_OUTCOME" "$BVS_NEXTEST_RESTORE_RESULT" "$BVS_NEXTEST_RESTORE_HIT")"
+          bvs_nextest_reason="$(restore_reason "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$BVS_NEXTEST_RESTORE_OUTCOME" "$BVS_NEXTEST_RESTORE_REASON")"
+          bvs_sidecar_restore="$(restore_state "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$BVS_SIDECAR_RESTORE_OUTCOME" "$BVS_SIDECAR_RESTORE_RESULT" "$BVS_SIDECAR_RESTORE_HIT")"
+          bvs_sidecar_reason="$(restore_reason "$S3_ELIGIBLE" "$S3_AWS_OUTCOME" "$BVS_SIDECAR_RESTORE_OUTCOME" "$BVS_SIDECAR_RESTORE_REASON")"
+          {
+            echo "BVS nextest archive S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${bvs_nextest_restore} reason=${bvs_nextest_reason}"
+            echo "BVS binary sidecars S3: eligible=${S3_ELIGIBLE:-false} mode=${S3_CACHE_MODE:-none} aws=${S3_AWS_OUTCOME:-skipped} restore=${bvs_sidecar_restore} reason=${bvs_sidecar_reason}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Resolve crate managed target dir
         id: crate_target
@@ -716,13 +777,22 @@ jobs:
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH" --extract-to "$RUNNER_TEMP/bvs-nextest-list-extract" --extract-overwrite --workspace-remap "$GITHUB_WORKSPACE/crates/backtesting-vertical-slice"
 
       - name: test
+        shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
           failures=0
           for shard in $(seq 1 "$BVS_NEXTEST_SHARDS"); do
             echo "::group::bvs-test partition ${shard}/${BVS_NEXTEST_SHARDS}"
-            if ! just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl; then
+            partition_log="$RUNNER_TEMP/bvs-nextest-archive-partition-${shard}.log"
+            set +e
+            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"
+            rc="${PIPESTATUS[0]}"
+            set -e
+            if [[ "$rc" -ne 0 ]]; then
               failures=$((failures + 1))
+              echo "::error title=BVS nextest archive partition failed::shard=${shard}/${BVS_NEXTEST_SHARDS} exit=${rc}"
+              echo "last relevant log lines for BVS nextest archive partition ${shard}/${BVS_NEXTEST_SHARDS}:"
+              tail -80 "$partition_log"
             fi
             echo "::endgroup::"
           done

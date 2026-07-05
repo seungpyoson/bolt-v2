@@ -570,13 +570,14 @@ fn losing_settlement_moves_durable_loss_governor() {
         .context
         .clone()
         .with_settlement_runtime_sink(Some(sink_handle));
-    materialize_configured_position(
+    let position = materialize_configured_position(
         &mut strategy,
         instrument_id,
         PositionId::from("P-RUNTIME-LOSS"),
         Quantity::new(10.0, 2),
         0.45,
     );
+    let settlement_key = settlement_key_for_position(&position);
 
     emit_resolution_update(&mut strategy, 3_099.0);
 
@@ -588,7 +589,7 @@ fn losing_settlement_moves_durable_loss_governor() {
     assert!(
         loss_snapshot
             .adjusted_position_pnl
-            .contains_key("BTC-USD.BINANCE:P-RUNTIME-LOSS"),
+            .contains_key(&settlement_key),
         "settlement-key dedupe entry should persist with the realized-PnL snapshot: {loss_snapshot:?}"
     );
     assert_eq!(sink.venue_explanation_count(), 1);

@@ -14,7 +14,7 @@ import sys
 import tempfile
 import textwrap
 
-from test_fixtures import load_owner_module, write_executable, write_policy
+from test_fixtures import load_owner_module, rust_verification_policy_text, write_executable, write_policy
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -1221,6 +1221,14 @@ REMOTE_COMPILE_CACHE_POLICY = {
 }
 
 
+REMOTE_FAST_LINKER_POLICY = {
+    "enabled": True,
+    "ci_env": "GITHUB_ACTIONS",
+    "linker_env": "BOLT_RUST_FAST_LINKER",
+    "programs": ["mold", "lld"],
+}
+
+
 def assert_validate_remote_compile_cache_policy_contract() -> None:
     owner = load_owner_module()
     # A well-formed opt-in policy validates; an absent table means the feature is
@@ -1283,6 +1291,74 @@ def assert_managed_remote_compile_cache_env_fails_open() -> None:
                 raise AssertionError(f"malformed wrapper must fail open to no wrapper: {path!r}")
 
 
+def assert_validate_remote_fast_linker_policy_contract() -> None:
+    owner = load_owner_module()
+    owner.validate_remote_fast_linker_policy({"remote_fast_linker": dict(REMOTE_FAST_LINKER_POLICY)})
+    owner.validate_remote_fast_linker_policy({})
+    rejects = [
+        {**REMOTE_FAST_LINKER_POLICY, "enabled": False},
+        {**REMOTE_FAST_LINKER_POLICY, "ci_env": "NOT_GITHUB_ACTIONS"},
+        {**REMOTE_FAST_LINKER_POLICY, "linker_env": "bad lower"},
+        {**REMOTE_FAST_LINKER_POLICY, "programs": []},
+        {**REMOTE_FAST_LINKER_POLICY, "programs": ["lld", "mold"]},
+        {**REMOTE_FAST_LINKER_POLICY, "unexpected_key": "x"},
+    ]
+    for bad in rejects:
+        try:
+            owner.validate_remote_fast_linker_policy({"remote_fast_linker": bad})
+        except owner.PolicyError:
+            continue
+        raise AssertionError(f"expected PolicyError for remote_fast_linker={bad!r}")
+
+
+def assert_managed_remote_fast_linker_env_selects_available_program() -> None:
+    owner = load_owner_module()
+    policy = {"remote_fast_linker": dict(REMOTE_FAST_LINKER_POLICY)}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        bin_dir = pathlib.Path(tmp) / "bin"
+        bin_dir.mkdir()
+        write_executable(bin_dir / "mold", "#!/usr/bin/env bash\nexit 0\n")
+        base_path = os.environ.get("PATH", "")
+        with _patched_environ(
+            {
+                "PATH": f"{bin_dir}{os.pathsep}{base_path}",
+                "GITHUB_ACTIONS": "true",
+                "BOLT_RUST_FAST_LINKER": "mold",
+            }
+        ):
+            env = owner.managed_remote_fast_linker_env(policy)
+        if env != {"RUSTFLAGS": "-C link-arg=-fuse-ld=mold"}:
+            raise AssertionError(env)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        bin_dir = pathlib.Path(tmp) / "bin"
+        bin_dir.mkdir()
+        write_executable(bin_dir / "ld.lld", "#!/usr/bin/env bash\nexit 0\n")
+        base_path = os.environ.get("PATH", "")
+        with _patched_environ(
+            {
+                "PATH": f"{bin_dir}{os.pathsep}{base_path}",
+                "GITHUB_ACTIONS": "true",
+                "BOLT_RUST_FAST_LINKER": "lld",
+            }
+        ):
+            env = owner.managed_remote_fast_linker_env(policy)
+        if env != {"RUSTFLAGS": "-C link-arg=-fuse-ld=lld"}:
+            raise AssertionError(env)
+
+    gate_off_cases = [
+        {"GITHUB_ACTIONS": None, "BOLT_RUST_FAST_LINKER": "mold"},
+        {"GITHUB_ACTIONS": "false", "BOLT_RUST_FAST_LINKER": "mold"},
+        {"GITHUB_ACTIONS": "true", "BOLT_RUST_FAST_LINKER": None},
+        {"GITHUB_ACTIONS": "true", "BOLT_RUST_FAST_LINKER": "gold"},
+    ]
+    for env_values in gate_off_cases:
+        with _patched_environ(env_values):
+            if owner.managed_remote_fast_linker_env(policy) != {}:
+                raise AssertionError(f"fast linker must stay off when a gate is unmet: {env_values!r}")
+
+
 def assert_managed_env_scrubs_then_reinjects_wrapper() -> None:
     owner = load_owner_module()
     policy = {
@@ -1315,6 +1391,69 @@ def assert_managed_env_scrubs_then_reinjects_wrapper() -> None:
         env = owner.managed_env(REPO_ROOT, policy)
     if "RUSTC_WRAPPER" in env:
         raise AssertionError("managed_env must not inject a wrapper outside CI (GITHUB_ACTIONS unset)")
+
+
+def assert_managed_env_scrubs_then_injects_fast_linker() -> None:
+    owner = load_owner_module()
+    policy = {
+        "target_namespace": "rust-verification-fast-linker-test",
+        "remote_fast_linker": dict(REMOTE_FAST_LINKER_POLICY),
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        bin_dir = pathlib.Path(tmp) / "bin"
+        bin_dir.mkdir()
+        write_executable(bin_dir / "mold", "#!/usr/bin/env bash\nexit 0\n")
+        base_path = os.environ.get("PATH", "")
+        with _patched_environ(
+            {
+                "PATH": f"{bin_dir}{os.pathsep}{base_path}",
+                "RUSTFLAGS": "-C link-arg=-fuse-ld=gold",
+                "GITHUB_ACTIONS": "true",
+                "BOLT_RUST_FAST_LINKER": "mold",
+            }
+        ):
+            env = owner.managed_env(REPO_ROOT, policy)
+    if env.get("RUSTFLAGS") != "-C link-arg=-fuse-ld=mold":
+        raise AssertionError("managed_env must scrub pre-existing RUSTFLAGS and inject the configured fast linker")
+
+    with _patched_environ(
+        {
+            "RUSTFLAGS": "-C link-arg=-fuse-ld=gold",
+            "GITHUB_ACTIONS": None,
+            "BOLT_RUST_FAST_LINKER": "mold",
+        }
+    ):
+        env = owner.managed_env(REPO_ROOT, policy)
+    if "RUSTFLAGS" in env:
+        raise AssertionError("managed_env must not inject fast linker flags outside CI")
+
+
+def assert_fast_linker_programs_command_reads_policy() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        policy_text = (
+            rust_verification_policy_text()
+            + textwrap.dedent(
+                """\
+
+                [remote_fast_linker]
+                enabled = true
+                ci_env = "GITHUB_ACTIONS"
+                linker_env = "BOLT_RUST_FAST_LINKER"
+                programs = ["mold", "lld"]
+                """
+            )
+        )
+        write_policy(repo, policy_text=policy_text)
+        result = run_owner(
+            ["fast-linker-programs", "--repo", str(repo)],
+            env=os.environ.copy(),
+        )
+    if result.returncode != 0:
+        raise AssertionError((result.returncode, result.stdout, result.stderr))
+    if result.stdout.splitlines() != ["mold", "lld"]:
+        raise AssertionError(result.stdout)
 
 
 def run_global_cargo_config_assertion(
@@ -1627,6 +1766,10 @@ def main() -> int:
     assert_validate_remote_compile_cache_policy_contract()
     assert_managed_remote_compile_cache_env_fails_open()
     assert_managed_env_scrubs_then_reinjects_wrapper()
+    assert_validate_remote_fast_linker_policy_contract()
+    assert_managed_remote_fast_linker_env_selects_available_program()
+    assert_managed_env_scrubs_then_injects_fast_linker()
+    assert_fast_linker_programs_command_reads_policy()
     assert_ci_provenance_gate_name_helpers_stay_in_parity()
     assert_rust_probe_guidance_distinguishes_feedback_from_proof()
     assert_fmt_avoids_managed_cache_lock()

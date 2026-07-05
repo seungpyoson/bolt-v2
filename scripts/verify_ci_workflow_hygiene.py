@@ -733,6 +733,7 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "inputs.include-nextest-version",
     "inputs.include-build-values",
     "inputs.lint-workflow-contract",
+    "inputs.install-rust-linker",
     "inputs.build-jobs-key",
     "just ci-lint-workflow",
     "awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml",
@@ -744,6 +745,8 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate rust_verification_owner",
     "ci/github-actions-runners.toml",
     "cargo_build_jobs=$cargo_build_jobs",
+    'python3.12 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE"',
+    "BOLT_RUST_FAST_LINKER=$rust_linker_program",
     'target-dir --repo "$GITHUB_WORKSPACE"',
     "os.path.relpath",
 )
@@ -762,6 +765,7 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
 SETUP_ACTION_ORDERED_STEPS = (
     "Lint workflow contract",
     "Read shared values",
+    "Install Rust linker",
     "Resolve managed target dir",
     "Setup Rust toolchain",
 )
@@ -9540,11 +9544,11 @@ def test_has_inline_shard_reproduction_command(job_lines: list[str]) -> bool:
 
 
 def job_skips_tag_reuse(job_lines: list[str]) -> bool:
-    text = uncommented_text(job_lines)
+    job_if = job_if_value(job_lines)
     return (
         has_line_matching(job_lines, TAG_SKIP_IF_RE)
         or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
-        or FULL_CI_REQUIRED_EXPR in text
+        or FULL_CI_REQUIRED_EXPR in job_if
     )
 
 
@@ -11357,6 +11361,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("source-fence must branch to just source-fence for full CI and just source-fence-static for docs policy")
         if not source_fence_checkout_uses_docs_head_ref(jobs["source-fence"]):
             errors.append("source-fence checkout must use pull_request head SHA for docs policy and github.sha otherwise")
+        if not job_has_setup_input(
+            jobs["source-fence"],
+            "install-rust-linker",
+            "${{ needs.ci-policy.outputs.full_ci_required == 'true' && 'true' || 'false' }}",
+        ):
+            errors.append("ci.yml source-fence must install configured Rust linker")
 
     for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):
@@ -11402,6 +11412,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append(".github/workflows/ci.yml clippy must enable workflow contract lint")
         if not job_has_toolchain_component(jobs["clippy"], "rustfmt"):
             errors.append(".github/workflows/ci.yml clippy must install rustfmt component")
+        if not job_has_setup_input(jobs["clippy"], "install-rust-linker", '"true"'):
+            errors.append("ci.yml clippy must install configured Rust linker")
         if "just check-aarch64" in clippy_text:
             errors.append("clippy must not run check-aarch64")
         if clippy_installs_aarch64_toolchain(jobs["clippy"]):
@@ -11577,6 +11589,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"test-archive must emit explicit {label} S3 save status")
         if not job_has_setup_input(archive_lines, "include-managed-target-dir", '"true"'):
             errors.append("test-archive must opt into managed target dir")
+        if not job_has_setup_input(archive_lines, "install-rust-linker", '"true"'):
+            errors.append("ci.yml test-archive must install configured Rust linker")
         if not target_restore_blocks:
             errors.append("test-archive must restore archive build target cache")
         if any(
@@ -11817,6 +11831,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("build must gate on full_ci_required")
         if not has_line_matching(jobs["build"], BUILD_IF_RE):
             errors.append("build must gate on needs.detector.outputs.build_required and skip tag reuse")
+        if not job_has_setup_input(jobs["build"], "install-rust-linker", '"true"'):
+            errors.append("ci.yml build must install configured Rust linker")
 
     if "ci-provenance-emit" in jobs:
         emit_lines = jobs["ci-provenance-emit"]
@@ -12053,6 +12069,11 @@ def verify_setup_action(action_text: str) -> list[str]:
         errors.append("setup action missing include-managed-target-dir input")
     elif not input_block_has_default_false(target_dir_input):
         errors.append("setup action include-managed-target-dir default must be false")
+    rust_linker_input = extract_action_input_block(action_text, "install-rust-linker")
+    if not rust_linker_input:
+        errors.append("setup action missing install-rust-linker input")
+    elif not input_block_has_default_false(rust_linker_input):
+        errors.append("setup action install-rust-linker default must be false")
     cargo_build_jobs_input = extract_action_input_block(action_text, "build-jobs-key")
     if not cargo_build_jobs_input:
         errors.append("setup action missing build-jobs-key input")

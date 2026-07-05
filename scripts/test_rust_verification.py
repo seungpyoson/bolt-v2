@@ -59,7 +59,7 @@ def assert_ci_provenance_gate_name_helpers_stay_in_parity() -> None:
         "gate\tignored",
         "${{ github.ref }}",
         "gate }}",
-        "backtester-gate-dispatch",
+        "backtester-gate-iteration",
     ):
         owner_result = owner.github_actions_output_safe_check_name(value)
         provenance_result = provenance.github_actions_output_safe_check_name(value)
@@ -68,7 +68,6 @@ def assert_ci_provenance_gate_name_helpers_stay_in_parity() -> None:
     collision_cases = (
         {"gate_required": "gate", "gate_iteration": "gate"},
         {"gate_required": "gate", "backtester_required": "gate"},
-        {"gate_dispatch_full": "gate-dispatch", "backtester_dispatch_full": "gate-dispatch"},
     )
     for gate_names in collision_cases:
         owner_errors = owner.gate_name_collision_errors(gate_names)
@@ -234,7 +233,7 @@ def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
         "verify-remote only for final exact-head full-CI proof",
         "For final proof, use exact-head PR CI evidence through `just verify-remote`",
         "Full CI is proof. Rust Probe is debugging.",
-        "dispatch Backtester CI with full_ci=true for this branch or mark ready",
+        "dispatch Backtester CI with " + "full_ci" + "=true for this branch or mark ready",
     )
     operator_surfaces = (
         SCRIPT,
@@ -391,13 +390,11 @@ def write_verify_remote_config(repo: pathlib.Path) -> None:
             workflow_path = ".github/workflows/ci.yml"
 
             [ci_provenance.dispatch]
-            workflow_input = "full_ci"
-            run_name_full = "CI [dispatch:full]"
             run_name_iteration = "CI [dispatch:iteration]"
             proof_gate_job = "gate"
 
             [ci_provenance.gate_names]
-            gate_dispatch_full = "gate-dispatch"
+            gate_required = "gate"
             """
         ),
         encoding="utf-8",
@@ -427,7 +424,7 @@ def workflow_run(
     display_title: str | None = None,
 ) -> dict[str, object]:
     if display_title is None:
-        display_title = "CI [dispatch:full]" if event == "workflow_dispatch" else "CI"
+        display_title = "CI [dispatch:iteration]" if event == "workflow_dispatch" else "CI"
     return {
         "databaseId": database_id,
         "attempt": 1,
@@ -452,7 +449,7 @@ def workflow_jobs(*, gate_conclusion: str | None = "success") -> dict[str, objec
             },
             {
                 "databaseId": 9001,
-                "name": "gate-dispatch",
+                "name": "gate-iteration",
                 "status": "completed",
                 "conclusion": gate_conclusion,
             }
@@ -614,7 +611,7 @@ def run_verify_remote_with_harness(harness: VerifyRemoteHarness) -> tuple[int, s
     return result, stdout.getvalue(), stderr.getvalue()
 
 
-def assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped() -> None:
+def assert_verify_remote_rejects_draft_full_ci_dispatch_removed() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
         repo = pathlib.Path(tmp) / "repo"
@@ -624,190 +621,17 @@ def assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped() -> None
             owner,
             repo,
             pr=verify_remote_pr(is_draft=True),
-            run_lists=[
-                [],
-                [workflow_run(201, status="in_progress", conclusion=None)],
-                [workflow_run(201, status="completed", conclusion="success")],
-            ],
+            run_lists=[],
         ) as harness:
             result, stdout, stderr = run_verify_remote_with_harness(harness)
-        if result != 0:
+        if result != 2:
             raise AssertionError((result, stdout, stderr))
-        if len(harness.dispatches) != 1:
+        if harness.dispatches:
             raise AssertionError(harness.dispatches)
-        dispatch_text = " ".join(harness.dispatches[0])
-        if ".github/workflows/ci.yml" not in dispatch_text or "full_ci=true" not in dispatch_text:
-            raise AssertionError(dispatch_text)
-        if "full CI feedback" not in stdout or "just rust-probe suggest" not in stdout:
-            raise AssertionError(stdout)
-        if harness.pr_checks_calls:
-            raise AssertionError("draft dispatch wait must not use aggregate gh pr checks")
-
-
-def assert_verify_remote_dispatch_wait_does_not_depend_on_local_clock() -> None:
-    owner = load_owner_module()
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_verify_remote_config(repo)
-        with VerifyRemoteHarness(
-            owner,
-            repo,
-            pr=verify_remote_pr(is_draft=True),
-            run_lists=[
-                [],
-                [workflow_run(204, status="in_progress", conclusion=None, created_at="2026-06-13T00:00:01Z")],
-                [workflow_run(204, status="completed", conclusion="success", created_at="2026-06-13T00:00:01Z")],
-            ],
-        ) as harness:
-            result, stdout, stderr = run_verify_remote_with_harness(harness)
-        if result != 0:
-            raise AssertionError((result, stdout, stderr))
-        if len(harness.dispatches) != 1:
-            raise AssertionError(harness.dispatches)
-
-
-def assert_verify_remote_draft_dispatch_ignores_existing_and_concurrent_iteration_runs() -> None:
-    owner = load_owner_module()
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_verify_remote_config(repo)
-        with VerifyRemoteHarness(
-            owner,
-            repo,
-            pr=verify_remote_pr(is_draft=True),
-            run_lists=[
-                [
-                    workflow_run(
-                        202,
-                        status="completed",
-                        conclusion="success",
-                        display_title="CI [dispatch:iteration]",
-                    )
-                ],
-                [
-                    workflow_run(
-                        203,
-                        status="completed",
-                        conclusion="success",
-                        created_at="2026-06-13T00:02:00Z",
-                        display_title="CI [dispatch:iteration]",
-                    ),
-                    workflow_run(
-                        204,
-                        status="in_progress",
-                        conclusion=None,
-                        created_at="2026-06-13T00:01:00Z",
-                    ),
-                ],
-                [
-                    workflow_run(
-                        203,
-                        status="completed",
-                        conclusion="success",
-                        created_at="2026-06-13T00:02:00Z",
-                        display_title="CI [dispatch:iteration]",
-                    ),
-                    workflow_run(
-                        204,
-                        status="completed",
-                        conclusion="success",
-                        created_at="2026-06-13T00:01:00Z",
-                    ),
-                ],
-            ],
-        ) as harness:
-            result, stdout, stderr = run_verify_remote_with_harness(harness)
-        if result != 0:
-            raise AssertionError((result, stdout, stderr))
-        if len(harness.dispatches) != 1:
-            raise AssertionError(harness.dispatches)
-
-
-def assert_verify_remote_draft_dispatch_ignores_preexisting_full_run() -> None:
-    owner = load_owner_module()
-    preexisting_full = workflow_run(
-        206,
-        status="completed",
-        conclusion="success",
-        created_at="2026-06-13T00:02:00Z",
-    )
-    fresh_pending = workflow_run(
-        207,
-        status="in_progress",
-        conclusion=None,
-        created_at="2026-06-13T00:01:00Z",
-    )
-    fresh_success = workflow_run(
-        207,
-        status="completed",
-        conclusion="success",
-        created_at="2026-06-13T00:01:00Z",
-    )
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_verify_remote_config(repo)
-        with VerifyRemoteHarness(
-            owner,
-            repo,
-            pr=verify_remote_pr(is_draft=True),
-            run_lists=[
-                [preexisting_full],
-                [fresh_pending, preexisting_full],
-                [fresh_success, preexisting_full],
-            ],
-        ) as harness:
-            result, stdout, stderr = run_verify_remote_with_harness(harness)
-        if result != 0:
-            raise AssertionError((result, stdout, stderr))
-        if len(harness.dispatches) != 1:
-            raise AssertionError(harness.dispatches)
-        if harness.sleep_calls < 1:
-            raise AssertionError("expected verify-remote to ignore the pre-existing full run and wait")
-
-
-def assert_verify_remote_rejects_full_marker_without_gate_success() -> None:
-    owner = load_owner_module()
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_verify_remote_config(repo)
-        with VerifyRemoteHarness(
-            owner,
-            repo,
-            pr=verify_remote_pr(is_draft=True),
-            run_lists=[
-                [],
-                [workflow_run(205, status="completed", conclusion="success")],
-                [workflow_run(205, status="completed", conclusion="success")],
-            ],
-            jobs_by_run_id={205: workflow_jobs(gate_conclusion="skipped")},
-        ) as harness:
-            result, _stdout, stderr = run_verify_remote_with_harness(harness)
-        if result != 1 or "successful dispatch full gate job" not in stderr:
-            raise AssertionError((result, stderr))
-
-
-def assert_verify_remote_fails_when_branch_advances_after_dispatch() -> None:
-    owner = load_owner_module()
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_verify_remote_config(repo)
-        with VerifyRemoteHarness(
-            owner,
-            repo,
-            pr=verify_remote_pr(is_draft=True),
-            run_lists=[[], [workflow_run(203, status="in_progress", conclusion=None)]],
-            advance_after_dispatch=True,
-        ) as harness:
-            result, _stdout, stderr = run_verify_remote_with_harness(harness)
-        if result != 2 or "PR branch advanced during watch" not in stderr:
-            raise AssertionError((result, stderr))
-        if len(harness.dispatches) != 1:
-            raise AssertionError(harness.dispatches)
+        if "draft PRs cannot run full CI through workflow_dispatch" not in stderr:
+            raise AssertionError(stderr)
+        if "just rust-probe" not in stderr:
+            raise AssertionError(stderr)
 
 
 def assert_verify_remote_waits_on_pending_full_run_over_stale_deferred_gate() -> None:
@@ -934,22 +758,9 @@ def assert_verify_remote_fork_draft_fails_closed() -> None:
             run_lists=[],
         ) as harness:
             result, _stdout, stderr = run_verify_remote_with_harness(harness)
-        expected = (
-            "draft fork PRs cannot dispatch upstream full CI; mark the PR ready for review "
-            "or have a maintainer move the branch into the upstream repository"
-        )
+        expected = "draft PRs cannot run full CI through workflow_dispatch"
         if result != 2 or expected not in stderr:
             raise AssertionError((result, stderr))
-
-
-def assert_repository_owner_requires_owner_separator() -> None:
-    owner = load_owner_module()
-    if owner.repository_owner("bolt-v2") is not None:
-        raise AssertionError("bare repository names must not be parsed as owners")
-    if owner.repository_owner("seungpyoson/bolt-v2") != "seungpyoson":
-        raise AssertionError("owner/repo strings must expose the owner")
-    if owner.repository_name("seungpyoson/bolt-v2") != "bolt-v2":
-        raise AssertionError("owner/repo strings must expose the repository name")
 
 
 def assert_verify_remote_api_error_fails_closed() -> None:
@@ -961,7 +772,7 @@ def assert_verify_remote_api_error_fails_closed() -> None:
         with VerifyRemoteHarness(
             owner,
             repo,
-            pr=verify_remote_pr(is_draft=True),
+            pr=verify_remote_pr(is_draft=False),
             run_lists=[],
             run_list_error="API rate limit exceeded while listing workflow runs",
         ) as harness:
@@ -1132,7 +943,7 @@ def assert_ci_logs_command_uses_draft_aware_events() -> None:
             raise AssertionError(emitted)
 
 
-def assert_ci_logs_command_uses_draft_workflow_dispatch_events() -> None:
+def assert_ci_logs_command_fails_closed_for_draft_pr_without_full_ci() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
         repo = pathlib.Path(tmp) / "repo"
@@ -1156,13 +967,18 @@ def assert_ci_logs_command_uses_draft_workflow_dispatch_events() -> None:
             with harness:
                 owner.emit_failed_job_diagnostics = lambda **kwargs: emitted.append(int(kwargs["run"]["databaseId"]))
                 args = type("Args", (), {"repo": str(repo)})()
-                result = owner.cmd_ci_logs(args)
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = owner.cmd_ci_logs(args)
         finally:
             owner.emit_failed_job_diagnostics = original_emit
-        if result != 0:
-            raise AssertionError(result)
-        if emitted != [502]:
+        if result != 2:
+            raise AssertionError((result, stdout.getvalue(), stderr.getvalue()))
+        if emitted:
             raise AssertionError(emitted)
+        if "draft PRs cannot run full CI through workflow_dispatch" not in stderr.getvalue():
+            raise AssertionError(stderr.getvalue())
 
 
 def assert_ci_logs_command_fails_when_diagnostics_unavailable() -> None:
@@ -1635,22 +1451,16 @@ def main() -> int:
     assert_oversized_policy_fails_closed()
     assert_validate_policy_rejects_unknown_cheap_lane_just_recipe()
     assert_remote_diagnostics_policy_loads()
-    assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped()
-    assert_verify_remote_dispatch_wait_does_not_depend_on_local_clock()
-    assert_verify_remote_draft_dispatch_ignores_existing_and_concurrent_iteration_runs()
-    assert_verify_remote_draft_dispatch_ignores_preexisting_full_run()
-    assert_verify_remote_rejects_full_marker_without_gate_success()
-    assert_verify_remote_fails_when_branch_advances_after_dispatch()
+    assert_verify_remote_rejects_draft_full_ci_dispatch_removed()
     assert_verify_remote_waits_on_pending_full_run_over_stale_deferred_gate()
     assert_verify_remote_ready_pr_waits_for_full_run_after_stale_deferred_gate()
     assert_verify_remote_uses_green_full_run_over_stale_deferred_gate()
     assert_verify_remote_fork_draft_fails_closed()
-    assert_repository_owner_requires_owner_separator()
     assert_verify_remote_api_error_fails_closed()
     assert_verify_remote_preflight_rejects_dirty_or_unpushed_head_before_ci()
     assert_ci_logs_command_uses_exact_head_run()
     assert_ci_logs_command_uses_draft_aware_events()
-    assert_ci_logs_command_uses_draft_workflow_dispatch_events()
+    assert_ci_logs_command_fails_closed_for_draft_pr_without_full_ci()
     assert_ci_logs_command_fails_when_diagnostics_unavailable()
     assert_global_cargo_target_dir_config_is_created_and_idempotent()
     assert_global_cargo_target_dir_config_preserves_existing_content()

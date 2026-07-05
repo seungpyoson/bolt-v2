@@ -104,19 +104,15 @@ require_source_branch = "main"
 require_gate_check = true
 
 [ci_provenance.dispatch]
-workflow_input = "full_ci"
 run_name_default = "CI"
-run_name_full = "CI [dispatch:full]"
 run_name_iteration = "CI [dispatch:iteration]"
 proof_gate_job = "gate"
 
 [ci_provenance.gate_names]
 gate_required = "gate"
 gate_iteration = "gate-iteration"
-gate_dispatch_full = "gate-dispatch"
 backtester_required = "backtester-gate"
 backtester_iteration = "backtester-gate-iteration"
-backtester_dispatch_full = "backtester-gate-dispatch"
 
 [ci_provenance.required_checks.gate]
 context = "gate"
@@ -129,8 +125,8 @@ supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.gate.proof_rule]
-fresh = ["full", "tag_reuse"]
-carry_forward = []
+fresh = ["docs", "full", "tag_reuse"]
+carry_forward = ["noop"]
 
 [ci_provenance.required_checks.backtester-gate]
 context = "backtester-gate"
@@ -139,11 +135,11 @@ integration_id = 15368
 required = true
 target = true
 runs_on_tags = true
-supports_carry_forward = true
+supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
-fresh = ["full", "tag_reuse"]
+fresh = ["docs", "full", "noop", "tag_reuse"]
 carry_forward = []
 
 [ci_provenance.required_checks.host-health]
@@ -157,7 +153,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 carry_forward = []
 
 [ci_provenance.required_checks.actionlint]
@@ -171,7 +167,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.actionlint.proof_rule]
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 carry_forward = []
 
 [ci_provenance.required_checks.coverage-enforcer]
@@ -185,7 +181,7 @@ supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.coverage-enforcer.proof_rule]
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 carry_forward = []
 
 [ci_provenance.docs]
@@ -207,7 +203,7 @@ safe_paths = [
 forbidden_ignored_build_paths = [
   ".claude/rust-verification.toml",
 ]
-non_heavy_required_jobs = ["detector"]
+non_heavy_required_jobs = ["detector", "source-fence"]
 
 [ci_provenance.api_limits]
 workflow_runs_per_page = 100
@@ -225,13 +221,12 @@ draft_pr_opened = "iteration"
 draft_pr_reopened = "iteration"
 draft_pr_edited = "iteration"
 converted_to_draft = "iteration"
-ready_pr = "iteration"
-ready_pr_edited_no_base = "iteration"
-ready_pr_reopened = "iteration"
-ready_for_review = "iteration"
+ready_pr = "full"
+ready_pr_edited_no_base = "noop"
+ready_pr_reopened = "noop"
+ready_for_review = "full"
 docs = "docs"
 workflow_dispatch = "iteration"
-workflow_dispatch_full_ci = "full"
 main_push = "full"
 merge_group = "full"
 mergify_temp_pr = "full"
@@ -269,13 +264,12 @@ tag = "tag_reuse"
 mergify_temp_pr = "full"
 merge_group = "full"
 main_push = "full"
-workflow_dispatch_full_ci = "full"
 workflow_dispatch = "iteration"
 docs = "docs"
-ready_for_review = "iteration"
-ready_pr_reopened = "iteration"
-ready_pr_edited_no_base = "iteration"
-ready_pr = "iteration"
+ready_for_review = "full"
+ready_pr_reopened = "noop"
+ready_pr_edited_no_base = "noop"
+ready_pr = "full"
 converted_to_draft = "iteration"
 draft_pr_edited = "iteration"
 draft_pr_reopened = "iteration"
@@ -297,23 +291,19 @@ run_jobs_per_page = 100
 workflow_runs_per_page = 100
 
 [ci_provenance.dispatch]
-workflow_input = "full_ci"
 run_name_default = "CI"
-run_name_full = "CI [dispatch:full]"
 run_name_iteration = "CI [dispatch:iteration]"
 proof_gate_job = "gate"
 
 [ci_provenance.gate_names]
-backtester_dispatch_full = "backtester-gate-dispatch"
 backtester_iteration = "backtester-gate-iteration"
 backtester_required = "backtester-gate"
-gate_dispatch_full = "gate-dispatch"
 gate_iteration = "gate-iteration"
 gate_required = "gate"
 
 [ci_provenance.required_checks.coverage-enforcer.proof_rule]
 carry_forward = []
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 
 [ci_provenance.required_checks.coverage-enforcer]
 arrivals = ["pull_request", "merge_group"]
@@ -327,7 +317,7 @@ context = "coverage-enforcer"
 
 [ci_provenance.required_checks.actionlint.proof_rule]
 carry_forward = []
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 
 [ci_provenance.required_checks.actionlint]
 arrivals = ["pull_request", "merge_group"]
@@ -341,7 +331,7 @@ context = "actionlint"
 
 [ci_provenance.required_checks.host-health.proof_rule]
 carry_forward = []
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 
 [ci_provenance.required_checks.host-health]
 arrivals = ["pull_request", "merge_group"]
@@ -355,11 +345,11 @@ context = "host-health"
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
 carry_forward = []
-fresh = ["full", "tag_reuse"]
+fresh = ["docs", "full", "noop", "tag_reuse"]
 
 [ci_provenance.required_checks.backtester-gate]
 arrivals = ["pull_request", "merge_group"]
-supports_carry_forward = true
+supports_carry_forward = false
 runs_on_tags = true
 target = true
 required = true
@@ -368,8 +358,8 @@ reporter = "backtester-ci.yml gate job"
 context = "backtester-gate"
 
 [ci_provenance.required_checks.gate.proof_rule]
-carry_forward = []
-fresh = ["full", "tag_reuse"]
+carry_forward = ["noop"]
+fresh = ["docs", "full", "tag_reuse"]
 
 [ci_provenance.required_checks.gate]
 arrivals = ["pull_request", "merge_group"]
@@ -382,7 +372,7 @@ reporter = "ci.yml gate summary job"
 context = "gate"
 
 [ci_provenance.docs]
-non_heavy_required_jobs = ["detector"]
+non_heavy_required_jobs = ["detector", "source-fence"]
 forbidden_ignored_build_paths = [
   ".claude/rust-verification.toml",
 ]
@@ -1019,7 +1009,7 @@ def assert_emit_docs_ci_record_requires_skipped_heavy_jobs() -> None:
             "deny=skipped",
             "clippy=skipped",
             "check-aarch64=skipped",
-            "source-fence=skipped",
+            "source-fence=success",
             "nextest-fingerprint=skipped",
             "test-archive=skipped",
             "test=skipped",
@@ -1037,6 +1027,8 @@ def assert_emit_docs_ci_record_requires_skipped_heavy_jobs() -> None:
         if record["kind"] != "docs-ci":
             raise AssertionError(record)
         if record["required_jobs"]["clippy"] != "skipped":
+            raise AssertionError(record)
+        if record["required_jobs"]["source-fence"] != "success":
             raise AssertionError(record)
         if record["pull_request"]["base_sha"] != "1" * 40:
             raise AssertionError(record)
@@ -1987,8 +1979,6 @@ def assert_ci_policy_rejects_event_sender_cli_override_arguments() -> None:
         "mergify/merge-queue/83d4b0be7e",
         "--pull-request-base-changed",
         "false",
-        "--workflow-dispatch-full-ci",
-        "",
         "--docs-only",
         "false",
         "--ref",
@@ -1998,6 +1988,7 @@ def assert_ci_policy_rejects_event_sender_cli_override_arguments() -> None:
         ("--event-sender-id", "37929162"),
         ("--event-sender", "37929162"),
         ("--event-nam", "pull_request"),
+        ("--workflow-dispatch-full-ci", "true"),
     ):
         code, stdout, stderr = run_cli([*base_args, flag, value])
         combined = stdout + stderr
@@ -2016,13 +2007,12 @@ def assert_ci_policy_outputs_matrix() -> None:
             "draft_pr_reopened": "iteration",
             "draft_pr_edited": "iteration",
             "converted_to_draft": "iteration",
-            "ready_pr": "iteration",
-            "ready_pr_edited_no_base": "iteration",
-            "ready_pr_reopened": "iteration",
-            "ready_for_review": "iteration",
+            "ready_pr": "full",
+            "ready_pr_edited_no_base": "noop",
+            "ready_pr_reopened": "noop",
+            "ready_for_review": "full",
             "docs": "docs",
             "workflow_dispatch": "iteration",
-            "workflow_dispatch_full_ci": "full",
             "main_push": "full",
             "merge_group": "full",
             "mergify_temp_pr": "full",
@@ -2036,38 +2026,27 @@ def assert_ci_policy_outputs_matrix() -> None:
             "defer": ("gate", "backtester-gate"),
             "iteration": ("gate-iteration", "backtester-gate-iteration"),
             "noop": ("gate", "backtester-gate"),
-            "workflow_dispatch_full_ci": ("gate-dispatch", "backtester-gate-dispatch"),
         }
-        # Queue-only rework (#981): every ordinary pull_request action defers heavy
-        # lanes (ci_policy_path == "iteration", full_ci_required false) and publishes
-        # only the non-required gate-iteration; the merge-boundary mergify temp PR is
-        # the SOLE producer of the required "gate". docs-only no longer downgrades a
-        # PR to the required docs path because no ordinary PR path is "full" anymore,
-        # so the docs override (which only fires on path == "full") never engages.
+        # Draft pull_request and workflow_dispatch events stay cheap iteration.
+        # Ready pull_request events publish full proof on the required gate; ready
+        # no-code transitions use the noop carry-forward path.
         cases = [
-            ("push", "", "false", "false", "", "refs/heads/main", "false", "full", "main_push"),
-            ("push", "", "false", "false", "true", "refs/heads/main", "false", "full", "main_push"),
-            ("push", "", "false", "false", "", "refs/tags/v1.2.3", "false", "tag_reuse", "tag"),
-            ("pull_request", "opened", "true", "false", "", "refs/pull/1/merge", "false", "iteration", "draft_pr_opened"),
-            ("pull_request", "synchronize", "true", "false", "", "refs/pull/1/merge", "false", "iteration", "draft_pr_synchronize"),
-            ("pull_request", "reopened", "true", "false", "", "refs/pull/1/merge", "false", "iteration", "draft_pr_reopened"),
-            ("pull_request", "edited", "true", "false", "", "refs/pull/1/merge", "false", "iteration", "draft_pr_edited"),
-            ("pull_request", "converted_to_draft", "true", "false", "", "refs/pull/1/merge", "false", "iteration", "converted_to_draft"),
-            ("pull_request", "opened", "false", "false", "", "refs/pull/1/merge", "false", "iteration", "ready_pr"),
-            ("pull_request", "opened", "false", "false", "", "refs/pull/1/merge", "true", "iteration", "ready_pr"),
-            ("pull_request", "edited", "false", "false", "", "refs/pull/1/merge", "true", "iteration", "ready_pr_edited_no_base"),
-            ("pull_request", "edited", "false", "true", "", "refs/pull/1/merge", "true", "iteration", "ready_pr"),
-            ("pull_request", "reopened", "false", "false", "", "refs/pull/1/merge", "false", "iteration", "ready_pr_reopened"),
-            ("pull_request", "ready_for_review", "false", "false", "", "refs/pull/1/merge", "true", "iteration", "ready_for_review"),
-            ("workflow_dispatch", "", "true", "false", "true", "refs/heads/codex/branch", "true", "full", "workflow_dispatch_full_ci"),
-            ("workflow_dispatch", "", "true", "false", "false", "refs/heads/codex/branch", "true", "iteration", "workflow_dispatch"),
-            ("workflow_dispatch", "", "true", "false", "", "refs/heads/codex/branch", "true", "iteration", "workflow_dispatch"),
-            ("workflow_dispatch", "", "true", "false", "TRUE", "refs/heads/codex/branch", "false", "iteration", "workflow_dispatch"),
-            ("workflow_dispatch", "", "true", "false", " true ", "refs/heads/codex/branch", "false", "iteration", "workflow_dispatch"),
-            ("workflow_dispatch", "", "true", "false", "1", "refs/heads/codex/branch", "false", "iteration", "workflow_dispatch"),
-            ("workflow_dispatch", "", "true", "false", "yes", "refs/heads/codex/branch", "false", "iteration", "workflow_dispatch"),
-            ("merge_group", "checks_requested", "false", "false", "", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "true", "full", "merge_group"),
-            ("unknown_event", "", "true", "false", "", "refs/heads/codex/branch", "true", "full", "unknown_event"),
+            ("push", "", "false", "false", "refs/heads/main", "false", "full", "main_push"),
+            ("push", "", "false", "false", "refs/tags/v1.2.3", "false", "tag_reuse", "tag"),
+            ("pull_request", "opened", "true", "false", "refs/pull/1/merge", "false", "iteration", "draft_pr_opened"),
+            ("pull_request", "synchronize", "true", "false", "refs/pull/1/merge", "false", "iteration", "draft_pr_synchronize"),
+            ("pull_request", "reopened", "true", "false", "refs/pull/1/merge", "false", "iteration", "draft_pr_reopened"),
+            ("pull_request", "edited", "true", "false", "refs/pull/1/merge", "false", "iteration", "draft_pr_edited"),
+            ("pull_request", "converted_to_draft", "true", "false", "refs/pull/1/merge", "false", "iteration", "converted_to_draft"),
+            ("pull_request", "opened", "false", "false", "refs/pull/1/merge", "false", "full", "ready_pr"),
+            ("pull_request", "opened", "false", "false", "refs/pull/1/merge", "true", "docs", "docs"),
+            ("pull_request", "edited", "false", "false", "refs/pull/1/merge", "true", "noop", "ready_pr_edited_no_base"),
+            ("pull_request", "edited", "false", "true", "refs/pull/1/merge", "true", "docs", "docs"),
+            ("pull_request", "reopened", "false", "false", "refs/pull/1/merge", "false", "noop", "ready_pr_reopened"),
+            ("pull_request", "ready_for_review", "false", "false", "refs/pull/1/merge", "true", "docs", "docs"),
+            ("workflow_dispatch", "", "true", "false", "refs/heads/codex/branch", "true", "iteration", "workflow_dispatch"),
+            ("merge_group", "checks_requested", "false", "false", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "true", "full", "merge_group"),
+            ("unknown_event", "", "true", "false", "refs/heads/codex/branch", "true", "full", "unknown_event"),
         ]
         # Queue-only rework (#981): the policy table pins every row to a non-"defer" value,
         # so no matrix row can exercise full_ci_deferred's True branch. Assert that invariant
@@ -2075,7 +2054,7 @@ def assert_ci_policy_outputs_matrix() -> None:
         # policy_path="defer" directly (verify_ci_provenance / backtester), not via this table.
         if any(expected == "defer" for *_, expected, _reason in cases):
             raise AssertionError("policy matrix must not expect 'defer' — defer is unreachable via the table")
-        for event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref, docs_only, expected, reason in cases:
+        for event_name, action, draft, base_changed, ref, docs_only, expected, reason in cases:
             code, stdout, stderr = run_cli(
                 [
                     "ci-policy",
@@ -2091,8 +2070,6 @@ def assert_ci_policy_outputs_matrix() -> None:
                     "",
                     "--pull-request-base-changed",
                     base_changed,
-                    "--workflow-dispatch-full-ci",
-                    workflow_dispatch_full_ci,
                     "--docs-only",
                     docs_only,
                     "--ref",
@@ -2112,8 +2089,7 @@ def assert_ci_policy_outputs_matrix() -> None:
                 raise AssertionError(f"ci-policy must expose reason {reason}: {output}")
             if output.get("expected_event_class") != expected_event_classes[reason]:
                 raise AssertionError(f"ci-policy must expose expected_event_class for {reason}: {output}")
-            name_key = reason if reason == "workflow_dispatch_full_ci" else expected
-            expected_gate, expected_backtester_gate = gate_names[name_key]
+            expected_gate, expected_backtester_gate = gate_names[expected]
             if output.get("gate_name") != expected_gate:
                 raise AssertionError(f"ci-policy must expose gate_name {expected_gate}: {output}")
             if output.get("backtester_gate_name") != expected_backtester_gate:
@@ -2138,8 +2114,6 @@ def assert_ci_policy_outputs_matrix() -> None:
                 "mergify/merge-queue/83d4b0be7e",
                 "--pull-request-base-changed",
                 "false",
-                "--workflow-dispatch-full-ci",
-                "",
                 "--docs-only",
                 "false",
                 "--ref",
@@ -2174,8 +2148,6 @@ def assert_ci_policy_outputs_matrix() -> None:
                 "mergify/merge-queue/83d4b0be7e",
                 "--pull-request-base-changed",
                 "false",
-                "--workflow-dispatch-full-ci",
-                "",
                 "--docs-only",
                 "true",
                 "--ref",
@@ -2204,8 +2176,6 @@ def assert_ci_policy_outputs_matrix() -> None:
                 "",
                 "--pull-request-base-changed",
                 "false",
-                "--workflow-dispatch-full-ci",
-                "",
                 "--docs-only",
                 "true",
                 "--ref",
@@ -2235,8 +2205,6 @@ def assert_ci_policy_outputs_matrix() -> None:
                 "",
                 "--pull-request-base-changed",
                 "false",
-                "--workflow-dispatch-full-ci",
-                "",
                 "--docs-only",
                 "true",
                 "--ref",
@@ -2248,23 +2216,16 @@ def assert_ci_policy_outputs_matrix() -> None:
         output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
         if output.get("ci_policy_path") != "full":
             raise AssertionError(f"force_full_ci must force draft PR events to full, got {output}")
-        # Queue-only rework (#981): force_full_ci keeps ci_policy_path == "full" (heavy
-        # lanes still run) but the gate name is now a pure function of the event, so a
-        # pull_request — whose head run is never proof of the squash-merged commit —
-        # publishes the NON-required gate-iteration, not the required "gate".
-        if output.get("gate_name") != "gate-iteration" or output.get("backtester_gate_name") != "backtester-gate-iteration":
-            raise AssertionError(f"force_full_ci on a pull_request must demote to non-required gate names, got {output}")
+        if output.get("gate_name") != "gate" or output.get("backtester_gate_name") != "backtester-gate":
+            raise AssertionError(f"force_full_ci on a pull_request must publish required gate names, got {output}")
         if output.get("expected_event_class") != "full":
             raise AssertionError(f"force_full_ci must publish full event class, got {output}")
 
 
 def assert_ci_policy_gate_names_are_event_based() -> None:
-    # Queue-only rework (#981): the gate name is a pure function of (event_name,
-    # reason) and never the policy VALUE. The required "gate" is reachable only by
-    # merge_group, push/main_push, tag, and the actor-verified mergify temp PR.
-    # Every ordinary pull_request — regardless of action/draft/base-change — earns
-    # only the non-required gate-iteration, so a PR-head run cannot satisfy the
-    # required gate that the merge queue actually merges on.
+    # Draft pull_request and workflow_dispatch runs publish only iteration feedback.
+    # Ready pull_request, merge-boundary, push, tag, docs, noop, and actor-bound
+    # Mergify proof paths publish the required gate names.
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
@@ -2274,21 +2235,26 @@ def assert_ci_policy_gate_names_are_event_based() -> None:
     backtester_required = config.gate_names["backtester_required"]
     backtester_iteration = config.gate_names["backtester_iteration"]
 
-    # Non-PR events that genuinely validate the to-be-merged commit keep the
-    # required gate name, plus the SOLE pull_request that earns it: the actor-bound
-    # mergify merge-queue temp PR (draft head ref + sender == bound mergify actor).
+    # Non-PR proof events and ready PR proof/carry-forward events keep the
+    # required gate name, plus the actor-bound Mergify merge-queue temp PR.
     required_cases = [
-        ("push", "", False, False, "", "refs/heads/main", -1, ""),
-        ("push", "", False, False, "", "refs/tags/v1.2.3", -1, ""),
-        ("merge_group", "checks_requested", False, False, "", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", -1, ""),
-        ("unknown_event", "", False, False, "", "refs/heads/codex/branch", -1, ""),
+        ("push", "", False, False, "refs/heads/main", -1, ""),
+        ("push", "", False, False, "refs/tags/v1.2.3", -1, ""),
+        ("merge_group", "checks_requested", False, False, "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", -1, ""),
+        ("unknown_event", "", False, False, "refs/heads/codex/branch", -1, ""),
+        ("pull_request", "opened", False, False, "refs/pull/1/merge", 4242, ""),
+        ("pull_request", "synchronize", False, False, "refs/pull/1/merge", 4242, ""),
+        ("pull_request", "edited", False, True, "refs/pull/1/merge", 4242, ""),
+        ("pull_request", "edited", False, False, "refs/pull/1/merge", 4242, ""),
+        ("pull_request", "reopened", False, False, "refs/pull/1/merge", 4242, ""),
+        ("pull_request", "ready_for_review", False, False, "refs/pull/1/merge", 4242, ""),
     ]
     for action in ("opened", "synchronize", "reopened"):
         required_cases.append(
-            ("pull_request", action, True, False, "", "refs/pull/965/merge", actor_id, "mergify/merge-queue/abc123")
+            ("pull_request", action, True, False, "refs/pull/965/merge", actor_id, "mergify/merge-queue/abc123")
         )
     saw_mergify_required = False
-    for event_name, action, draft, base_changed, wfd, ref, sender, head_ref in required_cases:
+    for event_name, action, draft, base_changed, ref, sender, head_ref in required_cases:
         result = module.evaluate_ci_policy(
             config,
             event_name=event_name,
@@ -2296,7 +2262,6 @@ def assert_ci_policy_gate_names_are_event_based() -> None:
             pull_request_draft=draft,
             pull_request_head_ref=head_ref,
             pull_request_base_changed=base_changed,
-            workflow_dispatch_full_ci=wfd,
             event_sender_id=sender,
             ref=ref,
         )
@@ -2307,9 +2272,10 @@ def assert_ci_policy_gate_names_are_event_based() -> None:
     if not saw_mergify_required:
         raise AssertionError("matrix must exercise the actor-bound mergify temp PR required gate")
 
-    # workflow_dispatch publishes feedback-only names (dispatch_full vs iteration).
-    saw_dispatch_full = saw_dispatch_iteration = False
-    for full_ci in ("", "false", "true", "TRUE", " true "):
+    # workflow_dispatch is always feedback-only iteration, including values that
+    # used to request full CI before the dispatch-full path was removed.
+    saw_dispatch_iteration = False
+    for legacy_full_ci in ("", "false", "true", "TRUE", " true "):
         result = module.evaluate_ci_policy(
             config,
             event_name="workflow_dispatch",
@@ -2317,60 +2283,49 @@ def assert_ci_policy_gate_names_are_event_based() -> None:
             pull_request_draft=False,
             pull_request_head_ref="",
             pull_request_base_changed=False,
-            workflow_dispatch_full_ci=full_ci,
             event_sender_id=-1,
             ref="refs/heads/codex/branch",
         )
-        if full_ci == "true":
-            saw_dispatch_full = True
-            expected_names = ("gate-dispatch", "backtester-gate-dispatch")
-        else:
-            saw_dispatch_iteration = True
-            expected_names = (gate_iteration, backtester_iteration)
+        saw_dispatch_iteration = True
+        expected_names = (gate_iteration, backtester_iteration)
         if (result.gate_name, result.backtester_gate_name) != expected_names:
-            raise AssertionError(f"workflow_dispatch must publish feedback-only names: {full_ci!r} {result}")
+            raise AssertionError(f"workflow_dispatch must publish iteration names: {legacy_full_ci!r} {result}")
 
-    # Every ordinary pull_request (sender is NOT the mergify actor) publishes ONLY
-    # the non-required gate-iteration regardless of action/draft/base-change.
+    # Draft pull_request events stay on the non-required gate-iteration.
     saw_pr_iteration = False
-    for action in ("opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft", "edited", "labeled"):
-        for draft in (False, True):
-            for base_changed in (False, True):
-                if action == "ready_for_review" and draft:
-                    assert_raises(
-                        "ready_for_review cannot be on a draft PR",
-                        lambda action=action, draft=draft, base_changed=base_changed: module.evaluate_ci_policy(
-                            config,
-                            event_name="pull_request",
-                            event_action=action,
-                            pull_request_draft=draft,
-                            pull_request_head_ref="",
-                            pull_request_base_changed=base_changed,
-                            workflow_dispatch_full_ci="",
-                            event_sender_id=4242,
-                            ref="refs/pull/1/merge",
-                        ),
-                    )
-                    continue
-                result = module.evaluate_ci_policy(
+    for action in ("opened", "synchronize", "reopened", "converted_to_draft", "edited"):
+        for base_changed in (False, True):
+            result = module.evaluate_ci_policy(
+                config,
+                event_name="pull_request",
+                event_action=action,
+                pull_request_draft=True,
+                pull_request_head_ref="",
+                pull_request_base_changed=base_changed,
+                event_sender_id=4242,
+                ref="refs/pull/1/merge",
+            )
+            case_label = ("pull_request", action, True, base_changed)
+            if result.gate_name == gate_required or result.backtester_gate_name == backtester_required:
+                raise AssertionError(f"draft pull_request must never publish the required gate: {case_label} {result}")
+            if (result.gate_name, result.backtester_gate_name) != (gate_iteration, backtester_iteration):
+                raise AssertionError(f"draft pull_request must publish gate-iteration: {case_label} {result}")
+            saw_pr_iteration = True
+    assert_raises(
+        "ready_for_review cannot be on a draft PR",
+        lambda: module.evaluate_ci_policy(
                     config,
                     event_name="pull_request",
-                    event_action=action,
-                    pull_request_draft=draft,
+                    event_action="ready_for_review",
+                    pull_request_draft=True,
                     pull_request_head_ref="",
-                    pull_request_base_changed=base_changed,
-                    workflow_dispatch_full_ci="",
+                    pull_request_base_changed=False,
                     event_sender_id=4242,
                     ref="refs/pull/1/merge",
-                )
-                case_label = ("pull_request", action, draft, base_changed)
-                if result.gate_name == gate_required or result.backtester_gate_name == backtester_required:
-                    raise AssertionError(f"ordinary pull_request must never publish the required gate: {case_label} {result}")
-                if (result.gate_name, result.backtester_gate_name) != (gate_iteration, backtester_iteration):
-                    raise AssertionError(f"ordinary pull_request must publish gate-iteration: {case_label} {result}")
-                saw_pr_iteration = True
-    if not (saw_dispatch_full and saw_dispatch_iteration and saw_pr_iteration):
-        raise AssertionError("event-based naming matrix must exercise dispatch full/iteration and PR iteration")
+        ),
+    )
+    if not (saw_dispatch_iteration and saw_pr_iteration):
+        raise AssertionError("event-based naming matrix must exercise dispatch iteration and PR iteration")
 
 
 def required_gate_event_classes_from_resolver(module, config) -> set[str]:
@@ -2403,52 +2358,49 @@ def required_gate_event_classes_from_resolver(module, config) -> set[str]:
         "mergify/merge-queue/abc123abcd",
         "tmp-mergify/merge-queue/abc123abcd",
     )
-    workflow_dispatch_values = ("", "false", "true", "TRUE", " true ", "1")
     sender_ids = (-1, 4242, actor_id)
 
     for event_name in event_names:
         for action in actions:
             for draft in (False, True):
                 for base_changed in (False, True):
-                    for workflow_dispatch_full_ci in workflow_dispatch_values:
-                        for ref in refs:
-                            for sender_id in sender_ids:
-                                for head_ref in head_refs:
-                                    for docs_only in (False, True):
-                                        try:
-                                            result = module.evaluate_ci_policy(
-                                                config,
-                                                event_name=event_name,
-                                                event_action=action,
-                                                pull_request_draft=draft,
-                                                pull_request_head_ref=head_ref,
-                                                pull_request_base_changed=base_changed,
-                                                workflow_dispatch_full_ci=workflow_dispatch_full_ci,
-                                                docs_only=docs_only,
-                                                event_sender_id=sender_id,
-                                                ref=ref,
-                                            )
-                                        except module.ProvenanceError:
-                                            continue
-                                        suffix = module.gate_name_suffix_for(
-                                            event_name,
-                                            result.reason,
-                                            result.ci_policy_path,
+                    for ref in refs:
+                        for sender_id in sender_ids:
+                            for head_ref in head_refs:
+                                for docs_only in (False, True):
+                                    try:
+                                        result = module.evaluate_ci_policy(
+                                            config,
+                                            event_name=event_name,
+                                            event_action=action,
+                                            pull_request_draft=draft,
+                                            pull_request_head_ref=head_ref,
+                                            pull_request_base_changed=base_changed,
+                                            docs_only=docs_only,
+                                            event_sender_id=sender_id,
+                                            ref=ref,
                                         )
-                                        has_required_names = (
-                                            result.gate_name == gate_required
-                                            and result.backtester_gate_name == backtester_required
+                                    except module.ProvenanceError:
+                                        continue
+                                    suffix = module.gate_name_suffix_for(
+                                        event_name,
+                                        result.reason,
+                                        result.ci_policy_path,
+                                    )
+                                    has_required_names = (
+                                        result.gate_name == gate_required
+                                        and result.backtester_gate_name == backtester_required
+                                    )
+                                    if suffix == "required" and not has_required_names:
+                                        raise AssertionError(
+                                            f"required suffix must publish required gate names: {result}"
                                         )
-                                        if suffix == "required" and not has_required_names:
-                                            raise AssertionError(
-                                                f"required suffix must publish required gate names: {result}"
-                                            )
-                                        if has_required_names and suffix != "required":
-                                            raise AssertionError(
-                                                f"required gate names must derive from required suffix: {result}"
-                                            )
-                                        if suffix == "required":
-                                            required_event_classes.add(result.expected_event_class)
+                                    if has_required_names and suffix != "required":
+                                        raise AssertionError(
+                                            f"required gate names must derive from required suffix: {result}"
+                                        )
+                                    if suffix == "required":
+                                        required_event_classes.add(result.expected_event_class)
     return required_event_classes
 
 
@@ -2515,8 +2467,6 @@ def assert_mergify_temp_pr_requires_actor_binding() -> None:
             "mergify/merge-queue/83d4b0be7e",
             "--pull-request-base-changed",
             "false",
-            "--workflow-dispatch-full-ci",
-            "",
             "--docs-only",
             "false",
             "--ref",
@@ -2580,8 +2530,16 @@ def assert_mergify_temp_pr_requires_actor_binding() -> None:
         if code != 0:
             raise AssertionError(f"non-draft tmp mergify ci-policy failed: {stderr}")
         tmp_non_draft = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
-        if tmp_non_draft.get("reason") == "mergify_temp_pr" or tmp_non_draft.get("gate_name") != "gate-iteration":
-            raise AssertionError(f"non-draft tmp mergify ref must demote to gate-iteration: {tmp_non_draft}")
+        if (
+            tmp_non_draft.get("reason") == "mergify_temp_pr"
+            or tmp_non_draft.get("reason") != "ready_pr"
+            or tmp_non_draft.get("gate_name") != "gate"
+            or tmp_non_draft.get("backtester_gate_name") != "backtester-gate"
+            or tmp_non_draft.get("full_ci_required") != "true"
+        ):
+            raise AssertionError(
+                f"non-draft tmp mergify ref must fall back to normal ready PR proof: {tmp_non_draft}"
+            )
 
         code, stdout, stderr = run_with_event_sender(tmp_args, "12345")
         if code != 0:
@@ -2604,7 +2562,8 @@ def assert_mergify_temp_pr_requires_actor_binding() -> None:
 def assert_mergify_temp_pr_ready_event_uses_author_binding() -> None:
     # #1104 proof PRs can be marked ready by a human, so github.event.sender.id is not
     # always mergify[bot]. Bind to pull_request.user.id as well; a spoofed head ref
-    # with a non-Mergify author must still demote.
+    # with a non-Mergify author must not earn mergify_temp_pr, but still follows the
+    # normal ready_for_review full-PR policy.
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
         base_args = [
@@ -2623,8 +2582,6 @@ def assert_mergify_temp_pr_ready_event_uses_author_binding() -> None:
             "37929162",
             "--pull-request-base-changed",
             "false",
-            "--workflow-dispatch-full-ci",
-            "",
             "--docs-only",
             "false",
             "--ref",
@@ -2651,8 +2608,16 @@ def assert_mergify_temp_pr_ready_event_uses_author_binding() -> None:
         if code != 0:
             raise AssertionError(f"human-ready spoof proof PR ci-policy failed: {stderr}")
         spoof = output_dict(stdout)
-        if spoof.get("reason") == "mergify_temp_pr" or spoof.get("gate_name") != "gate-iteration":
-            raise AssertionError(f"non-Mergify-authored proof-shaped PR must demote: {spoof}")
+        if (
+            spoof.get("reason") == "mergify_temp_pr"
+            or spoof.get("reason") != "ready_for_review"
+            or spoof.get("gate_name") != "gate"
+            or spoof.get("backtester_gate_name") != "backtester-gate"
+            or spoof.get("full_ci_required") != "true"
+        ):
+            raise AssertionError(
+                f"non-Mergify-authored proof-shaped PR must fall back to normal ready proof: {spoof}"
+            )
 
         half_spoof_args = list(base_args)
         half_spoof_args[half_spoof_args.index("--pull-request-author-id") + 1] = "1376128"
@@ -2660,14 +2625,23 @@ def assert_mergify_temp_pr_ready_event_uses_author_binding() -> None:
         if code != 0:
             raise AssertionError(f"split-identity ready proof PR ci-policy failed: {stderr}")
         half_spoof = output_dict(stdout)
-        if half_spoof.get("reason") == "mergify_temp_pr" or half_spoof.get("gate_name") != "gate-iteration":
-            raise AssertionError(f"Mergify sender with non-Mergify author must demote: {half_spoof}")
+        if (
+            half_spoof.get("reason") == "mergify_temp_pr"
+            or half_spoof.get("reason") != "ready_for_review"
+            or half_spoof.get("gate_name") != "gate"
+            or half_spoof.get("backtester_gate_name") != "backtester-gate"
+            or half_spoof.get("full_ci_required") != "true"
+        ):
+            raise AssertionError(
+                f"Mergify sender with non-Mergify author must fall back to normal ready proof: {half_spoof}"
+            )
 
 
 def assert_mergify_temp_pr_synchronize_requires_sender_binding() -> None:
     # Author binding exists only to preserve the human ready_for_review transition on a
     # Mergify-authored proof PR. Byte-changing events still need the sender to be
-    # Mergify; otherwise a human-triggered update could earn the required queue gate.
+    # Mergify; otherwise a human-triggered update falls back to normal ready PR proof
+    # instead of earning the Mergify-specific reason.
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
         args = [
@@ -2686,8 +2660,6 @@ def assert_mergify_temp_pr_synchronize_requires_sender_binding() -> None:
             "37929162",
             "--pull-request-base-changed",
             "false",
-            "--workflow-dispatch-full-ci",
-            "",
             "--docs-only",
             "false",
             "--ref",
@@ -2698,8 +2670,16 @@ def assert_mergify_temp_pr_synchronize_requires_sender_binding() -> None:
         if code != 0:
             raise AssertionError(f"human-sync Mergify proof PR ci-policy failed: {stderr}")
         result = output_dict(stdout)
-        if result.get("reason") == "mergify_temp_pr" or result.get("gate_name") != "gate-iteration":
-            raise AssertionError(f"human-sync Mergify proof PR must demote without sender binding: {result}")
+        if (
+            result.get("reason") == "mergify_temp_pr"
+            or result.get("reason") != "ready_pr"
+            or result.get("gate_name") != "gate"
+            or result.get("backtester_gate_name") != "backtester-gate"
+            or result.get("full_ci_required") != "true"
+        ):
+            raise AssertionError(
+                f"human-sync Mergify proof PR must fall back to normal ready PR proof: {result}"
+            )
 
 
 def assert_mergify_temp_pr_edited_event_splits_metadata_from_base_change() -> None:
@@ -2724,8 +2704,6 @@ def assert_mergify_temp_pr_edited_event_splits_metadata_from_base_change() -> No
             "37929162",
             "--pull-request-base-changed",
             "false",
-            "--workflow-dispatch-full-ci",
-            "",
             "--docs-only",
             "false",
             "--ref",
@@ -2834,8 +2812,6 @@ def assert_ci_policy_non_numeric_sender_id_does_not_crash() -> None:
                 "mergify/merge-queue/83d4b0be7e",
                 "--pull-request-base-changed",
                 "false",
-                "--workflow-dispatch-full-ci",
-                "",
                 "--docs-only",
                 "false",
                 "--ref",
@@ -2853,12 +2829,15 @@ def assert_ci_policy_non_numeric_sender_id_does_not_crash() -> None:
 def assert_mergify_actor_binding_demotes_every_full_action() -> None:
     # GAP-1 canary across the WHOLE full-CI action set (imported, never re-listed): a
     # spoofed mergify head ref from a non-actor sender must NEVER earn reason
-    # mergify_temp_pr and must demote to the non-required gate-iteration, for every
-    # action that mergify_temp_pr_requires_full_ci treats as full.
+    # mergify_temp_pr. Draft fallback actions stay on gate-iteration; non-draft
+    # ready_for_review falls back to the normal ready-PR full gate.
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
+    gate_required = config.gate_names["gate_required"]
     gate_iteration = config.gate_names["gate_iteration"]
+    backtester_required = config.gate_names["backtester_required"]
+    backtester_iteration = config.gate_names["backtester_iteration"]
     non_actor = config.mergify_temp_pr_actor_id + 1
     cases = [(a, False) for a in sorted(module.MERGIFY_TEMP_PR_FULL_ACTIONS)] + [("edited", True)]
     for action, base_changed in cases:
@@ -2873,22 +2852,31 @@ def assert_mergify_actor_binding_demotes_every_full_action() -> None:
             pull_request_draft=draft,
             pull_request_head_ref="mergify/merge-queue/abc123",
             pull_request_base_changed=base_changed,
-            workflow_dispatch_full_ci="",
             event_sender_id=non_actor,
             ref="refs/pull/965/merge",
         )
         if result.reason == "mergify_temp_pr":
             raise AssertionError(f"{action}: non-actor sender must never earn mergify_temp_pr: {result}")
-        if result.full_ci_required or result.gate_name != gate_iteration:
+        if action == "ready_for_review":
+            if (
+                result.reason != "ready_for_review"
+                or not result.full_ci_required
+                or result.gate_name != gate_required
+                or result.backtester_gate_name != backtester_required
+            ):
+                raise AssertionError(f"{action}: non-actor spoof must fall back to normal ready proof: {result}")
+        elif result.full_ci_required or (
+            result.gate_name,
+            result.backtester_gate_name,
+        ) != (gate_iteration, backtester_iteration):
             raise AssertionError(f"{action}: non-actor spoof must demote to gate-iteration: {result}")
 
 
-def assert_ready_pr_defers_proof_to_merge_boundary_without_required_gate() -> None:
-    # Comprehensive #981 proof: a ready PR defers heavy lanes and never earns the
-    # required gate; the required gate is produced ONLY at the merge boundary
-    # (merge_group, the actor-bound mergify temp PR, push to main). The iteration
-    # verdict succeeds with heavy jobs skipped, while a full/required verdict over the
-    # SAME iteration-class evidence fails closed.
+def assert_ready_pr_uses_automatic_full_signal_without_dispatch_full() -> None:
+    # Standing CI policy: draft PRs and manual workflow_dispatch are the cheap
+    # iteration loop. A ready PR gets the one automatic full pull_request signal;
+    # no-code ready transitions carry required-context noop proof, and merge_group
+    # remains the final merge gate.
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
@@ -2898,7 +2886,7 @@ def assert_ready_pr_defers_proof_to_merge_boundary_without_required_gate() -> No
     backtester_required = config.gate_names["backtester_required"]
     backtester_iteration = config.gate_names["backtester_iteration"]
 
-    # (A) ready PR defers.
+    # (A) ready PR opened/synchronize publishes the required full pull_request gate.
     ready = module.evaluate_ci_policy(
         config,
         event_name="pull_request",
@@ -2906,21 +2894,64 @@ def assert_ready_pr_defers_proof_to_merge_boundary_without_required_gate() -> No
         pull_request_draft=False,
         pull_request_head_ref="",
         pull_request_base_changed=False,
-        workflow_dispatch_full_ci="",
         event_sender_id=4242,
         ref="refs/pull/1/merge",
     )
-    if ready.ci_policy_path != "iteration" or ready.full_ci_required or ready.full_ci_deferred:
-        raise AssertionError(f"ready PR must defer to iteration with full_ci_required false: {ready}")
-    if ready.expected_event_class != "iteration":
-        raise AssertionError(f"ready PR must resolve expected_event_class iteration: {ready}")
-    # (B) ready PR earns only the non-required gate.
-    if ready.gate_name != gate_iteration or ready.gate_name == gate_required:
-        raise AssertionError(f"ready PR must publish gate-iteration, never the required gate: {ready}")
-    if ready.backtester_gate_name != backtester_iteration:
-        raise AssertionError(f"ready PR must publish backtester-gate-iteration: {ready}")
-    # (C) iteration verdict succeeds on skipped-heavy evidence; the negative control
+    if ready.ci_policy_path != "full" or not ready.full_ci_required or ready.full_ci_deferred:
+        raise AssertionError(f"ready PR must resolve to full required CI: {ready}")
+    if ready.expected_event_class != "full":
+        raise AssertionError(f"ready PR must resolve expected_event_class full: {ready}")
+    if ready.gate_name != gate_required or ready.backtester_gate_name != backtester_required:
+        raise AssertionError(f"ready PR must publish required gate names: {ready}")
+    full_jobs = base_ci_gate_jobs()
+    module.evaluate_ci_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=False,
+        carry_forward_verified=False,
+        job_results=full_jobs,
+        build_required=False,
+    )
+
+    # (B) a ready PR edited/reopened without a content/base change carries the
+    # required context as noop, rather than burning another full run.
+    for action, reason in (("edited", "ready_pr_edited_no_base"), ("reopened", "ready_pr_reopened")):
+        noop = module.evaluate_ci_policy(
+            config,
+            event_name="pull_request",
+            event_action=action,
+            pull_request_draft=False,
+            pull_request_head_ref="",
+            pull_request_base_changed=False,
+            event_sender_id=4242,
+            ref="refs/pull/1/merge",
+        )
+        if (
+            noop.reason != reason
+            or noop.ci_policy_path != "noop"
+            or noop.expected_event_class != "noop"
+            or noop.full_ci_required
+            or noop.gate_name != gate_required
+            or noop.backtester_gate_name != backtester_required
+        ):
+            raise AssertionError(f"{action} ready PR must publish required noop proof: {noop}")
+
+    # (C) draft PR iteration succeeds on skipped-heavy evidence; the negative control
     # — a full/required verdict over that same evidence — fails closed.
+    draft = module.evaluate_ci_policy(
+        config,
+        event_name="pull_request",
+        event_action="opened",
+        pull_request_draft=True,
+        pull_request_head_ref="",
+        pull_request_base_changed=False,
+        event_sender_id=4242,
+        ref="refs/pull/1/merge",
+    )
+    if draft.ci_policy_path != "iteration" or draft.gate_name != gate_iteration:
+        raise AssertionError(f"draft PR must stay on the cheap iteration lane: {draft}")
     iteration_jobs = base_ci_gate_jobs(
         deny="skipped",
         clippy="skipped",
@@ -2958,7 +2989,7 @@ def assert_ready_pr_defers_proof_to_merge_boundary_without_required_gate() -> No
             build_required=False,
         ),
     )
-    # (D) the merge boundary produces the required gate from every trusted producer.
+    # (D) the merge boundary still produces full proof from every trusted producer.
     merge_group = module.evaluate_ci_policy(
         config,
         event_name="merge_group",
@@ -2966,7 +2997,6 @@ def assert_ready_pr_defers_proof_to_merge_boundary_without_required_gate() -> No
         pull_request_draft=False,
         pull_request_head_ref="",
         pull_request_base_changed=False,
-        workflow_dispatch_full_ci="",
         event_sender_id=-1,
         ref="refs/heads/gh-readonly-queue/main/pr-1-deadbeef",
     )
@@ -2983,7 +3013,6 @@ def assert_ready_pr_defers_proof_to_merge_boundary_without_required_gate() -> No
         pull_request_draft=True,
         pull_request_head_ref="mergify/merge-queue/abc123",
         pull_request_base_changed=False,
-        workflow_dispatch_full_ci="",
         event_sender_id=actor_id,
         ref="refs/pull/965/merge",
     )
@@ -2996,13 +3025,12 @@ def assert_ready_pr_defers_proof_to_merge_boundary_without_required_gate() -> No
         pull_request_draft=False,
         pull_request_head_ref="",
         pull_request_base_changed=False,
-        workflow_dispatch_full_ci="",
         event_sender_id=-1,
         ref="refs/heads/main",
     )
     if main_push.gate_name != gate_required:
         raise AssertionError(f"push to main must produce the required gate: {main_push}")
-    # (E) force_full_ci on a pull_request keeps full lanes but demotes the gate.
+    # (E) force_full_ci on a pull_request also publishes the required full gate.
     with tempfile.TemporaryDirectory() as tmp:
         forced = module.load_config(
             write_config(pathlib.Path(tmp), CONFIG_TOML.replace("force_full_ci = false", "force_full_ci = true"))
@@ -3014,14 +3042,13 @@ def assert_ready_pr_defers_proof_to_merge_boundary_without_required_gate() -> No
         pull_request_draft=False,
         pull_request_head_ref="",
         pull_request_base_changed=False,
-        workflow_dispatch_full_ci="",
         event_sender_id=4242,
         ref="refs/pull/1/merge",
     )
     if forced_result.reason != "force_full_ci" or forced_result.ci_policy_path != "full":
         raise AssertionError(f"force_full_ci must keep ci_policy_path full: {forced_result}")
-    if forced_result.gate_name != gate_iteration:
-        raise AssertionError(f"force_full_ci on a pull_request must demote to gate-iteration: {forced_result}")
+    if forced_result.gate_name != gate_required or forced_result.backtester_gate_name != backtester_required:
+        raise AssertionError(f"force_full_ci on a pull_request must publish required gates: {forced_result}")
     # (F) a spoofed mergify head ref from a non-actor sender stays gate-iteration.
     spoof = module.evaluate_ci_policy(
         config,
@@ -3030,7 +3057,6 @@ def assert_ready_pr_defers_proof_to_merge_boundary_without_required_gate() -> No
         pull_request_draft=True,
         pull_request_head_ref="mergify/merge-queue/abc123",
         pull_request_base_changed=False,
-        workflow_dispatch_full_ci="",
         event_sender_id=4242,
         ref="refs/pull/965/merge",
     )
@@ -3044,25 +3070,15 @@ def assert_dispatch_run_names_come_from_config() -> None:
         config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
     if config.dispatch_run_name_default != "CI":
         raise AssertionError(config)
-    if config.dispatch_run_name_full != "CI [dispatch:full]":
-        raise AssertionError(config)
     if config.dispatch_run_name_iteration != "CI [dispatch:iteration]":
         raise AssertionError(config)
     if config.dispatch_proof_gate_job != "gate":
-        raise AssertionError(config)
-    if config.gate_names["gate_dispatch_full"] != "gate-dispatch":
-        raise AssertionError(config)
-    if config.gate_names["backtester_dispatch_full"] != "backtester-gate-dispatch":
         raise AssertionError(config)
 
 
 def assert_gate_names_reject_github_output_control_chars() -> None:
     module = load_script()
     unsafe_values = [
-        ("gate_dispatch_full", "gate-dispatch", "gate-dispatch "),
-        ("backtester_dispatch_full", "backtester-gate-dispatch", " backtester-gate-dispatch"),
-        ("gate_dispatch_full", "gate-dispatch", "gate\\nignored=1"),
-        ("backtester_dispatch_full", "backtester-gate-dispatch", "backtester-gate\\rignored=1"),
         ("gate_iteration", "gate-iteration", "${{ github.ref }}"),
         ("backtester_iteration", "backtester-gate-iteration", "backtester-gate-iteration }}"),
     ]
@@ -3092,14 +3108,6 @@ def assert_gate_names_reject_collisions() -> None:
             'backtester_iteration = "backtester-gate-iteration"',
             'backtester_iteration = "backtester-gate"',
         ),
-        "ci_provenance.gate_names.gate_dispatch_full must not equal gate_required": CONFIG_TOML.replace(
-            'gate_dispatch_full = "gate-dispatch"',
-            'gate_dispatch_full = "gate"',
-        ),
-        "ci_provenance.gate_names.backtester_dispatch_full must not equal backtester_required": CONFIG_TOML.replace(
-            'backtester_dispatch_full = "backtester-gate-dispatch"',
-            'backtester_dispatch_full = "backtester-gate"',
-        ),
     }
     for fragment, config_text in cases.items():
         with tempfile.TemporaryDirectory() as tmp:
@@ -3123,31 +3131,31 @@ EXPECTED_REQUIRED_CHECK_PROOF_RULES = {
     "gate": {
         "runs_on_tags": True,
         "supports_carry_forward": True,
-        "fresh": ("full", "tag_reuse"),
-        "carry_forward": (),
+        "fresh": ("docs", "full", "tag_reuse"),
+        "carry_forward": ("noop",),
     },
     "backtester-gate": {
         "runs_on_tags": True,
-        "supports_carry_forward": True,
-        "fresh": ("full", "tag_reuse"),
+        "supports_carry_forward": False,
+        "fresh": ("docs", "full", "noop", "tag_reuse"),
         "carry_forward": (),
     },
     "host-health": {
         "runs_on_tags": False,
         "supports_carry_forward": False,
-        "fresh": ("full", "docs", "iteration"),
+        "fresh": ("docs", "full", "iteration", "noop"),
         "carry_forward": (),
     },
     "actionlint": {
         "runs_on_tags": False,
         "supports_carry_forward": False,
-        "fresh": ("full", "docs", "iteration"),
+        "fresh": ("docs", "full", "iteration", "noop"),
         "carry_forward": (),
     },
     "coverage-enforcer": {
         "runs_on_tags": False,
         "supports_carry_forward": False,
-        "fresh": ("full", "docs", "iteration"),
+        "fresh": ("docs", "full", "iteration", "noop"),
         "carry_forward": (),
     },
 }
@@ -3181,33 +3189,33 @@ def assert_required_checks_registry_rejects_unreachable_proof_rules() -> None:
         "supports_carry_forward=false": replace_once(
             CONFIG_TOML,
             """[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 carry_forward = []
 """,
             """[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["full", "docs"]
-carry_forward = ["iteration"]
+fresh = ["docs", "full", "iteration"]
+carry_forward = ["noop"]
 """,
         ),
         "carry_forward must be": replace_once(
             CONFIG_TOML,
             """[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 carry_forward = []
 """,
             """[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 carry_forward = ["tag_reuse"]
 """,
         ),
         "runs_on_tags=false": replace_once(
             CONFIG_TOML,
             """[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["full", "docs", "iteration"]
+fresh = ["docs", "full", "iteration", "noop"]
 carry_forward = []
 """,
             """[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
+fresh = ["docs", "full", "iteration", "noop", "tag_reuse"]
 carry_forward = []
 """,
         ),
@@ -3308,23 +3316,23 @@ required = false
         "proof_rule.fresh must be": replace_once(
             CONFIG_TOML,
             """[ci_provenance.required_checks.gate.proof_rule]
-fresh = ["full", "tag_reuse"]
-carry_forward = []
+fresh = ["docs", "full", "tag_reuse"]
+carry_forward = ["noop"]
 """,
             """[ci_provenance.required_checks.gate.proof_rule]
-fresh = ["full", "docs", "tag_reuse"]
-carry_forward = []
+fresh = ["full", "tag_reuse"]
+carry_forward = ["noop"]
 """,
         ),
         "fresh must be": replace_once(
             CONFIG_TOML,
             """[ci_provenance.required_checks.gate.proof_rule]
-fresh = ["full", "tag_reuse"]
-carry_forward = []
+fresh = ["docs", "full", "tag_reuse"]
+carry_forward = ["noop"]
 """,
             """[ci_provenance.required_checks.gate.proof_rule]
-fresh = ["full", "iteration", "tag_reuse"]
-carry_forward = []
+fresh = ["docs", "full", "iteration", "tag_reuse"]
+carry_forward = ["noop"]
 """,
         ),
     }
@@ -3365,20 +3373,20 @@ def assert_policy_contract_rejects_required_gate_holes() -> None:
             'converted_to_draft = "iteration"',
             'converted_to_draft = "full"',
         ),
-        "ci_provenance.policy.ready_pr must be iteration": CONFIG_TOML.replace(
-            'ready_pr = "iteration"',
+        "ci_provenance.policy.ready_pr must be full": CONFIG_TOML.replace(
             'ready_pr = "full"',
+            'ready_pr = "iteration"',
         ),
-        "ci_provenance.policy.ready_for_review must be iteration": CONFIG_TOML.replace(
-            'ready_for_review = "iteration"',
+        "ci_provenance.policy.ready_for_review must be full": CONFIG_TOML.replace(
             'ready_for_review = "full"',
+            'ready_for_review = "iteration"',
         ),
-        "ci_provenance.policy.ready_pr_edited_no_base must be iteration": CONFIG_TOML.replace(
-            'ready_pr_edited_no_base = "iteration"',
+        "ci_provenance.policy.ready_pr_edited_no_base must be noop": CONFIG_TOML.replace(
+            'ready_pr_edited_no_base = "noop"',
             'ready_pr_edited_no_base = "full"',
         ),
-        "ci_provenance.policy.ready_pr_reopened must be iteration": CONFIG_TOML.replace(
-            'ready_pr_reopened = "iteration"',
+        "ci_provenance.policy.ready_pr_reopened must be noop": CONFIG_TOML.replace(
+            'ready_pr_reopened = "noop"',
             'ready_pr_reopened = "full"',
         ),
         "ci_provenance.policy.main_push must be full": CONFIG_TOML.replace(
@@ -3397,13 +3405,13 @@ def assert_policy_contract_rejects_required_gate_holes() -> None:
             'unknown_event = "full"',
             'unknown_event = "iteration"',
         ),
-        "ci_provenance.policy.workflow_dispatch_full_ci must remain full": CONFIG_TOML.replace(
-            'workflow_dispatch_full_ci = "full"',
-            'workflow_dispatch_full_ci = "iteration"',
-        ),
         "ci_provenance.policy.docs must be docs": CONFIG_TOML.replace(
             'docs = "docs"',
             'docs = "full"',
+        ),
+        "workflow_dispatch_full_ci": CONFIG_TOML.replace(
+            "\nmain_push = \"full\"",
+            '\nworkflow_dispatch_full_ci = "full"\nmain_push = "full"',
         ),
         "ci_provenance.policy has unexpected keys": CONFIG_TOML.replace(
             "\n[ci_provenance.mergify]",
@@ -4964,8 +4972,9 @@ def assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof() -> None:
         ignore_emit_failure=False,
         reuse_found=False,
         carry_forward_verified=False,
-        job_results=skipped_heavy,
+        job_results={**skipped_heavy, "source-fence": "success"},
         build_required=False,
+        docs_required_jobs=("detector", "source-fence"),
     )
     assert_raises(
         "clippy unexpectedly ran during docs",
@@ -4976,8 +4985,9 @@ def assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof() -> None:
             ignore_emit_failure=False,
             reuse_found=False,
             carry_forward_verified=False,
-            job_results={**skipped_heavy, "clippy": "failure"},
+            job_results={**skipped_heavy, "source-fence": "success", "clippy": "failure"},
             build_required=False,
+            docs_required_jobs=("detector", "source-fence"),
         ),
     )
 
@@ -5157,6 +5167,13 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         job_results=skipped_jobs,
         bvs_changed=False,
     )
+    module.evaluate_backtester_gate_verdict(
+        policy_path="docs",
+        expected_event_class="docs",
+        full_ci_deferred=False,
+        job_results=skipped_jobs,
+        bvs_changed=False,
+    )
     assert_raises(
         "clippy unexpectedly ran during backtester no-crate",
         lambda: module.evaluate_backtester_gate_verdict(
@@ -5257,7 +5274,7 @@ def main() -> int:
     assert_parse_event_sender_id_fails_closed()
     assert_ci_policy_non_numeric_sender_id_does_not_crash()
     assert_mergify_actor_binding_demotes_every_full_action()
-    assert_ready_pr_defers_proof_to_merge_boundary_without_required_gate()
+    assert_ready_pr_uses_automatic_full_signal_without_dispatch_full()
     assert_dispatch_run_names_come_from_config()
     assert_gate_names_reject_github_output_control_chars()
     assert_gate_names_reject_collisions()

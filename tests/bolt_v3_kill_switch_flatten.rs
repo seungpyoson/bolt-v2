@@ -267,7 +267,7 @@ fn flatten_supervisor_requires_flattening_state_and_reducing_trading_state() {
     assert_eq!(plan.halt_id(), HALT_ID);
     assert_eq!(
         plan.decision_mode(),
-        BoltV3KillSwitchFlattenDecisionMode::DryRunProofOnly
+        BoltV3KillSwitchFlattenDecisionMode::LiveNodeCommandRouter
     );
 
     assert_eq!(
@@ -374,10 +374,16 @@ fn flatten_plan_commands_bind_metadata_and_nt_position_identity() {
 }
 
 #[test]
-fn flatten_plan_route_kinds_remain_dry_run_proof_only() {
-    for route_kind in [
-        BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter,
-        BoltV3KillSwitchFlattenRouteKind::PerStrategyActionPort,
+fn flatten_plan_route_kinds_select_matching_decision_mode() {
+    for (route_kind, expected_mode) in [
+        (
+            BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter,
+            BoltV3KillSwitchFlattenDecisionMode::LiveNodeCommandRouter,
+        ),
+        (
+            BoltV3KillSwitchFlattenRouteKind::PerStrategyActionPort,
+            BoltV3KillSwitchFlattenDecisionMode::DryRunProofOnly,
+        ),
     ] {
         let mut request = flatten_plan_request(
             KillSwitchState::Flattening {
@@ -388,12 +394,9 @@ fn flatten_plan_route_kinds_remain_dry_run_proof_only() {
         request.route_proof = BoltV3KillSwitchFlattenRouteProof::new(route_kind);
 
         let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(request)
-            .expect("supported route kinds should produce proof-only planned commands");
+            .expect("supported route kinds should produce planned commands");
 
-        assert_eq!(
-            plan.decision_mode(),
-            BoltV3KillSwitchFlattenDecisionMode::DryRunProofOnly
-        );
+        assert_eq!(plan.decision_mode(), expected_mode);
         assert_eq!(
             plan.commands()
                 .first()

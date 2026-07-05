@@ -2070,8 +2070,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     // above by `recover_kill_switch_state_before_live_node_build`, so re-sync NT
     // trading state from the final loss-protection state — otherwise a
     // fail-closed seed would latch admission while leaving NT trading `Active`.
-    let loss_protection =
-        configure_bolt_v3_kill_switch_loss_protection(loaded, &node, submit_admission.clone())?;
+    let loss_protection = configure_bolt_v3_kill_switch_loss_protection(
+        loaded,
+        &node,
+        decision_evidence.clone(),
+        submit_admission.clone(),
+    )?;
     if let Some(protection) = loss_protection.as_ref() {
         let seeded_state = protection.borrow().state().clone();
         sync_nt_trading_state_for_kill_switch(&mut node, &seeded_state);

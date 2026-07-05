@@ -20169,3 +20169,27 @@ literal = '''"poll Polymarket venue-truth endpoints"'''
 context = '''.context("poll Polymarket venue-truth endpoints")?;'''
 classification = "provider_runtime_diagnostic_context"
 reason = "Static error context for fail-closed venue-truth REST polling; cadence, endpoints, account, and credentials remain TOML or SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"kill switch flatten submit sink cannot cancel client_order_id={client_order_id}"'''
+context = '''"kill switch flatten submit sink cannot cancel client_order_id={client_order_id}"'''
+classification = "kill_switch_flatten_submit_sink_diagnostic"
+reason = "Fail-loud diagnostic for an impossible cancel call on the submit-only kill-switch flatten sink; it does not configure route policy, sizing, timing, or venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"kill switch flatten submit sink cannot cancel-all instrument_id={instrument_id}"'''
+context = '''"kill switch flatten submit sink cannot cancel-all instrument_id={instrument_id}"'''
+classification = "kill_switch_flatten_submit_sink_diagnostic"
+reason = "Fail-loud diagnostic for an impossible cancel-all call on the submit-only kill-switch flatten sink; it does not configure route policy, sizing, timing, or venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"kill switch flatten submit sink cannot modify client_order_id={client_order_id}"'''
+context = '''"kill switch flatten submit sink cannot modify client_order_id={client_order_id}"'''
+classification = "kill_switch_flatten_submit_sink_diagnostic"
+reason = "Fail-loud diagnostic for an impossible modify call on the submit-only kill-switch flatten sink; it does not configure route policy, sizing, timing, or venue behavior."

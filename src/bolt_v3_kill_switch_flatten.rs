@@ -234,6 +234,7 @@ impl BoltV3KillSwitchFlattenPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3KillSwitchFlattenDecisionMode {
     DryRunProofOnly,
+    LiveNodeCommandRouter,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -441,9 +442,19 @@ impl BoltV3KillSwitchFlattenSupervisor {
                 forced_reduction_claim: request.forced_reduction_claim.clone(),
             })
             .collect();
+        let decision_mode = match request.route_proof.route_kind() {
+            BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter => {
+                BoltV3KillSwitchFlattenDecisionMode::LiveNodeCommandRouter
+            }
+            BoltV3KillSwitchFlattenRouteKind::PerStrategyActionPort => {
+                BoltV3KillSwitchFlattenDecisionMode::DryRunProofOnly
+            }
+            BoltV3KillSwitchFlattenRouteKind::Unsupported => unreachable!(),
+        };
+
         Ok(BoltV3KillSwitchFlattenPlan {
             halt_id,
-            decision_mode: BoltV3KillSwitchFlattenDecisionMode::DryRunProofOnly,
+            decision_mode,
             candidates: request.snapshot.candidates().to_vec(),
             commands,
         })

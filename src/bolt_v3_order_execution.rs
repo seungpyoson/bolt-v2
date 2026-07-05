@@ -11,11 +11,12 @@ use nautilus_core::Params;
 use nautilus_model::{
     enums::OrderSide,
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId},
+    instruments::InstrumentAny,
     orders::{Order, OrderAny, OrderList},
     types::{Price, Quantity},
 };
 use nautilus_trading::Strategy;
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -26,14 +27,16 @@ use crate::{
         BoltV3OrderIntentClampOutcome, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
         BoltV3OrderIntentOrderFields,
     },
+    bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
     bolt_v3_maker_order_dispatch::{
         MakerOrderCommandSink, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
         dispatch_maker_order_command,
     },
+    bolt_v3_order_intent::{NtOrderBuildInputs, build_nt_order},
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput,
-        BoltV3SubmitAdmissionState, BoltV3SubmitLifecyclePolicy,
+        BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
         build_submit_admission_request_from_order,
     },
 };
@@ -106,7 +109,7 @@ impl BoltV3OrderExecutionPolicy {
         self.route_submit_with_sink(routing, &mut sink, order, context)
     }
 
-    fn route_submit_with_sink<S>(
+    pub(crate) fn route_submit_with_sink<S>(
         self,
         routing: BoltV3SubmitRoutingRequest<'_>,
         sink: &mut S,
@@ -476,19 +479,7 @@ fn venue_truth_exit_position(
 }
 
 fn floor_decimal_to_quantity_precision(value: Decimal, precision: u8) -> Result<Decimal> {
-    let mut multiplier = Decimal::ONE;
-    for _ in std::iter::repeat_n((), usize::from(precision)) {
-        multiplier = multiplier
-            .checked_mul(Decimal::TEN)
-            .ok_or_else(|| anyhow::anyhow!("quantity precision multiplier overflow"))?;
-    }
-    let scaled = value
-        .checked_mul(multiplier)
-        .ok_or_else(|| anyhow::anyhow!("quantity precision scaling overflow"))?;
-    scaled
-        .trunc()
-        .checked_div(multiplier)
-        .ok_or_else(|| anyhow::anyhow!("quantity precision scaling division failed"))
+    Ok(value.round_dp_with_strategy(u32::from(precision), RoundingStrategy::ToZero))
 }
 
 pub struct BoltV3SubmitRoutingRequest<'a> {
@@ -516,9 +507,9 @@ impl<'a> BoltV3SubmitRoutingRequest<'a> {
 
 #[derive(Debug, Clone)]
 pub struct BoltV3SubmitContext {
-    client_id: Option<ClientId>,
-    position_id: Option<PositionId>,
-    params: Option<Params>,
+    pub(crate) client_id: Option<ClientId>,
+    pub(crate) position_id: Option<PositionId>,
+    pub(crate) params: Option<Params>,
 }
 
 impl BoltV3SubmitContext {
@@ -575,6 +566,84 @@ pub struct BoltV3MakerOrderRoutingContext<'a> {
     pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct BoltV3KillSwitchFlattenRoutingContext<'a> {
+    pub execution_client_id: &'a str,
+    pub fallback_price: &'a str,
+    pub instrument: Option<&'a InstrumentAny>,
+    pub max_fee_bps: Decimal,
+    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+}
+
+pub(crate) fn route_kill_switch_flatten_command_with_sink<S>(
+    policy: BoltV3OrderExecutionPolicy,
+    sink: &mut S,
+    order_factory: &mut OrderFactory,
+    decision_evidence: &dyn BoltV3DecisionEvidenceWriter,
+    submit_admission: &BoltV3SubmitAdmissionState,
+    context: BoltV3KillSwitchFlattenRoutingContext<'_>,
+    command: &BoltV3KillSwitchFlattenCommand,
+) -> Result<BoltV3SubmitRoutingOutcome>
+where
+    S: BoltV3NtVenueMutationSink + ?Sized,
+{
+    let client_order_id = flatten_client_order_id(command);
+    let order = build_nt_order(
+        order_factory,
+        command.action_id(),
+        command.order_template(),
+        NtOrderBuildInputs {
+            instrument_id: command.instrument_id(),
+            order_side: command.order_side(),
+            quantity: command.quantity(),
+            price: None,
+            client_order_id,
+        },
+    )?;
+    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        command.strategy_id().to_string(),
+        BoltV3OrderIntentKind::Exit,
+        context.fallback_price.to_string(),
+        &order,
+    );
+    let mut request = build_submit_admission_request_from_order(
+        BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: context.execution_client_id,
+            intent: &intent,
+            order: &order,
+            instrument: context.instrument,
+            quote_quantity_last_price: None,
+            quote_quantity_reference_price: None,
+            lifecycle_policy: context.submit_lifecycle_policy,
+            risk_reducing_exit_position: None,
+        },
+        |_| Ok(context.max_fee_bps),
+    )?;
+    request.intent_kind = BoltV3SubmitIntentKind::KillSwitchForcedReduction;
+    request.risk_reducing_exit_proof = None;
+    request.kill_switch_forced_reduction = Some(command.forced_reduction_claim().clone());
+
+    policy.route_submit_with_sink(
+        BoltV3SubmitRoutingRequest::new(decision_evidence, submit_admission, intent, request),
+        sink,
+        order,
+        BoltV3SubmitContext::with_client_id_and_position_id(
+            ClientId::from(context.execution_client_id),
+            command.position_id(),
+        ),
+    )
+}
+
+fn flatten_client_order_id(command: &BoltV3KillSwitchFlattenCommand) -> ClientOrderId {
+    let mut value = String::new();
+    value.push_str(command.halt_id());
+    value.push('-');
+    value.push_str(command.action_id());
+    value.push('-');
+    value.push_str(command.position_id().as_str());
+    ClientOrderId::from(value)
+}
+
 pub fn route_maker_order_command<S>(
     policy: BoltV3OrderExecutionPolicy,
     strategy: &mut S,
@@ -597,7 +666,7 @@ where
     )
 }
 
-trait BoltV3NtVenueMutationSink {
+pub(crate) trait BoltV3NtVenueMutationSink {
     fn submit_order_via_nt(&mut self, order: OrderAny, context: BoltV3SubmitContext) -> Result<()>;
 
     fn cancel_order_via_nt(
@@ -930,20 +999,26 @@ mod tests {
         factories::OrderFactory,
     };
     use nautilus_core::Params;
+    use nautilus_core::UnixNanos;
     use nautilus_model::{
-        enums::{OrderSide, OrderType, PositionSide, TimeInForce},
-        identifiers::{ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId},
+        enums::{AssetClass, OrderSide, OrderType, PositionSide, TimeInForce, TradingState},
+        identifiers::{
+            AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol,
+            TraderId,
+        },
+        instruments::{BinaryOption, InstrumentAny},
         orders::{LimitOrder, Order, OrderAny},
-        types::{Price, Quantity},
+        types::{Currency, Price, Quantity},
     };
     use rust_decimal::Decimal;
+    use ustr::Ustr;
 
     use super::{
         BoltV3CancelRoutingOutcome, BoltV3MakerOrderRoutingContext, BoltV3MakerOrderRuntime,
         BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink, BoltV3OrderExecutionMode,
         BoltV3OrderExecutionPolicy, BoltV3SubmitContext, BoltV3SubmitRoutingOutcome,
         BoltV3SubmitRoutingRequest, clamp_risk_reducing_exit_to_venue_position,
-        route_maker_order_command_with_runtime,
+        route_kill_switch_flatten_command_with_sink, route_maker_order_command_with_runtime,
     };
     use crate::{
         bolt_v3_capital_admission::{
@@ -966,6 +1041,14 @@ mod tests {
             BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
             BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         },
+        bolt_v3_kill_switch::KillSwitchState,
+        bolt_v3_kill_switch_flatten::{
+            BoltV3KillSwitchFlattenCandidate, BoltV3KillSwitchFlattenPlanRequest,
+            BoltV3KillSwitchFlattenPolicy, BoltV3KillSwitchFlattenPositionEvidenceKind,
+            BoltV3KillSwitchFlattenPositionState, BoltV3KillSwitchFlattenRouteKind,
+            BoltV3KillSwitchFlattenRouteProof, BoltV3KillSwitchFlattenSnapshot,
+            BoltV3KillSwitchFlattenSupervisor,
+        },
         bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
         bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
         bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
@@ -973,6 +1056,7 @@ mod tests {
         bolt_v3_submit_admission::{
             BoltV3CompiledOrderAdmissionEvidence, BoltV3CompiledOrderKind,
             BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide, BoltV3CompiledProductKind,
+            BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
             BoltV3LiveSubmitApprovalLimits, BoltV3RiskReducingExitProof,
             BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
             BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitCapitalAdmissionNtComponents,
@@ -1643,6 +1727,229 @@ mod tests {
     }
 
     #[test]
+    fn kill_switch_forced_reduction_within_venue_position_records_within_bounds() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = venue_truth_admission_with_yes_position(writer, Decimal::new(8, 0));
+        let order = limit_exit_order(
+            "O-19700101-000000-001-FORCED-WITHIN-1",
+            Quantity::new(3.0, 2),
+        );
+        let intent = exit_intent_for_order(&order);
+        let mut request = risk_reducing_exit_submit_request_for_order(
+            &order,
+            Decimal::new(3, 0),
+            Decimal::new(3, 0),
+        );
+        request.intent_kind = BoltV3SubmitIntentKind::KillSwitchForcedReduction;
+        request.risk_reducing_exit_proof = None;
+
+        let (intent, request, order) =
+            clamp_risk_reducing_exit_to_venue_position(admission.as_ref(), intent, request, order)
+                .expect("forced reduction within venue position should pass unchanged");
+
+        assert_eq!(
+            request.intent_kind,
+            BoltV3SubmitIntentKind::KillSwitchForcedReduction
+        );
+        assert_eq!(order.quantity(), Quantity::new(3.0, 2));
+        assert_eq!(request.order_quantity, Decimal::new(3, 0));
+        assert_eq!(
+            intent.clamp_outcome,
+            Some(BoltV3OrderIntentClampOutcome::WithinBounds)
+        );
+    }
+
+    #[test]
+    fn kill_switch_flatten_command_routes_forced_reduction_through_clamped_submit() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+        admission.replace_kill_switch_state(KillSwitchState::Flattening {
+            halt_id: "halt-001".to_string(),
+        });
+        admission.configure_kill_switch_forced_reduction_policy(
+            BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 2, Decimal::new(10, 0))
+                .expect("forced reduction policy should be valid"),
+        );
+        let instrument = binary_option_with_max_price(InstrumentId::from("instrument-yes.VENUE-A"));
+        let claim = BoltV3KillSwitchForcedReductionClaim::new(
+            "halt-001",
+            "flatten-positions",
+            "a".repeat(64),
+        )
+        .expect("forced reduction claim should be valid");
+        let candidate = BoltV3KillSwitchFlattenCandidate::from_nt_position_state(
+            BoltV3KillSwitchFlattenPositionState {
+                evidence_kind: BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
+                account_id: AccountId::from("ACCOUNT-001"),
+                instrument_id: InstrumentId::from("instrument-yes.VENUE-A"),
+                strategy_id: StrategyId::from("strategy-a"),
+                position_id: PositionId::from("POSITION-001"),
+                position_side: PositionSide::Long,
+                quantity: Quantity::new(5.0, 2),
+                source_timestamp_unix_nanos: 1,
+            },
+        )
+        .expect("flatten candidate should be valid");
+        let plan =
+            BoltV3KillSwitchFlattenSupervisor::plan_flatten(BoltV3KillSwitchFlattenPlanRequest {
+                kill_switch_state: KillSwitchState::Flattening {
+                    halt_id: "halt-001".to_string(),
+                },
+                nt_trading_state: TradingState::Reducing,
+                action_id: "flatten-positions".to_string(),
+                config_sha256: "b".repeat(64),
+                policy_sha256: "a".repeat(64),
+                source_timestamp_unix_nanos: 2,
+                policy: BoltV3KillSwitchFlattenPolicy::with_source_freshness(10)
+                    .expect("flatten policy should be valid"),
+                snapshot: BoltV3KillSwitchFlattenSnapshot::new(vec![candidate])
+                    .expect("flatten snapshot should be valid"),
+                observed_at_unix_nanos: 2,
+                route_proof: BoltV3KillSwitchFlattenRouteProof::new(
+                    BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter,
+                ),
+                order_template: flatten_market_template(),
+                forced_reduction_claim: claim,
+            })
+            .expect("flatten plan should produce commands");
+        let command = plan
+            .commands()
+            .first()
+            .expect("open position should produce a flatten command");
+
+        let mut sink = RecordingVenueMutationSink::default();
+        let mut order_factory = generic_order_factory();
+        let outcome = route_kill_switch_flatten_command_with_sink(
+            BoltV3OrderExecutionPolicy::live(),
+            &mut sink,
+            &mut order_factory,
+            writer.as_ref(),
+            admission.as_ref(),
+            super::BoltV3KillSwitchFlattenRoutingContext {
+                execution_client_id: "execution_client",
+                fallback_price: "1",
+                instrument: Some(&instrument),
+                max_fee_bps: Decimal::ZERO,
+                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
+            },
+            command,
+        )
+        .expect("flatten command should route through submit policy");
+
+        assert_eq!(outcome, BoltV3SubmitRoutingOutcome::Submitted);
+        assert_eq!(sink.submit_calls, 1);
+        assert_eq!(sink.submitted_order_quantities, vec![Quantity::new(3.0, 2)]);
+        assert_eq!(admission.admitted_order_count(), 1);
+        assert_eq!(writer.records().len(), 1);
+        assert_eq!(
+            writer.records()[0].clamp_outcome,
+            Some(BoltV3OrderIntentClampOutcome::Clamped {
+                original_quantity: Decimal::new(5, 0).to_string(),
+            })
+        );
+        assert_eq!(writer.admission_decisions().len(), 1);
+        assert_eq!(
+            writer.admission_decisions()[0].intent_kind,
+            BoltV3SubmitIntentKind::KillSwitchForcedReduction
+        );
+    }
+
+    #[test]
+    fn kill_switch_flatten_command_rejects_zero_venue_position_with_clamp_evidence() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::ZERO);
+        admission.replace_kill_switch_state(KillSwitchState::Flattening {
+            halt_id: "halt-001".to_string(),
+        });
+        admission.configure_kill_switch_forced_reduction_policy(
+            BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 2, Decimal::new(10, 0))
+                .expect("forced reduction policy should be valid"),
+        );
+        let instrument = binary_option_with_max_price(InstrumentId::from("instrument-yes.VENUE-A"));
+        let claim = BoltV3KillSwitchForcedReductionClaim::new(
+            "halt-001",
+            "flatten-positions",
+            "a".repeat(64),
+        )
+        .expect("forced reduction claim should be valid");
+        let candidate = BoltV3KillSwitchFlattenCandidate::from_nt_position_state(
+            BoltV3KillSwitchFlattenPositionState {
+                evidence_kind: BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
+                account_id: AccountId::from("ACCOUNT-001"),
+                instrument_id: InstrumentId::from("instrument-yes.VENUE-A"),
+                strategy_id: StrategyId::from("strategy-a"),
+                position_id: PositionId::from("POSITION-001"),
+                position_side: PositionSide::Long,
+                quantity: Quantity::new(5.0, 2),
+                source_timestamp_unix_nanos: 1,
+            },
+        )
+        .expect("flatten candidate should be valid");
+        let plan =
+            BoltV3KillSwitchFlattenSupervisor::plan_flatten(BoltV3KillSwitchFlattenPlanRequest {
+                kill_switch_state: KillSwitchState::Flattening {
+                    halt_id: "halt-001".to_string(),
+                },
+                nt_trading_state: TradingState::Reducing,
+                action_id: "flatten-positions".to_string(),
+                config_sha256: "b".repeat(64),
+                policy_sha256: "a".repeat(64),
+                source_timestamp_unix_nanos: 2,
+                policy: BoltV3KillSwitchFlattenPolicy::with_source_freshness(10)
+                    .expect("flatten policy should be valid"),
+                snapshot: BoltV3KillSwitchFlattenSnapshot::new(vec![candidate])
+                    .expect("flatten snapshot should be valid"),
+                observed_at_unix_nanos: 2,
+                route_proof: BoltV3KillSwitchFlattenRouteProof::new(
+                    BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter,
+                ),
+                order_template: flatten_market_template(),
+                forced_reduction_claim: claim,
+            })
+            .expect("flatten plan should produce commands");
+        let command = plan
+            .commands()
+            .first()
+            .expect("open position should produce a flatten command");
+
+        let mut sink = RecordingVenueMutationSink::default();
+        let mut order_factory = generic_order_factory();
+        let error = route_kill_switch_flatten_command_with_sink(
+            BoltV3OrderExecutionPolicy::live(),
+            &mut sink,
+            &mut order_factory,
+            writer.as_ref(),
+            admission.as_ref(),
+            super::BoltV3KillSwitchFlattenRoutingContext {
+                execution_client_id: "execution_client",
+                fallback_price: "1",
+                instrument: Some(&instrument),
+                max_fee_bps: Decimal::ZERO,
+                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
+            },
+            command,
+        )
+        .expect_err("zero venue position should reject before flatten submit");
+
+        assert!(
+            error
+                .to_string()
+                .contains("no venue-held position to submit"),
+            "unexpected flatten clamp rejection: {error:#}"
+        );
+        assert_eq!(sink.submit_calls, 0);
+        assert_eq!(writer.records().len(), 1);
+        assert_eq!(
+            writer.records()[0].clamp_outcome,
+            Some(BoltV3OrderIntentClampOutcome::Rejected)
+        );
+        assert_eq!(
+            writer.records()[0].client_order_id,
+            "halt-001-flatten-positions-POSITION-001"
+        );
+    }
+
+    #[test]
     fn shadow_submit_records_evidence_without_consuming_capacity_or_calling_nt_submit() {
         let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
@@ -1986,6 +2293,23 @@ mod tests {
         }
     }
 
+    fn flatten_market_template() -> NtOrderTemplate {
+        NtOrderTemplate {
+            order_type: OrderType::Market,
+            time_in_force: TimeInForce::Ioc,
+            expire_time: None,
+            trigger_price: None,
+            activation_price: None,
+            trigger_type: None,
+            trigger_instrument_id: None,
+            trailing_offset: None,
+            trailing_offset_type: None,
+            is_post_only: false,
+            is_reduce_only: true,
+            is_quote_quantity: false,
+        }
+    }
+
     fn maker_routing_context() -> BoltV3MakerOrderRoutingContext<'static> {
         BoltV3MakerOrderRoutingContext {
             strategy_id: "maker-strategy",
@@ -2082,6 +2406,37 @@ mod tests {
         let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1);
         assert!(rebuild.accepted);
         admission
+    }
+
+    fn binary_option_with_max_price(instrument_id: InstrumentId) -> InstrumentAny {
+        InstrumentAny::BinaryOption(BinaryOption::new(
+            instrument_id,
+            Symbol::from("instrument-yes"),
+            AssetClass::Alternative,
+            Currency::USD(),
+            UnixNanos::from(1_u64),
+            UnixNanos::from(2_u64),
+            2,
+            2,
+            Price::from("0.01"),
+            Quantity::from("0.01"),
+            Some(Ustr::from("YES")),
+            None,
+            None,
+            Some(Quantity::from("0.01")),
+            None,
+            None,
+            Some(Price::from("1.00")),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            UnixNanos::from(1_u64),
+            UnixNanos::from(1_u64),
+        ))
     }
 
     fn limit_order(client_order_id: &str) -> OrderAny {

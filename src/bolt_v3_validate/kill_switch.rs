@@ -17,10 +17,20 @@ pub(super) fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<S
         )),
     }
     if block.flatten_open_positions_on_breach {
-        errors.push(
-            "risk.kill_switch.flatten_open_positions_on_breach=true is not supported until a shared execution-policy flatten path exists"
-                .to_string(),
-        );
+        match block.flatten.as_ref() {
+            Some(flatten) if flatten.enabled => {
+                if flatten.route_kind != KillSwitchFlattenRouteKindConfig::LiveNodeCommandRouter {
+                    errors.push(
+                        "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.route_kind=live_node_command_router"
+                            .to_string(),
+                    );
+                }
+            }
+            _ => errors.push(
+                "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.enabled=true"
+                    .to_string(),
+            ),
+        }
     }
     if block.action_retry_interval_ms == 0 {
         errors.push("risk.kill_switch.action_retry_interval_ms must be positive".to_string());

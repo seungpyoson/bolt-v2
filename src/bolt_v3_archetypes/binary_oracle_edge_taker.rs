@@ -39,7 +39,8 @@ use toml::{Value, map::Map};
 
 use nautilus_model::{
     enums::{OrderSide, OrderType, PositionSide, TimeInForce, TrailingOffsetType, TriggerType},
-    identifiers::{InstrumentId, StrategyId},
+    identifiers::{InstrumentId, StrategyId, Venue},
+    types::Currency,
 };
 
 use crate::{
@@ -433,6 +434,11 @@ pub fn register_runtime_strategy(
                 ),
             )
         })?;
+    let settlement_account_id =
+        execution_account_id(&context.loaded.root, execution_client_id).map(str::to_string);
+    let settlement_currency = settlement_account_id.as_deref().and_then(|account_id| {
+        settlement_currency_for_execution_account(&context.loaded.root, execution_venue, account_id)
+    });
     let build_context = StrategyBuildContext::new(
         fee_provider,
         context.decision_evidence.clone(),
@@ -440,7 +446,11 @@ pub fn register_runtime_strategy(
         context.order_execution_policy,
         execution_venue,
     )
-    .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
+    .with_realized_volatility_runtime(context.realized_volatility_runtime.clone())
+    .with_settlement_runtime_sink(context.settlement_runtime_sink.clone())
+    .with_settlement_recovery(context.settlement_recovery.clone())
+    .with_settlement_account_id(settlement_account_id)
+    .with_settlement_currency(settlement_currency);
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
@@ -451,6 +461,36 @@ pub fn register_runtime_strategy(
             node.kernel().trader(),
         )
         .map_err(|error| binding_message(&context, error.to_string()))
+}
+
+fn execution_account_id<'a>(
+    root: &'a BoltV3RootConfig,
+    execution_client_id: &str,
+) -> Option<&'a str> {
+    root.clients
+        .get(execution_client_id)?
+        .execution
+        .as_ref()?
+        .as_table()?
+        .get(stringify!(account_id))?
+        .as_str()
+}
+
+fn settlement_currency_for_execution_account(
+    root: &BoltV3RootConfig,
+    execution_venue: Venue,
+    account_id: &str,
+) -> Option<Currency> {
+    root.risk
+        .capital_pools
+        .as_ref()?
+        .iter()
+        .find(|pool| {
+            pool.enforce_submit_admission
+                && pool.venue_id == execution_venue.as_str()
+                && pool.account_id.to_string() == account_id
+        })
+        .map(|pool| Currency::from(pool.collateral_currency.as_str()))
 }
 
 pub fn raw_taker_config(

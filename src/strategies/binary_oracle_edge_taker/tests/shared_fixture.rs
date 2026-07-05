@@ -724,6 +724,69 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     }
 }
 
+#[derive(Debug, Default)]
+pub(super) struct RecordingSettlementRuntimeSink {
+    loss_observations: Mutex<Vec<crate::bolt_v3_loss_protection::PositionRealizedPnlObservation>>,
+    venue_explanations: Mutex<Vec<crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation>>,
+}
+
+impl RecordingSettlementRuntimeSink {
+    pub(super) fn loss_observations(
+        &self,
+    ) -> Vec<crate::bolt_v3_loss_protection::PositionRealizedPnlObservation> {
+        self.loss_observations
+            .lock()
+            .expect("recording settlement sink loss mutex poisoned")
+            .clone()
+    }
+
+    pub(super) fn venue_explanations(
+        &self,
+    ) -> Vec<crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation> {
+        self.venue_explanations
+            .lock()
+            .expect("recording settlement sink venue mutex poisoned")
+            .clone()
+    }
+}
+
+impl crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSink
+    for RecordingSettlementRuntimeSink
+{
+    fn record_loss_governor_position_realized_pnl(
+        &self,
+        observation: crate::bolt_v3_loss_protection::PositionRealizedPnlObservation,
+    ) -> Result<()> {
+        self.loss_observations
+            .lock()
+            .expect("recording settlement sink loss mutex poisoned")
+            .push(observation);
+        Ok(())
+    }
+
+    fn record_venue_truth_settlement(
+        &self,
+        explanation: crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation,
+    ) -> Result<()> {
+        self.venue_explanations
+            .lock()
+            .expect("recording settlement sink venue mutex poisoned")
+            .push(explanation);
+        Ok(())
+    }
+}
+
+pub(super) fn attach_settlement_runtime_sink(
+    strategy: &mut BinaryOracleEdgeTaker,
+    sink: std::rc::Rc<RecordingSettlementRuntimeSink>,
+) {
+    let sink: crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle = sink;
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_settlement_runtime_sink(Some(sink));
+}
+
 /// Execution venue of the binary-option market fixtures these tests trade against (their
 /// outcome instruments are `...POLYMARKET`). Production resolves the execution venue from
 /// config — `root.clients[execution_client_id].venue` — and is venue-agnostic (a HIP-4 or any
@@ -977,7 +1040,9 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             submit_admission,
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
-        ),
+        )
+        .with_settlement_account_id(Some("POLYMARKET-001".to_string()))
+        .with_settlement_currency(Some(Currency::USDC())),
     )
 }
 

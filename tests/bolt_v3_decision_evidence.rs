@@ -35,7 +35,8 @@ use bolt_v2::{
         JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path, read_exit_evaluation_evidence,
         read_latest_entry_decision_evidence_chain, read_loss_governor_halt_evidence,
         read_order_reject_evidence, read_settlement_booking_error_evidence,
-        read_settlement_evidence, read_settlement_keys_for_recovery_scope,
+        read_settlement_booking_error_keys_for_recovery_scope, read_settlement_evidence,
+        read_settlement_evidence_for_recovery_scope, read_settlement_keys_for_recovery_scope,
         read_submit_reservation_recovery_evidence,
     },
     bolt_v3_realized_volatility::{
@@ -1712,6 +1713,54 @@ fn settlement_recovery_reader_filters_by_structural_recovery_scope() {
     .expect("settlement keys should be read with a structural position scope");
 
     assert_eq!(recovered, BTreeSet::from(["MKT-1:P-RECOVERED".to_string()]));
+}
+
+#[test]
+fn settlement_booking_error_recovery_reader_filters_by_same_structural_scope() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let in_scope = sample_settlement_booking_error("MKT-1:P-RECOVERED");
+    let out_of_scope = sample_settlement_booking_error("MKT-2:P-OLD");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[
+            settlement_booking_error_evidence_line(&out_of_scope),
+            settlement_booking_error_evidence_line(&in_scope),
+        ],
+    );
+
+    let recovered = read_settlement_booking_error_keys_for_recovery_scope(
+        &evidence_path,
+        100_000,
+        &BTreeSet::from(["MKT-1:P-RECOVERED".to_string()]),
+    )
+    .expect("booking-error keys should be read with the same structural scope");
+
+    assert_eq!(recovered, BTreeSet::from(["MKT-1:P-RECOVERED".to_string()]));
+}
+
+#[test]
+fn settlement_evidence_recovery_reader_returns_in_scope_records_for_replay() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let in_scope = sample_settlement_evidence("MKT-1:P-RECOVERED");
+    let out_of_scope = sample_settlement_evidence("MKT-2:P-OLD");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[
+            settlement_evidence_line(&out_of_scope),
+            settlement_evidence_line(&in_scope),
+        ],
+    );
+
+    let recovered = read_settlement_evidence_for_recovery_scope(
+        &evidence_path,
+        100_000,
+        &BTreeSet::from(["MKT-1:P-RECOVERED".to_string()]),
+    )
+    .expect("settlement evidence should be replayable within the same structural scope");
+
+    assert_eq!(recovered, vec![in_scope]);
 }
 
 #[test]

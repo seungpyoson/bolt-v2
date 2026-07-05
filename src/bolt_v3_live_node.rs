@@ -171,7 +171,7 @@ use crate::{
     },
     bolt_v3_loss_protection::{
         KillSwitchLossAction, KillSwitchLossActionKind, KillSwitchLossActionSink,
-        KillSwitchLossProtection, KillSwitchLossProtectionConfig,
+        KillSwitchLossProtection, KillSwitchLossProtectionConfig, PositionRealizedPnlObservation,
     },
     bolt_v3_loss_runtime_feed::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
@@ -190,6 +190,10 @@ use crate::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
         check_no_forbidden_credential_env_vars, check_no_forbidden_credential_env_vars_with,
         resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
+    },
+    bolt_v3_settlement_runtime::{
+        BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSink,
+        BoltV3SettlementRuntimeSinkHandle,
     },
     bolt_v3_strategy_registration::{
         BoltV3StrategyExecutionControls, BoltV3StrategyRegistrationError,
@@ -405,6 +409,64 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
     fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
         Ok(())
     }
+}
+
+#[derive(Clone)]
+struct BoltV3LiveSettlementRuntimeSink {
+    loss_protection: Option<Rc<RefCell<KillSwitchLossProtection>>>,
+    capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
+}
+
+impl std::fmt::Debug for BoltV3LiveSettlementRuntimeSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoltV3LiveSettlementRuntimeSink")
+            .field("loss_protection", &self.loss_protection.is_some())
+            .field(
+                stringify!(capital_admission_runtime_feed),
+                &self.capital_admission_runtime_feed.is_some(),
+            )
+            .finish()
+    }
+}
+
+impl BoltV3SettlementRuntimeSink for BoltV3LiveSettlementRuntimeSink {
+    fn record_loss_governor_position_realized_pnl(
+        &self,
+        observation: PositionRealizedPnlObservation,
+    ) -> Result<()> {
+        if let Some(loss_protection) = self.loss_protection.as_ref() {
+            loss_protection
+                .borrow_mut()
+                .record_position_realized_pnl(observation)?;
+        }
+        Ok(())
+    }
+
+    fn record_venue_truth_settlement(
+        &self,
+        explanation: crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation,
+    ) -> Result<()> {
+        if let Some(feed) = self.capital_admission_runtime_feed.as_ref() {
+            feed.lock()
+                .expect("capital admission runtime feed lock poisoned")
+                .record_venue_truth_settlement(explanation)?;
+        }
+        Ok(())
+    }
+}
+
+fn settlement_runtime_sink_handle(
+    loss_protection: Option<&Rc<RefCell<KillSwitchLossProtection>>>,
+    capital_admission_runtime_feed: Option<&Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
+) -> Option<BoltV3SettlementRuntimeSinkHandle> {
+    if loss_protection.is_none() && capital_admission_runtime_feed.is_none() {
+        return None;
+    }
+    let sink: BoltV3SettlementRuntimeSinkHandle = Rc::new(BoltV3LiveSettlementRuntimeSink {
+        loss_protection: loss_protection.cloned(),
+        capital_admission_runtime_feed: capital_admission_runtime_feed.cloned(),
+    });
+    Some(sink)
 }
 
 struct BoltV3LiveNodeRuntimeFeeds {
@@ -1956,10 +2018,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::from_mode(
             loaded.root.runtime.order_execution_mode,
         );
-    let strategy_execution_controls = BoltV3StrategyExecutionControls {
-        submit_admission: submit_admission.clone(),
-        order_execution_policy,
-    };
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
@@ -1988,6 +2046,29 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     if let Some(state) = kill_switch_startup_state.as_ref() {
         sync_nt_trading_state_for_kill_switch(&mut node, state);
     }
+    let loss_protection =
+        configure_bolt_v3_kill_switch_loss_protection(loaded, &node, submit_admission.clone())?;
+    if let Some(protection) = loss_protection.as_ref() {
+        let seeded_state = protection.borrow().state().clone();
+        sync_nt_trading_state_for_kill_switch(&mut node, &seeded_state);
+    }
+    let settlement_runtime_sink = settlement_runtime_sink_handle(
+        loss_protection.as_ref(),
+        capital_admission_runtime_feed.as_ref(),
+    );
+    let settlement_recovery =
+        submit_reservation_recovery
+            .as_ref()
+            .map(|config| BoltV3SettlementRecoveryConfig {
+                path: config.path.clone(),
+                max_bytes: config.max_bytes,
+            });
+    let strategy_execution_controls = BoltV3StrategyExecutionControls {
+        submit_admission: submit_admission.clone(),
+        order_execution_policy,
+        settlement_runtime_sink,
+        settlement_recovery,
+    };
     let iv_runtime = loaded
         .root
         .iv
@@ -2061,20 +2142,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             strategy.strategy_archetype.as_str(),
             strategy.registered_strategy_id
         );
-    }
-    // Configure the durable kill-switch loss-protection accumulator after
-    // strategies are registered (its flatten targets are the registered NT
-    // strategy ids) and seed it from the durable store. `seed_from_store` can
-    // fail closed (e.g. an armed durable record with no loss snapshot becomes
-    // `FailedManualIntervention`) and override the kill-switch state established
-    // above by `recover_kill_switch_state_before_live_node_build`, so re-sync NT
-    // trading state from the final loss-protection state — otherwise a
-    // fail-closed seed would latch admission while leaving NT trading `Active`.
-    let loss_protection =
-        configure_bolt_v3_kill_switch_loss_protection(loaded, &node, submit_admission.clone())?;
-    if let Some(protection) = loss_protection.as_ref() {
-        let seeded_state = protection.borrow().state().clone();
-        sync_nt_trading_state_for_kill_switch(&mut node, &seeded_state);
     }
     let loss_halt_action_handler =
         match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {

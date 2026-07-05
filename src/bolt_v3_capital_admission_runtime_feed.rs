@@ -30,7 +30,7 @@ use crate::{
     },
     bolt_v3_venue_truth::{
         VenueTruthDivergence, VenueTruthOrderEvent, VenueTruthOrderEventMapper,
-        VenueTruthReconciler, VenueTruthSnapshot,
+        VenueTruthReconciler, VenueTruthSettlementExplanation, VenueTruthSnapshot,
     },
     nt_runtime_capture::{
         account_states_pattern, order_events_pattern, portfolio_snapshots_pattern,
@@ -274,6 +274,14 @@ impl CapitalAdmissionRuntimeFeed {
             }
         }
         Ok(published)
+    }
+
+    pub fn record_venue_truth_settlement(
+        &mut self,
+        explanation: VenueTruthSettlementExplanation,
+    ) -> anyhow::Result<()> {
+        self.venue_truth_reconciler.record_settlement(explanation)?;
+        Ok(())
     }
 
     pub fn on_position_event(&mut self, _event: &PositionEvent) -> Option<()> {

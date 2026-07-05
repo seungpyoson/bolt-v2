@@ -30,6 +30,79 @@ const PARTIAL_FILL_PINNED_FAILURE: &str =
 const RESTART_OPEN_EXIT_PINNED_FAILURE: &str =
     "restart replay must adopt the recovered exit before attributing fills";
 const SETTLEMENT_PINNED_FAILURE: &str = "hold-to-resolution must close exposure to Flat, book realized cash, and record settlement evidence";
+const TEST_LOSS_STATE_MAX_BYTES: u64 = 65_536;
+const TEST_LOSS_ACTION_RETRY_INTERVAL_MS: u64 = 250;
+const TEST_LOSS_ACTION_RETRY_TIMEOUT_MS: u64 = 5_000;
+
+#[derive(Debug, Default)]
+struct NoopLossActionSink;
+
+impl crate::bolt_v3_loss_protection::KillSwitchLossActionSink for NoopLossActionSink {
+    fn emit(&self, _action: crate::bolt_v3_loss_protection::KillSwitchLossAction) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct DurableLossSettlementRuntimeSink {
+    loss_protection: RefCell<crate::bolt_v3_loss_protection::KillSwitchLossProtection>,
+    venue_explanations: RefCell<Vec<crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation>>,
+}
+
+impl std::fmt::Debug for DurableLossSettlementRuntimeSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DurableLossSettlementRuntimeSink")
+            .field(
+                "venue_explanations",
+                &self.venue_explanations.borrow().len(),
+            )
+            .finish()
+    }
+}
+
+impl DurableLossSettlementRuntimeSink {
+    fn new(loss_protection: crate::bolt_v3_loss_protection::KillSwitchLossProtection) -> Self {
+        Self {
+            loss_protection: RefCell::new(loss_protection),
+            venue_explanations: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn loss_snapshot(&self) -> crate::bolt_v3_kill_switch_store::KillSwitchLossProtectionSnapshot {
+        self.loss_protection
+            .borrow()
+            .store()
+            .load_recovery_record()
+            .expect("durable loss-governor state should be readable")
+            .loss_protection
+            .expect("loss-governor snapshot should be persisted")
+    }
+
+    fn venue_explanation_count(&self) -> usize {
+        self.venue_explanations.borrow().len()
+    }
+}
+
+impl crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSink
+    for DurableLossSettlementRuntimeSink
+{
+    fn record_loss_governor_position_realized_pnl(
+        &self,
+        observation: crate::bolt_v3_loss_protection::PositionRealizedPnlObservation,
+    ) -> Result<()> {
+        self.loss_protection
+            .borrow_mut()
+            .record_position_realized_pnl(observation)?;
+        Ok(())
+    }
+
+    fn record_venue_truth_settlement(
+        &self,
+        explanation: crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation,
+    ) -> Result<()> {
+        self.venue_explanations.borrow_mut().push(explanation);
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct IncidentLifecycleCounts {
@@ -415,6 +488,123 @@ fn terminal_before_settlement_remanages_residual_then_books_residual_settlement(
         expected.realized_pnl,
         strategy.exposure
     );
+}
+
+#[test]
+fn booked_settlement_routes_to_runtime_sink_and_flattening() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let sink = Rc::new(RecordingSettlementRuntimeSink::default());
+    attach_settlement_runtime_sink(&mut strategy, sink.clone());
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-RUNTIME-WIN"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+
+    emit_resolution_update(&mut strategy, 3_101.0);
+
+    let events = evidence.events();
+    let loss_observations = sink.loss_observations();
+    let venue_explanations = sink.venue_explanations();
+    assert_eq!(settlement_evidence_count(&events), 1);
+    assert_eq!(loss_observations.len(), 1);
+    assert_eq!(venue_explanations.len(), 1);
+    assert_eq!(
+        loss_observations[0].event_id.as_deref(),
+        Some(venue_explanations[0].settlement_key.as_str())
+    );
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+
+    emit_resolution_update(&mut strategy, 3_101.0);
+    assert_eq!(
+        evidence.events().len(),
+        events.len(),
+        "same settlement key must suppress duplicate booking after runtime calls"
+    );
+    assert_eq!(sink.loss_observations().len(), 1);
+    assert_eq!(sink.venue_explanations().len(), 1);
+}
+
+#[test]
+fn losing_settlement_moves_durable_loss_governor() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission.clone(),
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let temp = tempfile::tempdir().expect("loss-governor tempdir should create");
+    let loss_protection = crate::bolt_v3_loss_protection::KillSwitchLossProtection::new(
+        settlement_loss_config(instrument_id),
+        submit_admission,
+        crate::bolt_v3_kill_switch_store::KillSwitchStore::new(
+            temp.path().join("kill-switch.json"),
+            TEST_LOSS_STATE_MAX_BYTES,
+        ),
+        Rc::new(NoopLossActionSink),
+    )
+    .expect("loss protection should initialize");
+    let sink = Rc::new(DurableLossSettlementRuntimeSink::new(loss_protection));
+    let sink_handle: crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle =
+        sink.clone();
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_settlement_runtime_sink(Some(sink_handle));
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-RUNTIME-LOSS"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+
+    emit_resolution_update(&mut strategy, 3_099.0);
+
+    let loss_snapshot = sink.loss_snapshot();
+    assert!(
+        loss_snapshot.daily_realized_pnl < Decimal::ZERO,
+        "losing settlement must move the durable loss-governor accumulator: {loss_snapshot:?}"
+    );
+    assert!(
+        loss_snapshot
+            .adjusted_position_pnl
+            .contains_key("BTC-USD.BINANCE:P-RUNTIME-LOSS"),
+        "settlement-key dedupe entry should persist with the realized-PnL snapshot: {loss_snapshot:?}"
+    );
+    assert_eq!(sink.venue_explanation_count(), 1);
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+}
+
+fn settlement_loss_config(
+    instrument_id: InstrumentId,
+) -> crate::bolt_v3_loss_protection::KillSwitchLossProtectionConfig {
+    crate::bolt_v3_loss_protection::KillSwitchLossProtectionConfig {
+        max_utc_daily_realized_loss: Decimal::new(100, 0),
+        action_retry_interval_ms: TEST_LOSS_ACTION_RETRY_INTERVAL_MS,
+        action_retry_timeout_ms: TEST_LOSS_ACTION_RETRY_TIMEOUT_MS,
+        account_ids: vec!["POLYMARKET-001".to_string()],
+        instrument_ids: vec![instrument_id.to_string()],
+    }
 }
 
 #[derive(Debug)]

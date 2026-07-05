@@ -4079,7 +4079,8 @@ fn read_settlement_evidence_records(
 
 /// Reads every `settlement_booking_error` record (current schema) from a
 /// decision-evidence log, in file order. These records are audit evidence for
-/// accepted fail-closed settlement behavior and do not seed idempotency.
+/// accepted fail-closed settlement behavior; startup recovery filters them by
+/// the same structural settlement-key scope used for settled keys.
 pub fn read_settlement_booking_error_evidence(
     path: impl AsRef<Path>,
     max_bytes: u64,
@@ -4123,6 +4124,44 @@ pub fn read_settlement_keys_for_recovery_scope(
         if !recovered.insert(evidence.settlement_key.clone()) {
             return Err(duplicate_settlement_key_error(&evidence.settlement_key));
         }
+    }
+    Ok(recovered)
+}
+
+pub fn read_settlement_booking_error_keys_for_recovery_scope(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+    recovery_scope_settlement_keys: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
+    let booking_errors = read_settlement_booking_error_evidence(path, max_bytes)?;
+    let mut recovered = BTreeSet::new();
+    for evidence in booking_errors {
+        if !recovery_scope_settlement_keys.contains(&evidence.settlement_key) {
+            continue;
+        }
+        if !recovered.insert(evidence.settlement_key.clone()) {
+            return Err(duplicate_settlement_key_error(&evidence.settlement_key));
+        }
+    }
+    Ok(recovered)
+}
+
+pub fn read_settlement_evidence_for_recovery_scope(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+    recovery_scope_settlement_keys: &BTreeSet<String>,
+) -> Result<Vec<BoltV3SettlementEvidence>> {
+    let settlements = read_settlement_evidence_records(path, max_bytes)?;
+    let mut seen = BTreeSet::new();
+    let mut recovered = Vec::new();
+    for evidence in settlements {
+        if !recovery_scope_settlement_keys.contains(&evidence.settlement_key) {
+            continue;
+        }
+        if !seen.insert(evidence.settlement_key.clone()) {
+            return Err(duplicate_settlement_key_error(&evidence.settlement_key));
+        }
+        recovered.push(evidence);
     }
     Ok(recovered)
 }

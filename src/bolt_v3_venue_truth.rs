@@ -79,6 +79,34 @@ pub struct VenueTruthSettlementExplanation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VenueTruthSettlementRecordError {
+    InvalidExplanation,
+    CollateralPayoutExceedsBound {
+        settlement_key: String,
+        collateral_payout: Decimal,
+        max_collateral_payout: Decimal,
+    },
+}
+
+impl fmt::Display for VenueTruthSettlementRecordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidExplanation => write!(f, "invalid venue-truth settlement explanation"),
+            Self::CollateralPayoutExceedsBound {
+                settlement_key,
+                collateral_payout,
+                max_collateral_payout,
+            } => write!(
+                f,
+                "invalid settlement `{settlement_key}` collateral_payout {collateral_payout} exceeds settled_quantity * payout_per_share {max_collateral_payout}"
+            ),
+        }
+    }
+}
+
+impl Error for VenueTruthSettlementRecordError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VenueTruthOrderEvent {
     Accepted {
         client_order_id: String,
@@ -312,10 +340,13 @@ struct VenueTruthFillCollateralLot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VenueTruthSettlementLot {
+    market_id: String,
     product_id: String,
     side: OrderSide,
     remaining_quantity: Decimal,
     remaining_collateral_balance_delta: Decimal,
+    recorded_capture_number: u64,
+    fully_consumed_at_capture_number: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,8 +387,12 @@ impl VenueTruthReconciler {
             .record_order_event(event, self.next_capture_number);
     }
 
-    pub fn record_settlement(&mut self, explanation: VenueTruthSettlementExplanation) {
-        self.event_projection.record_settlement(explanation);
+    pub fn record_settlement(
+        &mut self,
+        explanation: VenueTruthSettlementExplanation,
+    ) -> Result<(), VenueTruthSettlementRecordError> {
+        self.event_projection
+            .record_settlement(explanation, self.next_capture_number)
     }
 
     #[must_use]
@@ -500,13 +535,14 @@ impl VenueTruthReconciler {
         let mut projection = self.event_projection.clone();
         explain_open_order_delta(previous, &snapshot, &mut projection)
             .map_err(VenueTruthDivergenceCause::from)?;
-        explain_position_delta(previous, &snapshot, &mut projection)
+        explain_position_delta(previous, &snapshot, &mut projection, capture.capture_number)
             .map_err(VenueTruthDivergenceCause::from)?;
         explain_collateral_delta(
             previous,
             &snapshot,
             &mut projection,
             allow_deferred_collateral,
+            capture.capture_number,
         )?;
         if projection.ordering_violation {
             return Err(VenueTruthDivergenceKind::OrderingViolation.into());
@@ -639,21 +675,42 @@ impl VenueTruthEventProjection {
         }
     }
 
-    fn record_settlement(&mut self, explanation: VenueTruthSettlementExplanation) {
+    fn record_settlement(
+        &mut self,
+        explanation: VenueTruthSettlementExplanation,
+        capture_number: u64,
+    ) -> Result<(), VenueTruthSettlementRecordError> {
         self.event_count += 1;
         self.local_event_count += 1;
         if !matches!(explanation.side, OrderSide::Buy | OrderSide::Sell)
+            || explanation.market_id.trim().is_empty()
+            || explanation.product_id.trim().is_empty()
             || explanation.settled_quantity <= Decimal::ZERO
+            || explanation.payout_per_share < Decimal::ZERO
             || explanation.collateral_payout < Decimal::ZERO
         {
-            return;
+            return Err(VenueTruthSettlementRecordError::InvalidExplanation);
+        }
+        let max_collateral_payout = explanation.settled_quantity * explanation.payout_per_share;
+        if explanation.collateral_payout > max_collateral_payout {
+            return Err(
+                VenueTruthSettlementRecordError::CollateralPayoutExceedsBound {
+                    settlement_key: explanation.settlement_key,
+                    collateral_payout: explanation.collateral_payout,
+                    max_collateral_payout,
+                },
+            );
         }
         self.settlement_lots.push(VenueTruthSettlementLot {
+            market_id: explanation.market_id,
             product_id: explanation.product_id,
             side: explanation.side,
             remaining_quantity: explanation.settled_quantity,
             remaining_collateral_balance_delta: explanation.collateral_payout,
+            recorded_capture_number: capture_number,
+            fully_consumed_at_capture_number: None,
         });
+        Ok(())
     }
 
     fn prune_after_capture_acceptance(
@@ -702,6 +759,14 @@ impl VenueTruthEventProjection {
                 || accepted_venue_order_ids.contains_key(venue_order_id)
                 || fill_venue_order_ids.contains(venue_order_id)
         });
+        self.settlement_lots
+            .retain(|lot| match lot.fully_consumed_at_capture_number {
+                Some(capture_number) => {
+                    capture_number >= accepted_capture_number
+                        || lot.recorded_capture_number >= accepted_capture_number
+                }
+                None => true,
+            });
     }
 
     fn consume_fill_quantity(&mut self, venue_order_id: &VenueOrderId, amount: Decimal) -> bool {
@@ -774,8 +839,10 @@ impl VenueTruthEventProjection {
     fn consume_position_settlement(
         &mut self,
         product_id: &str,
+        market_id_hint: Option<&str>,
         side: OrderSide,
         amount: Decimal,
+        capture_number: u64,
     ) -> bool {
         if amount <= Decimal::ZERO {
             return amount == Decimal::ZERO;
@@ -785,7 +852,9 @@ impl VenueTruthEventProjection {
             if remaining == Decimal::ZERO {
                 break;
             }
-            if lot.product_id != product_id
+            if lot.market_id.is_empty()
+                || lot.product_id != product_id
+                || market_id_hint.is_some_and(|market_id| lot.market_id != market_id)
                 || lot.side != side
                 || lot.remaining_quantity <= Decimal::ZERO
             {
@@ -796,29 +865,33 @@ impl VenueTruthEventProjection {
             } else {
                 remaining
             };
-            let consumed_collateral_balance_delta = if consumed_quantity == lot.remaining_quantity {
-                lot.remaining_collateral_balance_delta
-            } else {
-                lot.remaining_collateral_balance_delta * consumed_quantity / lot.remaining_quantity
-            };
             lot.remaining_quantity -= consumed_quantity;
-            lot.remaining_collateral_balance_delta -= consumed_collateral_balance_delta;
             remaining -= consumed_quantity;
-            self.drainable_settlement_collateral_balance_delta += consumed_collateral_balance_delta;
+            mark_settlement_lot_fully_consumed(lot, capture_number);
         }
-        self.settlement_lots
-            .retain(|lot| lot.remaining_quantity > Decimal::ZERO);
         remaining == Decimal::ZERO
     }
 
-    fn consume_position_decrease(&mut self, product_id: &str, amount: Decimal) -> bool {
+    fn consume_position_decrease(
+        &mut self,
+        product_id: &str,
+        market_id_hint: Option<&str>,
+        amount: Decimal,
+        capture_number: u64,
+    ) -> bool {
         let mut fill_projection = self.clone();
         if fill_projection.consume_position_fill(product_id, OrderSide::Sell, amount) {
             *self = fill_projection;
             return true;
         }
         let mut settlement_projection = self.clone();
-        if settlement_projection.consume_position_settlement(product_id, OrderSide::Sell, amount) {
+        if settlement_projection.consume_position_settlement(
+            product_id,
+            market_id_hint,
+            OrderSide::Sell,
+            amount,
+            capture_number,
+        ) {
             *self = settlement_projection;
             return true;
         }
@@ -848,9 +921,11 @@ impl VenueTruthEventProjection {
         &mut self,
         amount: Decimal,
         allow_deferred_collateral: bool,
+        capture_number: u64,
     ) -> bool {
         let available = self.drainable_collateral_balance_delta
-            + self.drainable_settlement_collateral_balance_delta;
+            + self.drainable_settlement_collateral_balance_delta
+            + self.available_settlement_collateral_balance_delta();
         if amount == Decimal::ZERO {
             return allow_deferred_collateral || available == Decimal::ZERO;
         }
@@ -864,19 +939,48 @@ impl VenueTruthEventProjection {
         } else if amount > Decimal::ZERO || amount < available {
             return false;
         }
-        consume_from_drainable_amounts(
-            amount,
-            &mut self.drainable_collateral_balance_delta,
+        let mut remaining = amount;
+        consume_from_drainable_amount(&mut remaining, &mut self.drainable_collateral_balance_delta);
+        consume_from_drainable_amount(
+            &mut remaining,
             &mut self.drainable_settlement_collateral_balance_delta,
         );
-        true
+        self.consume_settlement_collateral_balance_delta(&mut remaining, capture_number);
+        remaining == Decimal::ZERO
     }
-}
 
-fn consume_from_drainable_amounts(amount: Decimal, first: &mut Decimal, second: &mut Decimal) {
-    let mut remaining = amount;
-    consume_from_drainable_amount(&mut remaining, first);
-    consume_from_drainable_amount(&mut remaining, second);
+    fn available_settlement_collateral_balance_delta(&self) -> Decimal {
+        self.settlement_lots
+            .iter()
+            .map(|lot| lot.remaining_collateral_balance_delta)
+            .sum()
+    }
+
+    fn consume_settlement_collateral_balance_delta(
+        &mut self,
+        remaining: &mut Decimal,
+        capture_number: u64,
+    ) {
+        if *remaining <= Decimal::ZERO {
+            return;
+        }
+        for lot in &mut self.settlement_lots {
+            if *remaining == Decimal::ZERO {
+                break;
+            }
+            if lot.market_id.is_empty() || lot.remaining_collateral_balance_delta <= Decimal::ZERO {
+                continue;
+            }
+            let consumed = if lot.remaining_collateral_balance_delta <= *remaining {
+                lot.remaining_collateral_balance_delta
+            } else {
+                *remaining
+            };
+            lot.remaining_collateral_balance_delta -= consumed;
+            *remaining -= consumed;
+            mark_settlement_lot_fully_consumed(lot, capture_number);
+        }
+    }
 }
 
 fn consume_from_drainable_amount(remaining: &mut Decimal, available: &mut Decimal) {
@@ -896,6 +1000,15 @@ fn consume_from_drainable_amount(remaining: &mut Decimal, available: &mut Decima
         };
         *available -= consumed;
         *remaining -= consumed;
+    }
+}
+
+fn mark_settlement_lot_fully_consumed(lot: &mut VenueTruthSettlementLot, capture_number: u64) {
+    if lot.remaining_quantity == Decimal::ZERO
+        && lot.remaining_collateral_balance_delta == Decimal::ZERO
+        && lot.fully_consumed_at_capture_number.is_none()
+    {
+        lot.fully_consumed_at_capture_number = Some(capture_number);
     }
 }
 
@@ -981,6 +1094,7 @@ fn explain_position_delta(
     previous: &VenueTruthSnapshot,
     current: &VenueTruthSnapshot,
     projection: &mut VenueTruthEventProjection,
+    capture_number: u64,
 ) -> Result<bool, VenueTruthDivergenceKind> {
     let mut product_ids: BTreeSet<&str> = BTreeSet::new();
     product_ids.extend(previous.positions_by_product_id.keys().map(String::as_str));
@@ -1005,7 +1119,13 @@ fn explain_position_delta(
             }
             explained = true;
         } else if delta < Decimal::ZERO {
-            if !projection.consume_position_decrease(product_id, -delta) {
+            let market_id_hint = position_market_id_hint(previous, current, product_id);
+            if !projection.consume_position_decrease(
+                product_id,
+                market_id_hint.as_deref(),
+                -delta,
+                capture_number,
+            ) {
                 return Err(VenueTruthDivergenceKind::UnexplainedPositionDelta);
             }
             explained = true;
@@ -1014,17 +1134,41 @@ fn explain_position_delta(
     Ok(explained)
 }
 
+fn position_market_id_hint(
+    previous: &VenueTruthSnapshot,
+    current: &VenueTruthSnapshot,
+    product_id: &str,
+) -> Option<String> {
+    let mut market_ids = BTreeSet::new();
+    for order in previous
+        .open_orders
+        .values()
+        .chain(current.open_orders.values())
+    {
+        if order.product_id == product_id {
+            market_ids.insert(order.market_id.clone());
+        }
+    }
+    if market_ids.len() == 1 {
+        return market_ids.into_iter().next();
+    }
+    None
+}
+
 fn explain_collateral_delta(
     previous: &VenueTruthSnapshot,
     current: &VenueTruthSnapshot,
     projection: &mut VenueTruthEventProjection,
     allow_deferred_collateral: bool,
+    capture_number: u64,
 ) -> Result<(), VenueTruthDivergenceCause> {
     let collateral_balance_delta =
         current.collateral_balance.as_decimal() - previous.collateral_balance.as_decimal();
-    if !projection
-        .consume_collateral_balance_delta(collateral_balance_delta, allow_deferred_collateral)
-    {
+    if !projection.consume_collateral_balance_delta(
+        collateral_balance_delta,
+        allow_deferred_collateral,
+        capture_number,
+    ) {
         return Err(VenueTruthDivergenceCause::collateral(
             VenueTruthCollateralDivergenceField::Balance,
         ));

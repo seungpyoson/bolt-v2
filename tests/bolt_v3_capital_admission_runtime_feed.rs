@@ -31,7 +31,9 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitCapitalAdmissionOpenOrderReservation, BoltV3SubmitIntentKind,
     BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
 };
-use bolt_v2::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthSnapshot};
+use bolt_v2::bolt_v3_venue_truth::{
+    VenueTruthCaptureFailureEvidence, VenueTruthSettlementExplanation, VenueTruthSnapshot,
+};
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
     publish_position_event, subscribe_account_state, subscribe_order_events,
@@ -240,6 +242,44 @@ fn polymarket_venue_truth_snapshot_promotes_open_orders_and_positions() {
     assert_eq!(product.no_position, Decimal::new(2, 0));
     assert_eq!(product.conditional_token_allowance, Decimal::new(9, 0));
     assert_eq!(product.collateral_allowance, Decimal::new(40, 0));
+}
+
+#[test]
+fn venue_truth_settlement_recorded_through_feed_explains_next_capture() {
+    let admission = Arc::new(polymarket_capital_admission_configured_admission());
+    let mut feed =
+        CapitalAdmissionRuntimeFeed::new(polymarket_runtime_feed_config(), admission.clone());
+
+    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot_with_position(
+        1_000,
+        Decimal::new(50_000_000, 0),
+        Decimal::new(40_000_000, 0),
+        "yes123",
+        4.0,
+    ))
+    .expect("baseline venue truth should reconcile");
+    feed.record_venue_truth_settlement(VenueTruthSettlementExplanation {
+        settlement_key: "yes123:P-FEED-SETTLEMENT".to_string(),
+        market_id: "condition".to_string(),
+        product_id: "yes123".to_string(),
+        side: OrderSide::Sell,
+        settled_quantity: Decimal::new(4, 0),
+        payout_per_share: Decimal::ONE,
+        collateral_payout: Decimal::new(4, 0),
+    })
+    .expect("settlement should record through the production feed");
+
+    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
+        1_100,
+        Decimal::new(54_000_000, 0),
+        Decimal::new(40_000_000, 0),
+    ))
+    .expect("booked settlement should explain the next venue capture");
+
+    assert!(
+        admission.capital_admission_state_snapshot().is_some(),
+        "accepted settlement capture should keep capital admission published"
+    );
 }
 
 #[test]
@@ -3138,6 +3178,32 @@ fn polymarket_venue_truth_snapshot_with_orders_and_positions(
                 avg_price: Some(0.58),
             },
         ],
+    })
+    .expect("test venue truth snapshot should be valid")
+}
+
+fn polymarket_venue_truth_snapshot_with_position(
+    captured_at: u64,
+    balance: Decimal,
+    allowance: Decimal,
+    asset: &str,
+    size: f64,
+) -> VenueTruthSnapshot {
+    build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
+        captured_at: UnixNanos::from(captured_at),
+        account_id: AccountId::from("ACCOUNT-001"),
+        collateral_currency: Currency::from("USD"),
+        collateral: BalanceAllowance {
+            balance,
+            allowance: Some(allowance),
+        },
+        open_orders: Vec::new(),
+        positions: vec![DataApiPosition {
+            asset: asset.to_string(),
+            condition_id: "condition".to_string(),
+            size,
+            avg_price: Some(0.42),
+        }],
     })
     .expect("test venue truth snapshot should be valid")
 }

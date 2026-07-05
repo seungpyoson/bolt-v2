@@ -12,6 +12,7 @@ use nautilus_model::{
     data::{IndexPriceUpdate, QuoteTick, TradeTick},
     identifiers::{ClientId, InstrumentId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
+    types::Currency,
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::Strategy;
@@ -23,6 +24,9 @@ use crate::{
     bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
+    bolt_v3_settlement_runtime::{
+        BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSinkHandle,
+    },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     bolt_v3_timestamp_domain::NtStrategyClockMs,
 };
@@ -69,6 +73,10 @@ pub struct StrategyBuildContext {
     order_execution_policy: BoltV3OrderExecutionPolicy,
     execution_venue: Venue,
     realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
+    settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
+    settlement_recovery: Option<BoltV3SettlementRecoveryConfig>,
+    settlement_account_id: Option<String>,
+    settlement_currency: Option<Currency>,
 }
 
 impl StrategyBuildContext {
@@ -92,6 +100,10 @@ impl StrategyBuildContext {
             order_execution_policy,
             execution_venue,
             realized_volatility_runtime: Arc::new(Mutex::new(RealizedVolSurfaceRuntime::empty())),
+            settlement_runtime_sink: None,
+            settlement_recovery: None,
+            settlement_account_id: None,
+            settlement_currency: None,
         }
     }
 
@@ -115,6 +127,32 @@ impl StrategyBuildContext {
         runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
     ) -> Self {
         self.realized_volatility_runtime = runtime;
+        self
+    }
+
+    pub fn with_settlement_runtime_sink(
+        mut self,
+        sink: Option<BoltV3SettlementRuntimeSinkHandle>,
+    ) -> Self {
+        self.settlement_runtime_sink = sink;
+        self
+    }
+
+    pub fn with_settlement_recovery(
+        mut self,
+        recovery: Option<BoltV3SettlementRecoveryConfig>,
+    ) -> Self {
+        self.settlement_recovery = recovery;
+        self
+    }
+
+    pub fn with_settlement_account_id(mut self, account_id: Option<String>) -> Self {
+        self.settlement_account_id = account_id;
+        self
+    }
+
+    pub fn with_settlement_currency(mut self, currency: Option<Currency>) -> Self {
+        self.settlement_currency = currency;
         self
     }
 
@@ -156,6 +194,22 @@ impl StrategyBuildContext {
     /// real order can only ever fire against an instrument on the venue it routes to.
     pub fn execution_venue(&self) -> Venue {
         self.execution_venue
+    }
+
+    pub fn settlement_runtime_sink(&self) -> Option<BoltV3SettlementRuntimeSinkHandle> {
+        self.settlement_runtime_sink.clone()
+    }
+
+    pub fn settlement_recovery(&self) -> Option<&BoltV3SettlementRecoveryConfig> {
+        self.settlement_recovery.as_ref()
+    }
+
+    pub fn settlement_account_id(&self) -> Option<&str> {
+        self.settlement_account_id.as_deref()
+    }
+
+    pub fn settlement_currency(&self) -> Option<Currency> {
+        self.settlement_currency.clone()
     }
 
     /// Subscription requests scoped to a single configured surface. A strategy must use this

@@ -6973,6 +6973,14 @@ classification = "kill_switch_loss_protection_utc_day_unit"
 reason = "Fixed UTC day nanosecond unit used to bucket realized PnL; the loss threshold is TOML-owned."
 
 [[allowed]]
+path = "src/bolt_v3_loss_halt_actions.rs"
+kind = "number"
+literal = '''86_400_000_000_000'''
+context = '''const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;'''
+classification = "loss_governor_manual_recovery_utc_day_unit"
+reason = "Fixed UTC day nanosecond unit used to decide whether the stored daily-loss trigger's calendar day has rolled; configured loss limits remain TOML-owned and are re-checked live at node start."
+
+[[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
 kind = "string"
 literal = '''"corrupt_evidence"'''
@@ -14194,92 +14202,92 @@ classification = "kill_switch_manual_recovery_audit_counter_step"
 reason = "Append-only audit count increments by one after writing exactly one manual-recovery JSONL record; this is structural count arithmetic, not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "1"
+context = '''let final_line_index = lines.len().saturating_sub(1);'''
+classification = "kill_switch_manual_recovery_audit_line_index_offset"
+reason = "Structural final-line index offset used to distinguish the sole tolerable torn final JSONL line from hard mid-file corruption; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "0"
+context = '''return Ok(0);'''
+classification = "kill_switch_manual_recovery_audit_empty_count"
+reason = "Structural empty-audit line count for missing or zero-byte audit files; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "-1"
+context = '''file.seek(SeekFrom::End(-1))'''
+classification = "kill_switch_manual_recovery_audit_last_byte_seek"
+reason = "Structural seek offset for inspecting the audit file's trailing byte before append; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "0_u8"
+context = '''let mut last_byte = [0_u8; 1];'''
+classification = "kill_switch_manual_recovery_audit_byte_buffer_seed"
+reason = "Structural single-byte read buffer initialization for the audit trailing-newline check; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "1"
+context = '''let mut last_byte = [0_u8; 1];'''
+classification = "kill_switch_manual_recovery_audit_byte_buffer_len"
+reason = "Structural single-byte read buffer length for the audit trailing-newline check; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "0"
+context = '''file.seek(SeekFrom::Start(0))'''
+classification = "kill_switch_manual_recovery_audit_rewind_offset"
+reason = "Structural file rewind offset used before streaming audit lines for a count; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "0"
+context = '''let mut count = 0;'''
+classification = "kill_switch_manual_recovery_audit_counter_seed"
+reason = "Structural line-count seed for streaming audit JSONL records; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = "1"
+context = '''count += 1;'''
+classification = "kill_switch_manual_recovery_audit_counter_step"
+reason = "Structural line-count increment for each nonempty audit JSONL record; not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
 kind = "string"
-literal = '''"stale evidence check refused: evidence observed_at_ns={observed_at_ns} is after now_ns={now_ns}"'''
-context = '''"stale evidence check refused: evidence observed_at_ns={observed_at_ns} is after now_ns={now_ns}"'''
+literal = '''"future-dated trigger check refused: trigger_observed_at_ns={trigger_observed_at_ns} is after now_ns={now_ns}"'''
+context = '''"future-dated trigger check refused: trigger_observed_at_ns={trigger_observed_at_ns} is after now_ns={now_ns}"'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing manual recovery refusal diagnostic for a durable halt trigger timestamp later than the command clock; displayed timestamps come from durable state and the command clock."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"stale evidence check refused: evidence observed_at_ns={evidence_observed_at_ns} is before trigger observed_at_ns={trigger_observed_at_ns}"'''
+context = '''"stale evidence check refused: evidence observed_at_ns={evidence_observed_at_ns} is before trigger observed_at_ns={trigger_observed_at_ns}"'''
+classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
+reason = "Operator-facing manual recovery refusal diagnostic for operator-attested evidence older than the durable halt trigger; displayed timestamps come from command metadata and durable state."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"future-dated evidence check refused: evidence observed_at_ns={evidence_observed_at_ns} is after now_ns={now_ns}"'''
+context = '''"future-dated evidence check refused: evidence observed_at_ns={evidence_observed_at_ns} is after now_ns={now_ns}"'''
 classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
 reason = "Operator-facing manual recovery refusal diagnostic for future-dated operator-attested evidence metadata; timestamps come from the command and clock."
-
-[[allowed]]
-path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
-kind = "string"
-literal = '''"stale snapshot check refused: snapshot observed_at_ns={observed_at_ns}, now_ns={now_ns}, max_snapshot_age_ns={max_snapshot_age_ns}"'''
-context = '''"stale snapshot check refused: snapshot observed_at_ns={observed_at_ns}, now_ns={now_ns}, max_snapshot_age_ns={max_snapshot_age_ns}"'''
-classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
-reason = "Operator-facing manual recovery refusal diagnostic for stale durable loss evidence; threshold and timestamps are loaded or observed, not hardcoded."
-
-[[allowed]]
-path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
-kind = "string"
-literal = '''"{check} refused: stored_loss={stored_loss} limit={limit}"'''
-context = '''"{check} refused: stored_loss={stored_loss} limit={limit}"'''
-classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
-reason = "Operator-facing manual recovery refusal diagnostic for a still-breaching stored loss; the check label is selected from typed policy evaluation and values come from durable state/config."
-
-[[allowed]]
-path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
-kind = "string"
-literal = '''"recovery-mode check refused: recovery_mode={recovery_mode:?} current_state={current_state:?} decision_accepted={decision_accepted}"'''
-context = '''"recovery-mode check refused: recovery_mode={recovery_mode:?} current_state={current_state:?} decision_accepted={decision_accepted}"'''
-classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
-reason = "Operator-facing manual recovery refusal diagnostic for the recovery state machine; displayed values are typed runtime state and policy, not hardcoded control values."
-
-[[allowed]]
-path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
-kind = "string"
-literal = '''"daily_loss_limit"'''
-context = '''check: "daily_loss_limit",'''
-classification = "kill_switch_manual_recovery_diagnostic_check_label"
-reason = "Stable diagnostic label naming the daily-loss policy check in a refusal message; the configured limit remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
-kind = "string"
-literal = '''"rolling_loss_limit"'''
-context = '''check: "rolling_loss_limit",'''
-classification = "kill_switch_manual_recovery_diagnostic_check_label"
-reason = "Stable diagnostic label naming the rolling-loss policy check in a refusal message; the configured limit remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
-kind = "string"
-literal = '''"per_trade_pnl"'''
-context = '''dimension: "per_trade_pnl",'''
-classification = "kill_switch_manual_recovery_diagnostic_dimension_label"
-reason = "Stable diagnostic label for a missing durable per-trade PnL dimension; it does not provide or configure the runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
-kind = "string"
-literal = '''"daily_pnl"'''
-context = '''dimension: "daily_pnl",'''
-classification = "kill_switch_manual_recovery_diagnostic_dimension_label"
-reason = "Stable diagnostic label for a missing durable daily PnL dimension; it does not provide or configure the runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
-kind = "string"
-literal = '''"rolling_pnl"'''
-context = '''dimension: "rolling_pnl",'''
-classification = "kill_switch_manual_recovery_diagnostic_dimension_label"
-reason = "Stable diagnostic label for a missing durable rolling PnL dimension; it does not provide or configure the runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
-kind = "string"
-literal = '''"current_equity"'''
-context = '''dimension: "current_equity",'''
-classification = "kill_switch_manual_recovery_diagnostic_dimension_label"
-reason = "Stable diagnostic label for a missing durable drawdown current-equity dimension; it does not provide or configure the runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
-kind = "string"
-literal = '''"peak_equity"'''
-context = '''dimension: "peak_equity",'''
-classification = "kill_switch_manual_recovery_diagnostic_dimension_label"
-reason = "Stable diagnostic label for a missing durable drawdown peak-equity dimension; it does not provide or configure the runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"

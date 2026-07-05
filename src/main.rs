@@ -170,7 +170,7 @@ enum OpsCommand {
         config: PathBuf,
     },
     #[command(
-        about = "Recover only loss-governor halts whose stored loss condition has cleared; node must be stopped because state is last-writer-wins; not an operator override. Use a reviewed config change to the loss limits or wait for the condition to clear. evidence_path/evidence_sha256 are operator-attested audit metadata, not file or hash verification."
+        about = "Recover only loss-governor halts whose triggering condition has verifiably passed by clock - daily UTC day rolled or rolling window elapsed; every limit is re-checked live at next node start. Node must be stopped because state is last-writer-wins; not an operator override. The audit file is unbounded append-only and operators rotate it externally. evidence_path/evidence_sha256 are operator-attested audit metadata, not file or hash verification."
     )]
     LossGovernorManualRecovery {
         #[arg(short, long)]
@@ -1899,9 +1899,18 @@ mod tests {
             "help must state the command is not an override: {help}"
         );
         assert!(
-            help.contains("reviewed config change to the loss limits")
-                && help.contains("wait for the condition to clear"),
-            "help must point to sanctioned alternatives: {help}"
+            help.contains("triggering condition has verifiably passed by clock")
+                && help.contains("daily UTC day rolled")
+                && help.contains("rolling window elapsed"),
+            "help must state the A2 clock-verified recovery semantics: {help}"
+        );
+        assert!(
+            help.contains("every limit is re-checked live at next node start"),
+            "help must state the runtime re-check backstop: {help}"
+        );
+        assert!(
+            help.contains("unbounded append-only") && help.contains("rotate it externally"),
+            "help must state audit rotation posture: {help}"
         );
         assert!(
             help.contains("operator-attested audit metadata")

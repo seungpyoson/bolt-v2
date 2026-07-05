@@ -17,6 +17,7 @@ use crate::{
         KillSwitchPendingHaltActionsSnapshot, KillSwitchRecoveryReason, KillSwitchRecoveryState,
         KillSwitchStore,
     },
+    bolt_v3_loss_governor::LossHaltReason,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
@@ -433,10 +434,11 @@ impl KillSwitchLossProtection {
         source: &'static str,
         observed_at_unix_nanos: u64,
     ) -> anyhow::Result<Option<KillSwitchState>> {
-        let trigger = KillSwitchHaltTrigger::loss_governor_breach(
+        let trigger = KillSwitchHaltTrigger::loss_governor_breach_with_reason(
             source,
             observed_at_unix_nanos,
             LOSS_TRIGGER_REASON,
+            LossHaltReason::DailyLossLimit,
         );
         let halting = transition_kill_switch_state(
             KillSwitchState::Armed,

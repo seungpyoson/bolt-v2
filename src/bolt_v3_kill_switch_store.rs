@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs,
-    io::{self, BufRead, Read},
+    io::{self, BufRead, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -67,6 +67,18 @@ pub struct KillSwitchLossGovernorManualRecoveryRecord {
     pub evidence_sha256: String,
     pub observed_at_ns: u64,
     pub recorded_at_ns: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<KillSwitchLossGovernorManualRecoveryOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KillSwitchLossGovernorManualRecoveryOutcome {
+    Recovered,
+    RefusedWithReason,
+    WriteFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +157,7 @@ impl KillSwitchStore {
         &self,
         manual_recovery: KillSwitchLossGovernorManualRecoveryRecord,
     ) -> Result<usize, KillSwitchStoreError> {
-        let previous_count = self.loss_governor_manual_recovery_audit_line_count()?;
+        let previous_count = self.loss_governor_manual_recovery_audit_appendable_line_count()?;
         let mut bytes =
             serde_json::to_vec(&manual_recovery).map_err(KillSwitchStoreError::Serialize)?;
         bytes.push(b'\n');
@@ -157,8 +169,8 @@ impl KillSwitchStore {
         &self,
     ) -> Result<Vec<KillSwitchLossGovernorManualRecoveryRecord>, KillSwitchStoreError> {
         let audit_path = self.loss_governor_manual_recovery_audit_path();
-        let file = match fs::File::open(&audit_path) {
-            Ok(file) => file,
+        let contents = match fs::read_to_string(&audit_path) {
+            Ok(contents) => contents,
             Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(source) => {
                 return Err(KillSwitchStoreError::Io {
@@ -167,40 +179,91 @@ impl KillSwitchStore {
                 });
             }
         };
+        let lines: Vec<&str> = contents.lines().collect();
+        let final_line_index = lines.len().saturating_sub(1);
         let mut records = Vec::new();
-        for line in io::BufReader::new(file).lines() {
-            let line = line.map_err(|source| KillSwitchStoreError::Io {
-                path: audit_path.clone(),
-                source,
-            })?;
+        for (line_index, line) in lines.into_iter().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
-            records.push(serde_json::from_str(&line).map_err(|source| {
-                KillSwitchStoreError::Deserialize {
-                    path: audit_path.clone(),
-                    source,
+            match serde_json::from_str(line) {
+                Ok(record) => records.push(record),
+                Err(source) if line_index == final_line_index && !contents.ends_with('\n') => {
+                    log::error!(
+                        "skipping unparseable final loss-governor manual recovery audit line in {}: {source}",
+                        audit_path.display()
+                    );
                 }
-            })?);
+                Err(source) => {
+                    return Err(KillSwitchStoreError::Deserialize {
+                        path: audit_path.clone(),
+                        source,
+                    });
+                }
+            }
         }
         Ok(records)
     }
 
-    fn loss_governor_manual_recovery_audit_line_count(
+    fn loss_governor_manual_recovery_audit_appendable_line_count(
         &self,
     ) -> Result<usize, KillSwitchStoreError> {
         let audit_path = self.loss_governor_manual_recovery_audit_path();
-        match fs::read_to_string(&audit_path) {
-            Ok(contents) => Ok(contents
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .count()),
-            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(0),
-            Err(source) => Err(KillSwitchStoreError::Io {
-                path: audit_path,
+        let mut file = match fs::File::open(&audit_path) {
+            Ok(file) => file,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(source) => {
+                return Err(KillSwitchStoreError::Io {
+                    path: audit_path,
+                    source,
+                });
+            }
+        };
+        let file_len = file
+            .metadata()
+            .map_err(|source| KillSwitchStoreError::Io {
+                path: audit_path.clone(),
                 source,
-            }),
+            })?
+            .len();
+        if file_len == 0 {
+            return Ok(0);
         }
+        file.seek(SeekFrom::End(-1))
+            .map_err(|source| KillSwitchStoreError::Io {
+                path: audit_path.clone(),
+                source,
+            })?;
+        let mut last_byte = [0_u8; 1];
+        file.read_exact(&mut last_byte)
+            .map_err(|source| KillSwitchStoreError::Io {
+                path: audit_path.clone(),
+                source,
+            })?;
+        if last_byte[0] != b'\n' {
+            log::error!(
+                "refusing to append loss-governor manual recovery audit line because {} does not end with a newline",
+                audit_path.display()
+            );
+            return Err(KillSwitchStoreError::TornManualRecoveryAudit { path: audit_path });
+        }
+        file.seek(SeekFrom::Start(0))
+            .map_err(|source| KillSwitchStoreError::Io {
+                path: audit_path.clone(),
+                source,
+            })?;
+        let reader = io::BufReader::new(file);
+        let mut count = 0;
+        for line in reader.lines() {
+            let line = line.map_err(|source| KillSwitchStoreError::Io {
+                path: audit_path.clone(),
+                source,
+            })?;
+            if !line.trim().is_empty() {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     pub fn bootstrap_initial_armed_loss_snapshot(&self) -> Result<(), KillSwitchStoreError> {
@@ -496,6 +559,9 @@ pub enum KillSwitchStoreError {
         bytes: u64,
         max_bytes: u64,
     },
+    TornManualRecoveryAudit {
+        path: PathBuf,
+    },
 }
 
 impl std::fmt::Display for KillSwitchStoreError {
@@ -524,6 +590,11 @@ impl std::fmt::Display for KillSwitchStoreError {
                 "kill-switch state file {} is {bytes} bytes, exceeding the {max_bytes} byte limit",
                 path.display()
             ),
+            Self::TornManualRecoveryAudit { path } => write!(
+                f,
+                "loss-governor manual recovery audit file {} does not end with a newline; refusing to append onto a torn line",
+                path.display()
+            ),
         }
     }
 }
@@ -536,6 +607,7 @@ impl std::error::Error for KillSwitchStoreError {
             Self::Deserialize { source, .. } => Some(source),
             Self::StateAlreadyExists { .. } => None,
             Self::StateTooLarge { .. } => None,
+            Self::TornManualRecoveryAudit { .. } => None,
         }
     }
 }

@@ -11,8 +11,10 @@ use bolt_v2::{
     bolt_v3_kill_switch_store::{
         KillSwitchLossProtectionSnapshot, KillSwitchRecoveryState, KillSwitchStore,
     },
+    bolt_v3_loss_governor::LossHaltReason,
     bolt_v3_loss_governor_manual_recovery_ops::{
-        LossGovernorManualRecoveryCommand, recover_loss_governor_manual_halt,
+        LossGovernorManualRecoveryCommand, LossGovernorManualRecoveryError,
+        recover_loss_governor_manual_halt,
     },
 };
 use rust_decimal::Decimal;
@@ -199,12 +201,17 @@ fn valid_command() -> LossGovernorManualRecoveryCommand {
 fn valid_manual_recovery_records_armed_state_and_append_only_audit_history() {
     let (loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
     let store = runtime_store(&loaded);
-    store
-        .write_state_with_loss_snapshot(&loss_governor_halted_state(), Some(&zero_loss_snapshot()))
-        .expect("latched loss-governor halt should persist");
+    let halt_observed_at_ns = 10 * NANOS_PER_UTC_DAY + 1_000;
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        loss_governor_halted_state_at(halt_observed_at_ns),
+        &zero_loss_snapshot(),
+        LossHaltReason::DailyLossLimit.as_str(),
+    );
 
-    let outcome = recover_loss_governor_manual_halt(&loaded, valid_command())
-        .expect("valid manual recovery should persist armed state");
+    let outcome =
+        recover_loss_governor_manual_halt(&loaded, command_at(11 * NANOS_PER_UTC_DAY + 1_000))
+            .expect("valid manual recovery should persist armed state");
 
     assert_eq!(outcome.previous_state, KillSwitchStateKind::Halted);
     assert_eq!(outcome.recovered_state, KillSwitchStateKind::Armed);
@@ -220,6 +227,10 @@ fn valid_manual_recovery_records_armed_state_and_append_only_audit_history() {
     let audit_lines = read_manual_recovery_audit_lines(&store);
     assert_eq!(audit_lines.len(), 1);
     assert_eq!(audit_lines[0]["evidence_sha256"], VALID_EVIDENCE_SHA256);
+    assert_eq!(
+        audit_lines[0]["outcome"],
+        serde_json::Value::String("recovered".to_string())
+    );
     let state_json: serde_json::Value =
         serde_json::from_slice(&fs::read(store.path()).expect("state file should read"))
             .expect("state file should be JSON");
@@ -251,54 +262,69 @@ fn valid_manual_recovery_records_armed_state_and_append_only_audit_history() {
 }
 
 #[test]
-fn manual_recovery_refuses_missing_durable_dimensions_instead_of_fabricating_pass() {
+fn manual_recovery_ignores_non_triggering_missing_dimensions_after_daily_clock_passes() {
     let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
     let store = runtime_store(&loaded);
-    let halted = loss_governor_halted_state();
-    store
-        .write_state_with_loss_snapshot(&halted, Some(&zero_loss_snapshot()))
-        .expect("latched loss-governor halt should persist");
-
-    let error = recover_loss_governor_manual_halt(&loaded, valid_command())
-        .expect_err("missing durable dimensions must refuse manual recovery");
-
-    let message = error.to_string();
-    assert!(
-        message.contains("missing-dimension fail-closed"),
-        "refusal must identify the missing-dimension fail-closed check, got: {message}"
+    let halt_observed_at_ns = 10 * NANOS_PER_UTC_DAY + 1_000;
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        loss_governor_halted_state_at(halt_observed_at_ns),
+        &zero_loss_snapshot(),
+        LossHaltReason::DailyLossLimit.as_str(),
     );
-    assert!(
-        message.contains("per_trade_pnl"),
-        "refusal must name the missing durable dimension, got: {message}"
-    );
+
+    let outcome =
+        recover_loss_governor_manual_halt(&loaded, command_at(11 * NANOS_PER_UTC_DAY + 1_000))
+            .expect(
+                "non-triggering dimensions are re-checked by the runtime path at next node start",
+            );
+
+    assert_eq!(outcome.recovered_state, KillSwitchStateKind::Armed);
     assert_eq!(
         store
             .load_recovery_state()
             .expect("store should remain readable"),
-        KillSwitchRecoveryState::Recovered(halted)
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Armed)
     );
 }
 
 #[test]
-fn manual_recovery_refuses_still_breaching_stored_loss_with_diagnostic() {
+fn manual_recovery_refuses_same_day_daily_halt_and_records_refused_audit() {
     let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
     let store = runtime_store(&loaded);
-    let halted = loss_governor_halted_state();
-    store
-        .write_state_with_loss_snapshot(&halted, Some(&breaching_loss_snapshot()))
-        .expect("latched loss-governor halt should persist");
+    let halted = loss_governor_halted_state_at(10 * NANOS_PER_UTC_DAY + 1_000);
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        halted,
+        &breaching_loss_snapshot(),
+        LossHaltReason::DailyLossLimit.as_str(),
+    );
 
-    let error = recover_loss_governor_manual_halt(&loaded, valid_command())
-        .expect_err("stored loss still breaching the limit must refuse manual recovery");
+    let error =
+        recover_loss_governor_manual_halt(&loaded, command_at(10 * NANOS_PER_UTC_DAY + 2_000))
+            .expect_err("same-day daily loss halt should remain latched");
 
     let message = error.to_string();
     assert!(
         message.contains("daily_loss_limit"),
-        "refusal must identify the daily loss check, got: {message}"
+        "refusal must identify the daily trigger clock check, got: {message}"
     );
     assert!(
-        message.contains("-7.50") && message.contains("7.50"),
-        "refusal must include stored loss and configured limit, got: {message}"
+        message.contains("UTC day has not rolled"),
+        "refusal must identify the clock condition, got: {message}"
+    );
+    let audit_lines = read_manual_recovery_audit_lines(&store);
+    assert_eq!(audit_lines.len(), 1);
+    assert_eq!(
+        audit_lines[0]["outcome"],
+        serde_json::Value::String("refused-with-reason".to_string())
+    );
+    assert!(
+        audit_lines[0]["outcome_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("daily_loss_limit")),
+        "refused audit must carry the diagnostic, got: {}",
+        audit_lines[0]
     );
 }
 
@@ -320,6 +346,19 @@ fn manual_recovery_refuses_unauthorized_operator_without_downgrading() {
         error.to_string().contains("is not authorized"),
         "error must identify authorization refusal, got: {error}"
     );
+    let audit_lines = read_manual_recovery_audit_lines(&store);
+    assert_eq!(audit_lines.len(), 1);
+    assert_eq!(
+        audit_lines[0]["outcome"],
+        serde_json::Value::String("refused-with-reason".to_string())
+    );
+    assert!(
+        audit_lines[0]["outcome_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("authorization refused")),
+        "refused audit must carry the authorization diagnostic, got: {}",
+        audit_lines[0]
+    );
     assert_eq!(
         store
             .load_recovery_state()
@@ -332,20 +371,25 @@ fn manual_recovery_refuses_unauthorized_operator_without_downgrading() {
 fn manual_recovery_clears_loss_governor_halting_state_when_condition_has_passed() {
     let (loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
     let store = runtime_store(&loaded);
+    let halt_observed_at_ns = 10 * NANOS_PER_UTC_DAY + 1_000;
     let halting = KillSwitchState::Halting {
         halt_id: "halt-loss-governor-halting-1".to_string(),
         trigger: KillSwitchHaltTrigger::loss_governor_breach(
             "loss-governor",
-            2_000,
+            halt_observed_at_ns,
             "daily loss cap breached",
         ),
     };
-    store
-        .write_state_with_loss_snapshot(&halting, Some(&zero_loss_snapshot()))
-        .expect("latched loss-governor halting state should persist");
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        halting,
+        &zero_loss_snapshot(),
+        LossHaltReason::DailyLossLimit.as_str(),
+    );
 
-    let outcome = recover_loss_governor_manual_halt(&loaded, valid_command())
-        .expect("halting loss-governor state should recover when the condition has passed");
+    let outcome =
+        recover_loss_governor_manual_halt(&loaded, command_at(11 * NANOS_PER_UTC_DAY + 1_000))
+            .expect("halting loss-governor state should recover when the condition has passed");
 
     assert_eq!(outcome.previous_state, KillSwitchStateKind::Halting);
     assert_eq!(
@@ -365,7 +409,7 @@ fn manual_recovery_clears_daily_halt_after_utc_day_rolls() {
         &store,
         loss_governor_halted_state_at(halt_observed_at_ns),
         &breaching_loss_snapshot(),
-        "daily_loss_limit",
+        LossHaltReason::DailyLossLimit.as_str(),
     );
 
     let outcome =
@@ -390,7 +434,7 @@ fn manual_recovery_refuses_same_day_daily_halt() {
         &store,
         halted.clone(),
         &breaching_loss_snapshot(),
-        "daily_loss_limit",
+        LossHaltReason::DailyLossLimit.as_str(),
     );
 
     let error =
@@ -418,10 +462,10 @@ fn manual_recovery_clears_rolling_halt_after_window_elapses() {
         &store,
         halted,
         &breaching_loss_snapshot(),
-        "rolling_loss_limit",
+        LossHaltReason::RollingLossLimit.as_str(),
     );
 
-    let outcome = recover_loss_governor_manual_halt(&loaded, command_at(300_000_000_001))
+    let outcome = recover_loss_governor_manual_halt(&loaded, command_at(300_000_002_001))
         .expect("rolling loss halt should clear after the configured window elapses");
 
     assert_eq!(outcome.recovered_state, KillSwitchStateKind::Armed);
@@ -436,7 +480,7 @@ fn manual_recovery_refuses_drawdown_trigger_with_runtime_path_diagnostic() {
         &store,
         halted,
         &breaching_loss_snapshot(),
-        "max_drawdown_limit",
+        LossHaltReason::MaxDrawdownLimit.as_str(),
     );
 
     let error = recover_loss_governor_manual_halt(&loaded, command_at(300_000_000_001))
@@ -446,6 +490,52 @@ fn manual_recovery_refuses_drawdown_trigger_with_runtime_path_diagnostic() {
     assert!(
         message.contains("max_drawdown_limit") && message.contains("runtime-path recovery"),
         "drawdown refusal should identify the runtime-path requirement, got: {message}"
+    );
+}
+
+#[test]
+fn manual_recovery_state_write_failure_leaves_prewrite_audit_durable() {
+    let (mut loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halt_observed_at_ns = 10 * NANOS_PER_UTC_DAY + 1_000;
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        loss_governor_halted_state_at(halt_observed_at_ns),
+        &zero_loss_snapshot(),
+        LossHaltReason::DailyLossLimit.as_str(),
+    );
+    loaded
+        .root
+        .risk
+        .kill_switch
+        .as_mut()
+        .expect("test enables kill switch")
+        .max_state_file_bytes = 1;
+
+    let error =
+        recover_loss_governor_manual_halt(&loaded, command_at(11 * NANOS_PER_UTC_DAY + 1_000))
+            .expect_err("state write should fail after the audit attempt is durable");
+
+    assert!(
+        matches!(
+            error,
+            LossGovernorManualRecoveryError::StoreWriteFailed { .. }
+                | LossGovernorManualRecoveryError::FailedStateWriteFailed { .. }
+        ),
+        "write failure should surface through the existing error path, got: {error}"
+    );
+    let audit_lines = read_manual_recovery_audit_lines(&store);
+    assert!(
+        audit_lines
+            .iter()
+            .any(|line| line["outcome"] == serde_json::Value::String("recovered".to_string())),
+        "pre-write recovered attempt should be durable, got: {audit_lines:?}"
+    );
+    assert!(
+        audit_lines
+            .iter()
+            .any(|line| line["outcome"] == serde_json::Value::String("write-failed".to_string())),
+        "write-failed audit outcome should be durable, got: {audit_lines:?}"
     );
 }
 

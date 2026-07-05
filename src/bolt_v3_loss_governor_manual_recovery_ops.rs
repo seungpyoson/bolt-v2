@@ -1,14 +1,16 @@
 //! Loss-governor manual recovery is a safety check, not an operator override.
-//! It only clears a loss-governor halt when the durable kill-switch snapshot
-//! proves the configured loss condition has passed; missing durable dimensions
-//! fail closed. Operators who need a halt cleared while a configured condition is
-//! still breached must use the sanctioned alternative: a reviewed config change
-//! to the loss limits, or wait for the condition to clear.
+//! It clears a halt only when the triggering condition has verifiably passed by
+//! clock: a daily-loss halt clears only after the UTC day rolls, and a
+//! rolling-loss halt clears only after the configured rolling window elapses.
+//! Per-trade, drawdown, stale-snapshot, and legacy stores without a typed
+//! trigger reason require runtime-path recovery; every configured limit is
+//! re-checked live by the loss governor at the next node start.
 //!
 //! Stop the node before running this command. The kill-switch state file remains
 //! last-writer-wins, so a live node can rewrite the state after the CLI writes
-//! it. Manual-recovery audit attempts are stored in a sibling append-only JSONL
-//! file, so state races cannot erase the audit trail.
+//! it. Manual-recovery audit attempts are stored in a sibling unbounded
+//! append-only JSONL file, so state races cannot erase the audit trail.
+//! Operators rotate that audit file externally.
 //!
 //! `evidence_path` and `evidence_sha256` are operator-attested audit metadata.
 //! This command never opens the evidence file and never hash-verifies it; the
@@ -20,27 +22,23 @@ use std::{
 };
 
 use nautilus_model::enums::TradingState;
-use rust_decimal::Decimal;
 
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LossGovernorBlock},
     bolt_v3_kill_switch::{KillSwitchHaltTriggerKind, KillSwitchState, KillSwitchStateKind},
     bolt_v3_kill_switch_store::{
-        KillSwitchLossGovernorManualRecoveryRecord, KillSwitchLossProtectionSnapshot,
-        KillSwitchRecoveryReason, KillSwitchRecoveryRecord, KillSwitchRecoveryState,
-        KillSwitchStore, KillSwitchStoreError,
+        KillSwitchLossGovernorManualRecoveryOutcome, KillSwitchLossGovernorManualRecoveryRecord,
+        KillSwitchLossProtectionSnapshot, KillSwitchRecoveryReason, KillSwitchRecoveryRecord,
+        KillSwitchRecoveryState, KillSwitchStore, KillSwitchStoreError,
     },
-    bolt_v3_loss_governor::{
-        LossAdmissionDecision, LossGovernorPolicy, LossSnapshot, LossSourceObservationTimestamps,
-        evaluate_loss_admission,
-    },
+    bolt_v3_loss_governor::LossHaltReason,
     bolt_v3_loss_halt_actions::{
+        LossGovernorClockManualRecoveryRefusal, LossGovernorClockManualRecoveryRequest,
         LossGovernorHaltActionPolicy, LossGovernorManualRecoveryEvidence,
-        LossGovernorManualRecoveryEvidenceError, LossGovernorManualRecoveryRequest,
-        LossGovernorRecoveryMode, LossGovernorTradingStateAction,
-        next_loss_governor_manual_recovery_trading_state,
+        LossGovernorManualRecoveryEvidenceError, LossGovernorRecoveryMode,
+        LossGovernorTradingStateAction,
+        next_loss_governor_clock_verified_manual_recovery_trading_state,
     },
-    bolt_v3_validate::parse_decimal_string,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,73 +108,85 @@ pub enum LossGovernorManualRecoveryError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LossGovernorManualRecoveryRefusal {
-    StaleEvidence {
-        observed_at_ns: u64,
-        now_ns: u64,
-    },
-    StaleSnapshot {
-        observed_at_ns: u64,
-        now_ns: u64,
-        max_snapshot_age_ns: u64,
-    },
-    StoredLossBreach {
-        check: &'static str,
-        stored_loss: Decimal,
-        limit: Decimal,
-    },
-    MissingDimensionFailClosed {
-        dimension: &'static str,
-        required_by: &'static str,
-    },
-    RecoveryMode {
-        current_state: TradingState,
-        recovery_mode: LossGovernorRecoveryMode,
-        decision_accepted: bool,
-    },
+    TriggerClock(LossGovernorClockManualRecoveryRefusal),
 }
 
 impl fmt::Display for LossGovernorManualRecoveryRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::StaleEvidence {
-                observed_at_ns,
-                now_ns,
-            } => write!(
-                f,
-                "stale evidence check refused: evidence observed_at_ns={observed_at_ns} is after now_ns={now_ns}"
-            ),
-            Self::StaleSnapshot {
-                observed_at_ns,
-                now_ns,
-                max_snapshot_age_ns,
-            } => write!(
-                f,
-                "stale snapshot check refused: snapshot observed_at_ns={observed_at_ns}, now_ns={now_ns}, max_snapshot_age_ns={max_snapshot_age_ns}"
-            ),
-            Self::StoredLossBreach {
-                check,
-                stored_loss,
-                limit,
-            } => write!(
-                f,
-                "{check} refused: stored_loss={stored_loss} limit={limit}"
-            ),
-            Self::MissingDimensionFailClosed {
-                dimension,
-                required_by,
-            } => write!(
-                f,
-                "missing-dimension fail-closed: {required_by} requires {dimension}, but the kill-switch store has no durable value for that dimension"
-            ),
-            Self::RecoveryMode {
-                current_state,
-                recovery_mode,
-                decision_accepted,
-            } => write!(
-                f,
-                "recovery-mode check refused: recovery_mode={recovery_mode:?} current_state={current_state:?} decision_accepted={decision_accepted}"
-            ),
+            Self::TriggerClock(reason) => write_clock_refusal(f, *reason),
         }
+    }
+}
+
+fn write_clock_refusal(
+    f: &mut fmt::Formatter<'_>,
+    reason: LossGovernorClockManualRecoveryRefusal,
+) -> fmt::Result {
+    match reason {
+        LossGovernorClockManualRecoveryRefusal::IneligibleTradingState { current_state } => {
+            write!(
+                f,
+                "recovery-state check refused: current_state={current_state:?} is not a loss-governor halt state"
+            )
+        }
+        LossGovernorClockManualRecoveryRefusal::LegacyStoreMissingTriggerReason => write!(
+            f,
+            "legacy-store fail-closed: loss-governor halt has no typed trigger reason; forward-only recoverability requires runtime-path recovery"
+        ),
+        LossGovernorClockManualRecoveryRefusal::FutureDatedTrigger {
+            trigger_observed_at_ns,
+            now_ns,
+        } => write!(
+            f,
+            "future-dated trigger check refused: trigger_observed_at_ns={trigger_observed_at_ns} is after now_ns={now_ns}"
+        ),
+        LossGovernorClockManualRecoveryRefusal::StaleEvidence {
+            evidence_observed_at_ns,
+            trigger_observed_at_ns,
+        } => write!(
+            f,
+            "stale evidence check refused: evidence observed_at_ns={evidence_observed_at_ns} is before trigger observed_at_ns={trigger_observed_at_ns}"
+        ),
+        LossGovernorClockManualRecoveryRefusal::FutureDatedEvidence {
+            evidence_observed_at_ns,
+            now_ns,
+        } => write!(
+            f,
+            "future-dated evidence check refused: evidence observed_at_ns={evidence_observed_at_ns} is after now_ns={now_ns}"
+        ),
+        LossGovernorClockManualRecoveryRefusal::DailyWindowStillOpen {
+            trigger_observed_at_ns,
+            now_ns,
+        } => write!(
+            f,
+            "daily_loss_limit refused: triggering UTC day has not rolled; trigger_observed_at_ns={trigger_observed_at_ns} now_ns={now_ns}"
+        ),
+        LossGovernorClockManualRecoveryRefusal::RollingWindowStillOpen {
+            trigger_observed_at_ns,
+            now_ns,
+            rolling_window_ns,
+        } => write!(
+            f,
+            "rolling_loss_limit refused: configured rolling window has not elapsed; trigger_observed_at_ns={trigger_observed_at_ns} now_ns={now_ns} rolling_window_ns={rolling_window_ns}"
+        ),
+        LossGovernorClockManualRecoveryRefusal::RuntimePathRequired { trigger_reason } => write!(
+            f,
+            "{} requires runtime-path recovery; tracked follow-up for offline recovery",
+            trigger_reason.as_str()
+        ),
+        LossGovernorClockManualRecoveryRefusal::RecoveryMode { recovery_mode } => write!(
+            f,
+            "recovery-mode check refused: recovery_mode={recovery_mode:?} is not supported for clock-verified manual recovery"
+        ),
+        LossGovernorClockManualRecoveryRefusal::InvalidEvidence => write!(
+            f,
+            "invalid evidence check refused: manual-recovery evidence is missing or structurally invalid"
+        ),
+        LossGovernorClockManualRecoveryRefusal::InvalidRollingWindow => write!(
+            f,
+            "rolling_loss_limit refused: configured rolling window must be positive"
+        ),
     }
 }
 
@@ -312,64 +322,63 @@ pub fn recover_loss_governor_manual_halt(
         action_policy.manual_recovery_evidence_max_path_bytes,
     )
     .map_err(LossGovernorManualRecoveryError::InvalidManualRecoveryEvidence)?;
+    let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
     if !kill_switch
         .authorized_operator_ids
         .iter()
         .any(|operator_id| operator_id == evidence.operator_id())
     {
+        record_refused_manual_recovery_attempt(
+            &store,
+            &evidence,
+            command.now_ns,
+            "authorization refused: operator is not authorized by risk.kill_switch.authorized_operator_ids",
+        );
         return Err(LossGovernorManualRecoveryError::UnauthorizedOperator {
             operator_id: evidence.operator_id().to_string(),
         });
     }
 
-    let loss_policy = loss_governor_policy(loss_governor)?;
-    let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
     let record = store
         .load_recovery_record()
         .map_err(LossGovernorManualRecoveryError::StoreLoad)?;
     let current_state = recoverable_current_state(&record, store.path().to_path_buf())?;
-    let current_trading_state = loss_governor_recoverable_trading_state(&current_state)?;
+    let recoverable_halt = loss_governor_recoverable_halt(&current_state)?;
     let loss_protection = record.loss_protection.as_ref().ok_or_else(|| {
         LossGovernorManualRecoveryError::MissingLossProtectionSnapshot {
             path: store.path().to_path_buf(),
         }
     })?;
 
-    let snapshot = manual_recovery_loss_snapshot(loss_protection, &evidence);
-    let decision = evaluate_loss_admission(&loss_policy, Some(&snapshot), command.now_ns);
-    let target =
-        next_loss_governor_manual_recovery_trading_state(LossGovernorManualRecoveryRequest {
+    if let Err(reason) = next_loss_governor_clock_verified_manual_recovery_trading_state(
+        LossGovernorClockManualRecoveryRequest {
             policy: &action_policy,
-            current_state: current_trading_state,
-            decision: &decision,
-            snapshot: Some(&snapshot),
+            current_state: recoverable_halt.current_trading_state,
+            trigger_reason: recoverable_halt.trigger_reason,
+            trigger_observed_at_ns: recoverable_halt.trigger_observed_at_ns,
             now_ns: command.now_ns,
-            max_snapshot_age_ns: loss_policy.max_snapshot_age_ns,
+            rolling_window_ns: loss_governor.rolling_window_ns,
             evidence: Some(&evidence),
             max_evidence_path_bytes: action_policy.manual_recovery_evidence_max_path_bytes,
-        });
-    if target != Some(TradingState::Active) {
-        return Err(LossGovernorManualRecoveryError::RecoveryRefused {
-            reason: manual_recovery_refusal(
-                &loss_policy,
-                &action_policy,
-                current_trading_state,
-                &decision,
-                &snapshot,
-                &evidence,
-                command.now_ns,
-            ),
-        });
+        },
+    ) {
+        let refusal = LossGovernorManualRecoveryRefusal::TriggerClock(reason);
+        record_refused_manual_recovery_attempt(
+            &store,
+            &evidence,
+            command.now_ns,
+            &refusal.to_string(),
+        );
+        return Err(LossGovernorManualRecoveryError::RecoveryRefused { reason: refusal });
     }
 
     let previous_state = current_state.kind();
-    let manual_recovery = KillSwitchLossGovernorManualRecoveryRecord {
-        operator_id: evidence.operator_id().to_string(),
-        evidence_path: evidence.evidence_path().to_string(),
-        evidence_sha256: evidence.evidence_sha256().to_string(),
-        observed_at_ns: evidence.observed_at_ns(),
-        recorded_at_ns: command.now_ns,
-    };
+    let manual_recovery = manual_recovery_record(
+        &evidence,
+        command.now_ns,
+        KillSwitchLossGovernorManualRecoveryOutcome::Recovered,
+        None,
+    );
     let manual_recovery_count =
         persist_manual_recovery_attempt(&store, &current_state, loss_protection, manual_recovery)?;
 
@@ -423,6 +432,7 @@ fn persist_manual_recovery_attempt(
     loss_protection: &KillSwitchLossProtectionSnapshot,
     manual_recovery: KillSwitchLossGovernorManualRecoveryRecord,
 ) -> Result<usize, LossGovernorManualRecoveryError> {
+    let write_failed_manual_recovery = manual_recovery.clone();
     let manual_recovery_count = match store.append_loss_governor_manual_recovery(manual_recovery) {
         Ok(count) => count,
         Err(recovery_error) => {
@@ -446,6 +456,19 @@ fn persist_manual_recovery_attempt(
     if let Err(recovery_error) =
         store.write_state_with_loss_snapshot(&KillSwitchState::Armed, Some(loss_protection))
     {
+        let write_failed = KillSwitchLossGovernorManualRecoveryRecord {
+            outcome: Some(KillSwitchLossGovernorManualRecoveryOutcome::WriteFailed),
+            outcome_reason: Some(format!(
+                "loss governor manual recovery write failed: {recovery_error:?}"
+            )),
+            ..write_failed_manual_recovery
+        };
+        if let Err(audit_error) = store.append_loss_governor_manual_recovery(write_failed) {
+            log::error!(
+                "failed to append write-failed loss-governor manual recovery audit line for {}: {audit_error}",
+                store.path().display()
+            );
+        }
         let failed = failed_manual_intervention_state(
             current_state,
             format!("loss governor manual recovery write failed: {recovery_error:?}"),
@@ -463,6 +486,43 @@ fn persist_manual_recovery_attempt(
         };
     }
     Ok(manual_recovery_count)
+}
+
+fn record_refused_manual_recovery_attempt(
+    store: &impl LossGovernorManualRecoveryStoreWriter,
+    evidence: &LossGovernorManualRecoveryEvidence,
+    recorded_at_ns: u64,
+    refusal: &str,
+) {
+    let refused = manual_recovery_record(
+        evidence,
+        recorded_at_ns,
+        KillSwitchLossGovernorManualRecoveryOutcome::RefusedWithReason,
+        Some(refusal.to_string()),
+    );
+    if let Err(error) = store.append_loss_governor_manual_recovery(refused) {
+        log::error!(
+            "failed to append refused loss-governor manual recovery audit line for {}: {error}",
+            store.path().display()
+        );
+    }
+}
+
+fn manual_recovery_record(
+    evidence: &LossGovernorManualRecoveryEvidence,
+    recorded_at_ns: u64,
+    outcome: KillSwitchLossGovernorManualRecoveryOutcome,
+    outcome_reason: Option<String>,
+) -> KillSwitchLossGovernorManualRecoveryRecord {
+    KillSwitchLossGovernorManualRecoveryRecord {
+        operator_id: evidence.operator_id().to_string(),
+        evidence_path: evidence.evidence_path().to_string(),
+        evidence_sha256: evidence.evidence_sha256().to_string(),
+        observed_at_ns: evidence.observed_at_ns(),
+        recorded_at_ns,
+        outcome: Some(outcome),
+        outcome_reason,
+    }
 }
 
 fn recoverable_current_state(
@@ -488,13 +548,24 @@ fn recoverable_current_state(
     }
 }
 
-fn loss_governor_recoverable_trading_state(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecoverableLossGovernorHalt {
+    current_trading_state: TradingState,
+    trigger_reason: Option<LossHaltReason>,
+    trigger_observed_at_ns: u64,
+}
+
+fn loss_governor_recoverable_halt(
     state: &KillSwitchState,
-) -> Result<TradingState, LossGovernorManualRecoveryError> {
+) -> Result<RecoverableLossGovernorHalt, LossGovernorManualRecoveryError> {
     match state {
         KillSwitchState::Halting { trigger, .. } | KillSwitchState::Halted { trigger, .. } => {
             if trigger.kind == KillSwitchHaltTriggerKind::LossGovernorBreach {
-                Ok(TradingState::Reducing)
+                Ok(RecoverableLossGovernorHalt {
+                    current_trading_state: TradingState::Reducing,
+                    trigger_reason: trigger.loss_halt_reason,
+                    trigger_observed_at_ns: trigger.source_timestamp_unix_nanos,
+                })
             } else {
                 Err(LossGovernorManualRecoveryError::NonLossGovernorState {
                     state: state.kind(),
@@ -515,160 +586,6 @@ fn failed_manual_intervention_state(state: &KillSwitchState, reason: String) -> 
         _ => unreachable!("manual recovery write failure requires a recoverable halt"),
     };
     KillSwitchState::FailedManualIntervention { halt_id, reason }
-}
-
-fn manual_recovery_loss_snapshot(
-    snapshot: &KillSwitchLossProtectionSnapshot,
-    evidence: &LossGovernorManualRecoveryEvidence,
-) -> LossSnapshot {
-    LossSnapshot {
-        source: evidence.evidence_path().to_string(),
-        observed_at_ns: evidence.observed_at_ns(),
-        per_trade_pnl: None,
-        daily_pnl: Some(snapshot.daily_realized_pnl),
-        rolling_pnl: None,
-        current_equity: None,
-        peak_equity: None,
-        source_observations: LossSourceObservationTimestamps::unobserved(),
-    }
-}
-
-fn manual_recovery_refusal(
-    loss_policy: &LossGovernorPolicy,
-    action_policy: &LossGovernorHaltActionPolicy,
-    current_state: TradingState,
-    decision: &LossAdmissionDecision,
-    snapshot: &LossSnapshot,
-    evidence: &LossGovernorManualRecoveryEvidence,
-    now_ns: u64,
-) -> LossGovernorManualRecoveryRefusal {
-    if evidence.observed_at_ns() > now_ns {
-        return LossGovernorManualRecoveryRefusal::StaleEvidence {
-            observed_at_ns: evidence.observed_at_ns(),
-            now_ns,
-        };
-    }
-    if snapshot.source.trim().is_empty()
-        || snapshot.observed_at_ns > now_ns
-        || now_ns - snapshot.observed_at_ns > loss_policy.max_snapshot_age_ns
-    {
-        return LossGovernorManualRecoveryRefusal::StaleSnapshot {
-            observed_at_ns: snapshot.observed_at_ns,
-            now_ns,
-            max_snapshot_age_ns: loss_policy.max_snapshot_age_ns,
-        };
-    }
-    if let Some(refusal) = stored_loss_breach_refusal(loss_policy, snapshot) {
-        return refusal;
-    }
-    if let Some(refusal) = missing_dimension_refusal(loss_policy, snapshot) {
-        return refusal;
-    }
-    LossGovernorManualRecoveryRefusal::RecoveryMode {
-        current_state,
-        recovery_mode: action_policy.recovery_mode,
-        decision_accepted: decision.accepted,
-    }
-}
-
-fn stored_loss_breach_refusal(
-    policy: &LossGovernorPolicy,
-    snapshot: &LossSnapshot,
-) -> Option<LossGovernorManualRecoveryRefusal> {
-    if let (Some(limit), Some(stored_loss)) = (policy.max_daily_loss, snapshot.daily_pnl)
-        && loss_breaches(stored_loss, limit)
-    {
-        return Some(LossGovernorManualRecoveryRefusal::StoredLossBreach {
-            check: "daily_loss_limit",
-            stored_loss,
-            limit,
-        });
-    }
-    if let (Some(limit), Some(stored_loss)) = (policy.max_rolling_loss, snapshot.rolling_pnl)
-        && loss_breaches(stored_loss, limit)
-    {
-        return Some(LossGovernorManualRecoveryRefusal::StoredLossBreach {
-            check: "rolling_loss_limit",
-            stored_loss,
-            limit,
-        });
-    }
-    None
-}
-
-fn missing_dimension_refusal(
-    policy: &LossGovernorPolicy,
-    snapshot: &LossSnapshot,
-) -> Option<LossGovernorManualRecoveryRefusal> {
-    if policy.max_per_trade_loss.is_some() && snapshot.per_trade_pnl.is_none() {
-        return Some(
-            LossGovernorManualRecoveryRefusal::MissingDimensionFailClosed {
-                dimension: "per_trade_pnl",
-                required_by: "risk.loss_governor.max_per_trade_loss",
-            },
-        );
-    }
-    if policy.max_daily_loss.is_some() && snapshot.daily_pnl.is_none() {
-        return Some(
-            LossGovernorManualRecoveryRefusal::MissingDimensionFailClosed {
-                dimension: "daily_pnl",
-                required_by: "risk.loss_governor.max_daily_loss",
-            },
-        );
-    }
-    if policy.max_rolling_loss.is_some() && snapshot.rolling_pnl.is_none() {
-        return Some(
-            LossGovernorManualRecoveryRefusal::MissingDimensionFailClosed {
-                dimension: "rolling_pnl",
-                required_by: "risk.loss_governor.max_rolling_loss",
-            },
-        );
-    }
-    if policy.max_drawdown.is_some() && snapshot.current_equity.is_none() {
-        return Some(
-            LossGovernorManualRecoveryRefusal::MissingDimensionFailClosed {
-                dimension: "current_equity",
-                required_by: "risk.loss_governor.max_drawdown",
-            },
-        );
-    }
-    if policy.max_drawdown.is_some() && snapshot.peak_equity.is_none() {
-        return Some(
-            LossGovernorManualRecoveryRefusal::MissingDimensionFailClosed {
-                dimension: "peak_equity",
-                required_by: "risk.loss_governor.max_drawdown",
-            },
-        );
-    }
-    None
-}
-
-fn loss_breaches(pnl: Decimal, limit: Decimal) -> bool {
-    pnl < Decimal::ZERO && -pnl >= limit
-}
-
-fn loss_governor_policy(
-    block: &LossGovernorBlock,
-) -> Result<LossGovernorPolicy, LossGovernorManualRecoveryError> {
-    Ok(LossGovernorPolicy {
-        max_snapshot_age_ns: block.max_snapshot_age_ns,
-        max_per_trade_loss: optional_loss_governor_decimal(
-            "risk.loss_governor.max_per_trade_loss",
-            block.max_per_trade_loss.as_deref(),
-        )?,
-        max_daily_loss: optional_loss_governor_decimal(
-            "risk.loss_governor.max_daily_loss",
-            block.max_daily_loss.as_deref(),
-        )?,
-        max_rolling_loss: optional_loss_governor_decimal(
-            "risk.loss_governor.max_rolling_loss",
-            block.max_rolling_loss.as_deref(),
-        )?,
-        max_drawdown: optional_loss_governor_decimal(
-            "risk.loss_governor.max_drawdown",
-            block.max_drawdown.as_deref(),
-        )?,
-    })
 }
 
 fn halt_action_policy(
@@ -692,19 +609,6 @@ fn halt_action_policy(
             block.manual_recovery_evidence_max_path_bytes,
         )?,
     })
-}
-
-fn optional_loss_governor_decimal(
-    label: &'static str,
-    value: Option<&str>,
-) -> Result<Option<Decimal>, LossGovernorManualRecoveryError> {
-    value
-        .map(|value| {
-            parse_decimal_string(value).map_err(|reason| {
-                LossGovernorManualRecoveryError::InvalidLossGovernorDecimal { label, reason }
-            })
-        })
-        .transpose()
 }
 
 fn required_loss_governor_trading_state_action(
@@ -742,10 +646,12 @@ mod tests {
 
     use super::*;
     use crate::bolt_v3_kill_switch::KillSwitchHaltTrigger;
+    use rust_decimal::Decimal;
 
     struct FakeManualRecoveryStore {
         path: PathBuf,
         append_calls: RefCell<usize>,
+        appended_records: RefCell<Vec<KillSwitchLossGovernorManualRecoveryRecord>>,
         write_results: RefCell<VecDeque<bool>>,
         written_states: RefCell<Vec<KillSwitchState>>,
     }
@@ -755,9 +661,14 @@ mod tests {
             Self {
                 path: PathBuf::from("state/kill-switch.json"),
                 append_calls: RefCell::new(0),
+                appended_records: RefCell::new(Vec::new()),
                 write_results: RefCell::new(write_results.into_iter().collect()),
                 written_states: RefCell::new(Vec::new()),
             }
+        }
+
+        fn appended_records(&self) -> Vec<KillSwitchLossGovernorManualRecoveryRecord> {
+            self.appended_records.borrow().clone()
         }
 
         fn written_states(&self) -> Vec<KillSwitchState> {
@@ -772,9 +683,10 @@ mod tests {
 
         fn append_loss_governor_manual_recovery(
             &self,
-            _manual_recovery: KillSwitchLossGovernorManualRecoveryRecord,
+            manual_recovery: KillSwitchLossGovernorManualRecoveryRecord,
         ) -> Result<usize, KillSwitchStoreError> {
             *self.append_calls.borrow_mut() += 1;
+            self.appended_records.borrow_mut().push(manual_recovery);
             Ok(1)
         }
 
@@ -829,6 +741,8 @@ mod tests {
                 .to_string(),
             observed_at_ns: 2_500,
             recorded_at_ns: 2_600,
+            outcome: Some(KillSwitchLossGovernorManualRecoveryOutcome::Recovered),
+            outcome_reason: None,
         }
     }
 
@@ -848,7 +762,16 @@ mod tests {
             error,
             LossGovernorManualRecoveryError::StoreWriteFailed { .. }
         ));
-        assert_eq!(*store.append_calls.borrow(), 1);
+        assert_eq!(*store.append_calls.borrow(), 2);
+        let appended_records = store.appended_records();
+        assert_eq!(
+            appended_records[0].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Recovered)
+        );
+        assert_eq!(
+            appended_records[1].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::WriteFailed)
+        );
         let written_states = store.written_states();
         assert_eq!(written_states.len(), 2);
         assert_eq!(written_states[0], KillSwitchState::Armed);
@@ -874,7 +797,16 @@ mod tests {
             error,
             LossGovernorManualRecoveryError::FailedStateWriteFailed { .. }
         ));
-        assert_eq!(*store.append_calls.borrow(), 1);
+        assert_eq!(*store.append_calls.borrow(), 2);
+        let appended_records = store.appended_records();
+        assert_eq!(
+            appended_records[0].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Recovered)
+        );
+        assert_eq!(
+            appended_records[1].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::WriteFailed)
+        );
         let written_states = store.written_states();
         assert_eq!(written_states.len(), 2);
         assert_eq!(written_states[0], KillSwitchState::Armed);

@@ -11,6 +11,8 @@ use crate::bolt_v3_loss_governor::{
 };
 use crate::bolt_v3_numeric::is_sha256_hex_digest;
 
+const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;
+
 pub type LossGovernorHaltActionHandler =
     Rc<dyn Fn(Option<&LossSnapshot>, u64, LossSourceObservationTimestamps)>;
 
@@ -210,6 +212,54 @@ pub struct LossGovernorManualRecoveryRequest<'a> {
     pub max_evidence_path_bytes: usize,
 }
 
+pub struct LossGovernorClockManualRecoveryRequest<'a> {
+    pub policy: &'a LossGovernorHaltActionPolicy,
+    pub current_state: TradingState,
+    pub trigger_reason: Option<LossHaltReason>,
+    pub trigger_observed_at_ns: u64,
+    pub now_ns: u64,
+    pub rolling_window_ns: u64,
+    pub evidence: Option<&'a LossGovernorManualRecoveryEvidence>,
+    pub max_evidence_path_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LossGovernorClockManualRecoveryRefusal {
+    IneligibleTradingState {
+        current_state: TradingState,
+    },
+    LegacyStoreMissingTriggerReason,
+    FutureDatedTrigger {
+        trigger_observed_at_ns: u64,
+        now_ns: u64,
+    },
+    StaleEvidence {
+        evidence_observed_at_ns: u64,
+        trigger_observed_at_ns: u64,
+    },
+    FutureDatedEvidence {
+        evidence_observed_at_ns: u64,
+        now_ns: u64,
+    },
+    DailyWindowStillOpen {
+        trigger_observed_at_ns: u64,
+        now_ns: u64,
+    },
+    RollingWindowStillOpen {
+        trigger_observed_at_ns: u64,
+        now_ns: u64,
+        rolling_window_ns: u64,
+    },
+    RuntimePathRequired {
+        trigger_reason: LossHaltReason,
+    },
+    RecoveryMode {
+        recovery_mode: LossGovernorRecoveryMode,
+    },
+    InvalidEvidence,
+    InvalidRollingWindow,
+}
+
 #[must_use]
 pub fn next_loss_governor_manual_recovery_trading_state(
     request: LossGovernorManualRecoveryRequest<'_>,
@@ -254,6 +304,93 @@ pub fn next_loss_governor_manual_recovery_trading_state(
     Some(TradingState::Active)
 }
 
+pub fn next_loss_governor_clock_verified_manual_recovery_trading_state(
+    request: LossGovernorClockManualRecoveryRequest<'_>,
+) -> Result<TradingState, LossGovernorClockManualRecoveryRefusal> {
+    let LossGovernorClockManualRecoveryRequest {
+        policy,
+        current_state,
+        trigger_reason,
+        trigger_observed_at_ns,
+        now_ns,
+        rolling_window_ns,
+        evidence,
+        max_evidence_path_bytes,
+    } = request;
+
+    match policy.recovery_mode {
+        LossGovernorRecoveryMode::Manual => {}
+    }
+    if !matches!(current_state, TradingState::Halted | TradingState::Reducing) {
+        return Err(
+            LossGovernorClockManualRecoveryRefusal::IneligibleTradingState { current_state },
+        );
+    }
+    let evidence = evidence.ok_or(LossGovernorClockManualRecoveryRefusal::InvalidEvidence)?;
+    if evidence.validate(max_evidence_path_bytes).is_err() {
+        return Err(LossGovernorClockManualRecoveryRefusal::InvalidEvidence);
+    }
+    if trigger_observed_at_ns > now_ns {
+        return Err(LossGovernorClockManualRecoveryRefusal::FutureDatedTrigger {
+            trigger_observed_at_ns,
+            now_ns,
+        });
+    }
+    if evidence.observed_at_ns > now_ns {
+        return Err(
+            LossGovernorClockManualRecoveryRefusal::FutureDatedEvidence {
+                evidence_observed_at_ns: evidence.observed_at_ns,
+                now_ns,
+            },
+        );
+    }
+    if evidence.observed_at_ns < trigger_observed_at_ns {
+        return Err(LossGovernorClockManualRecoveryRefusal::StaleEvidence {
+            evidence_observed_at_ns: evidence.observed_at_ns,
+            trigger_observed_at_ns,
+        });
+    }
+
+    match trigger_reason {
+        None => Err(LossGovernorClockManualRecoveryRefusal::LegacyStoreMissingTriggerReason),
+        Some(LossHaltReason::DailyLossLimit) => {
+            let trigger_day = trigger_observed_at_ns / NANOS_PER_UTC_DAY;
+            let now_day = now_ns / NANOS_PER_UTC_DAY;
+            if trigger_day < now_day {
+                Ok(TradingState::Active)
+            } else {
+                Err(
+                    LossGovernorClockManualRecoveryRefusal::DailyWindowStillOpen {
+                        trigger_observed_at_ns,
+                        now_ns,
+                    },
+                )
+            }
+        }
+        Some(LossHaltReason::RollingLossLimit) => {
+            if rolling_window_ns == 0 {
+                return Err(LossGovernorClockManualRecoveryRefusal::InvalidRollingWindow);
+            }
+            if now_ns - trigger_observed_at_ns > rolling_window_ns {
+                Ok(TradingState::Active)
+            } else {
+                Err(
+                    LossGovernorClockManualRecoveryRefusal::RollingWindowStillOpen {
+                        trigger_observed_at_ns,
+                        now_ns,
+                        rolling_window_ns,
+                    },
+                )
+            }
+        }
+        Some(
+            trigger_reason @ (LossHaltReason::PerTradeLossLimit
+            | LossHaltReason::MaxDrawdownLimit
+            | LossHaltReason::StaleLossSnapshot),
+        ) => Err(LossGovernorClockManualRecoveryRefusal::RuntimePathRequired { trigger_reason }),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TradingStateSeverity {
     Active,
@@ -293,9 +430,11 @@ fn strongest_trading_state_action(
 #[cfg(test)]
 mod tests {
     use super::{
+        LossGovernorClockManualRecoveryRefusal, LossGovernorClockManualRecoveryRequest,
         LossGovernorHaltActionPolicy, LossGovernorManualRecoveryEvidence,
         LossGovernorManualRecoveryEvidenceError, LossGovernorManualRecoveryRequest,
-        LossGovernorRecoveryMode, LossGovernorTradingStateAction,
+        LossGovernorRecoveryMode, LossGovernorTradingStateAction, NANOS_PER_UTC_DAY,
+        next_loss_governor_clock_verified_manual_recovery_trading_state,
         next_loss_governor_manual_recovery_trading_state, next_loss_governor_trading_state,
     };
     use crate::bolt_v3_loss_governor::{
@@ -347,11 +486,15 @@ mod tests {
     }
 
     fn valid_recovery_evidence() -> LossGovernorManualRecoveryEvidence {
+        recovery_evidence_at(1_100)
+    }
+
+    fn recovery_evidence_at(observed_at_ns: u64) -> LossGovernorManualRecoveryEvidence {
         LossGovernorManualRecoveryEvidence::new(
             "operator-1",
             "manual-recovery/evidence.json",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            1_100,
+            observed_at_ns,
             128,
         )
         .expect("valid manual recovery evidence should build")
@@ -376,6 +519,30 @@ mod tests {
             evidence,
             max_evidence_path_bytes: 128,
         })
+    }
+
+    fn clock_manual_recovery_target(
+        trigger_reason: Option<LossHaltReason>,
+        trigger_observed_at_ns: u64,
+        now_ns: u64,
+        rolling_window_ns: u64,
+    ) -> Result<TradingState, LossGovernorClockManualRecoveryRefusal> {
+        let evidence = recovery_evidence_at(now_ns);
+        next_loss_governor_clock_verified_manual_recovery_trading_state(
+            LossGovernorClockManualRecoveryRequest {
+                policy: &policy(
+                    LossGovernorTradingStateAction::Halted,
+                    LossGovernorTradingStateAction::Reducing,
+                ),
+                current_state: TradingState::Halted,
+                trigger_reason,
+                trigger_observed_at_ns,
+                now_ns,
+                rolling_window_ns,
+                evidence: Some(&evidence),
+                max_evidence_path_bytes: 128,
+            },
+        )
     }
 
     #[test]
@@ -515,6 +682,114 @@ mod tests {
         );
 
         assert_eq!(target, Some(TradingState::Active));
+    }
+
+    #[test]
+    fn clock_verified_manual_recovery_clears_daily_only_after_utc_day_rolls() {
+        let trigger_observed_at_ns = 10 * NANOS_PER_UTC_DAY + 1_000;
+
+        assert_eq!(
+            clock_manual_recovery_target(
+                Some(LossHaltReason::DailyLossLimit),
+                trigger_observed_at_ns,
+                11 * NANOS_PER_UTC_DAY + 1_000,
+                300_000_000_000,
+            ),
+            Ok(TradingState::Active)
+        );
+        assert_eq!(
+            clock_manual_recovery_target(
+                Some(LossHaltReason::DailyLossLimit),
+                trigger_observed_at_ns,
+                10 * NANOS_PER_UTC_DAY + 2_000,
+                300_000_000_000,
+            ),
+            Err(
+                LossGovernorClockManualRecoveryRefusal::DailyWindowStillOpen {
+                    trigger_observed_at_ns,
+                    now_ns: 10 * NANOS_PER_UTC_DAY + 2_000,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn clock_verified_manual_recovery_clears_rolling_only_after_window_elapses() {
+        assert_eq!(
+            clock_manual_recovery_target(
+                Some(LossHaltReason::RollingLossLimit),
+                2_000,
+                300_000_002_001,
+                300_000_000_000,
+            ),
+            Ok(TradingState::Active)
+        );
+        assert_eq!(
+            clock_manual_recovery_target(
+                Some(LossHaltReason::RollingLossLimit),
+                2_000,
+                300_000_002_000,
+                300_000_000_000,
+            ),
+            Err(
+                LossGovernorClockManualRecoveryRefusal::RollingWindowStillOpen {
+                    trigger_observed_at_ns: 2_000,
+                    now_ns: 300_000_002_000,
+                    rolling_window_ns: 300_000_000_000,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn clock_verified_manual_recovery_refuses_legacy_and_runtime_path_triggers() {
+        assert_eq!(
+            clock_manual_recovery_target(None, 1_000, 2_000, 300_000_000_000),
+            Err(LossGovernorClockManualRecoveryRefusal::LegacyStoreMissingTriggerReason)
+        );
+        assert_eq!(
+            clock_manual_recovery_target(
+                Some(LossHaltReason::MaxDrawdownLimit),
+                1_000,
+                2_000,
+                300_000_000_000,
+            ),
+            Err(
+                LossGovernorClockManualRecoveryRefusal::RuntimePathRequired {
+                    trigger_reason: LossHaltReason::MaxDrawdownLimit,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn clock_verified_manual_recovery_reports_future_dated_evidence_explicitly() {
+        let evidence = recovery_evidence_at(2_001);
+        let result = next_loss_governor_clock_verified_manual_recovery_trading_state(
+            LossGovernorClockManualRecoveryRequest {
+                policy: &policy(
+                    LossGovernorTradingStateAction::Halted,
+                    LossGovernorTradingStateAction::Reducing,
+                ),
+                current_state: TradingState::Halted,
+                trigger_reason: Some(LossHaltReason::DailyLossLimit),
+                trigger_observed_at_ns: 1_000,
+                now_ns: 2_000,
+                rolling_window_ns: 300_000_000_000,
+                evidence: Some(&evidence),
+                max_evidence_path_bytes: 128,
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(
+                LossGovernorClockManualRecoveryRefusal::FutureDatedEvidence {
+                    evidence_observed_at_ns: 2_001,
+                    now_ns: 2_000,
+                }
+            )
+        );
     }
 
     #[test]

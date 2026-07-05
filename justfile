@@ -275,6 +275,7 @@ debug-test filter package="": check-workspace require-rust-verification-owner
     if [[ -z "$package" ]]; then package={{quote(package)}}; fi
     if [[ -z "$filter" ]]; then echo "ERROR: debug-test filter must be non-empty" >&2; exit 2; fi
     args=(-E "$filter")
+    if [[ "$filter" =~ ^[[:alnum:]_:.:-]+$ ]]; then args=("$filter"); fi
     if [[ "$package" == "backtesting-vertical-slice" ]]; then
         python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --locked "${args[@]}"
     elif [[ -s "${NEXTEST_ARCHIVE_PATH:-}" && -z "$package" ]]; then

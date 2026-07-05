@@ -625,7 +625,7 @@ def _manifest_authorizes_overwrite(
         and entry.get("source_scope") == source_scope
         and (
             entry.get("source_path") == source_path
-            or source_scope in {"global", "local", "worktree", "effective"}
+            or source_scope in {"global", "local", "worktree", "system", "effective"}
         )
         and entry.get("runtime_sha256") == destination_sha
     )
@@ -766,7 +766,7 @@ def _manifest_source_file(
         invoke_root=invoke_root or repo_root,
         home_dir=home_dir,
     )
-    if hook_scope == "global":
+    if hook_scope in {"global", "system"}:
         return None if current_dir is None else current_dir / hook_name
     if hook_scope in {"local", "worktree", "effective"}:
         if current_dir is None:
@@ -818,20 +818,35 @@ def _configured_hooks_path(
     invoke_root: pathlib.Path,
     source_root: pathlib.Path,
 ) -> tuple[str, str | None]:
-    if _worktree_config_enabled(invoke_root):
-        worktree_raw = _git_config_value(invoke_root, ["--worktree", "--get", "core.hooksPath"])
-        if worktree_raw:
-            return "worktree", worktree_raw
-    local_raw = _git_config_value(source_root, ["--local", "--get", "core.hooksPath"])
-    if local_raw:
-        return "local", local_raw
-    global_raw = _git_config_value(invoke_root, ["--global", "--get", "core.hooksPath"])
-    if global_raw:
-        return "global", global_raw
     effective_raw = _git_config_value(invoke_root, ["--get", "core.hooksPath"])
-    if effective_raw:
-        return "effective", effective_raw
-    return "default", None
+    if effective_raw is None:
+        return "default", None
+    scoped = _git(
+        invoke_root,
+        ["config", "--show-scope", "--get", "core.hooksPath"],
+        check=False,
+    )
+    if scoped.returncode != 0 or not scoped.stdout.strip():
+        raise CleanMergedError(
+            "core.hooksPath is configured but Git did not report its config scope; "
+            "set it in repo-local, worktree, global, or system config before installing "
+            "clean-merged hooks"
+        )
+    parts = scoped.stdout.splitlines()[0].split(None, 1)
+    if len(parts) != 2:
+        raise CleanMergedError(
+            "core.hooksPath config scope output was not understood; set it in "
+            "repo-local, worktree, global, or system config before installing "
+            "clean-merged hooks"
+        )
+    source_scope, raw = parts
+    if source_scope in {"worktree", "local", "global", "system"}:
+        return source_scope, raw
+    raise CleanMergedError(
+        f"core.hooksPath comes from unsupported {source_scope} config scope; "
+        "set it in repo-local, worktree, global, or system config before installing "
+        "clean-merged hooks"
+    )
 
 
 def _current_hooks_dir_for_scope(
@@ -851,6 +866,9 @@ def _current_hooks_dir_for_scope(
         base = repo_root
     elif source_scope == "global":
         raw = _git_config_value(invoke_root, ["--global", "--get", "core.hooksPath"])
+        base = invoke_root
+    elif source_scope == "system":
+        raw = _git_config_value(invoke_root, ["--system", "--get", "core.hooksPath"])
         base = invoke_root
     elif source_scope == "effective":
         raw = _git_config_value(invoke_root, ["--get", "core.hooksPath"])
@@ -909,7 +927,7 @@ def _hook_manifest_source_dir_entry(
         invoke_root=invoke_root,
         home_dir=home_dir,
     )
-    if source_scope == "global":
+    if source_scope in {"global", "system"}:
         return None if current_dir is None else ActiveHookDir(current_dir, source_scope)
     if source_scope in {"local", "worktree", "effective"}:
         if current_dir is None:
@@ -1009,7 +1027,11 @@ def _active_hook_dirs(
             )
         ]
 
-    bases = [invoke_root] if source_scope in {"worktree", "global", "effective"} else [source_root]
+    bases = (
+        [invoke_root]
+        if source_scope in {"worktree", "global", "system", "effective"}
+        else [source_root]
+    )
     if source_scope == "local" and not _same_path(invoke_root, source_root):
         bases.append(invoke_root)
 
@@ -1130,6 +1152,36 @@ def install_hooks(
     source_hook_names = {hook_file.name for hook_file in source_hook_files}
     source_dirs: list[dict[str, str]] = []
     adopted_source_paths: set[str] = set()
+    runtime_source_scope = next(
+        (
+            active_hooks.source_scope
+            for active_hooks in active_hook_dirs
+            if _same_path(active_hooks.path, runtime_hooks_dir)
+        ),
+        "default",
+    )
+    if runtime_hooks_dir.is_dir():
+        for hook_file in sorted(runtime_hooks_dir.iterdir(), key=lambda path: path.name):
+            if (
+                not hook_file.is_file()
+                or not _is_git_hook_name(hook_file.name)
+                or hook_file.name not in source_hook_names
+            ):
+                continue
+            repo_source_file = source_hooks_dir / hook_file.name
+            if hook_file.read_bytes() == repo_source_file.read_bytes():
+                continue
+            if hook_file.name in manifest_hooks:
+                continue
+            shadow_copy = _shadowed_hook_copy(common_dir, hook_file)
+            _record_shadowed_hook(
+                hook_file=shadow_copy,
+                repo_source_file=repo_source_file,
+                source_scope=runtime_source_scope,
+                shadowed_hooks=shadowed_hooks,
+                hook_name=hook_file.name,
+            )
+            hook_file.unlink()
     for active_hooks in active_hook_dirs:
         _record_source_dir(
             source_dirs,
@@ -1217,7 +1269,13 @@ def install_hooks(
                 home_dir=home_dir,
             )
             if source_file is None:
-                if entry.get("source_scope") in {"global", "local", "worktree", "effective"}:
+                if entry.get("source_scope") in {
+                    "global",
+                    "local",
+                    "worktree",
+                    "system",
+                    "effective",
+                }:
                     continue
                 raise CleanMergedError(
                     f"shadowed hook manifest entry for {hook_name} has invalid source_path"
@@ -1256,7 +1314,13 @@ def install_hooks(
             home_dir=home_dir,
         )
         if source_file is None:
-            if entry.get("source_scope") in {"global", "local", "worktree", "effective"}:
+            if entry.get("source_scope") in {
+                "global",
+                "local",
+                "worktree",
+                "system",
+                "effective",
+            }:
                 _remove_hook_with_provenance(
                     runtime_hooks_dir=runtime_hooks_dir,
                     hook_name=hook_name,
@@ -3327,6 +3391,16 @@ def _redirect_output_to(path: pathlib.Path, max_bytes: int, rotated_retention_da
     return handle
 
 
+def _hook_runtime_outside_allowed_problem(
+    hook_name: str,
+    hook_file: pathlib.Path,
+) -> str:
+    return (
+        f"hook {hook_name} runtime is outside allowed state; "
+        f"remove {hook_file} and run `just setup`"
+    )
+
+
 def _diagnose_hook_install_state(
     repo_root: pathlib.Path,
     invoke_root: pathlib.Path,
@@ -3340,10 +3414,16 @@ def _diagnose_hook_install_state(
         hook_manifest = _load_hook_manifest(common)
         manifest_hooks = _hook_manifest_hooks(hook_manifest)
         manifest_shadowed = _hook_manifest_shadowed(hook_manifest)
+        manifest_loaded = True
     except CleanMergedError as exc:
         manifest_hooks = {}
         manifest_shadowed = {}
+        manifest_loaded = False
         problems.append(str(exc))
+        problems.append(
+            f"repair or remove hook manifest {_hook_manifest_path(common)} "
+            "and run `just setup`"
+        )
 
     active_hooks_dir_raw = _git(invoke_root, ["config", "--get", "core.hooksPath"], check=False)
     if active_hooks_dir_raw.returncode == 0 and active_hooks_dir_raw.stdout.strip():
@@ -3380,15 +3460,13 @@ def _diagnose_hook_install_state(
             if not present:
                 problems.append(f"hook {h} missing (run `just setup`)")
             elif not regular_file:
-                problems.append(
-                    f"hook {h} runtime is outside allowed state; "
-                    "remove it and run `just setup`"
-                )
-            elif _same_path(active_hooks_dir, expected_hooks_dir) and not manifest_match:
-                problems.append(
-                    f"hook {h} runtime is outside allowed state; "
-                    "remove it and run `just setup`"
-                )
+                problems.append(_hook_runtime_outside_allowed_problem(h, hook_file))
+            elif (
+                manifest_loaded
+                and _same_path(active_hooks_dir, expected_hooks_dir)
+                and not manifest_match
+            ):
+                problems.append(_hook_runtime_outside_allowed_problem(h, hook_file))
             elif _same_path(active_hooks_dir, expected_hooks_dir) and not source_match:
                 problems.append(f"hook {h} runtime does not match tracked source (run `just setup`)")
             if _same_path(active_hooks_dir, expected_hooks_dir) and regular_file and not executable:
@@ -3409,6 +3487,7 @@ def _diagnose_hook_install_state(
             problems.append(f"hook {hook_name} manifest entry is invalid")
             continue
         hook_file = expected_hooks_dir / hook_name
+        runtime_present = hook_file.exists() or hook_file.is_symlink()
         runtime_regular_file = hook_file.is_file() and not hook_file.is_symlink()
         runtime_match = (
             runtime_regular_file
@@ -3432,8 +3511,18 @@ def _diagnose_hook_install_state(
             f"  manifest hook {hook_name:14s} runtime_match={runtime_match} "
             f"source_match={source_match}"
         )
-        if not runtime_match:
-            problems.append(f"hook {hook_name} runtime changed since install")
+        if hook_name not in CLEAN_MERGED_HOOKS and not runtime_match:
+            if runtime_present:
+                problems.append(_hook_runtime_outside_allowed_problem(hook_name, hook_file))
+            else:
+                problems.append(f"hook {hook_name} missing (run `just setup`)")
+        if (
+            entry.get("source_kind") == "repo-source"
+            and hook_name not in CLEAN_MERGED_HOOKS
+            and runtime_regular_file
+            and not _is_executable(hook_file)
+        ):
+            problems.append(f"hook {hook_name} is not executable (run `just setup`)")
         if not source_match:
             problems.append(f"hook {hook_name} source changed since install")
 

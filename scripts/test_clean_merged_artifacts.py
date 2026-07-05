@@ -1424,16 +1424,16 @@ class CleanupContractTests(unittest.TestCase):
         self.assertNotIn("remote.origin.prune", source)
 
     def test_setup_uses_untracked_git_common_runtime_hook_directory(self) -> None:
-        source = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-        docs = (REPO_ROOT / "docs" / "ops" / "clean-merged-design.md").read_text(
-            encoding="utf-8"
-        )
+        self._write_clean_merged_hook_sources(self.work)
 
-        self.assertIn("scripts/clean_merged_artifacts.py --install-hooks", source)
-        self.assertNotIn("git config core.hooksPath .githooks", source)
-        self.assertNotIn("chmod +x .githooks/post-merge", source)
-        self.assertIn("git-common hooks directory", docs)
-        self.assertIn("hook provenance manifest", docs)
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            _run(["git", "config", "--get", "core.hooksPath"], cwd=self.work)
+            .stdout.strip(),
+            str(git_common_dir_compat(self.work) / "hooks"),
+        )
 
     def test_install_hooks_preserves_existing_local_hooks_when_moving_to_runtime_dir(
         self,
@@ -1723,6 +1723,66 @@ class CleanupContractTests(unittest.TestCase):
             new_commit_msg.resolve(),
         )
 
+    def test_install_hooks_tracks_system_hook_path_move(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        system_hooks_v1 = self.tmp / "system-hooks-move-v1"
+        system_hooks_v1.mkdir()
+        system_commit_msg_v1 = system_hooks_v1 / "commit-msg"
+        system_commit_msg_v1.write_text("#!/bin/sh\nprintf system-v1\n", encoding="utf-8")
+        system_commit_msg_v1.chmod(0o755)
+        system_config = self.tmp / "system-move.gitconfig"
+        system_config.write_text(
+            f"[core]\n\thooksPath = {system_hooks_v1}\n",
+            encoding="utf-8",
+        )
+        env = {"GIT_CONFIG_SYSTEM": str(system_config)}
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks", env=env).returncode, 0)
+        system_hooks_v2 = self.tmp / "system-hooks-move-v2"
+        system_hooks_v2.mkdir()
+        system_commit_msg_v2 = system_hooks_v2 / "commit-msg"
+        system_commit_msg_v2.write_text("#!/bin/sh\nprintf system-v2\n", encoding="utf-8")
+        system_commit_msg_v2.chmod(0o755)
+        system_config.write_text(
+            f"[core]\n\thooksPath = {system_hooks_v2}\n",
+            encoding="utf-8",
+        )
+
+        proc = run_clean_proc(self.work, "--install-hooks", env=env)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        runtime_hook = git_common_dir_compat(self.work) / "hooks" / "commit-msg"
+        self.assertEqual(
+            runtime_hook.read_text(encoding="utf-8"),
+            system_commit_msg_v2.read_text(encoding="utf-8"),
+        )
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["hooks"]["commit-msg"]["source_scope"], "system")
+        self.assertEqual(manifest["hooks"]["commit-msg"]["source_path"], str(system_commit_msg_v2))
+
+    def test_install_hooks_refuses_untrackable_command_scope_hooks_path(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        command_hooks = self.tmp / "command-hooks"
+        command_hooks.mkdir()
+        command_commit_msg = command_hooks / "commit-msg"
+        command_commit_msg.write_text("#!/bin/sh\nprintf command-hook\n", encoding="utf-8")
+        command_commit_msg.chmod(0o755)
+
+        proc = run_clean_proc(
+            self.work,
+            "--install-hooks",
+            env={
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.hooksPath",
+                "GIT_CONFIG_VALUE_0": str(command_hooks),
+            },
+        )
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("unsupported command config scope", proc.stderr)
+
     def test_install_hooks_removes_global_hook_when_global_path_unset(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
         global_hooks = self.tmp / "global-hooks-unset"
@@ -1801,6 +1861,52 @@ class CleanupContractTests(unittest.TestCase):
 
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("hook commit-msg source changed", proc.stdout)
+
+    def test_doctor_reports_adopted_hook_runtime_drift_with_recovery(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        global_hooks = self.tmp / "global-hooks-runtime-drift"
+        global_hooks.mkdir()
+        global_commit_msg = global_hooks / "commit-msg"
+        global_commit_msg.write_text("#!/bin/sh\nprintf global-v1\n", encoding="utf-8")
+        global_commit_msg.chmod(0o755)
+        global_config = self.tmp / "global-runtime-drift.gitconfig"
+        global_config.write_text(
+            f"[core]\n\thooksPath = {global_hooks}\n",
+            encoding="utf-8",
+        )
+        env = {"GIT_CONFIG_GLOBAL": str(global_config)}
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks", env=env).returncode, 0)
+        runtime_hook = git_common_dir_compat(self.work) / "hooks" / "commit-msg"
+        runtime_hook.write_text("#!/bin/sh\nprintf tampered-runtime\n", encoding="utf-8")
+        runtime_hook.chmod(0o755)
+
+        setup = run_clean_proc(self.work, "--install-hooks", env=env)
+        proc = run_clean_proc(self.work, "--doctor", env=env)
+
+        self.assertEqual(setup.returncode, 1)
+        self.assertIn("refusing to adopt modified runtime hook commit-msg", setup.stderr)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(
+            f"hook commit-msg runtime is outside allowed state; "
+            f"remove {runtime_hook} and run `just setup`",
+            proc.stdout,
+        )
+
+    def test_doctor_reports_invalid_manifest_recovery_before_hook_recovery(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        manifest_path = git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json"
+        manifest_path.write_text("{", encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("hook manifest unreadable", proc.stdout)
+        self.assertIn(
+            f"repair or remove hook manifest {manifest_path} and run `just setup`",
+            proc.stdout,
+        )
+        self.assertNotIn("runtime is outside allowed state", proc.stdout)
 
     def test_doctor_on_config_error_reports_manifest_hook_source_drift(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
@@ -1983,6 +2089,39 @@ class CleanupContractTests(unittest.TestCase):
             "#!/bin/sh\nprintf default-local-post-merge\n",
         )
 
+    def test_install_hooks_shadow_records_runtime_collision_with_nondefault_active_dir(
+        self,
+    ) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        legacy_hooks = self.work / ".legacy-hooks"
+        legacy_hooks.mkdir()
+        _run(["git", "config", "core.hooksPath", ".legacy-hooks"], cwd=self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        colliding_hook = runtime_hooks / "post-merge"
+        colliding_hook.write_text(
+            "#!/bin/sh\nprintf stale-runtime-post-merge\n",
+            encoding="utf-8",
+        )
+        colliding_hook.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            colliding_hook.read_text(encoding="utf-8"),
+            (source_hooks / "post-merge").read_text(encoding="utf-8"),
+        )
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        shadowed = manifest["shadowed_hooks"]["post-merge"][0]
+        self.assertEqual(
+            pathlib.Path(shadowed["source_path"]).read_text(encoding="utf-8"),
+            "#!/bin/sh\nprintf stale-runtime-post-merge\n",
+        )
+
     def test_install_hooks_shadow_records_marker_impostor_without_body_trust(
         self,
     ) -> None:
@@ -2086,8 +2225,8 @@ class CleanupContractTests(unittest.TestCase):
 
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn(
-            "hook post-merge runtime is outside allowed state; "
-            "remove it and run `just setup`",
+            f"hook post-merge runtime is outside allowed state; "
+            f"remove {runtime_hook} and run `just setup`",
             proc.stdout,
         )
 
@@ -2104,8 +2243,8 @@ class CleanupContractTests(unittest.TestCase):
 
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn(
-            "hook post-merge runtime is outside allowed state; "
-            "remove it and run `just setup`",
+            f"hook post-merge runtime is outside allowed state; "
+            f"remove {runtime_hook} and run `just setup`",
             proc.stdout,
         )
         self.assertNotIn(
@@ -2128,6 +2267,22 @@ class CleanupContractTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("hook post-merge is not executable (run `just setup`)", proc.stdout)
 
+    def test_doctor_reports_non_executable_repo_source_hook(self) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        source_hook = source_hooks / "pre-push"
+        source_hook.write_text("#!/bin/sh\nprintf tracked-pre-push\n", encoding="utf-8")
+        source_hook.chmod(0o755)
+        _run(["git", "add", ".githooks/pre-push"], cwd=self.work)
+        _run(["git", "commit", "-m", "track pre-push hook"], cwd=self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        runtime_hook = git_common_dir_compat(self.work) / "hooks" / "pre-push"
+        runtime_hook.chmod(0o644)
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("hook pre-push is not executable (run `just setup`)", proc.stdout)
+
     def test_doctor_reports_missing_managed_hook_without_remove_recovery(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
         self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
@@ -2140,7 +2295,7 @@ class CleanupContractTests(unittest.TestCase):
         self.assertIn("hook post-merge missing (run `just setup`)", proc.stdout)
         self.assertNotIn(
             "hook post-merge runtime is outside allowed state; "
-            "remove it and run `just setup`",
+            f"remove {runtime_hook} and run `just setup`",
             proc.stdout,
         )
 

@@ -183,19 +183,23 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
 - Keep direct tracked `.githooks/<hook-name>` files as repo hook source and
   generate active hooks under the untracked git-common hooks directory
   (`$(git rev-parse --git-common-dir)/hooks`).
-  `just setup` points `core.hooksPath` at that generated directory so agent
-  hook installers can mutate active hooks without dirtying tracked repo files.
-  During that move, setup copies repo hook sources plus existing hooks from the
-  previous active hook directory when those names are not owned by tracked repo
-  hook sources, so local/global agent hooks keep firing after the path changes.
+  `just setup` points `core.hooksPath` at that generated directory so generated
+  hook copies can change without dirtying tracked repo files. During that move,
+  setup copies repo hook sources plus existing hooks from the previous active
+  hook directory when those names are not owned by tracked repo hook sources, so
+  local/global agent hooks keep firing after the path changes. Runtime copies
+  are manifest-owned; direct edits to runtime copies are diagnosed as outside
+  the allowed state and should be removed before re-running setup.
   Setup records adopted source directories as well as hook files, so later setup
   runs re-list those source directories and adopt newly added sibling hooks
-  without guessing hook body content. Local, worktree, effective, and global hook
-  path moves follow current Git config; unset sources or disappeared files remove
-  manifest-owned runtime copies. Same-name external hooks, including initial
-  default `.git/hooks` collisions, are preserved in the shadow store and recorded
-  in the manifest instead of guessed, merged, or dispatched. Symlink hooks are
-  refused, and external hook executable mode is preserved.
+  without guessing hook body content. Local, worktree, global, and system hook
+  path moves follow current Git config; unsupported effective-only config scopes
+  fail closed instead of creating an untrackable fork. Unset sources or
+  disappeared files remove manifest-owned runtime copies. Same-name external
+  hooks, including initial default `.git/hooks` collisions, are preserved in the
+  shadow store and recorded in the manifest instead of guessed, merged, or
+  dispatched. Symlink hooks are refused, and external hook executable mode is
+  preserved.
   Setup records hook source path, source directory, Git config scope, and byte hashes in
   `$(git rev-parse --git-common-dir)/clean-merged.hooks-manifest.json`.
   Runtime overwrites are allowed only for exact byte matches or entries whose

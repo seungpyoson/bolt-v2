@@ -16,6 +16,11 @@ struct ArtifactRefCandidate {
     location: String,
 }
 
+/// Gate policy: committed reference JSON can contain both live artifact pins and
+/// historical source attestations. Reference-tree targets remain live pins
+/// checked against current bytes or the evicted-fixture index. Source-tree
+/// targets inside dated status files are point-in-time attestations and are not
+/// rewritten on every source edit.
 #[test]
 fn committed_source_universe_artifact_refs_match_current_reference_bytes() {
     let repo_root = repo_root_from_manifest_dir();
@@ -156,8 +161,8 @@ fn artifact_ref_collector_treats_named_path_sha256_objects_as_pins() {
     let json = serde_json::json!({
         "source_proof_admissibility_status": {
             "admissibility_contract": {
-                "path": "repo://crates/backtesting-vertical-slice/src/source_proof_admissibility.rs",
-                "sha256": "b52df4d20d6c8b5e656294ee331758c648f1cb1eb27c0c1b6fbb7e2c021fcf12"
+                "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+                "sha256": "d1fb1504af910203751eb15ba22300b241d4272e48dbfd27de432e737b5cc59d"
             }
         }
     });
@@ -171,12 +176,42 @@ fn artifact_ref_collector_treats_named_path_sha256_objects_as_pins() {
                 && candidate.location
                     == "$.source_proof_admissibility_status.admissibility_contract"
                 && candidate.path
-                    == "repo://crates/backtesting-vertical-slice/src/source_proof_admissibility.rs"
+                    == "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
                 && candidate.sha256
-                    == "b52df4d20d6c8b5e656294ee331758c648f1cb1eb27c0c1b6fbb7e2c021fcf12"
+                    == "d1fb1504af910203751eb15ba22300b241d4272e48dbfd27de432e737b5cc59d"
         }),
         "collector should include named-key path/sha256 pins: {artifact_refs:?}"
     );
+}
+
+#[test]
+fn dated_status_source_path_pins_are_point_in_time_attestations() {
+    let dated_status = Path::new(
+        "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
+    );
+
+    assert!(!should_enforce_artifact_ref(
+        dated_status,
+        "crates/backtesting-vertical-slice/src/source_proof.rs"
+    ));
+    assert!(!should_enforce_artifact_ref(
+        dated_status,
+        "src/source_proof.rs"
+    ));
+    assert!(!should_enforce_artifact_ref(
+        dated_status,
+        "scripts/verify_source_proof.py"
+    ));
+    assert!(should_enforce_artifact_ref(
+        dated_status,
+        "specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
+    ));
+    assert!(should_enforce_artifact_ref(
+        Path::new(
+            "specs/023-nt-research-analytics-platform/reference/source-proof-policy-hardcode-audit.2026-06-09.json",
+        ),
+        "crates/backtesting-vertical-slice/src/source_proof.rs"
+    ));
 }
 
 #[test]
@@ -239,6 +274,10 @@ fn check_artifact_ref(
         }
     };
 
+    if !should_enforce_artifact_ref(owner_path, &artifact_path) {
+        return;
+    }
+
     let actual_sha256 = actual_sha256(repo_root, evicted_index, &artifact_path);
 
     if recorded_sha256 != actual_sha256 {
@@ -250,6 +289,35 @@ fn check_artifact_ref(
                 .display()
         ));
     }
+}
+
+fn should_enforce_artifact_ref(owner_path: &Path, artifact_path: &str) -> bool {
+    !(is_dated_status_file(owner_path) && is_source_tree_path(artifact_path))
+}
+
+fn is_dated_status_file(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(date_start) = file_name
+        .strip_suffix(".json")
+        .and_then(|name| name.rfind("-status."))
+    else {
+        return false;
+    };
+    let date = &file_name[date_start + "-status.".len()..file_name.len() - ".json".len()];
+    date.len() == "YYYY-MM-DD".len()
+        && date.chars().enumerate().all(|(index, character)| {
+            if matches!(index, 4 | 7) {
+                character == '-'
+            } else {
+                character.is_ascii_digit()
+            }
+        })
+}
+
+fn is_source_tree_path(path: &str) -> bool {
+    path.starts_with("crates/") || path.starts_with("src/") || path.starts_with("scripts/")
 }
 
 fn normalize_repo_path(path: &str) -> Result<String, String> {

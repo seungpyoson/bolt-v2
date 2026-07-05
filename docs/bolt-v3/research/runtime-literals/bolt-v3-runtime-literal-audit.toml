@@ -20027,6 +20027,14 @@ classification = "order_lifecycle_recovery_reason_label"
 reason = "Stable recovery evidence reason for multiple attributed restart open exit orders; it distinguishes the fail-closed recovery class and does not configure strategy behavior."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"settlement product id is unbound for instrument `{}`"'''
+context = '''"settlement product id is unbound for instrument `{}`",'''
+classification = "settlement_fail_closed_diagnostic_template"
+reason = "Fail-closed diagnostic emitted when a settlement instrument cannot be structurally mapped into the prediction-market product-id domain; the product id itself remains venue/instrument-derived."
+
+[[allowed]]
 path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"polymarket_venue_truth_rest"'''
@@ -20305,6 +20313,14 @@ literal = "1"
 context = '''self.next_capture_number += 1;'''
 classification = "venue_truth_capture_sequence_increment"
 reason = "Structural unit increment assigning the next per-account venue capture ordinal; capture cadence remains TOML-owned and no tolerance is introduced."
+
+[[allowed]]
+path = "src/bolt_v3_venue_truth.rs"
+kind = "string"
+literal = '''"settlement lot market id is bound"'''
+context = '''"settlement lot market id is bound"'''
+classification = "venue_truth_debug_invariant_message"
+reason = "Debug assertion text for the invariant that settlement lots accepted by record_settlement carry a bound market id; it is not a venue, market, or runtime setting."
 
 [[allowed]]
 path = "src/bolt_v3_kill_switch.rs"

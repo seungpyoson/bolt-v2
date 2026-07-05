@@ -484,6 +484,10 @@ def _git_config_value(repo_root: pathlib.Path, args: list[str]) -> str | None:
     return proc.stdout.strip()
 
 
+def _worktree_config_enabled(repo_root: pathlib.Path) -> bool:
+    return _git_config_value(repo_root, ["--get", "extensions.worktreeConfig"]) == "true"
+
+
 def _tracked_hook_source_paths(repo_root: pathlib.Path) -> list[str]:
     proc = _git(repo_root, ["ls-files", "-z", "--", ".githooks"], check=False)
     if proc.returncode != 0:
@@ -516,7 +520,7 @@ def _hook_manifest_path(common_dir: pathlib.Path) -> pathlib.Path:
 def _load_hook_manifest(common_dir: pathlib.Path) -> dict[str, Any]:
     manifest_path = _hook_manifest_path(common_dir)
     if not manifest_path.is_file():
-        return {"version": 1, "hooks": {}}
+        return {"version": 1, "hooks": {}, "source_dirs": []}
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -535,6 +539,13 @@ def _load_hook_manifest(common_dir: pathlib.Path) -> dict[str, Any]:
         raise CleanMergedError(
             f"hook manifest invalid at {manifest_path}: shadowed_hooks must be object"
         )
+    source_dirs = manifest.get("source_dirs")
+    if source_dirs is None:
+        manifest["source_dirs"] = []
+    elif not isinstance(source_dirs, list):
+        raise CleanMergedError(
+            f"hook manifest invalid at {manifest_path}: source_dirs must be array"
+        )
     return manifest
 
 
@@ -548,18 +559,25 @@ def _hook_manifest_shadowed(manifest: dict[str, Any]) -> dict[str, Any]:
     return shadowed if isinstance(shadowed, dict) else {}
 
 
+def _hook_manifest_source_dirs(manifest: dict[str, Any]) -> list[Any]:
+    source_dirs = manifest.get("source_dirs")
+    return source_dirs if isinstance(source_dirs, list) else []
+
+
 def _write_hook_manifest(
     common_dir: pathlib.Path,
     *,
     runtime_hooks_dir: pathlib.Path,
     hooks: dict[str, Any],
     shadowed_hooks: dict[str, Any],
+    source_dirs: list[dict[str, str]],
 ) -> None:
     manifest = {
         "version": 1,
         "runtime_hooks_dir": str(runtime_hooks_dir),
         "hooks": hooks,
         "shadowed_hooks": shadowed_hooks,
+        "source_dirs": source_dirs,
     }
     _atomic_write_text(
         _hook_manifest_path(common_dir),
@@ -582,6 +600,10 @@ def _repo_relative_path(repo_root: pathlib.Path, path: pathlib.Path) -> str:
         return str(path)
 
 
+def _is_git_hook_name(name: str) -> bool:
+    return not name.endswith(".sample")
+
+
 def _manifest_authorizes_overwrite(
     entry: Any,
     *,
@@ -594,9 +616,31 @@ def _manifest_authorizes_overwrite(
         isinstance(entry, dict)
         and entry.get("source_kind") == source_kind
         and entry.get("source_scope") == source_scope
-        and (entry.get("source_path") == source_path or source_scope == "global")
+        and (
+            entry.get("source_path") == source_path
+            or source_scope in {"global", "local", "worktree", "effective"}
+        )
         and entry.get("runtime_sha256") == destination_sha
     )
+
+
+def _record_hook_provenance(
+    *,
+    source_file: pathlib.Path,
+    destination: pathlib.Path,
+    source_kind: str,
+    source_scope: str,
+    source_path: str,
+    manifest_hooks: dict[str, Any],
+) -> None:
+    source_sha = _file_sha256(source_file)
+    manifest_hooks[destination.name] = {
+        "source_kind": source_kind,
+        "source_scope": source_scope,
+        "source_path": source_path,
+        "source_sha256": source_sha,
+        "runtime_sha256": _file_sha256(destination),
+    }
 
 
 def _copy_hook_with_provenance(
@@ -608,9 +652,11 @@ def _copy_hook_with_provenance(
     source_path: str,
     manifest_hooks: dict[str, Any],
 ) -> None:
+    if source_file.is_symlink():
+        raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
     source_sha = _file_sha256(source_file)
     if destination.exists():
-        if not destination.is_file():
+        if destination.is_symlink() or not destination.is_file():
             raise CleanMergedError(f"refusing to overwrite non-file hook at {destination}")
         destination_sha = _file_sha256(destination)
         if (
@@ -628,19 +674,35 @@ def _copy_hook_with_provenance(
                 f"installer provenance at {destination}"
             )
     shutil.copy2(source_file, destination)
-    destination.chmod(
-        destination.stat().st_mode
-        | stat.S_IXUSR
-        | stat.S_IXGRP
-        | stat.S_IXOTH
+    if source_kind == "repo-source":
+        destination.chmod(
+            destination.stat().st_mode
+            | stat.S_IXUSR
+            | stat.S_IXGRP
+            | stat.S_IXOTH
+        )
+    _record_hook_provenance(
+        source_file=source_file,
+        destination=destination,
+        source_kind=source_kind,
+        source_scope=source_scope,
+        source_path=source_path,
+        manifest_hooks=manifest_hooks,
     )
-    manifest_hooks[destination.name] = {
-        "source_kind": source_kind,
-        "source_scope": source_scope,
-        "source_path": source_path,
-        "source_sha256": source_sha,
-        "runtime_sha256": _file_sha256(destination),
-    }
+
+
+def _shadowed_hook_copy(
+    common_dir: pathlib.Path,
+    hook_file: pathlib.Path,
+) -> pathlib.Path:
+    if hook_file.is_symlink():
+        raise CleanMergedError(f"refusing to shadow symlink hook at {hook_file}")
+    shadow_dir = common_dir / "clean-merged.shadowed-hooks"
+    shadow_dir.mkdir(parents=True, exist_ok=True)
+    destination = shadow_dir / f"{hook_file.name}.{_file_sha256(hook_file)}"
+    if not destination.exists():
+        shutil.copy2(hook_file, destination)
+    return destination
 
 
 def _remove_hook_with_provenance(
@@ -650,9 +712,9 @@ def _remove_hook_with_provenance(
     entry: dict[str, Any],
 ) -> None:
     destination = runtime_hooks_dir / hook_name
-    if not destination.exists():
+    if not destination.exists() and not destination.is_symlink():
         return
-    if not destination.is_file():
+    if destination.is_symlink() or not destination.is_file():
         raise CleanMergedError(f"refusing to remove non-file hook at {destination}")
     if entry.get("runtime_sha256") != _file_sha256(destination):
         raise CleanMergedError(
@@ -668,27 +730,34 @@ def _manifest_source_file(
     *,
     hook_name: str | None = None,
     invoke_root: pathlib.Path | None = None,
+    runtime_hooks_dir: pathlib.Path | None = None,
     home_dir: pathlib.Path | None = None,
 ) -> pathlib.Path | None:
     if not isinstance(entry, dict):
-        return None
-    if hook_name is not None and entry.get("source_scope") == "global":
-        global_raw = _git_config_value(
-            invoke_root or repo_root,
-            ["--global", "--get", "core.hooksPath"],
-        )
-        if global_raw:
-            return _resolve_hooks_path(
-                invoke_root or repo_root,
-                global_raw,
-                home_dir=home_dir,
-            ) / hook_name
         return None
     raw = entry.get("source_path")
     if not isinstance(raw, str) or not raw:
         return None
     path = pathlib.Path(raw)
-    return path if path.is_absolute() else repo_root / path
+    manifest_path = path if path.is_absolute() else repo_root / path
+    hook_scope = str(entry.get("source_scope") or "manifest")
+    if hook_name is None:
+        return manifest_path
+    current_dir = _current_hooks_dir_for_scope(
+        hook_scope,
+        repo_root=repo_root,
+        invoke_root=invoke_root or repo_root,
+        home_dir=home_dir,
+    )
+    if hook_scope == "global":
+        return None if current_dir is None else current_dir / hook_name
+    if hook_scope in {"local", "worktree", "effective"}:
+        if current_dir is None:
+            return None
+        if runtime_hooks_dir is not None and _same_path(current_dir, runtime_hooks_dir):
+            return manifest_path
+        return current_dir / hook_name
+    return manifest_path
 
 
 def _record_shadowed_hook(
@@ -697,15 +766,17 @@ def _record_shadowed_hook(
     repo_source_file: pathlib.Path,
     source_scope: str,
     shadowed_hooks: dict[str, Any],
+    hook_name: str | None = None,
 ) -> None:
     if not hook_file.is_file() or not repo_source_file.is_file():
         return
     if hook_file.read_bytes() == repo_source_file.read_bytes():
         return
-    entries = shadowed_hooks.setdefault(hook_file.name, [])
+    manifest_hook_name = hook_name or hook_file.name
+    entries = shadowed_hooks.setdefault(manifest_hook_name, [])
     if not isinstance(entries, list):
         entries = []
-        shadowed_hooks[hook_file.name] = entries
+        shadowed_hooks[manifest_hook_name] = entries
     source_path = str(hook_file)
     source_sha = _file_sha256(hook_file)
     replacement = {
@@ -728,9 +799,10 @@ def _configured_hooks_path(
     invoke_root: pathlib.Path,
     source_root: pathlib.Path,
 ) -> tuple[str, str | None]:
-    worktree_raw = _git_config_value(invoke_root, ["--worktree", "--get", "core.hooksPath"])
-    if worktree_raw:
-        return "worktree", worktree_raw
+    if _worktree_config_enabled(invoke_root):
+        worktree_raw = _git_config_value(invoke_root, ["--worktree", "--get", "core.hooksPath"])
+        if worktree_raw:
+            return "worktree", worktree_raw
     local_raw = _git_config_value(source_root, ["--local", "--get", "core.hooksPath"])
     if local_raw:
         return "local", local_raw
@@ -741,6 +813,159 @@ def _configured_hooks_path(
     if effective_raw:
         return "effective", effective_raw
     return "default", None
+
+
+def _current_hooks_dir_for_scope(
+    source_scope: str,
+    *,
+    repo_root: pathlib.Path,
+    invoke_root: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> pathlib.Path | None:
+    if source_scope == "worktree":
+        if not _worktree_config_enabled(invoke_root):
+            return None
+        raw = _git_config_value(invoke_root, ["--worktree", "--get", "core.hooksPath"])
+        base = invoke_root
+    elif source_scope == "local":
+        raw = _git_config_value(repo_root, ["--local", "--get", "core.hooksPath"])
+        base = repo_root
+    elif source_scope == "global":
+        raw = _git_config_value(invoke_root, ["--global", "--get", "core.hooksPath"])
+        base = invoke_root
+    elif source_scope == "effective":
+        raw = _git_config_value(invoke_root, ["--get", "core.hooksPath"])
+        base = invoke_root
+    else:
+        return None
+    if raw is None:
+        return None
+    return _resolve_hooks_path(base, raw, home_dir=home_dir)
+
+
+def _hook_manifest_entry_source_dir(
+    repo_root: pathlib.Path,
+    entry: Any,
+    *,
+    hook_name: str,
+    invoke_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> ActiveHookDir | None:
+    if not isinstance(entry, dict) or entry.get("source_kind") != "active-hook":
+        return None
+    source_file = _manifest_source_file(
+        repo_root,
+        entry,
+        hook_name=hook_name,
+        invoke_root=invoke_root,
+        runtime_hooks_dir=runtime_hooks_dir,
+        home_dir=home_dir,
+    )
+    if source_file is None:
+        return None
+    return ActiveHookDir(source_file.parent, str(entry.get("source_scope") or "manifest"))
+
+
+def _hook_manifest_source_dir_entry(
+    repo_root: pathlib.Path,
+    entry: Any,
+    *,
+    invoke_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> ActiveHookDir | None:
+    if not isinstance(entry, dict):
+        return None
+    source_scope = str(entry.get("source_scope") or "")
+    raw = entry.get("source_path")
+    if not isinstance(raw, str) or not raw:
+        return None
+    manifest_dir = pathlib.Path(raw)
+    if not manifest_dir.is_absolute():
+        manifest_dir = repo_root / manifest_dir
+    current_dir = _current_hooks_dir_for_scope(
+        source_scope,
+        repo_root=repo_root,
+        invoke_root=invoke_root,
+        home_dir=home_dir,
+    )
+    if source_scope == "global":
+        return None if current_dir is None else ActiveHookDir(current_dir, source_scope)
+    if source_scope in {"local", "worktree", "effective"}:
+        if current_dir is None:
+            return None
+        if _same_path(current_dir, runtime_hooks_dir):
+            return ActiveHookDir(manifest_dir, source_scope)
+        return ActiveHookDir(current_dir, source_scope)
+    return None
+
+
+def _manifest_active_hook_dirs(
+    manifest: dict[str, Any],
+    *,
+    repo_root: pathlib.Path,
+    invoke_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> list[ActiveHookDir]:
+    dirs: list[ActiveHookDir] = []
+    for entry in _hook_manifest_source_dirs(manifest):
+        candidate = _hook_manifest_source_dir_entry(
+            repo_root,
+            entry,
+            invoke_root=invoke_root,
+            runtime_hooks_dir=runtime_hooks_dir,
+            home_dir=home_dir,
+        )
+        if candidate is not None:
+            dirs.append(candidate)
+    for hook_name, entry in sorted(_hook_manifest_hooks(manifest).items()):
+        candidate = _hook_manifest_entry_source_dir(
+            repo_root,
+            entry,
+            hook_name=hook_name,
+            invoke_root=invoke_root,
+            runtime_hooks_dir=runtime_hooks_dir,
+            home_dir=home_dir,
+        )
+        if candidate is not None:
+            dirs.append(candidate)
+    for hook_name, entries in sorted(_hook_manifest_shadowed(manifest).items()):
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            candidate = _hook_manifest_entry_source_dir(
+                repo_root,
+                entry,
+                hook_name=hook_name,
+                invoke_root=invoke_root,
+                runtime_hooks_dir=runtime_hooks_dir,
+                home_dir=home_dir,
+            )
+            if candidate is not None:
+                dirs.append(candidate)
+    deduped: list[ActiveHookDir] = []
+    for candidate in dirs:
+        if not any(_same_path(candidate.path, existing.path) for existing in deduped):
+            deduped.append(candidate)
+    return deduped
+
+
+def _record_source_dir(
+    source_dirs: list[dict[str, str]],
+    hook_dir: ActiveHookDir,
+    *,
+    runtime_hooks_dir: pathlib.Path,
+) -> None:
+    if _same_path(hook_dir.path, runtime_hooks_dir):
+        return
+    entry = {
+        "source_scope": hook_dir.source_scope,
+        "source_path": str(hook_dir.path),
+    }
+    if entry not in source_dirs:
+        source_dirs.append(entry)
 
 
 def _active_hook_dirs(
@@ -856,12 +1081,25 @@ def install_hooks(
     manifest_hooks = dict(_hook_manifest_hooks(manifest))
     shadowed_hooks: dict[str, Any] = {}
 
-    active_hook_dirs = _active_hook_dirs(
+    configured_active_hook_dirs = _active_hook_dirs(
         invoke_root=invoke_root,
         source_root=source_root,
         runtime_hooks_dir=runtime_hooks_dir,
         home_dir=home_dir,
     )
+    active_hook_dirs: list[ActiveHookDir] = []
+    for candidate in [
+        *configured_active_hook_dirs,
+        *_manifest_active_hook_dirs(
+            manifest,
+            repo_root=source_root,
+            invoke_root=invoke_root,
+            runtime_hooks_dir=runtime_hooks_dir,
+            home_dir=home_dir,
+        ),
+    ]:
+        if not any(_same_path(candidate.path, existing.path) for existing in active_hook_dirs):
+            active_hook_dirs.append(candidate)
     source_hook_files = sorted(
         (
             source_root / rel_path
@@ -871,6 +1109,53 @@ def install_hooks(
         key=lambda path: path.name,
     )
     source_hook_names = {hook_file.name for hook_file in source_hook_files}
+    source_dirs: list[dict[str, str]] = []
+    adopted_source_paths: set[str] = set()
+    for active_hooks in active_hook_dirs:
+        _record_source_dir(
+            source_dirs,
+            active_hooks,
+            runtime_hooks_dir=runtime_hooks_dir,
+        )
+        if not active_hooks.path.is_dir() or not _same_path(active_hooks.path, runtime_hooks_dir):
+            continue
+        for hook_file in sorted(active_hooks.path.iterdir(), key=lambda path: path.name):
+            if not hook_file.is_file() or not _is_git_hook_name(hook_file.name):
+                continue
+            if hook_file.name in source_hook_names:
+                repo_source_file = source_hooks_dir / hook_file.name
+                if hook_file.read_bytes() == repo_source_file.read_bytes():
+                    continue
+                if hook_file.name in manifest_hooks:
+                    continue
+                shadow_copy = _shadowed_hook_copy(common_dir, hook_file)
+                _record_shadowed_hook(
+                    hook_file=shadow_copy,
+                    repo_source_file=repo_source_file,
+                    source_scope=active_hooks.source_scope,
+                    shadowed_hooks=shadowed_hooks,
+                    hook_name=hook_file.name,
+                )
+                hook_file.unlink()
+                continue
+            entry = manifest_hooks.get(hook_file.name)
+            if isinstance(entry, dict):
+                if entry.get("runtime_sha256") != _file_sha256(hook_file):
+                    raise CleanMergedError(
+                        f"refusing to adopt modified runtime hook {hook_file.name} "
+                        f"without installer provenance at {hook_file}"
+                    )
+                adopted_source_paths.add(str(hook_file))
+                continue
+            _record_hook_provenance(
+                source_file=hook_file,
+                destination=hook_file,
+                source_kind="active-hook",
+                source_scope=active_hooks.source_scope,
+                source_path=str(hook_file),
+                manifest_hooks=manifest_hooks,
+            )
+            adopted_source_paths.add(str(hook_file))
     for hook_file in source_hook_files:
         destination = runtime_hooks_dir / hook_file.name
         _copy_hook_with_provenance(
@@ -896,7 +1181,6 @@ def install_hooks(
         )
         manifest_hooks.pop(hook_name, None)
 
-    adopted_source_paths: set[str] = set()
     for hook_name, entries in sorted(_hook_manifest_shadowed(manifest).items()):
         if not isinstance(entries, list):
             raise CleanMergedError(f"shadowed hook manifest entry for {hook_name} is invalid")
@@ -910,10 +1194,11 @@ def install_hooks(
                 entry,
                 hook_name=hook_name,
                 invoke_root=invoke_root,
+                runtime_hooks_dir=runtime_hooks_dir,
                 home_dir=home_dir,
             )
             if source_file is None:
-                if entry.get("source_scope") == "global":
+                if entry.get("source_scope") in {"global", "local", "worktree", "effective"}:
                     continue
                 raise CleanMergedError(
                     f"shadowed hook manifest entry for {hook_name} has invalid source_path"
@@ -948,10 +1233,11 @@ def install_hooks(
             entry,
             hook_name=hook_name,
             invoke_root=invoke_root,
+            runtime_hooks_dir=runtime_hooks_dir,
             home_dir=home_dir,
         )
         if source_file is None:
-            if entry.get("source_scope") == "global":
+            if entry.get("source_scope") in {"global", "local", "worktree", "effective"}:
                 _remove_hook_with_provenance(
                     runtime_hooks_dir=runtime_hooks_dir,
                     hook_name=hook_name,
@@ -992,7 +1278,11 @@ def install_hooks(
         if not active_hooks_dir.is_dir() or _same_path(active_hooks_dir, runtime_hooks_dir):
             continue
         for hook_file in sorted(active_hooks_dir.iterdir(), key=lambda path: path.name):
-            if not hook_file.is_file() or str(hook_file) in adopted_source_paths:
+            if (
+                not hook_file.is_file()
+                or not _is_git_hook_name(hook_file.name)
+                or str(hook_file) in adopted_source_paths
+            ):
                 continue
             if hook_file.name in source_hook_names:
                 _record_shadowed_hook(
@@ -1023,6 +1313,7 @@ def install_hooks(
         runtime_hooks_dir=runtime_hooks_dir,
         hooks=manifest_hooks,
         shadowed_hooks=shadowed_hooks,
+        source_dirs=source_dirs,
     )
     return runtime_hooks_dir
 
@@ -3095,6 +3386,7 @@ def _diagnose_hook_install_state(
             entry,
             hook_name=hook_name,
             invoke_root=invoke_root,
+            runtime_hooks_dir=expected_hooks_dir,
             home_dir=home_dir,
         )
         source_match = (
@@ -3124,6 +3416,7 @@ def _diagnose_hook_install_state(
                 entry,
                 hook_name=hook_name,
                 invoke_root=invoke_root,
+                runtime_hooks_dir=expected_hooks_dir,
                 home_dir=home_dir,
             )
             source_match = (

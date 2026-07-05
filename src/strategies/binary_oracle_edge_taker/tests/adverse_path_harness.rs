@@ -601,6 +601,7 @@ fn booked_settlement_explains_polymarket_venue_source_token_id_snapshot() {
             .reconcile_snapshot(polymarket_snapshot(
                 1_000,
                 Decimal::new(50_000_000, 0),
+                Decimal::new(50_000_000, 0),
                 Some((&product_id, 10.0)),
             ))
             .expect("venue-source baseline should be accepted"),
@@ -615,6 +616,7 @@ fn booked_settlement_explains_polymarket_venue_source_token_id_snapshot() {
             .reconcile_snapshot(polymarket_snapshot(
                 1_100,
                 Decimal::new(60_000_000, 0),
+                Decimal::new(50_000_000, 0),
                 None,
             ))
             .expect("settlement should explain the venue-source token-id snapshot delta"),
@@ -1117,6 +1119,7 @@ fn settlement_evidence_matches(
 fn polymarket_snapshot(
     captured_at: u64,
     balance: Decimal,
+    allowance: Decimal,
     position: Option<(&str, f64)>,
 ) -> crate::bolt_v3_venue_truth::VenueTruthSnapshot {
     build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
@@ -1125,7 +1128,7 @@ fn polymarket_snapshot(
         collateral_currency: Currency::pUSD(),
         collateral: BalanceAllowance {
             balance,
-            allowance: Some(balance),
+            allowance: Some(allowance),
         },
         open_orders: Vec::new(),
         positions: position
@@ -1148,7 +1151,7 @@ fn write_settlement_evidence_line(path: &std::path::Path, evidence: BoltV3Settle
         "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
         "kind": BOLT_V3_SETTLEMENT_RECORD_KIND,
-        "evidence": evidence,
+        "settlement": evidence,
     });
     std::fs::write(
         path,

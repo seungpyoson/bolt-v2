@@ -1586,6 +1586,12 @@ runs:
           echo "::error::remote_fast_linker has no configured programs"
           exit 1
         fi
+        for rust_linker_program in "${rust_linker_programs[@]}"; do
+          if command -v "$rust_linker_program" >/dev/null 2>&1 || command -v "ld.$rust_linker_program" >/dev/null 2>&1; then
+            echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
+            exit 0
+          fi
+        done
         sudo apt-get update
         for rust_linker_program in "${rust_linker_programs[@]}"; do
           if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
@@ -1903,6 +1909,8 @@ def assert_error(
 ) -> None:
     verifier = load_verifier()
     errors = verifier.verify_text(workflow, action, nextest_config)
+    if "ROOT_TEST_ARCHIVE_JOB_SHA256" not in fragment and workflow != repo_workflow_text(".github/workflows/ci.yml"):
+        errors = [error for error in errors if "ROOT_TEST_ARCHIVE_JOB_SHA256" not in error]
     if not any(fragment in error for error in errors):
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
 
@@ -18686,7 +18694,7 @@ def main() -> int:
     )
     assert_error(
         "setup action missing expected literal 'BOLT_RUST_FAST_LINKER=$rust_linker_program'",
-        action=replace_once(BASE_ACTION, "BOLT_RUST_FAST_LINKER=$rust_linker_program", "BOLT_RUST_FAST_LINKER=hardcoded"),
+        action=BASE_ACTION.replace("BOLT_RUST_FAST_LINKER=$rust_linker_program", "BOLT_RUST_FAST_LINKER=hardcoded"),
     )
     assert_error(
         "setup action must export managed_target_dir from target_dir step",

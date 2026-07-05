@@ -1320,7 +1320,9 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
         submit_admission,
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
-    );
+    )
+    .with_settlement_account_id(Some("POLYMARKET-001".to_string()))
+    .with_settlement_currency(Some(Currency::USDC()));
     strategy.config.edge_threshold_basis_points = 1;
     strategy.active.price_to_beat = Some(3_100.0);
     strategy

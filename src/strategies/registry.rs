@@ -209,7 +209,7 @@ impl StrategyBuildContext {
     }
 
     pub fn settlement_currency(&self) -> Option<Currency> {
-        self.settlement_currency.clone()
+        self.settlement_currency
     }
 
     /// Subscription requests scoped to a single configured surface. A strategy must use this

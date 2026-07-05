@@ -981,7 +981,7 @@ impl BinaryOracleEdgeTaker {
             &position,
             settlement_key.clone(),
             update,
-            settlement_currency.clone(),
+            settlement_currency,
             SettlementEvidenceComputation {
                 outcome_side,
                 strike_price,
@@ -1005,7 +1005,7 @@ impl BinaryOracleEdgeTaker {
                 settlement_position_realized_pnl_observation(
                     account_id,
                     &evidence,
-                    settlement_currency.clone(),
+                    settlement_currency,
                 )?,
             )?;
         }
@@ -7347,7 +7347,7 @@ fn settlement_order_side_from_evidence(value: &str) -> Result<OrderSide> {
 fn settlement_key_for_position(position: &OpenPositionState) -> String {
     let mut key = settlement_product_id(position.instrument_id);
     key.push(':');
-    key.push_str(&position.position_id.to_string());
+    key.push_str(position.position_id.as_ref());
     key
 }
 

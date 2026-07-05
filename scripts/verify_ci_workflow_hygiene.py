@@ -12596,19 +12596,33 @@ def partition_job_body_digest_errors(
     ]
 
 
-def top_level_defaults_errors(workflow_text: str, workflow_name: str) -> list[str]:
+PARTITION_WORKFLOW_TOP_LEVEL_KEYS = frozenset(
+    {"concurrency", "env", "jobs", "name", "on", "permissions", "run-name"}
+)
+
+
+def partition_workflow_top_level_key_errors(workflow_text: str, workflow_name: str) -> list[str]:
+    errors: list[str] = []
+    allowed_keys = ", ".join(sorted(PARTITION_WORKFLOW_TOP_LEVEL_KEYS))
     for line in workflow_text.splitlines():
-        if line.startswith((" ", "\t")):
+        structural = workflow_yaml_structural_line(line).rstrip()
+        if not structural.strip() or structural.startswith((" ", "\t")):
             continue
-        key, separator, _value = workflow_yaml_structural_line(line).partition(":")
-        if separator and key.strip().strip("'\"") == "defaults":
-            return [f"{workflow_name} top-level defaults must not be used"]
-    return []
+        match = re.fullmatch(rf"({YAML_KEY_PATTERN})\s*:.*", structural)
+        entry = structural
+        if match is not None:
+            entry = unquote_yaml_scalar(match.group(1))
+        if entry not in PARTITION_WORKFLOW_TOP_LEVEL_KEYS:
+            errors.append(
+                f"{workflow_name} top-level entry {entry!r} is not allowed; "
+                f"allowed keys: {allowed_keys}; offending line: {structural!r}"
+            )
+    return errors
 
 
 def partition_workflow_boundary_errors(workflow_text: str, workflow_name: str) -> list[str]:
     errors = classified_top_level_env_errors(workflow_text, workflow_name)
-    errors.extend(top_level_defaults_errors(workflow_text, workflow_name))
+    errors.extend(partition_workflow_top_level_key_errors(workflow_text, workflow_name))
     return errors
 
 

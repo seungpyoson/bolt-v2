@@ -13601,6 +13601,28 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     )
     if real_backtester_errors:
         raise AssertionError(f"real backtester-ci.yml must be clean, got: {real_backtester_errors}")
+    bvs_just_version_bump = replace_once(
+        real_backtester_workflow,
+        '  JUST_VERSION: "1.49.0"\n',
+        '  JUST_VERSION: "1.49.1"\n',
+    )
+    bvs_just_version_bump_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_just_version_bump}
+    )
+    if bvs_just_version_bump_errors:
+        raise AssertionError(f"backtester JUST_VERSION bump must be boundary-clean, got: {bvs_just_version_bump_errors}")
+    bvs_job_body_edit = replace_once_after(
+        real_backtester_workflow,
+        "  test-archive:",
+        '          echo "BVS nextest archive S3 save outcome:',
+        '          echo "BVS nextest archive S3 save outcome: probe ',
+    )
+    bvs_job_body_boundary_errors = verifier.partition_workflow_boundary_errors(
+        bvs_job_body_edit,
+        "backtester-ci.yml",
+    )
+    if bvs_job_body_boundary_errors:
+        raise AssertionError(f"backtester job body edit must not trip top-level boundary, got: {bvs_job_body_boundary_errors}")
     bad = """jobs:
   test-archive:
     name: bvs-test archive
@@ -14214,10 +14236,13 @@ permissions:
     ), bvs_top_level_flow_errors
     for defaults_probe in (
         "defaults:\n  run:\n    shell: sh\n",
-        "defaults: {run: {shell: bash}}\n",
         'defaults: {"run": {shell: bash}}\n',
+        "? defaults\n: {run: {working-directory: scripts}}\n",
+        "? defaults : {run: {shell: bash}}\n",
+        "!!map defaults: {run: {shell: bash}}\n",
+        "defaults: &defaults_probe {run: {shell: bash}}\n",
         '"defaults":\n  run:\n    shell: sh\n',
-        "defaults: {}\n",
+        "evil_top: {a: b}\n",
     ):
         bvs_top_level_defaults = replace_once(
             real_backtester_workflow,
@@ -14228,7 +14253,7 @@ permissions:
             {".github/workflows/backtester-ci.yml": bvs_top_level_defaults}
         )
         assert any(
-            "backtester-ci.yml top-level defaults must not be used" in error
+            "backtester-ci.yml top-level entry" in error
             for error in bvs_top_level_defaults_errors
         ), bvs_top_level_defaults_errors
     bvs_partition_step_rename_probe = replace_once_after(
@@ -15118,13 +15143,16 @@ git() {
     )
     for defaults_probe in (
         "defaults:\n  run:\n    shell: sh\n\n",
-        "defaults: {run: {shell: bash}}\n",
         'defaults: {"run": {shell: bash}}\n',
+        "? defaults\n: {run: {working-directory: scripts}}\n",
+        "? defaults : {run: {shell: bash}}\n",
+        "!!map defaults: {run: {shell: bash}}\n",
+        "defaults: &defaults_probe {run: {shell: bash}}\n",
         '"defaults":\n  run:\n    shell: sh\n',
-        "defaults: {}\n",
+        "evil_top: {a: b}\n",
     ):
         assert_error(
-            "ci.yml top-level defaults must not be used",
+            "ci.yml top-level entry",
             replace_once(BASE_WORKFLOW, "permissions:\n", f"{defaults_probe}permissions:\n"),
         )
     assert_error(
@@ -15721,6 +15749,30 @@ def main() -> int:
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     real_ci_workflow = repo_workflow_text(".github/workflows/ci.yml")
     assert_clean(workflow=real_ci_workflow)
+    root_just_version_bump = replace_once(
+        real_ci_workflow,
+        '  JUST_VERSION: "1.49.0"\n',
+        '  JUST_VERSION: "1.49.1"\n',
+    )
+    root_just_version_bump_errors = load_verifier().verify_text(
+        root_just_version_bump,
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    if root_just_version_bump_errors:
+        raise AssertionError(f"root JUST_VERSION bump must be boundary-clean, got: {root_just_version_bump_errors}")
+    root_job_body_edit = replace_once_after(
+        real_ci_workflow,
+        "      - name: Run nextest archive partitions",
+        '            echo "reproduce locally: just test-archive-run',
+        '            echo "probe reproduce locally: just test-archive-run',
+    )
+    root_job_body_boundary_errors = load_verifier().partition_workflow_boundary_errors(
+        root_job_body_edit,
+        "ci.yml",
+    )
+    if root_job_body_boundary_errors:
+        raise AssertionError(f"root job body edit must not trip top-level boundary, got: {root_job_body_boundary_errors}")
     if "  test-archive:\n" not in BASE_WORKFLOW or "      - name: Run nextest archive partitions\n" not in BASE_WORKFLOW:
         raise AssertionError("BASE_WORKFLOW must include the root test-archive partition fixture")
     real_ci_errors = load_verifier().verify_text(
@@ -16293,12 +16345,22 @@ def main() -> int:
         "env:\n  PATH: /tmp/partition-shim\n  JUST_VERSION: \"1.49.0\"\n",
     )
     assert_error("top-level env.PATH must be classified as reuse-scoped or build-neutral", root_top_level_path_env)
-    root_top_level_defaults = replace_once(
-        real_ci_workflow,
-        "permissions:\n",
-        "defaults:\n  run:\n    shell: sh\npermissions:\n",
-    )
-    assert_error("ci.yml top-level defaults must not be used", root_top_level_defaults)
+    for defaults_probe in (
+        "defaults:\n  run:\n    shell: sh\n",
+        'defaults: {"run": {shell: bash}}\n',
+        "? defaults\n: {run: {working-directory: scripts}}\n",
+        "? defaults : {run: {shell: bash}}\n",
+        "!!map defaults: {run: {shell: bash}}\n",
+        "defaults: &defaults_probe {run: {shell: bash}}\n",
+        '"defaults":\n  run:\n    shell: sh\n',
+        "evil_top: {a: b}\n",
+    ):
+        root_top_level_defaults = replace_once(
+            real_ci_workflow,
+            "permissions:\n",
+            f"{defaults_probe}permissions:\n",
+        )
+        assert_error("ci.yml top-level entry", root_top_level_defaults)
     root_partition_step_rename_probe = replace_once_after(
         real_ci_workflow,
         "  test-archive:",

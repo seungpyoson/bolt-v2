@@ -224,15 +224,15 @@ fn execution_plan_writer_is_idempotent_and_refuses_dirty_existing_artifact() {
 
 #[test]
 fn retained_execution_plan_artifact_hash_matches_written_file_bytes() {
-    let retained_plan_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../specs/023-nt-research-analytics-platform/reference/",
-        "source-universe-execution-packs/",
-        "binance-data-vision-trades-2026-03-01-all-instruments/",
-        "execution-pack/runs/",
-        "00000-source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00000/",
-        BACKFILL_EXECUTION_PLAN_FILE
-    );
+    let retained_plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference")
+        .join("source-universe-execution-packs")
+        .join("binance-data-vision-trades-2026-03-01-all-instruments")
+        .join("execution-pack/runs")
+        .join(
+            "00000-source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00000",
+        )
+        .join(BACKFILL_EXECUTION_PLAN_FILE);
     let plan_bytes = std::fs::read(retained_plan_path).expect("read retained execution plan");
     let plan: BackfillExecutionPlan =
         serde_json::from_slice(&plan_bytes).expect("parse retained execution plan");

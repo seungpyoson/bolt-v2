@@ -1581,11 +1581,17 @@ runs:
       if: ${{ inputs.install-rust-linker == 'true' }}
       shell: bash
       run: |
-        mapfile -t rust_linker_programs < <(python3 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE")
+        mapfile -t rust_linker_programs < <(python3.12 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE")
         if [ "${#rust_linker_programs[@]}" -eq 0 ]; then
           echo "::error::remote_fast_linker has no configured programs"
           exit 1
         fi
+        for rust_linker_program in "${rust_linker_programs[@]}"; do
+          if command -v "$rust_linker_program" >/dev/null; then
+            echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
+            exit 0
+          fi
+        done
         sudo apt-get update
         for rust_linker_program in "${rust_linker_programs[@]}"; do
           if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
@@ -18677,12 +18683,24 @@ def main() -> int:
         ),
     )
     assert_error(
-        "setup action missing expected literal 'fast-linker-programs --repo \"$GITHUB_WORKSPACE\"'",
-        action=replace_once(BASE_ACTION, 'fast-linker-programs --repo "$GITHUB_WORKSPACE"', 'other-linker-programs --repo "$GITHUB_WORKSPACE"'),
+        "setup action missing expected literal 'python3.12 \"${{ steps.shared.outputs.rust_verification_owner }}\" fast-linker-programs --repo \"$GITHUB_WORKSPACE\"'",
+        action=replace_once(
+            BASE_ACTION,
+            'python3.12 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE"',
+            'python3 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE"',
+        ),
+    )
+    assert_error(
+        "setup action missing expected literal 'command -v \"$rust_linker_program\" >/dev/null'",
+        action=replace_once(
+            BASE_ACTION,
+            'command -v "$rust_linker_program" >/dev/null',
+            'printf "%s\\n" "$rust_linker_program" >/dev/null',
+        ),
     )
     assert_error(
         "setup action missing expected literal 'BOLT_RUST_FAST_LINKER=$rust_linker_program'",
-        action=replace_once(BASE_ACTION, "BOLT_RUST_FAST_LINKER=$rust_linker_program", "BOLT_RUST_FAST_LINKER=hardcoded"),
+        action=BASE_ACTION.replace("BOLT_RUST_FAST_LINKER=$rust_linker_program", "BOLT_RUST_FAST_LINKER=hardcoded"),
     )
     assert_error(
         "setup action must export managed_target_dir from target_dir step",

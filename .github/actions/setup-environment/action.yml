@@ -134,11 +134,17 @@ runs:
       if: ${{ inputs.install-rust-linker == 'true' }}
       shell: bash
       run: |
-        mapfile -t rust_linker_programs < <(python3 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE")
+        mapfile -t rust_linker_programs < <(python3.12 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE")
         if [ "${#rust_linker_programs[@]}" -eq 0 ]; then
           echo "::error::remote_fast_linker has no configured programs"
           exit 1
         fi
+        for rust_linker_program in "${rust_linker_programs[@]}"; do
+          if command -v "$rust_linker_program" >/dev/null; then
+            echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
+            exit 0
+          fi
+        done
         sudo apt-get update
         for rust_linker_program in "${rust_linker_programs[@]}"; do
           if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then

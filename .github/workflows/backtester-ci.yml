@@ -777,6 +777,7 @@ jobs:
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH" --extract-to "$RUNNER_TEMP/bvs-nextest-list-extract" --extract-overwrite --workspace-remap "$GITHUB_WORKSPACE/crates/backtesting-vertical-slice"
 
       - name: test
+        shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
           failures=0

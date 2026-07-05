@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+from typing import Callable
 
 from ci_test_manifest import CiTestManifest
 
@@ -2883,6 +2884,73 @@ def replace_once_after(text: str, anchor: str, old: str, new: str) -> str:
     before = text[:index]
     after = text[index:]
     return before + replace_once(after, old, new)
+
+
+def mutate_named_step_after(
+    text: str,
+    anchor: str,
+    step_name: str,
+    mutator: Callable[[list[str]], list[str]],
+) -> str:
+    index = text.find(anchor)
+    if index == -1:
+        raise AssertionError(f"fixture anchor not found: {anchor!r}")
+    before = text[:index]
+    lines = text[index:].splitlines(keepends=True)
+    start: int | None = None
+    end = len(lines)
+    step_indent = 0
+    for line_index, line in enumerate(lines):
+        if line.strip() != f"- name: {step_name}":
+            continue
+        start = line_index
+        step_indent = len(line) - len(line.lstrip(" "))
+        break
+    if start is None:
+        raise AssertionError(f"fixture step not found after {anchor!r}: {step_name!r}")
+    for line_index in range(start + 1, len(lines)):
+        line = lines[line_index]
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent < step_indent or (indent == step_indent and line.lstrip().startswith("- ")):
+            end = line_index
+            break
+    return before + "".join(lines[:start] + mutator(lines[start:end]) + lines[end:])
+
+
+def add_false_condition_to_named_step_after(text: str, anchor: str, step_name: str) -> str:
+    def add_if(block: list[str]) -> list[str]:
+        property_indent = len(block[0]) - len(block[0].lstrip(" ")) + 2
+        return [block[0], f"{' ' * property_indent}if: ${{{{ false }}}}\n", *block[1:]]
+
+    return mutate_named_step_after(text, anchor, step_name, add_if)
+
+
+def shadow_named_step_with_false_condition_after(
+    text: str,
+    anchor: str,
+    step_name: str,
+    renamed_step_name: str,
+) -> str:
+    def duplicate_decoy_and_rename(block: list[str]) -> list[str]:
+        property_indent = len(block[0]) - len(block[0].lstrip(" ")) + 2
+        false_condition = f"{' ' * property_indent}if: ${{{{ false }}}}\n"
+        decoy = [block[0], false_condition, *block[1:]]
+        renamed_first_line = block[0].replace(
+            f"- name: {step_name}",
+            f"- name: {renamed_step_name}",
+            1,
+        )
+        if renamed_first_line == block[0]:
+            raise AssertionError(f"fixture step name not rewritable: {step_name!r}")
+        return decoy + [renamed_first_line, *block[1:]]
+
+    return mutate_named_step_after(text, anchor, step_name, duplicate_decoy_and_rename)
+
+
+def duplicate_named_step_after(text: str, anchor: str, step_name: str) -> str:
+    return mutate_named_step_after(text, anchor, step_name, lambda block: block + block)
 
 
 def without_once_after(text: str, anchor: str, old: str) -> str:
@@ -13774,6 +13842,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: List scoped BVS archive tests
         run: nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH"
       - name: test
+        shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
           failures=0
@@ -14047,6 +14116,39 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256" in error
         for error in bvs_partition_comment_probe_errors
     ), bvs_partition_comment_probe_errors
+    bvs_partition_duplicate_name_probe = duplicate_named_step_after(
+        good,
+        "  test-archive:",
+        "test",
+    )
+    bvs_partition_duplicate_name_errors = bvs_cache_errors(bvs_partition_duplicate_name_probe)
+    assert any(
+        "backtester bvs-test archive partition step: digest pin target step matched 2 steps" in error
+        for error in bvs_partition_duplicate_name_errors
+    ), bvs_partition_duplicate_name_errors
+    bvs_partition_decoy_shadow_probe = shadow_named_step_with_false_condition_after(
+        good,
+        "  test-archive:",
+        "test",
+        "renamed test",
+    )
+    bvs_partition_decoy_shadow_errors = bvs_cache_errors(bvs_partition_decoy_shadow_probe)
+    assert any(
+        "backtester bvs-test archive partition step: digest pin target step must use canonical name/shell/run envelope"
+        in error
+        for error in bvs_partition_decoy_shadow_errors
+    ), bvs_partition_decoy_shadow_errors
+    bvs_partition_false_condition_probe = add_false_condition_to_named_step_after(
+        good,
+        "  test-archive:",
+        "test",
+    )
+    bvs_partition_false_condition_errors = bvs_cache_errors(bvs_partition_false_condition_probe)
+    assert any(
+        "backtester bvs-test archive partition step: digest pin target step must use canonical name/shell/run envelope"
+        in error
+        for error in bvs_partition_false_condition_errors
+    ), bvs_partition_false_condition_errors
     bvs_partition_step_rename_probe = replace_once_after(
         good,
         "  test-archive:",
@@ -16063,6 +16165,34 @@ def main() -> int:
         '            #\n            set +e\n',
     )
     assert_error("ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256", root_partition_comment_probe)
+    root_partition_duplicate_name_probe = duplicate_named_step_after(
+        BASE_WORKFLOW,
+        "  test-archive:",
+        "Run nextest archive partitions",
+    )
+    assert_error(
+        "test-archive Run nextest archive partitions: digest pin target step matched 2 steps",
+        root_partition_duplicate_name_probe,
+    )
+    root_partition_decoy_shadow_probe = shadow_named_step_with_false_condition_after(
+        BASE_WORKFLOW,
+        "  test-archive:",
+        "Run nextest archive partitions",
+        "Run renamed nextest archive partitions",
+    )
+    assert_error(
+        "test-archive Run nextest archive partitions: digest pin target step must use canonical name/shell/run envelope",
+        root_partition_decoy_shadow_probe,
+    )
+    root_partition_false_condition_probe = add_false_condition_to_named_step_after(
+        BASE_WORKFLOW,
+        "  test-archive:",
+        "Run nextest archive partitions",
+    )
+    assert_error(
+        "test-archive Run nextest archive partitions: digest pin target step must use canonical name/shell/run envelope",
+        root_partition_false_condition_probe,
+    )
     root_partition_step_rename_probe = replace_once_after(
         BASE_WORKFLOW,
         "  test-archive:",

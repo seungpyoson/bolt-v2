@@ -3563,6 +3563,10 @@ def step_name_matches(block: list[str], step_name: str) -> bool:
     return any(name_re.match(strip_comment(line)) for line in block)
 
 
+def named_step_blocks(lines: list[str], step_name: str) -> list[list[str]]:
+    return [block for block in step_blocks(lines) if step_name_matches(block, step_name)]
+
+
 def step_declares_run(block: list[str]) -> bool:
     return any(YAML_RUN_LINE_RE.match(strip_comment(line).rstrip()) is not None for line in block)
 
@@ -11840,9 +11844,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append("test-archive must aggregate partition failures")
                 break
         errors.extend(
-            partition_run_body_digest_errors(
+            partition_step_digest_errors(
                 label="test-archive Run nextest archive partitions",
-                run_body=named_step_run_block("\n".join(archive_lines), "Run nextest archive partitions"),
+                job_lines=archive_lines,
+                step_name="Run nextest archive partitions",
                 expected_sha256=ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256,
                 constant_name="ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256",
             )
@@ -12588,6 +12593,9 @@ def run_body_sha256(run_body: str) -> str:
     return hashlib.sha256(run_body.encode("utf-8")).hexdigest()
 
 
+PARTITION_STEP_ENVELOPE_KEYS = frozenset({"name", "shell", "run"})
+
+
 def partition_run_body_digest_errors(
     *,
     label: str,
@@ -12604,6 +12612,34 @@ def partition_run_body_digest_errors(
         f"{label} full run body digest changed: expected {expected_sha256}, got {actual_sha256}; "
         f"update {constant_name} with reviewed workflow run body changes"
     ]
+
+
+def partition_step_digest_errors(
+    *,
+    label: str,
+    job_lines: list[str],
+    step_name: str,
+    expected_sha256: str,
+    constant_name: str,
+) -> list[str]:
+    matching_blocks = named_step_blocks(job_lines, step_name)
+    if not matching_blocks:
+        return [f"{label}: digest pin target step not found"]
+    if len(matching_blocks) != 1:
+        return [f"{label}: digest pin target step matched {len(matching_blocks)} steps"]
+    block = matching_blocks[0]
+    if not block_has_canonical_step_envelope(
+        block,
+        PARTITION_STEP_ENVELOPE_KEYS,
+        {"name": step_name, "shell": "bash", "run": "|"},
+    ):
+        return [f"{label}: digest pin target step must use canonical name/shell/run envelope"]
+    return partition_run_body_digest_errors(
+        label=label,
+        run_body=named_step_run_block("\n".join(job_lines), step_name),
+        expected_sha256=expected_sha256,
+        constant_name=constant_name,
+    )
 
 
 class WorkflowJobStep(NamedTuple):
@@ -13059,9 +13095,10 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     if BVS_PARTITION_FAILURE_WRAPPER not in archive_text:
         errors.append("backtester bvs-test partition failures must use contiguous failure wrapper")
     errors.extend(
-        partition_run_body_digest_errors(
+        partition_step_digest_errors(
             label="backtester bvs-test archive partition step",
-            run_body=named_step_run_block("\n".join(archive_job), "test"),
+            job_lines=archive_job,
+            step_name="test",
             expected_sha256=BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256,
             constant_name="BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256",
         )

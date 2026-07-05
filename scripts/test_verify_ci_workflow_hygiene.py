@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import dataclasses
+import functools
 import io
 import importlib.util
 import os
@@ -9419,65 +9420,68 @@ ci-lint-workflow:
     python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner
 
 ci-lint-workflow-inner: require-local-verification-gate
-    python3 scripts/test_verify_ci_workflow_hygiene.py
-    python3 scripts/test_ci_storage_audit.py
-    python3 scripts/test_ci_storage_tripwire.py
-    python3 scripts/test_root_bin_sidecars.py
-    python3 scripts/test_ci_input_sets.py
-    python3 scripts/test_rust_test_targets.py
+    if [ -n "${BOLT_CI_LINT_WORKFLOW_WORKERS:-}" ]; then
+        set -- --workers "$BOLT_CI_LINT_WORKFLOW_WORKERS"
+    else
+        set --
+    fi
+    if ! python3 scripts/run_ci_lint_suites.py "$@"; then
+        failed=1
+    fi
 """
     errors = verifier.verify_local_verification_gate_recipes(justfile_text)
     if errors:
         raise AssertionError(f"local gate recipe wiring should pass, got: {errors}")
 
-    missing_storage_audit_test = justfile_text.replace("    python3 scripts/test_ci_storage_audit.py\n", "")
-    missing_storage_audit_test_errors = verifier.verify_local_verification_gate_recipes(missing_storage_audit_test)
-    if not any(
-        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_audit.py" in error
-        for error in missing_storage_audit_test_errors
-    ):
-        raise AssertionError(
-            f"ci storage audit test wiring drift was silent, got: {missing_storage_audit_test_errors}"
-        )
+    runner_line = '    if ! python3 scripts/run_ci_lint_suites.py "$@"; then'
 
-    missing_storage_tripwire_test = justfile_text.replace("    python3 scripts/test_ci_storage_tripwire.py\n", "")
-    missing_storage_tripwire_test_errors = verifier.verify_local_verification_gate_recipes(missing_storage_tripwire_test)
-    if not any(
-        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_tripwire.py" in error
-        for error in missing_storage_tripwire_test_errors
-    ):
-        raise AssertionError(
-            f"ci storage tripwire test wiring drift was silent, got: {missing_storage_tripwire_test_errors}"
-        )
+    missing_runner = justfile_text.replace(f"{runner_line}\n", "")
+    missing_runner_errors = verifier.verify_local_verification_gate_recipes(missing_runner)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py" in error for error in missing_runner_errors):
+        raise AssertionError(f"ci-lint runner wiring drift was silent, got: {missing_runner_errors}")
 
-    duplicate_storage_audit_test = justfile_text.replace(
-        "    python3 scripts/test_ci_storage_audit.py\n",
-        "    python3 scripts/test_ci_storage_audit.py\n"
-        "    python3 scripts/test_ci_storage_audit.py\n",
+    duplicate_runner = justfile_text.replace(
+        f"{runner_line}\n",
+        f"{runner_line}\n"
+        f"{runner_line}\n",
     )
-    duplicate_storage_audit_test_errors = verifier.verify_local_verification_gate_recipes(duplicate_storage_audit_test)
-    if not any(
-        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_audit.py exactly once" in error
-        for error in duplicate_storage_audit_test_errors
-    ):
-        raise AssertionError(
-            f"duplicate ci storage audit test wiring was silent, got: {duplicate_storage_audit_test_errors}"
-        )
+    duplicate_runner_errors = verifier.verify_local_verification_gate_recipes(duplicate_runner)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py exactly once" in error for error in duplicate_runner_errors):
+        raise AssertionError(f"duplicate ci-lint runner wiring was silent, got: {duplicate_runner_errors}")
 
-    missing_sidecar_test = justfile_text.replace("    python3 scripts/test_root_bin_sidecars.py\n", "")
-    missing_sidecar_test_errors = verifier.verify_local_verification_gate_recipes(missing_sidecar_test)
-    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_root_bin_sidecars.py" in error for error in missing_sidecar_test_errors):
-        raise AssertionError(f"root bin sidecar test wiring drift was silent, got: {missing_sidecar_test_errors}")
+    extra_inner_work = justfile_text.replace(
+        runner_line,
+        f"{runner_line}\n"
+        "    python3 scripts/test_ci_storage_audit.py",
+    )
+    extra_inner_errors = verifier.verify_local_verification_gate_recipes(extra_inner_work)
+    if not any("justfile ci-lint-workflow-inner must not run CI lint suite commands outside scripts/run_ci_lint_suites.py" in error for error in extra_inner_errors):
+        raise AssertionError(f"ci-lint extra inner work was silent, got: {extra_inner_errors}")
 
-    missing_ci_input_sets_test = justfile_text.replace("    python3 scripts/test_ci_input_sets.py\n", "")
-    missing_ci_input_sets_test_errors = verifier.verify_local_verification_gate_recipes(missing_ci_input_sets_test)
-    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_ci_input_sets.py" in error for error in missing_ci_input_sets_test_errors):
-        raise AssertionError(f"CI input set test wiring drift was silent, got: {missing_ci_input_sets_test_errors}")
+    echo_decoy = justfile_text.replace(
+        runner_line,
+        '    echo python3 scripts/run_ci_lint_suites.py "$@"',
+    )
+    echo_decoy_errors = verifier.verify_local_verification_gate_recipes(echo_decoy)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py" in error for error in echo_decoy_errors):
+        raise AssertionError(f"ci-lint runner echo decoy satisfied wiring, got: {echo_decoy_errors}")
 
-    missing_rust_test_targets_test = justfile_text.replace("    python3 scripts/test_rust_test_targets.py\n", "")
-    missing_rust_test_targets_test_errors = verifier.verify_local_verification_gate_recipes(missing_rust_test_targets_test)
-    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_rust_test_targets.py" in error for error in missing_rust_test_targets_test_errors):
-        raise AssertionError(f"Rust test target test wiring drift was silent, got: {missing_rust_test_targets_test_errors}")
+    noncanonical_runner = justfile_text.replace(
+        runner_line,
+        f"{runner_line}\n"
+        "    python3 scripts/run_ci_lint_suites.py --workers 2",
+    )
+    noncanonical_runner_errors = verifier.verify_local_verification_gate_recipes(noncanonical_runner)
+    if not any("justfile ci-lint-workflow-inner must not invoke the runner outside the pinned line" in error for error in noncanonical_runner_errors):
+        raise AssertionError(f"ci-lint noncanonical runner line was silent, got: {noncanonical_runner_errors}")
+
+    commented_runner = justfile_text.replace(
+        runner_line,
+        f"    # {runner_line.strip()}",
+    )
+    commented_runner_errors = verifier.verify_local_verification_gate_recipes(commented_runner)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py" in error for error in commented_runner_errors):
+        raise AssertionError(f"ci-lint runner comments must not satisfy wiring, got: {commented_runner_errors}")
 
     ungated = justfile_text.replace(
         "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner",
@@ -9504,10 +9508,20 @@ ci-lint-workflow-inner: require-local-verification-gate
     if not any("justfile ci-lint-workflow must contain only the local verification gate command" in error for error in extra_public_errors):
         raise AssertionError(f"ci-lint-workflow public recipe extra work was silent, got: {extra_public_errors}")
 
-    nested_public_gate = justfile_text.replace(
-        "    python3 scripts/test_verify_ci_workflow_hygiene.py",
-        "    just ci-lint-workflow",
-    )
+    broken_runner = object()
+    original_runner_module = sys.modules.get("run_ci_lint_suites")
+    sys.modules["run_ci_lint_suites"] = broken_runner
+    try:
+        broken_runner_errors = verifier.verify_local_verification_gate_recipes(justfile_text)
+    finally:
+        if original_runner_module is None:
+            sys.modules.pop("run_ci_lint_suites", None)
+        else:
+            sys.modules["run_ci_lint_suites"] = original_runner_module
+    if not any("ci-lint workflow runner suite table must be importable" in error for error in broken_runner_errors):
+        raise AssertionError(f"broken ci-lint runner import was not governed, got: {broken_runner_errors}")
+
+    nested_public_gate = justfile_text.replace(runner_line, "    just ci-lint-workflow")
     nested_public_errors = verifier.verify_local_verification_gate_recipes(nested_public_gate)
     if not any("justfile ci-lint-workflow-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
         raise AssertionError(f"ci-lint-workflow nested public gate call was silent, got: {nested_public_errors}")
@@ -15188,55 +15202,70 @@ def assert_cargo_named_just_recipe_headers_are_not_raw_cargo_commands() -> None:
         raise AssertionError(f"cargo-named just recipe header was treated as raw cargo: {errors!r}")
 
 
+@functools.cache
+def ci_lint_suite_commands() -> set[str]:
+    path = REPO_ROOT / "scripts" / "run_ci_lint_suites.py"
+    spec = importlib.util.spec_from_file_location("run_ci_lint_suites_under_hygiene_test", path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load run_ci_lint_suites.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return {" ".join(suite.command) for suite in module.CI_LINT_SUITES}
+
+
+def assert_ci_lint_suite_runs(command: str, message: str) -> None:
+    if command not in ci_lint_suite_commands():
+        raise AssertionError(message)
+
+
 def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    expected = "python3 scripts/test_rust_verification_cache_retention.py"
-    if expected not in justfile:
-        raise AssertionError("ci-lint-workflow must run rust verification cache retention self-tests")
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_rust_verification_cache_retention.py",
+        "ci-lint-workflow must run rust verification cache retention self-tests",
+    )
 
 
 def assert_ci_lint_runs_verify_remote_tests() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    expected = "python3 scripts/test_verify_remote.py"
-    if expected not in justfile:
-        raise AssertionError("ci-lint-workflow must run remote verification watcher self-tests")
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_verify_remote.py",
+        "ci-lint-workflow must run remote verification watcher self-tests",
+    )
 
 
 def assert_ci_lint_runs_ci_provenance_tests() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    expected = "python3 scripts/test_ci_provenance.py"
-    if expected not in justfile:
-        raise AssertionError("ci-lint-workflow must run CI provenance self-tests")
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_ci_provenance.py",
+        "ci-lint-workflow must run CI provenance self-tests",
+    )
 
 
 def assert_ci_lint_runs_command_understanding_tests() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    expected = "python3 scripts/test_command_understanding.py"
-    if expected not in justfile:
-        raise AssertionError("ci-lint-workflow must run command understanding self-tests")
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_command_understanding.py",
+        "ci-lint-workflow must run command understanding self-tests",
+    )
 
 
 def assert_ci_lint_runs_rust_probe_tests() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    expected = "python3 scripts/test_run_rust_probe.py"
-    if expected not in justfile:
-        raise AssertionError("ci-lint-workflow must run Rust Probe runner self-tests")
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_run_rust_probe.py",
+        "ci-lint-workflow must run Rust Probe runner self-tests",
+    )
 
 
 def assert_ci_lint_runs_cancel_obsolete_dispatch_tests() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    expected = "python3 scripts/test_cancel_obsolete_dispatch_runs.py"
-    if expected not in justfile:
-        raise AssertionError("ci-lint-workflow must run dispatch cancellation self-tests")
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_cancel_obsolete_dispatch_runs.py",
+        "ci-lint-workflow must run dispatch cancellation self-tests",
+    )
 
 
 def test_ci_test_manifest_self_tests_are_gated() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    if "scripts/test_ci_test_manifest.py" not in justfile:
-        raise AssertionError(
-            "ci-lint-workflow must invoke scripts/test_ci_test_manifest.py so the "
-            "manifest parser's self-tests are gated"
-        )
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_ci_test_manifest.py",
+        "ci-lint-workflow must invoke scripts/test_ci_test_manifest.py so the manifest parser's self-tests are gated",
+    )
 
 
 def assert_github_scripts_are_repo_automation_fenced() -> None:

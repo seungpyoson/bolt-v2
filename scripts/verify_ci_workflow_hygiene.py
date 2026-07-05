@@ -6731,13 +6731,8 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
 ACTIONLINT_WORKFLOW_REQUIRED_COMMANDS = (
     "python3 scripts/test_ci_storage_audit.py",
 )
-CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
-    "python3 scripts/test_ci_storage_audit.py",
-    "python3 scripts/test_ci_storage_tripwire.py",
-    "python3 scripts/test_root_bin_sidecars.py",
-    "python3 scripts/test_ci_input_sets.py",
-    "python3 scripts/test_rust_test_targets.py",
-)
+CI_LINT_WORKFLOW_RUNNER_COMMAND = "python3 scripts/run_ci_lint_suites.py"
+CI_LINT_WORKFLOW_RUNNER_LINE = 'if ! python3 scripts/run_ci_lint_suites.py "$@"; then'
 SOURCE_FENCE_STATIC_INNER_REQUIRED_COMMANDS = (
     "python3 scripts/run_fences.py",
 )
@@ -6790,6 +6785,16 @@ def gated_inner_recipe_name(
     return inner_name
 
 
+def ci_lint_suite_commands(errors: list[str]) -> tuple[str, ...]:
+    try:
+        import run_ci_lint_suites
+
+        return tuple(" ".join(suite.command) for suite in run_ci_lint_suites.CI_LINT_SUITES)
+    except (AttributeError, ImportError, SyntaxError, TypeError) as exc:
+        errors.append(f"ci-lint workflow runner suite table must be importable: {type(exc).__name__}: {exc}")
+        return ()
+
+
 def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
     recipes = just_recipe_blocks(justfile_text)
     errors: list[str] = []
@@ -6800,12 +6805,24 @@ def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
         gated_inner_recipe_name(recipes, public_name, inner_name, errors)
     if "ci-lint-workflow-inner" in recipes:
         ci_lint_inner_lines = active_recipe_lines(recipes, "ci-lint-workflow-inner")
-        for required_command in CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS:
-            command_count = sum(1 for line in ci_lint_inner_lines if required_command in line)
-            if command_count == 0:
-                errors.append(f"justfile ci-lint-workflow-inner must run {required_command}")
-            elif command_count > 1:
-                errors.append(f"justfile ci-lint-workflow-inner must run {required_command} exactly once")
+        runner_count = sum(1 for line in ci_lint_inner_lines if line == CI_LINT_WORKFLOW_RUNNER_LINE)
+        if runner_count == 0:
+            errors.append(f"justfile ci-lint-workflow-inner must run {CI_LINT_WORKFLOW_RUNNER_COMMAND}")
+        elif runner_count > 1:
+            errors.append(f"justfile ci-lint-workflow-inner must run {CI_LINT_WORKFLOW_RUNNER_COMMAND} exactly once")
+
+        for line in ci_lint_inner_lines:
+            if "run_ci_lint_suites.py" in line and line != CI_LINT_WORKFLOW_RUNNER_LINE:
+                errors.append("justfile ci-lint-workflow-inner must not invoke the runner outside the pinned line")
+
+        suite_commands = ci_lint_suite_commands(errors)
+        for line in ci_lint_inner_lines:
+            if any(command in line for command in suite_commands):
+                errors.append(
+                    "justfile ci-lint-workflow-inner must not run CI lint suite commands outside "
+                    "scripts/run_ci_lint_suites.py"
+                )
+                break
     return errors
 
 

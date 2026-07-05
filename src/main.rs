@@ -20,7 +20,8 @@ use bolt_v2::{
         DeployTargetError, HostFactsSource, Imdsv2HostFactsSource, ObservedHostFacts,
         TargetVerifyOutcome, load_deploy_target, verify_deploy_target,
     },
-    bolt_v3_kill_switch_store::KillSwitchStore,
+    bolt_v3_kill_switch::KillSwitchState,
+    bolt_v3_kill_switch_store::{KillSwitchRecoveryState, KillSwitchStore},
     bolt_v3_live_node::{
         BoltV3LiveNodeRuntime, build_bolt_v3_live_node_with_resolved,
         build_bolt_v3_strategy_free_data_client_probe_live_node, current_build_head_sha,
@@ -32,6 +33,10 @@ use bolt_v2::{
     bolt_v3_operator_artifacts::{
         LaunchIdentity, WrittenOperatorArtifact, is_lowercase_git_sha, read_launch_identity,
         write_launch_identity,
+    },
+    bolt_v3_operator_health::{
+        BoltV3InputHealth, BoltV3OperatorHealthSurface, BoltV3RejectObserverHealth,
+        BoltV3VenueTruthHealth,
     },
     bolt_v3_prod_profile::{
         GENERATOR_FORMAT_VERSION, ProductionInvariants, generate_live_config, live_config_path,
@@ -71,6 +76,12 @@ const CLOB_V2_CACHE_SYNC_REQUEST_PATH_OUTPUT_FIELD: &str = "request_path";
 const CLOB_V2_CACHE_SYNC_BASE_URL_HTTP_SHA256_OUTPUT_FIELD: &str = "base_url_http_sha256";
 const KILL_SWITCH_STORE_INIT_COMPLETED_OUTPUT_FIELD: &str = "kill_switch_store_init_completed";
 const KILL_SWITCH_STORE_INIT_STATE_PATH_OUTPUT_FIELD: &str = "state_path";
+const OPS_STATUS_KILL_SWITCH_STORE_FAIL_CLOSED_HALT_ID: &str =
+    "ops-status-kill-switch-store-fail-closed";
+const OPS_STATUS_KILL_SWITCH_STORE_UNREADABLE_HALT_ID: &str =
+    "ops-status-kill-switch-store-unreadable";
+const OPS_STATUS_KILL_SWITCH_STORE_FAIL_CLOSED_REASON_PREFIX: &str =
+    "kill-switch store fail-closed";
 const LOSS_GOVERNOR_MANUAL_RECOVERY_COMPLETED_OUTPUT_FIELD: &str =
     "loss_governor_manual_recovery_completed";
 const LOSS_GOVERNOR_MANUAL_RECOVERY_STATE_PATH_OUTPUT_FIELD: &str = "state_path";
@@ -813,12 +824,23 @@ fn run_reference_current_price_health(
     print_reference_current_price_health_report(&report)
 }
 
+#[derive(serde::Serialize)]
+struct ReferenceCurrentPriceHealthOperatorReport<'a> {
+    #[serde(flatten)]
+    report: &'a ReferenceCurrentPriceHealthReport,
+    operator_health: BoltV3InputHealth,
+}
+
 fn print_reference_current_price_health_report(
     report: &ReferenceCurrentPriceHealthReport,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let operator_report = ReferenceCurrentPriceHealthOperatorReport {
+        report,
+        operator_health: BoltV3InputHealth::from_reference_current_price_report(report),
+    };
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
-    serde_json::to_writer_pretty(&mut stdout, report)?;
+    serde_json::to_writer_pretty(&mut stdout, &operator_report)?;
     use std::io::Write as _;
     writeln!(&mut stdout)?;
     if !report.all_sources_observed() {
@@ -1055,6 +1077,7 @@ struct OpsStatusBody {
     config: ConfigStatus,
     launch_identity: LaunchIdentityStatus,
     deploy_target: DeployTargetStatus,
+    operator_health: BoltV3OperatorHealthSurface,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1199,6 +1222,72 @@ fn deploy_target_status<S: HostFactsSource>(config_root: &Path, source: &S) -> D
     }
 }
 
+fn ops_status_operator_health_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> BoltV3OperatorHealthSurface {
+    let Some(kill_switch) = loaded
+        .root
+        .risk
+        .kill_switch
+        .as_ref()
+        .filter(|kill_switch| kill_switch.enabled)
+    else {
+        return BoltV3OperatorHealthSurface::not_configured();
+    };
+    let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
+    let kill_switch_state = match store.load_recovery_state() {
+        Ok(KillSwitchRecoveryState::Recovered(state)) => state,
+        Ok(KillSwitchRecoveryState::FailClosed { reason, state: _ }) => {
+            KillSwitchState::FailedManualIntervention {
+                halt_id: OPS_STATUS_KILL_SWITCH_STORE_FAIL_CLOSED_HALT_ID.to_string(),
+                reason: format!(
+                    "{OPS_STATUS_KILL_SWITCH_STORE_FAIL_CLOSED_REASON_PREFIX}: {reason}"
+                ),
+            }
+        }
+        Err(error) => KillSwitchState::FailedManualIntervention {
+            halt_id: OPS_STATUS_KILL_SWITCH_STORE_UNREADABLE_HALT_ID.to_string(),
+            reason: error.to_string(),
+        },
+    };
+    let capital_admission_configured =
+        loaded
+            .root
+            .risk
+            .capital_pools
+            .as_ref()
+            .is_some_and(|pools| {
+                pools.iter().any(|pool| {
+                    pool.enforce_submit_admission && pool.prediction_market_binary.is_some()
+                })
+            });
+    let reference_source_count = loaded
+        .strategies
+        .iter()
+        .filter_map(|strategy| strategy.config.reference_current_price.as_ref())
+        .map(|reference| reference.source_order.len())
+        .sum();
+    let reject_observer = if capital_admission_configured {
+        BoltV3RejectObserverHealth::unobserved()
+    } else {
+        BoltV3RejectObserverHealth::not_configured()
+    };
+    let venue_truth = if capital_admission_configured {
+        BoltV3VenueTruthHealth::from_configured_kill_switch_and_capital_state(
+            &kill_switch_state,
+            None,
+        )
+    } else {
+        BoltV3VenueTruthHealth::not_configured()
+    };
+    let input_health = if reference_source_count == 0 {
+        BoltV3InputHealth::not_configured()
+    } else {
+        BoltV3InputHealth::unobserved(reference_source_count)
+    };
+    BoltV3OperatorHealthSurface::from_parts(reject_observer, venue_truth, input_health)
+}
+
 fn run_ops_status(
     config_root: &Path,
     profile: &str,
@@ -1209,7 +1298,8 @@ fn run_ops_status(
     // The config row also supplies the catalog directory and current checksum the
     // launch-identity row needs; when the config cannot be verified the identity
     // row is skipped rather than reading an arbitrary location.
-    let (config, launch_identity) = match verify_live_config(config_root, profile) {
+    let (config, launch_identity, operator_health) = match verify_live_config(config_root, profile)
+    {
         Ok(verification) => {
             let catalog_directory =
                 Path::new(&verification.loaded.root.persistence.catalog_directory).to_path_buf();
@@ -1227,13 +1317,15 @@ fn run_ops_status(
                 profile,
                 &current_checksum,
             );
-            (config, launch_identity)
+            let operator_health = ops_status_operator_health_from_loaded(&verification.loaded);
+            (config, launch_identity, operator_health)
         }
         Err(error) => (
             ConfigStatus::Error {
                 error: error.to_string(),
             },
             LaunchIdentityStatus::SkippedConfigUnavailable,
+            BoltV3OperatorHealthSurface::not_configured(),
         ),
     };
 
@@ -1256,6 +1348,7 @@ fn run_ops_status(
             config,
             launch_identity,
             deploy_target,
+            operator_health,
         },
     };
     println!("{}", serde_json::to_string_pretty(&report)?);

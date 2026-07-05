@@ -12,6 +12,7 @@ use crate::{
         BoltV3OrderRejectEvidence, BoltV3OrderRejectReason, BoltV3RejectSource, EpisodeFirstNs,
         evict_oldest_episodes_over_cap,
     },
+    bolt_v3_operator_health::BoltV3OperatorHealthTransitionEmitter,
     nt_runtime_capture::order_events_pattern,
 };
 
@@ -51,6 +52,7 @@ const REJECT_REASON_NUM_MIN_LEN: usize = 12;
 const REJECT_REASON_MAX_LEN: usize = 256;
 /// Appended when the redacted reason text is truncated at the length cap.
 const REJECT_REASON_TRUNCATION_MARKER: &str = "...";
+const OPERATOR_HEALTH_REASON_ORDER_REJECT_OBSERVER: &str = stringify!(order_reject_observer);
 
 #[derive(Debug, Clone)]
 struct RejectObserverEpisode {
@@ -73,12 +75,30 @@ pub struct OrderRejectObserverFeedSubscription {
 pub fn subscribe_order_reject_observer_feed(
     feed: Arc<Mutex<BoltV3OrderRejectObserverFeed>>,
 ) -> OrderRejectObserverFeedSubscription {
+    subscribe_order_reject_observer_feed_internal(feed, None)
+}
+
+#[must_use]
+pub fn subscribe_order_reject_observer_feed_with_health_emitter(
+    feed: Arc<Mutex<BoltV3OrderRejectObserverFeed>>,
+    health_emitter: BoltV3OperatorHealthTransitionEmitter,
+) -> OrderRejectObserverFeedSubscription {
+    subscribe_order_reject_observer_feed_internal(feed, Some(health_emitter))
+}
+
+fn subscribe_order_reject_observer_feed_internal(
+    feed: Arc<Mutex<BoltV3OrderRejectObserverFeed>>,
+    health_emitter: Option<BoltV3OperatorHealthTransitionEmitter>,
+) -> OrderRejectObserverFeedSubscription {
     let order_feed = Arc::clone(&feed);
     let order_events = TypedHandler::from(move |event: &OrderEventAny| {
-        order_feed
+        let health_updated = order_feed
             .lock()
             .expect("order reject observer order-event feed lock poisoned")
             .on_order_event(event);
+        if health_updated && let Some(health_emitter) = health_emitter.as_ref() {
+            health_emitter(OPERATOR_HEALTH_REASON_ORDER_REJECT_OBSERVER);
+        }
     });
     subscribe_order_events(order_events_pattern(), order_events.clone(), None);
     OrderRejectObserverFeedSubscription {
@@ -106,6 +126,14 @@ pub struct BoltV3OrderRejectObserverFeed {
     episodes: BTreeMap<String, RejectObserverEpisode>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3OrderRejectObserverHealthSnapshot {
+    pub active_episode_count: usize,
+    pub total_retry_count: u32,
+    pub oldest_episode_first_ns: Option<u64>,
+    pub latest_client_order_id: Option<String>,
+}
+
 impl BoltV3OrderRejectObserverFeed {
     #[must_use]
     pub fn new(
@@ -119,11 +147,32 @@ impl BoltV3OrderRejectObserverFeed {
         }
     }
 
-    pub fn on_order_event(&mut self, event: &OrderEventAny) {
+    #[must_use]
+    pub fn health_snapshot(&self) -> BoltV3OrderRejectObserverHealthSnapshot {
+        let active_episode_count = self.episodes.len();
+        let total_retry_count = self
+            .episodes
+            .values()
+            .fold(0_u32, |total, episode| total.saturating_add(episode.count));
+        let oldest_episode_first_ns = self.episodes.values().map(|episode| episode.first_ns).min();
+        let latest_client_order_id = self
+            .episodes
+            .values()
+            .max_by_key(|episode| episode.first_ns)
+            .map(|episode| episode.last_client_order_id.clone());
+        BoltV3OrderRejectObserverHealthSnapshot {
+            active_episode_count,
+            total_retry_count,
+            oldest_episode_first_ns,
+            latest_client_order_id,
+        }
+    }
+
+    pub fn on_order_event(&mut self, event: &OrderEventAny) -> bool {
         let (reject_source, venue_reason_text) = match event {
             OrderEventAny::Rejected(rejected) => {
                 if event.account_id() != Some(self.account_id) {
-                    return;
+                    return false;
                 }
                 (BoltV3RejectSource::Venue, rejected.reason.as_str())
             }
@@ -135,7 +184,7 @@ impl BoltV3OrderRejectObserverFeed {
                 // construction params through the live_node wiring (#885 minor item [14]).
                 (BoltV3RejectSource::NtExecution, denied.reason.as_str())
             }
-            _ => return,
+            _ => return false,
         };
         // Classify on the full, unredacted reason (the classification only selects
         // an enum arm and never persists the raw text); the redacted-and-capped
@@ -191,7 +240,7 @@ impl BoltV3OrderRejectObserverFeed {
             self.evict_oldest_episodes_over_cap();
         }
         if !retry_count.is_power_of_two() {
-            return;
+            return true;
         }
 
         let evidence = BoltV3OrderRejectEvidence {
@@ -229,6 +278,7 @@ impl BoltV3OrderRejectObserverFeed {
                 evidence.raw_reason_text
             );
         }
+        true
     }
 
     /// Bound the episode map: while it exceeds the cap, drop the entry with the

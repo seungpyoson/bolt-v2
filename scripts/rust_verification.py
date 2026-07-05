@@ -1021,16 +1021,20 @@ def managed_remote_fast_linker_env(repo: pathlib.Path, policy: dict[str, Any]) -
         return {}
     wrapper_dir = target_dir(repo, policy) / "fast-linker-bin"
     base_path = os.environ.get("PATH", "")
-    wrapper_dir_key = os.path.normcase(os.path.abspath(wrapper_dir))
+    wrapper_dir_key = os.path.normcase(os.path.realpath(wrapper_dir))
     filtered_path = os.pathsep.join(
         part
         for part in base_path.split(os.pathsep)
-        if part and os.path.normcase(os.path.abspath(part)) != wrapper_dir_key
+        if part and os.path.normcase(os.path.realpath(part)) != wrapper_dir_key
     )
     if shutil.which(selected, path=filtered_path) is None:
         return {}
     real_cc = shutil.which("cc", path=filtered_path)
     if real_cc is None:
+        return {}
+    real_cc_key = os.path.normcase(os.path.realpath(real_cc))
+    wrapper_cc_key = os.path.normcase(os.path.realpath(wrapper_dir / "cc"))
+    if real_cc_key == wrapper_cc_key:
         return {}
     wrapper_dir.mkdir(parents=True, exist_ok=True)
     wrapper = wrapper_dir / "cc"

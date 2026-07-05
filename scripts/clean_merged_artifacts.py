@@ -604,6 +604,13 @@ def _is_git_hook_name(name: str) -> bool:
     return not name.endswith(".sample")
 
 
+def _is_executable(path: pathlib.Path) -> bool:
+    try:
+        return bool(path.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+    except OSError:
+        return False
+
+
 def _manifest_authorizes_overwrite(
     entry: Any,
     *,
@@ -654,9 +661,11 @@ def _copy_hook_with_provenance(
 ) -> None:
     if source_file.is_symlink():
         raise CleanMergedError(f"refusing to install symlink hook source at {source_file}")
+    if destination.is_symlink():
+        raise CleanMergedError(f"refusing to overwrite non-file hook at {destination}")
     source_sha = _file_sha256(source_file)
     if destination.exists():
-        if destination.is_symlink() or not destination.is_file():
+        if not destination.is_file():
             raise CleanMergedError(f"refusing to overwrite non-file hook at {destination}")
         destination_sha = _file_sha256(destination)
         if (
@@ -697,10 +706,18 @@ def _shadowed_hook_copy(
 ) -> pathlib.Path:
     if hook_file.is_symlink():
         raise CleanMergedError(f"refusing to shadow symlink hook at {hook_file}")
+    source_sha = _file_sha256(hook_file)
     shadow_dir = common_dir / "clean-merged.shadowed-hooks"
     shadow_dir.mkdir(parents=True, exist_ok=True)
-    destination = shadow_dir / f"{hook_file.name}.{_file_sha256(hook_file)}"
-    if not destination.exists():
+    destination = shadow_dir / f"{hook_file.name}.{source_sha}"
+    if destination.is_symlink():
+        raise CleanMergedError(f"refusing to shadow into symlink hook at {destination}")
+    if destination.exists() and not destination.is_file():
+        raise CleanMergedError(f"refusing to shadow into non-file hook at {destination}")
+    if destination.exists():
+        if _file_sha256(destination) != source_sha:
+            raise CleanMergedError(f"refusing to shadow into mismatched hook at {destination}")
+    else:
         shutil.copy2(hook_file, destination)
     return destination
 
@@ -768,6 +785,8 @@ def _record_shadowed_hook(
     shadowed_hooks: dict[str, Any],
     hook_name: str | None = None,
 ) -> None:
+    if hook_file.is_symlink() or repo_source_file.is_symlink():
+        raise CleanMergedError(f"refusing to record symlink hook at {hook_file}")
     if not hook_file.is_file() or not repo_source_file.is_file():
         return
     if hook_file.read_bytes() == repo_source_file.read_bytes():
@@ -3338,29 +3357,42 @@ def _diagnose_hook_install_state(
             problems.append("core.hooksPath is not git-common hooks directory (run `just setup`)")
         for h in CLEAN_MERGED_HOOKS:
             hook_file = active_hooks_dir / h
-            exists = hook_file.is_file()
+            present = hook_file.exists() or hook_file.is_symlink()
+            regular_file = hook_file.is_file() and not hook_file.is_symlink()
+            executable = regular_file and _is_executable(hook_file)
             source_file = source_hooks_dir / h
             source_match = (
-                exists
+                regular_file
                 and source_file.is_file()
+                and not source_file.is_symlink()
                 and hook_file.read_bytes() == source_file.read_bytes()
             )
             entry = manifest_hooks.get(h)
             manifest_match = (
-                exists
+                regular_file
                 and isinstance(entry, dict)
                 and entry.get("runtime_sha256") == _file_sha256(hook_file)
             )
             print(
-                f"  hook {h:14s} exists={exists} source_match={source_match} "
-                f"manifest_match={manifest_match}"
+                f"  hook {h:14s} exists={present} source_match={source_match} "
+                f"manifest_match={manifest_match} executable={executable}"
             )
-            if not exists:
-                problems.append(f"hook {h} missing")
-            if _same_path(active_hooks_dir, expected_hooks_dir) and not manifest_match:
-                problems.append(f"hook {h} lacks installer provenance (run `just setup`)")
-            if _same_path(active_hooks_dir, expected_hooks_dir) and not source_match:
+            if not present:
+                problems.append(f"hook {h} missing (run `just setup`)")
+            elif not regular_file:
+                problems.append(
+                    f"hook {h} runtime is outside allowed state; "
+                    "remove it and run `just setup`"
+                )
+            elif _same_path(active_hooks_dir, expected_hooks_dir) and not manifest_match:
+                problems.append(
+                    f"hook {h} runtime is outside allowed state; "
+                    "remove it and run `just setup`"
+                )
+            elif _same_path(active_hooks_dir, expected_hooks_dir) and not source_match:
                 problems.append(f"hook {h} runtime does not match tracked source (run `just setup`)")
+            if _same_path(active_hooks_dir, expected_hooks_dir) and regular_file and not executable:
+                problems.append(f"hook {h} is not executable (run `just setup`)")
     else:
         print("  core.hooksPath           = (unset; hooks would live in .git/hooks)")
         problems.append("core.hooksPath unset; clean-merged hooks not active")
@@ -3377,8 +3409,9 @@ def _diagnose_hook_install_state(
             problems.append(f"hook {hook_name} manifest entry is invalid")
             continue
         hook_file = expected_hooks_dir / hook_name
+        runtime_regular_file = hook_file.is_file() and not hook_file.is_symlink()
         runtime_match = (
-            hook_file.is_file()
+            runtime_regular_file
             and entry.get("runtime_sha256") == _file_sha256(hook_file)
         )
         source_file = _manifest_source_file(
@@ -3392,6 +3425,7 @@ def _diagnose_hook_install_state(
         source_match = (
             source_file is not None
             and source_file.is_file()
+            and not source_file.is_symlink()
             and entry.get("source_sha256") == _file_sha256(source_file)
         )
         print(
@@ -3422,6 +3456,7 @@ def _diagnose_hook_install_state(
             source_match = (
                 source_file is not None
                 and source_file.is_file()
+                and not source_file.is_symlink()
                 and entry.get("source_sha256") == _file_sha256(source_file)
             )
             print(

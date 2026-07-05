@@ -2014,6 +2014,25 @@ class CleanupContractTests(unittest.TestCase):
             "#!/bin/sh\n# clean-merged-managed\nprintf marker-impostor\n",
         )
 
+    def test_install_hooks_refuses_mismatched_shadow_copy(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        common_dir = git_common_dir_compat(self.work)
+        runtime_hooks = common_dir / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        colliding_hook = runtime_hooks / "post-merge"
+        colliding_hook.write_text("#!/bin/sh\nprintf default-local-post-merge\n", encoding="utf-8")
+        colliding_hook.chmod(0o755)
+        shadow_dir = common_dir / "clean-merged.shadowed-hooks"
+        shadow_dir.mkdir(parents=True, exist_ok=True)
+        shadow_copy = shadow_dir / f"post-merge.{file_sha256(colliding_hook)}"
+        shadow_copy.write_text("#!/bin/sh\nprintf wrong-shadow\n", encoding="utf-8")
+        shadow_copy.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("refusing to shadow into mismatched hook", proc.stderr)
+
     def test_install_hooks_refuses_symlink_hook_source(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
         global_hooks = self.tmp / "global-hooks-symlink-source"
@@ -2036,6 +2055,94 @@ class CleanupContractTests(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 1)
         self.assertIn("refusing to install symlink hook source", proc.stderr)
+
+    def test_install_hooks_refuses_symlink_hook_destination(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        outside_target = self.tmp / "outside-post-merge-target"
+        (runtime_hooks / "post-merge").symlink_to(outside_target)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("refusing to overwrite non-file hook", proc.stderr)
+        self.assertFalse(outside_target.exists())
+
+    def test_doctor_reports_symlink_managed_hook_as_outside_allowed_state(self) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        runtime_hook = git_common_dir_compat(self.work) / "hooks" / "post-merge"
+        target = self.tmp / "post-merge-target"
+        target.write_text(
+            (source_hooks / "post-merge").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        target.chmod(0o755)
+        runtime_hook.unlink()
+        runtime_hook.symlink_to(target)
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(
+            "hook post-merge runtime is outside allowed state; "
+            "remove it and run `just setup`",
+            proc.stdout,
+        )
+
+    def test_doctor_reports_modified_managed_hook_recovery_without_setup_loop(
+        self,
+    ) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        runtime_hook = git_common_dir_compat(self.work) / "hooks" / "post-merge"
+        runtime_hook.write_text("#!/bin/sh\nprintf tampered\n", encoding="utf-8")
+        runtime_hook.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(
+            "hook post-merge runtime is outside allowed state; "
+            "remove it and run `just setup`",
+            proc.stdout,
+        )
+        self.assertNotIn(
+            "hook post-merge lacks installer provenance (run `just setup`)",
+            proc.stdout,
+        )
+        self.assertNotIn(
+            "hook post-merge runtime does not match tracked source (run `just setup`)",
+            proc.stdout,
+        )
+
+    def test_doctor_reports_non_executable_managed_hook(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        runtime_hook = git_common_dir_compat(self.work) / "hooks" / "post-merge"
+        runtime_hook.chmod(0o644)
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("hook post-merge is not executable (run `just setup`)", proc.stdout)
+
+    def test_doctor_reports_missing_managed_hook_without_remove_recovery(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        runtime_hook = git_common_dir_compat(self.work) / "hooks" / "post-merge"
+        runtime_hook.unlink()
+
+        proc = run_clean_proc(self.work, "--doctor")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("hook post-merge missing (run `just setup`)", proc.stdout)
+        self.assertNotIn(
+            "hook post-merge runtime is outside allowed state; "
+            "remove it and run `just setup`",
+            proc.stdout,
+        )
 
     def test_install_hooks_preserves_non_executable_external_hook_mode(self) -> None:
         self._write_clean_merged_hook_sources(self.work)

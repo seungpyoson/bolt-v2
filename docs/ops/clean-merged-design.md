@@ -180,8 +180,12 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
 
 ## Installation — `just setup`
 
-- Resolve active hooks dir; install additively with markers; abort loudly on
-  foreign-content ambiguity.
+- Keep `.githooks/` as tracked hook source and generate active hooks under the
+  untracked git-common hooks directory (`$(git rev-parse --git-common-dir)/hooks`).
+  `just setup` points `core.hooksPath` at that generated directory so agent
+  hook installers can mutate active hooks without dirtying tracked repo files.
+  During that move, setup preserves existing non-managed hooks from the previous
+  active hook directory so local agent hooks keep firing after the path changes.
 - Restructure existing `post-checkout` (its `prev_head != 000…` early-exit
   moves BELOW our dispatch so cleanup runs first when gated).
 - Extend existing `post-rewrite` (Entire CLI line preserved).
@@ -207,9 +211,11 @@ survives shell-sensitive branch names). Subprocess diagnostics stored in
 The "always-on" contract has two precise limits:
 
 - **Always-on per clone, after `just setup`.** The tool is inert in a fresh
-  clone until `just setup` runs `git config core.hooksPath .githooks`. Git
-  cannot auto-run hooks on clone without local config; there is no in-tree
-  bootstrap. `just clean-merged-doctor` reports an unset hooksPath as a problem.
+  clone until `just setup` generates active hooks in the git-common hooks
+  directory from tracked `.githooks/` sources, preserves existing non-managed
+  hooks, and points `core.hooksPath` at that generated directory. Git cannot
+  auto-run hooks on clone without local config; there is no in-tree bootstrap.
+  `just clean-merged-doctor` reports an unset hooksPath as a problem.
 - **Always-on for branch ref cleanup (Lane H + Lane R).** Every `git pull`
   (incl. FF — empirically verified) and checkout of the configured trunk fires
   the hooks and cleans eligible branches automatically.

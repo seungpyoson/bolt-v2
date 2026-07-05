@@ -60,6 +60,7 @@ else:
 
 SCRIPT_NAME = "clean-merged"
 HOOK_MARKER = f"# {SCRIPT_NAME}-managed"
+CLEAN_MERGED_HOOKS = ("post-merge", "post-checkout", "post-rewrite")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHORT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 LOCK_FILE = "clean-merged.lock"
@@ -429,6 +430,45 @@ def _git(repo_root: pathlib.Path, args: list[str], *,
         ["git", *args], cwd=repo_root, check=check, capture_output=True,
         text=True, timeout=timeout, env=full_env, input=input,
     )
+
+
+def _resolve_hooks_path(repo_root: pathlib.Path, raw: str) -> pathlib.Path:
+    path = pathlib.Path(raw)
+    return path if path.is_absolute() else repo_root / path
+
+
+def install_hooks(repo_root: pathlib.Path) -> pathlib.Path:
+    source_hooks_dir = repo_root / ".githooks"
+    missing = [name for name in CLEAN_MERGED_HOOKS if not (source_hooks_dir / name).is_file()]
+    if missing:
+        raise CleanMergedError(
+            "missing tracked clean-merged hook source(s): " + ", ".join(missing)
+        )
+
+    runtime_hooks_dir = git_common_dir(repo_root) / "hooks"
+    runtime_hooks_dir.mkdir(parents=True, exist_ok=True)
+
+    active = _git(repo_root, ["config", "--get", "core.hooksPath"], check=False)
+    if active.returncode == 0 and active.stdout.strip():
+        active_hooks_dir = _resolve_hooks_path(repo_root, active.stdout.strip())
+        if active_hooks_dir.is_dir() and active_hooks_dir.resolve() != runtime_hooks_dir.resolve():
+            for hook_file in active_hooks_dir.iterdir():
+                if hook_file.name in CLEAN_MERGED_HOOKS or not hook_file.is_file():
+                    continue
+                shutil.copy2(hook_file, runtime_hooks_dir / hook_file.name)
+
+    for hook_name in CLEAN_MERGED_HOOKS:
+        destination = runtime_hooks_dir / hook_name
+        shutil.copy2(source_hooks_dir / hook_name, destination)
+        destination.chmod(
+            destination.stat().st_mode
+            | stat.S_IXUSR
+            | stat.S_IXGRP
+            | stat.S_IXOTH
+        )
+
+    _git(repo_root, ["config", "core.hooksPath", str(runtime_hooks_dir)])
+    return runtime_hooks_dir
 
 
 _REPORT_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -2440,7 +2480,7 @@ def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
             if not hooks_dir.is_absolute():
                 hooks_dir = repo_root / hooks_dir
             print(f"  core.hooksPath           = {hooks_dir}")
-            for h in ("post-merge", "post-checkout", "post-rewrite"):
+            for h in CLEAN_MERGED_HOOKS:
                 f = hooks_dir / h
                 managed = f.is_file() and HOOK_MARKER in f.read_text(encoding="utf-8", errors="replace")
                 print(f"  hook {h:14s} managed={managed}")
@@ -2497,7 +2537,7 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
         if not active_hooks_dir.is_absolute():
             active_hooks_dir = repo_root / active_hooks_dir
         print(f"  core.hooksPath           = {active_hooks_dir}")
-        for h in ("post-merge", "post-checkout", "post-rewrite"):
+        for h in CLEAN_MERGED_HOOKS:
             hook_file = active_hooks_dir / h
             exists = hook_file.is_file()
             managed = exists and HOOK_MARKER in hook_file.read_text(encoding="utf-8", errors="replace")
@@ -2678,6 +2718,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prune-backups", nargs="?", const=-1, type=int, default=None,
                    metavar="DAYS", help="prune backup refs older than DAYS")
     p.add_argument("--doctor", action="store_true", help="run diagnostic")
+    p.add_argument("--install-hooks", action="store_true",
+                   help="install generated runtime hooks for just setup")
     p.add_argument("--only-if-current-trunk", action="store_true",
                    help=argparse.SUPPRESS)
     p.add_argument("--redirect-output-to-lane-r-log", action="store_true",
@@ -2767,8 +2809,14 @@ def main(argv: list[str] | None = None) -> int:
     #
     # _resolve_repo_root and load_config can raise CleanMergedError; catch the
     # parent type so non-git dirs and bad common-dir resolution fail open.
+    repo_root = pathlib.Path.cwd()
     try:
         invoke_root = _resolve_repo_root(pathlib.Path.cwd())
+        if args.install_hooks:
+            hooks_dir = install_hooks(invoke_root)
+            if not args.quiet:
+                print(f"[{SCRIPT_NAME}] installed hooks in {hooks_dir}")
+            return 0
         repo_root = _main_worktree_root(invoke_root)
         config = load_config(repo_root)
     except CleanMergedError as exc:
@@ -2777,6 +2825,8 @@ def main(argv: list[str] | None = None) -> int:
         # problem and exit non-zero.
         if not args.quiet:
             print(f"[{SCRIPT_NAME}] error: {exc}", file=sys.stderr)
+        if args.install_hooks:
+            return 1
         if args.print_remote_name:
             return 1
         if args.doctor:

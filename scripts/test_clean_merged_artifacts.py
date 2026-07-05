@@ -1375,6 +1375,67 @@ class CleanupContractTests(unittest.TestCase):
         self.assertIn("remote.${clean_merged_remote}.prune", source)
         self.assertNotIn("remote.origin.prune", source)
 
+    def test_setup_uses_untracked_git_common_runtime_hook_directory(self) -> None:
+        source = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+        docs = (REPO_ROOT / "docs" / "ops" / "clean-merged-design.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("scripts/clean_merged_artifacts.py --install-hooks", source)
+        self.assertNotIn("git config core.hooksPath .githooks", source)
+        self.assertNotIn("chmod +x .githooks/post-merge", source)
+        self.assertIn("git-common hooks directory", docs)
+        self.assertIn("preserves existing non-managed hooks", docs)
+
+    def test_install_hooks_preserves_existing_local_hooks_when_moving_to_runtime_dir(
+        self,
+    ) -> None:
+        source_hooks = self.work / ".githooks"
+        source_hooks.mkdir()
+        for hook in ("post-merge", "post-checkout", "post-rewrite"):
+            hook_file = source_hooks / hook
+            hook_file.write_text(
+                f"#!/bin/sh\n# clean-merged-managed\n# generated {hook}\n",
+                encoding="utf-8",
+            )
+            hook_file.chmod(0o755)
+        local_hook = source_hooks / "commit-msg"
+        local_hook.write_text("#!/bin/sh\nprintf local-hook\n", encoding="utf-8")
+        local_hook.chmod(0o755)
+        chained_hook = source_hooks / "post-rewrite.pre-entire"
+        chained_hook.write_text("#!/bin/sh\nprintf chained-hook\n", encoding="utf-8")
+        chained_hook.chmod(0o755)
+        _run(["git", "config", "core.hooksPath", ".githooks"], cwd=self.work)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        common_dir = pathlib.Path(
+            _run(
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=self.work,
+            ).stdout.strip()
+        )
+        runtime_hooks = common_dir / "hooks"
+        self.assertEqual(
+            _run(["git", "config", "--get", "core.hooksPath"], cwd=self.work).stdout.strip(),
+            str(runtime_hooks),
+        )
+        for hook in ("post-merge", "post-checkout", "post-rewrite"):
+            self.assertEqual(
+                (runtime_hooks / hook).read_text(encoding="utf-8"),
+                (source_hooks / hook).read_text(encoding="utf-8"),
+            )
+            self.assertTrue(os.access(runtime_hooks / hook, os.X_OK))
+        self.assertEqual(
+            (runtime_hooks / "commit-msg").read_text(encoding="utf-8"),
+            local_hook.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            (runtime_hooks / "post-rewrite.pre-entire").read_text(encoding="utf-8"),
+            chained_hook.read_text(encoding="utf-8"),
+        )
+
     def test_setup_remote_prune_snippet_sets_configured_remote(self) -> None:
         cfg = self.work / "config" / "clean-merged.toml"
         cfg.write_text(

@@ -12596,44 +12596,19 @@ def partition_job_body_digest_errors(
     ]
 
 
-def top_level_mapping_has_child(workflow_text: str, parent_key: str, child_key: str) -> bool:
-    parent_indent = 0
-    child_indent: int | None = None
-    for index, line in enumerate(workflow_text.splitlines()):
-        clean = strip_comment(line).rstrip()
-        if not clean.strip():
+def top_level_defaults_errors(workflow_text: str, workflow_name: str) -> list[str]:
+    for line in workflow_text.splitlines():
+        if line.startswith((" ", "\t")):
             continue
-        structural = workflow_yaml_structural_line(clean)
-        if structural.startswith((" ", "\t")):
-            continue
-        key, separator, inline_value = structural.partition(":")
-        if not separator or key.strip().strip("'\"") != parent_key:
-            continue
-        inline_value = unquote_yaml_scalar(inline_value.strip())
-        if inline_value and re.search(rf"(?:^|[{{,]\s*){re.escape(child_key)}\s*:", inline_value):
-            return True
-        for child in workflow_text.splitlines()[index + 1 :]:
-            child_clean = strip_comment(child).rstrip()
-            if not child_clean.strip():
-                continue
-            indent = len(child_clean) - len(child_clean.lstrip(" "))
-            if indent <= parent_indent:
-                break
-            if child_indent is None:
-                child_indent = indent
-            if indent != child_indent:
-                continue
-            child_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:", child_clean)
-            if child_match is not None and unquote_yaml_scalar(child_match.group(1)) == child_key:
-                return True
-        return False
-    return False
+        key, separator, _value = workflow_yaml_structural_line(line).partition(":")
+        if separator and key.strip().strip("'\"") == "defaults":
+            return [f"{workflow_name} top-level defaults must not be used"]
+    return []
 
 
 def partition_workflow_boundary_errors(workflow_text: str, workflow_name: str) -> list[str]:
     errors = classified_top_level_env_errors(workflow_text, workflow_name)
-    if top_level_mapping_has_child(workflow_text, "defaults", "run"):
-        errors.append(f"{workflow_name} top-level defaults.run must not be used")
+    errors.extend(top_level_defaults_errors(workflow_text, workflow_name))
     return errors
 
 

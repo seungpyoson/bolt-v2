@@ -14201,7 +14201,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
   RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
 permissions:
 """,
-        """env: {PATH: "/tmp/partition-shim:${{ env.PATH }}", JUST_VERSION: "1.49.0", CARGO_TERM_COLOR: always, RUST_VERIFICATION_ROOT_BASE: "${{ github.workspace }}/.rust-verification"}
+        """env: {"PATH": "/tmp/partition-shim:${{ env.PATH }}", JUST_VERSION: "1.49.0", CARGO_TERM_COLOR: always, RUST_VERIFICATION_ROOT_BASE: "${{ github.workspace }}/.rust-verification"}
 permissions:
 """,
     )
@@ -14212,18 +14212,25 @@ permissions:
         "top-level env reuse scope could not parse backtester-ci.yml" in error
         for error in bvs_top_level_flow_errors
     ), bvs_top_level_flow_errors
-    bvs_top_level_defaults = replace_once(
-        real_backtester_workflow,
-        "permissions:\n",
-        "defaults:\n  run:\n    shell: sh\npermissions:\n",
-    )
-    bvs_top_level_defaults_errors = verifier.verify_repo_automation_texts(
-        {".github/workflows/backtester-ci.yml": bvs_top_level_defaults}
-    )
-    assert any(
-        "backtester-ci.yml top-level defaults.run must not be used" in error
-        for error in bvs_top_level_defaults_errors
-    ), bvs_top_level_defaults_errors
+    for defaults_probe in (
+        "defaults:\n  run:\n    shell: sh\n",
+        "defaults: {run: {shell: bash}}\n",
+        'defaults: {"run": {shell: bash}}\n',
+        '"defaults":\n  run:\n    shell: sh\n',
+        "defaults: {}\n",
+    ):
+        bvs_top_level_defaults = replace_once(
+            real_backtester_workflow,
+            "permissions:\n",
+            f"{defaults_probe}permissions:\n",
+        )
+        bvs_top_level_defaults_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/backtester-ci.yml": bvs_top_level_defaults}
+        )
+        assert any(
+            "backtester-ci.yml top-level defaults must not be used" in error
+            for error in bvs_top_level_defaults_errors
+        ), bvs_top_level_defaults_errors
     bvs_partition_step_rename_probe = replace_once_after(
         real_backtester_workflow,
         "  test-archive:",
@@ -15109,14 +15116,17 @@ git() {
             "",
         ),
     )
-    assert_error(
-        "ci.yml top-level defaults.run must not be used",
-        replace_once(BASE_WORKFLOW, "permissions:\n", "defaults:\n  run:\n    shell: sh\n\npermissions:\n"),
-    )
-    assert_error(
-        "ci.yml top-level defaults.run must not be used",
-        replace_once(BASE_WORKFLOW, "permissions:\n", "defaults: { run: { shell: sh } }\npermissions:\n"),
-    )
+    for defaults_probe in (
+        "defaults:\n  run:\n    shell: sh\n\n",
+        "defaults: {run: {shell: bash}}\n",
+        'defaults: {"run": {shell: bash}}\n',
+        '"defaults":\n  run:\n    shell: sh\n',
+        "defaults: {}\n",
+    ):
+        assert_error(
+            "ci.yml top-level defaults must not be used",
+            replace_once(BASE_WORKFLOW, "permissions:\n", f"{defaults_probe}permissions:\n"),
+        )
     assert_error(
         "YAML anchors and aliases must not be used in ci.yml while nextest reuse is enabled",
         replace_once(
@@ -16288,7 +16298,7 @@ def main() -> int:
         "permissions:\n",
         "defaults:\n  run:\n    shell: sh\npermissions:\n",
     )
-    assert_error("ci.yml top-level defaults.run must not be used", root_top_level_defaults)
+    assert_error("ci.yml top-level defaults must not be used", root_top_level_defaults)
     root_partition_step_rename_probe = replace_once_after(
         real_ci_workflow,
         "  test-archive:",

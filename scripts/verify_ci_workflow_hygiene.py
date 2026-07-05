@@ -812,7 +812,7 @@ TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
     "            if [[ \"$rc\" -ne 0 ]]; then\n"
     "              status=1\n"
 )
-ROOT_TEST_ARCHIVE_JOB_SHA256 = "6d0b1df8d8995dbc68cbdf072de322dc7b979783294102acf55a5577811c4439"
+ROOT_TEST_ARCHIVE_JOB_SHA256 = "26f12192ac235c6468c3c85d81969495569bab6dfa5ea02794918b2425acfd6f"
 CI_CLASSIFICATION_SUMMARY_LINE = (
     'echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} '
     'full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} '

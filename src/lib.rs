@@ -26,6 +26,7 @@ pub mod bolt_v3_kill_switch_flatten;
 pub mod bolt_v3_kill_switch_store;
 pub mod bolt_v3_live_node;
 pub mod bolt_v3_loss_governor;
+pub mod bolt_v3_loss_governor_manual_recovery_ops;
 pub mod bolt_v3_loss_halt_actions;
 pub mod bolt_v3_loss_protection;
 pub mod bolt_v3_loss_runtime_feed;

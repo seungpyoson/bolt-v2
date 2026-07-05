@@ -12,9 +12,22 @@ __pycache__/
 .agent-doctor/
 .agents/
 .beads/
+# Agent-local state must be ignored HERE (tracked .gitignore), not only in
+# .git/info/exclude or the global ignore: Entire's attribution scan honors
+# .gitignore alone, and unlisted local trees bloat checkpoint metadata past
+# GitHub's blob limit (see PR #1231).
 .entire/
+.worktrees/
+.devin/config.local.json
+.githooks/commit-msg
+.githooks/post-commit
+.githooks/pre-push
+.githooks/prepare-commit-msg
+.githooks/*.pre-entire
+*.local.md
 .claude/agents/
 .claude/settings.json
+.claude/settings.local.json
 .claude/findings/
 .codex/*
 !.codex/config.toml

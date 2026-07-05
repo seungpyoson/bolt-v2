@@ -93,6 +93,17 @@ def git(cwd: pathlib.Path, *args: str) -> str:
     return _run(["git", *args], cwd=cwd).stdout
 
 
+def git_common_dir_compat(work: pathlib.Path) -> pathlib.Path:
+    if not work.is_dir():
+        raise FileNotFoundError(f"Work directory {work} does not exist")
+    common_dir = pathlib.Path(
+        _run(["git", "rev-parse", "--git-common-dir"], cwd=work).stdout.strip()
+    )
+    if not common_dir.is_absolute():
+        common_dir = work / common_dir
+    return common_dir.resolve()
+
+
 def make_repo(tmp: pathlib.Path) -> pathlib.Path:
     """Bare remote + working clone. Returns the working repo path."""
     remote = tmp / "remote.git"
@@ -1419,12 +1430,7 @@ class CleanupContractTests(unittest.TestCase):
         proc = run_clean_proc(self.work, "--install-hooks")
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        common_dir = pathlib.Path(
-            _run(
-                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                cwd=self.work,
-            ).stdout.strip()
-        )
+        common_dir = git_common_dir_compat(self.work)
         runtime_hooks = common_dir / "hooks"
         self.assertEqual(
             _run(["git", "config", "--get", "core.hooksPath"], cwd=self.work).stdout.strip(),
@@ -1445,6 +1451,25 @@ class CleanupContractTests(unittest.TestCase):
             chained_hook.read_text(encoding="utf-8"),
         )
 
+    def test_install_hooks_syncs_new_source_local_hook_after_runtime_path_is_active(
+        self,
+    ) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        local_hook = source_hooks / "prepare-commit-msg"
+        local_hook.write_text("#!/bin/sh\nprintf source-local-hook\n", encoding="utf-8")
+        local_hook.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        runtime_hook = git_common_dir_compat(self.work) / "hooks" / "prepare-commit-msg"
+        self.assertEqual(
+            runtime_hook.read_text(encoding="utf-8"),
+            local_hook.read_text(encoding="utf-8"),
+        )
+        self.assertTrue(os.access(runtime_hook, os.X_OK))
+
     def test_install_hooks_refuses_nonmanaged_same_name_hook_collision(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
         legacy_hooks = self.work / ".legacy-hooks"
@@ -1461,12 +1486,7 @@ class CleanupContractTests(unittest.TestCase):
 
     def test_install_hooks_refuses_default_runtime_same_name_hook_collision(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
-        runtime_hooks = pathlib.Path(
-            _run(
-                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                cwd=self.work,
-            ).stdout.strip()
-        ) / "hooks"
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
         runtime_hooks.mkdir(parents=True, exist_ok=True)
         colliding_hook = runtime_hooks / "post-merge"
         colliding_hook.write_text("#!/bin/sh\nprintf default-local-post-merge\n", encoding="utf-8")
@@ -1494,6 +1514,25 @@ class CleanupContractTests(unittest.TestCase):
             proc.stderr,
         )
 
+    def test_install_hooks_resolves_home_relative_active_hooks_path(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        home = self.tmp / "home"
+        active_hooks = home / "hooks"
+        active_hooks.mkdir(parents=True)
+        local_hook = active_hooks / "commit-msg"
+        local_hook.write_text("#!/bin/sh\nprintf home-local-hook\n", encoding="utf-8")
+        local_hook.chmod(0o755)
+        _run(["git", "config", "core.hooksPath", "~/hooks"], cwd=self.work)
+
+        proc = run_clean_proc(self.work, "--install-hooks", env={"HOME": str(home)})
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        runtime_hook = git_common_dir_compat(self.work) / "hooks" / "commit-msg"
+        self.assertEqual(
+            runtime_hook.read_text(encoding="utf-8"),
+            local_hook.read_text(encoding="utf-8"),
+        )
+
     def test_install_hooks_uses_main_worktree_hook_sources_from_linked_worktree(self) -> None:
         source_hooks = self._write_clean_merged_hook_sources(self.work, label="main")
         _run(["git", "branch", "feat/hook-install"], cwd=self.work)
@@ -1503,12 +1542,7 @@ class CleanupContractTests(unittest.TestCase):
         proc = run_clean_proc(linked, "--install-hooks")
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        common_dir = pathlib.Path(
-            _run(
-                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                cwd=self.work,
-            ).stdout.strip()
-        )
+        common_dir = git_common_dir_compat(self.work)
         runtime_hook = common_dir / "hooks" / "post-merge"
         self.assertEqual(
             runtime_hook.read_text(encoding="utf-8"),

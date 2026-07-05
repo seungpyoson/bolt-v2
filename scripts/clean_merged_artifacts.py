@@ -432,8 +432,29 @@ def _git(repo_root: pathlib.Path, args: list[str], *,
     )
 
 
-def _resolve_hooks_path(repo_root: pathlib.Path, raw: str) -> pathlib.Path:
-    path = pathlib.Path(raw)
+def _resolve_home_dir() -> pathlib.Path | None:
+    try:
+        return pathlib.Path.home()
+    except (KeyError, RuntimeError):
+        return None
+
+
+def _resolve_hooks_path(
+    repo_root: pathlib.Path,
+    raw: str,
+    *,
+    home_dir: pathlib.Path | None = None,
+) -> pathlib.Path:
+    if raw == "~" or raw.startswith("~/"):
+        if home_dir is None:
+            home_dir = _resolve_home_dir()
+        if home_dir is not None:
+            suffix = raw[2:] if raw.startswith("~/") else ""
+            path = home_dir / suffix if suffix else home_dir
+        else:
+            path = pathlib.Path(raw)
+    else:
+        path = pathlib.Path(raw)
     return path if path.is_absolute() else repo_root / path
 
 
@@ -466,19 +487,20 @@ def _active_hook_dirs(
     invoke_root: pathlib.Path,
     source_root: pathlib.Path,
     runtime_hooks_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
 ) -> list[pathlib.Path]:
     active = _git(source_root, ["config", "--get", "core.hooksPath"], check=False)
     if active.returncode != 0 or not active.stdout.strip():
         return [runtime_hooks_dir]
 
     raw = active.stdout.strip()
-    path = pathlib.Path(raw)
-    if path.is_absolute():
+    path = _resolve_hooks_path(source_root, raw, home_dir=home_dir)
+    if pathlib.Path(raw).is_absolute() or raw == "~" or raw.startswith("~/"):
         return [path]
 
-    candidates = [source_root / path]
+    candidates = [path]
     if not _same_path(invoke_root, source_root):
-        candidates.append(invoke_root / path)
+        candidates.append(_resolve_hooks_path(invoke_root, raw, home_dir=home_dir))
     return candidates
 
 
@@ -486,8 +508,13 @@ def install_hooks(
     invoke_root: pathlib.Path,
     *,
     source_root: pathlib.Path | None = None,
+    home_dir: pathlib.Path | None = None,
 ) -> pathlib.Path:
     source_root = _main_worktree_root(invoke_root) if source_root is None else source_root
+    if not invoke_root.is_dir():
+        raise CleanMergedError(f"invoke worktree does not exist: {invoke_root}")
+    if not source_root.is_dir():
+        raise CleanMergedError(f"source worktree does not exist: {source_root}")
     source_hooks_dir = source_root / ".githooks"
     missing = [name for name in CLEAN_MERGED_HOOKS if not (source_hooks_dir / name).is_file()]
     if missing:
@@ -509,6 +536,7 @@ def install_hooks(
         invoke_root=invoke_root,
         source_root=source_root,
         runtime_hooks_dir=runtime_hooks_dir,
+        home_dir=home_dir,
     )
     hook_dirs_to_check = [runtime_hooks_dir, *active_hook_dirs]
     for hook_dir in hook_dirs_to_check:
@@ -520,6 +548,22 @@ def install_hooks(
                 raise CleanMergedError(
                     f"refusing to overwrite non-managed hook {hook_name} at {existing}"
                 )
+
+    for hook_file in source_hooks_dir.iterdir():
+        if not hook_file.is_file():
+            continue
+        if hook_file.name in CLEAN_MERGED_HOOKS and not _hook_is_managed(hook_file):
+            raise CleanMergedError(
+                f"tracked clean-merged hook source {hook_file.name} is not marked managed"
+            )
+        destination = runtime_hooks_dir / hook_file.name
+        shutil.copy2(hook_file, destination)
+        destination.chmod(
+            destination.stat().st_mode
+            | stat.S_IXUSR
+            | stat.S_IXGRP
+            | stat.S_IXOTH
+        )
 
     for active_hooks_dir in active_hook_dirs:
         if not active_hooks_dir.is_dir() or _same_path(active_hooks_dir, runtime_hooks_dir):
@@ -535,16 +579,6 @@ def install_hooks(
                         f"{destination}"
                     )
             shutil.copy2(hook_file, destination)
-
-    for hook_name in CLEAN_MERGED_HOOKS:
-        destination = runtime_hooks_dir / hook_name
-        shutil.copy2(source_hooks_dir / hook_name, destination)
-        destination.chmod(
-            destination.stat().st_mode
-            | stat.S_IXUSR
-            | stat.S_IXGRP
-            | stat.S_IXOTH
-        )
 
     _git(source_root, ["config", "core.hooksPath", str(runtime_hooks_dir)])
     return runtime_hooks_dir
@@ -2555,9 +2589,11 @@ def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
         print(f"  git-common-dir           = {common}")
         active = _git(repo_root, ["config", "--get", "core.hooksPath"], check=False)
         if active.returncode == 0 and active.stdout.strip():
-            hooks_dir = pathlib.Path(active.stdout.strip())
-            if not hooks_dir.is_absolute():
-                hooks_dir = repo_root / hooks_dir
+            hooks_dir = _resolve_hooks_path(
+                repo_root,
+                active.stdout.strip(),
+                home_dir=_resolve_home_dir(),
+            )
             print(f"  core.hooksPath           = {hooks_dir}")
             for h in CLEAN_MERGED_HOOKS:
                 f = hooks_dir / h
@@ -2614,9 +2650,11 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     # hooks install
     active_hooks_dir_raw = _git(repo_root, ["config", "--get", "core.hooksPath"], check=False)
     if active_hooks_dir_raw.returncode == 0 and active_hooks_dir_raw.stdout.strip():
-        active_hooks_dir = pathlib.Path(active_hooks_dir_raw.stdout.strip())
-        if not active_hooks_dir.is_absolute():
-            active_hooks_dir = repo_root / active_hooks_dir
+        active_hooks_dir = _resolve_hooks_path(
+            repo_root,
+            active_hooks_dir_raw.stdout.strip(),
+            home_dir=_resolve_home_dir(),
+        )
         print(f"  core.hooksPath           = {active_hooks_dir}")
         if not _same_path(active_hooks_dir, expected_hooks_dir):
             problems.append("core.hooksPath is not git-common hooks directory (run `just setup`)")
@@ -2914,7 +2952,11 @@ def main(argv: list[str] | None = None) -> int:
         invoke_root = _resolve_repo_root(pathlib.Path.cwd())
         repo_root = _main_worktree_root(invoke_root)
         if args.install_hooks:
-            hooks_dir = install_hooks(invoke_root, source_root=repo_root)
+            hooks_dir = install_hooks(
+                invoke_root,
+                source_root=repo_root,
+                home_dir=_resolve_home_dir(),
+            )
             if not args.quiet:
                 print(f"[{SCRIPT_NAME}] installed hooks in {hooks_dir}")
             return 0

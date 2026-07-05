@@ -1042,7 +1042,7 @@ jobs:
             cache_mode="read_write"
             role_arn="$ROLE_ARN"
           fi
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+          if [[ "$trusted" != "true" && ( "$GITHUB_EVENT_NAME" == "pull_request" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ) ]]; then
             cache_mode="read_only"
             role_arn="$PR_READONLY_ROLE_ARN"
           fi

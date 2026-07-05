@@ -23,8 +23,8 @@ use bolt_v2::{
     bolt_v3_config::{BacktestConfigOverride, RealizedVolatilitySourceSelector},
     bolt_v3_order_execution::BoltV3OrderExecutionMode,
     strategies::{
-        binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder, production_strategy_registry,
-        registry::StrategyBuilder,
+        binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder, binary_oracle_maker,
+        production_strategy_registry, registry::StrategyBuilder,
     },
 };
 use nautilus_backtest::config::{
@@ -53,6 +53,8 @@ use super::source_proof::{AcceptedDataset, FixtureType, SourceProofFidelityClass
 pub const STRATEGY_HURST_VPIN_DIRECTIONAL: &str = "hurst_vpin_directional";
 /// Registry key for Bolt's compiled Rust binary-oracle taker strategy.
 pub const STRATEGY_BINARY_ORACLE_EDGE_TAKER: &str = "binary_oracle_edge_taker";
+/// Registry key for Bolt's compiled Rust binary-oracle maker strategy.
+pub const STRATEGY_BINARY_ORACLE_MAKER: &str = binary_oracle_maker::KEY;
 /// Registry key for the bolt-owned mechanical trade-replay order-producing probe.
 pub const STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE: &str = "mechanical_trade_replay_probe";
 /// Strategy parameter key for the bar type.
@@ -125,6 +127,7 @@ pub fn registered_strategies() -> &'static [&'static str] {
     &[
         STRATEGY_HURST_VPIN_DIRECTIONAL,
         STRATEGY_BINARY_ORACLE_EDGE_TAKER,
+        STRATEGY_BINARY_ORACLE_MAKER,
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
     ]
 }
@@ -136,6 +139,11 @@ pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'
             Some(&[STRATEGY_PARAM_BAR_TYPE, STRATEGY_PARAM_TRADE_SIZE])
         }
         STRATEGY_BINARY_ORACLE_EDGE_TAKER => Some(&[
+            STRATEGY_PARAM_CONFIG_TOML,
+            STRATEGY_PARAM_FEE_BPS,
+            STRATEGY_PARAM_ORDER_EXECUTION_MODE,
+        ]),
+        STRATEGY_BINARY_ORACLE_MAKER => Some(&[
             STRATEGY_PARAM_CONFIG_TOML,
             STRATEGY_PARAM_FEE_BPS,
             STRATEGY_PARAM_ORDER_EXECUTION_MODE,
@@ -1156,6 +1164,71 @@ fn validate_strategy_source(
                         "strategy.parameters.config_toml",
                     ));
                 }
+            }
+        }
+        STRATEGY_BINARY_ORACLE_MAKER => {
+            if strategy.config_overlay.is_some() {
+                return Err(ManifestError::InvalidStrategyConfigOverlay {
+                    field: "strategy.config_overlay",
+                    message: format!("not supported for strategy {key:?}"),
+                });
+            }
+            for parameter in [
+                STRATEGY_PARAM_CONFIG_TOML,
+                STRATEGY_PARAM_FEE_BPS,
+                STRATEGY_PARAM_ORDER_EXECUTION_MODE,
+            ] {
+                if !strategy.parameters.contains_key(parameter) {
+                    return Err(ManifestError::MissingField(match parameter {
+                        STRATEGY_PARAM_CONFIG_TOML => "strategy.parameters.config_toml",
+                        STRATEGY_PARAM_FEE_BPS => "strategy.parameters.fee_bps",
+                        STRATEGY_PARAM_ORDER_EXECUTION_MODE => {
+                            "strategy.parameters.order_execution_mode"
+                        }
+                        _ => unreachable!(),
+                    }));
+                }
+            }
+            let order_execution_mode = strategy
+                .parameters
+                .get(STRATEGY_PARAM_ORDER_EXECUTION_MODE)
+                .expect("presence checked above");
+            let _order_execution_mode: BoltV3OrderExecutionMode =
+                toml::Value::String(order_execution_mode.clone())
+                    .try_into()
+                    .map_err(|_| {
+                        ManifestError::MissingField("strategy.parameters.order_execution_mode")
+                    })?;
+            let fee_bps = strategy
+                .parameters
+                .get(STRATEGY_PARAM_FEE_BPS)
+                .expect("presence checked above");
+            let fee_bps = rust_decimal::Decimal::from_str(fee_bps)
+                .map_err(|_| ManifestError::MissingField("strategy.parameters.fee_bps"))?;
+            if fee_bps < rust_decimal::Decimal::ZERO {
+                return Err(ManifestError::MissingField("strategy.parameters.fee_bps"));
+            }
+            let raw_config = strategy
+                .parameters
+                .get(STRATEGY_PARAM_CONFIG_TOML)
+                .expect("presence checked above");
+            let raw_config = toml::from_str::<toml::Value>(raw_config)
+                .map_err(|_| ManifestError::MissingField("strategy.parameters.config_toml"))?;
+            let registry =
+                production_strategy_registry().map_err(|_| ManifestError::UnknownStrategy {
+                    registry_key: key.to_string(),
+                })?;
+            let mut errors = Vec::new();
+            registry.validate(
+                key,
+                &raw_config,
+                "strategy.parameters.config_toml",
+                &mut errors,
+            );
+            if !errors.is_empty() {
+                return Err(ManifestError::MissingField(
+                    "strategy.parameters.config_toml",
+                ));
             }
         }
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => {
@@ -3467,9 +3540,16 @@ mod tests {
         "0000000000000000000000000000000000000000000000000000000000000000";
     const TEST_SHA256_ONE: &str =
         "1111111111111111111111111111111111111111111111111111111111111111";
-
     fn accepted_dataset() -> AcceptedDataset {
         synthetic_accepted_dataset_for_tests()
+    }
+
+    fn binary_option_accepted_dataset() -> AcceptedDataset {
+        let mut accepted = accepted_dataset();
+        accepted.product_family = "prediction-market".to_string();
+        accepted.product_category = "binary-option".to_string();
+        accepted.fixture_type = FixtureType::BinaryOption;
+        accepted
     }
 
     fn valid_manifest() -> BacktestingRunManifest {
@@ -4728,6 +4808,57 @@ mod tests {
         manifest
     }
 
+    fn binary_oracle_maker_config_toml() -> String {
+        r#"
+        strategy_id = "binary_oracle_maker-backtest-001"
+        order_id_tag = "001"
+        oms_type = "netting"
+        client_id = "maker_execution_client"
+        trade_flow_window_secs = 600
+        trade_flow_max_samples = 1000
+        mu_min_classified_samples = 4
+        mu_stale_window_ms = 60000
+        mu_min_floor = 0.05
+        requote_min_interval_ms = 500
+        quote_interval_ms = 1000
+        market_portfolio_max_active_markets = 1
+        market_portfolio_total_bankroll_notional = 1500.0
+        market_portfolio_min_slot_notional = 100.0
+        markets_config_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+        [[markets]]
+        market_key = "sample-event"
+        family_key = "static_binary_event"
+        underlying_asset = "ETH"
+        cadence_seconds = 60
+        cadence_slug_token = "will-sample-event-resolve-yes"
+        static_condition_id = "condition-sample-event"
+        static_yes_outcome = "Yes"
+        static_no_outcome = "No"
+        "#
+        .to_string()
+    }
+
+    fn binary_oracle_maker_manifest() -> BacktestingRunManifest {
+        let mut manifest = valid_manifest();
+        manifest.market_structure_fixture = MarketStructureFixture::BinaryOption;
+        manifest.strategy.registry_key = STRATEGY_BINARY_ORACLE_MAKER.to_string();
+        manifest.strategy.parameters = BTreeMap::from([
+            (
+                STRATEGY_PARAM_CONFIG_TOML.to_string(),
+                binary_oracle_maker_config_toml(),
+            ),
+            (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
+            (
+                STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
+                "shadow".to_string(),
+            ),
+        ]);
+        manifest.strategy_config_hash =
+            "3333333333333333333333333333333333333333333333333333333333333333".to_string();
+        manifest
+    }
+
     #[test]
     fn binary_oracle_accepts_production_config_overlay_without_inline_config_toml() {
         let manifest = binary_oracle_overlay_manifest();
@@ -4752,6 +4883,15 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn binary_oracle_maker_accepts_inline_config_toml() {
+        let manifest = binary_oracle_maker_manifest();
+
+        manifest
+            .validate(&binary_option_accepted_dataset())
+            .expect("binary-oracle maker inline config should validate");
     }
 
     #[test]

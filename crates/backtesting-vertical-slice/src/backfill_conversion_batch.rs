@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    atomic_artifact_write::atomic_write,
     backfill_coverage::{BackfillCoverageLedger, BackfillCoverageRecord, BackfillCoverageStatus},
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
 };
@@ -372,30 +371,20 @@ pub fn write_backfill_conversion_batch_plan(
             error: error.to_string(),
         }
     })?;
-    let bytes = serde_json::to_vec_pretty(plan)
-        .map_err(|error| BackfillConversionBatchPlanError::Serialize(error.to_string()))?;
     let path = output_dir.join(BACKFILL_CONVERSION_BATCH_PLAN_FILE);
-    if path.exists() {
-        let existing =
-            fs::read(&path).map_err(|error| BackfillConversionBatchPlanError::ReadExisting {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            })?;
-        if existing != bytes {
-            return Err(BackfillConversionBatchPlanError::ExistingArtifactMismatch {
-                path: path.display().to_string(),
-            });
-        }
-    } else {
-        atomic_write(&path, &bytes).map_err(|error| BackfillConversionBatchPlanError::Write {
-            path: path.display().to_string(),
-            error: error.to_string(),
-        })?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
+        &path,
+        BACKFILL_CONVERSION_BATCH_PLAN_FILE,
+        plan,
+        BackfillConversionBatchPlanError::Serialize,
+        |path, error| BackfillConversionBatchPlanError::ReadExisting { path, error },
+        |path| BackfillConversionBatchPlanError::ExistingArtifactMismatch { path },
+        |path, error| BackfillConversionBatchPlanError::Write { path, error },
+    )?;
     Ok(BackfillConversionBatchPlanArtifact {
         path,
-        content_hash: format!("{:x}", Sha256::digest(&bytes)),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         record_count: plan.record_count,
     })
 }

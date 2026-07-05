@@ -12,11 +12,11 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{
     portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
 };
+use crate::reference_artifact::ReferenceArtifactPin;
 use crate::{
     source_proof::{SourceBindingRegistry, SourceProofReport},
     source_universe_conversion_queue::{
@@ -53,14 +53,6 @@ pub struct SourceUniverseObjectGateSourceBindingSpec {
 #[serde(rename_all = "snake_case")]
 pub enum SourceUniverseObjectGateStatus {
     Ready,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceUniverseObjectGateArtifactRef {
-    pub role: String,
-    pub path: PathBuf,
-    pub sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,7 +117,7 @@ pub struct SourceUniverseObjectGateMaterialization {
     pub source_binding_count: u64,
     pub total_accepted_bytes: u64,
     pub source_binding_summaries: Vec<SourceUniverseObjectGateSourceBindingSummary>,
-    pub artifact_refs: Vec<SourceUniverseObjectGateArtifactRef>,
+    pub artifact_refs: Vec<ReferenceArtifactPin>,
     pub records: Vec<SourceUniverseObjectGateRecord>,
 }
 
@@ -250,41 +242,23 @@ pub fn write_source_universe_object_gate_materialization(
         )
     })?;
     let path = output_dir.join(SOURCE_UNIVERSE_OBJECT_GATES_FILE);
-    let bytes = serde_json::to_vec_pretty(&materialization)
-        .context("serialize source-universe object-gate materialization")?;
-    if path.exists() {
-        let existing = fs::read(&path).with_context(|| {
-            format!(
-                "read existing source-universe object-gate materialization {}",
-                path.display()
-            )
-        })?;
-        if existing != bytes {
-            ensure!(
-                spec.overwrite_existing_artifacts,
-                "dirty source-universe object-gate materialization {}: existing file content differs",
-                path.display()
-            );
-            atomic_write(&path, &bytes).with_context(|| {
-                format!(
-                    "write source-universe object-gate materialization {}",
-                    path.display()
-                )
-            })?;
-        }
-    } else {
-        atomic_write(&path, &bytes).with_context(|| {
-            format!(
-                "write source-universe object-gate materialization {}",
-                path.display()
-            )
-        })?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len_overwrite(
+        &path,
+        SOURCE_UNIVERSE_OBJECT_GATES_FILE,
+        &materialization,
+        spec.overwrite_existing_artifacts,
+    )
+    .with_context(|| {
+        format!(
+            "write source-universe object-gate materialization {}",
+            path.display()
+        )
+    })?;
 
     Ok(SourceUniverseObjectGateMaterializationArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         work_item_count: materialization.work_item_count,
     })
 }
@@ -759,12 +733,8 @@ fn object_gate_record(
     })
 }
 
-fn artifact_ref(
-    role: &str,
-    path: &Path,
-    artifact_path: PathBuf,
-) -> Result<SourceUniverseObjectGateArtifactRef> {
-    Ok(SourceUniverseObjectGateArtifactRef {
+fn artifact_ref(role: &str, path: &Path, artifact_path: PathBuf) -> Result<ReferenceArtifactPin> {
+    Ok(ReferenceArtifactPin {
         role: role.to_string(),
         path: artifact_path,
         sha256: sha256_file(path)?,

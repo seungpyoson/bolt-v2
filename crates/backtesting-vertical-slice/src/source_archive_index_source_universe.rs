@@ -12,9 +12,9 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
+use crate::reference_artifact::ReferenceArtifactPin;
 use crate::source_archive_index_manifest::{
     SourceArchiveIndexManifest, SourceArchiveIndexManifestStatus,
 };
@@ -38,14 +38,6 @@ pub struct SourceArchiveIndexSourceUniverseSpec {
     pub source_binding: String,
     pub source_hash_algorithm: String,
     pub schema_columns: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceArchiveIndexSourceUniverseArtifactRef {
-    pub role: String,
-    pub path: PathBuf,
-    pub sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,7 +86,7 @@ pub struct SourceArchiveIndexSourceUniverseManifest {
     pub object_count: u64,
     pub accepted_bytes: u64,
     pub category_summaries: Vec<SourceArchiveIndexSourceUniverseCategorySummary>,
-    pub artifact_refs: Vec<SourceArchiveIndexSourceUniverseArtifactRef>,
+    pub artifact_refs: Vec<ReferenceArtifactPin>,
     pub payload_records: Vec<SourceArchiveIndexSourceUniversePayloadRecord>,
 }
 
@@ -160,44 +152,45 @@ pub fn write_source_archive_index_source_universe_manifest(
         )
     })?;
     let path = output_dir.join(SOURCE_ARCHIVE_INDEX_SOURCE_UNIVERSE_FILE);
-    let bytes = serde_json::to_vec_pretty(&manifest)
-        .context("serialize source archive index source-universe manifest")?;
-    if path.exists() {
-        let existing = fs::read(&path).with_context(|| {
-            format!(
-                "read existing source archive index source-universe manifest {}",
-                path.display()
-            )
-        })?;
-        ensure!(
-            existing == bytes,
-            "dirty source archive index source-universe manifest {}: existing file content differs",
+    let written = crate::reference_artifact::write_reference_artifact_with_len(
+        &path,
+        SOURCE_ARCHIVE_INDEX_SOURCE_UNIVERSE_FILE,
+        &manifest,
+    )
+    .with_context(|| {
+        format!(
+            "write source archive index source-universe manifest {}",
             path.display()
-        );
-    } else {
-        atomic_write(&path, &bytes).with_context(|| {
-            format!(
-                "write source archive index source-universe manifest {}",
-                path.display()
-            )
-        })?;
-    }
+        )
+    })?;
     if let Some(category_manifest_path) = spec.category_manifest_path.as_ref() {
         let category_path = resolve_output_dir(base_dir, category_manifest_path);
         let category_manifest = category_manifest(&manifest);
-        let category_bytes = serde_json::to_vec_pretty(&category_manifest)
-            .context("serialize source archive index category manifest")?;
-        write_clean_artifact(
+        if let Some(parent) = category_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "create source archive index category manifest directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        crate::reference_artifact::write_reference_artifact_with_len(
             &category_path,
-            &category_bytes,
-            "source archive index category manifest",
-        )?;
+            SOURCE_ARCHIVE_INDEX_SOURCE_UNIVERSE_SCHEMA_VERSION,
+            &category_manifest,
+        )
+        .with_context(|| {
+            format!(
+                "write source archive index category manifest {}",
+                category_path.display()
+            )
+        })?;
     }
 
     Ok(SourceArchiveIndexSourceUniverseArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         object_count: manifest.object_count,
         accepted_bytes: manifest.accepted_bytes,
     })
@@ -310,7 +303,7 @@ pub fn evaluate_source_archive_index_source_universe_manifest(
         }],
         // Committed manifests must be reproducible from any checkout: echo the
         // spec-authored path verbatim; resolution stays a read-time concern.
-        artifact_refs: vec![SourceArchiveIndexSourceUniverseArtifactRef {
+        artifact_refs: vec![ReferenceArtifactPin {
             role: "source_archive_index_manifest".to_string(),
             path: spec.source_archive_index_manifest_path.clone(),
             sha256: index_hash,
@@ -420,23 +413,6 @@ where
         .with_context(|| format!("parse JSON artifact {}", path.display()))
 }
 
-fn write_clean_artifact(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create {label} directory {}", parent.display()))?;
-    }
-    if path.exists() {
-        let existing =
-            fs::read(path).with_context(|| format!("read existing {label} {}", path.display()))?;
-        ensure!(
-            existing == bytes,
-            "dirty {label} {}: existing file content differs",
-            path.display()
-        );
-        return Ok(());
-    }
-    atomic_write(path, bytes).with_context(|| format!("write {label} {}", path.display()))
-}
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).with_context(|| format!("read artifact {}", path.display()))?;
     Ok(sha256_hex(&bytes))

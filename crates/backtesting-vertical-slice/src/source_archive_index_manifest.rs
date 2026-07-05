@@ -11,9 +11,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
+use crate::reference_artifact::ReferenceArtifactPin;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
@@ -68,14 +68,6 @@ pub enum SourceArchiveIndexManifestStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SourceArchiveIndexManifestArtifactRef {
-    pub role: String,
-    pub path: PathBuf,
-    pub sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SourceArchiveIndexManifest {
     pub schema_version: String,
     pub manifest_id: String,
@@ -93,7 +85,7 @@ pub struct SourceArchiveIndexManifest {
     pub total_content_length_bytes: u64,
     pub first_archive_hour_utc: String,
     pub last_archive_hour_utc: String,
-    pub artifact_refs: Vec<SourceArchiveIndexManifestArtifactRef>,
+    pub artifact_refs: Vec<ReferenceArtifactPin>,
     pub records: Vec<SourceArchiveIndexRecord>,
 }
 
@@ -140,29 +132,17 @@ pub fn write_source_archive_index_manifest(
         )
     })?;
     let path = output_dir.join(SOURCE_ARCHIVE_INDEX_MANIFEST_FILE);
-    let bytes =
-        serde_json::to_vec_pretty(&manifest).context("serialize source archive index manifest")?;
-    if path.exists() {
-        let existing = fs::read(&path).with_context(|| {
-            format!(
-                "read existing source archive index manifest {}",
-                path.display()
-            )
-        })?;
-        ensure!(
-            existing == bytes,
-            "dirty source archive index manifest {}: existing file content differs",
-            path.display()
-        );
-    } else {
-        atomic_write(&path, &bytes)
-            .with_context(|| format!("write source archive index manifest {}", path.display()))?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len(
+        &path,
+        SOURCE_ARCHIVE_INDEX_MANIFEST_FILE,
+        &manifest,
+    )
+    .with_context(|| format!("write source archive index manifest {}", path.display()))?;
 
     Ok(SourceArchiveIndexManifestArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         object_count: manifest.object_count,
         verified_head_count: manifest.verified_head_count,
         total_content_length_bytes: manifest.total_content_length_bytes,
@@ -276,7 +256,7 @@ pub fn evaluate_source_archive_index_manifest(
         last_archive_hour_utc: last_archive_hour_utc.unwrap_or_default(),
         // Committed manifests must be reproducible from any checkout: echo the
         // spec-authored path verbatim; resolution stays a read-time concern.
-        artifact_refs: vec![SourceArchiveIndexManifestArtifactRef {
+        artifact_refs: vec![ReferenceArtifactPin {
             role: "source_archive_index_snapshot".to_string(),
             path: spec.index_snapshot_path.clone(),
             sha256: snapshot_hash,

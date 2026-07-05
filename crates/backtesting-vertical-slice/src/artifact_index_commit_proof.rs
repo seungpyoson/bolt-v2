@@ -20,7 +20,6 @@ use object_store::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::{
     artifact_index::{
@@ -467,8 +466,8 @@ async fn execute_commit_sequence(
     let read_snapshot: ArtifactIndexSnapshotManifest =
         get_json(object_store.as_ref(), &read_snapshot_path).await?;
     let resolved = resolve_committed_snapshot(&read_pointer, &read_snapshot)?;
-    let snapshot_bytes =
-        serde_json::to_vec_pretty(&read_snapshot).context("serialize readback snapshot")?;
+    let snapshot_bytes = crate::reference_artifact::canonical_json_bytes(&read_snapshot)
+        .context("serialize readback snapshot")?;
     let iam_scope_probe =
         probe_producer_iam_scope(spec, object_store.as_ref(), &artifact_root_object_path).await?;
     let producer_iam_scope_proven = !spec.denied_artifact_kinds.is_empty()
@@ -664,7 +663,8 @@ async fn put_create_json<T>(
 where
     T: Serialize,
 {
-    let bytes = serde_json::to_vec_pretty(value).context("serialize create-only object")?;
+    let bytes = crate::reference_artifact::canonical_json_bytes(value)
+        .context("serialize create-only object")?;
     object_store
         .put_opts(path, Bytes::from(bytes).into(), PutMode::Create.into())
         .await
@@ -680,7 +680,8 @@ async fn put_update_json_if_match<T>(
 where
     T: Serialize,
 {
-    let bytes = serde_json::to_vec_pretty(value).context("serialize conditional update object")?;
+    let bytes = crate::reference_artifact::canonical_json_bytes(value)
+        .context("serialize conditional update object")?;
     object_store
         .put_opts(
             path,
@@ -836,28 +837,16 @@ fn write_report(
         )
     })?;
     let path = output_dir.join(ARTIFACT_INDEX_COMMIT_PROOF_REPORT_FILE);
-    let bytes = serde_json::to_vec_pretty(report)
-        .context("serialize Artifact Index commit proof report")?;
-    if path.exists() {
-        let existing = fs::read(&path).with_context(|| {
-            format!(
-                "read existing Artifact Index commit proof report {}",
-                path.display()
-            )
-        })?;
-        ensure!(
-            existing == bytes,
-            "existing Artifact Index commit proof report differs: {}",
+    let written = crate::reference_artifact::write_reference_artifact_with_len(
+        &path,
+        ARTIFACT_INDEX_COMMIT_PROOF_REPORT_FILE,
+        report,
+    )
+    .with_context(|| {
+        format!(
+            "write Artifact Index commit proof report {}",
             path.display()
-        );
-    } else {
-        atomic_write(&path, &bytes).with_context(|| {
-            format!(
-                "write Artifact Index commit proof report {}",
-                path.display()
-            )
-        })?;
-    }
-    let hash = sha256_hex(&bytes);
-    Ok((path, hash, bytes.len() as u64))
+        )
+    })?;
+    Ok((path, written.pin.sha256, written.bytes))
 }

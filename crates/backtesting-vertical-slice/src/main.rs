@@ -23,7 +23,8 @@ use backtesting_vertical_slice::hashing::sha256_hex;
 use backtesting_vertical_slice::{
     artifact_store_secrets::{ArtifactStoreSecretResolver, ArtifactStoreSsmResolver},
     backfill_execution_plan::{
-        BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
+        BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION, BackfillExecutionPlan, BackfillExecutionPlanStatus,
+        BackfillExecutionRunBinding,
     },
     nt_catalog_capability::NtCatalogSsmCredentialResolver,
     operator::{
@@ -616,7 +617,12 @@ mod tests {
             }],
             "blocking_issues": []
         });
-        fs::write(&path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+        backtesting_vertical_slice::reference_artifact::write_reference_artifact(
+            &path,
+            BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
+            &plan,
+        )
+        .unwrap();
         path
     }
 
@@ -1004,9 +1010,11 @@ table_families = ["trades"]
             }],
             "blocking_issues": []
         });
-        fs::write(
+        backtesting_vertical_slice::reference_artifact::write_reference_artifact_with_len_overwrite(
             &execution_plan_path,
-            serde_json::to_vec_pretty(&execution_plan).unwrap(),
+            BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
+            &execution_plan,
+            true,
         )
         .unwrap();
         let cli = Cli {
@@ -1043,9 +1051,11 @@ table_families = ["trades"]
             serde_json::from_slice(&fs::read(&execution_plan_path).unwrap()).unwrap();
         execution_plan["table_family"] =
             serde_json::Value::String(format!("{}-mismatch", spec.source_proof.table_family));
-        fs::write(
+        backtesting_vertical_slice::reference_artifact::write_reference_artifact_with_len_overwrite(
             &execution_plan_path,
-            serde_json::to_vec_pretty(&execution_plan).unwrap(),
+            BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
+            &execution_plan,
+            true,
         )
         .unwrap();
         let cli = Cli {

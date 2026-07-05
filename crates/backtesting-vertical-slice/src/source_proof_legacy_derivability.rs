@@ -14,9 +14,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::source_proof::EvidenceState;
 
 pub const SOURCE_PROOF_LEGACY_DERIVABILITY_SCHEMA_VERSION: &str =
@@ -347,12 +345,8 @@ impl SourceProofLegacyDerivabilityReport {
     }
 
     pub fn content_hash(&self) -> Result<String, SourceProofLegacyDerivabilityReportError> {
-        let bytes = serde_json::to_vec_pretty(self).map_err(|error| {
-            SourceProofLegacyDerivabilityReportError::Serialize(error.to_string())
-        })?;
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        Ok(hex::encode(hasher.finalize()))
+        crate::reference_artifact::canonical_json_sha256(self)
+            .map_err(|error| SourceProofLegacyDerivabilityReportError::Serialize(error.to_string()))
     }
 }
 
@@ -419,35 +413,19 @@ pub fn write_source_proof_legacy_derivability_report(
         }
     })?;
     let path = output_dir.join(SOURCE_PROOF_LEGACY_DERIVABILITY_REPORT_FILE);
-    let bytes = serde_json::to_vec_pretty(report)
-        .map_err(|error| SourceProofLegacyDerivabilityWriteError::Serialize(error.to_string()))?;
-    if path.exists() {
-        let existing = fs::read(&path).map_err(|error| {
-            SourceProofLegacyDerivabilityWriteError::ReadExisting {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            }
-        })?;
-        if existing != bytes {
-            return Err(
-                SourceProofLegacyDerivabilityWriteError::ExistingArtifactMismatch {
-                    path: path.display().to_string(),
-                },
-            );
-        }
-    } else {
-        atomic_write(&path, &bytes).map_err(|error| {
-            SourceProofLegacyDerivabilityWriteError::Write {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            }
-        })?;
-    }
-    let content_hash = hex::encode(Sha256::digest(&bytes));
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
+        &path,
+        SOURCE_PROOF_LEGACY_DERIVABILITY_REPORT_FILE,
+        report,
+        SourceProofLegacyDerivabilityWriteError::Serialize,
+        |path, error| SourceProofLegacyDerivabilityWriteError::ReadExisting { path, error },
+        |path| SourceProofLegacyDerivabilityWriteError::ExistingArtifactMismatch { path },
+        |path, error| SourceProofLegacyDerivabilityWriteError::Write { path, error },
+    )?;
     Ok(SourceProofLegacyDerivabilityArtifact {
         path,
-        content_hash,
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         record_count: report.records.len() as u64,
     })
 }

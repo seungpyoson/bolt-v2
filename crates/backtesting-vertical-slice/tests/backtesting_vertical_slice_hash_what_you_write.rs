@@ -85,6 +85,7 @@ const COMPACT_VEC_HASH_ALLOWLIST: &[&str] = &[
 // different API. Current exemptions are semantic field-labeled parameter hashes
 // and assertions inside src-resident test modules.
 const COMPACT_STRING_HASH_ALLOWLIST: &[&str] = &["catalog_projection", "operator", "source_proof"];
+const REFERENCE_ARTIFACT_FACILITY_MODULE: &str = "reference_artifact";
 
 struct WriterCase {
     module: &'static str,
@@ -219,6 +220,46 @@ fn pretty_json_artifact_writers_do_not_use_compact_serialization_for_hash_claims
     assert!(
         unexpected_vec.is_empty() && unexpected_string.is_empty(),
         "compact serialization hashing remains outside named allowlists:\nserde_json::to_vec: {unexpected_vec:?}\nserde_json::to_string: {unexpected_string:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn reference_json_artifact_hashing_is_centralized() -> Result<()> {
+    let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let compact_vec_allowlist = COMPACT_VEC_HASH_ALLOWLIST
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let compact_string_allowlist = COMPACT_STRING_HASH_ALLOWLIST
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut offenders = Vec::new();
+
+    for path in rust_source_files_under(&src_root)? {
+        let module = source_module_key(&src_root, &path)?;
+        let source = fs::read_to_string(&path)
+            .with_context(|| format!("read source file {}", path.display()))?;
+        if module == REFERENCE_ARTIFACT_FACILITY_MODULE
+            || compact_vec_allowlist.contains(module.as_str())
+            || compact_string_allowlist.contains(module.as_str())
+        {
+            continue;
+        }
+        let serializes_json = source.contains("serde_json::to_vec")
+            || source.contains("serde_json::to_string")
+            || source.contains("serde_json::to_writer");
+        let computes_sha256 = source.contains("Sha256") || source.contains("sha256_hex");
+        if serializes_json && computes_sha256 {
+            offenders.push(module);
+        }
+    }
+
+    offenders.sort();
+    assert!(
+        offenders.is_empty(),
+        "reference JSON artifact serialization and SHA-256 hashing must stay centralized in {REFERENCE_ARTIFACT_FACILITY_MODULE}; offenders: {offenders:?}"
     );
     Ok(())
 }

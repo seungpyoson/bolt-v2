@@ -30,10 +30,8 @@ use nautilus_persistence::{
 };
 use object_store::path::Path as ObjectPath;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::run_manifest::{ManifestArtifactStore, artifact_store_storage_options_for_uri};
 
 pub const NT_CATALOG_PROOF_SCHEMA_VERSION: &str = "nt-catalog-proof.v1";
@@ -527,19 +525,11 @@ fn write_report(
         )
     })?;
     let path = output_dir.join(NT_CATALOG_PROOF_REPORT_FILE);
-    let bytes = serde_json::to_vec_pretty(report).context("serialize NT catalog proof report")?;
-    if path.exists() {
-        let existing = fs::read(&path)
-            .with_context(|| format!("read existing NT catalog proof report {}", path.display()))?;
-        ensure!(
-            existing == bytes,
-            "existing NT catalog proof report differs: {}",
-            path.display()
-        );
-    } else {
-        atomic_write(&path, &bytes)
-            .with_context(|| format!("write NT catalog proof report {}", path.display()))?;
-    }
-    let hash = format!("{:x}", Sha256::digest(&bytes));
-    Ok((path, hash, bytes.len() as u64))
+    let written = crate::reference_artifact::write_reference_artifact_with_len(
+        &path,
+        NT_CATALOG_PROOF_REPORT_FILE,
+        report,
+    )
+    .with_context(|| format!("write NT catalog proof report {}", path.display()))?;
+    Ok((path, written.pin.sha256, written.bytes))
 }

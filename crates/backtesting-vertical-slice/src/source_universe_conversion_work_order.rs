@@ -13,11 +13,11 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{
     portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
 };
+use crate::reference_artifact::ReferenceArtifactPin;
 use crate::{
     canonical_trades::RawPayloadContainer,
     source_universe_operator_inputs::{
@@ -47,14 +47,6 @@ pub enum SourceUniverseConversionWorkOrderStatus {
     Ready,
     PartiallyReady,
     Blocked,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceUniverseConversionWorkOrderArtifactRef {
-    pub role: String,
-    pub path: PathBuf,
-    pub sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,7 +117,7 @@ pub struct SourceUniverseConversionWorkOrder {
     pub withheld_record_count: u64,
     pub executable_source_bytes: u64,
     pub withheld_source_bytes: u64,
-    pub artifact_refs: Vec<SourceUniverseConversionWorkOrderArtifactRef>,
+    pub artifact_refs: Vec<ReferenceArtifactPin>,
     pub records: Vec<SourceUniverseConversionWorkOrderRecord>,
     pub withheld_records: Vec<SourceUniverseConversionWorkOrderWithheldRecord>,
     pub blocking_reasons: Vec<String>,
@@ -173,41 +165,23 @@ pub fn write_source_universe_conversion_work_order(
         )
     })?;
     let path = output_dir.join(SOURCE_UNIVERSE_CONVERSION_WORK_ORDER_FILE);
-    let bytes = serde_json::to_vec_pretty(&work_order)
-        .context("serialize source-universe conversion work order")?;
-    if path.exists() {
-        let existing = fs::read(&path).with_context(|| {
-            format!(
-                "read existing source-universe conversion work-order {}",
-                path.display()
-            )
-        })?;
-        if existing != bytes {
-            ensure!(
-                spec.overwrite_existing_artifacts,
-                "dirty source-universe conversion work-order {}: existing file content differs",
-                path.display()
-            );
-            atomic_write(&path, &bytes).with_context(|| {
-                format!(
-                    "write source-universe conversion work-order {}",
-                    path.display()
-                )
-            })?;
-        }
-    } else {
-        atomic_write(&path, &bytes).with_context(|| {
-            format!(
-                "write source-universe conversion work-order {}",
-                path.display()
-            )
-        })?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len_overwrite(
+        &path,
+        SOURCE_UNIVERSE_CONVERSION_WORK_ORDER_FILE,
+        &work_order,
+        spec.overwrite_existing_artifacts,
+    )
+    .with_context(|| {
+        format!(
+            "write source-universe conversion work-order {}",
+            path.display()
+        )
+    })?;
 
     Ok(SourceUniverseConversionWorkOrderArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         executable_record_count: work_order.executable_record_count,
         withheld_record_count: work_order.withheld_record_count,
     })
@@ -312,7 +286,7 @@ pub fn evaluate_source_universe_conversion_work_order(
         withheld_record_count,
         executable_source_bytes,
         withheld_source_bytes,
-        artifact_refs: vec![SourceUniverseConversionWorkOrderArtifactRef {
+        artifact_refs: vec![ReferenceArtifactPin {
             role: "source_universe_operator_inputs".to_string(),
             path: portable_artifact_path_for_spec(
                 &inputs_path,

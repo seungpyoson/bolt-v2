@@ -12,9 +12,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::source_proof::{
     FixtureType, SourceCandidateClass, SourceProofFidelityClass, SourceProofReport,
     SourceProofStatus, SourceSelectionStatus,
@@ -316,29 +314,19 @@ pub fn write_source_proof_shortlist_report(
         error: error.to_string(),
     })?;
     let path = output_dir.join(SOURCE_PROOF_SHORTLIST_REPORT_FILE);
-    let bytes = serde_json::to_vec_pretty(report)
-        .map_err(|error| SourceProofShortlistError::Serialize(error.to_string()))?;
-    if path.exists() {
-        let existing =
-            fs::read(&path).map_err(|error| SourceProofShortlistError::ReadExisting {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            })?;
-        if existing != bytes {
-            return Err(SourceProofShortlistError::ExistingArtifactMismatch {
-                path: path.display().to_string(),
-            });
-        }
-    } else {
-        atomic_write(&path, &bytes).map_err(|error| SourceProofShortlistError::Write {
-            path: path.display().to_string(),
-            error: error.to_string(),
-        })?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
+        &path,
+        SOURCE_PROOF_SHORTLIST_REPORT_FILE,
+        report,
+        SourceProofShortlistError::Serialize,
+        |path, error| SourceProofShortlistError::ReadExisting { path, error },
+        |path| SourceProofShortlistError::ExistingArtifactMismatch { path },
+        |path, error| SourceProofShortlistError::Write { path, error },
+    )?;
     Ok(SourceProofShortlistArtifact {
         path,
-        content_hash: hex::encode(Sha256::digest(&bytes)),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         candidate_count: report.candidates.len() as u64,
     })
 }

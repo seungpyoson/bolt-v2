@@ -15,10 +15,6 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
-use crate::atomic_artifact_write::atomic_write;
-
 pub const CONVERSION_MANIFEST_FILE: &str = "conversion-manifest.json";
 pub const CONVERSION_CHECKPOINT_FILE: &str = "conversion-checkpoint.json";
 pub const CATALOG_METADATA_FILE: &str = "catalog-metadata.json";
@@ -553,7 +549,12 @@ pub fn write_conversion_tables_index(
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create conversion output dir {}", output_dir.display()))?;
     let path = output_dir.join(CONVERSION_TABLES_FILE);
-    write_json(&path, &records)?;
+    crate::reference_artifact::write_reference_artifact_with_len(
+        &path,
+        CONVERSION_TABLES_FILE,
+        &records,
+    )
+    .with_context(|| format!("write {}", path.display()))?;
     Ok(path)
 }
 
@@ -726,7 +727,12 @@ pub fn write_conversion_checkpoint(
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create conversion output dir {}", output_dir.display()))?;
     let path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
-    write_json(&path, checkpoint)?;
+    crate::reference_artifact::write_reference_artifact_with_len(
+        &path,
+        CONVERSION_CHECKPOINT_FILE,
+        checkpoint,
+    )
+    .with_context(|| format!("write {}", path.display()))?;
     Ok(path)
 }
 
@@ -738,9 +744,27 @@ pub fn write_completed_conversion_artifacts(
 ) -> Result<()> {
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create conversion output dir {}", output_dir.display()))?;
-    write_json(&output_dir.join(CONVERSION_CHECKPOINT_FILE), checkpoint)?;
-    write_json(&output_dir.join(CONVERSION_MANIFEST_FILE), manifest)?;
-    write_json(&output_dir.join(CATALOG_METADATA_FILE), metadata)?;
+    let checkpoint_path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
+    crate::reference_artifact::write_reference_artifact_with_len(
+        &checkpoint_path,
+        CONVERSION_CHECKPOINT_FILE,
+        checkpoint,
+    )
+    .with_context(|| format!("write {}", checkpoint_path.display()))?;
+    let manifest_path = output_dir.join(CONVERSION_MANIFEST_FILE);
+    crate::reference_artifact::write_reference_artifact_with_len(
+        &manifest_path,
+        CONVERSION_MANIFEST_FILE,
+        manifest,
+    )
+    .with_context(|| format!("write {}", manifest_path.display()))?;
+    let metadata_path = output_dir.join(CATALOG_METADATA_FILE);
+    crate::reference_artifact::write_reference_artifact_with_len(
+        &metadata_path,
+        CATALOG_METADATA_FILE,
+        metadata,
+    )
+    .with_context(|| format!("write {}", metadata_path.display()))?;
     Ok(())
 }
 
@@ -749,15 +773,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let bytes = serde_json::to_vec_pretty(value).context("serialize conversion artifact")?;
-    atomic_write(path, &bytes).with_context(|| format!("write {}", path.display()))
-}
-
 fn content_hash<T: Serialize>(value: &T) -> Result<String> {
-    let bytes =
-        serde_json::to_vec_pretty(value).context("serialize conversion artifact for hash")?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    Ok(hex::encode(hasher.finalize()))
+    crate::reference_artifact::canonical_json_sha256(value)
+        .context("serialize conversion artifact for hash")
 }

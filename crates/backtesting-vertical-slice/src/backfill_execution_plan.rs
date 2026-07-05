@@ -12,7 +12,6 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::{
     backfill_accepted_tranche::{
@@ -440,38 +439,22 @@ pub fn write_backfill_execution_plan_with_overwrite(
         path: output_dir.display().to_string(),
         error: error.to_string(),
     })?;
-    let bytes = serde_json::to_vec_pretty(plan)
-        .map_err(|error| BackfillExecutionPlanError::Serialize(error.to_string()))?;
     let path = output_dir.join(BACKFILL_EXECUTION_PLAN_FILE);
-    if path.exists() {
-        let existing =
-            fs::read(&path).map_err(|error| BackfillExecutionPlanError::ReadExisting {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            })?;
-        if existing != bytes {
-            if overwrite_existing {
-                atomic_write(&path, &bytes).map_err(|error| BackfillExecutionPlanError::Write {
-                    path: path.display().to_string(),
-                    error: error.to_string(),
-                })?;
-            } else {
-                return Err(BackfillExecutionPlanError::ExistingArtifactMismatch {
-                    path: path.display().to_string(),
-                });
-            }
-        }
-    } else {
-        atomic_write(&path, &bytes).map_err(|error| BackfillExecutionPlanError::Write {
-            path: path.display().to_string(),
-            error: error.to_string(),
-        })?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped_overwrite(
+        &path,
+        BACKFILL_EXECUTION_PLAN_FILE,
+        plan,
+        overwrite_existing,
+        BackfillExecutionPlanError::Serialize,
+        |path, error| BackfillExecutionPlanError::ReadExisting { path, error },
+        |path| BackfillExecutionPlanError::ExistingArtifactMismatch { path },
+        |path, error| BackfillExecutionPlanError::Write { path, error },
+    )?;
 
     Ok(BackfillExecutionPlanArtifact {
         path,
-        content_hash: sha256_hex(&bytes),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
     })
 }
 

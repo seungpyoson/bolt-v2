@@ -893,24 +893,17 @@ pub fn write_source_universe_batch_execution_report(
 ) -> Result<SourceUniverseBatchExecutionReportArtifact> {
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create batch execution report dir {}", output_dir.display()))?;
-    let bytes = serde_json::to_vec_pretty(report).context("serialize batch execution report")?;
     let path = output_dir.join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE);
-    if path.exists() {
-        let existing = fs::read(&path)
-            .with_context(|| format!("read existing batch execution report {}", path.display()))?;
-        ensure!(
-            existing == bytes,
-            "dirty batch execution report {}: existing file content differs",
-            path.display()
-        );
-    } else {
-        atomic_write(&path, &bytes)
-            .with_context(|| format!("write batch execution report {}", path.display()))?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len(
+        &path,
+        SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE,
+        report,
+    )
+    .with_context(|| format!("write batch execution report {}", path.display()))?;
     Ok(SourceUniverseBatchExecutionReportArtifact {
         path,
-        content_hash: hex::encode(Sha256::digest(&bytes)),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
         completed_record_count: report.completed_record_count,
     })
 }

@@ -11,10 +11,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{
-    atomic_artifact_write::atomic_write,
     source_proof::{EvidenceState, SourceBindingRegistry, read_source_binding_registry_from_path},
     source_proof_legacy_derivability::{
         SourceProofLegacyDerivabilityIssue, SourceProofLegacyDerivabilityRecord,
@@ -250,31 +248,19 @@ pub fn write_source_proof_migration_preflight_report(
         }
     })?;
     let path = output_dir.join(SOURCE_PROOF_MIGRATION_PREFLIGHT_REPORT_FILE);
-    let bytes = serde_json::to_vec_pretty(report)
-        .map_err(|error| SourceProofMigrationPreflightError::Serialize(error.to_string()))?;
-    if path.exists() {
-        let existing =
-            fs::read(&path).map_err(|error| SourceProofMigrationPreflightError::ReadExisting {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            })?;
-        if existing != bytes {
-            return Err(
-                SourceProofMigrationPreflightError::ExistingArtifactMismatch {
-                    path: path.display().to_string(),
-                },
-            );
-        }
-    } else {
-        atomic_write(&path, &bytes).map_err(|error| SourceProofMigrationPreflightError::Write {
-            path: path.display().to_string(),
-            error: error.to_string(),
-        })?;
-    }
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
+        &path,
+        SOURCE_PROOF_MIGRATION_PREFLIGHT_REPORT_FILE,
+        report,
+        SourceProofMigrationPreflightError::Serialize,
+        |path, error| SourceProofMigrationPreflightError::ReadExisting { path, error },
+        |path| SourceProofMigrationPreflightError::ExistingArtifactMismatch { path },
+        |path, error| SourceProofMigrationPreflightError::Write { path, error },
+    )?;
     Ok(SourceProofMigrationPreflightArtifact {
         path,
-        content_hash: format!("{:x}", Sha256::digest(&bytes)),
-        bytes: bytes.len() as u64,
+        content_hash: written.pin.sha256,
+        bytes: written.bytes,
     })
 }
 

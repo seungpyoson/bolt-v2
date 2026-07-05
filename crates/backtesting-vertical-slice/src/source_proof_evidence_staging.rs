@@ -22,7 +22,6 @@ use object_store::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::atomic_artifact_write::atomic_write;
 use crate::run_manifest::{ManifestArtifactStore, artifact_store_storage_options_for_uri};
 
 pub const SOURCE_PROOF_EVIDENCE_STAGING_SCHEMA_VERSION: &str =
@@ -500,28 +499,14 @@ fn write_manifest(
         }
     })?;
     let path = output_dir.join(SOURCE_PROOF_EVIDENCE_STAGING_MANIFEST_FILE);
-    let bytes = serde_json::to_vec_pretty(manifest)
-        .map_err(|error| SourceProofEvidenceStagingError::Serialize(error.to_string()))?;
-    if path.exists() {
-        let existing = fs::read(&path).map_err(|error| {
-            SourceProofEvidenceStagingError::ReadExistingManifest {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            }
-        })?;
-        if existing != bytes {
-            return Err(SourceProofEvidenceStagingError::ExistingManifestMismatch {
-                path: path.display().to_string(),
-            });
-        }
-    } else {
-        atomic_write(&path, &bytes).map_err(|error| {
-            SourceProofEvidenceStagingError::WriteManifest {
-                path: path.display().to_string(),
-                error: error.to_string(),
-            }
-        })?;
-    }
-    let manifest_hash = hex::encode(Sha256::digest(&bytes));
-    Ok((path, manifest_hash, bytes.len() as u64))
+    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
+        &path,
+        SOURCE_PROOF_EVIDENCE_STAGING_MANIFEST_FILE,
+        manifest,
+        SourceProofEvidenceStagingError::Serialize,
+        |path, error| SourceProofEvidenceStagingError::ReadExistingManifest { path, error },
+        |path| SourceProofEvidenceStagingError::ExistingManifestMismatch { path },
+        |path, error| SourceProofEvidenceStagingError::WriteManifest { path, error },
+    )?;
+    Ok((path, written.pin.sha256, written.bytes))
 }

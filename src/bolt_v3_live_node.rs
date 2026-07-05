@@ -459,6 +459,8 @@ enum BoltV3OperatorHealthTransitionEmission {
 
 struct BoltV3DecisionEvidenceProducerGuards {
     loss_protection_guards: BoltV3LossProtectionRuntimeGuards,
+    order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
+    capital_admission_runtime_feed_subscription: Option<CapitalAdmissionRuntimeFeedSubscription>,
     venue_truth_runtime_guard: Option<BoltV3VenueTruthRuntimeGuard>,
 }
 
@@ -475,8 +477,12 @@ impl BoltV3DecisionEvidenceProducerStopper for BoltV3DecisionEvidenceProducerGua
         Box::pin(async move {
             let Self {
                 loss_protection_guards,
+                order_reject_observer_feed_subscription,
+                capital_admission_runtime_feed_subscription,
                 venue_truth_runtime_guard,
             } = self;
+            drop(order_reject_observer_feed_subscription);
+            drop(capital_admission_runtime_feed_subscription);
             if let Some(guard) = venue_truth_runtime_guard {
                 guard.stop_and_join();
             }
@@ -1126,6 +1132,12 @@ impl BoltV3LiveNodeRuntime {
     ) -> BoltV3DecisionEvidenceProducerGuards {
         BoltV3DecisionEvidenceProducerGuards {
             loss_protection_guards,
+            order_reject_observer_feed_subscription: self
+                .order_reject_observer_feed_subscription
+                .take(),
+            capital_admission_runtime_feed_subscription: self
+                .capital_admission_runtime_feed_subscription
+                .take(),
             venue_truth_runtime_guard: self.venue_truth_runtime_guard.take(),
         }
     }

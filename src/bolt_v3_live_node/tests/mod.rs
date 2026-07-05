@@ -40,6 +40,25 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEST_CATALOG_ID: AtomicU64 = AtomicU64::new(0);
+const PRODUCER_STOPPED_EVENT: &str = "producer_stopped";
+const DRAIN_SHUTDOWN_EVENT: &str = "drain_shutdown";
+
+struct RecordingProducerStopper {
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl BoltV3DecisionEvidenceProducerStopper for RecordingProducerStopper {
+    fn stop_before_decision_evidence_drain(
+        self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
+        Box::pin(async move {
+            self.events
+                .lock()
+                .expect("test event log lock should be available")
+                .push(PRODUCER_STOPPED_EVENT);
+        })
+    }
+}
 
 mod data_client_probe;
 mod fixtures;
@@ -160,25 +179,6 @@ fn operator_health_transition_logger_survives_poisoned_cache_lock() {
 
 #[tokio::test]
 async fn decision_evidence_shutdown_drain_stops_producers_first() {
-    const PRODUCER_STOPPED_EVENT: &str = "producer_stopped";
-    const DRAIN_SHUTDOWN_EVENT: &str = "drain_shutdown";
-
-    struct RecordingProducerStopper {
-        events: Arc<Mutex<Vec<&'static str>>>,
-    }
-
-    impl BoltV3DecisionEvidenceProducerStopper for RecordingProducerStopper {
-        fn stop_before_decision_evidence_drain(
-            self,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
-            self.events
-                .lock()
-                .expect("test event log lock should be available")
-                .push(PRODUCER_STOPPED_EVENT);
-            Box::pin(std::future::ready(()))
-        }
-    }
-
     let events = Arc::new(Mutex::new(Vec::new()));
     let producer_guards = RecordingProducerStopper {
         events: Arc::clone(&events),
@@ -200,6 +200,33 @@ async fn decision_evidence_shutdown_drain_stops_producers_first() {
             .expect("test event log lock should be available")
             .as_slice(),
         [PRODUCER_STOPPED_EVENT, DRAIN_SHUTDOWN_EVENT]
+    );
+}
+
+#[tokio::test]
+async fn producer_stop_event_records_when_stop_future_completes() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let producer_guards = RecordingProducerStopper {
+        events: Arc::clone(&events),
+    };
+
+    let stop_future = producer_guards.stop_before_decision_evidence_drain();
+    assert!(
+        events
+            .lock()
+            .expect("test event log lock should be available")
+            .is_empty(),
+        "producer stop must not be recorded before the stop future completes"
+    );
+
+    stop_future.await;
+
+    assert_eq!(
+        events
+            .lock()
+            .expect("test event log lock should be available")
+            .as_slice(),
+        [PRODUCER_STOPPED_EVENT]
     );
 }
 

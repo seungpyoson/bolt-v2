@@ -16,7 +16,8 @@ use crate::bolt_v3_venue_truth::{
 use crate::{
     bolt_v3_config::{KillSwitchFlattenConfigBlock, KillSwitchFlattenRouteKindConfig},
     bolt_v3_kill_switch_flatten::{
-        BoltV3KillSwitchFlattenCandidate, BoltV3KillSwitchFlattenPlanRequest,
+        BoltV3KillSwitchFlattenCandidate, BoltV3KillSwitchFlattenCommand,
+        BoltV3KillSwitchFlattenPlan, BoltV3KillSwitchFlattenPlanRequest,
         BoltV3KillSwitchFlattenPolicy, BoltV3KillSwitchFlattenPositionEvidenceKind,
         BoltV3KillSwitchFlattenPositionState, BoltV3KillSwitchFlattenRouteKind,
         BoltV3KillSwitchFlattenRouteProof, BoltV3KillSwitchFlattenSnapshot,
@@ -1176,7 +1177,7 @@ fn live_node_kill_switch_flatten_executor(
             )
             .map_err(domain_error)?;
 
-            for command in plan.commands() {
+            route_planned_kill_switch_flatten_commands(&plan, |command| {
                 let instrument = {
                     let cache = cache.borrow();
                     cache.instrument(&command.instrument_id()).cloned()
@@ -1260,12 +1261,48 @@ fn live_node_kill_switch_flatten_executor(
                     },
                     command,
                 )?;
-            }
+                Ok(())
+            })?;
             Ok(())
         },
     };
 
     Ok(Some(Rc::new(executor)))
+}
+
+fn route_planned_kill_switch_flatten_commands<F>(
+    plan: &BoltV3KillSwitchFlattenPlan,
+    mut route_command: F,
+) -> Result<()>
+where
+    F: FnMut(&BoltV3KillSwitchFlattenCommand) -> Result<()>,
+{
+    let mut failures = Vec::new();
+    for command in plan.commands() {
+        if let Err(error) = route_command(command) {
+            log::error!(
+                "kill switch flatten command failed: halt_id={} action_id={} position_id={} instrument_id={}: {error:#}",
+                command.halt_id(),
+                command.action_id(),
+                command.position_id(),
+                command.instrument_id()
+            );
+            failures.push(format!(
+                "position_id={} instrument_id={}: {error:#}",
+                command.position_id(),
+                command.instrument_id()
+            ));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "kill switch flatten command failures: halt_id={} failures={}",
+            plan.halt_id(),
+            failures.join(" | ")
+        )
+    }
 }
 
 fn publish_order_initialized(order: &OrderAny) {
@@ -2055,6 +2092,36 @@ mod tests {
     }
 
     #[test]
+    fn planned_flatten_command_routing_continues_after_command_failure() {
+        let plan = two_command_flatten_plan("halt-loop");
+        let mut routed_positions = Vec::new();
+
+        let error = route_planned_kill_switch_flatten_commands(&plan, |command| {
+            routed_positions.push(command.position_id().to_string());
+            if command.position_id() == PositionId::from("POSITION-001") {
+                anyhow::bail!("synthetic first command failure");
+            }
+            Ok(())
+        })
+        .expect_err("one command failure should return a loud aggregate error");
+
+        assert_eq!(
+            routed_positions,
+            vec!["POSITION-001".to_string(), "POSITION-002".to_string()]
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("kill switch flatten command failures"),
+            "unexpected aggregate error: {error:#}"
+        );
+        assert!(
+            error.to_string().contains("POSITION-001"),
+            "aggregate error should name the failed position: {error:#}"
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "venue truth reconcile feed lock poisoned")]
     fn venue_truth_reconcile_feed_lock_poison_panics() {
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
@@ -2340,6 +2407,54 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    fn two_command_flatten_plan(halt_id: &str) -> BoltV3KillSwitchFlattenPlan {
+        let claim = BoltV3KillSwitchForcedReductionClaim::new(
+            halt_id.to_string(),
+            "flatten-positions",
+            "a".repeat(64),
+        )
+        .expect("forced reduction claim should be valid");
+        let first = flatten_candidate("POSITION-001");
+        let second = flatten_candidate("POSITION-002");
+        BoltV3KillSwitchFlattenSupervisor::plan_flatten(BoltV3KillSwitchFlattenPlanRequest {
+            kill_switch_state: KillSwitchState::Flattening {
+                halt_id: halt_id.to_string(),
+            },
+            nt_trading_state: TradingState::Reducing,
+            action_id: "flatten-positions".to_string(),
+            config_sha256: "b".repeat(64),
+            policy_sha256: "a".repeat(64),
+            source_timestamp_unix_nanos: 2,
+            policy: BoltV3KillSwitchFlattenPolicy::with_source_freshness(10)
+                .expect("flatten policy should be valid"),
+            snapshot: BoltV3KillSwitchFlattenSnapshot::new(vec![first, second])
+                .expect("flatten snapshot should be valid"),
+            observed_at_unix_nanos: 2,
+            route_proof: BoltV3KillSwitchFlattenRouteProof::new(
+                BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter,
+            ),
+            order_template: flatten_market_template(),
+            forced_reduction_claim: claim,
+        })
+        .expect("two open positions should produce commands")
+    }
+
+    fn flatten_candidate(position_id: &str) -> BoltV3KillSwitchFlattenCandidate {
+        BoltV3KillSwitchFlattenCandidate::from_nt_position_state(
+            BoltV3KillSwitchFlattenPositionState {
+                evidence_kind: BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
+                account_id: AccountId::from("ACCOUNT-001"),
+                instrument_id: InstrumentId::from("instrument-yes.VENUE-A"),
+                strategy_id: StrategyId::from("strategy-a"),
+                position_id: PositionId::from(position_id),
+                position_side: PositionSide::Long,
+                quantity: Quantity::new(5.0, 2),
+                source_timestamp_unix_nanos: 1,
+            },
+        )
+        .expect("flatten candidate should be valid")
     }
 
     struct RoutingFlattenExecutor {

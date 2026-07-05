@@ -20193,3 +20193,19 @@ literal = '''"kill switch flatten submit sink cannot modify client_order_id={cli
 context = '''"kill switch flatten submit sink cannot modify client_order_id={client_order_id}"'''
 classification = "kill_switch_flatten_submit_sink_diagnostic"
 reason = "Fail-loud diagnostic for an impossible modify call on the submit-only kill-switch flatten sink; it does not configure route policy, sizing, timing, or venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"kill switch flatten command failures: halt_id={} failures={}"'''
+context = '''"kill switch flatten command failures: halt_id={} failures={}",'''
+classification = "kill_switch_flatten_command_failure_diagnostic"
+reason = "Fail-loud aggregate diagnostic returned after attempting every planned kill-switch flatten command; it reports observed failures and does not configure route policy, sizing, timing, or venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''" | "'''
+context = '''failures.join(" | ")'''
+classification = "kill_switch_flatten_command_failure_diagnostic_separator"
+reason = "Structural separator for the fail-loud aggregate kill-switch flatten command diagnostic; it does not configure runtime behavior."

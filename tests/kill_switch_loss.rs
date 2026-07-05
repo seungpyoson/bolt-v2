@@ -10,6 +10,7 @@ mod bolt_v3_kill_switch_config;
 mod bolt_v3_kill_switch_flatten;
 mod bolt_v3_kill_switch_runtime;
 mod bolt_v3_kill_switch_store;
+mod bolt_v3_loss_governor_manual_recovery_ops;
 mod bolt_v3_loss_protection;
 mod bolt_v3_loss_runtime_feed;
 

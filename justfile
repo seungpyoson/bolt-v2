@@ -266,6 +266,24 @@ clippy: check-workspace require-rust-verification-owner
 test *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test {{args}}
 
+debug-test filter package="": check-workspace require-rust-verification-owner
+    #!/usr/bin/env bash
+    set -euo pipefail
+    filter="${DEBUG_TEST_FILTER:-}"
+    package="${DEBUG_TEST_PACKAGE:-}"
+    if [[ -z "$filter" ]]; then filter={{quote(filter)}}; fi
+    if [[ -z "$package" ]]; then package={{quote(package)}}; fi
+    if [[ -z "$filter" ]]; then echo "ERROR: debug-test filter must be non-empty" >&2; exit 2; fi
+    args=(-E "$filter")
+    if [[ -n "$package" ]]; then args=(-p "$package" "${args[@]}"); fi
+    if [[ -s "${NEXTEST_ARCHIVE_PATH:-}" ]]; then
+        extract_root="${RUNNER_TEMP:-/tmp}/debug-nextest-archive-extract"
+        mkdir -p "$extract_root"
+        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "$NEXTEST_ARCHIVE_PATH" --extract-to "$extract_root" --extract-overwrite --workspace-remap "{{repo_root}}" "${args[@]}"
+    else
+        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --locked "${args[@]}"
+    fi
+
 test-archive archive *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest archive --locked --archive-file "{{archive}}" {{args}}
 
@@ -408,85 +426,12 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
     policy_json="$(python3 "{{rust_verification_owner}}" validate-policy --repo "{{repo_root}}")"
     toml_target="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_target"])')"
     toml_profile="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_profile"])')"
-    if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
-        failed=1
+    if [ -n "${BOLT_CI_LINT_WORKFLOW_WORKERS:-}" ]; then
+        set -- --workers "$BOLT_CI_LINT_WORKFLOW_WORKERS"
+    else
+        set --
     fi
-    if ! python3 scripts/test_ci_test_manifest.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_cancel_obsolete_dispatch_runs.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_config_validators.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_run_rust_probe.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_rust_probe_wrapper.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_ci_provenance.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_ci_input_sets.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_rust_test_targets.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_merge_readiness.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_merge_queue_preflight.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_merge_queue_operator.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_coverage_enforcer.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_nextest_fingerprint.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_root_bin_sidecars.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_ci_storage_audit.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_ci_storage_tripwire.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_find_same_sha_main_evidence.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_ubicloud_runner_minutes.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_verify_ci_path_filters.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_rust_verification.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_verify_remote.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_command_understanding.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_rust_verification_decoupling.py; then
-        failed=1
-    fi
-    if ! python3 scripts/test_rust_verification_cache_retention.py; then
-        failed=1
-    fi
-    if ! python3 scripts/verify_ci_path_filters.py; then
-        failed=1
-    fi
-    if ! python3 scripts/verify_ci_workflow_hygiene.py; then
+    if ! python3 scripts/run_ci_lint_suites.py "$@"; then
         failed=1
     fi
 

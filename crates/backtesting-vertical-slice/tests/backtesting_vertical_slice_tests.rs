@@ -54,6 +54,8 @@ mod backtesting_vertical_slice_custom_data_replay;
 mod backtesting_vertical_slice_end_to_end;
 #[path = "backtesting_vertical_slice_first_proof_selector.rs"]
 mod backtesting_vertical_slice_first_proof_selector;
+#[path = "backtesting_vertical_slice_hash_what_you_write.rs"]
+mod backtesting_vertical_slice_hash_what_you_write;
 #[path = "backtesting_vertical_slice_l2_snapshot_adapter.rs"]
 mod backtesting_vertical_slice_l2_snapshot_adapter;
 #[path = "backtesting_vertical_slice_mechanical_order_proof.rs"]
@@ -114,6 +116,8 @@ mod backtesting_vertical_slice_source_proof_reference_fixtures;
 mod backtesting_vertical_slice_source_proof_shortlist;
 #[path = "backtesting_vertical_slice_source_selection_readiness.rs"]
 mod backtesting_vertical_slice_source_selection_readiness;
+#[path = "backtesting_vertical_slice_source_universe_artifact_refs.rs"]
+mod backtesting_vertical_slice_source_universe_artifact_refs;
 #[path = "backtesting_vertical_slice_source_universe_batch_execution.rs"]
 mod backtesting_vertical_slice_source_universe_batch_execution;
 #[path = "backtesting_vertical_slice_source_universe_conversion_queue.rs"]

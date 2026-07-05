@@ -99,6 +99,33 @@ pub fn write_private_new_file(path: &Path, bytes: &[u8]) -> Result<(), AtomicIoE
     Ok(())
 }
 
+pub fn append_private_file(path: &Path, bytes: &[u8]) -> Result<(), AtomicIoError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| AtomicIoError {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    configure_file_options(&mut options, PRIVATE_ATOMIC_FILE_MODE);
+
+    let mut file = options.open(path).map_err(|source| AtomicIoError {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    enforce_exact_file_mode(&file, path, PRIVATE_ATOMIC_FILE_MODE)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|source| AtomicIoError {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    sync_parent_dir(path)?;
+    Ok(())
+}
+
 pub fn private_atomic_temp_path(path: &Path) -> PathBuf {
     private_atomic_temp_path_with_suffix(path, "tmp")
 }

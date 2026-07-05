@@ -91,6 +91,18 @@ DIAGNOSTIC_MACRO_PATTERN = re.compile(
 RAW_STRING_PREFIX_RE = re.compile(r'b?r(#+)?"')
 IGNORED_CONTEXT_RES = [re.compile(pattern) for pattern in IGNORED_CONTEXT_PATTERNS]
 IGNORED_CALL_CONTEXT_RES = [re.compile(pattern) for pattern in IGNORED_CALL_CONTEXT_PATTERNS]
+STRUCTURAL_CONTEXT_LITERALS = [
+    (
+        "number",
+        "Decimal::ZERO",
+        re.compile(r"\bmax_fee_bps:\s*Decimal::ZERO\b"),
+    ),
+    (
+        "boolean",
+        "false",
+        re.compile(r"\bsubmit_lifecycle_policy:\s*BoltV3SubmitLifecyclePolicy::new\(false\)"),
+    ),
+]
 
 
 @dataclass(frozen=True)
@@ -393,9 +405,27 @@ def scan_file(path: Path) -> list[Literal]:
             )
             continue
 
-        if char == "\n":
-            line += 1
-        index += 1
+        for kind, literal, context_pattern in STRUCTURAL_CONTEXT_LITERALS:
+            if text.startswith(literal, index) and context_pattern.search(current_context()):
+                literals.append(
+                    Literal(
+                        rel,
+                        line,
+                        kind,
+                        literal,
+                        current_context(),
+                        call_context(text, index),
+                    )
+                )
+                index += len(literal)
+                break
+        else:
+            if char == "\n":
+                line += 1
+            index += 1
+            continue
+
+        continue
 
     return literals
 

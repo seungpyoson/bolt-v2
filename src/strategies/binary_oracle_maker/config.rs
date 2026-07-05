@@ -8,11 +8,11 @@
 //! written by an operator directly.
 //! `deny_unknown_fields` fails loud on any stray key.
 //!
-//! This struct validates only the flat table's **structure** (field presence,
-//! TOML type, unknown keys, `oms_type` parseability). The operator-facing
-//! **bounds** for the μ knobs live solely in `archetype::validate_strategy` (the
-//! bolt-v3 go-live gate), so there is one home for each concern. Mirrors the
-//! taker config's parse/validate *shape* structurally.
+//! This struct validates the flat table's structure (field presence, TOML type,
+//! unknown keys, `oms_type` parseability) and delegates the live archetype's
+//! runtime bounds for the knobs threaded into this shape to the shared maker
+//! validation helpers. That keeps registry manifest validation fail-closed before
+//! backtest/build can turn malformed maker config into a green no-op run.
 
 use anyhow::{Context, Result};
 use nautilus_model::enums::OmsType;
@@ -20,7 +20,27 @@ use serde::Deserialize;
 use toml::Value;
 
 use super::binding::MakerMarketDeclaration;
-use crate::strategies::registry::ValidationError;
+use crate::{
+    bolt_v3_maker_market_selection::{
+        MakerMarketPortfolioBlocker, MakerMarketPortfolioDeclarationBlocker,
+        MakerMarketPortfolioDeclarationInputs, MakerMarketPortfolioPolicy,
+        MakerMarketPortfolioPolicyInputs, MakerRuntimeParameterBlocker,
+        MakerRuntimeParameterBoundInputs, maker_market_portfolio_declaration_blockers,
+        maker_market_portfolio_policy_input_blockers, maker_runtime_parameter_input_blockers,
+    },
+    strategies::registry::ValidationError,
+};
+
+trait TomlValueExt {
+    fn as_float_or_integer(&self) -> Option<f64>;
+}
+
+impl TomlValueExt for Value {
+    fn as_float_or_integer(&self) -> Option<f64> {
+        self.as_float()
+            .or_else(|| self.as_integer().map(|value| value as f64))
+    }
+}
 
 /// Flat NautilusTrader config the maker consumes at build. The `StrategyConfig`
 /// envelope fields `BinaryOracleMaker::new` feeds into `StrategyCore::new` plus
@@ -100,6 +120,39 @@ const MISSING_CLIENT_ID_CODE: &str = "missing_client_id";
 const INVALID_OMS_TYPE_CODE: &str = "invalid_oms_type";
 const INVALID_ORDER_ID_TAG_CODE: &str = "invalid_order_id_tag";
 const UNKNOWN_FIELD_CODE: &str = "unknown_field";
+const POSITIVE_REQUIRED_CODE: &str = stringify!(positive_required);
+const VALUE_OUT_OF_RANGE_CODE: &str = stringify!(value_out_of_range);
+const CONVERSION_OVERFLOW_CODE: &str = stringify!(conversion_overflow);
+const UNSATISFIABLE_WARMUP_CODE: &str = stringify!(unsatisfiable_warmup);
+const BANKROLL_BELOW_MIN_SLOT_CODE: &str = stringify!(bankroll_below_min_slot);
+const MISSING_MARKETS_CODE: &str = concat!(stringify!(missing_), stringify!(markets));
+const EMPTY_MARKETS_CODE: &str = stringify!(empty_markets);
+const MARKETS_ABOVE_ACTIVE_CAP_CODE: &str = stringify!(markets_above_active_cap);
+const MISSING_TRADE_FLOW_WINDOW_SECS_CODE: &str =
+    concat!(stringify!(missing_), stringify!(trade_flow_window_secs));
+const MISSING_TRADE_FLOW_MAX_SAMPLES_CODE: &str =
+    concat!(stringify!(missing_), stringify!(trade_flow_max_samples));
+const MISSING_MU_MIN_CLASSIFIED_SAMPLES_CODE: &str =
+    concat!(stringify!(missing_), stringify!(mu_min_classified_samples));
+const MISSING_MU_STALE_WINDOW_MS_CODE: &str =
+    concat!(stringify!(missing_), stringify!(mu_stale_window_ms));
+const MISSING_MU_MIN_FLOOR_CODE: &str = concat!(stringify!(missing_), stringify!(mu_min_floor));
+const MISSING_REQUOTE_MIN_INTERVAL_MS_CODE: &str =
+    concat!(stringify!(missing_), stringify!(requote_min_interval_ms));
+const MISSING_QUOTE_INTERVAL_MS_CODE: &str =
+    concat!(stringify!(missing_), stringify!(quote_interval_ms));
+const MISSING_MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_CODE: &str = concat!(
+    stringify!(missing_),
+    stringify!(market_portfolio_max_active_markets)
+);
+const MISSING_MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_CODE: &str = concat!(
+    stringify!(missing_),
+    stringify!(market_portfolio_total_bankroll_notional)
+);
+const MISSING_MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_CODE: &str = concat!(
+    stringify!(missing_),
+    stringify!(market_portfolio_min_slot_notional)
+);
 
 const STRATEGY_ID_FIELD: &str = "strategy_id";
 const ORDER_ID_TAG_FIELD: &str = "order_id_tag";
@@ -120,6 +173,32 @@ const MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD: &str = "market_portfolio_min_slo
 pub(crate) const MARKETS_CONFIG_DIGEST_FIELD: &str = "markets_config_digest";
 const MISSING_MARKETS_CONFIG_DIGEST_CODE: &str = "missing_markets_config_digest";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinaryOracleMakerFieldType {
+    String,
+    Integer,
+    Float,
+    Array,
+}
+
+impl BinaryOracleMakerFieldType {
+    fn expected(self) -> &'static str {
+        match self {
+            Self::String => stringify!(string),
+            Self::Integer => stringify!(integer),
+            Self::Float => stringify!(float),
+            Self::Array => stringify!(array),
+        }
+    }
+
+    fn article(self) -> &'static str {
+        match self {
+            Self::String | Self::Float => stringify!(a),
+            Self::Integer | Self::Array => stringify!(an),
+        }
+    }
+}
+
 /// Deserialize the maker config from its TOML table. Fails loud if the table is
 /// missing required envelope fields or carries unknown keys (via
 /// `deny_unknown_fields`).
@@ -129,14 +208,9 @@ pub fn parse_config(raw: &Value) -> Result<BinaryOracleMakerConfig> {
         .context("binary_oracle_maker builder requires a valid config table")
 }
 
-/// Push **structure** validation errors for the flat maker config into `errors`:
-/// unknown keys, plus envelope field presence/type and `oms_type` parseability.
-/// The μ runtime knobs are whitelisted here (so the flat table built by
-/// `archetype::raw_maker_config` is not flagged as carrying stray keys); their
-/// presence and type are guaranteed by that construction and re-enforced by the
-/// typed `deny_unknown_fields` deserialization at `parse_config`, and their
-/// operator-facing **bounds** are validated upstream in
-/// `archetype::validate_strategy` (one home per concern, no dual gate).
+/// Push validation errors for the flat maker config into `errors`: unknown keys,
+/// required field presence, TOML types, `oms_type` parseability, and the same
+/// runtime bounds the live archetype applies before constructing a maker.
 pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<ValidationError>) {
     let Some(table) = raw.as_table() else {
         errors.push(ValidationError {
@@ -210,8 +284,461 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
         MISSING_MARKETS_CONFIG_DIGEST_CODE,
         errors,
     );
+    let trade_flow_window_secs = validate_non_negative_u64_field(
+        table,
+        field_prefix,
+        TRADE_FLOW_WINDOW_SECS_FIELD,
+        MISSING_TRADE_FLOW_WINDOW_SECS_CODE,
+        errors,
+    );
+    let trade_flow_max_samples = validate_non_negative_u64_field(
+        table,
+        field_prefix,
+        TRADE_FLOW_MAX_SAMPLES_FIELD,
+        MISSING_TRADE_FLOW_MAX_SAMPLES_CODE,
+        errors,
+    );
+    let mu_min_classified_samples = validate_non_negative_u64_field(
+        table,
+        field_prefix,
+        MU_MIN_CLASSIFIED_SAMPLES_FIELD,
+        MISSING_MU_MIN_CLASSIFIED_SAMPLES_CODE,
+        errors,
+    );
+    let mu_stale_window_ms = validate_non_negative_u64_field(
+        table,
+        field_prefix,
+        MU_STALE_WINDOW_MS_FIELD,
+        MISSING_MU_STALE_WINDOW_MS_CODE,
+        errors,
+    );
+    let mu_min_floor = validate_float_field(
+        table,
+        field_prefix,
+        MU_MIN_FLOOR_FIELD,
+        MISSING_MU_MIN_FLOOR_CODE,
+        errors,
+    );
+    let requote_min_interval_ms = validate_non_negative_u64_field(
+        table,
+        field_prefix,
+        REQUOTE_MIN_INTERVAL_MS_FIELD,
+        MISSING_REQUOTE_MIN_INTERVAL_MS_CODE,
+        errors,
+    );
+    let quote_interval_ms = validate_non_negative_u64_field(
+        table,
+        field_prefix,
+        QUOTE_INTERVAL_MS_FIELD,
+        MISSING_QUOTE_INTERVAL_MS_CODE,
+        errors,
+    );
+    let market_portfolio_max_active_markets = validate_non_negative_u64_field(
+        table,
+        field_prefix,
+        MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD,
+        MISSING_MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_CODE,
+        errors,
+    );
+    let market_portfolio_total_bankroll_notional = validate_float_field(
+        table,
+        field_prefix,
+        MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD,
+        MISSING_MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_CODE,
+        errors,
+    );
+    let market_portfolio_min_slot_notional = validate_float_field(
+        table,
+        field_prefix,
+        MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD,
+        MISSING_MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_CODE,
+        errors,
+    );
+    let markets = validate_markets_array_field(table, field_prefix, errors);
+    validate_runtime_bounds(
+        field_prefix,
+        RuntimeBoundInputs {
+            trade_flow_window_secs,
+            trade_flow_max_samples,
+            mu_min_classified_samples,
+            mu_stale_window_ms,
+            mu_min_floor,
+            requote_min_interval_ms,
+            quote_interval_ms,
+            market_portfolio_max_active_markets,
+            market_portfolio_total_bankroll_notional,
+            market_portfolio_min_slot_notional,
+            declared_market_count: markets.map(|markets| markets.len()),
+        },
+        errors,
+    );
     validate_order_id_tag_delimiter_free(table, field_prefix, errors);
     validate_oms_type_parses(table, field_prefix, errors);
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeBoundInputs {
+    trade_flow_window_secs: Option<u64>,
+    trade_flow_max_samples: Option<u64>,
+    mu_min_classified_samples: Option<u64>,
+    mu_stale_window_ms: Option<u64>,
+    mu_min_floor: Option<f64>,
+    requote_min_interval_ms: Option<u64>,
+    quote_interval_ms: Option<u64>,
+    market_portfolio_max_active_markets: Option<u64>,
+    market_portfolio_total_bankroll_notional: Option<f64>,
+    market_portfolio_min_slot_notional: Option<f64>,
+    declared_market_count: Option<usize>,
+}
+
+fn validate_runtime_bounds(
+    field_prefix: &str,
+    inputs: RuntimeBoundInputs,
+    errors: &mut Vec<ValidationError>,
+) {
+    let runtime_bound_inputs = MakerRuntimeParameterBoundInputs {
+        trade_flow_window_secs: inputs.trade_flow_window_secs,
+        trade_flow_max_samples: inputs.trade_flow_max_samples,
+        mu_min_classified_samples: inputs.mu_min_classified_samples,
+        mu_stale_window_ms: inputs.mu_stale_window_ms,
+        mu_min_floor: inputs.mu_min_floor,
+        requote_min_interval_ms: inputs.requote_min_interval_ms,
+        quote_interval_ms: inputs.quote_interval_ms,
+    };
+    for blocker in maker_runtime_parameter_input_blockers(runtime_bound_inputs) {
+        push_runtime_parameter_blocker(field_prefix, blocker, errors);
+    }
+    validate_market_portfolio_bounds(field_prefix, inputs, errors);
+}
+
+fn push_runtime_parameter_blocker(
+    field_prefix: &str,
+    blocker: MakerRuntimeParameterBlocker,
+    errors: &mut Vec<ValidationError>,
+) {
+    let (field, code, message) = match blocker {
+        MakerRuntimeParameterBlocker::ZeroTradeFlowWindowSecs => (
+            TRADE_FLOW_WINDOW_SECS_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 (a zero retention window holds no trades, so a μ can never be produced)"
+                .to_string(),
+        ),
+        MakerRuntimeParameterBlocker::TradeFlowWindowMillisOverflow { window_secs } => (
+            TRADE_FLOW_WINDOW_SECS_FIELD,
+            CONVERSION_OVERFLOW_CODE,
+            format!(
+                "({window_secs}) must be small enough that its second-to-millisecond conversion does not overflow u64"
+            ),
+        ),
+        MakerRuntimeParameterBlocker::ZeroTradeFlowMaxSamples => (
+            TRADE_FLOW_MAX_SAMPLES_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 (a zero sample cap retains no trades, so a μ can never be produced)"
+                .to_string(),
+        ),
+        MakerRuntimeParameterBlocker::ZeroMuMinClassifiedSamples => (
+            MU_MIN_CLASSIFIED_SAMPLES_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 (a zero warmup threshold would admit a μ from an empty window)".to_string(),
+        ),
+        MakerRuntimeParameterBlocker::MuMinClassifiedSamplesAboveMax {
+            min_classified_samples,
+            max_samples,
+        } => (
+            MU_MIN_CLASSIFIED_SAMPLES_FIELD,
+            UNSATISFIABLE_WARMUP_CODE,
+            format!(
+                "({min_classified_samples}) must be <= {TRADE_FLOW_MAX_SAMPLES_FIELD} ({max_samples})"
+            ),
+        ),
+        MakerRuntimeParameterBlocker::ZeroMuStaleWindowMs => (
+            MU_STALE_WINDOW_MS_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 (a zero staleness window marks every reading stale, blocking μ permanently)"
+                .to_string(),
+        ),
+        MakerRuntimeParameterBlocker::MuMinFloorOutOfRange { floor } => (
+            MU_MIN_FLOOR_FIELD,
+            VALUE_OUT_OF_RANGE_CODE,
+            format!("({floor}) must be finite and in the open interval (0, 1)"),
+        ),
+        MakerRuntimeParameterBlocker::ZeroRequoteMinIntervalMs => (
+            REQUOTE_MIN_INTERVAL_MS_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 (a zero requote interval disables the same-tick throttle)".to_string(),
+        ),
+        MakerRuntimeParameterBlocker::ZeroQuoteIntervalMs => (
+            QUOTE_INTERVAL_MS_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 (a zero quote-loop interval would schedule a degenerate timer)".to_string(),
+        ),
+        MakerRuntimeParameterBlocker::QuoteIntervalNanosOverflow { quote_interval_ms } => (
+            QUOTE_INTERVAL_MS_FIELD,
+            CONVERSION_OVERFLOW_CODE,
+            format!(
+                "({quote_interval_ms}) must be small enough that its millisecond-to-nanosecond conversion does not overflow u64"
+            ),
+        ),
+    };
+    errors.push(ValidationError {
+        field: format!("{field_prefix}.{field}"),
+        code,
+        message,
+    });
+}
+
+fn validate_market_portfolio_bounds(
+    field_prefix: &str,
+    inputs: RuntimeBoundInputs,
+    errors: &mut Vec<ValidationError>,
+) {
+    let max_active_markets = inputs
+        .market_portfolio_max_active_markets
+        .and_then(|value| match usize::try_from(value) {
+            Ok(value) => Some(value),
+            Err(_) => {
+                errors.push(ValidationError {
+                    field: format!("{field_prefix}.{MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD}"),
+                    code: VALUE_OUT_OF_RANGE_CODE,
+                    message: "must fit the platform usize used by the portfolio planner"
+                        .to_string(),
+                });
+                None
+            }
+        });
+    let policy_inputs = MakerMarketPortfolioPolicyInputs {
+        max_active_markets,
+        total_bankroll_notional: inputs.market_portfolio_total_bankroll_notional,
+        min_slot_notional: inputs.market_portfolio_min_slot_notional,
+    };
+    for blocker in maker_market_portfolio_policy_input_blockers(policy_inputs) {
+        push_market_portfolio_policy_blocker(field_prefix, blocker, errors);
+    }
+    let policy = match (
+        max_active_markets,
+        inputs.market_portfolio_total_bankroll_notional,
+        inputs.market_portfolio_min_slot_notional,
+    ) {
+        (Some(max_active_markets), Some(total_bankroll_notional), Some(min_slot_notional)) => {
+            Some(MakerMarketPortfolioPolicy {
+                max_active_markets,
+                total_bankroll_notional,
+                min_slot_notional,
+            })
+        }
+        _ => None,
+    };
+    if let Some(declared_market_count) = inputs.declared_market_count {
+        for blocker in
+            maker_market_portfolio_declaration_blockers(MakerMarketPortfolioDeclarationInputs {
+                policy,
+                declared_market_count,
+            })
+        {
+            push_market_portfolio_declaration_blocker(field_prefix, blocker, errors);
+        }
+    }
+}
+
+fn push_market_portfolio_policy_blocker(
+    field_prefix: &str,
+    blocker: MakerMarketPortfolioBlocker<'_>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let (field, code, message) = match blocker {
+        MakerMarketPortfolioBlocker::InvalidMaxActiveMarkets => (
+            MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD,
+            POSITIVE_REQUIRED_CODE,
+            "must be > 0 so the maker can select at least one market",
+        ),
+        MakerMarketPortfolioBlocker::InvalidTotalBankroll => (
+            MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD,
+            VALUE_OUT_OF_RANGE_CODE,
+            "must be a positive finite bankroll notional",
+        ),
+        MakerMarketPortfolioBlocker::InvalidMinSlotNotional => (
+            MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD,
+            VALUE_OUT_OF_RANGE_CODE,
+            "must be a positive finite per-market slot notional",
+        ),
+        MakerMarketPortfolioBlocker::EmptyCandidateMarketKey
+        | MakerMarketPortfolioBlocker::DuplicateCandidateMarket { .. }
+        | MakerMarketPortfolioBlocker::EmptyActiveMarketKey
+        | MakerMarketPortfolioBlocker::DuplicateActiveMarket { .. }
+        | MakerMarketPortfolioBlocker::NoEligibleCandidates
+        | MakerMarketPortfolioBlocker::InsufficientSlotAllocation => return,
+    };
+    errors.push(ValidationError {
+        field: format!("{field_prefix}.{field}"),
+        code,
+        message: message.to_string(),
+    });
+}
+
+fn push_market_portfolio_declaration_blocker(
+    field_prefix: &str,
+    blocker: MakerMarketPortfolioDeclarationBlocker,
+    errors: &mut Vec<ValidationError>,
+) {
+    let (field, code, message) = match blocker {
+        MakerMarketPortfolioDeclarationBlocker::EmptyMarkets => (
+            MARKETS_FIELD,
+            EMPTY_MARKETS_CODE,
+            "must declare at least one market".to_string(),
+        ),
+        MakerMarketPortfolioDeclarationBlocker::MarketsAboveActiveCap {
+            declared_market_count,
+            max_active_markets,
+        } => (
+            MARKETS_FIELD,
+            MARKETS_ABOVE_ACTIVE_CAP_CODE,
+            format!(
+                "declares {declared_market_count} markets but {MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD} is {max_active_markets}"
+            ),
+        ),
+        MakerMarketPortfolioDeclarationBlocker::BankrollBelowMinSlotFloor {
+            total_bankroll_notional,
+            min_slot_notional,
+            ..
+        } => (
+            MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD,
+            BANKROLL_BELOW_MIN_SLOT_CODE,
+            format!(
+                "must be >= min(declared markets, max_active_markets) * {MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD}; configured total_bankroll_notional={total_bankroll_notional}, min_slot_notional={min_slot_notional}"
+            ),
+        ),
+    };
+    errors.push(ValidationError {
+        field: format!("{field_prefix}.{field}"),
+        code,
+        message,
+    });
+}
+
+fn validate_non_negative_u64_field(
+    table: &toml::map::Map<String, Value>,
+    field_prefix: &str,
+    field_name: &'static str,
+    missing_code: &'static str,
+    errors: &mut Vec<ValidationError>,
+) -> Option<u64> {
+    let value = validate_required_field(
+        table,
+        field_prefix,
+        field_name,
+        missing_code,
+        BinaryOracleMakerFieldType::Integer,
+        errors,
+    )?;
+    let value = value
+        .as_integer()
+        .expect("integer field was type-checked before extraction");
+    if value < 0 {
+        errors.push(ValidationError {
+            field: format!("{field_prefix}.{field_name}"),
+            code: VALUE_OUT_OF_RANGE_CODE,
+            message: "must be a non-negative integer that fits u64".to_string(),
+        });
+        return None;
+    }
+    Some(value as u64)
+}
+
+fn validate_float_field(
+    table: &toml::map::Map<String, Value>,
+    field_prefix: &str,
+    field_name: &'static str,
+    missing_code: &'static str,
+    errors: &mut Vec<ValidationError>,
+) -> Option<f64> {
+    let value = validate_required_field(
+        table,
+        field_prefix,
+        field_name,
+        missing_code,
+        BinaryOracleMakerFieldType::Float,
+        errors,
+    )?;
+    value.as_float_or_integer()
+}
+
+fn validate_markets_array_field<'a>(
+    table: &'a toml::map::Map<String, Value>,
+    field_prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) -> Option<&'a [Value]> {
+    let value = validate_required_field(
+        table,
+        field_prefix,
+        MARKETS_FIELD,
+        MISSING_MARKETS_CODE,
+        BinaryOracleMakerFieldType::Array,
+        errors,
+    )?;
+    let markets = value
+        .as_array()
+        .expect("array field was type-checked before extraction");
+    Some(markets.as_slice())
+}
+
+fn validate_required_field<'a>(
+    table: &'a toml::map::Map<String, Value>,
+    field_prefix: &str,
+    field_name: &'static str,
+    missing_code: &'static str,
+    field_type: BinaryOracleMakerFieldType,
+    errors: &mut Vec<ValidationError>,
+) -> Option<&'a Value> {
+    let field = format!("{field_prefix}.{field_name}");
+    let Some(value) = table.get(field_name) else {
+        push_missing_field(errors, field, missing_code, field_type);
+        return None;
+    };
+    if !field_type_matches(field_type, value) {
+        push_wrong_type(errors, field, field_type, value);
+        return None;
+    }
+    Some(value)
+}
+
+fn push_missing_field(
+    errors: &mut Vec<ValidationError>,
+    field: String,
+    code: &'static str,
+    field_type: BinaryOracleMakerFieldType,
+) {
+    errors.push(ValidationError {
+        field,
+        code,
+        message: format!("is missing required {} field", field_type.expected()),
+    });
+}
+
+fn push_wrong_type(
+    errors: &mut Vec<ValidationError>,
+    field: String,
+    field_type: BinaryOracleMakerFieldType,
+    value: &Value,
+) {
+    errors.push(ValidationError {
+        field,
+        code: WRONG_TYPE_CODE,
+        message: format!(
+            "must be {} {}, got {} value",
+            field_type.article(),
+            field_type.expected(),
+            value.type_str()
+        ),
+    });
+}
+
+fn field_type_matches(field_type: BinaryOracleMakerFieldType, value: &Value) -> bool {
+    match field_type {
+        BinaryOracleMakerFieldType::String => value.as_str().is_some(),
+        BinaryOracleMakerFieldType::Integer => value.as_integer().is_some(),
+        BinaryOracleMakerFieldType::Float => value.as_float_or_integer().is_some(),
+        BinaryOracleMakerFieldType::Array => value.as_array().is_some(),
+    }
 }
 
 /// Fail loud at load when `order_id_tag` contains the `-` delimiter the maker's
@@ -267,24 +794,18 @@ fn validate_oms_type_parses(
 fn validate_string_field(
     table: &toml::map::Map<String, Value>,
     field_prefix: &str,
-    field_name: &str,
+    field_name: &'static str,
     missing_code: &'static str,
     errors: &mut Vec<ValidationError>,
 ) {
-    let field = format!("{field_prefix}.{field_name}");
-    match table.get(field_name) {
-        None => errors.push(ValidationError {
-            field,
-            code: missing_code,
-            message: format!("missing required field `{field_name}`"),
-        }),
-        Some(value) if value.as_str().is_none() => errors.push(ValidationError {
-            field,
-            code: WRONG_TYPE_CODE,
-            message: format!("must be a string, got {} value", value.type_str()),
-        }),
-        Some(_) => {}
-    }
+    let _ = validate_required_field(
+        table,
+        field_prefix,
+        field_name,
+        missing_code,
+        BinaryOracleMakerFieldType::String,
+        errors,
+    );
 }
 
 #[cfg(test)]
@@ -376,6 +897,46 @@ mod tests {
                 .iter()
                 .any(|error| error.code == INVALID_ORDER_ID_TAG_CODE),
             "a hyphenated order_id_tag must be rejected: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_config_rejects_trade_flow_window_secs_wrong_type() {
+        let mut raw = valid_raw();
+        raw.as_table_mut().expect("config is a table").insert(
+            TRADE_FLOW_WINDOW_SECS_FIELD.to_string(),
+            Value::String("abc".to_string()),
+        );
+        let mut errors = Vec::new();
+
+        validate_config(&raw, "strategy", &mut errors);
+
+        assert!(
+            errors.iter().any(|error| {
+                error.field == format!("strategy.{TRADE_FLOW_WINDOW_SECS_FIELD}")
+                    && error.code == WRONG_TYPE_CODE
+            }),
+            "trade_flow_window_secs string must fail registry validation: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_config_rejects_zero_market_portfolio_max_active_markets() {
+        let mut raw = valid_raw();
+        raw.as_table_mut().expect("config is a table").insert(
+            MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD.to_string(),
+            Value::Integer(0),
+        );
+        let mut errors = Vec::new();
+
+        validate_config(&raw, "strategy", &mut errors);
+
+        assert!(
+            errors.iter().any(|error| {
+                error.field == format!("strategy.{MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD}")
+                    && error.code == POSITIVE_REQUIRED_CODE
+            }),
+            "zero market_portfolio_max_active_markets must fail registry validation: {errors:?}"
         );
     }
 

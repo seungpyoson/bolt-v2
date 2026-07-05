@@ -253,7 +253,7 @@ pub fn write_backfill_preflight_report(
     }
     Ok(BackfillPreflightReportArtifact {
         path,
-        content_hash: content_hash(report)?,
+        content_hash: format!("{:x}", Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
     })
 }
@@ -344,10 +344,4 @@ fn selected_record(record: &BackfillCoverageRecord) -> BackfillPreflightSelected
         skipped_objects: record.skipped_objects,
         canonical_ready: record.canonical_ready,
     }
-}
-
-fn content_hash(report: &BackfillPreflightReport) -> Result<String, BackfillPreflightError> {
-    let bytes = serde_json::to_vec(report)
-        .map_err(|error| BackfillPreflightError::Serialize(error.to_string()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }

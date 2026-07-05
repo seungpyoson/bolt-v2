@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import dataclasses
+import functools
 import io
 import importlib.util
 import os
@@ -25,6 +26,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SYNC_CI_DEBUG_SSH_PATH = REPO_ROOT / "scripts" / "sync_ci_debug_ssh_secret.py"
 DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
+DEBUG_TEST_WORKFLOW_PATH = ".github/workflows/debug-test.yml"
 SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
 GATE_NEEDS = "needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
 GATE_NAME = "name: ${{ needs.ci-policy.outputs.gate_name }}"
@@ -2288,7 +2290,7 @@ jobs:
             grant_swap_base,
             grant_swap_head,
         )
-    if not any("permissions grant jobs.first.permissions id-token: write" in error for error in grant_swap_errors):
+    if not any("permissions grant jobs.first id-token: write" in error for error in grant_swap_errors):
         raise AssertionError(f"per-job permission broadening must be blocked, got: {grant_swap_errors}")
 
     allowlist_errors = self_authorizing_errors_for_changes(
@@ -8653,6 +8655,163 @@ def assert_debug_workflow_checks_each_ssh_runner_step() -> None:
         raise AssertionError(f"debug verifier must check each SSH runner step, got: {errors}")
 
 
+def assert_debug_test_workflow_contract() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(DEBUG_TEST_WORKFLOW_PATH)
+    workflows = {
+        DEBUG_TEST_WORKFLOW_PATH: workflow,
+        ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml"),
+    }
+    expected_scoped_grants = {
+        ("permissions", "contents", "read"),
+        ("jobs.debug-test", "contents", "read"),
+        ("jobs.debug-test", "id-token", "write"),
+    }
+    scoped_grants = verifier.yaml_permissions_scoped_grants(workflow)
+    if scoped_grants != expected_scoped_grants:
+        raise AssertionError(f"debug-test permissions grants drifted: {scoped_grants!r}")
+
+    errors = verifier.verify_debug_test_workflow(workflows, repo_source_text("justfile"))
+    if errors:
+        raise AssertionError(f"debug-test workflow must satisfy its contract, got: {errors}")
+
+    mutations = (
+        (
+            "debug-test workflow must be workflow_dispatch-only",
+            workflow.replace("on:\n  workflow_dispatch:\n", "on:\n  push:\n    branches: [main]\n  workflow_dispatch:\n", 1),
+        ),
+        (
+            "debug-test workflow permissions must match scoped allowlist",
+            workflow.replace("permissions:\n  contents: read\n", "permissions:\n  contents: read\n  actions: read\n", 1),
+        ),
+        (
+            "debug-test workflow permissions must match scoped allowlist",
+            workflow.replace("    permissions:\n      contents: read\n      id-token: write\n", "    permissions:\n      contents: read\n      id-token: write\n      statuses: write\n", 1),
+        ),
+        (
+            "debug-test workflow permissions must match scoped allowlist",
+            workflow.replace("    permissions:\n      contents: read\n      id-token: write\n", "    permissions: write-all\n", 1),
+        ),
+        (
+            "debug-test workflow permissions must match scoped allowlist",
+            workflow.replace("      id-token: write\n", "", 1),
+        ),
+        (
+            "debug-test workflow must not declare concurrency",
+            workflow.replace("permissions:\n  contents: read\n", "concurrency:\n  group: debug-test\n\npermissions:\n  contents: read\n", 1),
+        ),
+        (
+            "debug-test workflow must run on vars.CI_RUNNER_MANAGED_HEAVY",
+            workflow.replace("runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}", "runs-on: ubuntu-latest", 1),
+        ),
+        (
+            "debug-test workflow timeout must be 30 minutes",
+            workflow.replace("timeout-minutes: 30", "timeout-minutes: 60", 1),
+        ),
+        (
+            "debug-test workflow must call managed just debug-test recipe",
+            workflow.replace('just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE"', 'cargo nextest run -E "$DEBUG_TEST_FILTER" --locked', 1),
+        ),
+        (
+            "debug-test workflow must use the PR-readonly cache role only",
+            workflow.replace("AWS_CI_CACHE_PR_READONLY_ROLE_ARN", "AWS_CI_CACHE_ROLE_ARN", 1),
+        ),
+        (
+            "Resolve debug archive cache eligibility' must bind PR_READONLY_ROLE_ARN to the PR-readonly role var",
+            replace_once(
+                workflow,
+                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+                "          PR_READONLY_ROLE_ARN: ${{ vars.CI_SCCACHE_BUCKET }}\n",
+            ),
+        ),
+        (
+            "Resolve sccache eligibility' must bind PR_READONLY_ROLE_ARN to the PR-readonly role var",
+            replace_once_after(
+                workflow,
+                "      - name: Resolve sccache eligibility\n",
+                "          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}\n",
+                "          PR_READONLY_ROLE_ARN: ${{ vars.CI_SCCACHE_BUCKET }}\n",
+            ),
+        ),
+        (
+            "Resolve debug archive cache eligibility' must output PR_READONLY_ROLE_ARN as role_arn",
+            replace_once(
+                workflow,
+                '          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"\n',
+                '          echo "role_arn=arn:aws:iam::123456789012:role/debug-archive-hijack" >> "$GITHUB_OUTPUT"\n',
+            ),
+        ),
+        (
+            "Resolve sccache eligibility' must output PR_READONLY_ROLE_ARN as role_arn",
+            replace_once_after(
+                workflow,
+                "      - name: Resolve sccache eligibility\n",
+                '          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"\n',
+                '          echo "role_arn=arn:aws:iam::123456789012:role/sccache-hijack" >> "$GITHUB_OUTPUT"\n',
+            ),
+        ),
+        (
+            "Configure AWS credentials for debug archive cache' must assume the resolved debug archive role",
+            replace_once(
+                workflow,
+                "          role-to-assume: ${{ steps.debug-archive-cache.outputs.role_arn }}\n",
+                "          role-to-assume: arn:aws:iam::123456789012:role/debug-archive-hijack\n",
+            ),
+        ),
+        (
+            "Configure AWS credentials for sccache' must assume the resolved sccache role",
+            replace_once(
+                workflow,
+                "          role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}\n",
+                "          role-to-assume: arn:aws:iam::123456789012:role/sccache-hijack\n",
+            ),
+        ),
+        (
+            "debug-test workflow must not reference provenance or gate jobs",
+            workflow.replace("name: debug-test", "name: debug-test\ngate: ignored", 1),
+        ),
+    )
+    for fragment, mutated in mutations:
+        mutated_errors = verifier.verify_debug_test_workflow(
+            {DEBUG_TEST_WORKFLOW_PATH: mutated, ".github/workflows/ci.yml": workflows[".github/workflows/ci.yml"]},
+            repo_source_text("justfile"),
+        )
+        if not any(fragment in error for error in mutated_errors):
+            raise AssertionError(f"expected {fragment!r}, got: {mutated_errors}")
+
+    mergify_text = repo_source_text(".mergify.yml") + "\n# debug-test\n"
+    mergify_errors = verifier.verify_debug_test_workflow(workflows, repo_source_text("justfile"), mergify_text)
+    if not any("debug-test workflow must not be referenced by .mergify.yml" in error for error in mergify_errors):
+        raise AssertionError(f"debug-test mergify reference must be rejected, got: {mergify_errors}")
+
+    justfile_without_recipe = repo_source_text("justfile").replace(
+        'debug-test filter package="": check-workspace require-rust-verification-owner\n',
+        "",
+        1,
+    )
+    recipe_errors = verifier.verify_debug_test_workflow(workflows, justfile_without_recipe)
+    if not any("justfile must define debug-test filter package" in error for error in recipe_errors):
+        raise AssertionError(f"missing debug-test just recipe must be rejected, got: {recipe_errors}")
+
+    unsafe_justfile = repo_source_text("justfile").replace(
+        'if [[ -z "$filter" ]]; then filter={{quote(filter)}}; fi\n',
+        'filter="${DEBUG_TEST_FILTER:-{{filter}}}"\n',
+        1,
+    )
+    quote_errors = verifier.verify_debug_test_workflow(workflows, unsafe_justfile)
+    if not any("justfile debug-test recipe must shell-quote direct filter/package arguments" in error for error in quote_errors):
+        raise AssertionError(f"unsafe direct debug-test filter interpolation must be rejected, got: {quote_errors}")
+
+    unguarded_justfile = repo_source_text("justfile").replace(
+        '    if [[ -z "$filter" ]]; then echo "ERROR: debug-test filter must be non-empty" >&2; exit 2; fi\n',
+        "",
+        1,
+    )
+    guard_errors = verifier.verify_debug_test_workflow(workflows, unguarded_justfile)
+    if not any("justfile debug-test recipe must fail closed on an empty filter" in error for error in guard_errors):
+        raise AssertionError(f"empty debug-test filter guard must be rejected, got: {guard_errors}")
+
+
 def assert_bootstrap_uses_onepassword_key_generation() -> None:
     sync_script = load_sync_ci_debug_ssh_script()
     commands: list[tuple[list[str], str | None]] = []
@@ -9482,65 +9641,68 @@ ci-lint-workflow:
     python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner
 
 ci-lint-workflow-inner: require-local-verification-gate
-    python3 scripts/test_verify_ci_workflow_hygiene.py
-    python3 scripts/test_ci_storage_audit.py
-    python3 scripts/test_ci_storage_tripwire.py
-    python3 scripts/test_root_bin_sidecars.py
-    python3 scripts/test_ci_input_sets.py
-    python3 scripts/test_rust_test_targets.py
+    if [ -n "${BOLT_CI_LINT_WORKFLOW_WORKERS:-}" ]; then
+        set -- --workers "$BOLT_CI_LINT_WORKFLOW_WORKERS"
+    else
+        set --
+    fi
+    if ! python3 scripts/run_ci_lint_suites.py "$@"; then
+        failed=1
+    fi
 """
     errors = verifier.verify_local_verification_gate_recipes(justfile_text)
     if errors:
         raise AssertionError(f"local gate recipe wiring should pass, got: {errors}")
 
-    missing_storage_audit_test = justfile_text.replace("    python3 scripts/test_ci_storage_audit.py\n", "")
-    missing_storage_audit_test_errors = verifier.verify_local_verification_gate_recipes(missing_storage_audit_test)
-    if not any(
-        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_audit.py" in error
-        for error in missing_storage_audit_test_errors
-    ):
-        raise AssertionError(
-            f"ci storage audit test wiring drift was silent, got: {missing_storage_audit_test_errors}"
-        )
+    runner_line = '    if ! python3 scripts/run_ci_lint_suites.py "$@"; then'
 
-    missing_storage_tripwire_test = justfile_text.replace("    python3 scripts/test_ci_storage_tripwire.py\n", "")
-    missing_storage_tripwire_test_errors = verifier.verify_local_verification_gate_recipes(missing_storage_tripwire_test)
-    if not any(
-        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_tripwire.py" in error
-        for error in missing_storage_tripwire_test_errors
-    ):
-        raise AssertionError(
-            f"ci storage tripwire test wiring drift was silent, got: {missing_storage_tripwire_test_errors}"
-        )
+    missing_runner = justfile_text.replace(f"{runner_line}\n", "")
+    missing_runner_errors = verifier.verify_local_verification_gate_recipes(missing_runner)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py" in error for error in missing_runner_errors):
+        raise AssertionError(f"ci-lint runner wiring drift was silent, got: {missing_runner_errors}")
 
-    duplicate_storage_audit_test = justfile_text.replace(
-        "    python3 scripts/test_ci_storage_audit.py\n",
-        "    python3 scripts/test_ci_storage_audit.py\n"
-        "    python3 scripts/test_ci_storage_audit.py\n",
+    duplicate_runner = justfile_text.replace(
+        f"{runner_line}\n",
+        f"{runner_line}\n"
+        f"{runner_line}\n",
     )
-    duplicate_storage_audit_test_errors = verifier.verify_local_verification_gate_recipes(duplicate_storage_audit_test)
-    if not any(
-        "justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_audit.py exactly once" in error
-        for error in duplicate_storage_audit_test_errors
-    ):
-        raise AssertionError(
-            f"duplicate ci storage audit test wiring was silent, got: {duplicate_storage_audit_test_errors}"
-        )
+    duplicate_runner_errors = verifier.verify_local_verification_gate_recipes(duplicate_runner)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py exactly once" in error for error in duplicate_runner_errors):
+        raise AssertionError(f"duplicate ci-lint runner wiring was silent, got: {duplicate_runner_errors}")
 
-    missing_sidecar_test = justfile_text.replace("    python3 scripts/test_root_bin_sidecars.py\n", "")
-    missing_sidecar_test_errors = verifier.verify_local_verification_gate_recipes(missing_sidecar_test)
-    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_root_bin_sidecars.py" in error for error in missing_sidecar_test_errors):
-        raise AssertionError(f"root bin sidecar test wiring drift was silent, got: {missing_sidecar_test_errors}")
+    extra_inner_work = justfile_text.replace(
+        runner_line,
+        f"{runner_line}\n"
+        "    python3 scripts/test_ci_storage_audit.py",
+    )
+    extra_inner_errors = verifier.verify_local_verification_gate_recipes(extra_inner_work)
+    if not any("justfile ci-lint-workflow-inner must not run CI lint suite commands outside scripts/run_ci_lint_suites.py" in error for error in extra_inner_errors):
+        raise AssertionError(f"ci-lint extra inner work was silent, got: {extra_inner_errors}")
 
-    missing_ci_input_sets_test = justfile_text.replace("    python3 scripts/test_ci_input_sets.py\n", "")
-    missing_ci_input_sets_test_errors = verifier.verify_local_verification_gate_recipes(missing_ci_input_sets_test)
-    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_ci_input_sets.py" in error for error in missing_ci_input_sets_test_errors):
-        raise AssertionError(f"CI input set test wiring drift was silent, got: {missing_ci_input_sets_test_errors}")
+    echo_decoy = justfile_text.replace(
+        runner_line,
+        '    echo python3 scripts/run_ci_lint_suites.py "$@"',
+    )
+    echo_decoy_errors = verifier.verify_local_verification_gate_recipes(echo_decoy)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py" in error for error in echo_decoy_errors):
+        raise AssertionError(f"ci-lint runner echo decoy satisfied wiring, got: {echo_decoy_errors}")
 
-    missing_rust_test_targets_test = justfile_text.replace("    python3 scripts/test_rust_test_targets.py\n", "")
-    missing_rust_test_targets_test_errors = verifier.verify_local_verification_gate_recipes(missing_rust_test_targets_test)
-    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_rust_test_targets.py" in error for error in missing_rust_test_targets_test_errors):
-        raise AssertionError(f"Rust test target test wiring drift was silent, got: {missing_rust_test_targets_test_errors}")
+    noncanonical_runner = justfile_text.replace(
+        runner_line,
+        f"{runner_line}\n"
+        "    python3 scripts/run_ci_lint_suites.py --workers 2",
+    )
+    noncanonical_runner_errors = verifier.verify_local_verification_gate_recipes(noncanonical_runner)
+    if not any("justfile ci-lint-workflow-inner must not invoke the runner outside the pinned line" in error for error in noncanonical_runner_errors):
+        raise AssertionError(f"ci-lint noncanonical runner line was silent, got: {noncanonical_runner_errors}")
+
+    commented_runner = justfile_text.replace(
+        runner_line,
+        f"    # {runner_line.strip()}",
+    )
+    commented_runner_errors = verifier.verify_local_verification_gate_recipes(commented_runner)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/run_ci_lint_suites.py" in error for error in commented_runner_errors):
+        raise AssertionError(f"ci-lint runner comments must not satisfy wiring, got: {commented_runner_errors}")
 
     ungated = justfile_text.replace(
         "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner",
@@ -9567,10 +9729,20 @@ ci-lint-workflow-inner: require-local-verification-gate
     if not any("justfile ci-lint-workflow must contain only the local verification gate command" in error for error in extra_public_errors):
         raise AssertionError(f"ci-lint-workflow public recipe extra work was silent, got: {extra_public_errors}")
 
-    nested_public_gate = justfile_text.replace(
-        "    python3 scripts/test_verify_ci_workflow_hygiene.py",
-        "    just ci-lint-workflow",
-    )
+    broken_runner = object()
+    original_runner_module = sys.modules.get("run_ci_lint_suites")
+    sys.modules["run_ci_lint_suites"] = broken_runner
+    try:
+        broken_runner_errors = verifier.verify_local_verification_gate_recipes(justfile_text)
+    finally:
+        if original_runner_module is None:
+            sys.modules.pop("run_ci_lint_suites", None)
+        else:
+            sys.modules["run_ci_lint_suites"] = original_runner_module
+    if not any("ci-lint workflow runner suite table must be importable" in error for error in broken_runner_errors):
+        raise AssertionError(f"broken ci-lint runner import was not governed, got: {broken_runner_errors}")
+
+    nested_public_gate = justfile_text.replace(runner_line, "    just ci-lint-workflow")
     nested_public_errors = verifier.verify_local_verification_gate_recipes(nested_public_gate)
     if not any("justfile ci-lint-workflow-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
         raise AssertionError(f"ci-lint-workflow nested public gate call was silent, got: {nested_public_errors}")
@@ -15579,55 +15751,70 @@ def assert_cargo_named_just_recipe_headers_are_not_raw_cargo_commands() -> None:
         raise AssertionError(f"cargo-named just recipe header was treated as raw cargo: {errors!r}")
 
 
+@functools.cache
+def ci_lint_suite_commands() -> set[str]:
+    path = REPO_ROOT / "scripts" / "run_ci_lint_suites.py"
+    spec = importlib.util.spec_from_file_location("run_ci_lint_suites_under_hygiene_test", path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load run_ci_lint_suites.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return {" ".join(suite.command) for suite in module.CI_LINT_SUITES}
+
+
+def assert_ci_lint_suite_runs(command: str, message: str) -> None:
+    if command not in ci_lint_suite_commands():
+        raise AssertionError(message)
+
+
 def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    expected = "python3 scripts/test_rust_verification_cache_retention.py"
-    if expected not in justfile:
-        raise AssertionError("ci-lint-workflow must run rust verification cache retention self-tests")
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_rust_verification_cache_retention.py",
+        "ci-lint-workflow must run rust verification cache retention self-tests",
+    )
 
 
 def assert_ci_lint_runs_verify_remote_tests() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    expected = "python3 scripts/test_verify_remote.py"
-    if expected not in justfile:
-        raise AssertionError("ci-lint-workflow must run remote verification watcher self-tests")
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_verify_remote.py",
+        "ci-lint-workflow must run remote verification watcher self-tests",
+    )
 
 
 def assert_ci_lint_runs_ci_provenance_tests() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    expected = "python3 scripts/test_ci_provenance.py"
-    if expected not in justfile:
-        raise AssertionError("ci-lint-workflow must run CI provenance self-tests")
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_ci_provenance.py",
+        "ci-lint-workflow must run CI provenance self-tests",
+    )
 
 
 def assert_ci_lint_runs_command_understanding_tests() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    expected = "python3 scripts/test_command_understanding.py"
-    if expected not in justfile:
-        raise AssertionError("ci-lint-workflow must run command understanding self-tests")
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_command_understanding.py",
+        "ci-lint-workflow must run command understanding self-tests",
+    )
 
 
 def assert_ci_lint_runs_rust_probe_tests() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    expected = "python3 scripts/test_run_rust_probe.py"
-    if expected not in justfile:
-        raise AssertionError("ci-lint-workflow must run Rust Probe runner self-tests")
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_run_rust_probe.py",
+        "ci-lint-workflow must run Rust Probe runner self-tests",
+    )
 
 
 def assert_ci_lint_runs_cancel_obsolete_dispatch_tests() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    expected = "python3 scripts/test_cancel_obsolete_dispatch_runs.py"
-    if expected not in justfile:
-        raise AssertionError("ci-lint-workflow must run dispatch cancellation self-tests")
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_cancel_obsolete_dispatch_runs.py",
+        "ci-lint-workflow must run dispatch cancellation self-tests",
+    )
 
 
 def test_ci_test_manifest_self_tests_are_gated() -> None:
-    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-    if "scripts/test_ci_test_manifest.py" not in justfile:
-        raise AssertionError(
-            "ci-lint-workflow must invoke scripts/test_ci_test_manifest.py so the "
-            "manifest parser's self-tests are gated"
-        )
+    assert_ci_lint_suite_runs(
+        "python3 scripts/test_ci_test_manifest.py",
+        "ci-lint-workflow must invoke scripts/test_ci_test_manifest.py so the manifest parser's self-tests are gated",
+    )
 
 
 def assert_github_scripts_are_repo_automation_fenced() -> None:
@@ -18352,6 +18539,7 @@ def main() -> int:
     assert_self_authorizing_governance_detector_contract()
     assert_debug_workflow_rejects_non_manual_trigger()
     assert_debug_workflow_checks_each_ssh_runner_step()
+    assert_debug_test_workflow_contract()
     assert_bootstrap_uses_onepassword_key_generation()
     assert_sync_errors_redact_command_arguments()
     assert_sync_public_key_uses_stdin()

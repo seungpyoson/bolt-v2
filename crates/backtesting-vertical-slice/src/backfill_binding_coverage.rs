@@ -250,7 +250,7 @@ pub fn write_backfill_binding_coverage_report(
     }
     Ok(BackfillBindingCoverageArtifact {
         path,
-        content_hash: content_hash(report)?,
+        content_hash: format!("{:x}", Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
     })
 }
@@ -466,12 +466,4 @@ fn source_bindings_from_registry(
             })
         })
         .collect()
-}
-
-fn content_hash(
-    report: &BackfillBindingCoverageReport,
-) -> Result<String, BackfillBindingCoverageError> {
-    let bytes = serde_json::to_vec(report)
-        .map_err(|error| BackfillBindingCoverageError::Serialize(error.to_string()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }

@@ -12,6 +12,7 @@ __pycache__/
 .agent-doctor/
 .agents/
 .beads/
+.entire/
 .claude/agents/
 .claude/settings.json
 .claude/findings/

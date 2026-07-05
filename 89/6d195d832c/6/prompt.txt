@@ -1,0 +1,1503 @@
+• A3 is pushed and reported on PR #1185.
+
+  Head: 82c23397b16f184b6db67e7d7d7cb7a0be7aaa17
+  Full CI: success, exact-head run
+  https://github.com/seungpyoson/bolt-v2/actions/runs/28705131608
+  PR report / re-review flag:
+  https://github.com/seungpyoson/bolt-v2/pull/1185#issuecomment-4881915641
+
+  Implemented the >= retention fix, shifted the three boundary tests one
+  accepted capture later, and added the production-shaped repro for the
+  accepted-order interleave. I also checked the PR body/source for the stale
+  “attributed to N+1” claim; the PR body did not contain it, and the code/
+  report now state the corrected in-flight capture-number semantics.
+
+  Local verification and exact-head CI are green. Worktree is clean.
+
+---
+
+GLM:Worktree cleaned. Here is my independent round-4 verdict.
+External Review — PR #1185, Round 4
+HEAD reviewed: 82c23397b16f184b6db67e7d7d7cb7a0be7aaa17 · Merge-base: 54044f0e9df · Method: blob-hash-compare vs round-3 head a54933ee96 — only src/bolt_v3_venue_truth.rs + tests/bolt_v3_polymarket_venue_truth.rs differ; all other core files byte-identical, so rounds 1-3 carryover holds.
+Verdict: APPROVE
+The round-3 during-pool false-halt (my round-3 Finding 1) is correctly fixed by a one-boundary retention grace (> → >= at all three sites), the fix is a genuine differential with a production-shape repro test, and I derived that the grace does not err toward false accepts. This is the right shape; the pruning state machine is now sound.
+The A3 fix — verified sound (no false-halt, no false-accept)
+Fix. prune_after_capture_acceptance (bolt_v3_venue_truth.rs:625-642) now retains terminal/accepted/fill-quantity entries attributed to capture C through capture C's own acceptance (C >= accepted_capture_number) and prunes them at capture C+1's acceptance. The fourth site (fill_capture_number_by_venue_order_id, :641-644) is derived from fill_quantity's retention, so it stays consistent with no separate edit. Comment at :330-331 correctly describes the semantics (in-flight attribution, same-sequence retention).
+My round-3 reproducer is now a passing test. accepted_order_before_snapshot_completion_survives_current_capture_boundary (tests/…:701-746) records Accepted after cap1 completes but before cap2 completes (attributed to 2 — exactly the during-pool interleave), then cap2 empty, cap3 shows the order. It asserts cap2 + cap3 both DeltaExplained. On the round-3 head this false-halted (cap2 prunes the event at 2>2=false → cap3 has no accepted[X] → halt at fence); the >= grace retains it through cap2 → cap3 explains it. Genuine differential, via the real record_snapshot_completion path (not projection internals). ✓
+False-accept symmetry (the key check) — derived clean. I confirmed no real divergence is silently absorbed:
+- Foreign order (no recorded events): caught at appearance — explain_open_order_delta demands accepted(F) which never exists. Grace creates no events.
+- Lost cancel: accept retention doesn't explain disappearances; only terminal does, and terminal/accepted/fill_quantity are all consumed-once (.remove()/decremented on use) — can't be double-applied.
+- Growth exceeding recorded fill qty: fill_quantity is decremented on consumption; once exhausted, further growth is unexplained → divergence. Grace only retains the remainder one boundary longer; total explainable growth stays bounded by recorded fill qty.
+- Indefinite leak: entries attributed to N are pruned at cap N+1's acceptance (N >= N+1 false) unless still open in baseline; forever-open orders retain via "open in baseline" (correct — active order). FOK state survives the same-sequence boundary, prunes at the following one (shifted tests confirm).
+The soundness argument holds: an event attributed to N is recorded before cap N completes, and cap N+1's snapshot is taken after cap N completes (completion(N) < reads(N+1)), so the effect is visible by cap N+1 — retaining through cap N's acceptance lets cap N+1 explain it, and pruning at cap N+1's acceptance bounds retention. (A >1-capture REST lag would still false-halt — fail-closed — but that's a strictly rarer, more severe REST fault than the one-capture lag this fixes; handling it would require unbounded retention, which would be unsound.)
+Other verification
+- Shifted unit tests pin real boundaries. All three (terminal_marks_only…:1159, the FOK test :1249, FOK-prune :1355) now assert survival at the same-sequence boundary (new non-emptiness assertions) + a second reconcile_snapshot + pruning at the following boundary. Substantive, not vacuous. ✓
+- Production diff is exactly the 3 operator changes + comment (verified by filtering the diff) — no other logic touched.
+- Carryover (blob-identical to round 3): capture fence/defer; SA1 lot drains (balance+allowance); suspension strictly-> + equality test; authority inversion (4 portfolio writers); durable halt (zero discarded writes, no downgrade, write-through, persist-failure escalation); ordering purity + independence; latch; boot gate; R-PL1. ✓
+- CI: dispatch:full 28705131608 = success at exact head 82c23397b. Heavy checks green as feedback; merge-proof gate queue-gated as the body states.
+- Campaign bars: no new constants/operators beyond >=; no silent fallbacks; no venue policy outside the provider layer; body Part of #1179 with no closing keywords (closes/fixes/resolves grep empty).
+- Mergeable: DIRTY/CONFLICTING solely on specs/711-capital-admission-rename/misnomer-allowlist.txt (verified via merge-tree; all Rust auto-merges) — the expected clearance-time rebase over #1207, not structural.
+Performed vs not performed
+Personally performed: fetched PR; blob-hash-compared all files vs round-3 head (only the 2 expected files differ); isolated the single round-4 commit; confirmed the production change is exactly 3 >→>= + comment; re-derived the during-pool interleave against HEAD and confirmed the new test fails on the round-3 head; hand-derived the false-accept symmetry across all three maps (foreign order, lost cancel, exceeding-qty growth, stale-remainder, double-use, leak, FOK); verified the shifted tests' boundaries; confirmed exact-head CI success and conflict scope.
+Could not perform: local Rust execution (remote-first policy) — all derivations are hand-traced against the code and consistent with green CI. Merge-proof gate is queue-gated (runs at the merge boundary per repo policy).
+The pruning state machine — wrong twice, then fixed in round 3 for the cancel-race and after-snapshot accept-race, now corrected in round 4 for the during-pool sibling — is sound at this head. Approving.
+Kimi:Verdict: APPROVE
+
+   HEAD reviewed: 82c23397b16f184b6db67e7d7d7cb7a0be7aaa17
+
+   The round-4 delta is a surgical correction of the round-3 retention
+   boundary. I verified the fix and the carryover surface.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Verified against HEAD 82c23397b
+
+   1. Only the expected files changed
+
+   ```bash
+     git diff --name-only
+   a54933ee96bef723cdc8e892eaf4e5ab12dc8f1f..82c23397b16f184b6db67e7d7d7cb7a0b
+   e7aaa17
+     # => src/bolt_v3_venue_truth.rs
+     # => tests/bolt_v3_polymarket_venue_truth.rs
+   ```
+
+   All other files are byte-identical to the round-3 head, so the rounds 1–3
+   carryover verification stands.
+
+   2. >= retention boundary
+
+   src/bolt_v3_venue_truth.rs:625-642 now retains projection entries when:
+
+   ```rust
+     open_venue_order_ids.contains(venue_order_id)
+         || *capture_number >= accepted_capture_number
+   ```
+
+   This applies to all three retention sites:
+   • terminal_venue_order_ids (:625-629)
+   • accepted_venue_order_ids (:630-634)
+   • fill_quantity_by_venue_order_id via fill_capture_number_by_venue_order_id
+      (:635-642)
+
+   The client_to_venue_order_id map is then retained only if the venue id is
+   still present in one of those retained sets (:655-660), so it cannot
+   outlive the real explanation state.
+
+   3. Semantics of the one-boundary grace
+
+   • An event recorded while capture N is in flight is tagged N+1.
+   • An event recorded before capture N completes is tagged N.
+   • Because snapshot reads and event reads are not atomic, the effect of a
+     same-sequence (N) event may first become visible in snapshot N+1.
+   • The >= rule keeps same-sequence entries through acceptance of capture N,
+     so they can explain capture N+1.
+   • They are pruned at acceptance of capture N+1 because N < N+1.
+
+   I could not construct a real-divergence interleave that this silently
+   absorbs:
+   • A recorded event can only explain a delta whose amount and direction it
+     matches.
+   • An unexplained foreign delta with no matching recorded event still
+     produces DeltaPending and halts at the next fence.
+   • Spurious/excess recorded state that is not consumed at its own boundary
+     remains observable and will surface at the following boundary if it
+     cannot be matched.
+
+   4. New production-shape repro test
+
+   tests/bolt_v3_polymarket_venue_truth.rs:705-746 records an Accepted event
+   while next_capture_number == 2, then completes an empty capture 2, then
+   completes capture 3 containing the order. It asserts both captures are
+   accepted.
+
+   On the round-3 head the Accepted entry tagged 2 would have been pruned at
+   acceptance of capture 2 (> 2 was false), so capture 3 would have seen an
+   unexplained new open order and false-halted at its fence. The new test
+   would fail there.
+
+   5. Shifted unit tests still pin real boundaries
+
+   The three in-file unit tests were extended with explicit intermediate
+   assertions:
+   • terminal_marks_only_and_capture_acceptance_prunes_projection_maps
+     (src/bolt_v3_venue_truth.rs:1082-1218) now asserts same-sequence state
+     survives the first accepted boundary and is cleared only at the second.
+   • fok_fill_projection_maps_prune_at_acceptance_boundary_without_terminal
+     (:1220-1301) asserts FOK state survives the same-sequence accepted
+     boundary and prunes at the following boundary.
+   • fok_fill_during_in_flight_capture_prunes_at_following_boundary
+     (:1303-1392) asserts in-flight FOK state survives the capture where its
+     effect becomes visible and prunes one accepted boundary later.
+
+   These are not vacuous: each asserts the non-empty state exists at the
+   intermediate step and is empty only after the subsequent accepted boundary.
+
+   6. Comment accuracy
+
+   src/bolt_v3_venue_truth.rs:331-334 now correctly documents that
+   next_capture_number names the in-flight capture and that pruning keeps
+   same-sequence entries through that capture's acceptance.
+
+   7. CI and campaign bars
+
+   • gh run view 28705131608 --repo seungpyoson/bolt-v2 shows green build,
+     clippy, test, source-fence, deny, etc.
+   • No new hardcoded constants/timers/caps in the production delta; the only
+     behavioral change is > → >=.
+   • No venue/market/strategy policy leaked into the generic reconciler.
+   • PR body remains Part of #1179; closingIssuesReferences is empty.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Findings
+
+   No blocking findings.
+
+   Low-severity observation
+
+   The one-boundary grace means recorded state can explain a delta one
+   snapshot later than its capture number. This is the intended
+   defer-until-explained trade-off and is bounded by the next accepted
+   snapshot. It does not create a silent fallback because:
+   • the accepted snapshot still matches venue truth, and
+   • any unconsumed recorded state remains in the projection and will cause a
+     halt if it cannot be matched at the following boundary.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Checks performed vs. not performed
+
+   Performed:
+   • Blob-hash carryover check via git diff --name-only.
+   • Read the full git diff of the round-4 delta.
+   • Read prune_after_capture_acceptance and the three updated unit tests at
+     the new head.
+   • Traced the new production repro test by hand and confirmed it would
+     false-halt on the round-3 head.
+   • Reasoned through same-sequence / cross-sequence interleaves for
+     false-accept risk.
+   • Verified the exact-head CI run with gh run view.
+   • Re-confirmed PR body and closing issue references with gh pr view.
+
+   Not performed:
+   • No local compile/test run (per repo remote-first policy; relied on
+     exact-head GitHub Actions).
+   • No exhaustive formal model of all possible event/snapshot interleaves
+     beyond the causal retention rule and the tested race cases.
+Claude: 
+External Review — PR #1185 "Lane 3 PR-A: causal venue truth reconciler", round 4 (full re-review, fast mechanic)
+
+Pinned range reviewed: merge-base 54044f0e9df1fedf228cb15c6ca04d5430c92adc → HEAD 82c23397b16f184b6db67e7d7d7cb7a0be7aaa17. Fetched pull/1185/head myself (matches), merge-base confirmed, scope still 42 files. Blob-hash compare against the round-3 head a54933ee9: only src/bolt_v3_venue_truth.rs and tests/bolt_v3_polymarket_venue_truth.rs differ (one commit) — the other 40 files carry over byte-identical to what I verified across rounds 1–3. CI at the exact head: run 2the head_sha API query myself.
+
+Verdict: APPROVE
+
+The round-4 delta is, character for character, the fix I validated empirically in round 3, plus the test consequences I predicted, plus a production-shaped regression test for the interleave I reproduced. I re-derived the false-accept direction, executed both suites at this head, and found nothing blocking.
+
+What I personally ver The grace can only cause a false accept if retained state wrongly explains a foreign delta. It can't: consumption is venue-order-id-keyed and quantity-bounded, and entries exist only for events that passed the venue+account filter in venue_truth_order_event_from_nt — so retained state can only ever explain bolt's own orders' appearance (accepted ids), disappearance (terminal markers — themselves the venue's statement that the order terminated), or matched-size changes (fill quantities, where any excess over recorded fills still fails consume_decimal → halt). The grace widens when bolt's own events may explain, never whose activity explains. Ordering guarantee: capture N+1's explains run on the projection clone before the A=N+1 prune executes on that same clone, so every consumption opportunity strictly precedes the drop; and an event tagged N arrived before completion(N) < reads(N+1), so its effect is visible by snapshot N+1 — anything still unconsumed at A=N+1 is genuinely never-to-appear. Foreign new orders, foreign disappearances, and unexplained collateral/position deltas all still halt (fail-closed direction preserved). Baseline (tag-1 through A=1) and pending-fence paths derive consistently. FOK map growth is now bounded at exactly one extra capture (~1 poll) of retention.
+
+3. Executed at this head: cargo test --test bolt_v3_polymarket_venue_truth → 27/27 passed, including the new accepted_order_before_snapshot_completion_survives_current_capture_boundary; cargo test --lib boltexecution in round 3 with my own equivalent test — so the assertion is red there. Genuine differential, anchored by my own prior run.
+
+5. The three shifted unit tests are not vacuous. Each now asserts the state survives the same-sequence acceptance boundary (the grace) and then asserts emptiness after the following accepted boundary — pinning both halves of the retention semantics, exactly the two-boundary shape my round-3 analysis said correctness requires.
+
+6. Campaign bars on the delta: no new constants (only test snapshot literals), no silent fallbacks (the grace is a retention window, not a substitute path; degraded/foreign paths still produce divergence evidence with the dimension-accurate field/reason from round 3), no venue policy outside the provider layer, no weakened tests (strictly strengthened). PR body remains "Part of #1179"; 0 closing keywords across all 4 body revisions (GraphQL edit history) and every commit in the range.
+
+Residual observations (non-blocking, all previously adjudicated/ledgered — restated for the record)
+
+- Allowance drain pool never dissipates on a non-decrementing venue (bounded "explanation budget"; admission authority still tightens to the captured value).
+- Balance/allowance-fresher-than-positions endpoint skew durably halts — fail-closed by design.
+- Trait-default Ok(()) on the two venue-truth evidence-writer methods (production-unreachable; verified via writer-selection blob identity).
+- POLYMARKET_VENUE_TRUTH_REST_SOURCE as a behavior key in the generic admission layer (post-Lane-4 cleanup class).
+- Durable-halt restart-laundering under total store-write failure remains bounded to the ledgered boot-side cross-check follow-up (pinned by the round-2 test).
+
+Checks performed vs not performed: I personally ran the two targeted suites at the pinned head, blob-compared all 42 files, re-derived the retention/false-accept space, and fetched CI/PR/body state from GitHub. I did not run the full local suite (green dispatch:full at the exact head covers it) and did not re-read the 40 carryover files beyond hash identity.
+
+After four rounds, the pruning state machine now has the property the campaign demanded: every interleave in the event×capture×judgment space either explains from bolt's own recorded events or halts loudly — and the one class of interleave production actually produces is finally pinned by a test that fails on every prior head.
+
+---
+
+• PR #1212 round-2 fixes are pushed and flagged for full re-review.
+
+  Head SHA: 226c3ec71bc57d3b8669c9ec69a74564aa8190ae
+  Full CI: https://github.com/seungpyoson/bolt-v2/actions/runs/28705464203
+  PR marker comment:
+  https://github.com/seungpyoson/bolt-v2/pull/1212#issuecomment-4881962087
+
+  Local gates passed: just fmt-check, just source-fence-static, just deny, just
+  ci-lint-workflow, plus git diff --check. Worktree is clean.
+
+---
+
+we have a conflict with resolve for 1185
+
+---
+
+PR 1212:
+
+Claude: 
+  PR #1212 — Lane 4 order lifecycle reconciler — Round 2 (full re-review)
+
+  Verdict: APPROVE
+
+  Reviewed at HEAD 226c3ec71, merge-base = current main 53c5b0b6f. My round-1 blocker (L1: EntryReconcilePending stuck-forever on terminal-without-fill) is resolved — verified by complete static re-derivation of the liveness map and by executed tests, including an adversarial backstop test I wrote. Everything else re-verifies clean.
+
+  L1 — my R1 blocker — RESOLVED (highest confidence)
+
+  The fix is a fill-evidence discriminator: EntryReconcilePending now carries observed_fill_quantity: Option<Quantity> (exposure.rs), and every terminal handler routes through resolve_pending_entry_terminal_event (mod.rs) carrying a terminal_proves_zero_fill flag. I hand-derived the full truth table and confirmed each cell by executed test (late_zero_fill_… + late_fill_observed_…, both green
+  ├─────────┼─────────┼─────────────────────────┼─────────────────────────┤
+  │ some    │ reject  │ true                    │ Flat (venue refused →   │
+  │         │ / deny  │                         │ any fill spurious)      │
+  ├─────────┼─────────┼─────────────────────────┼─────────────────────────┤
+  │         │ expire  │                         │ PRESERVE fail-closed (p │
+  │ some    │ /       │ false                   │ artial-fill-then-expire │
+  │         │ cancel  │                         │  is real; awaits        │
+  │         │         │                         │ position truth)         │
+  └─────────┴─────────┴─────────────────────────┴─────────────────────────┘
+
+  The asymmetry is sound: reject/deny are pre-execution (prove zero fill); expire/cancel can follow a partial fill (don't). The two Flat paths' safety rests on the position-truth backstop — apply_position_materialization_spec (mod.rs, the valid-adoption path) adopts any valid live position into Managed regardless of current state, so from Flat with no pending → origin = RecoveryBootstrap → Managed. I confirmed this both by reading (unconditional, no state guard) and by an executed adversarial test: zero-fill expire → Flat, then a late PositionOpened → Managed(RecoveryBootstrap). Real exposure is never orphaned.
+
+  Liveness map (complete, at HEAD): every EntryReconcilePending reason has an observation-driven exit — entry fill → Managed; valid position event → Managed; position-closed → Flat; zero-fill terminal → Flat; reject/deny → Flat. The only indefinite state (fill-observed, awaiting position truth) is intended fail-closed on positive fill evidence and resolves on the authoritative position channel. No reachable stuck-forever remains. No timers/counters anywhere — resolution is purely event-driven.
+
+  Round-2 delta and self-caught commits (all in scope, correct)
+
+  - L2 — lifecycle evidence now on the fill-branch reconcile entries, InvalidObservedPosition, and position-closed resolution; pinned by entry_fill_reconcile_branches_record_lifecycle_evidence (green). New evidence enums (PositionClosed, EntryReconcilePending) are closed taxonomy.
+  - L3 — residual_position_after_terminal precision now position.precision.max(filled.precision); residual_position_after_terminal_preserves_fill_precision executes green (10.00 − 4.1234 = 5.8766 @ prec 4; would truncate to 5.88 without the fix — true differential).
+  - ca6ee5e0b (self-caught) — reclassifies the boundary case from BlindRecovery{PendingEntryUnresolvedAtBoundary} to the resolvable EntryReconcilePending{UnresolvedAtSelectionBoundary} (removing the now-dead BlindRecovery variant) and adds EntryFillMaterialized evidence. Necessary — it's what makes the L1 resolution logic reachable. Correct, strategy-side only.
+  - e228bd120 (self-caught) — residual_position_observed_after_fill early-return returns the venue-observed residual instead of arithmetic. Correct (direct observation trumps computation).
+  - de34cff2e / 55235024e / 226c3ec71 — clippy refactor + moving PositionSide to #[cfg(test)]; pure hygiene, behavior-neutral.
+
+  Round-1 carryover re-confirmed
+
+  Blob-hash comparison vs 328dc3277: 9 of the PR's 16 files are byte-identical (the carried cleanups + adverse_path_harness.rs). Un-ignore integrity re-verified empirically: dropped_terminal_event…, partial_fill_then_expire…, restart_with_open_exit… all pass as ordinary members; hold_to_resolution… still ignored (red-by-design); ignored_adverse_path_harness_tests_still_fail_red green. Full run: 74 passed / 1 ignored / 0 failed. (The scripts/exit_decision.rs/source_evidence.rs/predeploy files in the 328dc3277..226c3ec71 range are base advancement from #1207/#1211, not PR content — confirmed absent from the PR's own diff.)
+
+  Campaign bars
+
+  No silent fallbacks (loud fail-closed hold or observation-driven resolve, evidence on each). Discriminator keys on NT terminal kind, not venue/market/strategy policy. No new human-chosen constants (only evidence-label strings + the preserved-reason, both allowlisted in the literal-audit TOML — CI green). Body "Part of #1179", no closing keywords. Pinning tests strengthened (add post-terminal resolution assertions beyond the boundary), none relaxed. CI at head 226c3ec71 = success.
+
+  Residual observations (non-blocking)
+
+  - Answering Q1b's "is evidence written?": the plain Flat→Managed(RecoveryBootstrap) backstop adoption writes no order-lifecycle evidence (only the from-EntryReconcilePending materialization emits EntryFillMaterialized). The exposure is correctly managed/exitable, but a reconcile-only surprise adoption leaves no strategy-local breadcrumb. Minor observability gap — optional follow-up, not a blocker.
+  - Transient-Flat double-entry race (considered, dismissed): not reachable under NT event ordering — OrderFilled precedes PositionOpened for the same fill, so any real fill sets observed_fill_quantity=Some before the terminal → PRESERVE, never the zero-fill Flat path. The backstop is defense-in-depth for reconcile-only position appearance.
+
+Performed vs. could not
+
+- Performed: fetched r2 head+base, verified merge-base = current main, blob-hash carryover; read full mod.rs/exposure.rs/decision_evidence.rs/tests diffs at HEAD; traced the complete liveness map (all EntryReconcilePending producers/consumers); read the self-caught + refactor commits individually; verified CI 28705464203 = success, literal allowlist, PR body/scope; built at HEAD (rustc 1.96.0) and executed the exposure + adverse_path_harness modules (74/1/0) plus an adversarial backstop test I authored — all green through real production.
+- Could not: run full CI locally (relied on verified green dispatch); no live-venue exercise; did not exhaustively fuzz every cross-order interleave (reasoned from NT's per-order sequencing instead).
+
+Let me update the memory record to reflect the round-2 APPROVE.
+GPT:
+• Verdict: REQUEST CHANGES
+
+  Findings
+  High: EntryReconcilePending can still lose a real late fill after a cancel/
+  expire terminal.
+
+  At HEAD 226c3ec71, resolve_pending_entry_terminal_event preserves fail-closed
+  only when observed_fill_quantity is already positive and
+  terminal_proves_zero_fill == false (src/strategies/binary_oracle_edge_taker/
+  mod.rs:1594). Otherwise it sets exposure to Flat at mod.rs:1618.
+
+  The call sites correctly say cancel/expire do not prove zero fill:
+  on_order_canceled passes terminal_proves_zero_fill: false at mod.rs:6379, and
+  on_order_expired does the same at mod.rs:6454. But if no fill has arrived
+  yet, those paths still clear to Flat. A later OrderFilled for the same client
+  order is then ignored because on_order_filled only treats a fill as an entry
+  fill when self.pending_entry() still matches (mod.rs:6198), and Flat has no
+  pending entry (src/strategies/binary_oracle_edge_taker/exposure.rs:207).
+  There is no fallback branch in on_order_filled after entry_fill == false and
+  exit_fill == false.
+
+  That is the campaign’s out-of-order-channel failure mode: cancel/expire
+  arrives before a genuine fill. The existing late-fill recovery test proves
+  OrderFilled alone can materialize the position when pending context is
+  retained (tests/exposure.rs:695), but the new zero-fill terminal test clears
+  cancel/expire to Flat (tests/exposure.rs:1140) and does not send a later
+  fill. A later position event may bootstrap a managed position, but the order-
+  fill observation itself no longer re-manages and no lifecycle evidence is
+  written for that client order.
+
+  Verified
+  I verified PR #1212 metadata through the GitHub connector: base 53c5b0b6,
+  head 226c3ec71, body starts Part of #1179, 16 changed files. Exact-head CI
+  run 28705464203 is success for 226c3ec71; jobs include build, clippy, deny,
+  source-fence, and test.
+
+  I performed blob-hash carryover against round-1 head 328dc327: only seven PR
+  blobs changed, including the strategy, exposure, evidence, and tests; I re-
+  read those changed areas and spot-checked the unchanged harness/restart/
+  pricing surfaces.
+
+  Local allowed checks run: just fmt-check passed; just source-fence-static
+  passed. I did not run local Rust tests/build beyond policy-approved checks
+  because this repo requires remote-first Rust verification.
+
+  Other surfaces personally checked: residual precision now preserves max
+  precision; residual re-management uses normal exit config and attributed
+  submit context; restart adoption queries execution-venue open sell orders and
+  fails closed for unattributed/ambiguous cases in production code; exactly
+  three harness ignores were removed and settlement remains ignored with the
+  meta-guard narrowed; commit messages contain no closing keywords.
+Kimi: ● Verdict: APPROVE — the round-2 revision resolves every adjudicated round-1
+   issue (L1 terminal-resolution stickiness, L2 missing lifecycle evidence, L3
+   residual precision) and the self-caught fixes stay within Lane 4’s
+   strategy-side boundary. I found no new blocking issue.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   How I re-derived the review
+
+   I treated round-1 head 328dc32773a65730c942f001dd8c6bcbd1561454 as the
+   carryover baseline and reviewed 226c3ec71bc57d3b8669c9ec69a74564aa8190ae
+   against the new merge-base 53c5b0b6f74015308737b6bf5a6bdff9f041699c. I also
+   diffed against the round-1 head to separate rebase noise from PR changes.
+
+   Key files read at HEAD:
+   • src/strategies/binary_oracle_edge_taker/mod.rs
+   • src/strategies/binary_oracle_edge_taker/exposure.rs
+   • src/strategies/binary_oracle_edge_taker/tests/exposure.rs
+   • src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs
+   • src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs
+   • src/bolt_v3_decision_evidence.rs
+
+   CI verified:
+   • gh run view 28705464203 --repo seungpyoson/bolt-v2 --json
+     conclusion,status,name,headSha → success, headSha:
+     226c3ec71bc57d3b8669c9ec69a74564aa8190ae.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Liveness map for EntryReconcilePending at this head
+
+   I traced every transition personally.
+
+   Into EntryReconcilePending (all observation-driven, no timer):
+   1. reclassify_unreachable_pending_entry_at_selection_boundary —
+      mod.rs:2045-2081
+      From PendingEntry when the instrument leaves the active up/down
+      selection. Reason UnresolvedAtSelectionBoundary, observed_fill_quantity:
+      None, lifecycle evidence BoundaryReclassification written.
+   2. on_order_filled entry-fill branch — mod.rs:6289-6322
+      When a fill arrives but position_id is missing or the inferred position
+      side is unsupported. Reason AwaitingPositionMaterialization /
+      UnsupportedEntryFillSide, observed_fill_quantity accumulated via
+      entry_reconcile_fill_quantity_after (mod.rs:1559-1574), lifecycle
+      evidence EntryReconcilePending written.
+   3. materialize_position_from_event invalid-side branch — mod.rs:3459-3485
+      When a position event carries a non-open side while a pending entry
+      exists. Reason InvalidObservedPosition, observed_fill_quantity carried
+      forward from prior reconcile state, lifecycle evidence
+      EntryReconcilePending written.
+
+   Out of EntryReconcilePending (all observation-driven):
+   1. on_order_filled materialization branch — mod.rs:6242-6288
+      Fill now provides position_id + inferable side → Managed. Lifecycle
+      evidence EntryFillMaterialized written.
+   2. materialize_position_from_event valid-position branch — mod.rs:3533-3565
+      Position opened/changed with supported contract → Managed (or
+      ExitPending update if already exiting). No new lifecycle line,
+      consistent with existing position-event handling.
+   3. on_position_closed entry-reconcile branch — mod.rs:6571-6598
+      Position closed for the same instrument → Flat. Lifecycle evidence
+      PositionClosed written.
+   4. resolve_pending_entry_terminal_event — mod.rs:1594-1646
+      Terminal order events now resolve by discriminator:
+       • observed_fill_quantity == None → Flat (Cancel/Expire/Deny/Reject).
+       • observed_fill_quantity == Some + terminal_proves_zero_fill == true
+         (Reject/Deny) → Flat.
+       • observed_fill_quantity == Some + terminal_proves_zero_fill == false
+         (Cancel/Expire) → preserved fail-closed with lifecycle evidence
+         raw_reason_text: "preserved fail-closed: fill observed, awaiting
+         position truth".
+
+   Stuck-forever reachability: the only indefinitely stuck cases are
+   intentional fail-closed states where a fill has been observed but position
+   truth never arrives and the terminal event does not prove zero fill.
+   Zero-fill terminals now resolve to Flat, and the position-event backstop
+   will re-Manage from venue truth if a contradictory position event later
+   arrives.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Adversarial truth-table check
+
+   ┌─────────────────┬────────┬──────────────────┬────────┬──────────────────┐
+   │ observed_fill_q │ Termin │ terminal_proves_ │ Result │ Evidence         │
+   │ uantity         │ al     │ zero_fill        │        │                  │
+   │                 │ kind   │                  │        │                  │
+   ├─────────────────┼────────┼──────────────────┼────────┼──────────────────┤
+   │ None            │ Cancel │ false            │ Flat   │ OrderCanceled/Or │
+   │                 │ ed /   │                  │        │ derExpired →     │
+   │                 │ Expire │                  │        │ Flat             │
+   │                 │ d      │                  │        │                  │
+   ├─────────────────┼────────┼──────────────────┼────────┼──────────────────┤
+   │ None            │ Reject │ true             │ Flat   │ OrderRejected/Or │
+   │                 │ ed /   │                  │        │ derDenied → Flat │
+   │                 │ Denied │                  │        │                  │
+   ├─────────────────┼────────┼──────────────────┼────────┼──────────────────┤
+   │ Some(q)         │ Cancel │ false            │ preser │ same transition, │
+   │                 │ ed /   │                  │ ved    │ EntryReconcilePe │
+   │                 │ Expire │                  │        │ nding, reason    │
+   │                 │ d      │                  │        │ text             │
+   ├─────────────────┼────────┼──────────────────┼────────┼──────────────────┤
+   │ Some(q)         │ Reject │ true             │ Flat   │ OrderRejected/Or │
+   │                 │ ed /   │                  │        │ derDenied → Flat │
+   │                 │ Denied │                  │        │                  │
+   └─────────────────┴────────┴──────────────────┴────────┴──────────────────┘
+
+   The contradictory row (Some(q) + Reject/Deny → Flat) is tested at
+   tests/exposure.rs:1187-1208
+   (late_zero_fill_entry_terminal_events_resolve_entry_reconcile_to_flat). The
+   position-truth backstop is real: on_position_opened / on_position_changed
+   call materialize_position_from_event regardless of current exposure
+   (mod.rs:6475-6501), so a later PositionOpened for that instrument will
+   re-create Managed exposure. No lifecycle line is emitted for that
+   re-materialization, but the prior EntryReconcilePending evidence and the
+   position event itself remain in the audit trail.
+
+   The out-of-order race (terminal → Flat, then genuine fill arrives later) is
+   bounded: on_order_filled ignores the late fill because no pending entry
+   matches (mod.rs:6198-6211). If the exchange later emits the derived
+   PositionOpened, the backstop recovers; if it does not, the strategy stays
+   Flat. That is the conservative, fail-closed choice.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Round-1 findings — status
+
+   ┌───────────────────────┬──────────────────────────────┬──────────────────┐
+   │ Round-1 finding       │ Round-2 fix                  │ Anchor           │
+   ├───────────────────────┼──────────────────────────────┼──────────────────┤
+   │ EntryReconcilePend │ Added                     │ mod.rs:1594-1646,      │
+   │ ing never resolved │ resolve_pending_entry_ter │ mod.rs:6383-6473       │
+   │ on terminal order  │ minal_event with          │                        │
+   │ events             │ terminal_proves_zero_fill │                        │
+   │                    │  discriminator            │                        │
+   ├────────────────────┼───────────────────────────┼────────────────────────┤
+   │ Missing lifecycle  │ on_order_filled now       │ mod.rs:6308-6322,      │
+   │ evidence on        │ records                   │ mod.rs:3471-3485       │
+   │ fill/position-even │ EntryReconcilePending     │                        │
+   │ t entry into       │ evidence;                 │                        │
+   │ EntryReconcilePend │ materialize_position_from │                        │
+   │ ing                │ _event invalid-side       │                        │
+   │                    │ branch records evidence   │                        │
+   ├────────────────────┼───────────────────────────┼────────────────────────┤
+   │ Missing lifecycle  │ on_position_closed        │ mod.rs:6583-6597       │
+   │ evidence on        │ entry-reconcile branch    │                        │
+   │ PositionClosed     │ records PositionClosed    │                        │
+   │ resolution         │ evidence                  │                        │
+   ├────────────────────┼───────────────────────────┼────────────────────────┤
+   │ Residual quantity  │ residual_position_after_t │ exposure.rs:108-113,   │
+   │ precision          │ erminal now uses          │ tested at              │
+   │ truncation         │ max(position.precision,   │ tests/exposure.rs:3030 │
+   │                    │ filled.precision)         │ -3073                  │
+   └────────────────────┴───────────────────────────┴────────────────────────┘
+
+   The old round-1 pinning test
+   late_entry_terminal_events_preserve_entry_reconcile_fail_closed_state has
+   been split and strengthened:
+   • late_zero_fill_entry_terminal_events_resolve_entry_reconcile_to_flat —
+     differential vs. round-1, proves zero-fill terminals now resolve.
+     tests/exposure.rs:1140-1224.
+   • late_fill_observed_entry_cancel_or_expire_preserves_entry_reconcile_fail_
+     closed_state — proves fill-observed Cancel/Expire still preserve.
+     tests/exposure.rs:1227-1315.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Self-caught fixes reviewed as first-class scope
+
+   1. e228bd120 — partial exit residual remanagement
+      Added the residual_position_observed_after_fill early-return in
+      ExitPendingState::residual_position_after_terminal (exposure.rs:99-101).
+      This is necessary when a partial fill is followed by a position update
+      showing the residual quantity and then a terminal event: without the
+      early-return the code would recompute residual from stale
+      filled_quantity and potentially mis-state it. The harness assertion at
+      tests/adverse_path_harness.rs:614 accepts EntryReconcilePending as a
+      halt-loud state, which is the round-1/spec refinement.
+
+   2. ca6ee5e0b — late entry fill lifecycle recovery
+      Changed the boundary-reclassification outcome from
+      BlindRecovery(PendingEntryUnresolvedAtBoundary) to EntryReconcilePending
+      { UnresolvedAtSelectionBoundary } (mod.rs:2055-2059) and added the
+      EntryFillMaterialized lifecycle transition (mod.rs:6270-6288,
+      decision_evidence.rs:1715-1718). This keeps the strategy in an
+      occupancy-bearing, evidence-tracked state rather than blind recovery,
+      and records materialization when a late fill finally arrives.
+
+   Both fixes are strategy-local and within Lane 4’s boundary.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Other verifications
+
+   • Un-ignore integrity: exactly three #[ignore] attrs removed; settlement
+     still ignored; meta-guard list now contains only settlement. git diff
+     53c5b0b6..226c3ec7 --
+     src/strategies/binary_oracle_edge_taker/tests/adverse_path_harness.rs.
+   • Harness assert: assert_managed_or_halted_loud gained exactly one
+     EntryReconcilePending { .. } arm; no other harness assertions weakened.
+   • Quantity residual: tests/adverse_path_harness.rs:107-132 pins residual
+     6.00 from 10.00 - 4.00; fresh re-exit helper checks normal exit_order
+     template and cache-attributed position_id.
+   • Restart adoption: mod.rs:1739-1889 still scopes to execution venue, fails
+     closed on unattributed/ambiguous open exits, and records
+     RestartOpenOrderAdopted / RestartOpenOrderRecoveryBlocked evidence.
+   • Boundary reclassification: still never clears state; transitions to
+     EntryReconcilePending and writes evidence.
+   • No timers/counters added for lifecycle resolution; the existing
+     selection-retry timer only drives reclassification entry.
+   • Scope/hygiene: no edits to submit_admission, capital-admission feed, or
+     venue-truth. PR body remains “Part of #1179” with no closing keywords.
+   • New string literals are source/discriminator labels for durable evidence,
+     justified in
+     docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml
+     .
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Low-severity observation (non-blocking)
+
+   materialize_position_from_event does not write an order-lifecycle evidence
+   line when a valid PositionOpened/PositionChanged event moves the strategy
+   from EntryReconcilePending → Managed. Only the fill-materialization path
+   emits EntryFillMaterialized. This is consistent with existing
+   position-event handling elsewhere, but it leaves a small audit asymmetry:
+   the lifecycle log will show the reconcile entry and the
+   terminal/position-closed exits, but not the position-event
+   re-materialization. I do not consider this blocking.
+
+   ───────────────────────────────────────────────────────────────────────────
+
+   Checks performed vs. not performed
+
+   Performed:
+   • Fetched exact HEAD and both diffs (new merge-base and round-1 head).
+   • Read all changed strategy, evidence, and test code at HEAD.
+   • Verified exact-head CI success via gh.
+   • Hand-derived the complete liveness map and adversarial truth table.
+   • Re-verified the three un-ignored harness tests, residual arithmetic,
+     restart adoption, and evidence transitions.
+
+   Not performed:
+   • I did not run cargo test locally; the project’s compile-heavy
+     verification policy points to CI, and exact-head dispatch:full is green.
+   • I did not do a deep audit of the runtime-literal TOML additions beyond
+     confirming they cover the new source labels.
+
+   Recommendation: merge.
+GLM: I have completed a full independent re-review. Here is my verdict.
+External Review — PR #1212 Round 2, HEAD 226c3ec71
+Verdict: APPROVE
+Round 2 delivers a sound, well-tested resolution to all three round-1 adjudicated items (L1/L2/L3) plus two correct self-caught fixes. The L1 discriminator's truth table is internally consistent, every EntryReconcilePending exit is observation-driven, the pinning-test split strictly strengthens (does not relax) round-1 coverage, and exact-head CI [dispatch:full] is green with the PR now MERGEABLE. Scope is clean (no #1185/#1207-owned surfaces touched).
+Findings (ranked — both non-blocking nits)
+1. NIT — observability Position-truth backstop re-manages without an order-lifecycle record tying it to the overridden terminal
+I derived the contradictory-case path the prompt flagged: observed_fill_quantity=Some(positive) + Denied/Rejected (terminal_proves_zero_fill=true) → Flat (mod.rs:1618). The position-truth backstop genuinely covers a real fill the terminal contradicts: a subsequent on_position_opened/on_position_changed reaches materialize_position_from_event (mod.rs:3449+), which from Flat builds Managed (origin RecoveryBootstrap, mod.rs:3584). I confirmed this works because materialize_position_from_event is not gated on reconcile state and only checks the foreign-venue guard + contract. However, that Flat→Managed transition writes no BoltV3OrderLifecycleEvidence — an operator sees OrderDenied → outcome Flat then later a Managed position with no explicit lifecycle link saying "position-truth overrode the zero-fill terminal." The Managed position is still observable via exit-eval evidence, so this is an observability gap, not a correctness or silent-loss defect. (Note: a late orphan on_order_filled arriving after the Flat resolution is dropped — entry_fill=false in Flat at mod.rs:6198 — but under NT's OMS invariant a real exposure-creating fill co-emits a position event, which is what re-manages. Robust for NT-conformant venues.)
+2. NIT — coverage residual_position_after_terminal early-return branch is pinned only via the parallel into_state_after_exit_update path
+The self-caught early-return (exposure.rs:99-101, residual_position_observed_after_fill → return full observed position) is correct and necessary (venue position-truth must dominate the quantity − filled_quantity arithmetic). It is exercised by exposure_exit_pending_terminal_with_residual_position_restores_managed_state (tests/exposure.rs:3075) through into_state_after_exit_update, not directly through mark_exit_order_terminal → residual_position_after_terminal. The logic is a one-line authoritative return parallel to the tested path, so risk is low; a direct unit test on residual_position_after_terminal with the flag set would tighten it.
+Items I personally verified as sound (no finding)
+L1 — terminal-resolution discriminator (mod.rs:1594 resolve_pending_entry_terminal_event). I derived the full truth table and confirmed it against the four handlers and the split tests:
+observed_fill    terminal    proves_zero    result    test pin
+None/zero    Canceled    false    Flat    tests/exposure.rs:1140
+None/zero    Expired    false    Flat    tests/exposure.rs:1219
+None/zero    Rejected    true    Flat    — (covered by deny/reject zero case)
+None/zero    Denied    true    Flat    tests/exposure.rs:1203
+Some(+)    Canceled    false    Preserve    tests/exposure.rs:1246
+Some(+)    Expired    false    Preserve    tests/exposure.rs:1276
+Some(+)    Rejected    true    Flat (contradiction)    tests/exposure.rs:1187
+Some(+)    Denied    true    Flat (contradiction)    tests/exposure.rs:1203
+terminal_proves_zero_fill is true only for Denied/Rejected (mod.rs:6415,6441) — sound: a denied (pre-venue OMS) or rejected (pre-acceptance) order cannot have filled. Canceled/Expired are false (mod.rs:6390,6462) — sound: partial fills may precede them, so fills are preserved awaiting position truth. Preserve records raw_reason_text = "preserved fail-closed: fill observed, awaiting position truth" (mod.rs:210) with outcome EntryReconcilePending; Flat records outcome Flat. The contradictory case (fills observed + deny/reject) → Flat with position-truth backstop — verified robust above.
+Liveness map (complete, no stuck-forever under NT conformance). Paths in: reclassify (mod.rs:2045, observed_fill_quantity=None); fill else-branch (mod.rs:6303, Some(accumulated)); InvalidObservedPosition (mod.rs:3463, preserves prior observed_fill_quantity via mod.rs:3441-3448). Paths out (all observation-driven, no timers): fill materialization → Managed (mod.rs:6251); position event → Managed (mod.rs:3584); terminal → Flat or Preserve (mod.rs:1594); on_position_closed matching instrument → Flat (mod.rs:6582); restart bootstrap overwrites. I confirmed entry_reconcile_fill_quantity_after (mod.rs:1559) accumulates correctly across multiple non-materializing fills. No reachable stuck-forever for any reason variant once a position event arrives (NT co-emits position events for exposure-creating fills).
+L2 — evidence on the three previously-unguarded transitions. Fill-branch entries (AwaitingPositionMaterialization / UnsupportedEntryFillSide) write EntryReconcilePending transition evidence with real filled_quantity (mod.rs:6308); InvalidObservedPosition writes it with preserved fill quantity (mod.rs:3471); on_position_closed reconcile resolution writes PositionClosed → Flat (mod.rs:6583). All pinned by entry_fill_reconcile_branches_record_lifecycle_evidence (tests/exposure.rs:2043), which asserts both fill-branches with exact observed_fill_quantity (2.00 / 3.00) and side/position-id fields. New transition variants EntryReconcilePending + PositionClosed and source const position_event (mod.rs:203) added cleanly.
+L3 — residual precision. residual_position_after_terminal (exposure.rs:97) now computes residual_precision = quantity.precision.max(filled_quantity.precision) (exposure.rs:112). residual_position_after_terminal_preserves_fill_precision (tests/exposure.rs:3030) seeds quantity precision 2 + filled precision 4 and asserts residual Quantity::new(5.8766, 4) — this fails on the round-1 code (would truncate to precision 2). Genuine red→green pin.
+Self-caught #1 (e228bd120, residual early-return). Correct and necessary: without it, an authoritative position event showing residual (residual_position_observed_after_fill=true) would be overridden by quantity − filled_quantity arithmetic that may not reflect venue truth. Returns the full observed position. Within Lane 4's strategy-side boundary.
+Self-caught #2 (ca6ee5e0b, late-fill recovery + observed_fill_quantity tracking). Correct and necessary: this is the foundation of the L1 discriminator — without tracking observed_fill_quantity on the reconcile state, no terminal could distinguish "fill observed" from "no fill." The materialization path (mod.rs:6242) recovers a late fill into Managed and records EntryFillMaterialized evidence (mod.rs:6270), pinned by the extended fill_after_rotation_preserves_exitable_position_book_and_subscription (tests/exposure.rs:695). Within boundary.
+Round-1 core re-verified. Un-ignore integrity: exactly one #[ignore] remains (settlement, adverse_path_harness.rs:240); meta-guard rotation contains only settlement (adverse_path_harness.rs:361); the three Lane 4 tests run as ordinary members through real production behavior (partial-fill: managed 10.00 − fill 4.00 → residual Quantity::new(6.0,2) via mark_exit_order_terminal→residual_position_after_terminal, adverse_path_harness.rs:128; restart adoption before fill replay, adverse_path_harness.rs:212-235; dropped-terminal reclassification, adverse_path_harness.rs:76). assert_managed_or_halted_loud admits exactly the one EntryReconcilePending arm (adverse_path_harness.rs:617). Fresh re-exit attribution validated structurally (cache.position_id(...) == Some(position_id), adverse_path_harness.rs:484). Restart adoption fail-closed on ambiguous/unattributed/cache-fail preserved. Boundary reclassification never clears state (split tests). No new timers/counters. No weakened tests — the pinning split strictly strengthens (round-1's blanket "all terminals preserve" would now fail; the split pins the actual nuanced discriminator with strictly more assertions).
+Campaign bars. No silent fallbacks (every transition writes evidence or fail-closes). No venue/market/strategy policy outside its owning layer (verified: zero submit_admission/capital_admission/venue_truth/exit_decision files in the 53c5b0b6..226c3ec71 diff). No new human-chosen constants — all new literals are stable audit-discriminator labels registered in runtime-literal-audit.toml. PR body Part of #1179, no closing keywords. PR MERGEABLE.
+Performed vs could not perform
+Performed personally: full 16-file PR diff read against new merge-base 53c5b0b6; direct read of mod.rs, exposure.rs, tests/exposure.rs, adverse_path_harness.rs, shared_fixture.rs, decision_evidence.rs at HEAD 226c3ec71 via git show (working tree is at a different SHA); blob comparison against round-1 head 328dc3277 for carryover; per-commit read of the two self-caught fixes (e228bd120, ca6ee5e0b) and the L1 fix (979fe1618); hand-derivation of the L1 truth table and the complete EntryReconcilePending liveness map; derivation of the contradictory-case position-truth backstop and the out-of-order late-fill drop; gh run view/gh pr view for exact-head CI (success, SHA-matched), mergeability (MERGEABLE), and body; scope grep for #1185/#1207-owned leakage.
+Could not perform: no local compile/test run (repo policy is remote-first; relied on exact-head dispatch:full success + static read). Did not exercise the position-truth backstop end-to-end in a driven integration test (assessed statically via materialize_position_from_event from Flat). Did not review #1207/#1211 content absorbed into the merge-base (out of PR scope — confirmed absent from the 16-file authored diff).
+
+---
+
+so 1212 needs some fix or not?
+
+---
+
+we have pr comments to resolve
+
+---
+
+Merged origin/main into fix/1179-money-loop and pushed the mechanical merge
+  head.
+
+  Head SHA: 06fb2cf7aa26428608d0ef7ae40f7264abd08b17
+  Full CI: success,
+  https://github.com/seungpyoson/bolt-v2/actions/runs/28706429461
+  PR report:
+  https://github.com/seungpyoson/bolt-v2/pull/1185#issuecomment-4882070217
+
+  Only conflict was specs/711-capital-admission-rename/misnomer-allowlist.txt;
+  resolved with three line-number anchor updates only. Local gates passed,
+  exact-head CI passed, and the worktree is clean.
+
+---
+
+1185 has a clean review?
+
+---
+
+which sessions are you waiting on?
+
+---
+
+why are you working on CI work
+
+---
+
+no you just own making bolt systematic and stable infra
+
+---
+
+1212 needs to resolve conflict
+
+---
+
+from session 2: 
+• Recommendation: fighting the foundation.
+
+  I recommend closing #1188 as a branch and porting the exit-clamp logic onto a
+  fresh PR from current main.
+
+  Evidence:
+
+  - Current origin/main: f57df191682ef6384dc9b3b6eb98098189947456
+  - #1188 head: 85d92b3eb8ecd7b4144942060b5d18e9dd0a3a02
+  - No-commit merge of origin/main into #1188 produced 8 unresolved conflicts:
+      - docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-
+        audit.toml
+
+      - docs/superpowers/specs/2026-07-03-money-loop-pr-a-authority-inversion-
+        design.md
+
+      - src/bolt_v3_capital_admission_runtime_feed.rs
+      - src/bolt_v3_live_node/risk_admission_loss.rs
+      - src/bolt_v3_providers/polymarket/venue_truth_runtime_source.rs
+      - src/bolt_v3_venue_truth.rs
+      - tests/bolt_v3_capital_admission_runtime_feed.rs
+      - tests/bolt_v3_polymarket_venue_truth.rs
+
+  The conflicts are not mechanical line drift. They are in the PR-A authority-
+  inversion core: old branch code still assumes immediate reconcile_snapshot,
+  direct venue-truth position promotion, and pre-v2 halt/runtime semantics.
+  Current main has the final capture-fenced reconciler, accepted-snapshot
+  promotion, capture-failure suspension, durable halt wiring, and the hardened
+  reconciler APIs.
+
+  The useful clamp logic is portable: probing only commit 85d92b3e onto fresh
+  origin/main showed src/bolt_v3_order_execution.rs and tests/
+  bolt_v3_decision_evidence.rs apply cleanly. The only single-commit conflicts
+  were in src/bolt_v3_capital_admission_runtime_feed.rs and its test, where
+  current main already has the accepted venue-truth position promotion in v2
+  form.
+
+  So the branch is fighting the foundation, but PR-C’s core order-execution
+  clamp should port cleanly onto main with the duplicated position-promotion
+  half dropped or rewritten against the v2 accepted-capture path. No adaptation
+  work was pushed.
+
+---
+
+so what's the current status overall? there are too many tasks so I'm quite confused
+
+---
+
+no you should not manage any CIs
+
+---
+
+brief 3 is not part of your work either. what's lane 5?
+
+---
+
+do you own pr 1220?
+
+---
+
+we may need to make this more simple - .toml docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml not sure if it's realistic to have ~20000 lines of configs that can be well understood
+
+---
+
+so what's the status?
+
+---
+
+• PR-C port is open: https://github.com/seungpyoson/bolt-v2/pull/1225
+
+  Head SHA: 6feada793bb662ac64a0ab102f4f97bd5ea33acd
+
+  Exact-head full CI:
+  https://github.com/seungpyoson/bolt-v2/actions/runs/28710965561
+  Conclusion: success, with gate-dispatch green.
+
+  Changed only:
+
+  - src/bolt_v3_order_execution.rs
+  - tests/bolt_v3_decision_evidence.rs
+
+  What landed:
+
+  - Ported the exit clamp core from 85d92b3eb.
+  - Clamp uses merged v2 accepted venue-truth position surfaces as-is.
+  - Dropped the old position-promotion half after verifying v2 accepted-capture
+    promotion covers open orders and positions.
+
+  - Requested review from required reviewer sp-reviewer.
+
+  Verification:
+
+  - Red/green clamp differential: red rejected before clamp, green after.
+  - Focused clamp test passed.
+  - Decision-evidence ordering test passed.
+  - v2 venue-truth promotion proof passed.
+  - just fmt-check, just deny, just ci-lint-workflow, source-fence-static, and
+    manual source-fence Rust tail passed.
+
+  Note: just verify-remote still keys off the initial pull_request run that
+  skipped the full gate, so it reports that run as insufficient. The dispatched
+  workflow_dispatch full_ci=true run above is exact-head and green.
+
+---
+
+1212 merged
+
+---
+
+we are only working on session 2, 4 right
+
+---
+
+PR #1225 round-1 changes are pushed and flagged for full
+  external re-review.
+
+  Head: b34f6ff2900f138166216e1e7df862eea1cb2d0d
+  Exact-head full CI: success
+  Run:
+  https://github.com/seungpyoson/bolt-v2/actions/runs/28713749468
+  PR comment:
+  https://github.com/seungpyoson/bolt-v2/pull/1225#issuecomment-4883249217
+
+  Delivered:
+
+  - R1: clamp_outcome evidence on every clamp evaluation path,
+    including clamped { original_quantity }, within_bounds,
+    rejected, and not_evaluated reasons.
+
+  - R2: KillSwitchForcedReduction now routes through the same
+    venue-position clamp path.
+
+  - Follow-up: boxed private rejection evidence after CI found
+    clippy::result_large_err.
+
+  Verification passed:
+
+  - cargo test --locked --lib bolt_v3_order_execution --
+    --nocapture
+
+  - cargo test --locked --lib
+    encode_order_intent_line_wraps_intent_with_metadata --
+    --nocapture
+
+  - cargo fmt --check
+  - cargo clippy --locked -- -D warnings
+  - just fmt-check
+  - just source-fence-static
+  - just deny
+  - just ci-lint-workflow
+  - exact-head full CI green
+
+  Open questions: none.
+
+---
+
+PR 1225
+Claude: CI is genuinely green at the exact HEAD (CI [dispatch:full] success on b34f6ff29; test/build/clippy/deny/check-aarch64/source-fence all success). I have everything I need. Here is my independent review.
+
+---
+Review — PR #1225 "clamp exits to venue truth position" (round 1)
+
+Verdict: APPROVive exit path iscorrect, fail-loud, and evidence-complete; residuals below are non-blocking, one warrants an explicit owner acknowledgment).
+
+Reviewed at HEAD b34f6ff2900f138166216e1e7df862eea1cb2d0d vs base f57df191. I re-derived the routing, math, evidence, and campaign bars from source; I did not rely on the PR body.
+
+What I verified holds (core clamp, live RiskReducingExit path)
+
+- Single venue-submit chokepoint. The only production submit_order_via_nt call is bolt_v3_order_execution.rs:141, inside route_submit_with_sink, after
+clamp_risk_reduroute_modify_with_sink is fail-closed in Live (returns Err; the maker requotes via cancel+resubmit, which re-enters route_submit_with_sink). So there is no replace/modify path that submits an oversized exit around the clamp — the "oversized ReplaceSubmit slips through" concern is closed structurally.
+- Clamp math is floor-down + rechecked. floor_decimal_to_quantity_precision truncates venue_position
+toward zero to(scaled.trunc()/multiplier, checked mul/div, overflow→Err),
+so submitted ≤ st-clampsubmitted_quantity > venue_position → Reject guard is belt-and-suspenders. Flooring to the order's own precision
+cannot introduc (precision is
+never increasedt's sharpest
+question: a venn than the order(3.14159, order dp=2 → submit 3.14 ≤ 3.14159) sells strictly less than held. Never clamps up.
+- Consistent field mutation after clamp:
+order.set_quantrder_quantity,
+proportional re
+(checked_mul(su) —multiply-before-divide, exact for fixed-price notional, fail-closed on overflow), proof.position_quantity=venue_position +
+proof.exit_quanof admissible:
+exit ≤ positiony=submitted,
+intent.quantityThe live test
+proves admissior_count==1) with
+the clamped val
+- Ordering: clamp → record_order_intent(&intent) (clamped) → admit(&request) (clamped) → submit. Rejections record clamp_outcome: Rejected before returning the error and never
+submit. The
+binary_oracle_eshared_policy
+ordering test iol names, not
+weakened (still < submit).
+- Evidence on eounds /Clamped{original_quantity} / Rejected / NotEvaluated{NoVenueTruth|ForeignInstrument} — all set with real values; the eligibility-gate pass-through
+(non-exit/entry
+venue_truth_exid on
+product.source T_SOURCE
+(authority chec not branch
+clamping behaviissionSnapshot is
+single-variant loud at compiletime if extended.
+- Zero/sub-precision venue position → loud reject (no
+venue-held posirecision), nosubmit — this is the direct kill for the 40-phantom-sell class. A partial reduction that is representable is never rejected; only genuinely unrepresentable (< 1 tick) positions reject.
+- Campaign bars: no new human-chosen constants/timers (only Decimal::{ZERO,ONE,TEN} and data-derived precision); pass-throughs are evidenced (not silent); PR body "Part of
+#1179", no clos exact HEAD;differential is logically sound (assert_eq!(submitted, [3.0])
+and clamp_outcoh fail onun-clamped code that would submit 5.0 / record None).
+
+Findings (all non-blocking)
+
+F1 — KillSwitchlity is inert in
+production (flais_venue_position_exit_clamp_eligible covers RiskReducingExit
+| KillSwitchForon path carriesa KillSwitchForcedReduction into route_submit_with_sink: the sole production request builder (bolt_v3_submit_admission.rs build_submit_admission_request_from_order) maps only
+Entry→Entry andaker path builds
+Entry; and the
+(reserve_basket
+bolt_v3_basket_
+admission/reserissionprimitives. So the forced-reduction arm is exercised only by the direct unit test
+kill_switch_for_position. This
+is not a hole (h is protected,and route_submit_with_sink is the single chokepoint any future forced-reduction submission must pass), but "forced reductions are now clamp-protected" overstates current
+production cove Recommend the
+owner note it ahan delivered.
+
+F2 — schema_version (14) not bumped for the new clamp_outcome evidence field (confirm intent).                             bolt_v3_decisiooutcome to thev14 order_intent payload without touching BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION. This is backward-compatible in this repo: serde defaults a missing Option to None (missing_field→deserialize_option→visit_none), and the reader strict-equality gate (:2896, !=) means bumping would instead reject existing v14 lines; there is no order_intent golden fixture, and the encode test was updated two-way (intenthe only residualis that a v14 order_intent line's shape is no longer uniquelydetermined by ihes the team'sschema-versioning discipline (the codebase uses no #[serde(default)] anywhere, suggesting strict versioning is the norg).                                                   F3 — No dedicatst(packet-vs-reale packet's check#6 expects an iepted-capturepromotion covers open-orders-AND-positions (the dropped #1188 half). No such test exists in the diff — and the PR body doesn't actually claim one; it points to merged #1185        accepted-capturby the clamp." Iconfirmed the con/no_positiongated by source, and those are populated by the base (#1185). Coverage legitimately lives in the merged base, so droppingthe redundant hnothing new tore-prove here.
+
+F4 — Minor: eligibility-gate pass-through for a hypothetical RiskReducingExit Buy leaves clamp_outcome=None (indistinguishable from a non-exit in evidence). Harmless under the long-only YES/NO Polymarket model where exits are always sells; noting only for completeness.                
+Performed vs not performed                                 - Performed: fuoductionsubmit/modify/route path via git grep at HEAD; read the clamp, venue_truth_exit_position, route_modify_with_sink, request builders, evidence envelope/encoder, and the orderitest at HEAD; cshot shape andthe snapshot aceywords (gh prview) and CI sun view28713749468 + check-runs API); reasoned the clamp math, notional rescale, and serde back-compat from source.
+- Not performed: I did not re-run the red/green differential locally (I veritions pin theclamped value/Clamped outcome that un-clamped code cannot produce — and CI is green at HEAD, but I did not check out pre-clamp code and observe the failure). I did not exhaustively audit #1185's accepted-capture promotion internals (out of this PR's scope; consumed as-is per the packet).
+GPT: 
+• Verdict: REQUEST CHANGES
+
+  Findings:
+
+  1. KillSwitchForcedReduction clamp path is not production-
+     routed.
+     At src/bolt_v3_submit_admission.rs:3040, production
+     request construction maps compiled Exit only to
+     RiskReducingExit. src/strategies/binary_oracle_edge_taker/
+     mod.rs:3914 routes strategy submits through that builder,
+     and my git grep found no production code in src/ that
+     constructs or mutates a submit request to
+     BoltV3SubmitIntentKind::KillSwitchForcedReduction. The
+     only clamp test does it manually at src/
+     bolt_v3_order_execution.rs:1615. So the forced-reduction
+     part is not an end-to-end production proof; it is a unit-
+     level synthetic branch.
+
+  What I personally verified:
+
+  - Reviewed exact diff f57df191...b34f6ff29.
+  - Inspected clamp math/order/request/proof/evidence mutation
+    in clamp_risk_reducing_exit_to_venue_position.
+
+  - Traced normal exit submit path through
+    submit_order_with_decision_evidence into route_submit.
+
+  - Traced venue-truth source acceptance and product-position
+    promotion.
+
+  - Ran git diff --check f57df191... b34f6ff29; passed.
+  - Confirmed route_modify remains fail-closed, so live in-
+    place replace cannot bypass submit admission.
+
+  Could not perform:
+
+  - gh pr view and gh run view both returned GitHub API
+    Forbidden, so I could not personally verify PR body text or
+    the linked CI run.
+
+  - I did not run local Rust tests/builds due this repo’s
+    remote-first Rust verification policy.
+GLM:Verdict: APPROVE
+Independent external review of PR #1225 at HEAD b34f6ff2900f138166216e1e7df862eea1cb2d0d (merge-base f57df1916 confirmed). All anchors below were personally re-derived from source at HEAD, not from the PR body.
+What I personally verified (executed)
+- HEAD/merge-base/CI: git merge-base = f57df1916... ✓. CI run 28713749468 via gh run view → conclusion: success, headSha: b34f6ff29... ✓. Owner R1/R2 comments fetched via gh api (4882955920, 4883255376) — both required items (clamp-outcome evidence; forced-reduction eligibility) are addressed in commits c51f74e0b and b34f6ff29.
+- Diff scope: 3 production files + 1 test file + misnomer-allowlist line-shift drift only. bolt_v3_submit_admission.rs change is purely additive (is_venue_position_exit_clamp_eligible at src/bolt_v3_submit_admission.rs:2792); no admission/reconciler internals modified.
+- Math re-derivation against nautilus quantity.rs:446 (from_decimal_dp → mantissa_exponent_to_fixed_i128 at fixed.rs:628) and rust_decimal trunc (decimal.rs:1220) + div_impl (ops/div.rs:221).
+- Routing: single submit path route_submit_with_sink (src/bolt_v3_order_execution.rs:109); destructuring captures all 4 routing fields + separate order.
+- ReplaceSubmit bypass: blocked by admission ReplaceSubmitUnsupported (src/bolt_v3_submit_admission.rs:3498-3501) — structurally cannot reach the venue.
+- Forced-reduction claim: BoltV3KillSwitchForcedReductionClaim (submit_admission.rs:2656) carries no quantity; admission check (evaluate_kill_switch_forced_reduction:2344) uses request.notional, which the clamp rescales down.
+- Proof test: polymarket_venue_truth_snapshot_promotes_open_orders_and_positions exists at merge-base (added by #1185 dc152ec5f), asserts both open_order_count == 1 AND yes_position == 7/no_position == 2 — non-vacuous.
+- Schema: v14 unchanged; clamp_outcome: Option<_> is backward-compatible additive; order_intent is audit-only (skipped on recovery, decision_evidence.rs:2610).
+Findings (ranked)
+No blocking findings. Three non-blocking observations:
+1. Observation, owner-ruled NoVenueTruth pass-through is the sole residual phantom-sell surface — bolt_v3_order_execution.rs:462 (src/bolt_v3_order_execution.rs venue_truth_exit_position). When accepted venue-truth is absent, a risk-reducing exit submits unclamped. This is the explicit owner ruling (comment 4882955920: "don't trap exposure behind absent data") and the NotEvaluated{NoVenueTruth} evidence makes it auditable, satisfying the no-silent-fallback bar. Residual risk accepted, not a blocker.
+2. Observation Non-eligible pass-through leaves clamp_outcome = None — bolt_v3_order_execution.rs:404 early-return. Entry / ReplaceSubmit (admission-blocked) / non-sell / zero-quantity skip without an explicit "NotEvaluated:Ineligible" marker. Semantically correct (clamp not applicable) and the five evaluation paths for eligible sell-exits are all covered, which is what the campaign bar requires. Not a blocker.
+3. Observation Notional rescale div rounds silently — bolt_v3_order_execution.rs:474. rust_decimal checked_div only returns None on overflow/div-by-zero (ops/div.rs:222-223); non-terminating division rounds. Mul-first ordering minimizes drift; notional is capital-accounting metadata (not the exact order quantity, which is precision-floored exactly). Sub-cent drift in accounting is acceptable. The div-by-zero case is unreachable (original_order_quantity > 0 guaranteed by the :404 and :419 guards).
+Math adversarials — all passed
+- Precision-flooring can't overshoot: floor_decimal_to_quantity_precision (:459) does trunc() to scale 0 then / 10^p, yielding a value with ≤ p decimal places. from_decimal_dp's banker-rounding branch (frac_digits > precision) is therefore never entered. clamped ≤ venue_position holds by construction.
+- Zero-floor rejection: venue_position ∈ (0, 1 unit at order precision) floors to 0 → loud Rejected at :432 (not a silent zero-submit). Correct.
+- Post-clamp recheck (:471): defensively unreachable (clamped ≤ venue by construction); retained as depth.
+- Admission shape check (submit_admission.rs:3520 evidence.quantity != request.order_quantity): both updated to submitted_quantity at :481/:484 — consistent.
+- Forced-reduction can't be weakened: clamp reduces notional → admission cap check (:2363) strictly easier to pass; zero-position forced reduction correctly rejects loud (nothing to reduce, not phantom).
+Campaign bars — all satisfied
+No new human-chosen constants (POLYMARKET_VENUE_TRUTH_REST_SOURCE is the #1185 provenance guard, used only for authority check at :464, no policy branching). No silent fallbacks (5 evaluation paths all carry clamp_outcome). No closing keywords in body/title ("Part of #1179"). Misnomer drift is line-number-only (+22 lines in decision_evidence.rs).
+Could not personally perform
+- Did not run Rust tests locally (per repo's remote-first policy; CI run 28713749468 green at exact head is the merge-gate proof). Non-compile local gates not run as the remote full-CI green supersedes them for an approval verdict.
+- Did not exercise the live Polymarket venue-truth stream (production-only, out of review scope for a code PR; campaign rule 10 governs that separately).
+Recommendation: merge-eligible after rebase clearance (misnomer-allowlist drift is the only expected conflict per packet, confirmed).
+Kimi: Verdict: APPROVE — the clamp core is correctly placed, the
+   math is fail-closed, and every pass-through is auditable.
+   The findings below are observations / follow-ups, not
+   blockers.
+
+   ───────────────────────────────────────────────────────────
+
+   What I personally verified
+
+   • Checked out the exact PR HEAD in an isolated worktree:
+     b34f6ff2900f138166216e1e7df862eea1cb2d0d.
+   • Re-derived the full diff against the stated merge-base
+     f57df191682ef6384dc9b3b6eb98098189947456.
+   • Traced the production submit paths that reach
+     route_submit_with_sink in src/bolt_v3_order_execution.rs.
+   • Adversarially walked
+     clamp_risk_reducing_exit_to_venue_position,
+     venue_truth_exit_position, and
+     floor_decimal_to_quantity_precision.
+   • Confirmed the exact-head CI run (28713749468) succeeded
+     with headSha == b34f6ff29.
+   • Verified via git merge-tree that the only merge drift
+     against current origin/main is in non-production
+     TOML/audit files (including the expected
+     misnomer-allowlist drift); no source conflict in src/.
+   • Did not run local compile-heavy cargo verification — per
+     repo policy I used code inspection and the exact-head CI
+     artifact instead.
+
+   ───────────────────────────────────────────────────────────
+
+   Ranked findings
+
+   1. KillSwitchForcedReduction is clamp-eligible, but no
+   production caller routes it through the submit seam yet
+
+   • The clamp code accepts
+     BoltV3SubmitIntentKind::KillSwitchForcedReduction at
+     src/bolt_v3_order_execution.rs:315 and the test at
+     src/bolt_v3_order_execution.rs:1601 exercises it by
+     mutating request.intent_kind directly.
+   • However, the only production callers of
+     BoltV3OrderExecutionPolicy::route_submit /
+     route_submit_with_sink are:
+       • src/strategies/binary_oracle_edge_taker/mod.rs:3939 —
+         exits map to RiskReducingExit, not
+         KillSwitchForcedReduction.
+       • src/bolt_v3_order_execution.rs:846 (maker entry path)
+         — Entry only.
+   • BoltV3KillSwitchFlattenCommand is produced by
+     src/bolt_v3_kill_switch_flatten.rs, but I found no
+     production consumer that turns those commands into
+     BoltV3SubmitRoutingRequests.
+   • Impact: the eligibility is correctly wired and
+     future-proof, but the claim that forced reductions
+     “genuinely route through this path in production” is not
+     yet realized end-to-end. Track in a follow-up issue or
+     scope the claim to “clamp-eligible at the shared
+     execution seam.”
+
+   2. WithinBounds outcome is implemented but untested
+
+   • src/bolt_v3_order_execution.rs:336-338 sets
+     BoltV3OrderIntentClampOutcome::WithinBounds when
+     request.order_quantity <= venue_position.
+   • No test at HEAD asserts this variant (grep -R
+     WithinBounds only hits the enum definition and the
+     production assignment).
+   • Impact: low — the path is trivial, but a regression that
+     accidentally changed this variant would not be caught.
+     Add one test where the exit quantity is already ≤ venue
+     position.
+
+   3. Stale-but-present accepted venue truth is a residual
+   phantom-sell window
+
+   • venue_truth_exit_position at
+     src/bolt_v3_order_execution.rs:458-476 returns the
+     snapshot position as long as product.source ==
+     POLYMARKET_VENUE_TRUTH_REST_SOURCE. It does not inspect
+     observed_at_ns or any max-age bound.
+   • The pass-through paths (NoVenueTruth, ForeignInstrument)
+     are not the paths that can recreate the phantom-sell
+     class: they explicitly record NotEvaluated evidence and
+     fall back to strategy-local data.
+   • The residual risk is a stale-but-present accepted capture
+     that still shows a position the venue no longer holds.
+     That is outside the scope of this clamp (it is
+     data-freshness policy, not clamp policy), but it should
+     be tracked explicitly.
+
+   4. clamp_outcome field is undocumented in the schema doc
+
+   • src/bolt_v3_decision_evidence.rs:273 adds pub
+     clamp_outcome: Option<BoltV3OrderIntentClampOutcome> to
+     BoltV3OrderIntentEvidence.
+   • docs/bolt-v3/2026-04-25-bolt-v3-schema.md describes
+     order_intent payloads but does not list clamp_outcome.
+   • The schema verifier
+     (scripts/verify_bolt_v3_schema_current.py) does not
+     enforce order-intent payload field lists, so CI is green.
+     Because the field is Option, serde treats a missing key
+     as None, so backward compatibility is preserved. Still,
+     the doc should be updated.
+
+   5. ReplaceSubmit exits are intentionally un-clamped
+
+   • is_venue_position_exit_clamp_eligible at
+     src/bolt_v3_submit_admission.rs:2793-2799 returns false
+     for ReplaceSubmit.
+   • No production code currently emits
+     BoltV3SubmitIntentKind::ReplaceSubmit (only tests), so no
+     oversized replace can slip through today.
+   • Impact: if a future slice wires replace-of-exit as a new
+     submit, it must either be clamped here or be proven
+     impossible to inflate quantity.
+
+   ───────────────────────────────────────────────────────────
+
+   Positives I verified
+
+   • Correct placement: clamp runs in route_submit_with_sink
+     at src/bolt_v3_order_execution.rs:125-136 before
+     record_order_intent, submit_admission.admit, and
+     sink.submit_order_via_nt. The source-integrity test at
+     tests/bolt_v3_decision_evidence.rs:1769-1782 still
+     enforces evidence < admission < submit.
+   • Authority is narrow: venue_truth_exit_position only
+     trusts POLYMARKET_VENUE_TRUTH_REST_SOURCE
+     (src/bolt_v3_order_execution.rs:466); any NT-derived
+     snapshot returns NoVenueTruth and passes through.
+   • Math is adversarially safe: flooring a positive
+     venue_position to order precision, then rechecking
+     submitted_quantity > venue_position at
+     src/bolt_v3_order_execution.rs:380-388, prevents a
+     quantity the venue would reject. The notional is rescaled
+     proportionally with checked mul/div at
+     src/bolt_v3_order_execution.rs:393-408. Clamping to zero
+     only happens when the venue position is below order
+     precision, in which case no partial reduction is
+     representable.
+   • Evidence on every clamp path: WithinBounds,
+     Clamped{original_quantity}, Rejected,
+     NotEvaluated{NoVenueTruth}, and
+     NotEvaluated{ForeignInstrument} are all assigned before
+     returning. Rejection records the intent with Rejected
+     before propagating the error.
+   • Dropped promotion half is covered:
+     tests/bolt_v3_capital_admission_runtime_feed.rs:215-243
+     proves the merged v2 accepted-capture promotion promotes
+     both open orders and positions, so the old #1188
+     promotion half is indeed superseded.
+   • Campaign bars: no new runtime constants;
+     POLYMARKET_VENUE_TRUTH_REST_SOURCE is only used as a
+     provenance guard; commit messages say “Part of #1179”
+     with no closing keyword; no silent fallbacks.
+
+---
+
+PR #1225 is ready for sp-reviewer + queue.
+
+  Merged head: 99813d11ae0338c585fc6f54a16aadc9090d566f
+  Exact-head full CI: success
+  Run:
+  https://github.com/seungpyoson/bolt-v2/actions/runs/28715761367
+  Report comment:
+  https://github.com/seungpyoson/bolt-v2/pull/1225#issuecomment-4883467193
+
+  Done:
+
+  - Updated PR body with the required forced-reduction wording.
+  - Merged origin/main.
+  - Conflict inventory was exactly specs/711-capital-admission-
+    rename/misnomer-allowlist.txt; resolved line anchors only,
+    no entry changes.
+
+  Local verification passed:
+
+  - just fmt-check
+  - just source-fence-static
+  - just deny
+  - just ci-lint-workflow
+  - BOLT_ALLOW_LOCAL_RUST=1 cargo clippy --locked -- -D
+    warnings
+
+  - Focused PR tests for order execution and evidence
+    serialization
+
+  Worktree is clean and PR head matches the reported SHA.
+
+---
+
+don't we need to get external model review?
+
+---
+
+we need to resolve pr comments
+
+---
+
+• Completed Lane 5 from the worktree branch.
+
+  - PR: https://github.com/seungpyoson/bolt-v2/pull/1229
+  - Branch: codex/1179-lane5-final-campaign
+  - Head SHA: 1abfc2102150198b33a11a8f6888a77838c3a05d
+  - Exact-head full CI: passed, run 28718063987
+
+    https://github.com/seungpyoson/bolt-v2/actions/runs/28718063987
+
+  - Required reviewer requested: sp-reviewer
+  - PR state: still draft
+  - Worktree: clean
+
+  Verification run:
+
+  - git diff --check
+  - just fmt-check
+  - just source-fence-static
+  - just verify-remote
+
+  Goal usage: 1,670,456 tokens, about 3h 56m.
+
+---
+
+GLM:My review is complete. Here is my verdict.
+Verdict: APPROVE (with three low-severity findings to address)
+The core deliverables are correct, well-tested, and within the structural-only campaign bar. CI is green at exact head 1abfc2102. No correctness, safety, or policy defects in the trading/admission/evidence paths. The findings below are improvement opportunities, not merge blockers.
+What I personally derived/executed
+Check    Result
+HEAD SHA + merge-base match packet    ✅ 1abfc2102… / 177d8038…
+Drain write path — no BufWriter above fd    ✅ JsonlBoltV3DecisionEvidenceWriter.file: Mutex<std::fs::File> (decision_evidence.rs:1783); append_line = write_all+sync_data per record (1805-1815); drain_shutdown = sync_all (1817-1825)
+Same Arc shared strategies↔drain    ✅ Single construction at live_node.rs:1870, cloned into feeds + runtime
+Three-way matrix (9 arms)    ✅ Walked all combinations; run/capture + drain errors both preserved, no masking (live_node.rs:1747-1784)
+Drain invoked on every shutdown path    ✅ Unconditional at live_node.rs:1746, after runner+capture+iv_stop; pre-runner early-returns can't have buffered evidence
+const→pub purity claim    ✅ Only VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE (submit_admission.rs:53); no other admission/reconciler internals touched
+Backstop lifecycle    ✅ Set on Flat-terminal (2 sites), consumed RecoveryBootstrap + instrument-filtered, cleared on new-entry/strategy-fill/non-recovery
+Cancel→Flat→override path    ✅ clear_pending_entry_for_client_order sets Flat (mod.rs:1470) before the if Flat check (1671)
+just fmt-check (literal audit + provider leak)    ✅ pass
+verify_bolt_v3_strategy_policy_fence.py    ✅ pass (Rule 9)
+just source-fence-static    ✅ all self-tests OK
+CI run 28718063987    ✅ success, exact head, dispatch:full
+Commit hygiene    ✅ no closing keywords; body "Part of #1179"
+Could not run: local cargo compile/clippy/test (per remote-first policy — relied on exact-head CI). Could not exercise: drain failure path (see Finding 2).
+Findings
+F1 (Low) — RunAndDecisionEvidenceShutdownDrain Display is inaccurate for the iv_stop-only + drain case.
+The fifth matrix arm (Ok(()), Err(iv_stop_error), Err(DecisionEvidenceShutdownDrain(drain_error))) (live_node.rs:1772-1779) builds this variant with run_error = iv_stop_error, but the Display string (live_node.rs:1547-1551) hardcodes "LiveNode run or runtime-capture shutdown failed …" — false when run and capture both succeeded and only the IV lifecycle stop failed. The run_error field still carries the true iv_stop text, so an operator can recover the real cause, but the leading label misdirects. Suggest generalizing the message to "run, runtime-capture, or IV lifecycle stop failed."
+F2 (Low) — Drain failure path is untested.
+The new test jsonl_decision_evidence_shutdown_drain_succeeds_after_record_write (tests/bolt_v3_decision_evidence.rs:931) is happy-path only — it asserts drain succeeds after a write. Neither DecisionEvidenceShutdownDrain, RunAndDecisionEvidenceShutdownDrain, nor any of the 9 matrix arms have coverage. (Fsync-fault injection is genuinely hard; the matrix is compiler-checked for exhaustiveness, so risk is low — but the "exercise drain failure" bar is not met.)
+F3 (Note) — BoltV3LiveNodeRuntime::operator_health_surface is pub but has zero callers; reject-observer health is never rendered.
+live_node.rs:938 defines the full live aggregation (reject-observer + kill-switch + capital + input-health), but no command or test calls it. The only rendered path, ops_status_operator_health_from_loaded (main.rs:1150-1178), passes None, None, None for reject-observer, capital, and input-health, so ops-status always emits not_configured for those two components. Input-health is rendered, but only in the separate run_reference_current_price_health command (main.rs:752). Net: reject-observer health is computed and tested in isolation but never surfaced to any operator output — the "single view" incident goal is only structurally scaffolded, not delivered. This is acceptable under the structural-only bar but should be wired or explicitly tracked.
+Aspects verified clean (no findings)
+- Announcements fail loud pre-arm: runtime_source_announcements returns Err for missing strategy config, dangling reference source ids, and unknown/missing RV surfaces — all before the runner starts (live_node.rs:2145-2151). Covers signal/resolution/reference/RV source kinds.
+- Health-surface truthfulness: NotConfigured is cleanly distinguishable from Nominal/Degraded/Halted/MissingInput; venue-truth renders Halted whenever the kill switch is not Armed or a divergence exists (operator_health.rs:104-111); poisoned lock panics loud (.expect) per convention.
+- Schema compat: PositionTruthRematerialized is added to BoltV3OrderLifecycleTransition (decision_evidence.rs:1740) — serde-owned snake_case serialization, no ordinal dependence, no decode-side match exists (write-only evidence), schema version 14 unchanged (additive within version).
+- No new human-chosen constants: all new literals are diagnostics/advisory-labels/counter-identities, registered in the literal-audit TOML with appropriate classifications; literal audit passes.
+- Override can't mis-link: take_position_truth_rematerialization_override filters by instrument_id (mod.rs:1607); cleared on new entry (5649) and strategy-fill materialization (6311).
+- Backstop test is genuine: links the overridden terminal's client_order_id to the re-managed position_id and asserts residual_quantity (exposure.rs:3226) — not a happy-path-only test.
+Kimi: ● Verdict: REQUEST CHANGES
+
+   I checked out the exact HEAD
+   (1abfc2102150198b33a11a8f6888a77838c3a05d), traced the new
+   code paths, ran the cheap local gates, and verified the
+   remote CI status. The implementation is mostly sound, but
+   the test coverage does not live up to the lane’s own claims
+   about exercising failure paths and aggregation states.
+
+   ───────────────────────────────────────────────────────────
+
+   What I personally verified
+
+   • gh run view 28718063987 → CI completed successfully at
+     exact HEAD.
+   • just fmt-check passed (after re-checking out the correct
+     HEAD).
+   • just source-fence-static passed.
+   • just deny passed (only pre-existing duplicate-crate
+     warnings).
+   • I did not run compile-heavy Rust tests locally per
+     ci/rust-verification.toml [local_compile_policy]; I
+     relied on the exact-head full CI plus the static gates
+     above.
+
+   ───────────────────────────────────────────────────────────
+
+   Findings (ranked)
+
+   1. Drain-failure path is implemented but not tested (must
+   fix)
+
+   • Anchor: src/bolt_v3_decision_evidence.rs:1817-1825 —
+     drain_shutdown() locks the mutex and calls sync_all(),
+     failing loud on poison or fsync failure.
+   • Anchor: src/bolt_v3_live_node.rs:1746-1784 — the
+     three-way (run_and_capture_result, iv_stop_result,
+     drain_result) matrix is exhaustive and preserves both
+     errors via RunAndDecisionEvidenceShutdownDrain.
+   • Gap: tests/bolt_v3_decision_evidence.rs:932-948 only
+     tests the happy path (drain_shutdown succeeds). There is
+     no test that forces drain_shutdown to return Err and no
+     test that exercises the
+     RunAndDecisionEvidenceShutdownDrain compound error.
+   • Ask: Add a test that exercises the drain failure path,
+     either by making
+     JsonlBoltV3DecisionEvidenceWriter::drain_shutdown fail
+     (e.g., a mock writer or a read-only file scenario) or by
+     unit-testing the shutdown classification matrix.
+
+   2. Operator-health aggregation is truthful but under-tested
+   (must fix)
+
+   • Anchor: src/bolt_v3_operator_health.rs:16-219 — the
+     aggregation is pure mapping: NotConfigured when a
+     producer is absent, Nominal/Degraded/MissingInput/Halted
+     based on actual state. No thresholds or timers are
+     introduced.
+   • Anchor: src/bolt_v3_live_node.rs:938-955 —
+     operator_health_surface() takes the reject-observer
+     snapshot and reads kill_switch_state / capital-admission
+     state from submit_admission.
+   • Gap: tests/bolt_v3_operator_health.rs has only two tests:
+     one for MissingInput and one for Halted via a divergence
+     trigger. It does not exercise:
+       • NotConfigured (kill-switch disabled / no input
+         health),
+       • Nominal,
+       • Degraded from active reject episodes,
+       • Degraded from venue_truth_capture_suspended,
+       • Halted from a non-divergence kill-switch latch.
+   • Ask: Add tests covering these states, especially the
+     not_configured vs healthy boundary and the Degraded
+     paths.
+
+   3. Runtime source announcements omit globally-consumed
+   feeds (advisory)
+
+   • Anchor: src/bolt_v3_operator_health.rs:265-385 —
+     runtime_source_announcements() announces signal_data,
+     resolution_data, reference_current_price, and
+     realized_volatility sources.
+   • Anchor: src/bolt_v3_live_node.rs:2148-2168 —
+     announcements are logged at warn! before the node runs,
+     so missing/misconfigured strategy-local sources do fail
+     loud via StrategyRegistration::Evidence.
+   • Observation: The node also consumes the venue-truth feed
+     and (when configured) IV runtime sources, but those are
+     not announced. The campaign framing is “the node states
+     what it consumes before arming.” The current
+     implementation satisfies that for strategy-bound sources
+     but not for the global feeds. I’m listing this as an
+     advisory rather than a blocker because the PR description
+     scopes it to per-source runtime feed announcements, but
+     consider extending it before calling the blindness
+     finding closed.
+
+   4. Disabled/unsupported reference sources are silently
+   omitted from announcements (advisory)
+
+   • Anchor: src/bolt_v3_reference_price.rs:94-99 —
+     reference_price_source_is_runtime_available() filters out
+     disabled or unsupported sources.
+   • Observation: In runtime_source_announcements() this
+     causes the source to simply disappear from the list
+     rather than be announced as disabled/unsupported. Since
+     disabled sources are not consumed, this is acceptable,
+     but if a required source were disabled it would not be
+     obvious from the announcement. Consider whether the
+     announcement should explicitly carry disabled sources
+     with an enabled: false flag.
+
+   ───────────────────────────────────────────────────────────
+
+   Positive anchors (no changes needed)
+
+   • Drain completeness:
+     JsonlBoltV3DecisionEvidenceWriter::append_line
+     (src/bolt_v3_decision_evidence.rs:1805-1815) writes
+     directly to std::fs::File and calls sync_data() per
+     record; drain_shutdown() calls sync_all(). There is no
+     BufWriter above the fd, so fsync is not defeated.
+   • Drain invocation: run_bolt_v3_live_node
+     (src/bolt_v3_live_node.rs:1746) calls
+     drain_decision_evidence_shutdown() after runner +
+     runtime-capture shutdown in every branch.
+   • Scope/purity: src/bolt_v3_submit_admission.rs:53 is the
+     only submit-admission change (const → pub const).
+     src/bolt_v3_operator_health.rs contains no thresholds,
+     timers, or venue policy.
+     src/bolt_v3_decision_evidence.rs:1740 adds
+     PositionTruthRematerialized as an additive enum variant.
+   • Backstop lifecycle: remember_flat_terminal_entry_override
+      (src/strategies/binary_oracle_edge_taker/mod.rs:1585)
+     sets the override on zero-fill terminal Flat;
+     take_position_truth_rematerialization_override
+     (src/strategies/binary_oracle_edge_taker/mod.rs:1593)
+     consumes it only on RecoveryBootstrap and only for the
+     same instrument_id; it is cleared on new entry
+     (mod.rs:5652) and on strategy-entry fills (mod.rs:6311).
+     The rematerialization evidence test is at
+     src/strategies/binary_oracle_edge_taker/tests/exposure.rs
+     :3186-3235.
+   • Hygiene: commit history is Part of #1179 with no closing
+     keywords.
+
+   ───────────────────────────────────────────────────────────
+
+   Summary
+
+   The code is structurally correct and the fail-loud behavior
+   is in place, but the test suite does not yet prove the
+   failure modes it claims to cover. Please add drain-failure
+   and broader health-state tests; the advisory items about
+   feed-announcement completeness can be addressed or
+   documented as out-of-scope in the PR description.
+GPT: ─────────────────────────────────────────────────────
+
+• Verdict: REQUEST CHANGES
+
+  Findings
+
+  1. High: ops status does not use the live operator-health
+     snapshots it adds.
+     At /private/tmp/bolt-v2-pr1229-review-1abfc2102/src/
+     main.rs:1150, ops_status_operator_health_from_loaded reads
+     only the durable kill-switch store, then calls
+     BoltV3OperatorHealthSurface::from_parts(None,
+     &kill_switch_state, None, None) at line 1178. I verified
+     the real runtime aggregator at /private/tmp/bolt-v2-
+     pr1229-review-1abfc2102/src/bolt_v3_live_node.rs:938 is
+     not called anywhere else. Result: reject observer and
+     input health are always not_configured in ops-status, and
+     venue-truth capture suspension can render nominal when the
+     kill-switch store is Armed, because the capital-state
+     source is passed as None. This misses the PR’s main
+     “single view of bot confusion” requirement.
+
+  2. High: runtime feed announcements omit venue-truth runtime
+     consumption, and the venue-truth thread is spawned before
+     announcements.
+     I traced spawn_venue_truth_runtime from /private/tmp/bolt-
+     v2-pr1229-review-1abfc2102/src/bolt_v3_live_node.rs:2059
+     before the announcement log at line 2162. The announcement
+     builder at /private/tmp/bolt-v2-pr1229-review-1abfc2102/
+     src/bolt_v3_operator_health.rs:265 only covers strategy
+     signal, resolution, reference-current-price, and realized-
+     volatility sources. It does not announce the venue-truth
+     provider/runtime source configured in /private/tmp/bolt-
+     v2-pr1229-review-1abfc2102/src/bolt_v3_live_node/
+     risk_admission_loss.rs:78 and polled by the spawned
+     runtime. That does not satisfy “the node states what it
+     consumes before arming.”
+
+  3. Medium: drain failure behavior is not covered by tests,
+     and the composite error is misleading for IV-stop plus
+     drain failure.
+     The new matrix uses RunAndDecisionEvidenceShutdownDrain
+     for (Ok(()), Err(iv_stop_error), Err(drain_error)) at /
+     private/tmp/bolt-v2-pr1229-review-1abfc2102/src/
+     bolt_v3_live_node.rs:1772, but the variant docs/display
+     say “runner/capture” and “LiveNode run or runtime-capture
+     shutdown” at lines 1380 and 1543. The only new drain test
+     I found is the success path at /private/tmp/bolt-v2-
+     pr1229-review-1abfc2102/tests/
+     bolt_v3_decision_evidence.rs:932; I found no test for
+     drain failure or the 3-way result matrix.
+
+  Performed
+
+  Reviewed exact detached HEAD
+  1abfc2102150198b33a11a8f6888a77838c3a05d in /private/tmp/
+  bolt-v2-pr1229-review-1abfc2102. Ran git diff --check, just
+  fmt-check, just ci-lint-workflow unsandboxed after sandbox
+  TCP denial, and just source-fence-static; all passed. I could
+  not independently verify the provided GitHub Actions run via
+  gh run view because GitHub API returned Forbidden.
+Claude: 
+---
+External Review — PR #1229 "Lane 5 operator health and shutdown drain"
+
+HEAD reviewed: 1abfc2102150198b33a11a8f6888a77838c3a05d  ·  base: 177d8038 (verified as the true merge-base)  ·  CI: run 28718063987 conclusion=success at this exact SHA (self-verified via gh run view)
+
+Verdict: REQUEST CHANGES
+
+The code that ships is clean, pure, and correct in isolation (drain placement, error matrix, announcement fidelity, backstop invariant, scope, hygiene all check out). But the central Lane-5 deliver
+---
+F1 — The live operator-health aggregation is dead code; ops status renders reject-observer + input-health as permanently not_configured (and capture-suspension as permanently false) — primary, blocking
+
+What I derived (all at HEAD):
+- operator_health_surface(&self, …) (src/bolt_v3_live_node.rs:938) is the only builder that snapshots the live reject-observer feed (feed.lock()…health_snapshot()) and the venue-truth-capture-suspension capital state. git grep operator_health_surface 1abfc2102 -- src tests returns only its definition — zero callers. It's pub on a lib type, so no dead-code lint fires acapital_state = None → venue_truth_capture_suspended is unconditionally false (bolt_v3_operator_health.rs:477).
+- run_ops_status (main.rs:1181) is a cold CLI (verify config + read the durable kill-switch store); it never connects to the running node, so it structurally cannot observe the in-memory reject-observer episodes or the runtime capital state.
+
+Failure scenario: During an incident identical to 2026-07-02 — reject episodes piling up, venue-truth capture suspended — an operator runs ops status and sees reject_observer.status:"not_configured", configured:false, input_health.status:"not_configured", venue_truth.venue_truth_capture_suspended:false, for a fully-configured produoperator_health_surface) — the deliverable is ~partially wired: ops status renders only the kill-switch-store-derived venue_truth; reject-observer live state has no render site anywhere.
+- (b) not_configured is not distinguishable from "configured but not observable from a cold CLI" — a truthfulness gap against the campaign bar ("every degraded path… distinguishable"). configured:false is factually wrong for a node whose reject observer is always wired. The enum has no Unobserved/Unknown state, so the cold path is forced into a definitive-negative label.
+
+Fix direction (class, not patch): give the live surface a real emission path (e.g., the live node emits operator_health_surfacoperator_health_surface does feed.lock().expect("order reject observer feed lock poisoned") (live_node.rs:939-943) — a status/observability call that can panic the node on a poisoned lock, inconsistent with the fail-loud-Err pattern the drain uses. A health read must not be able to crash the process.
+
+---
+F2 — Fail-loud drain-failure path, the entire three-way error matrix, three health states, and all backstop negative paths are untested — blocking for an incident-closing lane
+
+git grep at HEAD for the new error variants across tests/ returns only tests/bolt_v3_decision_evidence.rs:939 — the success path (drain_shno coverage; a mis-wired arm that swallows the drain error would pass CI.
+- Health states: only MissingInput and Halted are asserted (tests/bolt_v3_operator_health.rs:44,65). The PR-highlighted NotConfigured, plus Nominal and Degraded (incl. the venue_truth_capture_suspended → Degraded path), are untested.
+- Backstop negatives (exposure.rs): only the positive link is tested (:3226). Instrument-mismatch-clears-without-linking, non-RecoveryBootstrap-clears, exposure != Flat-no-consume, and the two clear-sites (new pending entry mod.rs:5652, DataActor managed mod.rs:6311) are unexercised.
+
+CI-green cannot refute this — it's an absence of tests. Given this is the FINAL lane closing a data-loss + blindness incident, the failure 
+- Drain mechanics: writer is Mutex<std::fs::File> (no BufWriter); append_line does write_all + sync_data() per record (bolt_v3_decision_evidence.rs:1805-1815); drain_shutdown adds sync_all and fails loud on poison (:1817-1825). Drain is the last shutdown op (live_node.rs:1746, after run/iv-stop/capture-shutdown); nothing writes evidence after it; the matrix is exhaustive and preserves both categories. Production writer is always the Jsonl writer or the no-strategy no-op; no buffering writer exists.
+- Announcement fidelity: runtime_source_announcements covers all four criterion-4 inputs — strike = resolution_data ("live resolution-strike (price-to-beat)", config.rs:646-651), spot = signal_data (spot_quote class), reference, RV. It uses the identical reference_price_source_is_runtime_available gate as the real subscription builder (bolt_v3_reference_price.rs:44-49) and is stricter (errors on a missing source block where the subscriber silently continues). Fails loud pre-arm on config inconsistency (unknown/missing RV surface, missing block) via StrategyRegistration::Evidence.
+- Backstop invariant: override is Some only while Flat (set with the Flat transition mod.rs:1652/1672; cleared on every Flat→non-Flat at :5652/:6311; take() clears unconditionally past the guards). Cross-market mis-link requires an instrument_id reused across rotations while an override survives — not reachable for per-market outcome instruments; and even then it's an observability-record mis-link, not a trading defect.
+- Scope/purity/hygiene: submit_admission.rs change is the single const → pub (SSOT, referenced not redefined); no reconciler/admission internals touched; operator_health has no thresholds/timers/policy; new audit-allowlist entries are counter-identities (0) and diagnostic labels, not behavior constants; PositionTruthRematerialized is an additive enum variant (v13 recovery fixtures unaffected); body "Part of #1179", no closing keywords in any commit.
+
+Observations (non-blocking)
+
+- O1 — imprecise premise. "Records buffered at shutdown could be lost" overstates the gap: every record is already sync_data'd at write time, so there is no userspace buffer to lose. The drain is a correct final metadata fsync + fail-loud poison check, not a buffer-flush. Worth aligning the framing.
+- O2 — latent silent no-op. The trait default drain_shutdown → Ok(()) (bolt_v3_decision_evidence.rs:149) means any future buffering writer that forgets to override would silently drop data — a silent-fallback surface against the campaign bar.
+- O3 — node-level feed not announced. The venue-truth REST capture feed (node-scoped) isn't in the per-strategy pre-arm announcement — a bounded completeness gap vs "state what it consumes."
+
+What I performed vs could not
+
+- Performed: all reads via git show/git grep pinned to 1abfc2102 (I caught and corrected that the working tree sits on an unrelated loss-recovery commit 9ae9f8ed, not the PR head — earlier full-file reads were re-anchored to HEAD copies); dead-code proof (0 callers); announcement↔subscription parity; config-field semantics; matrix exhaustiveness by hand; test-reference census; CI conclusion, PR body/commits, and #1179 acceptance bar fetched directly via gh.
+- Could not perform: a local build/test run at the PR head — the working tree is on a different commit and I avoided checking out to not disturb it; there are also no tests for the drain-failure/matrix paths to run. I relied on the self-verified CI success at the exact head SHA as evidence of compilation + happy-path test pass; I did not execute the failure/matrix/negative paths (F2 is precisely their absence).
+
+---
+
+give me the assignment paste for session 2
+
+---
+
+• PR #1233 is up:
+  https://github.com/seungpyoson/bolt-v2/pull/1233
+
+  Head SHA: 22694ecaca8d62697baa8d6b7c26fdbf05146f5f
+
+  Exact-head full CI is green:
+  https://github.com/seungpyoson/bolt-v2/actions/runs/28732831171
+
+  Build-plan comment was posted before coding on #1179:
+  https://github.com/seungpyoson/bolt-v2/issues/1179#issuecomment-4884886510
+
+  Owner review is requested from sp-reviewer. The Gemini
+  finding was answered and the review thread is resolved. Local
+  worktree is clean.
+
+  One operational note: local gh auth is currently invalid in
+  the keyring, so I used the GitHub connector for final PR/
+  status updates.

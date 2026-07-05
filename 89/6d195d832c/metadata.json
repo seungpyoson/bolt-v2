@@ -4,8 +4,9 @@
   "checkpoint_id": "896d195d832c",
   "strategy": "manual-commit",
   "branch": "codex/ws6-debug-test-lane",
-  "checkpoints_count": 40,
+  "checkpoints_count": 41,
   "files_touched": [
+    ".github/workflows/debug-test.yml",
     "ci/github-actions-runners.toml",
     "justfile",
     "scripts/test_ci_provenance.py",
@@ -54,14 +55,21 @@
       "compact_transcript": "/89/6d195d832c/5/transcript.jsonl",
       "content_hash": "/89/6d195d832c/5/content_hash.txt",
       "prompt": "/89/6d195d832c/5/prompt.txt"
+    },
+    {
+      "metadata": "/89/6d195d832c/6/metadata.json",
+      "transcript": "/89/6d195d832c/6/full.jsonl",
+      "compact_transcript": "/89/6d195d832c/6/transcript.jsonl",
+      "content_hash": "/89/6d195d832c/6/content_hash.txt",
+      "prompt": "/89/6d195d832c/6/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 299453,
-    "cache_creation_tokens": 7384030,
-    "cache_read_tokens": 349373769,
-    "output_tokens": 2007045,
-    "api_call_count": 1239
+    "input_tokens": 434252,
+    "cache_creation_tokens": 11673332,
+    "cache_read_tokens": 790050379,
+    "output_tokens": 3086319,
+    "api_call_count": 2126
   },
   "combined_attribution": {
     "calculated_at": "2026-07-05T07:16:04.293496Z",

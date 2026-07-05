@@ -59,8 +59,8 @@ else:
     _TOML_DECODE_ERROR = tomllib.TOMLDecodeError
 
 SCRIPT_NAME = "clean-merged"
-HOOK_MARKER = f"# {SCRIPT_NAME}-managed"
 CLEAN_MERGED_HOOKS = ("post-merge", "post-checkout", "post-rewrite")
+HOOK_MANIFEST_NAME = "clean-merged.hooks-manifest.json"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHORT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 LOCK_FILE = "clean-merged.lock"
@@ -206,10 +206,13 @@ def _main_worktree_root(repo_root: pathlib.Path) -> pathlib.Path:
     # Fallback for normal repos / linked worktrees (not submodules).
     try:
         out = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            ["git", "rev-parse", "--git-common-dir"],
             cwd=repo_root, check=True, capture_output=True, text=True,
         )
         common_dir = pathlib.Path(out.stdout.strip())
+        if not common_dir.is_absolute():
+            common_dir = repo_root / common_dir
+        common_dir = common_dir.resolve()
         candidate = common_dir.parent
         # Sanity check: parent should be a working tree, not inside .git/.
         if (candidate / ".git").exists() or (candidate.is_dir() and (candidate / "config").exists()):
@@ -413,10 +416,13 @@ def load_config(repo_root: pathlib.Path) -> Config:
 
 def git_common_dir(repo_root: pathlib.Path) -> pathlib.Path:
     out = subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ["git", "rev-parse", "--git-common-dir"],
         cwd=repo_root, check=True, capture_output=True, text=True,
     )
-    return pathlib.Path(out.stdout.strip())
+    common_dir = pathlib.Path(out.stdout.strip())
+    if not common_dir.is_absolute():
+        common_dir = repo_root / common_dir
+    return common_dir.resolve()
 
 
 def _git(repo_root: pathlib.Path, args: list[str], *,
@@ -465,21 +471,182 @@ def _same_path(left: pathlib.Path, right: pathlib.Path) -> bool:
         return left.absolute() == right.absolute()
 
 
-def _hook_is_managed(path: pathlib.Path) -> bool:
-    return path.is_file() and HOOK_MARKER in path.read_text(encoding="utf-8", errors="replace")
+@dataclasses.dataclass(frozen=True)
+class ActiveHookDir:
+    path: pathlib.Path
+    source_scope: str
+
+
+def _git_config_value(repo_root: pathlib.Path, args: list[str]) -> str | None:
+    proc = _git(repo_root, ["config", *args], check=False)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return proc.stdout.strip()
+
+
+def _tracked_hook_source_paths(repo_root: pathlib.Path) -> list[str]:
+    proc = _git(repo_root, ["ls-files", "-z", "--", ".githooks"], check=False)
+    if proc.returncode != 0:
+        return []
+    return sorted(
+        path for path in proc.stdout.split("\0")
+        if path.startswith(".githooks/") and path
+    )
 
 
 def _dirty_tracked_hook_sources(repo_root: pathlib.Path) -> list[str]:
-    rel_paths = [f".githooks/{hook}" for hook in CLEAN_MERGED_HOOKS]
+    rel_paths = _tracked_hook_source_paths(repo_root)
+    if not rel_paths:
+        return []
     dirty: set[str] = set()
     for args in (
-        ["diff", "--name-only", "--", *rel_paths],
-        ["diff", "--cached", "--name-only", "--", *rel_paths],
+        ["diff", "--name-only", "-z", "--", *rel_paths],
+        ["diff", "--cached", "--name-only", "-z", "--", *rel_paths],
     ):
         proc = _git(repo_root, args, check=False)
         if proc.returncode == 0:
-            dirty.update(line for line in proc.stdout.splitlines() if line in rel_paths)
+            dirty.update(path for path in proc.stdout.split("\0") if path in rel_paths)
     return sorted(dirty)
+
+
+def _hook_manifest_path(common_dir: pathlib.Path) -> pathlib.Path:
+    return common_dir / HOOK_MANIFEST_NAME
+
+
+def _load_hook_manifest(common_dir: pathlib.Path) -> dict[str, Any]:
+    manifest_path = _hook_manifest_path(common_dir)
+    if not manifest_path.is_file():
+        return {"version": 1, "hooks": {}}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CleanMergedError(f"hook manifest unreadable at {manifest_path}: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise CleanMergedError(f"hook manifest invalid at {manifest_path}: root must be object")
+    hooks = manifest.get("hooks")
+    if hooks is None:
+        manifest["hooks"] = {}
+    elif not isinstance(hooks, dict):
+        raise CleanMergedError(f"hook manifest invalid at {manifest_path}: hooks must be object")
+    return manifest
+
+
+def _hook_manifest_hooks(manifest: dict[str, Any]) -> dict[str, Any]:
+    hooks = manifest.get("hooks")
+    return hooks if isinstance(hooks, dict) else {}
+
+
+def _write_hook_manifest(
+    common_dir: pathlib.Path,
+    *,
+    runtime_hooks_dir: pathlib.Path,
+    hooks: dict[str, Any],
+) -> None:
+    manifest = {
+        "version": 1,
+        "runtime_hooks_dir": str(runtime_hooks_dir),
+        "hooks": hooks,
+    }
+    _atomic_write_text(
+        _hook_manifest_path(common_dir),
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _file_sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _repo_relative_path(repo_root: pathlib.Path, path: pathlib.Path) -> str:
+    try:
+        return str(path.relative_to(repo_root))
+    except ValueError:
+        return str(path)
+
+
+def _manifest_authorizes_overwrite(
+    entry: Any,
+    *,
+    destination_sha: str,
+    source_kind: str,
+    source_scope: str,
+    source_path: str,
+) -> bool:
+    return (
+        isinstance(entry, dict)
+        and entry.get("source_kind") == source_kind
+        and entry.get("source_scope") == source_scope
+        and entry.get("source_path") == source_path
+        and entry.get("runtime_sha256") == destination_sha
+    )
+
+
+def _copy_hook_with_provenance(
+    *,
+    source_file: pathlib.Path,
+    destination: pathlib.Path,
+    source_kind: str,
+    source_scope: str,
+    source_path: str,
+    manifest_hooks: dict[str, Any],
+) -> None:
+    source_sha = _file_sha256(source_file)
+    if destination.exists():
+        if not destination.is_file():
+            raise CleanMergedError(f"refusing to overwrite non-file hook at {destination}")
+        destination_sha = _file_sha256(destination)
+        if (
+            destination_sha != source_sha
+            and not _manifest_authorizes_overwrite(
+                manifest_hooks.get(destination.name),
+                destination_sha=destination_sha,
+                source_kind=source_kind,
+                source_scope=source_scope,
+                source_path=source_path,
+            )
+        ):
+            raise CleanMergedError(
+                f"refusing to overwrite hook {destination.name} without "
+                f"installer provenance at {destination}"
+            )
+    shutil.copy2(source_file, destination)
+    destination.chmod(
+        destination.stat().st_mode
+        | stat.S_IXUSR
+        | stat.S_IXGRP
+        | stat.S_IXOTH
+    )
+    manifest_hooks[destination.name] = {
+        "source_kind": source_kind,
+        "source_scope": source_scope,
+        "source_path": source_path,
+        "source_sha256": source_sha,
+        "runtime_sha256": _file_sha256(destination),
+    }
+
+
+def _configured_hooks_path(
+    *,
+    invoke_root: pathlib.Path,
+    source_root: pathlib.Path,
+) -> tuple[str, str | None]:
+    worktree_raw = _git_config_value(invoke_root, ["--worktree", "--get", "core.hooksPath"])
+    if worktree_raw:
+        return "worktree", worktree_raw
+    local_raw = _git_config_value(source_root, ["--local", "--get", "core.hooksPath"])
+    if local_raw:
+        return "local", local_raw
+    global_raw = _git_config_value(invoke_root, ["--global", "--get", "core.hooksPath"])
+    if global_raw:
+        return "global", global_raw
+    effective_raw = _git_config_value(invoke_root, ["--get", "core.hooksPath"])
+    if effective_raw:
+        return "effective", effective_raw
+    return "default", None
 
 
 def _active_hook_dirs(
@@ -488,20 +655,72 @@ def _active_hook_dirs(
     source_root: pathlib.Path,
     runtime_hooks_dir: pathlib.Path,
     home_dir: pathlib.Path | None,
-) -> list[pathlib.Path]:
-    active = _git(source_root, ["config", "--get", "core.hooksPath"], check=False)
-    if active.returncode != 0 or not active.stdout.strip():
-        return [runtime_hooks_dir]
+) -> list[ActiveHookDir]:
+    source_scope, raw = _configured_hooks_path(
+        invoke_root=invoke_root,
+        source_root=source_root,
+    )
+    if raw is None:
+        return [ActiveHookDir(runtime_hooks_dir, "default")]
 
-    raw = active.stdout.strip()
-    path = _resolve_hooks_path(source_root, raw, home_dir=home_dir)
     if pathlib.Path(raw).is_absolute() or raw == "~" or raw.startswith("~/"):
-        return [path]
+        return [
+            ActiveHookDir(
+                _resolve_hooks_path(source_root, raw, home_dir=home_dir),
+                source_scope,
+            )
+        ]
 
-    candidates = [path]
-    if not _same_path(invoke_root, source_root):
-        candidates.append(_resolve_hooks_path(invoke_root, raw, home_dir=home_dir))
+    bases = [invoke_root] if source_scope in {"worktree", "global", "effective"} else [source_root]
+    if source_scope == "local" and not _same_path(invoke_root, source_root):
+        bases.append(invoke_root)
+
+    candidates: list[ActiveHookDir] = []
+    for base in bases:
+        candidate = _resolve_hooks_path(base, raw, home_dir=home_dir)
+        if not any(_same_path(candidate, existing.path) for existing in candidates):
+            candidates.append(ActiveHookDir(candidate, source_scope))
     return candidates
+
+
+def _effective_hooks_dir(
+    repo_root: pathlib.Path,
+    *,
+    home_dir: pathlib.Path | None,
+) -> pathlib.Path | None:
+    raw = _git_config_value(repo_root, ["--get", "core.hooksPath"])
+    if raw is None:
+        return None
+    return _resolve_hooks_path(repo_root, raw, home_dir=home_dir)
+
+
+def _set_runtime_hooks_path(
+    *,
+    invoke_root: pathlib.Path,
+    source_root: pathlib.Path,
+    runtime_hooks_dir: pathlib.Path,
+    home_dir: pathlib.Path | None,
+) -> None:
+    _git(source_root, ["config", "--local", "core.hooksPath", str(runtime_hooks_dir)])
+    effective = _effective_hooks_dir(invoke_root, home_dir=home_dir)
+    if effective is not None and _same_path(effective, runtime_hooks_dir):
+        return
+
+    worktree_set = _git(
+        invoke_root,
+        ["config", "--worktree", "core.hooksPath", str(runtime_hooks_dir)],
+        check=False,
+    )
+    if worktree_set.returncode != 0:
+        raise CleanMergedError(
+            "core.hooksPath is still overridden outside repo-local config and "
+            f"worktree config could not be updated: {worktree_set.stderr.strip()}"
+        )
+    effective = _effective_hooks_dir(invoke_root, home_dir=home_dir)
+    if effective is None or not _same_path(effective, runtime_hooks_dir):
+        raise CleanMergedError(
+            f"core.hooksPath did not resolve to runtime hooks directory {runtime_hooks_dir}"
+        )
 
 
 def install_hooks(
@@ -524,13 +743,16 @@ def install_hooks(
     dirty_sources = _dirty_tracked_hook_sources(source_root)
     if dirty_sources:
         raise CleanMergedError(
-            "tracked clean-merged hook source(s) have local changes: "
+            "tracked hook source(s) have local changes: "
             + ", ".join(dirty_sources)
             + "; restore or commit them before installing hooks"
         )
 
-    runtime_hooks_dir = git_common_dir(source_root) / "hooks"
+    common_dir = git_common_dir(source_root)
+    runtime_hooks_dir = common_dir / "hooks"
     runtime_hooks_dir.mkdir(parents=True, exist_ok=True)
+    manifest = _load_hook_manifest(common_dir)
+    manifest_hooks = dict(_hook_manifest_hooks(manifest))
 
     active_hook_dirs = _active_hook_dirs(
         invoke_root=invoke_root,
@@ -538,49 +760,50 @@ def install_hooks(
         runtime_hooks_dir=runtime_hooks_dir,
         home_dir=home_dir,
     )
-    hook_dirs_to_check = [runtime_hooks_dir, *active_hook_dirs]
-    for hook_dir in hook_dirs_to_check:
-        if not hook_dir.is_dir():
-            continue
-        for hook_name in CLEAN_MERGED_HOOKS:
-            existing = hook_dir / hook_name
-            if existing.is_file() and not _hook_is_managed(existing):
-                raise CleanMergedError(
-                    f"refusing to overwrite non-managed hook {hook_name} at {existing}"
-                )
-
-    for hook_file in source_hooks_dir.iterdir():
-        if not hook_file.is_file():
-            continue
-        if hook_file.name in CLEAN_MERGED_HOOKS and not _hook_is_managed(hook_file):
-            raise CleanMergedError(
-                f"tracked clean-merged hook source {hook_file.name} is not marked managed"
-            )
+    source_hook_files = sorted(
+        (hook_file for hook_file in source_hooks_dir.iterdir() if hook_file.is_file()),
+        key=lambda path: path.name,
+    )
+    source_hook_names = {hook_file.name for hook_file in source_hook_files}
+    for hook_file in source_hook_files:
         destination = runtime_hooks_dir / hook_file.name
-        shutil.copy2(hook_file, destination)
-        destination.chmod(
-            destination.stat().st_mode
-            | stat.S_IXUSR
-            | stat.S_IXGRP
-            | stat.S_IXOTH
+        _copy_hook_with_provenance(
+            source_file=hook_file,
+            destination=destination,
+            source_kind="repo-source",
+            source_scope="repo",
+            source_path=_repo_relative_path(source_root, hook_file),
+            manifest_hooks=manifest_hooks,
         )
 
-    for active_hooks_dir in active_hook_dirs:
+    for active_hooks in active_hook_dirs:
+        active_hooks_dir = active_hooks.path
         if not active_hooks_dir.is_dir() or _same_path(active_hooks_dir, runtime_hooks_dir):
             continue
-        for hook_file in active_hooks_dir.iterdir():
-            if hook_file.name in CLEAN_MERGED_HOOKS or not hook_file.is_file():
+        for hook_file in sorted(active_hooks_dir.iterdir(), key=lambda path: path.name):
+            if hook_file.name in source_hook_names or not hook_file.is_file():
                 continue
             destination = runtime_hooks_dir / hook_file.name
-            if destination.exists() and not _same_path(destination, hook_file):
-                if destination.read_bytes() != hook_file.read_bytes():
-                    raise CleanMergedError(
-                        f"refusing to overwrite preserved hook {hook_file.name} at "
-                        f"{destination}"
-                    )
-            shutil.copy2(hook_file, destination)
+            _copy_hook_with_provenance(
+                source_file=hook_file,
+                destination=destination,
+                source_kind="active-hook",
+                source_scope=active_hooks.source_scope,
+                source_path=str(hook_file),
+                manifest_hooks=manifest_hooks,
+            )
 
-    _git(source_root, ["config", "core.hooksPath", str(runtime_hooks_dir)])
+    _set_runtime_hooks_path(
+        invoke_root=invoke_root,
+        source_root=source_root,
+        runtime_hooks_dir=runtime_hooks_dir,
+        home_dir=home_dir,
+    )
+    _write_hook_manifest(
+        common_dir,
+        runtime_hooks_dir=runtime_hooks_dir,
+        hooks=manifest_hooks,
+    )
     return runtime_hooks_dir
 
 
@@ -2595,10 +2818,22 @@ def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
                 home_dir=_resolve_home_dir(),
             )
             print(f"  core.hooksPath           = {hooks_dir}")
+            manifest_hooks = _hook_manifest_hooks(_load_hook_manifest(common))
             for h in CLEAN_MERGED_HOOKS:
                 f = hooks_dir / h
-                managed = f.is_file() and HOOK_MARKER in f.read_text(encoding="utf-8", errors="replace")
-                print(f"  hook {h:14s} managed={managed}")
+                exists = f.is_file()
+                source = repo_root / ".githooks" / h
+                source_match = exists and source.is_file() and f.read_bytes() == source.read_bytes()
+                entry = manifest_hooks.get(h)
+                manifest_match = (
+                    exists
+                    and isinstance(entry, dict)
+                    and entry.get("runtime_sha256") == _file_sha256(f)
+                )
+                print(
+                    f"  hook {h:14s} exists={exists} "
+                    f"source_match={source_match} manifest_match={manifest_match}"
+                )
         # heartbeat freshness even on config error
         import datetime as _dt
         hb_paths = [
@@ -2646,6 +2881,11 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     print(f"  git-common-dir           = {common}")
     expected_hooks_dir = common / "hooks"
     source_hooks_dir = repo_root / ".githooks"
+    try:
+        manifest_hooks = _hook_manifest_hooks(_load_hook_manifest(common))
+    except CleanMergedError as exc:
+        manifest_hooks = {}
+        problems.append(str(exc))
 
     # hooks install
     active_hooks_dir_raw = _git(repo_root, ["config", "--get", "core.hooksPath"], check=False)
@@ -2661,19 +2901,26 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
         for h in CLEAN_MERGED_HOOKS:
             hook_file = active_hooks_dir / h
             exists = hook_file.is_file()
-            managed = exists and _hook_is_managed(hook_file)
             source_file = source_hooks_dir / h
             source_match = (
                 exists
                 and source_file.is_file()
                 and hook_file.read_bytes() == source_file.read_bytes()
             )
-            print(
-                f"  hook {h:14s} exists={exists} managed={managed} "
-                f"source_match={source_match}"
+            entry = manifest_hooks.get(h)
+            manifest_match = (
+                exists
+                and isinstance(entry, dict)
+                and entry.get("runtime_sha256") == _file_sha256(hook_file)
             )
-            if not managed:
-                problems.append(f"hook {h} not marked managed")
+            print(
+                f"  hook {h:14s} exists={exists} source_match={source_match} "
+                f"manifest_match={manifest_match}"
+            )
+            if not exists:
+                problems.append(f"hook {h} missing")
+            if _same_path(active_hooks_dir, expected_hooks_dir) and not manifest_match:
+                problems.append(f"hook {h} lacks installer provenance (run `just setup`)")
             if _same_path(active_hooks_dir, expected_hooks_dir) and not source_match:
                 problems.append(f"hook {h} runtime does not match tracked source (run `just setup`)")
     else:
@@ -2682,7 +2929,7 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     dirty_sources = _dirty_tracked_hook_sources(repo_root)
     if dirty_sources:
         problems.append(
-            "tracked clean-merged hook source(s) have local changes: "
+            "tracked hook source(s) have local changes: "
             + ", ".join(dirty_sources)
         )
 

@@ -1313,6 +1313,17 @@ class CleanupContractTests(unittest.TestCase):
         for token in ("ContractRule", "PrPayloadRule", "_classify_contract"):
             self.assertNotIn(token, source)
 
+    def test_hook_ownership_does_not_parse_hook_body_markers(self) -> None:
+        source = (REPO_ROOT / "scripts" / "clean_merged_artifacts.py").read_text(
+            encoding="utf-8")
+        for token in ("HOOK_MARKER", "_hook_is_managed", "not marked managed"):
+            self.assertNotIn(token, source)
+
+    def test_git_common_dir_does_not_require_path_format_flag(self) -> None:
+        source = (REPO_ROOT / "scripts" / "clean_merged_artifacts.py").read_text(
+            encoding="utf-8")
+        self.assertNotIn("--path-format=absolute", source)
+
     def test_no_preview_cleanup_fallback_delete_path(self) -> None:
         source = (REPO_ROOT / "scripts" / "clean_merged_artifacts.py").read_text(
             encoding="utf-8")
@@ -1413,7 +1424,7 @@ class CleanupContractTests(unittest.TestCase):
         self.assertNotIn("git config core.hooksPath .githooks", source)
         self.assertNotIn("chmod +x .githooks/post-merge", source)
         self.assertIn("git-common hooks directory", docs)
-        self.assertIn("preserves existing non-managed hooks", docs)
+        self.assertIn("hook provenance manifest", docs)
 
     def test_install_hooks_preserves_existing_local_hooks_when_moving_to_runtime_dir(
         self,
@@ -1470,19 +1481,52 @@ class CleanupContractTests(unittest.TestCase):
         )
         self.assertTrue(os.access(runtime_hook, os.X_OK))
 
-    def test_install_hooks_refuses_nonmanaged_same_name_hook_collision(self) -> None:
+    def test_install_hooks_preserves_global_hooks_without_same_name_false_collision(
+        self,
+    ) -> None:
         self._write_clean_merged_hook_sources(self.work)
-        legacy_hooks = self.work / ".legacy-hooks"
-        legacy_hooks.mkdir()
-        colliding_hook = legacy_hooks / "post-rewrite"
-        colliding_hook.write_text("#!/bin/sh\nprintf local-post-rewrite\n", encoding="utf-8")
-        colliding_hook.chmod(0o755)
-        _run(["git", "config", "core.hooksPath", ".legacy-hooks"], cwd=self.work)
+        global_hooks = self.tmp / "global-hooks"
+        global_hooks.mkdir()
+        global_post_rewrite = global_hooks / "post-rewrite"
+        global_post_rewrite.write_text(
+            "#!/bin/sh\nprintf global-post-rewrite\n",
+            encoding="utf-8",
+        )
+        global_commit_msg = global_hooks / "commit-msg"
+        global_commit_msg.write_text(
+            "#!/bin/sh\nprintf global-commit-msg\n",
+            encoding="utf-8",
+        )
+        for hook in (global_post_rewrite, global_commit_msg):
+            hook.chmod(0o755)
+        global_config = self.tmp / "global.gitconfig"
+        global_config.write_text(
+            f"[core]\n\thooksPath = {global_hooks}\n",
+            encoding="utf-8",
+        )
 
-        proc = run_clean_proc(self.work, "--install-hooks")
+        proc = run_clean_proc(
+            self.work,
+            "--install-hooks",
+            env={"GIT_CONFIG_GLOBAL": str(global_config)},
+        )
 
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("refusing to overwrite non-managed hook post-rewrite", proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        source_hooks = self.work / ".githooks"
+        self.assertEqual(
+            (runtime_hooks / "post-rewrite").read_text(encoding="utf-8"),
+            (source_hooks / "post-rewrite").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            (runtime_hooks / "commit-msg").read_text(encoding="utf-8"),
+            global_commit_msg.read_text(encoding="utf-8"),
+        )
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["hooks"]["commit-msg"]["source_scope"], "global")
 
     def test_install_hooks_refuses_default_runtime_same_name_hook_collision(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
@@ -1495,7 +1539,31 @@ class CleanupContractTests(unittest.TestCase):
         proc = run_clean_proc(self.work, "--install-hooks")
 
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("refusing to overwrite non-managed hook post-merge", proc.stderr)
+        self.assertIn(
+            "refusing to overwrite hook post-merge without installer provenance",
+            proc.stderr,
+        )
+
+    def test_install_hooks_refuses_marker_impostor_without_manifest_provenance(
+        self,
+    ) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        runtime_hooks.mkdir(parents=True, exist_ok=True)
+        impostor = runtime_hooks / "post-merge"
+        impostor.write_text(
+            "#!/bin/sh\n# clean-merged-managed\nprintf marker-impostor\n",
+            encoding="utf-8",
+        )
+        impostor.chmod(0o755)
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn(
+            "refusing to overwrite hook post-merge without installer provenance",
+            proc.stderr,
+        )
 
     def test_install_hooks_refuses_dirty_tracked_hook_sources(self) -> None:
         source_hooks = self._write_clean_merged_hook_sources(self.work)
@@ -1510,9 +1578,23 @@ class CleanupContractTests(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 1)
         self.assertIn(
-            "tracked clean-merged hook source(s) have local changes: .githooks/post-rewrite",
+            "tracked hook source(s) have local changes: .githooks/post-rewrite",
             proc.stderr,
         )
+
+    def test_install_hooks_refuses_dirty_tracked_source_local_hook(self) -> None:
+        source_hooks = self._write_clean_merged_hook_sources(self.work)
+        local_hook = source_hooks / "commit-msg"
+        local_hook.write_text("#!/bin/sh\nprintf tracked-local-hook\n", encoding="utf-8")
+        local_hook.chmod(0o755)
+        _run(["git", "add", ".githooks"], cwd=self.work)
+        _run(["git", "commit", "-m", "track all hook sources"], cwd=self.work)
+        local_hook.write_text("#!/bin/sh\nprintf dirty-local-hook\n", encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn(".githooks/commit-msg", proc.stderr)
 
     def test_install_hooks_resolves_home_relative_active_hooks_path(self) -> None:
         self._write_clean_merged_hook_sources(self.work)
@@ -1551,6 +1633,47 @@ class CleanupContractTests(unittest.TestCase):
         self.assertNotEqual(
             runtime_hook.read_text(encoding="utf-8"),
             (linked_source_hooks / "post-merge").read_text(encoding="utf-8"),
+        )
+
+    def test_install_hooks_updates_linked_worktree_specific_hooks_path(
+        self,
+    ) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        _run(["git", "branch", "feat/worktree-hooks-path"], cwd=self.work)
+        linked = add_worktree(
+            self.work,
+            "feat/worktree-hooks-path",
+            self.tmp / "linked-worktree-hooks-path",
+        )
+        _run(["git", "config", "extensions.worktreeConfig", "true"], cwd=self.work)
+        linked_hooks = linked / ".linked-hooks"
+        linked_hooks.mkdir()
+        linked_commit_msg = linked_hooks / "commit-msg"
+        linked_commit_msg.write_text(
+            "#!/bin/sh\nprintf linked-commit-msg\n",
+            encoding="utf-8",
+        )
+        linked_commit_msg.chmod(0o755)
+        _run(["git", "config", "--worktree", "core.hooksPath", ".linked-hooks"],
+             cwd=linked)
+
+        proc = run_clean_proc(linked, "--install-hooks")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        runtime_hooks = git_common_dir_compat(self.work) / "hooks"
+        self.assertEqual(
+            _run(["git", "config", "--get", "core.hooksPath"], cwd=linked)
+            .stdout.strip(),
+            str(runtime_hooks),
+        )
+        self.assertEqual(
+            _run(["git", "config", "--worktree", "--get", "core.hooksPath"],
+                 cwd=linked).stdout.strip(),
+            str(runtime_hooks),
+        )
+        self.assertEqual(
+            (runtime_hooks / "commit-msg").read_text(encoding="utf-8"),
+            linked_commit_msg.read_text(encoding="utf-8"),
         )
 
     def test_doctor_rejects_legacy_tracked_hooks_path(self) -> None:

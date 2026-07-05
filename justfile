@@ -266,6 +266,24 @@ clippy: check-workspace require-rust-verification-owner
 test *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test {{args}}
 
+debug-test filter package="": check-workspace require-rust-verification-owner
+    #!/usr/bin/env bash
+    set -euo pipefail
+    filter="${DEBUG_TEST_FILTER:-}"
+    package="${DEBUG_TEST_PACKAGE:-}"
+    if [[ -z "$filter" ]]; then filter={{quote(filter)}}; fi
+    if [[ -z "$package" ]]; then package={{quote(package)}}; fi
+    if [[ -z "$filter" ]]; then echo "ERROR: debug-test filter must be non-empty" >&2; exit 2; fi
+    args=(-E "$filter")
+    if [[ -n "$package" ]]; then args=(-p "$package" "${args[@]}"); fi
+    if [[ -s "${NEXTEST_ARCHIVE_PATH:-}" ]]; then
+        extract_root="${RUNNER_TEMP:-/tmp}/debug-nextest-archive-extract"
+        mkdir -p "$extract_root"
+        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "$NEXTEST_ARCHIVE_PATH" --extract-to "$extract_root" --extract-overwrite --workspace-remap "{{repo_root}}" "${args[@]}"
+    else
+        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --locked "${args[@]}"
+    fi
+
 test-archive archive *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest archive --locked --archive-file "{{archive}}" {{args}}
 

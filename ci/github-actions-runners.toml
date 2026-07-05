@@ -69,6 +69,9 @@ flaky-smoke-rust-backtester-issue-789 = "managed_heavy"
 debug-heavy = "managed_heavy"
 debug-light = "managed_light"
 
+[workflows.debug_test]
+debug-test = "managed_heavy"
+
 [workflows.rust_probe]
 probe-unsupported-runner-tier = "managed_light"
 probe-unsupported-job-timeout = "managed_light"
@@ -94,6 +97,9 @@ flaky-detection-rust-backtester-issue-789 = 3
 flaky-smoke-rust-root = 3
 flaky-smoke-rust-backtester = 3
 flaky-smoke-rust-backtester-issue-789 = 3
+
+[cargo_build_jobs.debug_test]
+debug-test = 3
 
 [workflows.actionlint]
 actionlint = "github_hosted"
@@ -170,6 +176,7 @@ included_workflows = [
   "flaky_test_detection",
   "flaky_test_smoke",
   "ci_runner_debug",
+  "debug_test",
   "rust_probe",
 ]
 

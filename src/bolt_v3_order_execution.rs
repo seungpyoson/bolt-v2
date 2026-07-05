@@ -703,6 +703,67 @@ pub(crate) trait BoltV3NtVenueMutationSink {
     ) -> Result<()>;
 }
 
+pub(crate) struct BoltV3NtSubmitOnlySink<F>
+where
+    F: FnMut(OrderAny, BoltV3SubmitContext) -> Result<()>,
+{
+    dispatch: F,
+}
+
+impl<F> BoltV3NtSubmitOnlySink<F>
+where
+    F: FnMut(OrderAny, BoltV3SubmitContext) -> Result<()>,
+{
+    pub(crate) fn new(dispatch: F) -> Self {
+        Self { dispatch }
+    }
+}
+
+impl<F> BoltV3NtVenueMutationSink for BoltV3NtSubmitOnlySink<F>
+where
+    F: FnMut(OrderAny, BoltV3SubmitContext) -> Result<()>,
+{
+    fn submit_order_via_nt(&mut self, order: OrderAny, context: BoltV3SubmitContext) -> Result<()> {
+        (self.dispatch)(order, context)
+    }
+
+    fn cancel_order_via_nt(
+        &mut self,
+        client_order_id: ClientOrderId,
+        _client_id: Option<ClientId>,
+        _params: Option<Params>,
+    ) -> Result<()> {
+        anyhow::bail!(
+            "kill switch flatten submit sink cannot cancel client_order_id={client_order_id}"
+        )
+    }
+
+    fn cancel_all_orders_via_nt(
+        &mut self,
+        instrument_id: InstrumentId,
+        _order_side: Option<OrderSide>,
+        _client_id: Option<ClientId>,
+        _params: Option<Params>,
+    ) -> Result<()> {
+        anyhow::bail!(
+            "kill switch flatten submit sink cannot cancel-all instrument_id={instrument_id}"
+        )
+    }
+
+    fn modify_order_via_nt(
+        &mut self,
+        client_order_id: ClientOrderId,
+        _quantity: Quantity,
+        _price: Price,
+        _client_id: Option<ClientId>,
+        _params: Option<Params>,
+    ) -> Result<()> {
+        anyhow::bail!(
+            "kill switch flatten submit sink cannot modify client_order_id={client_order_id}"
+        )
+    }
+}
+
 struct NtStrategyVenueMutationSink<'a, S>
 where
     S: Strategy + ?Sized,
@@ -1844,7 +1905,7 @@ mod tests {
         assert_eq!(
             writer.records()[0].clamp_outcome,
             Some(BoltV3OrderIntentClampOutcome::Clamped {
-                original_quantity: Decimal::new(5, 0).to_string(),
+                original_quantity: Quantity::new(5.0, 2).as_decimal().to_string(),
             })
         );
         assert_eq!(writer.admission_decisions().len(), 1);

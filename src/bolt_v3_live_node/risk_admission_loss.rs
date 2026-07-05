@@ -24,8 +24,8 @@ use crate::{
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_execution::{
-        BoltV3KillSwitchFlattenRoutingContext, BoltV3NtVenueMutationSink,
-        BoltV3OrderExecutionPolicy, route_kill_switch_flatten_command_with_sink,
+        BoltV3KillSwitchFlattenRoutingContext, BoltV3NtSubmitOnlySink, BoltV3OrderExecutionPolicy,
+        route_kill_switch_flatten_command_with_sink,
     },
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_submit_admission::{
@@ -46,61 +46,6 @@ where
 {
     fn execute_flatten(&self, action: &KillSwitchLossAction) -> Result<()> {
         (self.execute_flatten)(action)
-    }
-}
-
-struct ClosureNtSubmitSink<
-    F: FnMut(OrderAny, crate::bolt_v3_order_execution::BoltV3SubmitContext) -> Result<()>,
-> {
-    submit_flatten_order: F,
-}
-
-impl<F> BoltV3NtVenueMutationSink for ClosureNtSubmitSink<F>
-where
-    F: FnMut(OrderAny, crate::bolt_v3_order_execution::BoltV3SubmitContext) -> Result<()>,
-{
-    fn submit_order_via_nt(
-        &mut self,
-        order: OrderAny,
-        context: crate::bolt_v3_order_execution::BoltV3SubmitContext,
-    ) -> Result<()> {
-        (self.submit_flatten_order)(order, context)
-    }
-
-    fn cancel_order_via_nt(
-        &mut self,
-        client_order_id: nautilus_model::identifiers::ClientOrderId,
-        _client_id: Option<ClientId>,
-        _params: Option<Params>,
-    ) -> Result<()> {
-        anyhow::bail!(
-            "kill switch flatten submit sink cannot cancel client_order_id={client_order_id}"
-        )
-    }
-
-    fn cancel_all_orders_via_nt(
-        &mut self,
-        instrument_id: InstrumentId,
-        _order_side: Option<OrderSide>,
-        _client_id: Option<ClientId>,
-        _params: Option<Params>,
-    ) -> Result<()> {
-        anyhow::bail!(
-            "kill switch flatten submit sink cannot cancel-all instrument_id={instrument_id}"
-        )
-    }
-
-    fn modify_order_via_nt(
-        &mut self,
-        client_order_id: nautilus_model::identifiers::ClientOrderId,
-        _quantity: nautilus_model::types::Quantity,
-        _price: Price,
-        _client_id: Option<ClientId>,
-        _params: Option<Params>,
-    ) -> Result<()> {
-        anyhow::bail!(
-            "kill switch flatten submit sink cannot modify client_order_id={client_order_id}"
-        )
     }
 }
 
@@ -1260,44 +1205,42 @@ fn live_node_kill_switch_flatten_executor(
                     false,
                     true,
                 );
-                let mut sink = ClosureNtSubmitSink {
-                    submit_flatten_order: |order, context| {
-                        if order.status() != nautilus_model::enums::OrderStatus::Initialized {
-                            anyhow::bail!(
-                                "kill switch flatten order denied before NT risk engine: invalid status for {}, expected INITIALIZED",
-                                order.client_order_id()
-                            );
-                        }
-                        {
-                            cache.borrow_mut().add_order(
-                                order.clone(),
-                                context.position_id,
-                                context.client_id,
-                                true,
-                            )?;
-                        }
-                        publish_order_initialized(&order);
-                        let params = context.params.filter(|params| !params.is_empty());
-                        let command = SubmitOrder::new(
-                            trader_id,
-                            context.client_id,
-                            order.strategy_id(),
-                            order.instrument_id(),
-                            order.client_order_id(),
-                            order.init_event().clone(),
-                            order.exec_algorithm_id(),
-                            context.position_id,
-                            params,
-                            UUID4::new(),
-                            clock.borrow().timestamp_ns(),
-                            None,
+                let mut sink = BoltV3NtSubmitOnlySink::new(|order, context| {
+                    if order.status() != nautilus_model::enums::OrderStatus::Initialized {
+                        anyhow::bail!(
+                            "kill switch flatten order denied before NT risk engine: invalid status for {}, expected INITIALIZED",
+                            order.client_order_id()
                         );
-                        risk_engine
-                            .borrow_mut()
-                            .execute(TradingCommand::SubmitOrder(command));
-                        Ok(())
-                    },
-                };
+                    }
+                    {
+                        cache.borrow_mut().add_order(
+                            order.clone(),
+                            context.position_id,
+                            context.client_id,
+                            true,
+                        )?;
+                    }
+                    publish_order_initialized(&order);
+                    let params = context.params.filter(|params| !params.is_empty());
+                    let command = SubmitOrder::new(
+                        trader_id,
+                        context.client_id,
+                        order.strategy_id(),
+                        order.instrument_id(),
+                        order.client_order_id(),
+                        order.init_event().clone(),
+                        order.exec_algorithm_id(),
+                        context.position_id,
+                        params,
+                        UUID4::new(),
+                        clock.borrow().timestamp_ns(),
+                        None,
+                    );
+                    risk_engine
+                        .borrow_mut()
+                        .execute(TradingCommand::SubmitOrder(command));
+                    Ok(())
+                });
                 let fallback_price = instrument
                     .max_price()
                     .map(|price| price.to_string())
@@ -1691,9 +1634,8 @@ mod tests {
         bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState, KillSwitchStateKind},
         bolt_v3_kill_switch_store::{KillSwitchRecoveryState, KillSwitchStore},
         bolt_v3_order_execution::{
-            BoltV3KillSwitchFlattenRoutingContext, BoltV3NtVenueMutationSink,
-            BoltV3OrderExecutionPolicy, BoltV3SubmitContext,
-            route_kill_switch_flatten_command_with_sink,
+            BoltV3KillSwitchFlattenRoutingContext, BoltV3NtSubmitOnlySink,
+            BoltV3OrderExecutionPolicy, route_kill_switch_flatten_command_with_sink,
         },
         bolt_v3_order_intent::NtOrderTemplate,
         bolt_v3_submit_admission::{
@@ -2101,7 +2043,7 @@ mod tests {
         assert_eq!(
             records[0].clamp_outcome,
             Some(BoltV3OrderIntentClampOutcome::Clamped {
-                original_quantity: Decimal::new(5, 0).to_string(),
+                original_quantity: Quantity::new(5.0, 2).as_decimal().to_string(),
             })
         );
         let admission_decisions = writer.admission_decisions();
@@ -2482,9 +2424,11 @@ mod tests {
                 .expect("open position should produce a command");
             let mut order_factory = flatten_order_factory(command.strategy_id());
             let instrument = flatten_binary_option(command.instrument_id());
-            let mut sink = RecordingFlattenSubmitSink {
-                submitted_quantities: self.submitted_quantities.clone(),
-            };
+            let submitted_quantities = self.submitted_quantities.clone();
+            let mut sink = BoltV3NtSubmitOnlySink::new(move |order, _context| {
+                submitted_quantities.borrow_mut().push(order.quantity());
+                Ok(())
+            });
 
             route_kill_switch_flatten_command_with_sink(
                 BoltV3OrderExecutionPolicy::live(),
@@ -2502,53 +2446,6 @@ mod tests {
                 command,
             )?;
             Ok(())
-        }
-    }
-
-    struct RecordingFlattenSubmitSink {
-        submitted_quantities: Rc<RefCell<Vec<Quantity>>>,
-    }
-
-    impl BoltV3NtVenueMutationSink for RecordingFlattenSubmitSink {
-        fn submit_order_via_nt(
-            &mut self,
-            order: OrderAny,
-            _context: BoltV3SubmitContext,
-        ) -> Result<()> {
-            self.submitted_quantities
-                .borrow_mut()
-                .push(order.quantity());
-            Ok(())
-        }
-
-        fn cancel_order_via_nt(
-            &mut self,
-            client_order_id: ClientOrderId,
-            _client_id: Option<ClientId>,
-            _params: Option<Params>,
-        ) -> Result<()> {
-            anyhow::bail!("unexpected flatten cancel for client_order_id={client_order_id}")
-        }
-
-        fn cancel_all_orders_via_nt(
-            &mut self,
-            instrument_id: InstrumentId,
-            _order_side: Option<OrderSide>,
-            _client_id: Option<ClientId>,
-            _params: Option<Params>,
-        ) -> Result<()> {
-            anyhow::bail!("unexpected flatten cancel-all for instrument_id={instrument_id}")
-        }
-
-        fn modify_order_via_nt(
-            &mut self,
-            client_order_id: ClientOrderId,
-            _quantity: Quantity,
-            _price: Price,
-            _client_id: Option<ClientId>,
-            _params: Option<Params>,
-        ) -> Result<()> {
-            anyhow::bail!("unexpected flatten modify for client_order_id={client_order_id}")
         }
     }
 

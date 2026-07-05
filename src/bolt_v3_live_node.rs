@@ -1,5 +1,5 @@
 //! Bolt-v3 NautilusTrader LiveNode assembly without strategy registration,
-//! market selection, order construction, or submit paths.
+//! market selection, order construction, or ordinary strategy submit paths.
 //!
 //! Bolt-v3 LiveNode controlled-build / controlled-connect /
 //! controlled-disconnect boundary. This module:
@@ -22,6 +22,9 @@
 //!   without entering the NT runner loop from the build path
 //! - wires the existing `crate::nt_runtime_capture` from the
 //!   `[persistence]` / `[persistence.streaming]` blocks
+//! - permits only the kill-switch forced-reduction flatten effect to hand an
+//!   already-admitted order to NT risk execution; ordinary strategy order
+//!   construction and policy stay outside this module
 //! - installs module-level logger filters from provider-owned bindings
 //!   that suppress NT credential info logs even when the root TOML log
 //!   level is `INFO`

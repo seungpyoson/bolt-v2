@@ -1658,6 +1658,34 @@ class CleanupContractTests(unittest.TestCase):
         )
         self.assertEqual(manifest["hooks"]["commit-msg"]["source_path"], str(global_commit_msg_v2))
 
+    def test_install_hooks_removes_global_hook_when_global_path_unset(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        global_hooks = self.tmp / "global-hooks-unset"
+        global_hooks.mkdir()
+        global_commit_msg = global_hooks / "commit-msg"
+        global_commit_msg.write_text("#!/bin/sh\nprintf global-v1\n", encoding="utf-8")
+        global_commit_msg.chmod(0o755)
+        global_config = self.tmp / "global-unset.gitconfig"
+        global_config.write_text(
+            f"[core]\n\thooksPath = {global_hooks}\n",
+            encoding="utf-8",
+        )
+        env = {"GIT_CONFIG_GLOBAL": str(global_config)}
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks", env=env).returncode, 0)
+        runtime_hook = git_common_dir_compat(self.work) / "hooks" / "commit-msg"
+        self.assertTrue(runtime_hook.exists())
+        global_config.write_text("", encoding="utf-8")
+
+        proc = run_clean_proc(self.work, "--install-hooks", env=env)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(runtime_hook.exists())
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertNotIn("commit-msg", manifest["hooks"])
+
     def test_install_hooks_removes_adopted_hook_when_manifest_source_disappears(
         self,
     ) -> None:
@@ -2003,6 +2031,26 @@ class CleanupContractTests(unittest.TestCase):
             (runtime_hooks / "commit-msg").read_text(encoding="utf-8"),
             linked_commit_msg.read_text(encoding="utf-8"),
         )
+
+    def test_doctor_checks_invoking_linked_worktree_hooks_path(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        _run(["git", "branch", "feat/doctor-worktree-hooks-path"], cwd=self.work)
+        linked = add_worktree(
+            self.work,
+            "feat/doctor-worktree-hooks-path",
+            self.tmp / "linked-doctor-worktree-hooks-path",
+        )
+        _run(["git", "config", "extensions.worktreeConfig", "true"], cwd=self.work)
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks").returncode, 0)
+        linked_hooks = linked / ".linked-hooks"
+        linked_hooks.mkdir()
+        _run(["git", "config", "--worktree", "core.hooksPath", ".linked-hooks"],
+             cwd=linked)
+
+        proc = run_clean_proc(linked, "--doctor")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("core.hooksPath is not git-common hooks directory", proc.stdout)
 
     def test_doctor_rejects_legacy_tracked_hooks_path(self) -> None:
         self._write_clean_merged_hook_sources(self.work)

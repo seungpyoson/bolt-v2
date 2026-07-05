@@ -191,8 +191,9 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
   Later setup runs refresh adopted external hooks and shadowed-hook records from
   their manifest source paths, follows the current global `core.hooksPath` for
   global-sourced hooks, and removes manifest-owned runtime copies whose source
-  file disappeared. Same-name external hooks are shadowed by the repo hook
-  source and recorded in the manifest instead of guessed, merged, or dispatched.
+  file disappeared or whose global hook source was unset. Same-name external
+  hooks are shadowed by the repo hook source and recorded in the manifest
+  instead of guessed, merged, or dispatched.
   Setup records hook source path, Git config scope, and byte hashes in
   `$(git rev-parse --git-common-dir)/clean-merged.hooks-manifest.json`.
   Runtime overwrites are allowed only for exact byte matches or entries whose

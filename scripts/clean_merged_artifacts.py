@@ -683,6 +683,7 @@ def _manifest_source_file(
                 global_raw,
                 home_dir=home_dir,
             ) / hook_name
+        return None
     raw = entry.get("source_path")
     if not isinstance(raw, str) or not raw:
         return None
@@ -912,6 +913,8 @@ def install_hooks(
                 home_dir=home_dir,
             )
             if source_file is None:
+                if entry.get("source_scope") == "global":
+                    continue
                 raise CleanMergedError(
                     f"shadowed hook manifest entry for {hook_name} has invalid source_path"
                 )
@@ -948,6 +951,14 @@ def install_hooks(
             home_dir=home_dir,
         )
         if source_file is None:
+            if entry.get("source_scope") == "global":
+                _remove_hook_with_provenance(
+                    runtime_hooks_dir=runtime_hooks_dir,
+                    hook_name=hook_name,
+                    entry=entry,
+                )
+                manifest_hooks.pop(hook_name, None)
+                continue
             raise CleanMergedError(f"hook manifest entry for {hook_name} has invalid source_path")
         if not source_file.is_file():
             _remove_hook_with_provenance(
@@ -3008,6 +3019,7 @@ def _redirect_output_to(path: pathlib.Path, max_bytes: int, rotated_retention_da
 
 def _diagnose_hook_install_state(
     repo_root: pathlib.Path,
+    invoke_root: pathlib.Path,
     common: pathlib.Path,
     problems: list[str],
 ) -> None:
@@ -3023,10 +3035,10 @@ def _diagnose_hook_install_state(
         manifest_shadowed = {}
         problems.append(str(exc))
 
-    active_hooks_dir_raw = _git(repo_root, ["config", "--get", "core.hooksPath"], check=False)
+    active_hooks_dir_raw = _git(invoke_root, ["config", "--get", "core.hooksPath"], check=False)
     if active_hooks_dir_raw.returncode == 0 and active_hooks_dir_raw.stdout.strip():
         active_hooks_dir = _resolve_hooks_path(
-            repo_root,
+            invoke_root,
             active_hooks_dir_raw.stdout.strip(),
             home_dir=home_dir,
         )
@@ -3082,7 +3094,7 @@ def _diagnose_hook_install_state(
             repo_root,
             entry,
             hook_name=hook_name,
-            invoke_root=repo_root,
+            invoke_root=invoke_root,
             home_dir=home_dir,
         )
         source_match = (
@@ -3111,7 +3123,7 @@ def _diagnose_hook_install_state(
                 repo_root,
                 entry,
                 hook_name=hook_name,
-                invoke_root=repo_root,
+                invoke_root=invoke_root,
                 home_dir=home_dir,
             )
             source_match = (
@@ -3126,7 +3138,11 @@ def _diagnose_hook_install_state(
                 problems.append(f"shadowed hook {hook_name} source changed since install")
 
 
-def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
+def cmd_doctor_on_error(
+    repo_root: pathlib.Path,
+    invoke_root: pathlib.Path,
+    exc: Exception,
+) -> int:
     """Doctor path that runs even when config parse failed.
 
     main() catches ConfigError before the doctor dispatch and returned 0 — so
@@ -3140,7 +3156,7 @@ def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
     try:
         common = git_common_dir(repo_root)
         print(f"  git-common-dir           = {common}")
-        _diagnose_hook_install_state(repo_root, common, problems)
+        _diagnose_hook_install_state(repo_root, invoke_root, common, problems)
         # heartbeat freshness even on config error
         import datetime as _dt
         hb_paths = [
@@ -3169,7 +3185,7 @@ def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
     return 1
 
 
-def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
+def cmd_doctor(repo_root: pathlib.Path, invoke_root: pathlib.Path, config: Config) -> int:
     problems: list[str] = []
     print(f"[{SCRIPT_NAME}] doctor")
 
@@ -3191,7 +3207,7 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     # git-common-dir
     common = git_common_dir(repo_root)
     print(f"  git-common-dir           = {common}")
-    _diagnose_hook_install_state(repo_root, common, problems)
+    _diagnose_hook_install_state(repo_root, invoke_root, common, problems)
 
     # remote.<remote>.prune must follow the configured remote name.
     prune_key = f"remote.{config.remote_name}.prune"
@@ -3455,6 +3471,7 @@ def main(argv: list[str] | None = None) -> int:
     # _resolve_repo_root and load_config can raise CleanMergedError; catch the
     # parent type so non-git dirs and bad common-dir resolution fail open.
     repo_root = pathlib.Path.cwd()
+    invoke_root = repo_root
     try:
         invoke_root = _resolve_repo_root(pathlib.Path.cwd())
         repo_root = _main_worktree_root(invoke_root)
@@ -3479,7 +3496,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.print_remote_name:
             return 1
         if args.doctor:
-            return cmd_doctor_on_error(repo_root=repo_root, exc=exc)
+            return cmd_doctor_on_error(repo_root=repo_root, invoke_root=invoke_root, exc=exc)
         return 0
 
     if args.print_remote_name:
@@ -3509,7 +3526,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Single-shot subcommands
     if args.doctor:
-        return cmd_doctor(repo_root, config)
+        return cmd_doctor(repo_root, invoke_root, config)
     if args.purge_quarantine is not None:
         grace = None if args.purge_quarantine == -1 else args.purge_quarantine
         cmd_purge_quarantine(repo_root, config, grace_days=grace, quiet=args.quiet)

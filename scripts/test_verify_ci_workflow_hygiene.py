@@ -2953,6 +2953,13 @@ def duplicate_named_step_after(text: str, anchor: str, step_name: str) -> str:
     return mutate_named_step_after(text, anchor, step_name, lambda block: block + block)
 
 
+def insert_step_before_named_step_after(text: str, anchor: str, step_name: str, step: str) -> str:
+    step_lines = step.splitlines(keepends=True)
+    if not step.endswith("\n"):
+        step_lines.append("\n")
+    return mutate_named_step_after(text, anchor, step_name, lambda block: step_lines + block)
+
+
 def without_once_after(text: str, anchor: str, old: str) -> str:
     index = text.find(anchor)
     if index == -1:
@@ -14149,6 +14156,74 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         in error
         for error in bvs_partition_false_condition_errors
     ), bvs_partition_false_condition_errors
+    bvs_partition_github_path_probe = insert_step_before_named_step_after(
+        good,
+        "  test-archive:",
+        "test",
+        """      - name: Install BVS partition shim
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/.ci-shims" >> "$GITHUB_PATH"
+""",
+    )
+    bvs_partition_github_path_errors = bvs_cache_errors(bvs_partition_github_path_probe)
+    assert any(
+        "backtester bvs-test archive partition step: digest-pinned partition job must not let prior steps write GITHUB_PATH"
+        in error
+        for error in bvs_partition_github_path_errors
+    ), bvs_partition_github_path_errors
+    bvs_partition_github_env_probe = insert_step_before_named_step_after(
+        good,
+        "  test-archive:",
+        "test",
+        """      - name: Export BVS partition env
+        shell: bash
+        run: echo "PARTITION_SHIM=1" >> "$GITHUB_ENV"
+""",
+    )
+    bvs_partition_github_env_errors = bvs_cache_errors(bvs_partition_github_env_probe)
+    assert any(
+        "backtester bvs-test archive partition step: digest-pinned partition job must not let prior steps write GITHUB_ENV"
+        in error
+        for error in bvs_partition_github_env_errors
+    ), bvs_partition_github_env_errors
+    bvs_partition_job_continue_on_error_probe = replace_once_after(
+        good,
+        "  test-archive:",
+        "    name: bvs-test archive\n",
+        "    name: bvs-test archive\n    continue-on-error: true\n",
+    )
+    bvs_partition_job_continue_on_error_errors = bvs_cache_errors(
+        bvs_partition_job_continue_on_error_probe
+    )
+    assert any(
+        "backtester bvs-test archive partition step: digest-pinned partition job must not define job-level continue-on-error"
+        in error
+        for error in bvs_partition_job_continue_on_error_errors
+    ), bvs_partition_job_continue_on_error_errors
+    bvs_partition_job_defaults_probe = replace_once_after(
+        good,
+        "  test-archive:",
+        "    steps:\n",
+        "    defaults:\n      run:\n        shell: sh\n    steps:\n",
+    )
+    bvs_partition_job_defaults_errors = bvs_cache_errors(bvs_partition_job_defaults_probe)
+    assert any(
+        "backtester bvs-test archive partition step: digest-pinned partition job must not define defaults.run"
+        in error
+        for error in bvs_partition_job_defaults_errors
+    ), bvs_partition_job_defaults_errors
+    bvs_partition_job_bash_env_probe = replace_once_after(
+        good,
+        "  test-archive:",
+        "    env:\n",
+        "    env:\n      BASH_ENV: .github/ci/partition-env.sh\n",
+    )
+    bvs_partition_job_bash_env_errors = bvs_cache_errors(bvs_partition_job_bash_env_probe)
+    assert any(
+        "backtester bvs-test archive partition step: digest-pinned partition job env must not set PATH or BASH_ENV"
+        in error
+        for error in bvs_partition_job_bash_env_errors
+    ), bvs_partition_job_bash_env_errors
     bvs_partition_step_rename_probe = replace_once_after(
         good,
         "  test-archive:",
@@ -16192,6 +16267,62 @@ def main() -> int:
     assert_error(
         "test-archive Run nextest archive partitions: digest pin target step must use canonical name/shell/run envelope",
         root_partition_false_condition_probe,
+    )
+    root_partition_github_path_probe = insert_step_before_named_step_after(
+        BASE_WORKFLOW,
+        "  test-archive:",
+        "Run nextest archive partitions",
+        """      - name: Install partition shim
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/.ci-shims" >> "$GITHUB_PATH"
+""",
+    )
+    assert_error(
+        "test-archive Run nextest archive partitions: digest-pinned partition job must not let prior steps write GITHUB_PATH",
+        root_partition_github_path_probe,
+    )
+    root_partition_github_env_probe = insert_step_before_named_step_after(
+        BASE_WORKFLOW,
+        "  test-archive:",
+        "Run nextest archive partitions",
+        """      - name: Export partition env
+        shell: bash
+        run: echo "PARTITION_SHIM=1" >> "$GITHUB_ENV"
+""",
+    )
+    assert_error(
+        "test-archive Run nextest archive partitions: digest-pinned partition job must not let prior steps write GITHUB_ENV",
+        root_partition_github_env_probe,
+    )
+    root_partition_job_continue_on_error_probe = replace_once_after(
+        BASE_WORKFLOW,
+        "  test-archive:",
+        "    name: nextest archive\n",
+        "    name: nextest archive\n    continue-on-error: true\n",
+    )
+    assert_error(
+        "test-archive Run nextest archive partitions: digest-pinned partition job must not define job-level continue-on-error",
+        root_partition_job_continue_on_error_probe,
+    )
+    root_partition_job_defaults_probe = replace_once_after(
+        BASE_WORKFLOW,
+        "  test-archive:",
+        "    steps:\n",
+        "    defaults:\n      run:\n        shell: sh\n    steps:\n",
+    )
+    assert_error(
+        "test-archive Run nextest archive partitions: digest-pinned partition job must not define defaults.run",
+        root_partition_job_defaults_probe,
+    )
+    root_partition_job_bash_env_probe = replace_once_after(
+        BASE_WORKFLOW,
+        "  test-archive:",
+        "    env:\n",
+        "    env:\n      BASH_ENV: .github/ci/partition-env.sh\n",
+    )
+    assert_error(
+        "test-archive Run nextest archive partitions: digest-pinned partition job env must not set PATH or BASH_ENV",
+        root_partition_job_bash_env_probe,
     )
     root_partition_step_rename_probe = replace_once_after(
         BASE_WORKFLOW,

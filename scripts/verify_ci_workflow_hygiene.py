@@ -3563,10 +3563,6 @@ def step_name_matches(block: list[str], step_name: str) -> bool:
     return any(name_re.match(strip_comment(line)) for line in block)
 
 
-def named_step_blocks(lines: list[str], step_name: str) -> list[list[str]]:
-    return [block for block in step_blocks(lines) if step_name_matches(block, step_name)]
-
-
 def step_declares_run(block: list[str]) -> bool:
     return any(YAML_RUN_LINE_RE.match(strip_comment(line).rstrip()) is not None for line in block)
 
@@ -12594,6 +12590,10 @@ def run_body_sha256(run_body: str) -> str:
 
 
 PARTITION_STEP_ENVELOPE_KEYS = frozenset({"name", "shell", "run"})
+GITHUB_FILE_REDIRECT_TARGETS = {
+    "GITHUB_ENV": re.compile(r">{1,2}\s*(?:\"|')?(?:\$\{GITHUB_ENV\}|\$GITHUB_ENV)(?:\"|')?"),
+    "GITHUB_PATH": re.compile(r">{1,2}\s*(?:\"|')?(?:\$\{GITHUB_PATH\}|\$GITHUB_PATH)(?:\"|')?"),
+}
 
 
 def partition_run_body_digest_errors(
@@ -12614,6 +12614,116 @@ def partition_run_body_digest_errors(
     ]
 
 
+def job_level_mapping_has_child(job_lines: list[str], parent_key: str, child_key: str) -> bool:
+    parent_indent = 4
+    child_indent: int | None = None
+    for index, line in enumerate(job_lines):
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        parent_match = re.match(rf"^\s{{{parent_indent}}}{re.escape(parent_key)}\s*:\s*(.*?)\s*$", clean)
+        if parent_match is None:
+            continue
+        inline_value = unquote_yaml_scalar(parent_match.group(1))
+        if inline_value and re.search(rf"(?:^|[{{,]\s*){re.escape(child_key)}\s*:", inline_value):
+            return True
+        for child in job_lines[index + 1 :]:
+            child_clean = strip_comment(child).rstrip()
+            if not child_clean.strip():
+                continue
+            indent = len(child_clean) - len(child_clean.lstrip(" "))
+            if indent <= parent_indent:
+                break
+            if child_indent is None:
+                child_indent = indent
+            if indent != child_indent:
+                continue
+            child_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:", child_clean)
+            if child_match is not None and unquote_yaml_scalar(child_match.group(1)) == child_key:
+                return True
+        return False
+    return False
+
+
+def job_level_env_forbidden_keys(job_lines: list[str]) -> set[str]:
+    forbidden: set[str] = set()
+    parent_indent = 4
+    child_indent: int | None = None
+    for index, line in enumerate(job_lines):
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        parent_match = re.match(r"^\s{4}env\s*:\s*(.*?)\s*$", clean)
+        if parent_match is None:
+            continue
+        inline_value = unquote_yaml_scalar(parent_match.group(1))
+        for key in ("PATH", "BASH_ENV"):
+            if inline_value and re.search(rf"(?:^|[{{,]\s*){key}\s*:", inline_value):
+                forbidden.add(key)
+        for child in job_lines[index + 1 :]:
+            child_clean = strip_comment(child).rstrip()
+            if not child_clean.strip():
+                continue
+            indent = len(child_clean) - len(child_clean.lstrip(" "))
+            if indent <= parent_indent:
+                break
+            if child_indent is None:
+                child_indent = indent
+            if indent != child_indent:
+                continue
+            child_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:", child_clean)
+            if child_match is None:
+                continue
+            key = unquote_yaml_scalar(child_match.group(1))
+            if key in {"PATH", "BASH_ENV"}:
+                forbidden.add(key)
+        return forbidden
+    return forbidden
+
+
+def shell_command_writes_github_file(command: str, variable: str) -> bool:
+    return GITHUB_FILE_REDIRECT_TARGETS[variable].search(command) is not None
+
+
+def digest_pinned_partition_trusted_context_errors(
+    *,
+    label: str,
+    job_lines: list[str],
+    blocks: list[list[str]],
+    partition_step_index: int,
+) -> list[str]:
+    errors: list[str] = []
+    job_items = job_top_level_items(job_lines)
+    if job_items is None or "continue-on-error" in job_items:
+        errors.append(
+            f"{label}: digest-pinned partition job must not define job-level continue-on-error"
+        )
+    if job_level_mapping_has_child(job_lines, "defaults", "run"):
+        errors.append(f"{label}: digest-pinned partition job must not define defaults.run")
+    if job_level_env_forbidden_keys(job_lines):
+        errors.append(f"{label}: digest-pinned partition job env must not set PATH or BASH_ENV")
+
+    for block in blocks[:partition_step_index]:
+        command = step_run_command(block)
+        if command is None:
+            continue
+        if shell_command_writes_github_file(command, "GITHUB_PATH"):
+            errors.append(
+                f"{label}: digest-pinned partition job must not let prior steps write GITHUB_PATH"
+            )
+            break
+    for block in blocks[:partition_step_index]:
+        command = step_run_command(block)
+        if command is None:
+            continue
+        if shell_command_writes_github_file(command, "GITHUB_ENV"):
+            errors.append(
+                f"{label}: digest-pinned partition job must not let prior steps write GITHUB_ENV"
+            )
+            break
+    return errors
+
+
 def partition_step_digest_errors(
     *,
     label: str,
@@ -12622,18 +12732,30 @@ def partition_step_digest_errors(
     expected_sha256: str,
     constant_name: str,
 ) -> list[str]:
-    matching_blocks = named_step_blocks(job_lines, step_name)
-    if not matching_blocks:
+    blocks = step_blocks(job_lines)
+    matching_indices = [
+        index for index, block in enumerate(blocks) if step_name_matches(block, step_name)
+    ]
+    if not matching_indices:
         return [f"{label}: digest pin target step not found"]
-    if len(matching_blocks) != 1:
-        return [f"{label}: digest pin target step matched {len(matching_blocks)} steps"]
-    block = matching_blocks[0]
+    if len(matching_indices) != 1:
+        return [f"{label}: digest pin target step matched {len(matching_indices)} steps"]
+    partition_step_index = matching_indices[0]
+    block = blocks[partition_step_index]
     if not block_has_canonical_step_envelope(
         block,
         PARTITION_STEP_ENVELOPE_KEYS,
         {"name": step_name, "shell": "bash", "run": "|"},
     ):
         return [f"{label}: digest pin target step must use canonical name/shell/run envelope"]
+    trusted_context_errors = digest_pinned_partition_trusted_context_errors(
+        label=label,
+        job_lines=job_lines,
+        blocks=blocks,
+        partition_step_index=partition_step_index,
+    )
+    if trusted_context_errors:
+        return trusted_context_errors
     return partition_run_body_digest_errors(
         label=label,
         run_body=named_step_run_block("\n".join(job_lines), step_name),

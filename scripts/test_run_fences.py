@@ -215,6 +215,44 @@ def assert_tests_run_without_filesystem_cache() -> None:
         raise AssertionError(stats)
 
 
+def assert_fences_only_cli_skips_test_phase() -> None:
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        scripts = root / "scripts"
+        write(scripts / "verify_bolt_v3_cli_flag.py", "def main(): return 0\n")
+        write(
+            scripts / "test_verify_bolt_v3_cli_flag.py",
+            "def main():\n"
+            "    raise RuntimeError('paired test phase should not run')\n",
+        )
+        write_dummy_standalone_tests(runner, scripts)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            fences_only_status = runner.main(
+                [
+                    "--root",
+                    str(root),
+                    "--scripts-dir",
+                    str(scripts),
+                    "--fences-only",
+                ]
+            )
+        if fences_only_status != 0:
+            raise AssertionError((fences_only_status, stdout.getvalue(), stderr.getvalue()))
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            full_status = runner.main(["--root", str(root), "--scripts-dir", str(scripts)])
+    combined = stdout.getvalue() + stderr.getvalue()
+    if full_status != 1:
+        raise AssertionError((full_status, combined))
+    if "paired test phase should not run" not in combined:
+        raise AssertionError(combined)
+
+
 def assert_filesystem_cache_skips_paths_outside_root() -> None:
     runner = load_runner()
     with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside_tmp:
@@ -285,6 +323,7 @@ def main() -> int:
     assert_runner_argv_does_not_leak_to_fences()
     assert_system_exit_none_is_success()
     assert_tests_run_without_filesystem_cache()
+    assert_fences_only_cli_skips_test_phase()
     assert_filesystem_cache_skips_paths_outside_root()
     assert_mixed_unittest_and_bare_tests_fail_loud()
     print("OK: run_fences self-tests passed.")

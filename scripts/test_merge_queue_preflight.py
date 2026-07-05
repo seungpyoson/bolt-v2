@@ -1828,6 +1828,109 @@ def assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder() 
             raise AssertionError(runs)
 
 
+def install_synthetic_run_fences(fixture: GitFixture, log: pathlib.Path, body: str = "") -> None:
+    git(fixture.repo, "checkout", "main")
+    write(
+        fixture.repo / "scripts" / "run_fences.py",
+        "#!/usr/bin/env python3\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"log = Path({str(log)!r})\n"
+        "with log.open('a', encoding='utf-8') as stream:\n"
+        "    stream.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        f"{body}"
+        "raise SystemExit(0)\n",
+    )
+    fixture.base = commit(fixture.repo, "install synthetic run_fences")
+    git(fixture.repo, "push", "origin", "main")
+
+
+def run_preflight_with_config(
+    fixture: GitFixture,
+    config: pathlib.Path,
+    heads: Mapping[int, str],
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        sys.executable,
+        str(SCRIPT_PATH),
+        "--origin",
+        str(fixture.remote),
+        "--base",
+        "main",
+        "--expected-base-sha",
+        fixture.base,
+        *[
+            item
+            for pr, head in heads.items()
+            for item in ("--expected-head-sha", f"{pr}={head}")
+        ],
+        "--config",
+        str(config),
+        "--no-gh",
+        "--json",
+        *(str(pr) for pr in heads),
+    ]
+    return subprocess.run(
+        command,
+        cwd=fixture.repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def assert_preflight_source_fence_profile_selects_fences_only_by_scripts_diff() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        log = root / "run-fences-argv.log"
+        install_synthetic_run_fences(fixture, log)
+        config = write_preflight_config(root, "static", [f"{sys.executable} scripts/run_fences.py"])
+
+        nonscripts_head = fixture.make_pr(1, {"one.txt": "one\n"})
+        result = run_preflight_with_config(fixture, config, {1: nonscripts_head})
+        assert_equal(result.returncode, 3, "non-scripts source fence profile rc")
+        first_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" not in first_run:
+            raise AssertionError(first_run)
+
+        scripts_head = fixture.make_pr(2, {"scripts/changed.py": "VALUE = 1\n"})
+        result = run_preflight_with_config(fixture, config, {2: scripts_head})
+        assert_equal(result.returncode, 3, "scripts source fence profile rc")
+        second_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in second_run:
+            raise AssertionError(second_run)
+
+
+def assert_scripts_pr_fence_regression_uses_full_profile() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        log = root / "run-fences-regression.log"
+        install_synthetic_run_fences(
+            fixture,
+            log,
+            "if '--fences-only' not in sys.argv and Path('scripts/fence_regression.txt').exists():\n"
+            "    print('full profile caught scripts fence regression')\n"
+            "    raise SystemExit(7)\n",
+        )
+        config = write_preflight_config(root, "static", [f"{sys.executable} scripts/run_fences.py"])
+        head = fixture.make_pr(1, {"scripts/fence_regression.txt": "regression\n"})
+
+        result = run_preflight_with_config(fixture, config, {1: head})
+        assert_equal(result.returncode, 2, "scripts fence regression rc")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "verifier_failed":
+            raise AssertionError(blocked)
+        if "full profile caught scripts fence regression" not in blocked[0]["stdout_preview"]:
+            raise AssertionError(blocked)
+        last_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" in last_run:
+            raise AssertionError(last_run)
+
+
 def assert_missing_verifier_executable_is_inconclusive() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -3045,6 +3148,8 @@ def main() -> int:
     assert_pr_that_conflicts_with_base_is_blocked()
     assert_verifier_failure_blocks_bad_pr_before_batching()
     assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder()
+    assert_preflight_source_fence_profile_selects_fences_only_by_scripts_diff()
+    assert_scripts_pr_fence_regression_uses_full_profile()
     assert_missing_verifier_executable_is_inconclusive()
     assert_unexpected_exception_is_not_split_advised()
     assert_verifier_timeout_is_inconclusive()

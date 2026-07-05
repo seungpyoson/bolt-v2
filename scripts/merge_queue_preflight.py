@@ -263,6 +263,10 @@ CHECK_STATE_ISSUE_MESSAGES = {
     "required_check_stale": "required check is stale: {name}",
 }
 VERIFIER_STREAMS = ("stdout", "stderr")
+FENCES_ONLY_FLAG = "--fences-only"
+RUN_FENCES_SCRIPT = "scripts/run_fences.py"
+SOURCE_FENCE_STATIC_COMMAND = ("just", "source-fence-static")
+SCRIPTS_PATHSPEC = "scripts"
 PREFLIGHT_MODE_FINDINGS = {
     True: (),
     False: (
@@ -2306,6 +2310,57 @@ def verifier_block(pr: int, result: VerifierResult, output_policy: OutputPolicy)
     }
 
 
+def source_fence_fences_only_command(command: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return command
+    if not parts or FENCES_ONLY_FLAG in parts:
+        return command
+    if tuple(parts) == SOURCE_FENCE_STATIC_COMMAND:
+        return shlex.join(("python3", RUN_FENCES_SCRIPT, FENCES_ONLY_FLAG))
+    if len(parts) >= 2 and pathlib.PurePosixPath(parts[1]).as_posix().endswith(RUN_FENCES_SCRIPT):
+        return shlex.join((*parts, FENCES_ONLY_FLAG))
+    return command
+
+
+def commit_touches_scripts(
+    repo: pathlib.Path,
+    base_sha: str,
+    commit: str,
+    input_timeout_seconds: int,
+) -> bool:
+    completed = git(
+        repo,
+        "diff",
+        "--name-only",
+        base_sha,
+        commit,
+        "--",
+        SCRIPTS_PATHSPEC,
+        check=False,
+        timeout_seconds=input_timeout_seconds,
+    )
+    if completed.returncode != 0 or completed.failure_type == "timeout":
+        return True
+    return any(line.strip() for line in completed.stdout.splitlines())
+
+
+def verifier_commands_for_commit(
+    *,
+    repo: pathlib.Path,
+    base_sha: str,
+    commit: str,
+    commands: Sequence[str],
+    input_timeout_seconds: int,
+) -> tuple[str, ...]:
+    if not commands:
+        return ()
+    if commit_touches_scripts(repo, base_sha, commit, input_timeout_seconds):
+        return tuple(commands)
+    return tuple(source_fence_fences_only_command(command) for command in commands)
+
+
 def unverified_batches_for_ready_prs(
     *,
     repo: pathlib.Path,
@@ -2390,6 +2445,7 @@ class VerifiedBatchFallback:
 def verified_fallback_batches(
     *,
     repo: pathlib.Path,
+    base_sha: str,
     prs: Sequence[int],
     heads: Mapping[int, ExpectedHead],
     base_commits: Mapping[int, SyntheticCommit],
@@ -2408,7 +2464,13 @@ def verified_fallback_batches(
         verifier_results = run_verifier_commands(
             repo,
             synthetic.commit,
-            verifier_commands,
+            verifier_commands_for_commit(
+                repo=repo,
+                base_sha=base_sha,
+                commit=synthetic.commit,
+                commands=verifier_commands,
+                input_timeout_seconds=input_timeout_seconds,
+            ),
             verifier_timeout_seconds,
             input_timeout_seconds,
         )
@@ -2477,7 +2539,13 @@ def verified_fallback_batches(
         candidate_verifiers = run_verifier_commands(
             repo,
             synthetic.commit,
-            verifier_commands,
+            verifier_commands_for_commit(
+                repo=repo,
+                base_sha=base_sha,
+                commit=synthetic.commit,
+                commands=verifier_commands,
+                input_timeout_seconds=input_timeout_seconds,
+            ),
             verifier_timeout_seconds,
             input_timeout_seconds,
         )
@@ -2524,6 +2592,7 @@ def verified_fallback_batches(
 def verify_final_batches_with_fallback(
     *,
     repo: pathlib.Path,
+    base_sha: str,
     candidate_batches: Sequence[Batch],
     heads: Mapping[int, ExpectedHead],
     base_commits: Mapping[int, SyntheticCommit],
@@ -2541,7 +2610,13 @@ def verify_final_batches_with_fallback(
         verifier_results = run_verifier_commands(
             repo,
             batch.commit,
-            verifier_commands,
+            verifier_commands_for_commit(
+                repo=repo,
+                base_sha=base_sha,
+                commit=batch.commit,
+                commands=verifier_commands,
+                input_timeout_seconds=input_timeout_seconds,
+            ),
             verifier_timeout_seconds,
             input_timeout_seconds,
         )
@@ -2559,6 +2634,7 @@ def verify_final_batches_with_fallback(
             continue
         fallback = verified_fallback_batches(
             repo=repo,
+            base_sha=base_sha,
             prs=batch.prs,
             heads=heads,
             base_commits=base_commits,
@@ -3107,6 +3183,7 @@ def preflight_with_fetch_refs(
     )
     fallback_blocked_prs, fallback_conflicts, batches = verify_final_batches_with_fallback(
         repo=repo,
+        base_sha=base_sha,
         candidate_batches=candidate_batches,
         heads=heads,
         base_commits=base_commits,

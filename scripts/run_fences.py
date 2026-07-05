@@ -309,12 +309,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=pathlib.Path, default=REPO_ROOT)
     parser.add_argument("--scripts-dir", type=pathlib.Path, default=SCRIPTS_DIR)
+    parser.add_argument("--fences-only", action="store_true", help="skip source-fence test suites")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    return run_fences(root=args.root, scripts_dir=args.scripts_dir)
+    return run_fences(root=args.root, scripts_dir=args.scripts_dir, run_tests=not args.fences_only)
 
 
 if __name__ == "__main__":

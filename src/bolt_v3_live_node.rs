@@ -247,9 +247,9 @@ pub use live_node_config::{
 #[cfg(test)]
 use risk_admission_loss::capital_admission_venue_spendability_snapshot_from_source_config;
 use risk_admission_loss::{
-    BoltV3CapitalAdmissionVenueSpendabilitySourceConfig, BoltV3SubmitReservationRecoveryConfig,
-    BoltV3VenueTruthRuntimeGuard, capital_admission_config_from_loaded,
-    capital_admission_runtime_feed_config_from_loaded,
+    BoltV3CapitalAdmissionVenueSpendabilitySourceConfig, BoltV3LossProtectionRuntimeGuards,
+    BoltV3SubmitReservationRecoveryConfig, BoltV3VenueTruthRuntimeGuard,
+    capital_admission_config_from_loaded, capital_admission_runtime_feed_config_from_loaded,
     capital_admission_venue_spendability_source_config_from_loaded,
     configure_bolt_v3_kill_switch_loss_protection, loss_governor_halt_action_handler_from_node,
     loss_governor_halt_action_policy_from_loaded, loss_governor_policy_from_loaded,
@@ -452,6 +452,46 @@ enum BoltV3OperatorHealthTransitionEmission {
     Emitted,
     Deduped,
     LoggerLockPoisoned,
+}
+
+struct BoltV3DecisionEvidenceProducerGuards {
+    loss_protection_guards: BoltV3LossProtectionRuntimeGuards,
+    venue_truth_runtime_guard: Option<BoltV3VenueTruthRuntimeGuard>,
+}
+
+trait BoltV3DecisionEvidenceProducerStopper {
+    fn stop_before_decision_evidence_drain(
+        self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
+}
+
+impl BoltV3DecisionEvidenceProducerStopper for BoltV3DecisionEvidenceProducerGuards {
+    fn stop_before_decision_evidence_drain(
+        self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
+        Box::pin(async move {
+            let Self {
+                loss_protection_guards,
+                venue_truth_runtime_guard,
+            } = self;
+            if let Some(guard) = venue_truth_runtime_guard {
+                guard.stop_and_join();
+            }
+            loss_protection_guards.stop_and_join().await;
+        })
+    }
+}
+
+async fn drain_after_stopping_decision_evidence_producers<P, D, E>(
+    producer_guards: P,
+    drain: D,
+) -> std::result::Result<(), E>
+where
+    P: BoltV3DecisionEvidenceProducerStopper,
+    D: FnOnce() -> std::result::Result<(), E>,
+{
+    producer_guards.stop_before_decision_evidence_drain().await;
+    drain()
 }
 
 impl BoltV3OperatorHealthTransitionLogger {
@@ -1077,10 +1117,28 @@ impl BoltV3LiveNodeRuntime {
             .emit_surface(reason, self.operator_health_surface(None));
     }
 
-    fn drain_decision_evidence_shutdown(&self) -> Result<(), BoltV3LiveNodeError> {
-        self.decision_evidence
-            .drain_shutdown()
-            .map_err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain)
+    fn decision_evidence_producer_guards_for_shutdown(
+        &mut self,
+        loss_protection_guards: BoltV3LossProtectionRuntimeGuards,
+    ) -> BoltV3DecisionEvidenceProducerGuards {
+        BoltV3DecisionEvidenceProducerGuards {
+            loss_protection_guards,
+            venue_truth_runtime_guard: self.venue_truth_runtime_guard.take(),
+        }
+    }
+
+    async fn drain_decision_evidence_shutdown<P>(
+        &self,
+        producer_guards: P,
+    ) -> Result<(), BoltV3LiveNodeError>
+    where
+        P: BoltV3DecisionEvidenceProducerStopper,
+    {
+        drain_after_stopping_decision_evidence_producers(producer_guards, || {
+            self.decision_evidence.drain_shutdown()
+        })
+        .await
+        .map_err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain)
     }
 
     pub fn nt_risk_trading_state(&self) -> TradingState {
@@ -1831,7 +1889,7 @@ pub async fn run_bolt_v3_live_node(
     // Wire the durable kill-switch loss protection for the whole run: subscribe
     // the accumulator to position events and spawn its halt-action retry loop.
     // The guard unsubscribes and aborts the retry task on drop.
-    let _loss_protection_guards = wire_bolt_v3_loss_protection_runtime(runtime);
+    let loss_protection_guards = wire_bolt_v3_loss_protection_runtime(runtime);
     runtime.emit_operator_health_surface_transition(OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP);
     let node_handle = runtime.node.handle();
     let mut capture_guards = {
@@ -1867,7 +1925,11 @@ pub async fn run_bolt_v3_live_node(
 
     let run_and_capture_result =
         classify_live_node_run_and_capture_shutdown(run_result, shutdown_result);
-    let drain_result = runtime.drain_decision_evidence_shutdown();
+    let producer_guards =
+        runtime.decision_evidence_producer_guards_for_shutdown(loss_protection_guards);
+    let drain_result = runtime
+        .drain_decision_evidence_shutdown(producer_guards)
+        .await;
     classify_live_node_shutdown(run_and_capture_result, iv_stop_result, drain_result)
 }
 

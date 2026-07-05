@@ -158,6 +158,51 @@ fn operator_health_transition_logger_survives_poisoned_cache_lock() {
     );
 }
 
+#[tokio::test]
+async fn decision_evidence_shutdown_drain_stops_producers_first() {
+    const PRODUCER_STOPPED_EVENT: &str = "producer_stopped";
+    const DRAIN_SHUTDOWN_EVENT: &str = "drain_shutdown";
+
+    struct RecordingProducerStopper {
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl BoltV3DecisionEvidenceProducerStopper for RecordingProducerStopper {
+        fn stop_before_decision_evidence_drain(
+            self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
+            self.events
+                .lock()
+                .expect("test event log lock should be available")
+                .push(PRODUCER_STOPPED_EVENT);
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let producer_guards = RecordingProducerStopper {
+        events: Arc::clone(&events),
+    };
+
+    drain_after_stopping_decision_evidence_producers(producer_guards, || {
+        events
+            .lock()
+            .expect("test event log lock should be available")
+            .push(DRAIN_SHUTDOWN_EVENT);
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .expect("test drain should succeed");
+
+    assert_eq!(
+        events
+            .lock()
+            .expect("test event log lock should be available")
+            .as_slice(),
+        [PRODUCER_STOPPED_EVENT, DRAIN_SHUTDOWN_EVENT]
+    );
+}
+
 #[test]
 fn shutdown_classifier_surfaces_drain_failure_after_clean_run_and_capture() {
     let error = classify_live_node_shutdown(

@@ -53,8 +53,12 @@ pub(super) struct BoltV3VenueTruthRuntimeGuard {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
-impl Drop for BoltV3VenueTruthRuntimeGuard {
-    fn drop(&mut self) {
+impl BoltV3VenueTruthRuntimeGuard {
+    pub(super) fn stop_and_join(mut self) {
+        self.stop_and_join_inner();
+    }
+
+    fn stop_and_join_inner(&mut self) {
         self.shutdown_requested.store(true, Ordering::SeqCst);
         self.shutdown_notify.notify_waiters();
         if let Some(handle) = self.handle.take()
@@ -62,6 +66,12 @@ impl Drop for BoltV3VenueTruthRuntimeGuard {
         {
             log::error!("venue truth runtime thread join failed: {error:?}");
         }
+    }
+}
+
+impl Drop for BoltV3VenueTruthRuntimeGuard {
+    fn drop(&mut self) {
+        self.stop_and_join_inner();
     }
 }
 
@@ -1150,16 +1160,42 @@ impl BoltV3LossProtectionRuntimeGuards {
             retry_handle: None,
         }
     }
+
+    pub(super) async fn stop_and_join(mut self) {
+        self.unsubscribe_position_events();
+        let retry_handle = self.retry_handle.take();
+        drop(self);
+        if let Some(retry_handle) = retry_handle {
+            retry_handle.abort();
+            match retry_handle.await {
+                Ok(()) => {}
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => {
+                    log::error!(
+                        "bolt-v3 kill-switch loss protection retry task join failed: {error:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn unsubscribe_position_events(&mut self) {
+        if let Some(position_events) = self.position_events.take() {
+            unsubscribe_position_events(position_events_pattern(), &position_events);
+        }
+    }
+
+    fn abort_retry_task(&mut self) {
+        if let Some(retry_handle) = self.retry_handle.take() {
+            retry_handle.abort();
+        }
+    }
 }
 
 impl Drop for BoltV3LossProtectionRuntimeGuards {
     fn drop(&mut self) {
-        if let Some(position_events) = self.position_events.take() {
-            unsubscribe_position_events(position_events_pattern(), &position_events);
-        }
-        if let Some(retry_handle) = self.retry_handle.take() {
-            retry_handle.abort();
-        }
+        self.unsubscribe_position_events();
+        self.abort_retry_task();
     }
 }
 

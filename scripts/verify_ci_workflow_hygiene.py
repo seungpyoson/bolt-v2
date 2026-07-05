@@ -115,6 +115,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/ci-storage-cleanup-alert.yml": "ci_storage_cleanup_alert",
     "ci-runner-debug.yml": "ci_runner_debug",
     ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
+    "debug-test.yml": "debug_test",
+    ".github/workflows/debug-test.yml": "debug_test",
     "rust-probe.yml": "rust_probe",
     ".github/workflows/rust-probe.yml": "rust_probe",
     "actionlint.yml": "actionlint",

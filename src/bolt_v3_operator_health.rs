@@ -168,9 +168,9 @@ impl BoltV3VenueTruthHealth {
             }
         });
         let capital_state_source = capital_state.map(|state| state.source.clone());
-        let venue_truth_capture_suspended = capital_state_source
-            .as_deref()
-            .is_some_and(|source| source == VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE);
+        let venue_truth_capture_suspended = capital_state.is_some_and(|state| {
+            state.reservation_snapshot.source == VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE
+        });
         let status = if divergence.is_some() || !matches!(kill_switch_state, KillSwitchState::Armed)
         {
             BoltV3OperatorHealthStatus::Halted

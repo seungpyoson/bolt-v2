@@ -260,7 +260,8 @@ fn venue_truth_health_distinguishes_not_configured_unobserved_nominal_and_suspen
     assert_eq!(nominal.status, BoltV3OperatorHealthStatus::Nominal);
     assert!(!nominal.venue_truth_capture_suspended);
 
-    let suspended_state = capital_state_with_source(VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE);
+    let suspended_state =
+        capital_state_with_reservation_source(VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE);
     let suspended = BoltV3VenueTruthHealth::from_configured_kill_switch_and_capital_state(
         &KillSwitchState::Armed,
         Some(&suspended_state),
@@ -311,6 +312,17 @@ fn venue_truth_health_renders_non_divergence_latch_as_halted() {
 }
 
 fn capital_state_with_source(source: &str) -> NtDerivedCapitalAdmissionState {
+    capital_state_with_sources(source, "bolt_reservation_ledger")
+}
+
+fn capital_state_with_reservation_source(source: &str) -> NtDerivedCapitalAdmissionState {
+    capital_state_with_sources("nt_capital_admission_state", source)
+}
+
+fn capital_state_with_sources(
+    source: &str,
+    reservation_source: &str,
+) -> NtDerivedCapitalAdmissionState {
     NtDerivedCapitalAdmissionState {
         source: source.to_string(),
         observed_at_ns: 1_000,
@@ -352,7 +364,7 @@ fn capital_state_with_source(source: &str) -> NtDerivedCapitalAdmissionState {
             },
         ),
         reservation_snapshot: ReservationLedgerSnapshot {
-            source: "bolt_reservation_ledger".to_string(),
+            source: reservation_source.to_string(),
             observed_at_ns: 1_000,
             all_live_reservations_attributed: true,
         },

@@ -2331,7 +2331,9 @@ def source_fence_fences_only_command(command: str) -> str:
         return command
     if tuple(parts) == SOURCE_FENCE_STATIC_COMMAND:
         return shlex.join(("python3", RUN_FENCES_SCRIPT, FENCES_ONLY_FLAG))
-    if len(parts) >= 2 and pathlib.PurePosixPath(parts[1]).as_posix().endswith(RUN_FENCES_SCRIPT):
+    if pathlib.PurePosixPath(parts[0]).as_posix().endswith(RUN_FENCES_SCRIPT) or (
+        len(parts) >= 2 and pathlib.PurePosixPath(parts[1]).as_posix().endswith(RUN_FENCES_SCRIPT)
+    ):
         return shlex.join((*parts, FENCES_ONLY_FLAG))
     return command
 

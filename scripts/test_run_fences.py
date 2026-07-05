@@ -220,6 +220,7 @@ def assert_fences_only_cli_skips_test_phase() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         scripts = root / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
         write(scripts / "verify_bolt_v3_cli_flag.py", "def main(): return 0\n")
         write(
             scripts / "test_verify_bolt_v3_cli_flag.py",

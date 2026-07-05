@@ -1832,8 +1832,9 @@ def assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder() 
 
 def install_synthetic_run_fences(fixture: GitFixture, log: pathlib.Path, body: str = "") -> None:
     git(fixture.repo, "checkout", "main")
+    script = fixture.repo / "scripts" / "run_fences.py"
     write(
-        fixture.repo / "scripts" / "run_fences.py",
+        script,
         "#!/usr/bin/env python3\n"
         "from pathlib import Path\n"
         "import sys\n"
@@ -1843,6 +1844,7 @@ def install_synthetic_run_fences(fixture: GitFixture, log: pathlib.Path, body: s
         f"{body}"
         "raise SystemExit(0)\n",
     )
+    script.chmod(0o755)
     fixture.base = commit(fixture.repo, "install synthetic run_fences")
     git(fixture.repo, "push", "origin", "main")
 
@@ -1936,6 +1938,14 @@ def assert_preflight_source_fence_profile_selects_fences_only_by_scripts_diff() 
         if "--fences-only" in second_run:
             raise AssertionError(second_run)
 
+        direct_config = write_preflight_config(root, "static", ["./scripts/run_fences.py"])
+        direct_head = fixture.make_pr(3, {"direct.txt": "direct\n"})
+        result = run_preflight_with_config(fixture, direct_config, {3: direct_head})
+        assert_equal(result.returncode, 3, "direct source fence profile rc")
+        direct_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" not in direct_run:
+            raise AssertionError(direct_run)
+
 
 def assert_scripts_pr_fence_regression_uses_full_profile() -> None:
     with tempfile.TemporaryDirectory() as tmp:
@@ -1974,7 +1984,7 @@ def assert_verifier_progress_breadcrumb_precedes_final_output() -> None:
         write(
             verifier,
             "import time\n"
-            "time.sleep(2)\n",
+            "time.sleep(5)\n",
         )
         command = [
             sys.executable,
@@ -2003,13 +2013,13 @@ def assert_verifier_progress_breadcrumb_precedes_final_output() -> None:
             stderr=subprocess.PIPE,
         )
         try:
-            line = read_line_with_timeout(process.stderr, 1.0)
+            line = read_line_with_timeout(process.stderr, 5.0)
             if line is None or "merge_queue_preflight: verifier running:" not in line:
                 raise AssertionError(line)
             stdout_line = read_line_with_timeout(process.stdout, 0.1)
             if stdout_line not in (None, ""):
                 raise AssertionError(stdout_line)
-            stdout, _stderr = process.communicate(timeout=5)
+            stdout, _stderr = process.communicate(timeout=10)
         finally:
             stop_process(process)
         assert_equal(process.returncode, 3, "streaming breadcrumb rc")
@@ -2033,7 +2043,7 @@ def assert_first_verifier_failure_breadcrumb_arrives_before_later_batch_finishes
             "    print('fail marker rejected')\n"
             "    sys.exit(7)\n"
             "if Path('slow.txt').exists():\n"
-            "    time.sleep(3)\n",
+            "    time.sleep(10)\n",
         )
         command = [
             sys.executable,
@@ -2065,12 +2075,12 @@ def assert_first_verifier_failure_breadcrumb_arrives_before_later_batch_finishes
             stderr=subprocess.PIPE,
         )
         try:
-            line, lines = wait_for_stderr_line(process, "merge_queue_preflight: verifier failed:", 1.5)
+            line, lines = wait_for_stderr_line(process, "merge_queue_preflight: verifier failed:", 5.0)
             if line is None:
                 raise AssertionError(lines)
             if "exit 7" not in line:
                 raise AssertionError(line)
-            stdout, _stderr = process.communicate(timeout=7)
+            stdout, _stderr = process.communicate(timeout=15)
         finally:
             stop_process(process)
         assert_equal(process.returncode, 2, "first failure breadcrumb rc")

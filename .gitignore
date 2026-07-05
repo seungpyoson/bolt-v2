@@ -27,20 +27,9 @@ __pycache__/
 *.local.md
 .sc/
 .mcp.json
-**/.claude/scheduled_tasks.lock
-**/.claude/scheduled_tasks.json
-**/.claude/routines/.state/
-**/.claude/worktrees/
-**/.claude/checkpoints/
-**/.claude/mailbox/
-**/.claude/agent-registry.json
-**/.claude/agent-memory-local
-**/.claude/first-run
-**/.claude/assistant-daemon-state.json
-.claude/agents/
-.claude/settings.json
-.claude/settings.local.json
-.claude/findings/
+**/.claude/*
+!**/.claude/skills/
+!**/.claude/skills/**
 .codex/*
 !.codex/config.toml
 .gemini/*
@@ -58,6 +47,23 @@ __pycache__/
 .factory/
 .antigravitycli/
 .superpowers/
+# Fail-closed: coding-agent state dirs are ignored by default, including
+# agents not yet in use here; allowlist shared content explicitly (see the
+# .codex/.gemini/.claude patterns above).
+.cursor/
+.windsurf/
+.cline/
+.roo/
+.continue/
+.copilot/
+.goose/
+.amp/
+.crush/
+.junie/
+.augment/
+.kiro/
+.qodo/
+.trae/
 .DS_Store
 __pycache__/
 *.pyc

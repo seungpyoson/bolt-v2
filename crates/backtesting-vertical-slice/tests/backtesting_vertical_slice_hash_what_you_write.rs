@@ -86,6 +86,9 @@ const COMPACT_VEC_HASH_ALLOWLIST: &[&str] = &[
 // and assertions inside src-resident test modules.
 const COMPACT_STRING_HASH_ALLOWLIST: &[&str] = &["catalog_projection", "operator", "source_proof"];
 const REFERENCE_ARTIFACT_FACILITY_MODULE: &str = "reference_artifact";
+// PR-A cannot rewrite source-fenced contracts because committed `specs/` pins
+// their source bytes and data reconciliation belongs to PR-B.
+const SOURCE_FENCED_REFERENCE_ARTIFACT_ALLOWLIST: &[&str] = &["source_proof_admissibility"];
 
 struct WriterCase {
     module: &'static str,
@@ -235,6 +238,10 @@ fn reference_json_artifact_hashing_is_centralized() -> Result<()> {
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
+    let source_fenced_allowlist = SOURCE_FENCED_REFERENCE_ARTIFACT_ALLOWLIST
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
     let mut offenders = Vec::new();
 
     for path in rust_source_files_under(&src_root)? {
@@ -244,6 +251,7 @@ fn reference_json_artifact_hashing_is_centralized() -> Result<()> {
         if module == REFERENCE_ARTIFACT_FACILITY_MODULE
             || compact_vec_allowlist.contains(module.as_str())
             || compact_string_allowlist.contains(module.as_str())
+            || source_fenced_allowlist.contains(module.as_str())
         {
             continue;
         }

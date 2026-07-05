@@ -14,7 +14,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::source_proof::{
     SourceBindingRegistry, SourceProofReport, read_source_binding_registry_from_path,
 };
@@ -333,9 +335,16 @@ impl SourceProofAdmissibilityReport {
     }
 
     pub fn content_hash(&self) -> Result<String, SourceProofAdmissibilityReportError> {
-        crate::reference_artifact::canonical_json_sha256(self)
-            .map_err(|error| SourceProofAdmissibilityReportError::Serialize(error.to_string()))
+        let bytes = serde_json::to_vec_pretty(self)
+            .map_err(|error| SourceProofAdmissibilityReportError::Serialize(error.to_string()))?;
+        Ok(content_hash_for_bytes(&bytes))
     }
+}
+
+fn content_hash_for_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
 }
 
 impl SourceProofAdmissibilitySummary {
@@ -382,19 +391,33 @@ pub fn write_source_proof_admissibility_report(
     })?;
 
     let path = output_dir.join(SOURCE_PROOF_ADMISSIBILITY_REPORT_FILE);
-    let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
-        &path,
-        SOURCE_PROOF_ADMISSIBILITY_REPORT_FILE,
-        report,
-        SourceProofAdmissibilityWriteError::Serialize,
-        |path, error| SourceProofAdmissibilityWriteError::ReadExisting { path, error },
-        |path| SourceProofAdmissibilityWriteError::ExistingArtifactMismatch { path },
-        |path, error| SourceProofAdmissibilityWriteError::Write { path, error },
-    )?;
+    let bytes = serde_json::to_vec_pretty(report)
+        .map_err(|error| SourceProofAdmissibilityWriteError::Serialize(error.to_string()))?;
+    if path.exists() {
+        let existing =
+            fs::read(&path).map_err(|error| SourceProofAdmissibilityWriteError::ReadExisting {
+                path: path.display().to_string(),
+                error: error.to_string(),
+            })?;
+        if existing != bytes {
+            return Err(
+                SourceProofAdmissibilityWriteError::ExistingArtifactMismatch {
+                    path: path.display().to_string(),
+                },
+            );
+        }
+    } else {
+        atomic_write(&path, &bytes).map_err(|error| SourceProofAdmissibilityWriteError::Write {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        })?;
+    }
+
+    let content_hash = content_hash_for_bytes(&bytes);
     Ok(SourceProofAdmissibilityArtifact {
         path,
-        content_hash: written.pin.sha256,
-        bytes: written.bytes,
+        content_hash,
+        bytes: bytes.len() as u64,
         record_count: report.records.len() as u64,
     })
 }

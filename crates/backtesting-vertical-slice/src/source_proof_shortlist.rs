@@ -337,18 +337,10 @@ pub fn write_source_proof_shortlist_report(
     }
     Ok(SourceProofShortlistArtifact {
         path,
-        content_hash: content_hash(report)?,
+        content_hash: hex::encode(Sha256::digest(&bytes)),
         bytes: bytes.len() as u64,
         candidate_count: report.candidates.len() as u64,
     })
-}
-
-fn content_hash(report: &SourceProofShortlistReport) -> Result<String, SourceProofShortlistError> {
-    let bytes = serde_json::to_vec(report)
-        .map_err(|error| SourceProofShortlistError::Serialize(error.to_string()))?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    Ok(hex::encode(hasher.finalize()))
 }
 
 fn is_candidate(

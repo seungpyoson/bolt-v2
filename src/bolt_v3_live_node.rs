@@ -1,5 +1,5 @@
 //! Bolt-v3 NautilusTrader LiveNode assembly without strategy registration,
-//! market selection, order construction, or submit paths.
+//! market selection, order construction, or ordinary strategy submit paths.
 //!
 //! Bolt-v3 LiveNode controlled-build / controlled-connect /
 //! controlled-disconnect boundary. This module:
@@ -22,6 +22,9 @@
 //!   without entering the NT runner loop from the build path
 //! - wires the existing `crate::nt_runtime_capture` from the
 //!   `[persistence]` / `[persistence.streaming]` blocks
+//! - permits only the kill-switch forced-reduction flatten effect to hand an
+//!   already-admitted order to NT risk execution; ordinary strategy order
+//!   construction and policy stay outside this module
 //! - installs module-level logger filters from provider-owned bindings
 //!   that suppress NT credential info logs even when the root TOML log
 //!   level is `INFO`
@@ -2046,8 +2049,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     if let Some(state) = kill_switch_startup_state.as_ref() {
         sync_nt_trading_state_for_kill_switch(&mut node, state);
     }
-    let loss_protection =
-        configure_bolt_v3_kill_switch_loss_protection(loaded, &node, submit_admission.clone())?;
+    let loss_protection = configure_bolt_v3_kill_switch_loss_protection(
+        loaded,
+        &node,
+        decision_evidence.clone(),
+        submit_admission.clone(),
+    )?;
     if let Some(protection) = loss_protection.as_ref() {
         let seeded_state = protection.borrow().state().clone();
         sync_nt_trading_state_for_kill_switch(&mut node, &seeded_state);

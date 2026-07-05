@@ -4,10 +4,7 @@ use nautilus_model::{
     enums::OrderStatus,
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId},
 };
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    num::{NonZeroU32, NonZeroU64},
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 type BoltV3KillSwitchCancelOrderIdentity = (AccountId, InstrumentId, StrategyId, ClientOrderId);
 
@@ -194,7 +191,6 @@ impl BoltV3KillSwitchCancelSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3KillSwitchCancelPolicy {
     mandatory_surfaces: BTreeSet<BoltV3KillSwitchOutstandingOrderRiskSurface>,
-    max_source_age_unix_nanos: Option<u64>,
 }
 
 impl BoltV3KillSwitchCancelPolicy {
@@ -205,22 +201,7 @@ impl BoltV3KillSwitchCancelPolicy {
         if mandatory_surfaces.is_empty() {
             return Err(BoltV3KillSwitchCancelError::MissingMandatorySurfacePolicy);
         }
-        Ok(Self {
-            mandatory_surfaces,
-            max_source_age_unix_nanos: None,
-        })
-    }
-
-    pub fn with_source_freshness(
-        mandatory_surfaces: impl IntoIterator<Item = BoltV3KillSwitchOutstandingOrderRiskSurface>,
-        max_source_age_unix_nanos: u64,
-    ) -> Result<Self, BoltV3KillSwitchCancelError> {
-        if max_source_age_unix_nanos == 0 {
-            return Err(BoltV3KillSwitchCancelError::InvalidSourceFreshness);
-        }
-        let mut policy = Self::new(mandatory_surfaces)?;
-        policy.max_source_age_unix_nanos = Some(max_source_age_unix_nanos);
-        Ok(policy)
+        Ok(Self { mandatory_surfaces })
     }
 
     pub fn validate_snapshot(
@@ -368,7 +349,6 @@ impl BoltV3KillSwitchCancelSupervisor {
             _ => return Err(BoltV3KillSwitchCancelError::KillSwitchStateNotCancelling),
         };
         validate_plan_metadata(&request)?;
-        validate_source_freshness(&request)?;
         request.scope.validate_snapshot(&request.snapshot)?;
         request.policy.validate_snapshot(&request.snapshot)?;
         let route_kind = require_supported_route_proof(&request)?;
@@ -437,40 +417,6 @@ fn validate_plan_metadata(
         return Err(BoltV3KillSwitchCancelError::MissingObservationTimestamp);
     }
     Ok(())
-}
-
-fn validate_source_freshness(
-    request: &BoltV3KillSwitchCancelPlanRequest,
-) -> Result<(), BoltV3KillSwitchCancelError> {
-    let Some(max_source_age_unix_nanos) = request.policy.max_source_age_unix_nanos else {
-        return Ok(());
-    };
-    if source_timestamp_is_stale(
-        request.source_timestamp_unix_nanos,
-        request.observed_at_unix_nanos,
-        max_source_age_unix_nanos,
-    ) {
-        return Err(BoltV3KillSwitchCancelError::StaleSourceTimestamp);
-    }
-    if request.snapshot.candidates().iter().any(|candidate| {
-        source_timestamp_is_stale(
-            candidate.source_timestamp_unix_nanos(),
-            request.observed_at_unix_nanos,
-            max_source_age_unix_nanos,
-        )
-    }) {
-        return Err(BoltV3KillSwitchCancelError::StaleSourceTimestamp);
-    }
-    Ok(())
-}
-
-fn source_timestamp_is_stale(
-    source_timestamp_unix_nanos: u64,
-    observed_at_unix_nanos: u64,
-    max_source_age_unix_nanos: u64,
-) -> bool {
-    source_timestamp_unix_nanos > observed_at_unix_nanos
-        || observed_at_unix_nanos - source_timestamp_unix_nanos > max_source_age_unix_nanos
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -811,69 +757,6 @@ fn merge_aggregate_result(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoltV3KillSwitchCancelRetryDecision {
-    RetryAllowed { next_attempt_unix_nanos: u64 },
-    FailedManualIntervention,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BoltV3KillSwitchCancelRetryPolicy {
-    max_attempts: u32,
-    timeout_unix_nanos: u64,
-    backoff_unix_nanos: u64,
-}
-
-impl BoltV3KillSwitchCancelRetryPolicy {
-    pub fn new(
-        max_attempts: u32,
-        timeout_unix_nanos: u64,
-        backoff_unix_nanos: u64,
-    ) -> Result<Self, BoltV3KillSwitchCancelError> {
-        if NonZeroU32::new(max_attempts).is_none()
-            || NonZeroU64::new(timeout_unix_nanos).is_none()
-            || NonZeroU64::new(backoff_unix_nanos).is_none()
-        {
-            return Err(BoltV3KillSwitchCancelError::InvalidRetryPolicy);
-        }
-        Ok(Self {
-            max_attempts,
-            timeout_unix_nanos,
-            backoff_unix_nanos,
-        })
-    }
-
-    pub fn decision_for(
-        &self,
-        attempts_made: u32,
-        first_attempt_unix_nanos: u64,
-        observed_at_unix_nanos: u64,
-    ) -> Result<BoltV3KillSwitchCancelRetryDecision, BoltV3KillSwitchCancelError> {
-        if NonZeroU32::new(attempts_made).is_none()
-            || NonZeroU64::new(first_attempt_unix_nanos).is_none()
-            || NonZeroU64::new(observed_at_unix_nanos).is_none()
-            || observed_at_unix_nanos < first_attempt_unix_nanos
-        {
-            return Err(BoltV3KillSwitchCancelError::InvalidRetryState);
-        }
-        if attempts_made >= self.max_attempts {
-            return Ok(BoltV3KillSwitchCancelRetryDecision::FailedManualIntervention);
-        }
-        let elapsed_unix_nanos = observed_at_unix_nanos - first_attempt_unix_nanos;
-        if elapsed_unix_nanos > self.timeout_unix_nanos {
-            return Ok(BoltV3KillSwitchCancelRetryDecision::FailedManualIntervention);
-        }
-        let Some(next_attempt_unix_nanos) =
-            observed_at_unix_nanos.checked_add(self.backoff_unix_nanos)
-        else {
-            return Ok(BoltV3KillSwitchCancelRetryDecision::FailedManualIntervention);
-        };
-        Ok(BoltV3KillSwitchCancelRetryDecision::RetryAllowed {
-            next_attempt_unix_nanos,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3KillSwitchCancelError {
     MissingActionId,
     InvalidConfigSha256,
@@ -888,15 +771,11 @@ pub enum BoltV3KillSwitchCancelError {
     MissingCandidates,
     MissingMandatorySurfacePolicy,
     MissingMandatorySurfaceProof,
-    InvalidSourceFreshness,
-    StaleSourceTimestamp,
     FailedManualInterventionRequired,
     KillSwitchStateNotCancelling,
     InvalidOutcomeOrderStatus,
     UnknownOutcomeCandidate,
     OutOfScopeCancelCandidate,
-    InvalidRetryPolicy,
-    InvalidRetryState,
 }
 
 fn worse_outcome(

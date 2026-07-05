@@ -136,7 +136,10 @@ output_dir = "{}"
     let manifest: backtesting_vertical_slice::backfill_accepted_tranche::BackfillAcceptedTrancheManifest =
         serde_json::from_slice(&std::fs::read(first.path).expect("manifest"))
             .expect("manifest json");
-    assert_eq!(manifest.source_proof_scope_report_hash, scope_hash(&scope));
+    assert_eq!(
+        manifest.source_proof_scope_report_hash,
+        file_hash(&scope_path)
+    );
 }
 
 fn candidate_scope_report() -> BackfillSourceProofScopeReport {
@@ -173,5 +176,12 @@ fn scope_hash(scope: &BackfillSourceProofScopeReport) -> String {
     format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(scope).expect("scope json"))
+    )
+}
+
+fn file_hash(path: &std::path::Path) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(std::fs::read(path).expect("artifact bytes"))
     )
 }

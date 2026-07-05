@@ -1152,6 +1152,32 @@ def assert_fingerprint_reuse_rejects_failed_cancelled_and_wrong_workflow_runs() 
                 raise AssertionError((label, result))
 
 
+def assert_debug_test_workflow_is_not_fingerprint_reuse_source() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = record_with_fingerprint(module, config)
+        debug_run = run_payload(path=".github/workflows/debug-test.yml", event="workflow_dispatch", head_branch="feature/ws6")
+        fake = FakeGitHub(
+            runs_pages=[[debug_run]],
+            artifacts_by_run_id={
+                RUN_ID: {
+                    "artifacts": [
+                        fingerprint_artifact(id=11),
+                        provenance_artifact(id=12),
+                    ]
+                }
+            },
+            records_by_artifact_id={12: record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(f"debug-test workflow must not be a fingerprint reuse source: {result}")
+        if len(fake.queries) != 1 or fake.queries[0][0] != "actions/workflows/ci.yml/runs":
+            raise AssertionError(f"debug-test run must be excluded before artifact lookup, got: {fake.queries}")
+
+
 def assert_fingerprint_reuse_rejects_ambiguous_and_expired_artifacts() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -5190,6 +5216,7 @@ def main() -> int:
     assert_fingerprint_reuse_prior_green_returns_reuse()
     assert_fingerprint_reuse_no_prior_run_returns_no_reuse()
     assert_fingerprint_reuse_rejects_failed_cancelled_and_wrong_workflow_runs()
+    assert_debug_test_workflow_is_not_fingerprint_reuse_source()
     assert_fingerprint_reuse_rejects_ambiguous_and_expired_artifacts()
     assert_fingerprint_reuse_requires_exact_fingerprint_components()
     assert_fingerprint_reuse_rejects_source_record_workflow_digest_mismatch()

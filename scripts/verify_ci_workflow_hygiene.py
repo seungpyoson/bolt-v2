@@ -115,6 +115,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/ci-storage-cleanup-alert.yml": "ci_storage_cleanup_alert",
     "ci-runner-debug.yml": "ci_runner_debug",
     ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
+    "debug-test.yml": "debug_test",
+    ".github/workflows/debug-test.yml": "debug_test",
     "rust-probe.yml": "rust_probe",
     ".github/workflows/rust-probe.yml": "rust_probe",
     "actionlint.yml": "actionlint",
@@ -10596,7 +10598,8 @@ def yaml_permissions_scoped_grants(workflow_text: str) -> set[tuple[str, str, st
             stack.pop()
         scalar = unquote_yaml_scalar(match.group(3)).strip()
         if key == "permissions":
-            scope = ".".join([*(ancestor for _indent, ancestor in stack), key])
+            ancestors = [ancestor for _indent, ancestor in stack]
+            scope = ".".join(ancestors) if ancestors else key
             for grant_key, grant_value in yaml_permissions_block_grants(
                 lines,
                 index,
@@ -14921,6 +14924,144 @@ def verify_ci_runner_debug_workflow(workflows: dict[str, str]) -> list[str]:
     return errors
 
 
+def verify_debug_test_workflow(
+    workflows: dict[str, str],
+    justfile_text: str,
+    mergify_text: str = "",
+) -> list[str]:
+    workflow_name = ".github/workflows/debug-test.yml"
+    workflow_text = workflows.get(workflow_name)
+    if workflow_text is None:
+        return [f"{workflow_name} must exist for the dispatch-only fast debug lane"]
+    errors: list[str] = []
+    workflow_clean = uncommented_text(workflow_text.splitlines())
+    triggers = workflow_trigger_keys(workflow_text)
+    if triggers != {"workflow_dispatch"}:
+        errors.append(
+            f"{workflow_name} debug-test workflow must be workflow_dispatch-only, got {sorted(triggers)!r}"
+        )
+    trigger_text = "\n".join(workflow_trigger_block(workflow_text, "workflow_dispatch"))
+    for input_name in ("ref", "filter", "package"):
+        if f"      {input_name}:" not in trigger_text:
+            errors.append(f"{workflow_name} debug-test workflow must declare {input_name} input")
+    if '        required: true' not in trigger_text or '        default: ""' not in trigger_text:
+        errors.append(f"{workflow_name} debug-test workflow must pin required ref/filter and optional package inputs")
+
+    expected_scoped_permissions = {
+        ("permissions", "contents", "read"),
+        ("jobs.debug-test", "contents", "read"),
+        ("jobs.debug-test", "id-token", "write"),
+    }
+    scoped_permissions = yaml_permissions_scoped_grants(workflow_text)
+    if scoped_permissions != expected_scoped_permissions:
+        errors.append(f"{workflow_name} debug-test workflow permissions must match scoped allowlist")
+    if top_level_block(workflow_text, "concurrency"):
+        errors.append(f"{workflow_name} debug-test workflow must not declare concurrency")
+    if "AWS_CI_CACHE_ROLE_ARN" in workflow_clean or "AWS_CI_CACHE_PR_READONLY_ROLE_ARN" not in workflow_clean:
+        errors.append(f"{workflow_name} debug-test workflow must use the PR-readonly cache role only")
+    if "if this lane ever becomes gate-relevant, it migrates to digest pins" not in workflow_text:
+        errors.append(f"{workflow_name} debug-test workflow must document the digest-pin graduation contract")
+    for forbidden in (
+        "actions:",
+        "checks:",
+        "pull-requests:",
+        "check-runs",
+    ):
+        if forbidden in workflow_clean:
+            errors.append(f"{workflow_name} debug-test workflow must not reference {forbidden}")
+    if re.search(r"(^|\n)\s*(?:gate|needs):|ci-provenance|provenance|check-ci-gate|check-backtester-gate", workflow_clean):
+        errors.append(f"{workflow_name} debug-test workflow must not reference provenance or gate jobs")
+    if re.search(r"(^|[\s;&|()])cargo\s+(?:nextest|test|build|check|clippy)\b", workflow_clean):
+        errors.append(f"{workflow_name} debug-test workflow must not run raw cargo")
+
+    jobs = parse_jobs(workflow_text)
+    job = jobs.get("debug-test")
+    if job is None:
+        errors.append(f"{workflow_name} debug-test workflow must define debug-test job")
+    else:
+        job_text = uncommented_text(job)
+        if "runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}" not in job_text:
+            errors.append(f"{workflow_name} debug-test workflow must run on vars.CI_RUNNER_MANAGED_HEAVY")
+        if "timeout-minutes: 30" not in job_text:
+            errors.append(f"{workflow_name} debug-test workflow timeout must be 30 minutes")
+        for fragment in (
+            "build-jobs-key: debug_test.debug-test",
+            "include-nextest-version: \"true\"",
+            "include-managed-target-dir: \"true\"",
+            "just debug-test \"$DEBUG_TEST_FILTER\" \"$DEBUG_TEST_PACKAGE\"",
+            "BOLT_RUST_VERIFICATION_SCCACHE:",
+            "DEBUG_TEST_FILTER: ${{ inputs.filter }}",
+            "DEBUG_TEST_PACKAGE: ${{ inputs.package || '' }}",
+            'echo "Checked-out SHA: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"',
+            "tail -120 \"$log\"",
+            "grep -E",
+        ):
+            if fragment not in job_text:
+                errors.append(f"{workflow_name} debug-test workflow must call managed just debug-test recipe")
+                break
+        for step_name in (
+            "Resolve debug nextest fingerprint",
+            "Restore debug nextest archive from S3",
+            "Restore debug root binary sidecars from S3",
+            "Resolve debug archive reuse",
+            "Run debug test",
+        ):
+            if named_step_block(job, step_name) is None:
+                errors.append(f"{workflow_name} debug-test workflow must include step {step_name!r}")
+        for step_name in (
+            "Resolve debug archive cache eligibility",
+            "Resolve sccache eligibility",
+        ):
+            step_block = named_step_block(job, step_name)
+            step_text = uncommented_text(step_block) if step_block is not None else ""
+            if "PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}" not in step_text:
+                errors.append(
+                    f"{workflow_name} {step_name}' must bind PR_READONLY_ROLE_ARN to the PR-readonly role var"
+                )
+            if 'echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"' not in step_text:
+                errors.append(f"{workflow_name} {step_name}' must output PR_READONLY_ROLE_ARN as role_arn")
+        for step_name, role_output in (
+            ("Configure AWS credentials for debug archive cache", "steps.debug-archive-cache.outputs.role_arn"),
+            ("Configure AWS credentials for sccache", "steps.sccache-eligible.outputs.role_arn"),
+        ):
+            step_block = named_step_block(job, step_name)
+            step_text = uncommented_text(step_block) if step_block is not None else ""
+            if f"role-to-assume: ${{{{ {role_output} }}}}" not in step_text:
+                label = "debug archive" if "debug archive" in step_name else "sccache"
+                errors.append(f"{workflow_name} {step_name}' must assume the resolved {label} role")
+        run_step = named_step_block(job, "Run debug test")
+        run_text = uncommented_text(run_step) if run_step is not None else ""
+        if "shell: bash" not in run_text or 'rc="${PIPESTATUS[0]}"' not in run_text:
+            errors.append(f"{workflow_name} debug-test workflow must preserve nextest exit status under bash")
+
+    if "debug-test" in mergify_text:
+        errors.append("debug-test workflow must not be referenced by .mergify.yml")
+
+    if justfile_text:
+        if 'debug-test filter package="": check-workspace require-rust-verification-owner' not in justfile_text:
+            errors.append("justfile must define debug-test filter package")
+        for fragment in (
+            'python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --locked',
+            '--archive-file "$NEXTEST_ARCHIVE_PATH"',
+            '-E "$filter"',
+        ):
+            if fragment not in justfile_text:
+                errors.append("justfile debug-test recipe must route nextest through managed cargo")
+                break
+        for fragment in (
+            'filter="${DEBUG_TEST_FILTER:-}"',
+            'package="${DEBUG_TEST_PACKAGE:-}"',
+            'if [[ -z "$filter" ]]; then filter={{quote(filter)}}; fi',
+            'if [[ -z "$package" ]]; then package={{quote(package)}}; fi',
+        ):
+            if fragment not in justfile_text:
+                errors.append("justfile debug-test recipe must shell-quote direct filter/package arguments")
+                break
+        if 'if [[ -z "$filter" ]]; then echo "ERROR: debug-test filter must be non-empty" >&2; exit 2; fi' not in justfile_text:
+            errors.append("justfile debug-test recipe must fail closed on an empty filter")
+    return errors
+
+
 def verify_dispatch_ci_cancel_workflow(workflows: dict[str, str]) -> list[str]:
     workflow_name = ".github/workflows/dispatch-ci-cancel.yml"
     workflow_text = workflows.get(workflow_name)
@@ -15863,6 +16004,13 @@ def main() -> int:
     errors.extend(verify_artifact_retention_policy(workflow_texts, composite_action_texts))
     errors.extend(verify_github_actions_runner_contract(workflow_texts))
     errors.extend(verify_ci_runner_debug_workflow(workflow_texts))
+    errors.extend(
+        verify_debug_test_workflow(
+            workflow_texts,
+            repo_automation_texts.get("justfile", ""),
+            DEFAULT_MERGIFY_CONFIG.read_text() if DEFAULT_MERGIFY_CONFIG.exists() else "",
+        )
+    )
     errors.extend(verify_dispatch_ci_cancel_workflow(workflow_texts))
     ci_workflow = workflow_texts.get(".github/workflows/ci.yml")
     if ci_workflow is not None:

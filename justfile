@@ -275,12 +275,14 @@ debug-test filter package="": check-workspace require-rust-verification-owner
     if [[ -z "$package" ]]; then package={{quote(package)}}; fi
     if [[ -z "$filter" ]]; then echo "ERROR: debug-test filter must be non-empty" >&2; exit 2; fi
     args=(-E "$filter")
-    if [[ -n "$package" ]]; then args=(-p "$package" "${args[@]}"); fi
-    if [[ -s "${NEXTEST_ARCHIVE_PATH:-}" ]]; then
+    if [[ "$package" == "backtesting-vertical-slice" ]]; then
+        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --locked "${args[@]}"
+    elif [[ -s "${NEXTEST_ARCHIVE_PATH:-}" && -z "$package" ]]; then
         extract_root="${RUNNER_TEMP:-/tmp}/debug-nextest-archive-extract"
         mkdir -p "$extract_root"
         python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "$NEXTEST_ARCHIVE_PATH" --extract-to "$extract_root" --extract-overwrite --workspace-remap "{{repo_root}}" "${args[@]}"
     else
+        if [[ -n "$package" ]]; then args=(-p "$package" "${args[@]}"); fi
         python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --locked "${args[@]}"
     fi
 

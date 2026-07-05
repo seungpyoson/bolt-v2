@@ -1398,7 +1398,7 @@ jobs:
         shell: bash
         env:
           DETECTOR_ALLOWED: ${{ needs.detector.outputs.fingerprint_reuse_allowed || 'false' }}
-          DETECTOR_REASON: ${{ needs.detector.outputs.fingerprint_reuse_reason || 'non-consumer-event' }}
+          DETECTOR_REASON: ${{ needs.detector.outputs.fingerprint_reuse_reason || 'unknown' }}
           REUSE_FOUND: ${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}
           REUSE_SOURCE_RUN: ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id || 'none' }}
           REUSE_SOURCE_SHA: ${{ needs.nextest-fingerprint-reuse.outputs.source_sha || 'none' }}
@@ -1406,7 +1406,7 @@ jobs:
           REUSE_REASON: ${{ needs.nextest-fingerprint-reuse.outputs.reason || '' }}
         run: |
           detector_allowed="${DETECTOR_ALLOWED:-false}"
-          detector_reason="${DETECTOR_REASON:-non-consumer-event}"
+          detector_reason="${DETECTOR_REASON:-unknown}"
           reuse_found="${REUSE_FOUND:-false}"
           source_run="${REUSE_SOURCE_RUN:-none}"
           source_sha="${REUSE_SOURCE_SHA:-none}"

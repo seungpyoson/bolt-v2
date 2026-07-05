@@ -812,7 +812,7 @@ NEXTEST_REUSE_SUMMARY_LINE = (
 )
 NEXTEST_REUSE_SUMMARY_ENV_LINES = (
     "DETECTOR_ALLOWED: ${{ needs.detector.outputs.fingerprint_reuse_allowed || 'false' }}",
-    "DETECTOR_REASON: ${{ needs.detector.outputs.fingerprint_reuse_reason || 'non-consumer-event' }}",
+    "DETECTOR_REASON: ${{ needs.detector.outputs.fingerprint_reuse_reason || 'unknown' }}",
     "REUSE_FOUND: ${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}",
     "REUSE_SOURCE_RUN: ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id || 'none' }}",
     "REUSE_SOURCE_SHA: ${{ needs.nextest-fingerprint-reuse.outputs.source_sha || 'none' }}",
@@ -821,12 +821,27 @@ NEXTEST_REUSE_SUMMARY_ENV_LINES = (
 )
 NEXTEST_REUSE_SUMMARY_ASSIGNMENTS = (
     'detector_allowed="${DETECTOR_ALLOWED:-false}"',
-    'detector_reason="${DETECTOR_REASON:-non-consumer-event}"',
+    'detector_reason="${DETECTOR_REASON:-unknown}"',
     'reuse_found="${REUSE_FOUND:-false}"',
     'source_run="${REUSE_SOURCE_RUN:-none}"',
     'source_sha="${REUSE_SOURCE_SHA:-none}"',
     'artifact="${REUSE_ARTIFACT:-none}"',
     'reason="${REUSE_REASON:-}"',
+)
+BVS_PARTITION_LOG_ASSIGN = 'partition_log="$RUNNER_TEMP/bvs-nextest-archive-partition-${shard}.log"'
+BVS_PARTITION_COMMAND = (
+    'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" '
+    '"$RUNNER_TEMP/bvs-nextest-archive-extract" '
+    '--partition "count:${shard}/${BVS_NEXTEST_SHARDS}" '
+    "-- --skip issue_789_first_real_free_data_taker_pl"
+)
+BVS_PARTITION_TEE = f'{BVS_PARTITION_COMMAND} 2>&1 | tee "$partition_log"'
+BVS_PARTITION_FAILURE_WRAPPER = (
+    f"            {BVS_PARTITION_LOG_ASSIGN}\n"
+    "            set +e\n"
+    f"            {BVS_PARTITION_TEE}\n"
+    "            rc=\"${PIPESTATUS[0]}\"\n"
+    "            set -e\n"
 )
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
@@ -13008,6 +13023,8 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         or 'tail -80 "$partition_log"' not in archive_text
     ):
         errors.append("backtester bvs-test archive must log partition diagnostics")
+    if BVS_PARTITION_FAILURE_WRAPPER not in archive_text:
+        errors.append("backtester bvs-test partition failures must use contiguous failure wrapper")
     if 'rc="${PIPESTATUS[0]}"' not in archive_text:
         errors.append("backtester bvs-test partition failures must preserve shard exit codes")
     if 'echo "::error title=BVS nextest archive partition failed::shard=${shard}/${BVS_NEXTEST_SHARDS} exit=${rc}"' not in archive_text:

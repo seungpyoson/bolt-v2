@@ -980,7 +980,7 @@ jobs:
     steps:
       - env:
           DETECTOR_ALLOWED: ${{ needs.detector.outputs.fingerprint_reuse_allowed || 'false' }}
-          DETECTOR_REASON: ${{ needs.detector.outputs.fingerprint_reuse_reason || 'non-consumer-event' }}
+          DETECTOR_REASON: ${{ needs.detector.outputs.fingerprint_reuse_reason || 'unknown' }}
           REUSE_FOUND: ${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}
           REUSE_SOURCE_RUN: ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id || 'none' }}
           REUSE_SOURCE_SHA: ${{ needs.nextest-fingerprint-reuse.outputs.source_sha || 'none' }}
@@ -988,7 +988,7 @@ jobs:
           REUSE_REASON: ${{ needs.nextest-fingerprint-reuse.outputs.reason || '' }}
         run: |
           detector_allowed="${DETECTOR_ALLOWED:-false}"
-          detector_reason="${DETECTOR_REASON:-non-consumer-event}"
+          detector_reason="${DETECTOR_REASON:-unknown}"
           reuse_found="${REUSE_FOUND:-false}"
           source_run="${REUSE_SOURCE_RUN:-none}"
           source_sha="${REUSE_SOURCE_SHA:-none}"
@@ -14011,6 +14011,19 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "backtester bvs-test partition failures must emit shard error annotations" in error
         for error in missing_bvs_partition_annotation_errors
     ), missing_bvs_partition_annotation_errors
+
+    missing_bvs_partition_set_e_disable = replace_once(
+        good,
+        """            set +e
+            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"
+""",
+        '            just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${shard}/${BVS_NEXTEST_SHARDS}" -- --skip issue_789_first_real_free_data_taker_pl 2>&1 | tee "$partition_log"\n',
+    )
+    missing_bvs_partition_set_e_disable_errors = bvs_cache_errors(missing_bvs_partition_set_e_disable)
+    assert any(
+        "backtester bvs-test partition failures must use contiguous failure wrapper" in error
+        for error in missing_bvs_partition_set_e_disable_errors
+    ), missing_bvs_partition_set_e_disable_errors
 
     missing_bvs_archive_save_status = replace_once(
         good,

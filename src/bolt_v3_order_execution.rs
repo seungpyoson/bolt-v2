@@ -25,8 +25,7 @@ use crate::{
     bolt_v3_decision_evidence::{
         BoltV3DecisionEvidenceWriter, BoltV3OrderIntentClampNotEvaluatedReason,
         BoltV3OrderIntentClampOutcome, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields, BoltV3SettlementBookingErrorEvidence,
-        BoltV3SettlementEvidence,
+        BoltV3OrderIntentOrderFields,
     },
     bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
     bolt_v3_maker_order_dispatch::{
@@ -1109,7 +1108,8 @@ mod tests {
             BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
             BoltV3OrderIntentClampNotEvaluatedReason, BoltV3OrderIntentClampOutcome,
             BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderRejectEvidence,
-            BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
+            BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence,
+            BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
             BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         },
         bolt_v3_kill_switch::KillSwitchState,

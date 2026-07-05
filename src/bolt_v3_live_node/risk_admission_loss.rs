@@ -4,7 +4,6 @@ use std::sync::{
 };
 
 use nautilus_common::{
-    clock::Clock,
     factories::OrderFactory,
     messages::execution::{SubmitOrder, TradingCommand},
 };

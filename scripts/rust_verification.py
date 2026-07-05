@@ -297,6 +297,7 @@ def validate_policy_data(data: dict[str, Any]) -> None:
         raise PolicyError("commands.build.artifact_layout must be 'cargo'")
     validate_local_compile_policy(data)
     validate_remote_compile_cache_policy(data)
+    validate_remote_fast_linker_policy(data)
     validate_local_lane_policy(data)
     if "remote_verification" in data:
         validate_remote_verification_policy(data)
@@ -445,6 +446,29 @@ def validate_remote_compile_cache_policy(data: dict[str, Any]) -> None:
     wrapper_program = require_non_empty_string(policy, "wrapper_program", "remote_compile_cache")
     if wrapper_program != "sccache":
         raise PolicyError("remote_compile_cache.wrapper_program must be 'sccache'")
+
+
+def validate_remote_fast_linker_policy(data: dict[str, Any]) -> None:
+    policy = data.get("remote_fast_linker")
+    if policy is None:
+        return
+    if not isinstance(policy, dict):
+        raise PolicyError("remote_fast_linker table must be a table")
+    allowed_keys = {"enabled", "ci_env", "linker_env", "programs"}
+    for key in policy:
+        if key not in allowed_keys:
+            raise PolicyError(f"remote_fast_linker.{key} is not supported")
+    if policy.get("enabled") is not True:
+        raise PolicyError("remote_fast_linker.enabled must be true")
+    for key in ("ci_env", "linker_env"):
+        value = require_non_empty_string(policy, key, "remote_fast_linker")
+        if not ENV_NAME_RE.match(value):
+            raise PolicyError(f"remote_fast_linker.{key} must be an environment variable name")
+    if policy["ci_env"] != "GITHUB_ACTIONS":
+        raise PolicyError("remote_fast_linker.ci_env must be 'GITHUB_ACTIONS'")
+    programs = string_array_policy_value(policy, "programs")
+    if programs != ["mold", "lld"]:
+        raise PolicyError("remote_fast_linker.programs must prefer mold with lld fallback")
 
 
 def validate_local_lane_policy(data: dict[str, Any]) -> None:
@@ -954,6 +978,7 @@ def managed_env(repo: pathlib.Path, policy: dict[str, Any] | None = None) -> dic
     env["CARGO_TARGET_DIR"] = str(target_dir(repo, data))
     env["RUST_VERIFICATION_PRESERVE_ROUTING_ENV"] = "1"
     env.update(managed_remote_compile_cache_env(data))
+    env.update(managed_remote_fast_linker_env(data))
     return env
 
 
@@ -982,6 +1007,21 @@ def managed_remote_compile_cache_env(policy: dict[str, Any]) -> dict[str, str]:
     if pathlib.Path(wrapper).name != wrapper_program:
         return {}
     return {"RUSTC_WRAPPER": wrapper}
+
+
+def managed_remote_fast_linker_env(policy: dict[str, Any]) -> dict[str, str]:
+    linker_policy = policy.get("remote_fast_linker")
+    if not isinstance(linker_policy, dict) or linker_policy.get("enabled") is not True:
+        return {}
+    if os.environ.get(str(linker_policy["ci_env"])) != "true":
+        return {}
+    selected = os.environ.get(str(linker_policy["linker_env"]), "")
+    programs = list(linker_policy["programs"])
+    if selected not in programs:
+        return {}
+    if shutil.which(selected) is None:
+        return {}
+    return {"RUSTFLAGS": f"-C link-arg=-fuse-ld={selected}"}
 
 
 def scrubbed_local_env() -> dict[str, str]:
@@ -4582,6 +4622,21 @@ def cmd_binary_path(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fast_linker_programs(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    try:
+        policy = load_policy(repo)
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    linker_policy = policy.get("remote_fast_linker")
+    if not isinstance(linker_policy, dict) or linker_policy.get("enabled") is not True:
+        return 0
+    for program in linker_policy["programs"]:
+        print(program)
+    return 0
+
+
 def cmd_cargo(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
     try:
@@ -4817,6 +4872,10 @@ def build_parser() -> argparse.ArgumentParser:
     binary.add_argument("--repo", required=True)
     binary.add_argument("--bin", required=True)
     binary.set_defaults(func=cmd_binary_path)
+
+    fast_linker_programs = subparsers.add_parser("fast-linker-programs")
+    fast_linker_programs.add_argument("--repo", required=True)
+    fast_linker_programs.set_defaults(func=cmd_fast_linker_programs)
 
     cargo = subparsers.add_parser("cargo")
     cargo.add_argument("--repo", required=True)

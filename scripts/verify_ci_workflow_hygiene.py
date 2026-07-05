@@ -733,6 +733,7 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "inputs.include-nextest-version",
     "inputs.include-build-values",
     "inputs.lint-workflow-contract",
+    "inputs.install-rust-linker",
     "inputs.build-jobs-key",
     "just ci-lint-workflow",
     "awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml",
@@ -744,6 +745,8 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate rust_verification_owner",
     "ci/github-actions-runners.toml",
     "cargo_build_jobs=$cargo_build_jobs",
+    'fast-linker-programs --repo "$GITHUB_WORKSPACE"',
+    "BOLT_RUST_FAST_LINKER=$rust_linker_program",
     'target-dir --repo "$GITHUB_WORKSPACE"',
     "os.path.relpath",
 )
@@ -762,9 +765,11 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
 SETUP_ACTION_ORDERED_STEPS = (
     "Lint workflow contract",
     "Read shared values",
+    "Install Rust linker",
     "Resolve managed target dir",
     "Setup Rust toolchain",
 )
+CI_RUST_FAST_LINKER_JOBS = {"build", "clippy", "source-fence", "test-archive"}
 TEST_PARTITION_COMMAND = (
     'just test-archive-run "$NEXTEST_ARCHIVE_PATH" '
     '"$RUNNER_TEMP/nextest-archive-extract" '
@@ -11362,6 +11367,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):
             errors.append(f"{job_name} must run just {recipe}")
 
+    for job_name in sorted(CI_RUST_FAST_LINKER_JOBS):
+        if job_name in jobs and not job_has_setup_input(jobs[job_name], "install-rust-linker", "true"):
+            errors.append(f"ci.yml {job_name} must install configured Rust linker")
+
     if "deny" in jobs:
         deny_needs = extract_needs(jobs["deny"])
         if "detector" not in deny_needs:
@@ -12058,6 +12067,11 @@ def verify_setup_action(action_text: str) -> list[str]:
         errors.append("setup action missing build-jobs-key input")
     elif not input_block_has_default_empty(cargo_build_jobs_input):
         errors.append("setup action build-jobs-key default must be empty")
+    rust_linker_input = extract_action_input_block(action_text, "install-rust-linker")
+    if not rust_linker_input:
+        errors.append("setup action missing install-rust-linker input")
+    elif not input_block_has_default_false(rust_linker_input):
+        errors.append("setup action install-rust-linker default must be false")
     if not any(SETUP_TARGET_DIR_EXPORT_RE.match(line) for line in uncommented_lines):
         errors.append("setup action must export managed_target_dir from target_dir step")
     if not any(SETUP_TARGET_DIR_RELATIVE_EXPORT_RE.match(line) for line in uncommented_lines):
@@ -15902,6 +15916,9 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
                 errors.append(
                     f"{workflow_name} {job} has build-jobs-key but is missing from cargo_build_jobs.{workflow_key} in ci/github-actions-runners.toml"
                 )
+            if workflow_name == "ci.yml" and job in CI_RUST_FAST_LINKER_JOBS:
+                if not job_has_setup_input(jobs[job], "install-rust-linker", "true"):
+                    errors.append(f"{workflow_name} {job} must install configured Rust linker")
     return errors
 
 

@@ -14,10 +14,11 @@
 //! append-only JSONL file, so state races cannot erase the audit trail.
 //! Operators rotate that audit file externally. The last audit record for a
 //! given attempt is authoritative: `attempted` is written before the state write,
-//! followed by `recovered` after a successful state write or `write-failed` when
-//! the write fails. An audit trail ending in `attempted` while the state file is
-//! `Armed` means recovery succeeded but the terminal audit append was
-//! interrupted; the state file is authoritative, so cross-check it.
+//! followed by `recovered` after a successful or read-back-confirmed `Armed`
+//! state write, or `write-failed` when a write error is not confirmed committed.
+//! An audit trail ending in `attempted` while the state file is `Armed` means
+//! recovery succeeded but the terminal audit append was interrupted; the state
+//! file is authoritative, so cross-check it.
 //! `FailedManualIntervention` is terminal for this command, routes to
 //! `UnsupportedState`, and needs out-of-band repair.
 //!
@@ -26,10 +27,10 @@
 //! | Durable operation | Crash before operation | Crash after operation | Torn audit at operation | Non-torn IO error at operation |
 //! | --- | --- | --- | --- | --- |
 //! | `attempted` append | Store remains the original halt and the audit has no new line; the next invocation runs a normal recovery. Test: `manual_recovery_after_crash_before_attempted_append_recovers_from_original_halt`. | Store remains the original halt and the audit ends in `attempted`; the next invocation retries and can recover, appending a new `attempted`/`recovered` pair. Test: `manual_recovery_after_crash_after_attempted_append_retries_and_recovers`. | Store remains the original halt and the audit has a torn final line; the next invocation returns `RepairManualRecoveryAudit` until the audit is repaired. Test: `manual_recovery_torn_audit_requires_repair_without_touching_halt`. | Store is downgraded to `FailedManualIntervention` and no attempted line is durable; the next invocation treats that state as terminal. Tests: `attempted_audit_non_torn_error_persists_failed_manual_intervention`, `manual_recovery_after_failed_manual_intervention_is_terminal_and_audits`. |
-//! | `Armed` state write | Store remains the original halt and the audit ends in `attempted`; the next invocation retries and can recover. Test: `manual_recovery_after_crash_after_attempted_append_retries_and_recovers`. | Store is `Armed` and the audit ends in `attempted`; the next invocation treats `Armed` as authoritative and records an `UnsupportedState` refusal when the audit is appendable. Test: `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`. | The state write does not inspect the audit file; a pre-existing torn audit is caught by the preceding `attempted` append, leaving the halt untouched and the next invocation returning `RepairManualRecoveryAudit`. Test: `manual_recovery_torn_audit_requires_repair_without_touching_halt`. | Store remains the original halt until fallback runs; with a successful write-failed audit and failed-state write, it becomes `FailedManualIntervention` and the next invocation is terminal. Tests: `failed_recovery_state_write_persists_failed_manual_intervention`, `manual_recovery_after_failed_manual_intervention_is_terminal_and_audits`. |
-//! | `write-failed` append | Store remains the original halt and the audit ends in `attempted`; the next invocation retries and can recover. Test: `manual_recovery_after_crash_after_attempted_append_retries_and_recovers`. | Store remains the original halt and the audit ends in `write-failed`; the next invocation retries from the original halt and can recover. Test: `manual_recovery_after_crash_after_write_failed_append_retries_from_original_halt`. | Store remains the original halt and the audit must be repaired before any failed-state write; the next invocation returns `RepairManualRecoveryAudit`. Tests: `failed_recovery_state_write_with_torn_write_failed_audit_requires_repair_only`, `manual_recovery_torn_audit_requires_repair_without_touching_halt`. | Store is downgraded to `FailedManualIntervention` after logging the audit error; the next invocation treats that state as terminal. Tests: `write_failed_audit_io_error_persists_failed_manual_intervention`, `manual_recovery_after_failed_manual_intervention_is_terminal_and_audits`. |
-//! | `FailedManualIntervention` state write | Store remains the original halt and the audit ends in `write-failed`; the next invocation retries from the original halt. Test: `manual_recovery_after_crash_after_write_failed_append_retries_from_original_halt`. | Store is `FailedManualIntervention` and the audit ends in `write-failed`; the next invocation routes to `UnsupportedState` and records a refusal when the audit is appendable. Test: `manual_recovery_after_failed_manual_intervention_is_terminal_and_audits`. | The failed-state write does not inspect the audit file; a torn write-failed audit is detected before this write and leaves the halt untouched, so the next invocation returns `RepairManualRecoveryAudit`. Test: `failed_recovery_state_write_with_torn_write_failed_audit_requires_repair_only`. | Store remains the original halt while the audit ends in `write-failed`; the command returns `FailedStateWriteFailed`, and the next invocation retries from the original halt. Tests: `failed_recovery_state_write_reports_when_failed_state_also_fails`, `manual_recovery_after_crash_after_write_failed_append_retries_from_original_halt`. |
-//! | `recovered` append | Store is `Armed` and the audit ends in `attempted`; the next invocation treats `Armed` as authoritative and records an `UnsupportedState` refusal when the audit is appendable. Test: `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`. | Store is `Armed` and the audit ends in `recovered`; the next invocation treats `Armed` as authoritative and records an `UnsupportedState` refusal when the audit is appendable. Test: `manual_recovery_after_crash_after_recovered_append_refuses_as_armed_and_audits`. | Store is already `Armed`; the command reports success, the audit tail must be repaired before the next refusal can be audited, and the next invocation returns `RepairManualRecoveryAudit`. Tests: `recovered_audit_torn_error_reports_success_after_armed_state_wins`, `manual_recovery_torn_audit_blocks_armed_refusal_until_repaired`. | Store is already `Armed`; the command reports success after logging, the audit may end at `attempted`, and the next invocation treats `Armed` as authoritative when the audit is appendable. Tests: `recovered_audit_non_torn_error_reports_success_after_armed_state_wins`, `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`. |
+//! | `Armed` state write | Store remains the original halt and the audit ends in `attempted`; the next invocation retries and can recover. Test: `manual_recovery_after_crash_after_attempted_append_retries_and_recovers`. | Store is `Armed` and the audit ends in `attempted`; the next invocation treats `Armed` as authoritative and records an `UnsupportedState` refusal when the audit is appendable. Test: `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`. | The state write does not inspect the audit file; a pre-existing torn audit is caught by the preceding `attempted` append, leaving the halt untouched and the next invocation returning `RepairManualRecoveryAudit`. Test: `manual_recovery_torn_audit_requires_repair_without_touching_halt`. | The command re-reads the store before recording any outcome. Read-back `Armed` takes the success path; otherwise the fallback path runs. Tests: `committed_state_write_error_appends_recovered_and_reports_success`, `committed_state_write_error_with_recovered_audit_io_error_reports_success`, `state_write_error_with_readback_error_persists_failed_manual_intervention`, `failed_recovery_state_write_persists_failed_manual_intervention`. |
+//! | `write-failed` append | This operation is reached only after the `Armed` write returned an error and read-back did not confirm `Armed`; the audit still ends in `attempted`, and the next invocation follows the actual store state. Tests: `manual_recovery_after_crash_after_attempted_append_retries_and_recovers`, `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`, `state_write_error_with_readback_error_persists_failed_manual_intervention`. | Read-back showed the original halt or failed; the audit ends in `write-failed`, and the next invocation follows the actual store state. Tests: `manual_recovery_after_crash_after_write_failed_append_retries_from_original_halt`, `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`. | Store remains the original halt when read-back showed the halt, and the audit must be repaired before any failed-state write; the next invocation returns `RepairManualRecoveryAudit`. Tests: `failed_recovery_state_write_with_torn_write_failed_audit_requires_repair_only`, `manual_recovery_torn_audit_requires_repair_without_touching_halt`. | Store is downgraded to `FailedManualIntervention` after logging the audit error; the next invocation treats that state as terminal. Tests: `write_failed_audit_io_error_persists_failed_manual_intervention`, `manual_recovery_after_failed_manual_intervention_is_terminal_and_audits`. |
+//! | `FailedManualIntervention` state write | This operation is reached only after a non-torn `write-failed` append; if the process crashes first, the audit ends in `write-failed` and the next invocation follows the actual store state. Tests: `manual_recovery_after_crash_after_write_failed_append_retries_from_original_halt`, `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`. | Store is `FailedManualIntervention` and the audit ends in `write-failed`; the next invocation routes to `UnsupportedState` and records a refusal when the audit is appendable. Tests: `state_write_error_with_readback_error_persists_failed_manual_intervention`, `manual_recovery_after_failed_manual_intervention_is_terminal_and_audits`. | The failed-state write does not inspect the audit file; a torn write-failed audit is detected before this write and leaves the halt untouched, so the next invocation returns `RepairManualRecoveryAudit`. Test: `failed_recovery_state_write_with_torn_write_failed_audit_requires_repair_only`. | The state remains whatever the read-back phase observed or failed to observe while the audit ends in `write-failed`; the command returns `FailedStateWriteFailed`, and the next invocation follows the actual store state. Tests: `failed_recovery_state_write_reports_when_failed_state_also_fails`, `state_write_error_with_readback_error_and_failed_state_write_reports_both_errors`, `manual_recovery_after_crash_after_write_failed_append_retries_from_original_halt`, `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`. |
+//! | `recovered` append | Store is `Armed` and the audit ends in `attempted`; the next invocation treats `Armed` as authoritative and records an `UnsupportedState` refusal when the audit is appendable. Test: `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`. | Store is `Armed` and the audit ends in `recovered`; the next invocation treats `Armed` as authoritative and records an `UnsupportedState` refusal when the audit is appendable. Test: `manual_recovery_after_crash_after_recovered_append_refuses_as_armed_and_audits`. | Store is already `Armed`; the command reports success, the audit tail must be repaired before the next refusal can be audited, and the next invocation returns `RepairManualRecoveryAudit`. Tests: `recovered_audit_torn_error_reports_success_after_armed_state_wins`, `committed_state_write_error_with_torn_recovered_audit_reports_success`, `manual_recovery_torn_audit_blocks_armed_refusal_until_repaired`. | Store is already `Armed`; the command reports success after logging, the audit may end at `attempted`, and the next invocation treats `Armed` as authoritative when the audit is appendable. Tests: `recovered_audit_non_torn_error_reports_success_after_armed_state_wins`, `committed_state_write_error_with_recovered_audit_io_error_reports_success`, `manual_recovery_after_crash_after_armed_write_treats_armed_state_as_authoritative`. |
 //!
 //! Refusals after config and store-path resolution are audited when the audit
 //! path is appendable. Pre-config failures and an unwritable audit path are the
@@ -481,6 +482,8 @@ trait LossGovernorManualRecoveryStoreWriter {
         manual_recovery: KillSwitchLossGovernorManualRecoveryRecord,
     ) -> Result<usize, KillSwitchStoreError>;
 
+    fn load_recovery_record(&self) -> Result<KillSwitchRecoveryRecord, KillSwitchStoreError>;
+
     fn write_state_with_loss_snapshot(
         &self,
         state: &KillSwitchState,
@@ -498,6 +501,10 @@ impl LossGovernorManualRecoveryStoreWriter for KillSwitchStore {
         manual_recovery: KillSwitchLossGovernorManualRecoveryRecord,
     ) -> Result<usize, KillSwitchStoreError> {
         KillSwitchStore::append_loss_governor_manual_recovery(self, manual_recovery)
+    }
+
+    fn load_recovery_record(&self) -> Result<KillSwitchRecoveryRecord, KillSwitchStoreError> {
+        KillSwitchStore::load_recovery_record(self)
     }
 
     fn write_state_with_loss_snapshot(
@@ -547,6 +554,16 @@ fn persist_manual_recovery_attempt(
     if let Err(recovery_error) =
         store.write_state_with_loss_snapshot(&KillSwitchState::Armed, Some(loss_protection))
     {
+        match store.load_recovery_record() {
+            Ok(record) if armed_state_committed(&record) => {
+                return append_recovered_manual_recovery(
+                    store,
+                    recovered_manual_recovery,
+                    manual_recovery_count,
+                );
+            }
+            Ok(_) | Err(_) => {}
+        }
         let write_failed = KillSwitchLossGovernorManualRecoveryRecord {
             outcome: Some(KillSwitchLossGovernorManualRecoveryOutcome::WriteFailed),
             outcome_reason: Some(format!(
@@ -579,11 +596,26 @@ fn persist_manual_recovery_attempt(
             }),
         };
     }
+    append_recovered_manual_recovery(store, recovered_manual_recovery, manual_recovery_count)
+}
+
+fn armed_state_committed(record: &KillSwitchRecoveryRecord) -> bool {
+    matches!(
+        &record.recovery_state,
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Armed)
+    )
+}
+
+fn append_recovered_manual_recovery(
+    store: &impl LossGovernorManualRecoveryStoreWriter,
+    recovered_manual_recovery: KillSwitchLossGovernorManualRecoveryRecord,
+    manual_recovery_count: usize,
+) -> Result<usize, LossGovernorManualRecoveryError> {
     match store.append_loss_governor_manual_recovery(recovered_manual_recovery) {
         Ok(count) => Ok(count),
         Err(audit_error) => {
             log::error!(
-                "failed to append recovered loss-governor manual recovery audit line for {} after Armed state write succeeded: {audit_error}",
+                "failed to append recovered loss-governor manual recovery audit line for {} after Armed state write committed: {audit_error}",
                 store.path().display()
             );
             Ok(manual_recovery_count)
@@ -800,13 +832,35 @@ mod tests {
         TornAudit,
     }
 
+    enum FakeWriteResult {
+        Ok,
+        ErrUncommitted,
+        ErrCommitted,
+    }
+
+    enum FakeReadResult {
+        Io,
+    }
+
+    impl From<bool> for FakeWriteResult {
+        fn from(value: bool) -> Self {
+            if value {
+                Self::Ok
+            } else {
+                Self::ErrUncommitted
+            }
+        }
+    }
+
     struct FakeManualRecoveryStore {
         path: PathBuf,
         append_calls: RefCell<usize>,
         appended_records: RefCell<Vec<KillSwitchLossGovernorManualRecoveryRecord>>,
         append_results: RefCell<VecDeque<FakeAppendResult>>,
-        write_results: RefCell<VecDeque<bool>>,
+        write_results: RefCell<VecDeque<FakeWriteResult>>,
+        read_results: RefCell<VecDeque<FakeReadResult>>,
         written_states: RefCell<Vec<KillSwitchState>>,
+        durable_state: RefCell<KillSwitchState>,
     }
 
     impl FakeManualRecoveryStore {
@@ -818,13 +872,33 @@ mod tests {
             write_results: impl IntoIterator<Item = bool>,
             append_results: impl IntoIterator<Item = FakeAppendResult>,
         ) -> Self {
+            Self::with_write_results_and_append_results(
+                write_results.into_iter().map(FakeWriteResult::from),
+                append_results,
+            )
+        }
+
+        fn with_write_results_and_append_results(
+            write_results: impl IntoIterator<Item = FakeWriteResult>,
+            append_results: impl IntoIterator<Item = FakeAppendResult>,
+        ) -> Self {
+            Self::with_write_read_and_append_results(write_results, [], append_results)
+        }
+
+        fn with_write_read_and_append_results(
+            write_results: impl IntoIterator<Item = FakeWriteResult>,
+            read_results: impl IntoIterator<Item = FakeReadResult>,
+            append_results: impl IntoIterator<Item = FakeAppendResult>,
+        ) -> Self {
             Self {
                 path: PathBuf::from("state/kill-switch.json"),
                 append_calls: RefCell::new(0),
                 appended_records: RefCell::new(Vec::new()),
                 append_results: RefCell::new(append_results.into_iter().collect()),
                 write_results: RefCell::new(write_results.into_iter().collect()),
+                read_results: RefCell::new(read_results.into_iter().collect()),
                 written_states: RefCell::new(Vec::new()),
+                durable_state: RefCell::new(recovery_state()),
             }
         }
 
@@ -834,6 +908,10 @@ mod tests {
 
         fn written_states(&self) -> Vec<KillSwitchState> {
             self.written_states.borrow().clone()
+        }
+
+        fn durable_state(&self) -> KillSwitchState {
+            self.durable_state.borrow().clone()
         }
     }
 
@@ -862,6 +940,13 @@ mod tests {
             }
         }
 
+        fn load_recovery_record(&self) -> Result<KillSwitchRecoveryRecord, KillSwitchStoreError> {
+            match self.read_results.borrow_mut().pop_front() {
+                Some(FakeReadResult::Io) => Err(synthetic_store_error(&self.path)),
+                None => Ok(recovery_record_for_state(self.durable_state())),
+            }
+        }
+
         fn write_state_with_loss_snapshot(
             &self,
             state: &KillSwitchState,
@@ -869,9 +954,34 @@ mod tests {
         ) -> Result<(), KillSwitchStoreError> {
             self.written_states.borrow_mut().push(state.clone());
             match self.write_results.borrow_mut().pop_front() {
-                Some(true) => Ok(()),
-                Some(false) | None => Err(synthetic_store_error(&self.path)),
+                Some(FakeWriteResult::Ok) => {
+                    *self.durable_state.borrow_mut() = state.clone();
+                    Ok(())
+                }
+                Some(FakeWriteResult::ErrCommitted) => {
+                    *self.durable_state.borrow_mut() = state.clone();
+                    Err(synthetic_store_error(&self.path))
+                }
+                Some(FakeWriteResult::ErrUncommitted) | None => {
+                    Err(synthetic_store_error(&self.path))
+                }
             }
+        }
+    }
+
+    fn recovery_record_for_state(state: KillSwitchState) -> KillSwitchRecoveryRecord {
+        let recovery_state = match state {
+            KillSwitchState::Halting { .. } | KillSwitchState::FailedManualIntervention { .. } => {
+                KillSwitchRecoveryState::FailClosed {
+                    reason: KillSwitchRecoveryReason::UnresolvedHalt,
+                    state: Some(state),
+                }
+            }
+            state => KillSwitchRecoveryState::Recovered(state),
+        };
+        KillSwitchRecoveryRecord {
+            recovery_state,
+            loss_protection: None,
         }
     }
 
@@ -976,6 +1086,187 @@ mod tests {
             written_states[1],
             KillSwitchState::FailedManualIntervention { .. }
         ));
+    }
+
+    #[test]
+    fn committed_state_write_error_appends_recovered_and_reports_success() {
+        let store = FakeManualRecoveryStore::with_write_results_and_append_results(
+            [FakeWriteResult::ErrCommitted, FakeWriteResult::Ok],
+            [FakeAppendResult::Ok(1), FakeAppendResult::Ok(2)],
+        );
+
+        let result = persist_manual_recovery_attempt(
+            &store,
+            &recovery_state(),
+            &loss_snapshot(),
+            manual_recovery_record(),
+        );
+        let count = result.unwrap_or_else(|error| {
+            panic!(
+                "committed Armed state must report recovery success after read-back; got {error:?}; recorded writes: {:?}",
+                store.written_states()
+            )
+        });
+
+        assert_eq!(count, 2);
+        let appended_records = store.appended_records();
+        assert_eq!(appended_records.len(), 2);
+        assert_eq!(
+            appended_records[0].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Attempted)
+        );
+        assert_eq!(
+            appended_records[1].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Recovered)
+        );
+        assert_eq!(store.written_states(), vec![KillSwitchState::Armed]);
+        assert_eq!(store.durable_state(), KillSwitchState::Armed);
+    }
+
+    #[test]
+    fn committed_state_write_error_with_torn_recovered_audit_reports_success() {
+        let store = FakeManualRecoveryStore::with_write_results_and_append_results(
+            [FakeWriteResult::ErrCommitted],
+            [FakeAppendResult::Ok(1), FakeAppendResult::TornAudit],
+        );
+
+        let count = persist_manual_recovery_attempt(
+            &store,
+            &recovery_state(),
+            &loss_snapshot(),
+            manual_recovery_record(),
+        )
+        .expect("torn recovered audit must not reverse read-back-confirmed Armed state");
+
+        assert_eq!(count, 1);
+        let appended_records = store.appended_records();
+        assert_eq!(appended_records.len(), 2);
+        assert_eq!(
+            appended_records[0].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Attempted)
+        );
+        assert_eq!(
+            appended_records[1].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Recovered)
+        );
+        assert_eq!(store.written_states(), vec![KillSwitchState::Armed]);
+        assert_eq!(store.durable_state(), KillSwitchState::Armed);
+    }
+
+    #[test]
+    fn committed_state_write_error_with_recovered_audit_io_error_reports_success() {
+        let store = FakeManualRecoveryStore::with_write_results_and_append_results(
+            [FakeWriteResult::ErrCommitted],
+            [FakeAppendResult::Ok(1), FakeAppendResult::Io],
+        );
+
+        let count = persist_manual_recovery_attempt(
+            &store,
+            &recovery_state(),
+            &loss_snapshot(),
+            manual_recovery_record(),
+        )
+        .expect("recovered audit IO error must not reverse read-back-confirmed Armed state");
+
+        assert_eq!(count, 1);
+        let appended_records = store.appended_records();
+        assert_eq!(appended_records.len(), 2);
+        assert_eq!(
+            appended_records[0].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Attempted)
+        );
+        assert_eq!(
+            appended_records[1].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Recovered)
+        );
+        assert_eq!(store.written_states(), vec![KillSwitchState::Armed]);
+        assert_eq!(store.durable_state(), KillSwitchState::Armed);
+    }
+
+    #[test]
+    fn state_write_error_with_readback_error_persists_failed_manual_intervention() {
+        let store = FakeManualRecoveryStore::with_write_read_and_append_results(
+            [FakeWriteResult::ErrCommitted, FakeWriteResult::Ok],
+            [FakeReadResult::Io],
+            [FakeAppendResult::Ok(1), FakeAppendResult::Ok(2)],
+        );
+
+        let error = persist_manual_recovery_attempt(
+            &store,
+            &recovery_state(),
+            &loss_snapshot(),
+            manual_recovery_record(),
+        )
+        .expect_err("unreadable post-error state must fall back conservatively");
+
+        assert!(matches!(
+            error,
+            LossGovernorManualRecoveryError::StoreWriteFailed { .. }
+        ));
+        let appended_records = store.appended_records();
+        assert_eq!(appended_records.len(), 2);
+        assert_eq!(
+            appended_records[0].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Attempted)
+        );
+        assert_eq!(
+            appended_records[1].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::WriteFailed)
+        );
+        let written_states = store.written_states();
+        assert_eq!(written_states.len(), 2);
+        assert_eq!(written_states[0], KillSwitchState::Armed);
+        assert!(matches!(
+            written_states[1],
+            KillSwitchState::FailedManualIntervention { .. }
+        ));
+        assert!(matches!(
+            store.durable_state(),
+            KillSwitchState::FailedManualIntervention { .. }
+        ));
+    }
+
+    #[test]
+    fn state_write_error_with_readback_error_and_failed_state_write_reports_both_errors() {
+        let store = FakeManualRecoveryStore::with_write_read_and_append_results(
+            [
+                FakeWriteResult::ErrCommitted,
+                FakeWriteResult::ErrUncommitted,
+            ],
+            [FakeReadResult::Io],
+            [FakeAppendResult::Ok(1), FakeAppendResult::Ok(2)],
+        );
+
+        let error = persist_manual_recovery_attempt(
+            &store,
+            &recovery_state(),
+            &loss_snapshot(),
+            manual_recovery_record(),
+        )
+        .expect_err("failed fallback state write should report both write errors");
+
+        assert!(matches!(
+            error,
+            LossGovernorManualRecoveryError::FailedStateWriteFailed { .. }
+        ));
+        let appended_records = store.appended_records();
+        assert_eq!(appended_records.len(), 2);
+        assert_eq!(
+            appended_records[0].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Attempted)
+        );
+        assert_eq!(
+            appended_records[1].outcome,
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::WriteFailed)
+        );
+        let written_states = store.written_states();
+        assert_eq!(written_states.len(), 2);
+        assert_eq!(written_states[0], KillSwitchState::Armed);
+        assert!(matches!(
+            written_states[1],
+            KillSwitchState::FailedManualIntervention { .. }
+        ));
+        assert_eq!(store.durable_state(), KillSwitchState::Armed);
     }
 
     #[test]

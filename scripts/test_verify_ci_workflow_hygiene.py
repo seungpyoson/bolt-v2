@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import dataclasses
+import functools
 import io
 import importlib.util
 import os
@@ -15117,6 +15118,7 @@ def assert_cargo_named_just_recipe_headers_are_not_raw_cargo_commands() -> None:
         raise AssertionError(f"cargo-named just recipe header was treated as raw cargo: {errors!r}")
 
 
+@functools.cache
 def ci_lint_suite_commands() -> set[str]:
     path = REPO_ROOT / "scripts" / "run_ci_lint_suites.py"
     spec = importlib.util.spec_from_file_location("run_ci_lint_suites_under_hygiene_test", path)

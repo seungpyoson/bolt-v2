@@ -129,6 +129,11 @@ def write_block(stream: TextIO, text: str) -> None:
         stream.write("\n")
 
 
+def flush_streams(stdout: TextIO, stderr: TextIO) -> None:
+    stdout.flush()
+    stderr.flush()
+
+
 def print_result(result: SuiteResult, *, stdout: TextIO, stderr: TextIO) -> None:
     stdout.write(f"=== ci-lint suite: {result.suite.name} ===\n")
     stdout.write(f"$ {' '.join(result.suite.command)}\n")
@@ -138,6 +143,7 @@ def print_result(result: SuiteResult, *, stdout: TextIO, stderr: TextIO) -> None
         stdout.write(f"OK: {result.suite.name}\n")
     else:
         stderr.write(f"FAIL: {result.suite.name} exited {result.returncode}\n")
+    flush_streams(stdout, stderr)
 
 
 def run_suites(
@@ -181,8 +187,10 @@ def run_suites(
         stderr.write(f"FAIL: {len(failures)} ci-lint suite(s) failed:\n")
         for result in failures:
             stderr.write(f"- {result.suite.name} exited {result.returncode}\n")
+        flush_streams(stdout, stderr)
         return 1
     stdout.write(f"OK: {len(suite_list)} ci-lint suite(s) passed.\n")
+    flush_streams(stdout, stderr)
     return 0
 
 

@@ -28,6 +28,16 @@ def python_command(body: str) -> tuple[str, ...]:
     return (sys.executable, "-c", body)
 
 
+class FlushTrackingStringIO(io.StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.flush_count = 0
+
+    def flush(self) -> None:
+        self.flush_count += 1
+        super().flush()
+
+
 def test_runner_groups_each_suite_output_and_reports_all_failures() -> None:
     runner = load_runner_module()
     suites = (
@@ -67,6 +77,25 @@ def test_runner_groups_each_suite_output_and_reports_all_failures() -> None:
     second_failure = stderr_output.find("FAIL: second-failure exited 7")
     if not (first_stderr < first_failure < second_stderr < second_failure):
         raise AssertionError(stderr_output)
+
+
+def test_runner_flushes_grouped_blocks_and_final_summary() -> None:
+    runner = load_runner_module()
+    suites = (
+        runner.CiLintSuite("first", python_command("print('first')")),
+        runner.CiLintSuite("second", python_command("print('second')")),
+    )
+    stdout = FlushTrackingStringIO()
+    stderr = FlushTrackingStringIO()
+
+    status = runner.run_suites(suites, workers=2, stdout=stdout, stderr=stderr)
+
+    if status != 0:
+        raise AssertionError(status)
+    if stdout.flush_count < 3:
+        raise AssertionError(f"grouped stdout blocks and final summary were not flushed: {stdout.flush_count}")
+    if stderr.flush_count < 7:
+        raise AssertionError(f"grouped stderr blocks and final summary were not flushed: {stderr.flush_count}")
 
 
 def test_runner_emits_start_finish_breadcrumbs_to_stderr() -> None:
@@ -275,6 +304,7 @@ def test_default_suite_table_covers_the_ci_lint_contract() -> None:
 def main() -> int:
     tests = (
         test_runner_groups_each_suite_output_and_reports_all_failures,
+        test_runner_flushes_grouped_blocks_and_final_summary,
         test_runner_emits_start_finish_breadcrumbs_to_stderr,
         test_runner_timeout_is_attributed_to_suite,
         test_runner_timeout_preserves_partial_output_in_grouped_result,

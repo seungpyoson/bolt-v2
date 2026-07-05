@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import tomllib
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -47,6 +48,8 @@ tracked_inputs = [
     "src/",
     "tests/",
     "config/root.toml",
+    "config/profiles/",
+    "config/strategies/",
 ]
 
 [[safe_excludes]]
@@ -80,6 +83,11 @@ ROOT_INPUT_SAFE_EXCLUDES = (
     "justfile",
     "ci/rust-verification.toml",
     "scripts/rust_verification.py",
+)
+
+PRODUCTION_CONFIG_TRACKED_INPUTS = (
+    "config/profiles/",
+    "config/strategies/",
 )
 
 
@@ -186,6 +194,8 @@ edition = "2021"
     write(repo / "scripts" / "rust_verification.py", "# tracked verifier placeholder\n")
     write(repo / "scripts" / "command_understanding.py", "# tracked command parser placeholder\n")
     write(repo / "config" / "root.toml", "[root]\n")
+    write(repo / "config" / "profiles" / "prod.overlay.toml", "strategy_files = [\"strategies/prod.toml\"]\n")
+    write(repo / "config" / "strategies" / "prod.toml", "schema_version = 2\n")
     write(repo / "contracts" / "root.md", "# contract\n")
     write(repo / "docs" / "bolt-v3" / "index.md", "# bolt-v3\n")
     write(
@@ -300,6 +310,26 @@ def assert_fingerprint_outputs_have_provenance_shape() -> None:
             raise AssertionError(outputs)
 
 
+def assert_real_config_tracks_production_profile_inputs() -> None:
+    config = tomllib.loads((REPO_ROOT / "ci" / "nextest-fingerprint.toml").read_text(encoding="utf-8"))
+    archive = config.get("nextest_archive")
+    if not isinstance(archive, dict):
+        raise AssertionError("real nextest fingerprint config must define [nextest_archive]")
+    tracked_inputs = archive.get("tracked_inputs")
+    if not isinstance(tracked_inputs, list):
+        raise AssertionError("real nextest fingerprint config must define tracked_inputs")
+    missing = [
+        tracked_input
+        for tracked_input in PRODUCTION_CONFIG_TRACKED_INPUTS
+        if tracked_input not in tracked_inputs
+    ]
+    if missing:
+        raise AssertionError(
+            "real nextest tracked_inputs must include production profile inputs: "
+            f"{missing!r}"
+        )
+
+
 def assert_tree_digest_covers_runtime_inputs_and_mode_bits() -> None:
     with temporary_git_directory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
@@ -335,10 +365,25 @@ def assert_tree_digest_covers_runtime_inputs_and_mode_bits() -> None:
         if root_config_changed == manifest_changed:
             raise AssertionError("config/root.toml changes must change the nextest archive key")
 
+        write(
+            repo / "config" / "profiles" / "prod.overlay.toml",
+            "strategy_files = [\"strategies/prod.toml\"]\nprofile = \"changed\"\n",
+        )
+        commit_all(repo, "change production profile")
+        profile_config_changed, _ = fingerprint(repo)
+        if profile_config_changed == root_config_changed:
+            raise AssertionError("config/profiles changes must change the nextest archive key")
+
+        write(repo / "config" / "strategies" / "prod.toml", "schema_version = 2\nchanged = true\n")
+        commit_all(repo, "change production strategy")
+        strategy_config_changed, _ = fingerprint(repo)
+        if strategy_config_changed == profile_config_changed:
+            raise AssertionError("config/strategies changes must change the nextest archive key")
+
         (repo / "build.rs").chmod(0o755)
         commit_all(repo, "make deploy executable")
         mode_changed, _ = fingerprint(repo)
-        if mode_changed == root_config_changed:
+        if mode_changed == strategy_config_changed:
             raise AssertionError("allowlisted tracked mode changes must change the nextest archive key")
 
 
@@ -650,6 +695,7 @@ def assert_invalid_shards_fail_closed() -> None:
         "missing": FINGERPRINT_CONFIG_TEXT.replace("shards = 4\n", ""),
         "zero": FINGERPRINT_CONFIG_TEXT.replace("shards = 4", "shards = 0"),
         "non-numeric": FINGERPRINT_CONFIG_TEXT.replace("shards = 4", 'shards = "4"'),
+        "boolean": FINGERPRINT_CONFIG_TEXT.replace("shards = 4", "shards = true"),
     }
     for label, text in cases.items():
         with temporary_git_directory() as tmp:
@@ -685,6 +731,14 @@ def assert_missing_or_malformed_config_fails_closed() -> None:
             FINGERPRINT_CONFIG_TEXT.replace('    "scripts/config_validators.py",\n', ""),
             "nextest_archive.tracked_inputs must include scripts/config_validators.py",
         ),
+        "tracked inputs missing production profiles": (
+            FINGERPRINT_CONFIG_TEXT.replace('    "config/profiles/",\n', ""),
+            "nextest_archive.tracked_inputs must include config/profiles/",
+        ),
+        "tracked inputs missing production strategies": (
+            FINGERPRINT_CONFIG_TEXT.replace('    "config/strategies/",\n', ""),
+            "nextest_archive.tracked_inputs must include config/strategies/",
+        ),
         "malformed toml": ("[nextest_archive\n", "nextest fingerprint config invalid TOML"),
     }
     for label, (text, expected_error) in cases.items():
@@ -711,6 +765,7 @@ def assert_missing_or_malformed_config_fails_closed() -> None:
 
 def main() -> int:
     assert_fingerprint_outputs_have_provenance_shape()
+    assert_real_config_tracks_production_profile_inputs()
     assert_tree_digest_covers_runtime_inputs_and_mode_bits()
     assert_self_governance_changes_affect_digest()
     assert_tracked_inputs_must_match_head_tree()

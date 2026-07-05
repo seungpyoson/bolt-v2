@@ -460,6 +460,7 @@ impl BinaryOracleMaker {
 
         let fair_value = maker_reference_current_price_fair_value_decision(
             reference_selector,
+            quote_set.now_ms,
             reference_fair_value,
         );
         let Some(reference_fair_value_result) = fair_value.fair_value.as_ref() else {

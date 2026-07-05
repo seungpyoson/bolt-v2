@@ -24,7 +24,8 @@ JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_pmxt_broad_backfill_efficiency.py",
     "python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py",
 )
-JUSTFILE_RECIPES = ("verify-bte-022-pmxt-broad-backfill-efficiency", "source-fence-static-inner")
+SOURCE_FENCE_STATIC_COMMANDS = ("python3 scripts/run_fences.py",)
+JUSTFILE_RECIPES = ("verify-bte-022-pmxt-broad-backfill-efficiency",)
 
 STATUS_INPUTS = (
     ("coverage_ledger_status", PMXT_COVERAGE_STATUS),
@@ -195,8 +196,8 @@ def nested_mapping(data: dict[str, Any], keys: tuple[str, ...], rel_path: Path, 
     return current
 
 
-def just_recipe_commands(text: str, recipe: str) -> set[str]:
-    commands: set[str] = set()
+def just_recipe_commands(text: str, recipe: str) -> list[str]:
+    commands: list[str] = []
     in_recipe = False
     for raw_line in text.splitlines():
         stripped = raw_line.strip()
@@ -207,7 +208,7 @@ def just_recipe_commands(text: str, recipe: str) -> set[str]:
         if raw_line and not raw_line.startswith((" ", "\t")):
             break
         if stripped and not stripped.startswith("#"):
-            commands.add(stripped)
+            commands.append(stripped)
     return commands
 
 
@@ -357,6 +358,13 @@ def check_justfile(justfile_text: str, findings: list[str]) -> None:
         for command in JUSTFILE_COMMANDS:
             if command not in commands:
                 findings.append(f"{JUSTFILE}: {recipe} must run {command}")
+    source_fence_commands = just_recipe_commands(justfile_text, "source-fence-static-inner")
+    if not source_fence_commands:
+        findings.append(f"{JUSTFILE}: missing recipe source-fence-static-inner")
+        return
+    if tuple(source_fence_commands) != SOURCE_FENCE_STATIC_COMMANDS:
+        expected = " && ".join(SOURCE_FENCE_STATIC_COMMANDS)
+        findings.append(f"{JUSTFILE}: source-fence-static-inner must contain only {expected}")
 
 
 def scan_root(root: Path) -> list[str]:

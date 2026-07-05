@@ -41,10 +41,12 @@ REQUIRED_WS_FEEDERS = (
 REQUIRED_NON_WS_REGISTRY_ENTRIES = {
     ("IMDS_METADATA_ADAPTER_ID", "ImdsMetadata", "DeployTargetHostFacts"),
     ("AWS_SSM_SECRET_SOURCE_ADAPTER_ID", "AwsSdkResponse", "SecretResolution"),
+    ("polymarket::KEY", "HttpResponseBody", "PolymarketVenueTruthRuntime"),
 }
 REQUIRED_NON_WS_EXEMPTIONS = {
     ("Imdsv2HostFactsSource", "ImdsMetadata", "DeployTargetHostFacts"),
     ("AwsSsmSecretSource", "AwsSdkResponse", "SecretResolution"),
+    ("POLYMARKET", "HttpResponseBody", "PolymarketVenueTruthRuntime"),
 }
 RUST_VISIBILITY_PREFIX = r"(?:pub(?:\s+|\s*\([^)]*\)\s*)?)?"
 FORBIDDEN_NT_WIRE_PATH_PATTERNS = {
@@ -261,9 +263,13 @@ def scan_registry(root: Path, findings: list[str]) -> set[tuple[str, str, str]]:
     for entry in extra:
         findings.append(f"{REGISTRY}: unexpected registry entry {entry}")
 
-    extra_http = sorted(entry for entry in entries if entry[1] == "HttpResponseBody")
+    extra_http = sorted(
+        entry
+        for entry in entries
+        if entry[1] == "HttpResponseBody" and entry not in REQUIRED_NON_WS_REGISTRY_ENTRIES
+    )
     if extra_http:
-        findings.append(f"{REGISTRY}: http_response_body is an empty enforcing variant, got {extra_http}")
+        findings.append(f"{REGISTRY}: unexpected http_response_body registry entry {extra_http}")
 
     cross_checks = {
         "reference_price_provider_metadata": (
@@ -299,6 +305,7 @@ def scan_exemptions(
     registry_by_resolved_adapter = {
         ("Imdsv2HostFactsSource", "ImdsMetadata", "DeployTargetHostFacts"),
         ("AwsSsmSecretSource", "AwsSdkResponse", "SecretResolution"),
+        ("POLYMARKET", "HttpResponseBody", "PolymarketVenueTruthRuntime"),
     }
     registry_by_resolved_adapter.update(entries)
     for index, row in enumerate(rows):

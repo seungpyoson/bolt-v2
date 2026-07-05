@@ -56,7 +56,6 @@ pub struct MakerRuntimeReferenceFairValueInput<'a> {
     pub family_key: &'a str,
     pub interval_start_ms: u64,
     pub interval_end_ms: u64,
-    pub now_ms: u64,
     pub reference_quotes: &'a [ReferenceQuote],
     pub strike_price: Option<f64>,
     pub seconds_to_market_end: Option<u64>,
@@ -115,19 +114,21 @@ pub enum MakerRuntimeQuoteBlockReason {
 
 pub fn maker_reference_current_price_fair_value(
     selector: &mut ReferencePriceSelector,
+    now_ms: u64,
     input: MakerRuntimeReferenceFairValueInput<'_>,
 ) -> Option<MakerRuntimeReferenceFairValue> {
-    maker_reference_current_price_fair_value_decision(selector, input).fair_value
+    maker_reference_current_price_fair_value_decision(selector, now_ms, input).fair_value
 }
 
 pub fn maker_reference_current_price_fair_value_decision(
     selector: &mut ReferencePriceSelector,
+    now_ms: u64,
     input: MakerRuntimeReferenceFairValueInput<'_>,
 ) -> MakerRuntimeReferenceFairValueDecision {
     let Some(selection) = selector.select(
         input.interval_start_ms,
         input.interval_end_ms,
-        input.now_ms,
+        now_ms,
         input.reference_quotes,
     ) else {
         return fair_value_blocked(
@@ -162,7 +163,7 @@ pub fn maker_reference_current_price_fair_value_decision(
         market_family: input.family_key,
     };
     let request = FairValuePricingRequest {
-        now_ms: input.now_ms,
+        now_ms,
         realized_vol_gate_event_ms: Some(VenueEventMs::new(selected_quote.observed_ts_ms())),
         strike_price: input.strike_price,
         seconds_to_market_end: input.seconds_to_market_end,

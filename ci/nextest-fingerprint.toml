@@ -21,6 +21,8 @@ tracked_inputs = [
     "src/",
     "tests/",
     "config/root.toml",
+    "config/profiles/",
+    "config/strategies/",
 ]
 
 [[safe_excludes]]

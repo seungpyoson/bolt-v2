@@ -677,7 +677,7 @@ fn spike_cooldown_deadline_only_extends_never_retracts() {
 }
 
 #[test]
-fn task5_exit_decision_uses_exit_favoring_hysteresis_and_holds_on_missing_inputs() {
+fn task5_exit_decision_uses_hold_favoring_hysteresis_and_holds_on_missing_inputs() {
     assert_eq!(
         evaluate_exit_decision(Some(12.0), Some(13.1), 1.0),
         ExitDecision::Exit

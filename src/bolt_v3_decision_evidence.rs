@@ -59,6 +59,8 @@ pub const BOLT_V3_EXIT_EVALUATION_GATE_ID: &str = "bolt_v3.exit_evaluation";
 pub const BOLT_V3_EXIT_EVALUATION_RECORD_KIND: &str = "exit_evaluation";
 pub const BOLT_V3_ORDER_REJECT_GATE_ID: &str = "bolt_v3.order_reject";
 pub const BOLT_V3_ORDER_REJECT_RECORD_KIND: &str = "order_reject";
+pub const BOLT_V3_ORDER_LIFECYCLE_GATE_ID: &str = "bolt_v3.order_lifecycle";
+pub const BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND: &str = "order_lifecycle";
 
 /// Single source of truth for the upper bound on retained reject-episode maps. Both
 /// the submit-admission reject-episode map and the venue/NT order-reject observer
@@ -129,6 +131,9 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
     fn record_exit_evaluation(&self, evidence: &BoltV3ExitEvaluationEvidence) -> Result<()>;
     fn record_loss_governor_halt(&self, evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()>;
     fn record_order_reject(&self, evidence: &BoltV3OrderRejectEvidence) -> Result<()>;
+    fn record_order_lifecycle(&self, _evidence: &BoltV3OrderLifecycleEvidence) -> Result<()> {
+        Ok(())
+    }
     fn record_requote_throttle(&self, throttle: &BoltV3RequoteThrottleEvidence) -> Result<()>;
     fn record_venue_truth_capture_failure(
         &self,
@@ -241,6 +246,26 @@ pub enum BoltV3SubmitIntentKind {
     KillSwitchForcedReduction,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3OrderIntentClampNotEvaluatedReason {
+    NoVenueTruth,
+    ForeignInstrument,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum BoltV3OrderIntentClampOutcome {
+    WithinBounds,
+    Clamped {
+        original_quantity: String,
+    },
+    Rejected,
+    NotEvaluated {
+        reason: BoltV3OrderIntentClampNotEvaluatedReason,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3OrderIntentEvidence {
     pub strategy_id: String,
@@ -250,6 +275,7 @@ pub struct BoltV3OrderIntentEvidence {
     pub order_side: String,
     pub price: String,
     pub quantity: String,
+    pub clamp_outcome: Option<BoltV3OrderIntentClampOutcome>,
     pub order_fields: BoltV3OrderIntentOrderFields,
 }
 
@@ -289,6 +315,7 @@ impl BoltV3OrderIntentEvidence {
             order_side: order.order_side().to_string(),
             price: compiled_order_price_source(fallback_price, order),
             quantity: order.quantity().to_string(),
+            clamp_outcome: None,
             order_fields: BoltV3OrderIntentOrderFields::from_order(order),
         }
     }
@@ -1721,6 +1748,54 @@ pub struct BoltV3OrderRejectEvidence {
     pub elapsed_ns: u64,
 }
 
+/// Closed taxonomy of strategy-local order lifecycle transitions. These records
+/// make lifecycle substitutes distinguishable from normal submit/fill evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3OrderLifecycleTransition {
+    BoundaryReclassification,
+    EntryFillMaterialized,
+    EntryReconcilePending,
+    PositionClosed,
+    ResidualRemanaged,
+    RestartOpenOrderAdopted,
+    RestartOpenOrderRecoveryBlocked,
+    OrderDenied,
+    OrderRejected,
+    OrderCanceled,
+    OrderExpired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3OrderLifecycleOutcome {
+    PendingEntry,
+    Managed,
+    ExitPending,
+    EntryReconcilePending,
+    UnsupportedObserved,
+    BlindRecovery,
+    Flat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3OrderLifecycleEvidence {
+    pub strategy_id: String,
+    pub transition: BoltV3OrderLifecycleTransition,
+    pub outcome: BoltV3OrderLifecycleOutcome,
+    pub source: String,
+    pub market_id: Option<String>,
+    pub instrument_id: Option<String>,
+    pub position_id: Option<String>,
+    pub client_order_id: Option<String>,
+    pub prior_client_order_id: Option<String>,
+    pub raw_reason_text: Option<String>,
+    pub order_side: Option<String>,
+    pub filled_quantity: Option<String>,
+    pub residual_quantity: Option<String>,
+    pub ts_event_ns: Option<u64>,
+}
+
 #[derive(Debug)]
 pub struct JsonlBoltV3DecisionEvidenceWriter {
     file: Mutex<std::fs::File>,
@@ -1831,6 +1906,11 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
 
     fn record_order_reject(&self, evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
         let line = encode_order_reject_line(evidence)?;
+        self.append_line(&line)
+    }
+
+    fn record_order_lifecycle(&self, evidence: &BoltV3OrderLifecycleEvidence) -> Result<()> {
+        let line = encode_order_lifecycle_line(evidence)?;
         self.append_line(&line)
     }
 
@@ -2152,6 +2232,22 @@ pub fn read_latest_entry_decision_evidence_chain(
                 decoded.validate_header(
                     BOLT_V3_ORDER_REJECT_RECORD_KIND,
                     BOLT_V3_ORDER_REJECT_GATE_ID,
+                    index,
+                )?;
+            }
+            BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND,
+                    BOLT_V3_ORDER_LIFECYCLE_GATE_ID,
+                    index,
+                )?;
+                let decoded: OrderLifecycleLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 order lifecycle line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND,
+                    BOLT_V3_ORDER_LIFECYCLE_GATE_ID,
                     index,
                 )?;
             }
@@ -2477,6 +2573,22 @@ pub fn read_submit_reservation_recovery_evidence(
                 decoded.validate_header(
                     BOLT_V3_ORDER_REJECT_RECORD_KIND,
                     BOLT_V3_ORDER_REJECT_GATE_ID,
+                    index,
+                )?;
+            }
+            BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND,
+                    BOLT_V3_ORDER_LIFECYCLE_GATE_ID,
+                    index,
+                )?;
+                let decoded: OrderLifecycleLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 order lifecycle line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND,
+                    BOLT_V3_ORDER_LIFECYCLE_GATE_ID,
                     index,
                 )?;
             }
@@ -3575,6 +3687,50 @@ fn encode_order_reject_line(evidence: &BoltV3OrderRejectEvidence) -> Result<Vec<
     Ok(line)
 }
 
+#[derive(Serialize)]
+struct OrderLifecycleLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    evidence: &'a BoltV3OrderLifecycleEvidence,
+}
+
+#[derive(Deserialize)]
+struct OrderLifecycleLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    evidence: BoltV3OrderLifecycleEvidence,
+}
+
+impl OrderLifecycleLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.evidence;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+fn encode_order_lifecycle_line(evidence: &BoltV3OrderLifecycleEvidence) -> Result<Vec<u8>> {
+    let envelope = OrderLifecycleLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_ORDER_LIFECYCLE_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND,
+        evidence,
+    };
+    let mut line =
+        serde_json::to_vec(&envelope).context("failed to serialize order lifecycle evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
 /// Reads every `exit_evaluation` record (current schema) from a decision-evidence
 /// log, in file order. Records of other kinds and older schema versions are skipped,
 /// so this targeted reader is resilient to forward-compatible additions.
@@ -3915,6 +4071,7 @@ mod tests {
             order_side: OrderSide::Buy.to_string(),
             price: "0.42".to_string(),
             quantity: "1".to_string(),
+            clamp_outcome: None,
             order_fields: BoltV3OrderIntentOrderFields {
                 order_type: OrderType::Limit.to_string(),
                 time_in_force: TimeInForce::Gtc.to_string(),
@@ -3957,6 +4114,7 @@ mod tests {
         assert_eq!(intent["strategy_id"], "strategy-one");
         assert_eq!(intent["intent_kind"], "entry");
         assert_eq!(intent["order_side"], OrderSide::Buy.to_string());
+        assert_eq!(intent["clamp_outcome"], serde_json::Value::Null);
         assert_eq!(
             intent["order_fields"]["order_type"],
             OrderType::Limit.to_string()

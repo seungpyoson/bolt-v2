@@ -57,7 +57,6 @@ struct VenueEventFixture {
 }
 
 #[test]
-#[ignore = "red until #1179 Lane 4 acceptance bar 1: dropped terminal event"]
 fn dropped_terminal_event_after_accepted_entry_is_not_left_pending() {
     assert_reality_fixtures();
 
@@ -78,7 +77,6 @@ fn dropped_terminal_event_after_accepted_entry_is_not_left_pending() {
 }
 
 #[test]
-#[ignore = "red until #1179 Lane 4 acceptance bar 1: partial-fill-then-expire exit"]
 fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
     assert_reality_fixtures();
 
@@ -135,7 +133,6 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
 }
 
 #[test]
-#[ignore = "red until #1179 Lane 4 acceptance bar 1: restart with open order+position"]
 fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
     assert_reality_fixtures();
 
@@ -361,28 +358,11 @@ fn ignored_adverse_path_harness_tests_still_fail_red() {
     // This guard relies on the test profile using panic=unwind.
     panic::set_hook(Box::new(|_| {}));
 
-    for (name, test, expected_failure) in [
-        (
-            "dropped_terminal_event_after_accepted_entry_is_not_left_pending",
-            dropped_terminal_event_after_accepted_entry_is_not_left_pending as fn(),
-            DROPPED_TERMINAL_PINNED_FAILURE,
-        ),
-        (
-            "partial_fill_then_expire_exit_residual_is_remanaged_or_reexited",
-            partial_fill_then_expire_exit_residual_is_remanaged_or_reexited as fn(),
-            PARTIAL_FILL_PINNED_FAILURE,
-        ),
-        (
-            "restart_with_open_exit_order_and_position_adopts_order_before_fill_replay",
-            restart_with_open_exit_order_and_position_adopts_order_before_fill_replay as fn(),
-            RESTART_OPEN_EXIT_PINNED_FAILURE,
-        ),
-        (
-            "hold_to_resolution_books_realized_cash_and_settlement_evidence",
-            hold_to_resolution_books_realized_cash_and_settlement_evidence as fn(),
-            SETTLEMENT_PINNED_FAILURE,
-        ),
-    ] {
+    for (name, test, expected_failure) in [(
+        "hold_to_resolution_books_realized_cash_and_settlement_evidence",
+        hold_to_resolution_books_realized_cash_and_settlement_evidence as fn(),
+        SETTLEMENT_PINNED_FAILURE,
+    )] {
         let payload = match panic::catch_unwind(test) {
             Ok(()) => {
                 panic::set_hook(
@@ -634,6 +614,7 @@ fn assert_managed_or_halted_loud(strategy: &BinaryOracleEdgeTaker, context: &str
         matches!(
             strategy.exposure,
             ExposureState::Managed(_)
+                | ExposureState::EntryReconcilePending { .. }
                 | ExposureState::BlindRecovery(_)
                 | ExposureState::UnsupportedObserved(_)
         ),

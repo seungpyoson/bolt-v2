@@ -499,6 +499,7 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     ExitDecision(crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence),
     ExitEvaluation(Box<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence>),
     LossGovernorHalt(crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence),
+    OrderLifecycle(crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleEvidence),
     RequoteThrottle(crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence),
     /// Production settlement evidence (Lane 3, #1179) must map into this
     /// variant carrying realized_pnl; until that mapping exists this variant is
@@ -656,6 +657,19 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
     ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_order_lifecycle(
+        &self,
+        evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::OrderLifecycle(
+                evidence.clone(),
+            ));
         Ok(())
     }
 
@@ -1231,12 +1245,15 @@ pub(super) fn configured_position_probe(
 ) -> OpenPositionState {
     let original_exposure = strategy.exposure.clone();
     strategy.materialize_position_from_event(
-        instrument_id,
-        PositionId::from("P-SIDE-PROBE"),
-        OrderSide::Buy,
-        PositionSide::Long,
-        Quantity::new(1.0, 2),
-        0.450,
+        PositionMaterializationSpec {
+            instrument_id,
+            position_id: PositionId::from("P-SIDE-PROBE"),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(1.0, 2),
+            avg_px_open: 0.450,
+        },
+        0,
     );
     let position = managed_position_ref(strategy)
         .cloned()
@@ -1364,12 +1381,15 @@ pub(super) fn materialize_configured_position(
     avg_px_open: f64,
 ) -> OpenPositionState {
     strategy.materialize_position_from_event(
-        instrument_id,
-        position_id,
-        OrderSide::Buy,
-        PositionSide::Long,
-        quantity,
-        avg_px_open,
+        PositionMaterializationSpec {
+            instrument_id,
+            position_id,
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity,
+            avg_px_open,
+        },
+        0,
     );
     let mut position = managed_position_ref(strategy)
         .cloned()
@@ -1398,7 +1418,24 @@ pub(super) fn set_entry_reconcile_pending(
     pending: PendingEntryState,
     reason: EntryReconcileReason,
 ) {
-    strategy.exposure = ExposureState::EntryReconcilePending { pending, reason };
+    strategy.exposure = ExposureState::EntryReconcilePending {
+        pending,
+        reason,
+        observed_fill_quantity: None,
+    };
+}
+
+pub(super) fn set_entry_reconcile_pending_with_observed_fill(
+    strategy: &mut BinaryOracleEdgeTaker,
+    pending: PendingEntryState,
+    reason: EntryReconcileReason,
+    observed_fill_quantity: Quantity,
+) {
+    strategy.exposure = ExposureState::EntryReconcilePending {
+        pending,
+        reason,
+        observed_fill_quantity: Some(observed_fill_quantity),
+    };
 }
 
 pub(super) fn set_managed_position(
@@ -1477,6 +1514,7 @@ pub(super) fn set_exit_pending(
             market_id: position.market_id.clone(),
             position_id: Some(position.position_id),
             fill_received,
+            filled_quantity: fill_received.then_some(position.quantity),
             close_received,
             terminal_received: false,
             residual_position_observed_after_fill: false,
@@ -1919,6 +1957,23 @@ pub(super) fn order_rejected_event_with_reason(
         nautilus_core::UnixNanos::from(1_000_u64),
         false,
         false,
+    )
+}
+
+pub(super) fn order_denied_event_with_reason(
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+    reason: &'static str,
+) -> nautilus_model::events::OrderDenied {
+    nautilus_model::events::OrderDenied::new(
+        nautilus_model::identifiers::TraderId::from("TRADER-001"),
+        StrategyId::from("BINARYORACLEEDGETAKER-001"),
+        instrument_id,
+        client_order_id,
+        reason.into(),
+        nautilus_core::UUID4::new(),
+        nautilus_core::UnixNanos::from(1_000_u64),
+        nautilus_core::UnixNanos::from(1_000_u64),
     )
 }
 

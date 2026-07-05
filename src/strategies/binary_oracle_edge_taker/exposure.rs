@@ -64,6 +64,7 @@ pub(super) struct PendingExitState {
     pub(super) market_id: Option<String>,
     pub(super) position_id: Option<PositionId>,
     pub(super) fill_received: bool,
+    pub(super) filled_quantity: Option<Quantity>,
     pub(super) close_received: bool,
     pub(super) terminal_received: bool,
     pub(super) residual_position_observed_after_fill: bool,
@@ -93,6 +94,26 @@ impl ExitPendingState {
         self.pending_exit.fill_received && self.pending_exit.close_received
     }
 
+    pub(super) fn residual_position_after_terminal(&self) -> Option<OpenPositionState> {
+        let position = self.position.as_ref()?;
+        if self.pending_exit.residual_position_observed_after_fill {
+            return Some(position.position.clone());
+        }
+        let filled_quantity = self.pending_exit.filled_quantity.as_ref()?;
+        let residual = position.position.quantity.as_f64() - filled_quantity.as_f64();
+        if !is_positive_finite(residual) {
+            return None;
+        }
+        let mut residual_position = position.position.clone();
+        let residual_precision = position
+            .position
+            .quantity
+            .precision
+            .max(filled_quantity.precision);
+        residual_position.quantity = Quantity::new(residual, residual_precision);
+        Some(residual_position)
+    }
+
     pub(super) fn into_state_after_exit_update(self) -> ExposureState {
         if self.is_terminal() {
             return ExposureState::Flat;
@@ -113,6 +134,7 @@ impl ExitPendingState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EntryReconcileReason {
     AwaitingPositionMaterialization,
+    UnresolvedAtSelectionBoundary,
     UnsupportedEntryFillSide {
         order_side: OrderSide,
     },
@@ -142,6 +164,13 @@ pub(super) enum BlindRecoveryReason {
         entry_order_side: OrderSide,
         side: Option<PositionSide>,
     },
+    AmbiguousRestartOpenExitOrders {
+        instrument_id: InstrumentId,
+        count: usize,
+    },
+    UnattributedRestartOpenExitOrder {
+        instrument_id: InstrumentId,
+    },
     ForeignVenuePosition {
         instrument_venue: Venue,
         execution_venue: Venue,
@@ -166,6 +195,7 @@ pub(super) enum ExposureState {
     EntryReconcilePending {
         pending: PendingEntryState,
         reason: EntryReconcileReason,
+        observed_fill_quantity: Option<Quantity>,
     },
     Managed(ManagedPositionState),
     ExitPending(ExitPendingState),

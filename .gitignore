@@ -18,7 +18,7 @@ __pycache__/
 # GitHub's blob limit (see PR #1231).
 .entire/
 .worktrees/
-.devin/config.local.json
+.devin/
 .githooks/commit-msg
 .githooks/post-commit
 .githooks/pre-push
@@ -47,22 +47,22 @@ __pycache__/
 .factory/
 .antigravitycli/
 .superpowers/
-# Fail-closed: coding-agent state dirs are ignored by default, including
-# agents not yet in use here; allowlist shared content explicitly (see the
-# .codex/.gemini/.claude patterns above).
+# Fail-closed: coding-agent state DIRS are ignored by default, including
+# agents not yet in use here (names verified against vendor docs 2026-07-05);
+# allowlist shared content explicitly on adoption (see the .codex/.gemini/
+# .claude patterns above). Conventional root instruction FILES (AGENTS.md
+# style, .clinerules/.goosehints single-file forms) stay trackable.
 .cursor/
 .windsurf/
-.cline/
+.clinerules/
 .roo/
 .continue/
-.copilot/
 .goose/
 .amp/
 .crush/
 .junie/
 .augment/
 .kiro/
-.qodo/
 .trae/
 .DS_Store
 __pycache__/

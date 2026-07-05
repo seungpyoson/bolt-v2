@@ -24,6 +24,18 @@ pub struct ReferenceArtifactWrite {
     pub bytes: u64,
 }
 
+pub struct ReferenceArtifactErrorMappers<
+    SerializeError,
+    ReadExistingError,
+    MismatchError,
+    WriteError,
+> {
+    pub serialize_error: SerializeError,
+    pub read_existing_error: ReadExistingError,
+    pub mismatch_error: MismatchError,
+    pub write_error: WriteError,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReferenceArtifactError {
     Serialize(String),
@@ -143,12 +155,14 @@ where
     MismatchError: FnOnce(String) -> E,
     WriteError: FnOnce(String, String) -> E,
 {
-    write_reference_artifact_with_len(path, role, value).map_err(|error| match error {
-        ReferenceArtifactError::Serialize(error) => serialize_error(error),
-        ReferenceArtifactError::ReadExisting { path, error } => read_existing_error(path, error),
-        ReferenceArtifactError::ExistingArtifactMismatch { path } => mismatch_error(path),
-        ReferenceArtifactError::Write { path, error } => write_error(path, error),
-    })
+    let mappers = ReferenceArtifactErrorMappers {
+        serialize_error,
+        read_existing_error,
+        mismatch_error,
+        write_error,
+    };
+    write_reference_artifact_with_len(path, role, value)
+        .map_err(|error| map_reference_artifact_error(error, mappers))
 }
 
 pub fn write_reference_artifact_with_len_mapped_overwrite<
@@ -163,10 +177,12 @@ pub fn write_reference_artifact_with_len_mapped_overwrite<
     role: impl Into<String>,
     value: &T,
     overwrite_existing: bool,
-    serialize_error: SerializeError,
-    read_existing_error: ReadExistingError,
-    mismatch_error: MismatchError,
-    write_error: WriteError,
+    mappers: ReferenceArtifactErrorMappers<
+        SerializeError,
+        ReadExistingError,
+        MismatchError,
+        WriteError,
+    >,
 ) -> std::result::Result<ReferenceArtifactWrite, E>
 where
     T: Serialize,
@@ -175,14 +191,35 @@ where
     MismatchError: FnOnce(String) -> E,
     WriteError: FnOnce(String, String) -> E,
 {
-    write_reference_artifact_with_len_overwrite(path, role, value, overwrite_existing).map_err(
-        |error| match error {
-            ReferenceArtifactError::Serialize(error) => serialize_error(error),
-            ReferenceArtifactError::ReadExisting { path, error } => {
-                read_existing_error(path, error)
-            }
-            ReferenceArtifactError::ExistingArtifactMismatch { path } => mismatch_error(path),
-            ReferenceArtifactError::Write { path, error } => write_error(path, error),
-        },
-    )
+    write_reference_artifact_with_len_overwrite(path, role, value, overwrite_existing)
+        .map_err(|error| map_reference_artifact_error(error, mappers))
+}
+
+fn map_reference_artifact_error<E, SerializeError, ReadExistingError, MismatchError, WriteError>(
+    error: ReferenceArtifactError,
+    mappers: ReferenceArtifactErrorMappers<
+        SerializeError,
+        ReadExistingError,
+        MismatchError,
+        WriteError,
+    >,
+) -> E
+where
+    SerializeError: FnOnce(String) -> E,
+    ReadExistingError: FnOnce(String, String) -> E,
+    MismatchError: FnOnce(String) -> E,
+    WriteError: FnOnce(String, String) -> E,
+{
+    let ReferenceArtifactErrorMappers {
+        serialize_error,
+        read_existing_error,
+        mismatch_error,
+        write_error,
+    } = mappers;
+    match error {
+        ReferenceArtifactError::Serialize(error) => serialize_error(error),
+        ReferenceArtifactError::ReadExisting { path, error } => read_existing_error(path, error),
+        ReferenceArtifactError::ExistingArtifactMismatch { path } => mismatch_error(path),
+        ReferenceArtifactError::Write { path, error } => write_error(path, error),
+    }
 }

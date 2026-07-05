@@ -445,10 +445,15 @@ pub fn write_backfill_execution_plan_with_overwrite(
         BACKFILL_EXECUTION_PLAN_FILE,
         plan,
         overwrite_existing,
-        BackfillExecutionPlanError::Serialize,
-        |path, error| BackfillExecutionPlanError::ReadExisting { path, error },
-        |path| BackfillExecutionPlanError::ExistingArtifactMismatch { path },
-        |path, error| BackfillExecutionPlanError::Write { path, error },
+        crate::reference_artifact::ReferenceArtifactErrorMappers {
+            serialize_error: BackfillExecutionPlanError::Serialize,
+            read_existing_error: |path, error| BackfillExecutionPlanError::ReadExisting {
+                path,
+                error,
+            },
+            mismatch_error: |path| BackfillExecutionPlanError::ExistingArtifactMismatch { path },
+            write_error: |path, error| BackfillExecutionPlanError::Write { path, error },
+        },
     )?;
 
     Ok(BackfillExecutionPlanArtifact {

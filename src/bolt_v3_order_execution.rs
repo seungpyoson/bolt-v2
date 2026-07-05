@@ -316,9 +316,14 @@ fn clamp_risk_reducing_exit_to_venue_position(
     BoltV3ExitClampError,
 > {
     if !request.intent_kind.is_venue_position_exit_clamp_eligible()
-        || request.order_side != OrderSide::Sell
         || request.order_quantity <= Decimal::ZERO
     {
+        return Ok((intent, request, order));
+    }
+    if request.order_side != OrderSide::Sell {
+        intent.clamp_outcome = Some(BoltV3OrderIntentClampOutcome::NotEvaluated {
+            reason: BoltV3OrderIntentClampNotEvaluatedReason::NonSellOrderSide,
+        });
         return Ok((intent, request, order));
     }
     let venue_position = match venue_truth_exit_position(submit_admission, &request) {
@@ -1063,9 +1068,10 @@ mod tests {
     use nautilus_core::UnixNanos;
     use nautilus_model::{
         enums::{AssetClass, OrderSide, OrderType, PositionSide, TimeInForce, TradingState},
+        events::{OrderCanceled, OrderEventAny},
         identifiers::{
             AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol,
-            TraderId,
+            TraderId, VenueOrderId,
         },
         instruments::{BinaryOption, InstrumentAny},
         orders::{LimitOrder, Order, OrderAny},
@@ -1086,7 +1092,10 @@ mod tests {
             CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
             ProductAdmissionSnapshot, ProductKind,
         },
-        bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE,
+        bolt_v3_capital_admission_runtime_feed::{
+            CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
+            POLYMARKET_VENUE_TRUTH_REST_SOURCE,
+        },
         bolt_v3_capital_admission_state::{
             OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
             VenueSpendabilitySnapshot,
@@ -1698,6 +1707,34 @@ mod tests {
     }
 
     #[test]
+    fn clamp_eligible_non_sell_order_records_not_evaluated_reason() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = venue_truth_admission_with_yes_position(writer, Decimal::new(3, 0));
+        let order = limit_order("O-19700101-000000-001-FLAT-BUY-1");
+        let intent = exit_intent_for_order(&order);
+        let mut request = risk_reducing_exit_submit_request_for_order(
+            &order,
+            Decimal::new(5, 0),
+            Decimal::new(5, 0),
+        );
+        request.intent_kind = BoltV3SubmitIntentKind::KillSwitchForcedReduction;
+        request.risk_reducing_exit_proof = None;
+
+        let (intent, request, order) =
+            clamp_risk_reducing_exit_to_venue_position(admission.as_ref(), intent, request, order)
+                .expect("non-Sell forced reduction should pass through with explicit evidence");
+
+        assert_eq!(order.order_side(), OrderSide::Buy);
+        assert_eq!(request.order_side, OrderSide::Buy);
+        assert_eq!(
+            intent.clamp_outcome,
+            Some(BoltV3OrderIntentClampOutcome::NotEvaluated {
+                reason: BoltV3OrderIntentClampNotEvaluatedReason::NonSellOrderSide,
+            })
+        );
+    }
+
+    #[test]
     fn zero_venue_position_rejects_with_rejected_clamp_evidence() {
         let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
         let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::ZERO);
@@ -1861,8 +1898,7 @@ mod tests {
                 config_sha256: "b".repeat(64),
                 policy_sha256: "a".repeat(64),
                 source_timestamp_unix_nanos: 2,
-                policy: BoltV3KillSwitchFlattenPolicy::with_source_freshness(10)
-                    .expect("flatten policy should be valid"),
+                policy: BoltV3KillSwitchFlattenPolicy::new(),
                 snapshot: BoltV3KillSwitchFlattenSnapshot::new(vec![candidate])
                     .expect("flatten snapshot should be valid"),
                 observed_at_unix_nanos: 2,
@@ -1956,8 +1992,7 @@ mod tests {
                 config_sha256: "b".repeat(64),
                 policy_sha256: "a".repeat(64),
                 source_timestamp_unix_nanos: 2,
-                policy: BoltV3KillSwitchFlattenPolicy::with_source_freshness(10)
-                    .expect("flatten policy should be valid"),
+                policy: BoltV3KillSwitchFlattenPolicy::new(),
                 snapshot: BoltV3KillSwitchFlattenSnapshot::new(vec![candidate])
                     .expect("flatten snapshot should be valid"),
                 observed_at_unix_nanos: 2,
@@ -2007,6 +2042,70 @@ mod tests {
         assert_eq!(
             writer.records()[0].client_order_id,
             "halt-001-flatten-positions-POSITION-001"
+        );
+    }
+
+    #[test]
+    fn two_halt_cycles_release_terminal_forced_reduction_and_second_submits_clamped() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+        admission.configure_kill_switch_forced_reduction_policy(
+            BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 1, Decimal::new(10, 0))
+                .expect("forced reduction policy should be valid"),
+        );
+        let instrument = binary_option_with_max_price(InstrumentId::from("instrument-yes.VENUE-A"));
+        let mut feed = CapitalAdmissionRuntimeFeed::new(
+            capital_admission_runtime_feed_config(),
+            admission.clone(),
+        );
+        let mut sink = RecordingVenueMutationSink::default();
+        let mut order_factory = generic_order_factory();
+
+        let first = flatten_command_for_halt("halt-001", "POSITION-001");
+        route_one_flatten_command(
+            admission.as_ref(),
+            writer.as_ref(),
+            &instrument,
+            &mut sink,
+            &mut order_factory,
+            &first,
+        )
+        .expect("first halt should submit a clamped forced reduction");
+        assert_eq!(sink.submitted_order_quantities, vec![Quantity::new(3.0, 2)]);
+
+        let first_terminal = OrderEventAny::Canceled(order_canceled_event(
+            "halt-001-flatten-positions-POSITION-001",
+            1_100,
+        ));
+        assert!(
+            feed.on_order_event(&first_terminal).is_none(),
+            "forced-reduction terminal release should not require capital-reservation ownership"
+        );
+        admission.replace_kill_switch_state(KillSwitchState::Armed);
+
+        let second = flatten_command_for_halt("halt-002", "POSITION-002");
+        route_one_flatten_command(
+            admission.as_ref(),
+            writer.as_ref(),
+            &instrument,
+            &mut sink,
+            &mut order_factory,
+            &second,
+        )
+        .expect(
+            "second halt should submit after the first terminal releases the forced-reduction cap",
+        );
+
+        assert_eq!(
+            sink.submitted_order_quantities,
+            vec![Quantity::new(3.0, 2), Quantity::new(3.0, 2)]
+        );
+        let records = writer.records();
+        assert_eq!(
+            records.last().map(|record| record.clamp_outcome.clone()),
+            Some(Some(BoltV3OrderIntentClampOutcome::Clamped {
+                original_quantity: Quantity::new(5.0, 2).as_decimal().to_string(),
+            }))
         );
     }
 
@@ -2467,6 +2566,119 @@ mod tests {
         let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1);
         assert!(rebuild.accepted);
         admission
+    }
+
+    fn capital_admission_runtime_feed_config() -> CapitalAdmissionRuntimeFeedConfig {
+        CapitalAdmissionRuntimeFeedConfig {
+            venue_id: "VENUE-A".to_string(),
+            account_id: AccountId::from("ACCOUNT-001"),
+            collateral_currency: "USD".to_string(),
+            product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
+                PredictionMarketAdmissionSnapshot {
+                    source: "bolt_configured_binary_product".to_string(),
+                    observed_at_ns: 0,
+                    yes_instrument_id: "instrument-yes.VENUE-A".to_string(),
+                    no_instrument_id: "instrument-no.VENUE-A".to_string(),
+                    yes_position: Decimal::ZERO,
+                    no_position: Decimal::ZERO,
+                    collateral_allowance: Decimal::ZERO,
+                    conditional_token_allowance: Decimal::ZERO,
+                    collateral_coupled_group_id: "group-1".to_string(),
+                },
+            ),
+            startup_observed_at_ns: 0,
+            dedupe_retention_ns: u64::MAX,
+        }
+    }
+
+    fn flatten_command_for_halt(
+        halt_id: &str,
+        position_id: &str,
+    ) -> crate::bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand {
+        let claim =
+            BoltV3KillSwitchForcedReductionClaim::new(halt_id, "flatten-positions", "a".repeat(64))
+                .expect("forced reduction claim should be valid");
+        let candidate = BoltV3KillSwitchFlattenCandidate::from_nt_position_state(
+            BoltV3KillSwitchFlattenPositionState {
+                evidence_kind: BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
+                account_id: AccountId::from("ACCOUNT-001"),
+                instrument_id: InstrumentId::from("instrument-yes.VENUE-A"),
+                strategy_id: StrategyId::from("strategy-a"),
+                position_id: PositionId::from(position_id),
+                position_side: PositionSide::Long,
+                quantity: Quantity::new(5.0, 2),
+                source_timestamp_unix_nanos: 1,
+            },
+        )
+        .expect("flatten candidate should be valid");
+        let plan =
+            BoltV3KillSwitchFlattenSupervisor::plan_flatten(BoltV3KillSwitchFlattenPlanRequest {
+                kill_switch_state: KillSwitchState::Flattening {
+                    halt_id: halt_id.to_string(),
+                },
+                nt_trading_state: TradingState::Reducing,
+                action_id: "flatten-positions".to_string(),
+                config_sha256: "b".repeat(64),
+                policy_sha256: "a".repeat(64),
+                source_timestamp_unix_nanos: 2,
+                policy: BoltV3KillSwitchFlattenPolicy::new(),
+                snapshot: BoltV3KillSwitchFlattenSnapshot::new(vec![candidate])
+                    .expect("flatten snapshot should be valid"),
+                observed_at_unix_nanos: 2,
+                route_proof: BoltV3KillSwitchFlattenRouteProof::new(
+                    BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter,
+                ),
+                order_template: flatten_market_template(),
+                forced_reduction_claim: claim,
+            })
+            .expect("flatten plan should produce commands");
+        plan.commands()
+            .first()
+            .expect("open position should produce a command")
+            .clone()
+    }
+
+    fn route_one_flatten_command(
+        admission: &BoltV3SubmitAdmissionState,
+        writer: &RecordingDecisionEvidenceWriter,
+        instrument: &InstrumentAny,
+        sink: &mut RecordingVenueMutationSink,
+        order_factory: &mut OrderFactory,
+        command: &crate::bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
+    ) -> Result<BoltV3SubmitRoutingOutcome> {
+        admission.replace_kill_switch_state(KillSwitchState::Flattening {
+            halt_id: command.halt_id().to_string(),
+        });
+        route_kill_switch_flatten_command_with_sink(
+            BoltV3OrderExecutionPolicy::live(),
+            sink,
+            order_factory,
+            writer,
+            admission,
+            super::BoltV3KillSwitchFlattenRoutingContext {
+                execution_client_id: "execution_client",
+                fallback_price: "1",
+                instrument: Some(instrument),
+                max_fee_bps: Decimal::ZERO,
+                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
+            },
+            command,
+        )
+    }
+
+    fn order_canceled_event(client_order_id: &str, ts_event: u64) -> OrderCanceled {
+        OrderCanceled::new(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            InstrumentId::from("instrument-yes.VENUE-A"),
+            ClientOrderId::from(client_order_id),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(ts_event),
+            UnixNanos::from(ts_event),
+            false,
+            Some(VenueOrderId::from("venue-order-1")),
+            Some(AccountId::from("ACCOUNT-001")),
+        )
     }
 
     fn binary_option_with_max_price(instrument_id: InstrumentId) -> InstrumentAny {

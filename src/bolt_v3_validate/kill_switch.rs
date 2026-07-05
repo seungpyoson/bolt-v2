@@ -155,21 +155,6 @@ fn validate_kill_switch_cancel_block(block: &KillSwitchCancelConfigBlock) -> Vec
     }
 
     let mut errors = Vec::new();
-    if block.retry_max_attempts == 0 {
-        errors.push("risk.kill_switch.cancel.retry_max_attempts must be positive".to_string());
-    }
-    if block.retry_timeout_ms == 0 {
-        errors.push("risk.kill_switch.cancel.retry_timeout_ms must be positive".to_string());
-    }
-    if block.retry_backoff_ms == 0 {
-        errors.push("risk.kill_switch.cancel.retry_backoff_ms must be positive".to_string());
-    }
-    if block.source_freshness_max_age_ms == 0 {
-        errors.push(
-            "risk.kill_switch.cancel.source_freshness_max_age_ms must be positive".to_string(),
-        );
-    }
-
     let mut configured_surfaces = BTreeSet::new();
     for surface in &block.mandatory_surfaces {
         match parse_kill_switch_cancel_surface(surface.trim()) {
@@ -222,25 +207,6 @@ fn validate_kill_switch_flatten_block(
     }
 
     let mut errors = Vec::new();
-    if block.retry_max_attempts == 0 {
-        errors.push("risk.kill_switch.flatten.retry_max_attempts must be positive".to_string());
-    }
-    if block.retry_timeout_ms == 0 {
-        errors.push("risk.kill_switch.flatten.retry_timeout_ms must be positive".to_string());
-    }
-    if block.retry_backoff_ms == 0 {
-        errors.push("risk.kill_switch.flatten.retry_backoff_ms must be positive".to_string());
-    }
-    if block.source_freshness_max_age_ms == 0 {
-        errors.push(
-            "risk.kill_switch.flatten.source_freshness_max_age_ms must be positive".to_string(),
-        );
-    }
-    if block.max_position_proof_age_ms == 0 {
-        errors.push(
-            "risk.kill_switch.flatten.max_position_proof_age_ms must be positive".to_string(),
-        );
-    }
     if block.max_live_order_count == 0 {
         errors.push("risk.kill_switch.flatten.max_live_order_count must be positive".to_string());
     }

@@ -20209,3 +20209,19 @@ literal = '''" | "'''
 context = '''failures.join(" | ")'''
 classification = "kill_switch_flatten_command_failure_diagnostic_separator"
 reason = "Structural separator for the fail-loud aggregate kill-switch flatten command diagnostic; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "number"
+literal = '''Decimal::ZERO'''
+context = '''max_fee_bps: Decimal::ZERO,'''
+classification = "kill_switch_flatten_structural_fee_bound"
+reason = "Emergency kill-switch flatten routes bypass fee-adjusted entry admission and submit only venue-clamped risk reduction, so the max-fee bound is the structural zero-fee sentinel for that forced-reduction path, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "boolean"
+literal = '''false'''
+context = '''submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),'''
+classification = "kill_switch_flatten_no_replace_lifecycle_policy"
+reason = "Emergency kill-switch flatten creates fresh risk-reducing submits only; replacement lifecycle is structurally disabled for the submit-only flatten executor, not configured as an operator runtime value."

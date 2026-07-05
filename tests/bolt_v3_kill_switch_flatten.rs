@@ -8,8 +8,6 @@ use bolt_v2::{
         BoltV3KillSwitchFlattenPlanRequest, BoltV3KillSwitchFlattenPolicy,
         BoltV3KillSwitchFlattenPositionEvidenceKind, BoltV3KillSwitchFlattenPositionState,
         BoltV3KillSwitchFlattenQuantitySource, BoltV3KillSwitchFlattenResult,
-        BoltV3KillSwitchFlattenRetryContext, BoltV3KillSwitchFlattenRetryDecision,
-        BoltV3KillSwitchFlattenRetryPolicy, BoltV3KillSwitchFlattenRetrySupervisor,
         BoltV3KillSwitchFlattenRouteKind, BoltV3KillSwitchFlattenRouteProof,
         BoltV3KillSwitchFlattenSnapshot, BoltV3KillSwitchFlattenSupervisor,
     },
@@ -210,9 +208,8 @@ fn flatten_plan_trims_action_id_into_command_proof_records() {
 }
 
 #[test]
-fn flatten_policy_rejects_empty_and_stale_position_proof() {
-    let policy = BoltV3KillSwitchFlattenPolicy::with_source_freshness(MAX_SOURCE_AGE_UNIX_NANOS)
-        .expect("positive freshness policy should be valid");
+fn flatten_policy_rejects_empty_position_proof() {
+    let policy = BoltV3KillSwitchFlattenPolicy::new();
 
     let empty_snapshot =
         BoltV3KillSwitchFlattenSnapshot::new(vec![]).expect("empty snapshot preserves proof gap");
@@ -222,7 +219,10 @@ fn flatten_policy_rejects_empty_and_stale_position_proof() {
             .expect_err("empty position proof should fail closed"),
         BoltV3KillSwitchFlattenError::MissingPositionProof
     );
+}
 
+#[test]
+fn flatten_plan_allows_old_cache_position_proof() {
     let stale_snapshot = BoltV3KillSwitchFlattenSnapshot::new(vec![flatten_candidate_at(
         BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
         "position-stale-1",
@@ -230,27 +230,22 @@ fn flatten_policy_rejects_empty_and_stale_position_proof() {
         Quantity::from("1.00"),
         OBSERVED_AT_UNIX_NANOS - MAX_SOURCE_AGE_UNIX_NANOS - 1,
     )])
-    .expect("stale snapshot should preserve evidence for policy validation");
-    assert_eq!(
-        policy
-            .validate_snapshot(&stale_snapshot, OBSERVED_AT_UNIX_NANOS)
-            .expect_err("stale position proof should fail closed"),
-        BoltV3KillSwitchFlattenError::StaleSourceTimestamp
-    );
+    .expect("old cache snapshot should preserve flatten evidence");
+    let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(flatten_plan_request_with_snapshot(
+        KillSwitchState::Flattening {
+            halt_id: HALT_ID.to_string(),
+        },
+        TradingState::Reducing,
+        stale_snapshot,
+    ))
+    .expect("old NT cache position membership should still produce a flatten command");
 
-    let future_snapshot = BoltV3KillSwitchFlattenSnapshot::new(vec![flatten_candidate_at(
-        BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
-        "position-future-1",
-        PositionSide::Long,
-        Quantity::from("1.00"),
-        OBSERVED_AT_UNIX_NANOS + 1,
-    )])
-    .expect("future-dated position proof should preserve evidence for policy validation");
     assert_eq!(
-        policy
-            .validate_snapshot(&future_snapshot, OBSERVED_AT_UNIX_NANOS)
-            .expect_err("future-dated position proof should fail closed"),
-        BoltV3KillSwitchFlattenError::StaleSourceTimestamp
+        plan.commands()
+            .first()
+            .expect("old cache position should produce one command")
+            .position_id(),
+        PositionId::from("position-stale-1")
     );
 }
 
@@ -897,65 +892,6 @@ fn flatten_outcome_summary_never_authorizes_durable_state_transition() {
     }
 }
 
-#[test]
-fn flatten_retry_requires_reducing_context_budget_and_forced_reduction_cap() {
-    let policy = BoltV3KillSwitchFlattenRetryPolicy::new(3, 1_000, 100)
-        .expect("positive retry policy should be valid");
-
-    assert_eq!(
-        BoltV3KillSwitchFlattenRetrySupervisor::decide(
-            policy,
-            BoltV3KillSwitchFlattenRetryContext {
-                attempts: 1,
-                elapsed_ms: 250,
-                nt_trading_state: TradingState::Reducing,
-                live_forced_reduction_order_count: 0,
-                max_live_forced_reduction_order_count: 1,
-            },
-        ),
-        BoltV3KillSwitchFlattenRetryDecision::RetryAllowed { backoff_ms: 100 }
-    );
-    assert_eq!(
-        BoltV3KillSwitchFlattenRetrySupervisor::decide(
-            policy,
-            BoltV3KillSwitchFlattenRetryContext {
-                attempts: 1,
-                elapsed_ms: 250,
-                nt_trading_state: TradingState::Active,
-                live_forced_reduction_order_count: 0,
-                max_live_forced_reduction_order_count: 1,
-            },
-        ),
-        BoltV3KillSwitchFlattenRetryDecision::RouteNoLongerReducingManualIntervention
-    );
-    assert_eq!(
-        BoltV3KillSwitchFlattenRetrySupervisor::decide(
-            policy,
-            BoltV3KillSwitchFlattenRetryContext {
-                attempts: 1,
-                elapsed_ms: 250,
-                nt_trading_state: TradingState::Reducing,
-                live_forced_reduction_order_count: 1,
-                max_live_forced_reduction_order_count: 1,
-            },
-        ),
-        BoltV3KillSwitchFlattenRetryDecision::ForcedReductionCapUnavailable
-    );
-    assert_eq!(
-        BoltV3KillSwitchFlattenRetrySupervisor::decide(
-            policy,
-            BoltV3KillSwitchFlattenRetryContext {
-                attempts: 3,
-                elapsed_ms: 250,
-                nt_trading_state: TradingState::Reducing,
-                live_forced_reduction_order_count: 0,
-                max_live_forced_reduction_order_count: 1,
-            },
-        ),
-        BoltV3KillSwitchFlattenRetryDecision::ExhaustedManualIntervention
-    );
-}
-
 fn flatten_candidate(
     evidence_kind: BoltV3KillSwitchFlattenPositionEvidenceKind,
     position_id: &str,
@@ -1064,8 +1000,7 @@ fn flatten_plan_request_with_snapshot(
         config_sha256: CONFIG_SHA256.to_string(),
         policy_sha256: POLICY_SHA256.to_string(),
         source_timestamp_unix_nanos: SOURCE_TIMESTAMP_UNIX_NANOS,
-        policy: BoltV3KillSwitchFlattenPolicy::with_source_freshness(MAX_SOURCE_AGE_UNIX_NANOS)
-            .expect("positive freshness policy should be valid"),
+        policy: BoltV3KillSwitchFlattenPolicy::new(),
         snapshot,
         observed_at_unix_nanos: OBSERVED_AT_UNIX_NANOS,
         route_proof: BoltV3KillSwitchFlattenRouteProof::new(

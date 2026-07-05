@@ -520,15 +520,15 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 ##### `[risk.kill_switch.cancel]`
 
 - required: no; when absent or `enabled = false`, no cancel-supervisor proof model is enabled
-- `retry_max_attempts`, `retry_timeout_ms`, `retry_backoff_ms`, and `source_freshness_max_age_ms` must be positive when enabled
 - `mandatory_surfaces` must include every mandatory outstanding-order risk surface: `open`, `inflight`, `pending-cancel`, `emulated`, `algorithm-managed`, `contingent`, and `accepted-but-not-terminal`
-- still proof-only: this block configures cancel-supervisor evidence and retry classification, not direct NT cancel calls
+- still proof-only: this block configures cancel-supervisor evidence and mandatory outstanding-risk surfaces, not direct NT cancel calls
 
 ##### `[risk.kill_switch.flatten]`
 
 - required: no; when absent or `enabled = false`, no flatten-supervisor proof model is enabled
-- `retry_max_attempts`, `retry_timeout_ms`, `retry_backoff_ms`, `source_freshness_max_age_ms`, `max_position_proof_age_ms`, and `max_live_order_count` must be positive when enabled
 - `route_kind` must be `per_strategy_action_port` or `live_node_command_router`; live flatten requires `live_node_command_router`
+- NT cache membership is the flatten position proof; position age does not block emergency flatten submissions
+- `max_live_order_count` must be positive when enabled
 - `max_live_order_count` must be `<= risk.kill_switch.forced_reduction_max_live_order_count`
 - `max_notional_per_order` is a positive decimal string and must be `<= risk.kill_switch.forced_reduction_max_notional_per_order`
 - `order_type`, `time_in_force`, and `is_post_only` are the proof order-template fields checked by the shared NT order-template validator

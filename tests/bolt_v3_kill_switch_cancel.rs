@@ -5,8 +5,7 @@ use bolt_v2::{
         BoltV3KillSwitchCancelCandidate, BoltV3KillSwitchCancelDecisionMode,
         BoltV3KillSwitchCancelError, BoltV3KillSwitchCancelOutcomeAggregation,
         BoltV3KillSwitchCancelOutcomeEvidence, BoltV3KillSwitchCancelPlanRequest,
-        BoltV3KillSwitchCancelPolicy, BoltV3KillSwitchCancelRetryDecision,
-        BoltV3KillSwitchCancelRetryPolicy, BoltV3KillSwitchCancelRouteKind,
+        BoltV3KillSwitchCancelPolicy, BoltV3KillSwitchCancelRouteKind,
         BoltV3KillSwitchCancelRouteProof, BoltV3KillSwitchCancelScope,
         BoltV3KillSwitchCancelSnapshot, BoltV3KillSwitchCancelSupervisor,
         BoltV3KillSwitchOutstandingOrderRiskSurface,
@@ -22,7 +21,6 @@ const POLICY_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const CONFIG_SHA256: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const REQUEST_SOURCE_TIMESTAMP_UNIX_NANOS: u64 = 1_717_200_000_000_000_001;
 const REQUEST_OBSERVED_AT_UNIX_NANOS: u64 = 1_717_200_000_000_000_002;
-const MAX_SOURCE_AGE_UNIX_NANOS: u64 = 10;
 
 #[test]
 fn cancel_snapshot_covers_all_mandatory_outstanding_order_risk_surfaces() {
@@ -221,27 +219,7 @@ fn cancel_supervisor_commands_bind_request_and_candidate_metadata() {
 }
 
 #[test]
-fn cancel_supervisor_rejects_stale_source_timestamps_and_empty_scope_filters() {
-    let stale_timestamp = 1_000;
-    let stale_request = BoltV3KillSwitchCancelPlanRequest {
-        kill_switch_state: cancelling_state(),
-        action_id: ACTION_ID.to_string(),
-        config_sha256: CONFIG_SHA256.to_string(),
-        policy_sha256: POLICY_SHA256.to_string(),
-        source_timestamp_unix_nanos: stale_timestamp,
-        observed_at_unix_nanos: stale_timestamp + MAX_SOURCE_AGE_UNIX_NANOS + 1,
-        scope: valid_scope(),
-        route_proof: Some(BoltV3KillSwitchCancelRouteProof::new(
-            BoltV3KillSwitchCancelRouteKind::PerStrategyActionPort,
-        )),
-        policy: mandatory_surface_policy(),
-        snapshot: complete_cancel_snapshot_with_timestamp(stale_timestamp),
-    };
-
-    let error = BoltV3KillSwitchCancelSupervisor::plan_cancel(stale_request)
-        .expect_err("stale request or candidate source timestamps must fail closed");
-    assert_eq!(error, BoltV3KillSwitchCancelError::StaleSourceTimestamp);
-
+fn cancel_supervisor_rejects_empty_scope_filters() {
     for (account_ids, instrument_ids, strategy_ids) in [
         (
             Vec::<AccountId>::new(),
@@ -437,38 +415,6 @@ fn cancel_outcome_aggregation_keeps_missing_or_duplicate_evidence_fail_closed() 
     );
 }
 
-#[test]
-fn cancel_retry_policy_is_owned_by_configured_budget_and_exhausts_to_manual_intervention() {
-    assert_eq!(
-        BoltV3KillSwitchCancelRetryPolicy::new(0, 100, 10),
-        Err(BoltV3KillSwitchCancelError::InvalidRetryPolicy)
-    );
-    assert_eq!(
-        BoltV3KillSwitchCancelRetryPolicy::new(3, 0, 10),
-        Err(BoltV3KillSwitchCancelError::InvalidRetryPolicy)
-    );
-    assert_eq!(
-        BoltV3KillSwitchCancelRetryPolicy::new(3, 100, 0),
-        Err(BoltV3KillSwitchCancelError::InvalidRetryPolicy)
-    );
-
-    let policy = BoltV3KillSwitchCancelRetryPolicy::new(3, 100, 10).expect("valid retry policy");
-    assert_eq!(
-        policy.decision_for(1, 1_717_200_000_000_000_000, 1_717_200_000_000_000_050),
-        Ok(BoltV3KillSwitchCancelRetryDecision::RetryAllowed {
-            next_attempt_unix_nanos: 1_717_200_000_000_000_060,
-        })
-    );
-    assert_eq!(
-        policy.decision_for(3, 1_717_200_000_000_000_000, 1_717_200_000_000_000_050),
-        Ok(BoltV3KillSwitchCancelRetryDecision::FailedManualIntervention)
-    );
-    assert_eq!(
-        policy.decision_for(1, 1_717_200_000_000_000_000, 1_717_200_000_000_000_101),
-        Ok(BoltV3KillSwitchCancelRetryDecision::FailedManualIntervention)
-    );
-}
-
 fn cancel_plan_request(kill_switch_state: KillSwitchState) -> BoltV3KillSwitchCancelPlanRequest {
     BoltV3KillSwitchCancelPlanRequest {
         kill_switch_state,
@@ -487,11 +433,10 @@ fn cancel_plan_request(kill_switch_state: KillSwitchState) -> BoltV3KillSwitchCa
 }
 
 fn mandatory_surface_policy() -> BoltV3KillSwitchCancelPolicy {
-    BoltV3KillSwitchCancelPolicy::with_source_freshness(
+    BoltV3KillSwitchCancelPolicy::new(
         BoltV3KillSwitchOutstandingOrderRiskSurface::mandatory_surfaces()
             .iter()
             .copied(),
-        MAX_SOURCE_AGE_UNIX_NANOS,
     )
     .expect("mandatory surface policy should construct")
 }

@@ -2691,7 +2691,10 @@ fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
         BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
     ));
 
-    admission.record_kill_switch_forced_reduction_terminal();
+    assert!(
+        admission.record_kill_switch_forced_reduction_terminal("client-order-1"),
+        "terminal release should consume the tracked forced-reduction client order id"
+    );
 
     admission
         .admit(&forced_reduction_request(

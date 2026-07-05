@@ -191,41 +191,20 @@ impl BoltV3KillSwitchFlattenSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BoltV3KillSwitchFlattenPolicy {
-    max_source_age_unix_nanos: u64,
-}
+pub struct BoltV3KillSwitchFlattenPolicy;
 
 impl BoltV3KillSwitchFlattenPolicy {
-    pub fn with_source_freshness(
-        max_source_age_unix_nanos: u64,
-    ) -> Result<Self, BoltV3KillSwitchFlattenError> {
-        if max_source_age_unix_nanos == 0 {
-            return Err(BoltV3KillSwitchFlattenError::NonPositiveSourceFreshness);
-        }
-        Ok(Self {
-            max_source_age_unix_nanos,
-        })
+    pub const fn new() -> Self {
+        Self
     }
 
     pub fn validate_snapshot(
         &self,
         snapshot: &BoltV3KillSwitchFlattenSnapshot,
-        observed_at_unix_nanos: u64,
+        _observed_at_unix_nanos: u64,
     ) -> Result<(), BoltV3KillSwitchFlattenError> {
         if snapshot.candidates().is_empty() {
             return Err(BoltV3KillSwitchFlattenError::MissingPositionProof);
-        }
-        for candidate in snapshot.candidates() {
-            let Some(source_age_unix_nanos) =
-                observed_at_unix_nanos.checked_sub(candidate.source_timestamp_unix_nanos())
-            else {
-                // Candidate construction cannot know the observation clock, so future-source
-                // evidence is rejected at the snapshot policy boundary.
-                return Err(BoltV3KillSwitchFlattenError::StaleSourceTimestamp);
-            };
-            if source_age_unix_nanos > self.max_source_age_unix_nanos {
-                return Err(BoltV3KillSwitchFlattenError::StaleSourceTimestamp);
-            }
         }
         Ok(())
     }
@@ -836,75 +815,6 @@ fn worse_flatten_aggregate(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BoltV3KillSwitchFlattenRetryPolicy {
-    retry_max_attempts: u32,
-    retry_timeout_ms: u64,
-    retry_backoff_ms: u64,
-}
-
-impl BoltV3KillSwitchFlattenRetryPolicy {
-    pub fn new(
-        retry_max_attempts: u32,
-        retry_timeout_ms: u64,
-        retry_backoff_ms: u64,
-    ) -> Result<Self, BoltV3KillSwitchFlattenError> {
-        if retry_max_attempts == 0 || retry_timeout_ms == 0 || retry_backoff_ms == 0 {
-            return Err(BoltV3KillSwitchFlattenError::InvalidRetryPolicy);
-        }
-        Ok(Self {
-            retry_max_attempts,
-            retry_timeout_ms,
-            retry_backoff_ms,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BoltV3KillSwitchFlattenRetryContext {
-    pub attempts: u32,
-    pub elapsed_ms: u64,
-    pub nt_trading_state: TradingState,
-    pub live_forced_reduction_order_count: u32,
-    pub max_live_forced_reduction_order_count: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoltV3KillSwitchFlattenRetryDecision {
-    RetryAllowed { backoff_ms: u64 },
-    ExhaustedManualIntervention,
-    TimedOutManualIntervention,
-    RouteNoLongerReducingManualIntervention,
-    ForcedReductionCapUnavailable,
-}
-
-pub struct BoltV3KillSwitchFlattenRetrySupervisor;
-
-impl BoltV3KillSwitchFlattenRetrySupervisor {
-    pub fn decide(
-        policy: BoltV3KillSwitchFlattenRetryPolicy,
-        context: BoltV3KillSwitchFlattenRetryContext,
-    ) -> BoltV3KillSwitchFlattenRetryDecision {
-        if context.nt_trading_state != TradingState::Reducing {
-            return BoltV3KillSwitchFlattenRetryDecision::RouteNoLongerReducingManualIntervention;
-        }
-        if context.live_forced_reduction_order_count
-            >= context.max_live_forced_reduction_order_count
-        {
-            return BoltV3KillSwitchFlattenRetryDecision::ForcedReductionCapUnavailable;
-        }
-        if context.attempts >= policy.retry_max_attempts {
-            return BoltV3KillSwitchFlattenRetryDecision::ExhaustedManualIntervention;
-        }
-        if context.elapsed_ms >= policy.retry_timeout_ms {
-            return BoltV3KillSwitchFlattenRetryDecision::TimedOutManualIntervention;
-        }
-        BoltV3KillSwitchFlattenRetryDecision::RetryAllowed {
-            backoff_ms: policy.retry_backoff_ms,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3KillSwitchFlattenError {
     ConflictingPositionProof,
     ForcedReductionProofMismatch,
@@ -912,18 +822,15 @@ pub enum BoltV3KillSwitchFlattenError {
     InvalidConfigSha256,
     InvalidOrderTemplate,
     InvalidPolicySha256,
-    InvalidRetryPolicy,
     InvalidAttemptOutcome,
     MissingActionId,
     KillSwitchStateNotFlattening,
     MissingCandidates,
     MissingPositionProof,
     MissingSourceTimestamp,
-    NonPositiveSourceFreshness,
     NtTradingStateNotReducing,
     OrderTemplateNotReduceOnly,
     OrderTemplateUsesQuoteQuantity,
-    StaleSourceTimestamp,
     UnknownOutcomeCommand,
     UnsupportedRouteProof,
 }

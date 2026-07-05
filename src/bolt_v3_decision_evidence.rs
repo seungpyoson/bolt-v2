@@ -251,6 +251,7 @@ pub enum BoltV3SubmitIntentKind {
 pub enum BoltV3OrderIntentClampNotEvaluatedReason {
     NoVenueTruth,
     ForeignInstrument,
+    NonSellOrderSide,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

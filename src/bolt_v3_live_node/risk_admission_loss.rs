@@ -23,7 +23,6 @@ use crate::{
         BoltV3KillSwitchFlattenRouteProof, BoltV3KillSwitchFlattenSnapshot,
         BoltV3KillSwitchFlattenSupervisor,
     },
-    bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_execution::{
         BoltV3KillSwitchFlattenRoutingContext, BoltV3NtSubmitOnlySink, BoltV3OrderExecutionPolicy,
         route_kill_switch_flatten_command_with_sink,
@@ -1370,16 +1369,9 @@ fn kill_switch_forced_reduction_policy_from_config(
 }
 
 fn flatten_policy_from_config(
-    flatten: &KillSwitchFlattenConfigBlock,
+    _flatten: &KillSwitchFlattenConfigBlock,
 ) -> Result<BoltV3KillSwitchFlattenPolicy> {
-    let max_source_age_unix_nanos = flatten
-        .max_position_proof_age_ms
-        .checked_mul(NANOS_PER_MILLI_U64)
-        .ok_or_else(|| {
-            anyhow::anyhow!("risk.kill_switch.flatten.max_position_proof_age_ms overflow")
-        })?;
-    BoltV3KillSwitchFlattenPolicy::with_source_freshness(max_source_age_unix_nanos)
-        .map_err(|error| anyhow::anyhow!("{error:?}"))
+    Ok(BoltV3KillSwitchFlattenPolicy::new())
 }
 
 fn flatten_order_template_from_config(flatten: &KillSwitchFlattenConfigBlock) -> NtOrderTemplate {
@@ -2427,8 +2419,7 @@ mod tests {
             config_sha256: "b".repeat(64),
             policy_sha256: "a".repeat(64),
             source_timestamp_unix_nanos: 2,
-            policy: BoltV3KillSwitchFlattenPolicy::with_source_freshness(10)
-                .expect("flatten policy should be valid"),
+            policy: BoltV3KillSwitchFlattenPolicy::new(),
             snapshot: BoltV3KillSwitchFlattenSnapshot::new(vec![first, second])
                 .expect("flatten snapshot should be valid"),
             observed_at_unix_nanos: 2,
@@ -2520,8 +2511,7 @@ mod tests {
                     config_sha256: "b".repeat(64),
                     policy_sha256: "a".repeat(64),
                     source_timestamp_unix_nanos: 2,
-                    policy: BoltV3KillSwitchFlattenPolicy::with_source_freshness(10)
-                        .expect("flatten policy should be valid"),
+                    policy: BoltV3KillSwitchFlattenPolicy::new(),
                     snapshot: BoltV3KillSwitchFlattenSnapshot::new(vec![candidate])
                         .expect("flatten snapshot should be valid"),
                     observed_at_unix_nanos: 2,

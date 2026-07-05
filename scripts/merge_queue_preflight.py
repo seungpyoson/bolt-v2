@@ -2248,6 +2248,11 @@ def run_verifier_commands(
                 parts = shlex.split(command)
                 if not parts:
                     raise PreflightError("verifier command must not be empty")
+                print(
+                    f"merge_queue_preflight: verifier running: {command}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 completed = run_command(
                     parts,
                     cwd=worktree,
@@ -2263,6 +2268,13 @@ def run_verifier_commands(
                     classification=verifier_failure_classification(completed.failure_type),
                 )
                 results.append(verifier_result)
+                status = "passed" if verifier_result.returncode == 0 else "failed"
+                print(
+                    "merge_queue_preflight: verifier "
+                    f"{status}: {command} (exit {verifier_result.returncode})",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 if verifier_result.returncode != 0:
                     break
         finally:

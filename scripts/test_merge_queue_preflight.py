@@ -9,10 +9,12 @@ import io
 import json
 import os
 import pathlib
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -1880,6 +1882,38 @@ def run_preflight_with_config(
     )
 
 
+def read_line_with_timeout(stream, timeout_seconds: float) -> str | None:
+    readable, _, _ = select.select([stream], [], [], timeout_seconds)
+    if not readable:
+        return None
+    return stream.readline()
+
+
+def wait_for_stderr_line(
+    process: subprocess.Popen[str],
+    needle: str,
+    timeout_seconds: float,
+) -> tuple[str | None, list[str]]:
+    deadline = time.monotonic() + timeout_seconds
+    lines: list[str] = []
+    while time.monotonic() < deadline:
+        line = read_line_with_timeout(process.stderr, max(0.0, deadline - time.monotonic()))
+        if line is None:
+            break
+        if line == "":
+            break
+        lines.append(line)
+        if needle in line:
+            return line, lines
+    return None, lines
+
+
+def stop_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is None:
+        process.kill()
+        process.communicate()
+
+
 def assert_preflight_source_fence_profile_selects_fences_only_by_scripts_diff() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -1929,6 +1963,121 @@ def assert_scripts_pr_fence_regression_uses_full_profile() -> None:
         last_run = log.read_text(encoding="utf-8").splitlines()[-1]
         if "--fences-only" in last_run:
             raise AssertionError(last_run)
+
+
+def assert_verifier_progress_breadcrumb_precedes_final_output() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        verifier = root / "slow_success.py"
+        write(
+            verifier,
+            "import time\n"
+            "time.sleep(2)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            "1",
+        ]
+        process = subprocess.Popen(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            line = read_line_with_timeout(process.stderr, 1.0)
+            if line is None or "merge_queue_preflight: verifier running:" not in line:
+                raise AssertionError(line)
+            stdout_line = read_line_with_timeout(process.stdout, 0.1)
+            if stdout_line not in (None, ""):
+                raise AssertionError(stdout_line)
+            stdout, _stderr = process.communicate(timeout=5)
+        finally:
+            stop_process(process)
+        assert_equal(process.returncode, 3, "streaming breadcrumb rc")
+        payload = parse_json(stdout)
+        assert_equal([batch["prs"] for batch in payload["batches"]], [[1]], "streaming breadcrumb batches")
+
+
+def assert_first_verifier_failure_breadcrumb_arrives_before_later_batch_finishes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        first_head = fixture.make_pr(1, {"shared.txt": "first\n", "fail.txt": "fail\n"})
+        second_head = fixture.make_pr(2, {"shared.txt": "second\n", "slow.txt": "slow\n"})
+        verifier = root / "fail_then_slow.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            "import time\n"
+            "if Path('fail.txt').exists():\n"
+            "    print('fail marker rejected')\n"
+            "    sys.exit(7)\n"
+            "if Path('slow.txt').exists():\n"
+            "    time.sleep(3)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={first_head}",
+            "--expected-head-sha",
+            f"2={second_head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            "1",
+            "2",
+        ]
+        process = subprocess.Popen(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            line, lines = wait_for_stderr_line(process, "merge_queue_preflight: verifier failed:", 1.5)
+            if line is None:
+                raise AssertionError(lines)
+            if "exit 7" not in line:
+                raise AssertionError(line)
+            stdout, _stderr = process.communicate(timeout=7)
+        finally:
+            stop_process(process)
+        assert_equal(process.returncode, 2, "first failure breadcrumb rc")
+        payload = parse_json(stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "verifier_failed":
+            raise AssertionError(blocked)
 
 
 def assert_missing_verifier_executable_is_inconclusive() -> None:
@@ -3150,6 +3299,8 @@ def main() -> int:
     assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder()
     assert_preflight_source_fence_profile_selects_fences_only_by_scripts_diff()
     assert_scripts_pr_fence_regression_uses_full_profile()
+    assert_verifier_progress_breadcrumb_precedes_final_output()
+    assert_first_verifier_failure_breadcrumb_arrives_before_later_batch_finishes()
     assert_missing_verifier_executable_is_inconclusive()
     assert_unexpected_exception_is_not_split_advised()
     assert_verifier_timeout_is_inconclusive()

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 from typing import Callable
 
 from ci_test_manifest import CiTestManifest
@@ -2518,6 +2519,89 @@ jobs:
         )
     if not any("secret reference secrets.JULES_API_KEY" in error for error in moved_errors):
         raise AssertionError(f"moving secret-using workflow into active path must be blocked, got: {moved_errors}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        large_data_repo = init_self_authorizing_fixture_repo(pathlib.Path(tmp))
+        large_data_path = "data/source-universe-execution-pack.json"
+        large_data_line_count = 100_001
+        large_data_final_id = large_data_line_count + 1
+        large_data_body = "".join(
+            f'  {{"id": {index}, "token": "stable-{index}"}},\n'
+            for index in range(large_data_line_count)
+        )
+        data_secret_sentinel = "DATA_JSON_TOKEN"
+        write_repo_text(
+            large_data_repo,
+            large_data_path,
+            "[\n"
+            + large_data_body
+            + f'  {{"id": {large_data_final_id}, "token": "base-final"}}\n'
+            + "]\n",
+        )
+        commit_repo(large_data_repo, "base large data")
+        large_data_base = run_repo_git(large_data_repo, "rev-parse", "HEAD").strip()
+        write_repo_text(
+            large_data_repo,
+            "AGENTS.md",
+            "SSM is primary. JULES_API_KEY is allowed for advisory repo maintenance.\n",
+        )
+        write_repo_text(
+            large_data_repo,
+            large_data_path,
+            "[\n"
+            + large_data_body
+            + f'  {{"id": {large_data_final_id}, "token": "${{{{ secrets.{data_secret_sentinel} }}}}"}}\n'
+            + "]\n",
+        )
+        write_repo_text(
+            large_data_repo,
+            ".github/workflows/large-data-signal.yml",
+            """\
+name: Large Data Signal
+permissions: {}
+jobs:
+  jules:
+    steps:
+      - env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: echo advisory
+""",
+        )
+        large_data_head = commit_repo(large_data_repo, "head large data")
+        verifier = load_verifier()
+        real_sequence_matcher = verifier.difflib.SequenceMatcher
+
+        class RejectLargeDataSequenceMatcher:
+            def __init__(self, isjunk, a, b, autojunk=True):
+                if any(data_secret_sentinel in line for line in b):
+                    raise AssertionError("large data file must not be diffed for self-authorizing signals")
+                self._matcher = real_sequence_matcher(
+                    isjunk,
+                    a,
+                    b,
+                    autojunk=autojunk,
+                )
+
+            def get_opcodes(self):
+                return self._matcher.get_opcodes()
+
+        verifier.difflib.SequenceMatcher = RejectLargeDataSequenceMatcher
+        try:
+            started = time.perf_counter()
+            large_data_errors = verifier.self_authorizing_governance_diff_errors(
+                large_data_repo,
+                large_data_base,
+                large_data_head,
+            )
+            elapsed = time.perf_counter() - started
+        finally:
+            verifier.difflib.SequenceMatcher = real_sequence_matcher
+    if elapsed >= 5.0:
+        raise AssertionError(f"large irrelevant data diff must complete in <5s, took {elapsed:.3f}s")
+    if not any("secret reference secrets.JULES_API_KEY" in error for error in large_data_errors):
+        raise AssertionError(f"workflow secret signal must still be blocked, got: {large_data_errors}")
+    if any(large_data_path in error or data_secret_sentinel in error for error in large_data_errors):
+        raise AssertionError(f"large data changes must be ignored, got: {large_data_errors}")
 
     required_self_authorizing_archive = (
         'git archive "$base_ref"',

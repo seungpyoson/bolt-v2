@@ -520,6 +520,8 @@ impl VenueTruthReconciler {
         let snapshot = capture.snapshot.clone();
         let Some(previous) = &self.previous_snapshot else {
             self.event_projection
+                .reconcile_settlement_restart_baseline(&snapshot, capture.capture_number);
+            self.event_projection
                 .prune_after_capture_acceptance(&snapshot, capture.capture_number);
             self.previous_snapshot = Some(snapshot.clone());
             return Ok(VenueTruthReconciliationResult {
@@ -767,6 +769,30 @@ impl VenueTruthEventProjection {
                 }
                 None => true,
             });
+    }
+
+    fn reconcile_settlement_restart_baseline(
+        &mut self,
+        snapshot: &VenueTruthSnapshot,
+        capture_number: u64,
+    ) {
+        // The first post-restart snapshot is the only checkpoint for replayed lots:
+        // components already visible there must not be required again on later captures.
+        for lot in &mut self.settlement_lots {
+            let baseline_quantity = snapshot
+                .positions_by_product_id
+                .get(&lot.product_id)
+                .copied()
+                .unwrap_or(Decimal::ZERO);
+            if baseline_quantity == Decimal::ZERO {
+                lot.remaining_quantity = Decimal::ZERO;
+            } else if baseline_quantity < lot.remaining_quantity {
+                lot.remaining_quantity = baseline_quantity;
+            } else if baseline_quantity == lot.remaining_quantity {
+                lot.remaining_collateral_balance_delta = Decimal::ZERO;
+            }
+            mark_settlement_lot_fully_consumed(lot, capture_number);
+        }
     }
 
     fn consume_fill_quantity(&mut self, venue_order_id: &VenueOrderId, amount: Decimal) -> bool {

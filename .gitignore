@@ -27,20 +27,15 @@ __pycache__/
 *.local.md
 .sc/
 .mcp.json
-**/.claude/*
-!**/.claude/skills/
-!**/.claude/skills/**
+# Generated SpecKit agent adapters are NOT committed; .specify/ is the
+# source of truth — regenerate locally with the spec-kit `specify` CLI
+# (options recorded in .specify/init-options.json).
+**/.claude/
+.gemini/
+.opencode/
+.pi/
 .codex/*
 !.codex/config.toml
-.gemini/*
-!.gemini/commands/
-!.gemini/commands/speckit.*.toml
-.opencode/*
-!.opencode/command/
-!.opencode/command/speckit.*.md
-.pi/*
-!.pi/prompts/
-!.pi/prompts/speckit.*.md
 .aider.chat.history.md
 .aider.input.history
 .aider.tags.cache.v*/
@@ -49,9 +44,9 @@ __pycache__/
 .superpowers/
 # Fail-closed: coding-agent state DIRS are ignored by default, including
 # agents not yet in use here (names verified against vendor docs 2026-07-05);
-# allowlist shared content explicitly on adoption (see the .codex/.gemini/
-# .claude patterns above). Conventional root instruction FILES (AGENTS.md
-# style, .clinerules/.goosehints single-file forms) stay trackable.
+# allowlist shared content explicitly on adoption (see the .codex pattern
+# above). Conventional root instruction FILES (AGENTS.md style,
+# .clinerules/.goosehints single-file forms) stay trackable.
 .cursor/
 .windsurf/
 .clinerules/

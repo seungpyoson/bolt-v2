@@ -23,8 +23,7 @@ use backtesting_vertical_slice::hashing::sha256_hex;
 use backtesting_vertical_slice::{
     artifact_store_secrets::{ArtifactStoreSecretResolver, ArtifactStoreSsmResolver},
     backfill_execution_plan::{
-        BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION, BackfillExecutionPlan, BackfillExecutionPlanStatus,
-        BackfillExecutionRunBinding,
+        BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
     },
     nt_catalog_capability::NtCatalogSsmCredentialResolver,
     operator::{
@@ -576,6 +575,7 @@ fn read_object_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use backtesting_vertical_slice::backfill_execution_plan::BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION;
     use clap::error::ErrorKind;
 
     const COMMITTED_RUN_SPEC: &str = include_str!(

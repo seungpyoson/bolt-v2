@@ -727,10 +727,11 @@ pub fn write_conversion_checkpoint(
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create conversion output dir {}", output_dir.display()))?;
     let path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
-    crate::reference_artifact::write_reference_artifact_with_len(
+    crate::reference_artifact::write_reference_artifact_with_len_overwrite(
         &path,
         CONVERSION_CHECKPOINT_FILE,
         checkpoint,
+        true,
     )
     .with_context(|| format!("write {}", path.display()))?;
     Ok(path)
@@ -745,24 +746,27 @@ pub fn write_completed_conversion_artifacts(
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create conversion output dir {}", output_dir.display()))?;
     let checkpoint_path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
-    crate::reference_artifact::write_reference_artifact_with_len(
+    crate::reference_artifact::write_reference_artifact_with_len_overwrite(
         &checkpoint_path,
         CONVERSION_CHECKPOINT_FILE,
         checkpoint,
+        true,
     )
     .with_context(|| format!("write {}", checkpoint_path.display()))?;
     let manifest_path = output_dir.join(CONVERSION_MANIFEST_FILE);
-    crate::reference_artifact::write_reference_artifact_with_len(
+    crate::reference_artifact::write_reference_artifact_with_len_overwrite(
         &manifest_path,
         CONVERSION_MANIFEST_FILE,
         manifest,
+        true,
     )
     .with_context(|| format!("write {}", manifest_path.display()))?;
     let metadata_path = output_dir.join(CATALOG_METADATA_FILE);
-    crate::reference_artifact::write_reference_artifact_with_len(
+    crate::reference_artifact::write_reference_artifact_with_len_overwrite(
         &metadata_path,
         CATALOG_METADATA_FILE,
         metadata,
+        true,
     )
     .with_context(|| format!("write {}", metadata_path.display()))?;
     Ok(())

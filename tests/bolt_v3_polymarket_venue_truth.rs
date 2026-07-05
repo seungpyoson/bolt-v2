@@ -7,7 +7,8 @@ use bolt_v2::bolt_v3_providers::polymarket::{
 use bolt_v2::bolt_v3_venue_truth::{
     VenueTruthCaptureEndpointError, VenueTruthDivergenceAlarmClass, VenueTruthDivergenceKind,
     VenueTruthOpenOrder, VenueTruthOrderEventMapper, VenueTruthReconciler,
-    VenueTruthReconciliation, VenueTruthSnapshot, venue_truth_capture_failure_parts,
+    VenueTruthReconciliation, VenueTruthSettlementExplanation, VenueTruthSnapshot,
+    venue_truth_capture_failure_parts,
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
@@ -859,6 +860,155 @@ fn positions_fresher_than_balance_skew_pends_then_explains_at_fence() {
 }
 
 #[test]
+fn settlement_explanation_consumes_winning_position_disappearance_and_payout() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_000,
+            Decimal::new(50_000_000, 0),
+            4.0,
+        ))
+        .expect("baseline should be accepted");
+    reconciler.record_settlement(settlement_explanation(
+        "MKT-1:P-WIN",
+        Decimal::new(4, 0),
+        Decimal::ONE,
+    ));
+
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(empty_snapshot(1_100, Decimal::new(54_000_000, 0)))
+            .expect("settlement should explain position disappearance and payout"),
+        VenueTruthReconciliation::DeltaExplained
+    );
+}
+
+#[test]
+fn settlement_explanation_consumes_losing_position_disappearance_without_payout() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_000,
+            Decimal::new(50_000_000, 0),
+            4.0,
+        ))
+        .expect("baseline should be accepted");
+    reconciler.record_settlement(settlement_explanation(
+        "MKT-1:P-LOSS",
+        Decimal::new(4, 0),
+        Decimal::ZERO,
+    ));
+
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(empty_snapshot(1_100, Decimal::new(50_000_000, 0)))
+            .expect("losing settlement should explain position disappearance without payout"),
+        VenueTruthReconciliation::DeltaExplained
+    );
+}
+
+#[test]
+fn settlement_explanation_rejects_over_bound_payout_at_capture_fence() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_000,
+            Decimal::new(50_000_000, 0),
+            4.0,
+        ))
+        .expect("baseline should be accepted");
+    reconciler.record_settlement(settlement_explanation(
+        "MKT-1:P-OVERPAY",
+        Decimal::new(4, 0),
+        Decimal::ONE,
+    ));
+    reconciler
+        .record_snapshot_completion(empty_snapshot(1_100, Decimal::new(55_000_000, 0)))
+        .expect("over-bound payout should pend before its fence");
+
+    let divergence = reconciler
+        .record_snapshot_completion(empty_snapshot(1_200, Decimal::new(55_000_000, 0)))
+        .expect_err("over-bound settlement payout must halt at the capture fence");
+
+    assert_eq!(
+        divergence.kind,
+        VenueTruthDivergenceKind::UnexplainedCollateralDelta
+    );
+}
+
+#[test]
+fn payout_shaped_collateral_delta_without_settlement_record_halts_at_fence() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_000,
+            Decimal::new(50_000_000, 0),
+            4.0,
+        ))
+        .expect("baseline should be accepted");
+    reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_100,
+            Decimal::new(54_000_000, 0),
+            4.0,
+        ))
+        .expect("payout-shaped collateral delta without a settlement record should pend");
+
+    let divergence = reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_200,
+            Decimal::new(54_000_000, 0),
+            4.0,
+        ))
+        .expect_err("payout-shaped collateral delta without a settlement record must halt");
+
+    assert_eq!(
+        divergence.kind,
+        VenueTruthDivergenceKind::UnexplainedCollateralDelta
+    );
+}
+
+#[test]
+fn settlement_position_and_payout_endpoint_skew_consumes_across_capture_fence() {
+    let mut reconciler = VenueTruthReconciler::new();
+    reconciler
+        .record_snapshot_completion(snapshot_with_position(
+            1_000,
+            Decimal::new(50_000_000, 0),
+            4.0,
+        ))
+        .expect("baseline should be accepted");
+    reconciler.record_settlement(settlement_explanation(
+        "MKT-1:P-SKEW",
+        Decimal::new(4, 0),
+        Decimal::ONE,
+    ));
+
+    let position_only = reconciler
+        .record_snapshot_completion(empty_snapshot(1_100, Decimal::new(50_000_000, 0)))
+        .expect("settlement position disappearance with deferred payout should pend");
+    assert_eq!(
+        position_only[0].outcome,
+        VenueTruthReconciliation::DeltaPending
+    );
+
+    let results = reconciler
+        .record_snapshot_completion(empty_snapshot(1_200, Decimal::new(54_000_000, 0)))
+        .expect("settlement payout catch-up should explain the pending capture");
+
+    assert!(
+        results.iter().any(|result| result.capture_number == 2
+            && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 2 should accept when payout catches up at the fence"
+    );
+    assert!(
+        results.iter().any(|result| result.capture_number == 3
+            && result.outcome == VenueTruthReconciliation::DeltaExplained),
+        "capture 3 should drain the deferred payout from the same settlement record"
+    );
+}
+
+#[test]
 fn pending_capture_without_channel_event_halts_as_silent_channel_at_fence() {
     let mut reconciler = VenueTruthReconciler::new();
     reconciler
@@ -1162,6 +1312,22 @@ fn record_order_event(reconciler: &mut VenueTruthReconciler, event: OrderEventAn
         .map_order_event(&event)
         .expect("test order event should map into venue truth projection");
     reconciler.record_order_event(mapped);
+}
+
+fn settlement_explanation(
+    settlement_key: &str,
+    settled_quantity: Decimal,
+    payout_per_share: Decimal,
+) -> VenueTruthSettlementExplanation {
+    VenueTruthSettlementExplanation {
+        settlement_key: settlement_key.to_string(),
+        market_id: "condition-token123".to_string(),
+        product_id: "token123".to_string(),
+        side: OrderSide::Sell,
+        settled_quantity,
+        payout_per_share,
+        collateral_payout: settled_quantity * payout_per_share,
+    }
 }
 
 fn open_order(

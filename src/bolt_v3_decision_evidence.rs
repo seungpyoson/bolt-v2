@@ -34,6 +34,7 @@ pub const BOLT_V3_ENTRY_SKIP_GATE_ID: &str = "bolt_v3.entry_skip";
 pub const BOLT_V3_EXIT_DECISION_GATE_ID: &str = "bolt_v3.exit_decision";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID: &str = "bolt_v3.loss_governor_halt";
 pub const BOLT_V3_REQUOTE_THROTTLE_GATE_ID: &str = "bolt_v3.requote_throttle";
+pub const BOLT_V3_SETTLEMENT_GATE_ID: &str = "bolt_v3.settlement";
 pub const BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID: &str = "bolt_v3.venue_truth_capture_failure";
 pub const BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID: &str = "bolt_v3.venue_truth_divergence";
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";
@@ -43,6 +44,8 @@ pub const BOLT_V3_ENTRY_SKIP_RECORD_KIND: &str = "entry_skip";
 pub const BOLT_V3_EXIT_DECISION_RECORD_KIND: &str = "exit_decision";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";
 pub const BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND: &str = "requote_throttle";
+pub const BOLT_V3_SETTLEMENT_RECORD_KIND: &str = "settlement";
+pub const BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND: &str = "settlement_booking_error";
 pub const BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND: &str = "venue_truth_capture_failure";
 pub const BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND: &str = "venue_truth_divergence";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";
@@ -135,6 +138,17 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
         Ok(())
     }
     fn record_requote_throttle(&self, throttle: &BoltV3RequoteThrottleEvidence) -> Result<()>;
+    fn record_settlement(&self, evidence: &BoltV3SettlementEvidence) -> Result<()> {
+        let _ = evidence;
+        Ok(())
+    }
+    fn record_settlement_booking_error(
+        &self,
+        evidence: &BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        let _ = evidence;
+        Ok(())
+    }
     fn record_venue_truth_capture_failure(
         &self,
         evidence: &VenueTruthCaptureFailureEvidence,
@@ -1167,6 +1181,51 @@ pub struct BoltV3RequoteThrottleEvidence {
     pub min_interval_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3SettlementEvidence {
+    pub strategy_id: String,
+    pub settlement_key: String,
+    pub market_id: String,
+    pub position_id: String,
+    pub instrument_id: String,
+    pub product_id: String,
+    pub outcome_side: BoltV3OutcomeSide,
+    pub entry_order_side: String,
+    pub quantity: String,
+    pub entry_price: String,
+    pub family_key: String,
+    pub strike_price: String,
+    pub resolution_instrument_id: String,
+    pub resolution_ts_event_ns: u64,
+    pub reference_close_price: String,
+    pub payout_per_share: String,
+    pub terminal_value: String,
+    pub realized_pnl: String,
+    pub settlement_currency: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3SettlementBookingErrorReason {
+    ResolutionFeedMissing,
+    SettlementAlreadyBooked,
+    SettlementInputInvalid,
+    SettlementBlocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3SettlementBookingErrorEvidence {
+    pub strategy_id: String,
+    pub settlement_key: String,
+    pub market_id: Option<String>,
+    pub position_id: Option<String>,
+    pub instrument_id: Option<String>,
+    pub resolution_instrument_id: Option<String>,
+    pub reason: BoltV3SettlementBookingErrorReason,
+    pub detail: String,
+    pub observed_at_ns: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub strategy_id: String,
@@ -1919,6 +1978,19 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
         self.append_line(&line)
     }
 
+    fn record_settlement(&self, evidence: &BoltV3SettlementEvidence) -> Result<()> {
+        let line = encode_settlement_line(evidence)?;
+        self.append_line(&line)
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        evidence: &BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        let line = encode_settlement_booking_error_line(evidence)?;
+        self.append_line(&line)
+    }
+
     fn record_venue_truth_capture_failure(
         &self,
         evidence: &VenueTruthCaptureFailureEvidence,
@@ -2232,6 +2304,40 @@ pub fn read_latest_entry_decision_evidence_chain(
                 decoded.validate_header(
                     BOLT_V3_ORDER_REJECT_RECORD_KIND,
                     BOLT_V3_ORDER_REJECT_GATE_ID,
+                    index,
+                )?;
+            }
+            BOLT_V3_SETTLEMENT_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_SETTLEMENT_RECORD_KIND,
+                    BOLT_V3_SETTLEMENT_GATE_ID,
+                    index,
+                )?;
+                let decoded: SettlementLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 settlement line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_SETTLEMENT_RECORD_KIND,
+                    BOLT_V3_SETTLEMENT_GATE_ID,
+                    index,
+                )?;
+            }
+            BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
+                    BOLT_V3_SETTLEMENT_GATE_ID,
+                    index,
+                )?;
+                let decoded: SettlementBookingErrorLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 settlement booking-error line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
+                    BOLT_V3_SETTLEMENT_GATE_ID,
                     index,
                 )?;
             }
@@ -2576,6 +2682,40 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
+            BOLT_V3_SETTLEMENT_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_SETTLEMENT_RECORD_KIND,
+                    BOLT_V3_SETTLEMENT_GATE_ID,
+                    index,
+                )?;
+                let decoded: SettlementLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 settlement line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_SETTLEMENT_RECORD_KIND,
+                    BOLT_V3_SETTLEMENT_GATE_ID,
+                    index,
+                )?;
+            }
+            BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
+                    BOLT_V3_SETTLEMENT_GATE_ID,
+                    index,
+                )?;
+                let decoded: SettlementBookingErrorLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 settlement booking-error line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
+                    BOLT_V3_SETTLEMENT_GATE_ID,
+                    index,
+                )?;
+            }
             BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND => {
                 header.validate(
                     BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND,
@@ -2708,6 +2848,8 @@ fn decision_evidence_header_is_below_current_schema_non_recovery_record(
                 | BOLT_V3_EXIT_EVALUATION_RECORD_KIND
                 | BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND
                 | BOLT_V3_ORDER_REJECT_RECORD_KIND
+                | BOLT_V3_SETTLEMENT_RECORD_KIND
+                | BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND
                 | BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND
                 | BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND
                 | BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND
@@ -3611,6 +3753,96 @@ fn encode_requote_throttle_line(throttle: &BoltV3RequoteThrottleEvidence) -> Res
     Ok(line)
 }
 
+#[derive(Serialize)]
+struct SettlementLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    settlement: &'a BoltV3SettlementEvidence,
+}
+
+#[derive(Deserialize)]
+struct SettlementLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    settlement: BoltV3SettlementEvidence,
+}
+
+impl SettlementLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.settlement;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+fn encode_settlement_line(evidence: &BoltV3SettlementEvidence) -> Result<Vec<u8>> {
+    let envelope = SettlementLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_SETTLEMENT_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_SETTLEMENT_RECORD_KIND,
+        settlement: evidence,
+    };
+    let mut line =
+        serde_json::to_vec(&envelope).context("failed to serialize settlement evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+#[derive(Serialize)]
+struct SettlementBookingErrorLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    booking_error: &'a BoltV3SettlementBookingErrorEvidence,
+}
+
+#[derive(Deserialize)]
+struct SettlementBookingErrorLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    booking_error: BoltV3SettlementBookingErrorEvidence,
+}
+
+impl SettlementBookingErrorLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.booking_error;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+fn encode_settlement_booking_error_line(
+    evidence: &BoltV3SettlementBookingErrorEvidence,
+) -> Result<Vec<u8>> {
+    let envelope = SettlementBookingErrorLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_SETTLEMENT_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
+        booking_error: evidence,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize settlement booking-error evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
 fn encode_venue_truth_capture_failure_line(
     evidence: &VenueTruthCaptureFailureEvidence,
 ) -> Result<Vec<u8>> {
@@ -3808,6 +4040,105 @@ pub fn read_order_reject_evidence(
             Ok(decoded.evidence)
         },
     )
+}
+
+/// Reads every `settlement` record (current schema) from a decision-evidence log,
+/// in file order. Duplicate settlement keys fail closed because startup uses these
+/// keys as the idempotency proof for settlement booking.
+pub fn read_settlement_evidence(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<Vec<BoltV3SettlementEvidence>> {
+    let records = read_settlement_evidence_records(path, max_bytes)?;
+    fail_closed_on_duplicate_settlement_keys(&records)?;
+    Ok(records)
+}
+
+fn read_settlement_evidence_records(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<Vec<BoltV3SettlementEvidence>> {
+    read_kind_evidence(
+        path,
+        max_bytes,
+        BOLT_V3_SETTLEMENT_RECORD_KIND,
+        BOLT_V3_SETTLEMENT_GATE_ID,
+        |line, index| {
+            let decoded: SettlementLineOwned = serde_json::from_slice(line).with_context(|| {
+                format!("failed to parse bolt-v3 settlement line at index {index}")
+            })?;
+            decoded.validate_header(
+                BOLT_V3_SETTLEMENT_RECORD_KIND,
+                BOLT_V3_SETTLEMENT_GATE_ID,
+                index,
+            )?;
+            Ok(decoded.settlement)
+        },
+    )
+}
+
+/// Reads every `settlement_booking_error` record (current schema) from a
+/// decision-evidence log, in file order. These records are audit evidence for
+/// accepted fail-closed settlement behavior and do not seed idempotency.
+pub fn read_settlement_booking_error_evidence(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<Vec<BoltV3SettlementBookingErrorEvidence>> {
+    read_kind_evidence(
+        path,
+        max_bytes,
+        BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
+        BOLT_V3_SETTLEMENT_GATE_ID,
+        |line, index| {
+            let decoded: SettlementBookingErrorLineOwned = serde_json::from_slice(line)
+                .with_context(|| {
+                    format!(
+                        "failed to parse bolt-v3 settlement booking-error line at index {index}"
+                    )
+                })?;
+            decoded.validate_header(
+                BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
+                BOLT_V3_SETTLEMENT_GATE_ID,
+                index,
+            )?;
+            Ok(decoded.booking_error)
+        },
+    )
+}
+
+/// Seeds startup settlement idempotency from durable settlement keys relevant to
+/// positions currently within recovery scope. The bound is structural: the caller
+/// supplies the position-derived keys; this reader never truncates by count or age.
+pub fn read_settlement_keys_for_recovery_scope(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+    recovery_scope_settlement_keys: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
+    let settlements = read_settlement_evidence_records(path, max_bytes)?;
+    let mut recovered = BTreeSet::new();
+    for evidence in settlements {
+        if !recovery_scope_settlement_keys.contains(&evidence.settlement_key) {
+            continue;
+        }
+        if !recovered.insert(evidence.settlement_key.clone()) {
+            return Err(duplicate_settlement_key_error(&evidence.settlement_key));
+        }
+    }
+    Ok(recovered)
+}
+
+fn fail_closed_on_duplicate_settlement_keys(records: &[BoltV3SettlementEvidence]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for record in records {
+        if !seen.insert(record.settlement_key.clone()) {
+            return Err(duplicate_settlement_key_error(&record.settlement_key));
+        }
+    }
+    Ok(())
+}
+
+fn duplicate_settlement_key_error(settlement_key: &str) -> anyhow::Error {
+    anyhow!("duplicate settlement key `{settlement_key}` in bolt-v3 settlement evidence")
 }
 
 /// Shared body for the kind-specific evidence readers above. Reads the whole file

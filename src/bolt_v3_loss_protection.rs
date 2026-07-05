@@ -212,6 +212,13 @@ impl KillSwitchLossProtection {
         let Some(observation) = position_realized_pnl_observation(event) else {
             return Ok(None);
         };
+        self.record_position_realized_pnl(observation)
+    }
+
+    pub fn record_position_realized_pnl(
+        &mut self,
+        observation: PositionRealizedPnlObservation,
+    ) -> anyhow::Result<Option<KillSwitchState>> {
         if !self
             .config
             .account_ids

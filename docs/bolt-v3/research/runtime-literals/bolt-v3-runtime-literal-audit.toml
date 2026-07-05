@@ -18964,6 +18964,14 @@ reason = '''Stable gate identifier stamped on durable maker requote-throttle evi
 [[allowed]]
 path = '''src/bolt_v3_decision_evidence.rs'''
 kind = '''string'''
+literal = '''"bolt_v3.settlement"'''
+context = '''pub const BOLT_V3_SETTLEMENT_GATE_ID: &str = "bolt_v3.settlement";'''
+classification = '''decision_evidence_gate_id'''
+reason = '''Stable gate identifier stamped on durable settlement and settlement booking-error evidence records; part of the JSONL audit schema, not operator runtime configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
 literal = '''"entry_skip"'''
 context = '''pub const BOLT_V3_ENTRY_SKIP_RECORD_KIND: &str = "entry_skip";'''
 classification = '''decision_evidence_record_kind'''
@@ -18996,10 +19004,34 @@ reason = '''JSONL envelope discriminator for maker requote-throttle evidence rec
 [[allowed]]
 path = '''src/bolt_v3_decision_evidence.rs'''
 kind = '''string'''
+literal = '''"settlement"'''
+context = '''pub const BOLT_V3_SETTLEMENT_RECORD_KIND: &str = "settlement";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for successful settlement evidence records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"settlement_booking_error"'''
+context = '''pub const BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND: &str = "settlement_booking_error";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for accepted fail-closed settlement booking-error evidence records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
 literal = '''"loss_governor"'''
 context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";'''
 classification = '''decision_evidence_subsystem_label'''
 reason = '''Stable subsystem label embedded in durable loss-governor halt evidence so operators can distinguish the firing subsystem; it is evidence schema text, not runtime configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"duplicate settlement key `{settlement_key}` in bolt-v3 settlement evidence"'''
+context = '''anyhow!("duplicate settlement key `{settlement_key}` in bolt-v3 settlement evidence")'''
+classification = '''decision_evidence_duplicate_settlement_key_diagnostic'''
+reason = '''Fail-closed diagnostic for ambiguous settlement idempotency evidence during recovery; operator settlement keys are derived from positions, not configured by this literal.'''
 
 [[allowed]]
 path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''

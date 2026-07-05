@@ -508,11 +508,17 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     /// contract: production must record the realized_pnl produced by the shared
     /// settlement oracle, not a separately rounded recomputation.
     Settlement(RecordedSettlementEvidenceEvent),
+    SettlementBookingError(RecordedSettlementBookingErrorEvidenceEvent),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct RecordedSettlementEvidenceEvent {
     pub(super) realized_pnl: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RecordedSettlementBookingErrorEvidenceEvent {
+    pub(super) reason: crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorReason,
 }
 
 #[derive(Debug, Default)]
@@ -528,13 +534,24 @@ impl RecordingSequencedDecisionEvidenceWriter {
             .clone()
     }
 
-    #[allow(dead_code)]
-    pub(super) fn record_settlement(&self, realized_pnl: f64) {
+    pub(super) fn push_settlement(&self, realized_pnl: f64) {
         self.events
             .lock()
             .expect("recording evidence writer mutex poisoned")
             .push(RecordedDecisionEvidenceEvent::Settlement(
                 RecordedSettlementEvidenceEvent { realized_pnl },
+            ));
+    }
+
+    pub(super) fn push_settlement_booking_error(
+        &self,
+        reason: crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorReason,
+    ) {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::SettlementBookingError(
+                RecordedSettlementBookingErrorEvidenceEvent { reason },
             ));
     }
 }
@@ -683,6 +700,26 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .push(RecordedDecisionEvidenceEvent::RequoteThrottle(
                 throttle.clone(),
             ));
+        Ok(())
+    }
+
+    fn record_settlement(
+        &self,
+        evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
+    ) -> Result<()> {
+        let realized_pnl = evidence
+            .realized_pnl
+            .parse::<f64>()
+            .map_err(|error| anyhow::anyhow!("settlement realized_pnl did not parse: {error}"))?;
+        self.push_settlement(realized_pnl);
+        Ok(())
+    }
+
+    fn record_settlement_booking_error(
+        &self,
+        evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+    ) -> Result<()> {
+        self.push_settlement_booking_error(evidence.reason);
         Ok(())
     }
 }

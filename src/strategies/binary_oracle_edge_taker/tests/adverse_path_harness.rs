@@ -15,7 +15,7 @@ use nautilus_model::{
 };
 use nautilus_trading::Strategy;
 use serde_json::{Value, json};
-use std::{any::Any, cell::RefCell, panic, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 pub(super) const PRECISION_REJECT_REASON: &str = "invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals, taker amount a max of 4 decimals";
 pub(super) const BALANCE_REJECT_REASON: &str =
@@ -237,7 +237,6 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
 }
 
 #[test]
-#[ignore = "red until #1179 Lane 3 acceptance bar 1: hold-to-resolution settlement"]
 fn hold_to_resolution_books_realized_cash_and_settlement_evidence() {
     assert_reality_fixtures();
 
@@ -271,6 +270,150 @@ fn hold_to_resolution_books_realized_cash_and_settlement_evidence() {
     assert!(
         failed_cases.is_empty(),
         "{SETTLEMENT_PINNED_FAILURE}; failed_cases={failed_cases:?}"
+    );
+}
+
+#[test]
+fn feed_outage_at_resolution_records_booking_error_without_booking_settlement() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-HOLD-TO-RESOLUTION-FEED-OUTAGE"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+
+    let close_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure market close");
+    strategy
+        .check_resolution_feed_outage_at_market_end(close_ms)
+        .expect("feed outage check should record booking-error evidence");
+
+    let events = evidence.events();
+    assert!(
+        settlement_evidence_count(&events) == 0
+            && settlement_booking_error_count(&events) == 1
+            && !matches!(strategy.exposure, ExposureState::Flat),
+        "resolution feed outage must fail closed: no settlement booking, one loud booking-error record, exposure preserved for venue-truth fence; exposure={:?}, events={events:?}",
+        strategy.exposure
+    );
+
+    emit_resolution_update(&mut strategy, 3_101.0);
+    let events = evidence.events();
+    assert!(
+        settlement_evidence_count(&events) == 0
+            && settlement_booking_error_count(&events) == 1
+            && !matches!(strategy.exposure, ExposureState::Flat),
+        "late resolution feed after a recorded outage must remain fail-closed with no booking; exposure={:?}, events={events:?}",
+        strategy.exposure
+    );
+}
+
+#[test]
+fn terminal_after_settlement_stays_flat_and_does_not_double_book() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-TERMINAL-AFTER-SETTLEMENT"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let exit_client_order_id = ClientOrderId::from("EXIT-TERMINAL-AFTER-SETTLEMENT");
+    set_exit_pending(
+        &mut strategy,
+        position,
+        exit_client_order_id,
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    emit_resolution_update(&mut strategy, 3_101.0);
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+
+    let events = evidence.events();
+    assert_eq!(settlement_evidence_count(&events), 1);
+    assert_eq!(settlement_booking_error_count(&events), 0);
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+}
+
+#[test]
+fn terminal_before_settlement_remanages_residual_then_books_residual_settlement() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-TERMINAL-BEFORE-SETTLEMENT"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let exit_client_order_id = ClientOrderId::from("EXIT-TERMINAL-BEFORE-SETTLEMENT");
+    set_exit_pending_with_filled_quantity(
+        &mut strategy,
+        position,
+        exit_client_order_id,
+        Quantity::new(4.0, 2),
+    );
+
+    strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+    assert!(
+        matches!(
+            &strategy.exposure,
+            ExposureState::Managed(managed) if managed.position.quantity == Quantity::new(6.0, 2)
+        ),
+        "terminal before settlement must re-manage the known residual before resolution; exposure={:?}",
+        strategy.exposure
+    );
+
+    emit_resolution_update(&mut strategy, 3_101.0);
+    let expected =
+        expected_hold_to_resolution_settlement_for_quantity(Leg::Yes, 0.45, 3_101.0, 6.0);
+    let events = evidence.events();
+    assert!(
+        matches!(strategy.exposure, ExposureState::Flat)
+            && settlement_evidence_matches(&events, expected.realized_pnl)
+            && settlement_evidence_count(&events) == 1,
+        "residual settlement should book exactly the residual quantity after terminal-before-settlement; expected_realized_pnl={}, exposure={:?}, events={events:?}",
+        expected.realized_pnl,
+        strategy.exposure
     );
 }
 
@@ -350,60 +493,21 @@ fn hold_to_resolution_case(
     }
 }
 
-#[test]
-fn ignored_adverse_path_harness_tests_still_fail_red() {
-    let mut previous_hook = Some(panic::take_hook());
-    // The hook is suppressed only around intentionally red ignored tests; the
-    // meta-test restores it before panicking so wrong-reason failures print.
-    // This guard relies on the test profile using panic=unwind.
-    panic::set_hook(Box::new(|_| {}));
-
-    for (name, test, expected_failure) in [(
-        "hold_to_resolution_books_realized_cash_and_settlement_evidence",
-        hold_to_resolution_books_realized_cash_and_settlement_evidence as fn(),
-        SETTLEMENT_PINNED_FAILURE,
-    )] {
-        let payload = match panic::catch_unwind(test) {
-            Ok(()) => {
-                panic::set_hook(
-                    previous_hook
-                        .take()
-                        .expect("panic hook should still be available for restore"),
-                );
-                panic!(
-                    "{name} unexpectedly passed; verify the pass is caused by the intended #1179 production fix before removing the ignore"
-                );
-            }
-            Err(payload) => payload,
-        };
-        let message = panic_payload_message(payload.as_ref());
-        if !message.contains(expected_failure) {
-            panic::set_hook(
-                previous_hook
-                    .take()
-                    .expect("panic hook should still be available for restore"),
-            );
-            panic!(
-                "{name} failed red for the wrong reason; expected panic to contain {expected_failure:?}, got {message:?}"
-            );
-        }
-    }
-
-    panic::set_hook(
-        previous_hook
-            .take()
-            .expect("panic hook should still be available for restore"),
+fn emit_resolution_update(strategy: &mut BinaryOracleEdgeTaker, reference_close_price: f64) {
+    let close_report_ts_ms = strategy
+        .active
+        .interval_end_ms
+        .expect("fixture should configure the interval close boundary");
+    let resolution_update = IndexPriceUpdate::new(
+        strategy
+            .resolution_instrument_id()
+            .expect("fixture should configure the resolution instrument"),
+        Price::new(reference_close_price, 1),
+        UnixNanos::from(close_report_ts_ms * NANOS_PER_MILLI_U64),
+        UnixNanos::from(close_report_ts_ms * NANOS_PER_MILLI_U64),
     );
-}
-
-fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
-    if let Some(message) = payload.downcast_ref::<String>() {
-        return message.clone();
-    }
-    if let Some(message) = payload.downcast_ref::<&'static str>() {
-        return (*message).to_string();
-    }
-    "<non-string panic payload>".to_string()
+    DataActor::on_index_price(strategy, &resolution_update)
+        .expect("resolution index price should route through the strategy handler");
 }
 
 fn partial_fill_residual_is_managed_or_fresh_reexit(
@@ -523,6 +627,31 @@ fn open_sell_exit_order_count(
         .count()
 }
 
+fn set_exit_pending_with_filled_quantity(
+    strategy: &mut BinaryOracleEdgeTaker,
+    position: OpenPositionState,
+    client_order_id: ClientOrderId,
+    filled_quantity: Quantity,
+) {
+    strategy.exposure = ExposureState::ExitPending(ExitPendingState {
+        pending_exit: PendingExitState {
+            client_order_id,
+            market_id: position.market_id.clone(),
+            position_id: Some(position.position_id),
+            fill_received: true,
+            filled_quantity: Some(filled_quantity),
+            close_received: false,
+            terminal_received: false,
+            residual_position_observed_after_fill: false,
+        },
+        position: Some(ManagedPositionState {
+            position,
+            origin: ManagedPositionOrigin::StrategyEntry,
+            pending_entry: None,
+        }),
+    });
+}
+
 fn held_instrument_id(strategy: &BinaryOracleEdgeTaker, held_leg: Leg) -> InstrumentId {
     match held_leg {
         Leg::Yes => strategy
@@ -545,10 +674,24 @@ fn expected_hold_to_resolution_settlement(
     entry_price: f64,
     reference_close_price: f64,
 ) -> BinarySettlementResult {
+    expected_hold_to_resolution_settlement_for_quantity(
+        held_leg,
+        entry_price,
+        reference_close_price,
+        10.0,
+    )
+}
+
+fn expected_hold_to_resolution_settlement_for_quantity(
+    held_leg: Leg,
+    entry_price: f64,
+    reference_close_price: f64,
+    quantity: f64,
+) -> BinarySettlementResult {
     let lot = BinarySettlementLot {
         leg: held_leg,
         side: QuoteSide::Buy,
-        quantity: 10.0,
+        quantity,
         entry_price,
     };
     settle_maker_runtime_reference_prices(MakerRuntimeSettlementInput {
@@ -559,6 +702,25 @@ fn expected_hold_to_resolution_settlement(
     })
     .result
     .expect("fixture payout should settle the held lot")
+}
+
+fn settlement_evidence_count(events: &[RecordedDecisionEvidenceEvent]) -> usize {
+    events
+        .iter()
+        .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::Settlement(_)))
+        .count()
+}
+
+fn settlement_booking_error_count(events: &[RecordedDecisionEvidenceEvent]) -> usize {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                RecordedDecisionEvidenceEvent::SettlementBookingError(_)
+            )
+        })
+        .count()
 }
 
 fn settlement_evidence_matches(

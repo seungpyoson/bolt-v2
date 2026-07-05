@@ -4,6 +4,7 @@ run-name: Debug Test [${{ inputs.ref }}]
 # Usage contract: iteration happens here; full CI runs only at merge time and for
 # final pre-merge evidence. This workflow is dispatch-only, non-gating, and never
 # emits provenance or check-run authorization.
+# if this lane ever becomes gate-relevant, it migrates to digest pins.
 
 on:
   workflow_dispatch:
@@ -35,6 +36,9 @@ jobs:
     name: debug-test
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
@@ -48,6 +52,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.ref }}
+
+      - name: Record checked-out SHA
+        shell: bash
+        run: |
+          echo "Checked-out SHA: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:

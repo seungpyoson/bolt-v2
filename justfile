@@ -273,6 +273,7 @@ debug-test filter package="": check-workspace require-rust-verification-owner
     package="${DEBUG_TEST_PACKAGE:-}"
     if [[ -z "$filter" ]]; then filter={{quote(filter)}}; fi
     if [[ -z "$package" ]]; then package={{quote(package)}}; fi
+    if [[ -z "$filter" ]]; then echo "ERROR: debug-test filter must be non-empty" >&2; exit 2; fi
     args=(-E "$filter")
     if [[ -n "$package" ]]; then args=(-p "$package" "${args[@]}"); fi
     if [[ -s "${NEXTEST_ARCHIVE_PATH:-}" ]]; then

@@ -2182,7 +2182,7 @@ jobs:
             grant_swap_base,
             grant_swap_head,
         )
-    if not any("permissions grant jobs.first.permissions id-token: write" in error for error in grant_swap_errors):
+    if not any("permissions grant jobs.first id-token: write" in error for error in grant_swap_errors):
         raise AssertionError(f"per-job permission broadening must be blocked, got: {grant_swap_errors}")
 
     allowlist_errors = self_authorizing_errors_for_changes(
@@ -8514,6 +8514,15 @@ def assert_debug_test_workflow_contract() -> None:
         DEBUG_TEST_WORKFLOW_PATH: workflow,
         ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml"),
     }
+    expected_scoped_grants = {
+        ("permissions", "contents", "read"),
+        ("jobs.debug-test", "contents", "read"),
+        ("jobs.debug-test", "id-token", "write"),
+    }
+    scoped_grants = verifier.yaml_permissions_scoped_grants(workflow)
+    if scoped_grants != expected_scoped_grants:
+        raise AssertionError(f"debug-test permissions grants drifted: {scoped_grants!r}")
+
     errors = verifier.verify_debug_test_workflow(workflows, repo_source_text("justfile"))
     if errors:
         raise AssertionError(f"debug-test workflow must satisfy its contract, got: {errors}")
@@ -8524,8 +8533,20 @@ def assert_debug_test_workflow_contract() -> None:
             workflow.replace("on:\n  workflow_dispatch:\n", "on:\n  push:\n    branches: [main]\n  workflow_dispatch:\n", 1),
         ),
         (
-            "debug-test workflow permissions must be contents: read only",
+            "debug-test workflow permissions must match scoped allowlist",
             workflow.replace("permissions:\n  contents: read\n", "permissions:\n  contents: read\n  actions: read\n", 1),
+        ),
+        (
+            "debug-test workflow permissions must match scoped allowlist",
+            workflow.replace("    permissions:\n      contents: read\n      id-token: write\n", "    permissions:\n      contents: read\n      id-token: write\n      statuses: write\n", 1),
+        ),
+        (
+            "debug-test workflow permissions must match scoped allowlist",
+            workflow.replace("    permissions:\n      contents: read\n      id-token: write\n", "    permissions: write-all\n", 1),
+        ),
+        (
+            "debug-test workflow permissions must match scoped allowlist",
+            workflow.replace("      id-token: write\n", "", 1),
         ),
         (
             "debug-test workflow must not declare concurrency",
@@ -8582,6 +8603,15 @@ def assert_debug_test_workflow_contract() -> None:
     quote_errors = verifier.verify_debug_test_workflow(workflows, unsafe_justfile)
     if not any("justfile debug-test recipe must shell-quote direct filter/package arguments" in error for error in quote_errors):
         raise AssertionError(f"unsafe direct debug-test filter interpolation must be rejected, got: {quote_errors}")
+
+    unguarded_justfile = repo_source_text("justfile").replace(
+        '    if [[ -z "$filter" ]]; then echo "ERROR: debug-test filter must be non-empty" >&2; exit 2; fi\n',
+        "",
+        1,
+    )
+    guard_errors = verifier.verify_debug_test_workflow(workflows, unguarded_justfile)
+    if not any("justfile debug-test recipe must fail closed on an empty filter" in error for error in guard_errors):
+        raise AssertionError(f"empty debug-test filter guard must be rejected, got: {guard_errors}")
 
 
 def assert_bootstrap_uses_onepassword_key_generation() -> None:

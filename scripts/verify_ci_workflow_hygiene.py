@@ -10581,7 +10581,8 @@ def yaml_permissions_scoped_grants(workflow_text: str) -> set[tuple[str, str, st
             stack.pop()
         scalar = unquote_yaml_scalar(match.group(3)).strip()
         if key == "permissions":
-            scope = ".".join([*(ancestor for _indent, ancestor in stack), key])
+            ancestors = [ancestor for _indent, ancestor in stack]
+            scope = ".".join(ancestors) if ancestors else key
             for grant_key, grant_value in yaml_permissions_block_grants(
                 lines,
                 index,
@@ -14929,15 +14930,21 @@ def verify_debug_test_workflow(
     if '        required: true' not in trigger_text or '        default: ""' not in trigger_text:
         errors.append(f"{workflow_name} debug-test workflow must pin required ref/filter and optional package inputs")
 
-    permissions = [line for line in top_level_block(workflow_text, "permissions") if line.strip()]
-    if permissions != ["  contents: read"]:
-        errors.append(f"{workflow_name} debug-test workflow permissions must be contents: read only")
+    expected_scoped_permissions = {
+        ("permissions", "contents", "read"),
+        ("jobs.debug-test", "contents", "read"),
+        ("jobs.debug-test", "id-token", "write"),
+    }
+    scoped_permissions = yaml_permissions_scoped_grants(workflow_text)
+    if scoped_permissions != expected_scoped_permissions:
+        errors.append(f"{workflow_name} debug-test workflow permissions must match scoped allowlist")
     if top_level_block(workflow_text, "concurrency"):
         errors.append(f"{workflow_name} debug-test workflow must not declare concurrency")
     if "AWS_CI_CACHE_ROLE_ARN" in workflow_clean or "AWS_CI_CACHE_PR_READONLY_ROLE_ARN" not in workflow_clean:
         errors.append(f"{workflow_name} debug-test workflow must use the PR-readonly cache role only")
+    if "if this lane ever becomes gate-relevant, it migrates to digest pins" not in workflow_text:
+        errors.append(f"{workflow_name} debug-test workflow must document the digest-pin graduation contract")
     for forbidden in (
-        "id-token:",
         "actions:",
         "checks:",
         "pull-requests:",
@@ -14968,6 +14975,7 @@ def verify_debug_test_workflow(
             "BOLT_RUST_VERIFICATION_SCCACHE:",
             "DEBUG_TEST_FILTER: ${{ inputs.filter }}",
             "DEBUG_TEST_PACKAGE: ${{ inputs.package || '' }}",
+            'echo "Checked-out SHA: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"',
             "tail -120 \"$log\"",
             "grep -E",
         ):
@@ -15011,6 +15019,8 @@ def verify_debug_test_workflow(
             if fragment not in justfile_text:
                 errors.append("justfile debug-test recipe must shell-quote direct filter/package arguments")
                 break
+        if 'if [[ -z "$filter" ]]; then echo "ERROR: debug-test filter must be non-empty" >&2; exit 2; fi' not in justfile_text:
+            errors.append("justfile debug-test recipe must fail closed on an empty filter")
     return errors
 
 

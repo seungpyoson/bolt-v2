@@ -1,0 +1,175 @@
+Review request: bolt-v2 PR #1226 — FULL-PR adversarial review. LIVE KILL-SWITCH SAFETY CODE.
+
+Repo: https://github.com/seungpyoson/bolt-v2
+PR:   https://github.com/seungpyoson/bolt-v2/pull/1226
+Base: merge-base with origin/main (branch cut post-#1185, >= f57df1916)
+Head:        78dfd70fb392626d677b16d084885de089395f8e
+Surface: src/bolt_v3_kill_switch_store.rs (durable-store schema + append API),
+NEW src/bolt_v3_loss_governor_manual_recovery_ops.rs (452 lines, the command),
+src/main.rs (ops subcommand wiring), src/lib.rs, tests ×3, runtime-literal audit re-anchor.
+
+Context: operators previously had NO shipped way to clear a loss-governor halt — the recovery
+function existed but nothing reached it. This PR adds `ops loss-governor-manual-recovery`:
+offline (node stopped, mirroring InitKillSwitchStore's posture), driving the EXISTING
+evaluate_loss_admission + next_loss_governor_manual_recovery_trading_state +
+LossGovernorManualRecoveryEvidence validation — no forked state machine — and persisting an
+append-only manual-recovery audit history as a NEW additive optional field
+(loss_governor_manual_recoveries) in the durable kill-switch store (schema version unbumped,
+old stores parse to empty history, field serialized only when non-empty).
+
+Claimed guarantees — try to break each:non-armed states are never
+   downgraded outside the sanctioned loss-governor halt path; successful recovery is
+   write-through durable Armed + preserved loss snapshot + audit; recovery-write failure
+   attempts FailedManualIntervention persistence, both-failed is its own loud error; nothing
+   silently succeeds.
+2. Evidence contract: no path constructs or applies a recovery without
+   LossGovernorManualRecoveryEvidence::new validation (operator id, evidence sha256,
+   observed-at) plus the UnauthorizedOperator check — verify where the authorized-operator set
+   comes from and whether it can be empty/bypassed.
+3. Fail-closed store handling: missing store, corrupt store, oversized store, wrong schema
+   version, non-loss-governor states, unsupported states — each a distinct loud error, no
+   auto-create, history never deleted.
+4. Schema compatibility BOTH directions: old store + new binary (must parse, empty history);
+   new store + old binary (what exactly happens — fail-closed halt is acceptable, silent
+   misread is not).
+5. The audit-history preservation path: routine write_state_with_loss_snapshot re-reads and
+   carries history forward; on a failed read it now LOGS log::error (path + error + explicit
+   empty-history statement) and proceeds — verify the regression test genuinely exercises the
+   Err branch and that no OTHER writer path can still drop history silently
+   (write_loss_governor_manual_recovery, bootstrap paths).
+
+Specific attack areas:
+- Concurrency posture: the command assumes the node is STOPPED (documented, mirroring
+  InitKillSwitchStore). Probe the consequence of violating it: node running + offline recovery
+  → the node's next state write re-reads history (preserved?) but can it overwrite/negate the
+  recovery Armed state, or double-apply? Is last-writer-wins here safe, and is the posture
+  loudly documented for operators?
+- Unbounded history growth: recoveries append forever into a store guarded by
+  ensure_state_bytes_within_limit — after enough entries, does routine state persistence start
+  FAILING (fail-closed brick of halt recording)? What's the limit vs per-record size math?
+- Evidence file handling: path/size limits on the evidence file
+  (manual_recovery_evidence_max_path_bytes existed in the runtime path) — mirrored here?
+- Degraded-state invariants: --help from any directory with no config; nonexistent state path
+  exits non-zero with a clear message (tests claimed — verify).
+- The now_ns source for the offline command (clock trust for evaluate_loss_admission's
+  staleness math).
+
+Evidence on file (verify, don't trust): red proof run 28710073223 at pre-impl commit 7110259e9
+(missing-symbol failures quoted); final full CI 28713654494 green at exactly 78dfd70fb; a
+superseded run 28713098359 that caught the first regression test not exercising the Err branch
+(then fixed); deviations declared (draft-toggle ×2 for dispatch, one probe dead on infra).
+
+Report findings as: severity / file + symbol anchor / concrete failure scenario.
+"Looks fine" only per-guarantee, with reasoning stated.
+
+---
+
+Review request: bolt-v2 PR #1226, round 2 — FULL-PR adversarial review at the redesigned head.
+LIVE KILL-SWITCH SAFETY CODE. This round REDESIGNED the audit storage and encoded an owner
+product decision — re-verify the whole PR, not the delta.
+
+Repo: https://github.com/seungpyoson/bolt-v2
+PR:   https://github.com/seungpyoson/bolt-v2/pull/1226
+Head: f450f47cdc8772619fed412f90532690e4558038 (round-1 head was 78dfd70fb)
+Surface: kill_switch_store.rs (audit file reader/writer, schema REVERTED to pre-PR shape),
+bolt_v3_atomic_io.rs (+27, append primitive), loss_governor_manual_recovery_ops.rs (886 lines),
+main.rs (CLI + about text), tests ×3, runtime-lite
+   loss_governor_manual_recoveries at all — this dissolves round-1's four findings (64KB cap
+   coupling → bricked halt recording → invalidate() destroying history; old-binary rollback
+   rewriting history away; corrupt-read silent drop; node-vs-CLI audit-loss race).
+2. OWNER DECISION (Option A, fail-closed — "the machine has the final word"): recovery can
+   NEVER clear a halt while the stored loss still breaches; dimensions without real durable
+   data refuse fail-closed (no more fabricated-passing zeros); the command is NOT an override —
+   stated in --help verbatim with the sanctioned alternative (reviewed config change / wait).
+   FailedManualIntervention fallback + both-failed, refusal diagnostics.
+
+DECLARED DEVIATION (scrutinize): both red-proof probe attempts at test-only commit a1e8745e8
+died at runner infra (exit 143) before assertions — there is NO executed red proof this round.
+The differential claims rest on construction + green tests at head. Verify by reading: would
+the audit-survival tests actually FAIL against the round-1 in-store design (do they exercise
+invalidate() and a routine state write against the audit file)? Would the fail-closed dimension
+tests FAIL against the round-1 fabricated-passing
+
+Try to break:
+1. The new audit file's own failure modes: append atomicity (partial line on crash?), file
+   permissions (private like the store?), corrupt/unreadable audit file behavior on load and
+   on append (must not block state recovery; must not silently swallow), unbounded growth
+   (now decoupled from the safety file — is plain disk growth acceptable/documented?).
+2. Option A enforcement completeness: enumerate every dimension evaluate_loss_admission checks;
+   confirm each is either real-durable-data or refuses — no remaining fabricated value. Confirm
+   a still-breaching stored daily loss refuses WITH the correct diagnostic.
+3. Schema revert completeness: the store round-trips byte-identical to pre-PR for all states;
+   no residual field, no version change; old binary ↔ new store now trivially compatible.
+4. Ordering: audit line written BEFORE the state write — verify the attempted-recovery record
+   exists even when the state write fails, and the
+   paths exit non-zero with clear messages.
+
+Evidence on file (verify, don't trust): full CI 28717116692 green at exactly f450f47cd;
+round-1 red proof 28710073223 (missing-symbol) still stands for the command's existence;
+round-2 probe deaths quoted in the body.
+
+Report findings as: severity / file + symbol anchor / concrete failure scenario.
+"Looks fine" only per-guarantee, with reasoning stated.
+
+---
+
+Review request: bolt-v2 PR #1226, round 3 (final) — FULL-PR adversarial review.
+LIVE KILL-SWITCH SAFETY CODE + owner-decided semantics (A2). Re-verify the whole PR.
+
+Repo: https://github.com/seungpyoson/bolt-v2
+PR:   https://github.com/seungpyoson/bolt-v2/pull/1226
+Head: 50354ebe8095ad6723d12ccdbced05e863cac5f8 (round-2 head f450f47cd was panel-reviewed:
+redesign confirmed, but the command was proven unusable under validated configs — round 3
+implements the owzero human override."
+Offline recovery clears ONLY the stored TRIGGERING condition when clock-verifiably passed:
+- DailyLossLimit trigger → cleared iff the trigger's UTC epoch-day (observed_at_ns /
+  86_400e9) is STRICTLY before the current UTC epoch-day (from now_ns).
+- RollingLossLimit trigger → cleared iff the rolling window duration has elapsed since the
+  trigger's observed_at_ns.
+- PerTradeLossLimit / MaxDrawdownLimit / StaleLossSnapshot triggers → REFUSE offline with a
+  diagnostic pointing to runtime-path recovery (tracked follow-up).
+everything at next node start (the documented backstop).
+
+Round-3 changes:
+1. A2 logic in the SHARED state-machine home (bolt_v3_loss_halt_actions.rs, +279) — verify
+   ONE implementation, mode-explicit, and that the runtime path's behavior with fresh data is
+   UNCHANGED (no fork, no behavior change for the live node).
+2. NEW durable field: optional loss_halt_reason persisted with the halt (kill_switch.rs +
+   kill_switch_store.rs) — verify additive compat BOTH directions (old store + new binary →
+   None → refuse-with-legacy-diagnostic; new store + old binary → what exactly happens?).
+3. Audit hardening: REFUSED and write-failed attempts now recorded with an outcome field;
+   torn FINAL line tolerated loudly on load (mid-file corruption still hard-errors); append
+   onto a file not ending in '\n' refuses loudly.
+4. Docs: A2 verbatim in --help/module docs; stop-node posture; live re-check backstop;
+   unbounded-audit rotation note; attested-evidence metadata.
+5. Coverage: day-rolled clears / same-day refuses / rolling-elapsed clears / drawdown-trigger
+   refuses / legacy-store refuses / real-store write-failure audit durability.
+
+DECLARED DEVIATION (scrutinize — 3rd PR in a row with this): both red-proof probe runs died
+on runner infra before assertions. NO executed red proofs this round. Verify differentials by
+construction: would the day-rolled-clears test FAIL at the round-2 head (where everything
+refused)? Would the torn-line test FAIL pre-fix?
+
+Try to break:
+1. The UTC-day arithmetic: epoch-day division edge cases (trigger just before midnight, now
+   just after; equal days; observed_at_ns = 0; far-future observed_at vs now — underflow/
+   overflow; confirm leap seconds are irrelevant to epoch-day math).
+2. The rolling-elapsed check: where does the window duration come from (config vs stored?),
+   the verdict — acceptable or a hole?
+3. Trigger-reason integrity: the store is operator-writable by design — confirm the new
+   reason field introduces no NEW trust assumption beyond the store's existing trust model.
+4. Single-implementation claim: no A2 logic duplicated in the ops module (it should only map
+   outcomes); runtime callers of next_loss_governor_manual_recovery_trading_state are
+   behavior-identical for fresh-data inputs.
+5. Refused-attempt audit records: every refusal path writes one (or the audited set is
+   documented); an audit-write failure must not turn a REFUSAL into anything else.
+6. All round-1/2 guarantees at this head: no forked state machine, evidence contract,
+   fail-closed store handling, schema compat (now with the optional reason field), audit-file
+   separation properties, Option-A non-override posture in docs.
+
+Evidence on file (verify, don't trust): full CI 28731948070 green at exactly 50354ebe8;
+fresh same-head PR checks green; round-1 red proof (missing-symbol) stands; round-2/3 probe
+deaths declared in the body.
+
+Report findings as: severity / file + symbol anchor / concrete failure scenario.
+"Looks fine" only per-guarantee, with reasoning stated.

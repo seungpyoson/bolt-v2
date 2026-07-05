@@ -286,6 +286,8 @@ pub fn current_build_head_sha() -> Option<&'static str> {
 const OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP: &str = stringify!(live_node_startup);
 const OPERATOR_HEALTH_REJECT_OBSERVER_READ_ERROR: &str =
     stringify!(order_reject_observer_feed_lock_poisoned);
+const OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR: &str =
+    stringify!(submit_admission_state_lock_poisoned);
 
 pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
@@ -445,6 +447,13 @@ struct BoltV3OperatorHealthTransitionLogger {
     last_surface: Arc<Mutex<Option<BoltV3OperatorHealthSurface>>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoltV3OperatorHealthTransitionEmission {
+    Emitted,
+    Deduped,
+    LoggerLockPoisoned,
+}
+
 impl BoltV3OperatorHealthTransitionLogger {
     fn new() -> Self {
         Self {
@@ -452,7 +461,11 @@ impl BoltV3OperatorHealthTransitionLogger {
         }
     }
 
-    fn emit_surface(&self, reason: &'static str, surface: BoltV3OperatorHealthSurface) {
+    fn emit_surface(
+        &self,
+        reason: &'static str,
+        surface: BoltV3OperatorHealthSurface,
+    ) -> BoltV3OperatorHealthTransitionEmission {
         let mut last_surface = match self.last_surface.lock() {
             Ok(last_surface) => last_surface,
             Err(_) => {
@@ -462,11 +475,11 @@ impl BoltV3OperatorHealthTransitionLogger {
                     serde_json::to_string(&surface)
                         .unwrap_or_else(|error| format!("serialization_failed:{error}"))
                 );
-                return;
+                return BoltV3OperatorHealthTransitionEmission::LoggerLockPoisoned;
             }
         };
         if last_surface.as_ref() == Some(&surface) {
-            return;
+            return BoltV3OperatorHealthTransitionEmission::Deduped;
         }
         log::warn!(
             "bolt-v3 operator health transition: reason={} surface={}",
@@ -475,6 +488,7 @@ impl BoltV3OperatorHealthTransitionLogger {
                 .unwrap_or_else(|error| format!("serialization_failed:{error}"))
         );
         *last_surface = Some(surface);
+        BoltV3OperatorHealthTransitionEmission::Emitted
     }
 }
 
@@ -494,21 +508,28 @@ fn live_operator_health_surface(
             }
         },
     );
-    let capital_state = submit_admission.capital_admission_state_snapshot();
-    let kill_switch_state = submit_admission.kill_switch_state();
     let venue_truth = if venue_truth_configured {
-        BoltV3VenueTruthHealth::from_configured_kill_switch_and_capital_state(
-            &kill_switch_state,
-            capital_state.as_ref(),
-        )
+        match submit_admission.operator_health_snapshot() {
+            Ok(snapshot) => BoltV3VenueTruthHealth::from_configured_kill_switch_and_capital_state(
+                &snapshot.kill_switch_state,
+                snapshot.capital_admission_state.as_ref(),
+            ),
+            Err(_) => BoltV3VenueTruthHealth::read_error_without_snapshot(
+                OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR,
+            ),
+        }
     } else {
         BoltV3VenueTruthHealth::not_configured()
     };
     BoltV3OperatorHealthSurface::from_parts(
         reject_observer,
         venue_truth,
-        input_health
-            .unwrap_or_else(|| BoltV3InputHealth::unobserved(input_health_configured_source_count)),
+        input_health.unwrap_or_else(|| {
+            // Lane 5 live input health is intentionally Unobserved here: Lane 2
+            // stale-policy fail-closed checks and `ops reference-current-price-health`
+            // cover reference inputs until the follow-up live input-health emitter lands.
+            BoltV3InputHealth::unobserved(input_health_configured_source_count)
+        }),
     )
 }
 

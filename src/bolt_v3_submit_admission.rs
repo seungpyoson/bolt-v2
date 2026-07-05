@@ -158,6 +158,17 @@ pub struct BoltV3SubmitAdmissionState {
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3SubmitAdmissionOperatorHealthSnapshot {
+    pub kill_switch_state: KillSwitchState,
+    pub capital_admission_state: Option<NtDerivedCapitalAdmissionState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3SubmitAdmissionHealthReadError {
+    StateLockPoisoned,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoltV3LossFreshness {
     pub account_state_count: u64,
@@ -616,6 +627,32 @@ impl BoltV3SubmitAdmissionState {
     ) -> anyhow::Result<()> {
         self.decision_evidence
             .record_venue_truth_divergence(evidence)
+    }
+
+    pub fn operator_health_snapshot(
+        &self,
+    ) -> Result<BoltV3SubmitAdmissionOperatorHealthSnapshot, BoltV3SubmitAdmissionHealthReadError>
+    {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| BoltV3SubmitAdmissionHealthReadError::StateLockPoisoned)?;
+        Ok(BoltV3SubmitAdmissionOperatorHealthSnapshot {
+            kill_switch_state: inner.kill_switch_state.clone(),
+            capital_admission_state: inner
+                .capital_admission
+                .as_ref()
+                .and_then(|capital_admission| capital_admission.state.clone()),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_inner_for_test(&self) {
+        let _guard = self
+            .inner
+            .lock()
+            .expect("test should acquire submit admission lock before poisoning it");
+        panic!("poison submit admission inner");
     }
 
     pub fn capital_admission_state_snapshot(&self) -> Option<NtDerivedCapitalAdmissionState> {

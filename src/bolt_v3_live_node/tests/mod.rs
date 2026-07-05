@@ -13,7 +13,10 @@ use crate::bolt_v3_config::{
 use crate::bolt_v3_iv::config::IvRootConfig;
 use crate::bolt_v3_iv::error::IvRejectReason;
 use crate::bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps};
-use crate::bolt_v3_operator_health::BoltV3OperatorHealthStatus;
+use crate::bolt_v3_operator_health::{
+    BoltV3InputHealth, BoltV3OperatorHealthStatus, BoltV3OperatorHealthSurface,
+    BoltV3RejectObserverHealth, BoltV3VenueTruthHealth,
+};
 use crate::bolt_v3_providers::hyperliquid::{
     ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
 };
@@ -75,6 +78,83 @@ fn live_operator_health_surface_renders_poisoned_reject_feed_as_degraded() {
     assert_eq!(
         surface.reject_observer.read_error.as_deref(),
         Some(OPERATOR_HEALTH_REJECT_OBSERVER_READ_ERROR)
+    );
+}
+
+#[test]
+fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth_read_error() {
+    let writer = Arc::new(NoStrategyDecisionEvidenceWriter);
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+    let capital_admission = capital_admission_config_from_loaded(&loaded)
+        .expect("fixture capital admission config should parse")
+        .expect("fixture should configure venue-truth capital admission");
+    let submit_admission =
+        BoltV3SubmitAdmissionState::new_with_capital_admission(writer, capital_admission);
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        submit_admission.poison_inner_for_test();
+    }));
+    assert!(poisoned.is_err());
+
+    let surface = live_operator_health_surface(None, &submit_admission, true, 0, None);
+
+    assert_eq!(
+        surface.venue_truth.status,
+        BoltV3OperatorHealthStatus::Degraded
+    );
+    assert_eq!(
+        surface.venue_truth.read_error.as_deref(),
+        Some(OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR)
+    );
+}
+
+#[test]
+fn operator_health_transition_logger_dedupes_identical_and_emits_changed_surface() {
+    let logger = BoltV3OperatorHealthTransitionLogger::new();
+    let nominal = BoltV3OperatorHealthSurface::not_configured();
+    let changed = BoltV3OperatorHealthSurface::from_parts(
+        BoltV3RejectObserverHealth::unobserved(),
+        BoltV3VenueTruthHealth::not_configured(),
+        BoltV3InputHealth::not_configured(),
+    );
+
+    assert_eq!(
+        logger.emit_surface(OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP, nominal.clone()),
+        BoltV3OperatorHealthTransitionEmission::Emitted
+    );
+    assert_eq!(
+        logger.emit_surface(OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP, nominal),
+        BoltV3OperatorHealthTransitionEmission::Deduped
+    );
+    assert_eq!(
+        logger.emit_surface(OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP, changed),
+        BoltV3OperatorHealthTransitionEmission::Emitted
+    );
+}
+
+#[test]
+fn operator_health_transition_logger_survives_poisoned_cache_lock() {
+    let logger = BoltV3OperatorHealthTransitionLogger::new();
+    let poison_logger = logger.clone();
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _guard = poison_logger
+            .last_surface
+            .lock()
+            .expect("test should acquire logger lock before poisoning it");
+        panic!("poison operator health transition logger");
+    }));
+    assert!(poisoned.is_err());
+
+    let emission = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        logger.emit_surface(
+            OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP,
+            BoltV3OperatorHealthSurface::not_configured(),
+        )
+    }));
+
+    assert_eq!(
+        emission.expect("poisoned logger lock must not panic"),
+        BoltV3OperatorHealthTransitionEmission::LoggerLockPoisoned
     );
 }
 

@@ -14,6 +14,8 @@ use super::*;
 
 const OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE: &str =
     stringify!(venue_truth_capture_failure);
+const OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_RECOVERY: &str =
+    stringify!(venue_truth_capture_recovery);
 const OPERATOR_HEALTH_REASON_VENUE_TRUTH_RUNTIME_FAILURE: &str =
     stringify!(venue_truth_runtime_failure);
 const OPERATOR_HEALTH_REASON_VENUE_TRUTH_DIVERGENCE: &str = stringify!(venue_truth_divergence);
@@ -281,7 +283,11 @@ async fn run_venue_truth_runtime(
             }
         };
         captures_missed = 0;
-        let reconcile = reconcile_venue_truth_snapshot(&feed, snapshot);
+        let reconcile = reconcile_venue_truth_snapshot_with_health_emission(
+            &feed,
+            snapshot,
+            health_emitter.as_ref(),
+        );
         if let Err(divergence) = reconcile {
             halt_for_venue_truth_divergence(
                 &submit_admission,
@@ -293,6 +299,21 @@ async fn run_venue_truth_runtime(
             break;
         }
     }
+}
+
+fn reconcile_venue_truth_snapshot_with_health_emission(
+    feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
+    snapshot: crate::bolt_v3_venue_truth::VenueTruthSnapshot,
+    health_emitter: Option<&BoltV3OperatorHealthTransitionEmitter>,
+) -> Result<
+    Option<BoltV3SubmitCapitalAdmissionNtComponents>,
+    Box<crate::bolt_v3_venue_truth::VenueTruthDivergence>,
+> {
+    let reconcile = reconcile_venue_truth_snapshot(feed, snapshot)?;
+    if let Some(health_emitter) = health_emitter {
+        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_RECOVERY);
+    }
+    Ok(reconcile)
 }
 
 fn reconcile_venue_truth_snapshot(
@@ -1363,6 +1384,65 @@ mod tests {
             KillSwitchStateKind::Armed
         );
         assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    }
+
+    #[test]
+    fn venue_truth_failure_recovery_repeat_failure_emits_three_health_transitions() {
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
+            Arc::new(NoStrategyDecisionEvidenceWriter),
+            test_capital_admission_config(),
+        ));
+        let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
+            test_capital_admission_runtime_feed_config(),
+            admission.clone(),
+        )));
+        let logger = BoltV3OperatorHealthTransitionLogger::new();
+        let emissions = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let health_emitter: BoltV3OperatorHealthTransitionEmitter = {
+            let admission = admission.clone();
+            let logger = logger.clone();
+            let emissions = emissions.clone();
+            Arc::new(move |reason| {
+                let surface = live_operator_health_surface(None, &admission, true, 0, None);
+                if logger.emit_surface(reason, surface)
+                    == BoltV3OperatorHealthTransitionEmission::Emitted
+                {
+                    emissions
+                        .lock()
+                        .expect("test emissions lock should not be poisoned")
+                        .push(reason);
+                }
+            })
+        };
+        let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
+            "clob_open_orders",
+            "transport_or_decode",
+            anyhow::anyhow!("transport failed"),
+        ));
+
+        handle_venue_truth_capture_failure(&admission, 1_200, 1, &error);
+        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE);
+
+        let mut recovery = test_venue_truth_snapshot();
+        recovery.captured_at = UnixNanos::from(1_300);
+        reconcile_venue_truth_snapshot_with_health_emission(&feed, recovery, Some(&health_emitter))
+            .expect("accepted venue truth snapshot should reconcile");
+
+        handle_venue_truth_capture_failure(&admission, 1_400, 1, &error);
+        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE);
+
+        let emissions = emissions
+            .lock()
+            .expect("test emissions lock should not be poisoned")
+            .clone();
+        assert_eq!(
+            emissions,
+            vec![
+                OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE,
+                OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_RECOVERY,
+                OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE,
+            ]
+        );
     }
 
     #[test]

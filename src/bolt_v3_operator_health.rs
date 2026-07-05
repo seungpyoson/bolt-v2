@@ -109,6 +109,7 @@ pub struct BoltV3VenueTruthHealth {
     pub divergence: Option<BoltV3VenueTruthDivergenceHealth>,
     pub capital_state_source: Option<String>,
     pub venue_truth_capture_suspended: bool,
+    pub read_error: Option<String>,
 }
 
 impl BoltV3VenueTruthHealth {
@@ -119,6 +120,7 @@ impl BoltV3VenueTruthHealth {
             divergence: None,
             capital_state_source: None,
             venue_truth_capture_suspended: false,
+            read_error: None,
         }
     }
 
@@ -129,6 +131,18 @@ impl BoltV3VenueTruthHealth {
             divergence: None,
             capital_state_source: None,
             venue_truth_capture_suspended: false,
+            read_error: None,
+        }
+    }
+
+    pub fn read_error_without_snapshot(error: impl Into<String>) -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::Degraded,
+            kill_switch_state: stringify!(read_error).to_string(),
+            divergence: None,
+            capital_state_source: None,
+            venue_truth_capture_suspended: false,
+            read_error: Some(error.into()),
         }
     }
 
@@ -171,6 +185,7 @@ impl BoltV3VenueTruthHealth {
             divergence,
             capital_state_source,
             venue_truth_capture_suspended,
+            read_error: None,
         }
     }
 }

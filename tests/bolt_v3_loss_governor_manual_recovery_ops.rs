@@ -2,6 +2,9 @@ use crate::support;
 
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use bolt_v2::{
     bolt_v3_config::{
         KillSwitchConfigBlock, LiveSubmitGovernanceBlock, LiveSubmitGovernanceMode,
@@ -164,6 +167,21 @@ fn loss_governor_halted_state_at(observed_at_ns: u64) -> KillSwitchState {
             "loss-governor",
             observed_at_ns,
             "loss governor triggered",
+        ),
+    }
+}
+
+fn loss_governor_halted_state_with_reason_at(
+    observed_at_ns: u64,
+    loss_halt_reason: LossHaltReason,
+) -> KillSwitchState {
+    KillSwitchState::Halted {
+        halt_id: "halt-loss-governor-1".to_string(),
+        trigger: KillSwitchHaltTrigger::loss_governor_breach_with_reason(
+            "loss-governor",
+            observed_at_ns,
+            "loss governor triggered",
+            loss_halt_reason,
         ),
     }
 }
@@ -429,7 +447,8 @@ fn manual_recovery_clears_daily_halt_after_utc_day_rolls() {
 fn manual_recovery_refuses_same_day_daily_halt() {
     let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
     let store = runtime_store(&loaded);
-    let halted = loss_governor_halted_state_at(10 * NANOS_PER_UTC_DAY + 1_000);
+    let halt_observed_at_ns = 10 * NANOS_PER_UTC_DAY + 1_000;
+    let halted = loss_governor_halted_state_at(halt_observed_at_ns);
     persist_loss_governor_halted_state_with_reason(
         &store,
         halted.clone(),
@@ -449,7 +468,10 @@ fn manual_recovery_refuses_same_day_daily_halt() {
         store
             .load_recovery_state()
             .expect("store should remain readable"),
-        KillSwitchRecoveryState::Recovered(halted)
+        KillSwitchRecoveryState::Recovered(loss_governor_halted_state_with_reason_at(
+            halt_observed_at_ns,
+            LossHaltReason::DailyLossLimit,
+        ))
     );
 }
 
@@ -493,9 +515,10 @@ fn manual_recovery_refuses_drawdown_trigger_with_runtime_path_diagnostic() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn manual_recovery_state_write_failure_leaves_prewrite_audit_durable() {
-    let (mut loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
+    let (loaded, _temp) = loaded_with_daily_only_loss_governor("state/kill-switch.json");
     let store = runtime_store(&loaded);
     let halt_observed_at_ns = 10 * NANOS_PER_UTC_DAY + 1_000;
     persist_loss_governor_halted_state_with_reason(
@@ -504,17 +527,21 @@ fn manual_recovery_state_write_failure_leaves_prewrite_audit_durable() {
         &zero_loss_snapshot(),
         LossHaltReason::DailyLossLimit.as_str(),
     );
-    loaded
-        .root
-        .risk
-        .kill_switch
-        .as_mut()
-        .expect("test enables kill switch")
-        .max_state_file_bytes = 1;
+    fs::write(manual_recovery_audit_path(&store), b"")
+        .expect("empty audit file should pre-exist so append can succeed");
+    let state_dir = store
+        .path()
+        .parent()
+        .expect("state path should have parent")
+        .to_path_buf();
+    fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o500))
+        .expect("state dir should become read-only");
 
-    let error =
-        recover_loss_governor_manual_halt(&loaded, command_at(11 * NANOS_PER_UTC_DAY + 1_000))
-            .expect_err("state write should fail after the audit attempt is durable");
+    let recovery_result =
+        recover_loss_governor_manual_halt(&loaded, command_at(11 * NANOS_PER_UTC_DAY + 1_000));
+    fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700))
+        .expect("state dir permissions should restore for cleanup");
+    let error = recovery_result.expect_err("state write should fail after the audit is durable");
 
     assert!(
         matches!(

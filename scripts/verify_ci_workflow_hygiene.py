@@ -12596,7 +12596,7 @@ def partition_run_body_digest_errors(
     constant_name: str,
 ) -> list[str]:
     if run_body is None:
-        return []
+        return [f"{label}: digest pin target step not found"]
     actual_sha256 = run_body_sha256(run_body)
     if actual_sha256 == expected_sha256:
         return []

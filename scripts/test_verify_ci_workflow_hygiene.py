@@ -14047,6 +14047,17 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "BVS_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256" in error
         for error in bvs_partition_comment_probe_errors
     ), bvs_partition_comment_probe_errors
+    bvs_partition_step_rename_probe = replace_once_after(
+        good,
+        "  test-archive:",
+        "      - name: test\n",
+        "      - name: renamed test\n",
+    )
+    bvs_partition_step_rename_errors = bvs_cache_errors(bvs_partition_step_rename_probe)
+    assert (
+        "backtester bvs-test archive partition step: digest pin target step not found"
+        in bvs_partition_step_rename_errors
+    ), bvs_partition_step_rename_errors
 
     missing_bvs_archive_save_status = replace_once(
         good,
@@ -16052,6 +16063,17 @@ def main() -> int:
         '            #\n            set +e\n',
     )
     assert_error("ROOT_NEXTEST_ARCHIVE_PARTITIONS_RUN_SHA256", root_partition_comment_probe)
+    root_partition_step_rename_probe = replace_once_after(
+        BASE_WORKFLOW,
+        "  test-archive:",
+        "      - name: Run nextest archive partitions\n",
+        "      - name: Run renamed nextest archive partitions\n",
+    )
+    root_partition_step_rename_errors = load_verifier().verify_workflow(root_partition_step_rename_probe)
+    assert (
+        "test-archive Run nextest archive partitions: digest pin target step not found"
+        in root_partition_step_rename_errors
+    ), root_partition_step_rename_errors
     assert_error(
         "test-archive partition failures must preserve shard exit codes",
         replace_once(

@@ -850,10 +850,6 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    pub(super) fn seed_settled_position_keys(&mut self, keys: BTreeSet<String>) {
-        self.settled_position_keys.extend(keys);
-    }
-
     pub(super) fn check_resolution_feed_outage_at_market_end(&mut self, now_ms: u64) -> Result<()> {
         let Some(interval_end_ms) = self.active.interval_end_ms else {
             return Ok(());

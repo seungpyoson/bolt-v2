@@ -4,7 +4,7 @@
   "checkpoint_id": "896d195d832c",
   "strategy": "manual-commit",
   "branch": "codex/ws6-debug-test-lane",
-  "checkpoints_count": 28,
+  "checkpoints_count": 40,
   "files_touched": [
     "ci/github-actions-runners.toml",
     "justfile",
@@ -47,13 +47,20 @@
       "compact_transcript": "/89/6d195d832c/4/transcript.jsonl",
       "content_hash": "/89/6d195d832c/4/content_hash.txt",
       "prompt": "/89/6d195d832c/4/prompt.txt"
+    },
+    {
+      "metadata": "/89/6d195d832c/5/metadata.json",
+      "transcript": "/89/6d195d832c/5/full.jsonl",
+      "compact_transcript": "/89/6d195d832c/5/transcript.jsonl",
+      "content_hash": "/89/6d195d832c/5/content_hash.txt",
+      "prompt": "/89/6d195d832c/5/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 212933,
-    "cache_creation_tokens": 4993891,
-    "cache_read_tokens": 212929219,
-    "output_tokens": 1458975,
-    "api_call_count": 869
+    "input_tokens": 299453,
+    "cache_creation_tokens": 7384030,
+    "cache_read_tokens": 349373769,
+    "output_tokens": 2007045,
+    "api_call_count": 1239
   }
 }

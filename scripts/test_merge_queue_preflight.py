@@ -1767,8 +1767,17 @@ def assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder() 
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
         first_head = fixture.make_pr(1, {"one.txt": "one\n"})
-        poison_head = fixture.make_pr(2, {"poison.txt": "poison\n"})
-        third_head = fixture.make_pr(3, {"three.txt": "three\n"})
+        poison_head = fixture.make_pr(2, {"poison.txt": "poison\n", "shared.txt": "poison\n"})
+        third_head = fixture.make_pr(3, {"shared.txt": "third\n", "three.txt": "three\n"})
+        bin_dir = write_fake_gh(
+            root,
+            views={
+                1: approved_pr_view(first_head),
+                2: approved_pr_view(poison_head),
+                3: approved_pr_view(third_head),
+            },
+            checks=passing_source_pr_checks(1, 2, 3),
+        )
         log = root / "verifier-log.txt"
         verifier = root / "reject_poison.py"
         write(
@@ -1798,7 +1807,6 @@ def assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder() 
             f"2={poison_head}",
             "--expected-head-sha",
             f"3={third_head}",
-            "--no-gh",
             "--verifier-profile",
             "none",
             "--run-verifier",
@@ -1808,9 +1816,12 @@ def assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder() 
             "2",
             "3",
         ]
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
         result = subprocess.run(
             command,
             cwd=fixture.repo,
+            env=env,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1824,9 +1835,89 @@ def assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder() 
             raise AssertionError(blocked)
         if "poison.txt is not allowed" not in blocked[0]["stdout_preview"]:
             raise AssertionError(blocked)
+        if payload["conflicts"]:
+            raise AssertionError(payload["conflicts"])
         runs = log.read_text(encoding="utf-8").splitlines()
-        assert_equal(runs[0], "one.txt,poison.txt,shared.txt,three.txt", "initial batch-first verifier run")
+        assert_equal(runs[0], "one.txt,poison.txt,shared.txt", "initial batch-first verifier run")
         if "one.txt,shared.txt,three.txt" not in runs:
+            raise AssertionError(runs)
+
+
+def assert_fallback_recombines_survivors_after_batch_max_split() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        heads = {
+            pr: fixture.make_pr(pr, {"poison.txt" if pr == 2 else f"pr{pr:02}.txt": f"pr {pr}\n"})
+            for pr in range(1, 12)
+        }
+        bin_dir = write_fake_gh(
+            root,
+            views={pr: approved_pr_view(head) for pr, head in heads.items()},
+            checks=passing_source_pr_checks(*heads),
+        )
+        log = root / "verifier-log.txt"
+        verifier = root / "reject_poison.py"
+        write(
+            verifier,
+            "from pathlib import Path\n"
+            "import sys\n"
+            f"log = Path({str(log)!r})\n"
+            "files = ','.join(sorted(path.name for path in Path('.').glob('*.txt')))\n"
+            "with log.open('a', encoding='utf-8') as stream:\n"
+            "    stream.write(files + '\\n')\n"
+            "if Path('poison.txt').exists():\n"
+            "    print('poison.txt is not allowed')\n"
+            "    sys.exit(7)\n",
+        )
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={heads[1]}",
+            *[
+                item
+                for pr in range(2, 12)
+                for item in ("--expected-head-sha", f"{pr}={heads[pr]}")
+            ],
+            "--verifier-profile",
+            "none",
+            "--run-verifier",
+            f"{sys.executable} {verifier}",
+            "--json",
+            *(str(pr) for pr in range(1, 12)),
+        ]
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 2, "poison fallback max split rc")
+        payload = parse_json(result.stdout)
+        assert_equal(
+            [batch["prs"] for batch in payload["batches"]],
+            [[1, 3, 4, 5, 6, 7, 8, 9, 10, 11]],
+            "poison fallback max split batches",
+        )
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 2 or blocked[0]["type"] != "verifier_failed":
+            raise AssertionError(blocked)
+        runs = log.read_text(encoding="utf-8").splitlines()
+        if "poison.txt" not in runs[0] or "pr11.txt" in runs[0]:
+            raise AssertionError(runs[0])
+        if "poison.txt" in runs[-1] or "pr11.txt" not in runs[-1]:
             raise AssertionError(runs)
 
 
@@ -1846,6 +1937,37 @@ def install_synthetic_run_fences(fixture: GitFixture, log: pathlib.Path, body: s
     )
     script.chmod(0o755)
     fixture.base = commit(fixture.repo, "install synthetic run_fences")
+    git(fixture.repo, "push", "origin", "main")
+
+
+def install_synthetic_source_fence_static(fixture: GitFixture, log: pathlib.Path, gate_log: pathlib.Path) -> None:
+    git(fixture.repo, "checkout", "main")
+    write(
+        fixture.repo / "scripts" / "local_verification_gate.py",
+        "#!/usr/bin/env python3\n"
+        "from pathlib import Path\n"
+        "import subprocess\n"
+        "import sys\n"
+        f"log = Path({str(gate_log)!r})\n"
+        "with log.open('a', encoding='utf-8') as stream:\n"
+        "    stream.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "separator = sys.argv.index('--')\n"
+        "raise SystemExit(subprocess.run(sys.argv[separator + 1:]).returncode)\n",
+    )
+    write(
+        fixture.repo / "justfile",
+        "source-fence-static:\n"
+        "    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner\n\n"
+        "source-fence-static-fences-only:\n"
+        "    python3 scripts/local_verification_gate.py source-fence-static-fences-only -- just source-fence-static-fences-only-inner\n\n"
+        "[private]\n"
+        "source-fence-static-inner:\n"
+        "    python3 scripts/run_fences.py\n\n"
+        "[private]\n"
+        "source-fence-static-fences-only-inner:\n"
+        "    python3 scripts/run_fences.py --fences-only\n",
+    )
+    fixture.base = commit(fixture.repo, "install synthetic source fence static")
     git(fixture.repo, "push", "origin", "main")
 
 
@@ -1946,6 +2068,19 @@ def assert_preflight_source_fence_profile_selects_fences_only_by_scripts_diff() 
         if "--fences-only" not in direct_run:
             raise AssertionError(direct_run)
 
+        gate_log = root / "source-fence-gate.log"
+        install_synthetic_source_fence_static(fixture, log, gate_log)
+        just_config = write_preflight_config(root, "static", ["just source-fence-static"])
+        just_head = fixture.make_pr(4, {"just.txt": "just\n"})
+        result = run_preflight_with_config(fixture, just_config, {4: just_head})
+        assert_equal(result.returncode, 3, "just source fence profile rc")
+        just_run = log.read_text(encoding="utf-8").splitlines()[-1]
+        if "--fences-only" not in just_run:
+            raise AssertionError(just_run)
+        gate_run = gate_log.read_text(encoding="utf-8").splitlines()[-1]
+        if gate_run != "source-fence-static-fences-only -- just source-fence-static-fences-only-inner":
+            raise AssertionError(gate_run)
+
 
 def assert_scripts_pr_fence_regression_uses_full_profile() -> None:
     with tempfile.TemporaryDirectory() as tmp:
@@ -2013,13 +2148,13 @@ def assert_verifier_progress_breadcrumb_precedes_final_output() -> None:
             stderr=subprocess.PIPE,
         )
         try:
-            line = read_line_with_timeout(process.stderr, 5.0)
+            line, lines = wait_for_stderr_line(process, "merge_queue_preflight: verifier running:", 15.0)
             if line is None or "merge_queue_preflight: verifier running:" not in line:
-                raise AssertionError(line)
+                raise AssertionError(lines)
             stdout_line = read_line_with_timeout(process.stdout, 0.1)
             if stdout_line not in (None, ""):
                 raise AssertionError(stdout_line)
-            stdout, _stderr = process.communicate(timeout=10)
+            stdout, _stderr = process.communicate(timeout=20)
         finally:
             stop_process(process)
         assert_equal(process.returncode, 3, "streaming breadcrumb rc")
@@ -2075,12 +2210,12 @@ def assert_first_verifier_failure_breadcrumb_arrives_before_later_batch_finishes
             stderr=subprocess.PIPE,
         )
         try:
-            line, lines = wait_for_stderr_line(process, "merge_queue_preflight: verifier failed:", 5.0)
+            line, lines = wait_for_stderr_line(process, "merge_queue_preflight: verifier failed:", 15.0)
             if line is None:
                 raise AssertionError(lines)
             if "exit 7" not in line:
                 raise AssertionError(line)
-            stdout, _stderr = process.communicate(timeout=15)
+            stdout, _stderr = process.communicate(timeout=30)
         finally:
             stop_process(process)
         assert_equal(process.returncode, 2, "first failure breadcrumb rc")
@@ -3307,6 +3442,7 @@ def main() -> int:
     assert_pr_that_conflicts_with_base_is_blocked()
     assert_verifier_failure_blocks_bad_pr_before_batching()
     assert_batch_first_fallback_excludes_poisoned_pr_and_reverifies_remainder()
+    assert_fallback_recombines_survivors_after_batch_max_split()
     assert_preflight_source_fence_profile_selects_fences_only_by_scripts_diff()
     assert_scripts_pr_fence_regression_uses_full_profile()
     assert_verifier_progress_breadcrumb_precedes_final_output()

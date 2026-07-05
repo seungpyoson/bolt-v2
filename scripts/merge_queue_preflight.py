@@ -266,6 +266,7 @@ VERIFIER_STREAMS = ("stdout", "stderr")
 FENCES_ONLY_FLAG = "--fences-only"
 RUN_FENCES_SCRIPT = "scripts/run_fences.py"
 SOURCE_FENCE_STATIC_COMMAND = ("just", "source-fence-static")
+SOURCE_FENCE_STATIC_FENCES_ONLY_COMMAND = ("just", "source-fence-static-fences-only")
 SCRIPTS_PATHSPEC = "scripts"
 PREFLIGHT_MODE_FINDINGS = {
     True: (),
@@ -2323,6 +2324,7 @@ def verifier_block(pr: int, result: VerifierResult, output_policy: OutputPolicy)
 
 
 def source_fence_fences_only_command(command: str) -> str:
+    """Append the fast source-fence flag while preserving the configured verifier entrypoint."""
     try:
         parts = shlex.split(command)
     except ValueError:
@@ -2330,10 +2332,8 @@ def source_fence_fences_only_command(command: str) -> str:
     if not parts or FENCES_ONLY_FLAG in parts:
         return command
     if tuple(parts) == SOURCE_FENCE_STATIC_COMMAND:
-        return shlex.join(("python3", RUN_FENCES_SCRIPT, FENCES_ONLY_FLAG))
-    if pathlib.PurePosixPath(parts[0]).as_posix().endswith(RUN_FENCES_SCRIPT) or (
-        len(parts) >= 2 and pathlib.PurePosixPath(parts[1]).as_posix().endswith(RUN_FENCES_SCRIPT)
-    ):
+        return shlex.join(SOURCE_FENCE_STATIC_FENCES_ONLY_COMMAND)
+    if any(pathlib.PurePosixPath(part).as_posix().endswith(RUN_FENCES_SCRIPT) for part in parts):
         return shlex.join((*parts, FENCES_ONLY_FLAG))
     return command
 
@@ -2344,6 +2344,7 @@ def commit_touches_scripts(
     commit: str,
     input_timeout_seconds: int,
 ) -> bool:
+    """Return True when the commit changes scripts/, failing closed to the full profile."""
     completed = git(
         repo,
         "diff",
@@ -2368,6 +2369,7 @@ def verifier_commands_for_commit(
     commands: Sequence[str],
     input_timeout_seconds: int,
 ) -> tuple[str, ...]:
+    """Select full or fences-only verifier commands for a synthetic commit."""
     if not commands:
         return ()
     if commit_touches_scripts(repo, base_sha, commit, input_timeout_seconds):
@@ -2385,6 +2387,7 @@ def unverified_batches_for_ready_prs(
     batch_max_limits: Mapping[str, int],
     input_timeout_seconds: int,
 ) -> tuple[list[dict[str, object]], list[Batch]]:
+    """Build optimistic merge batches before running expensive verifier commands."""
     conflicts: list[dict[str, object]] = []
     batches: list[Batch] = []
     current: SyntheticCommit | None = None
@@ -2456,6 +2459,19 @@ class VerifiedBatchFallback:
     batches: tuple[Batch, ...]
 
 
+def remaining_batch_prs(candidate_batches: Sequence[Batch], start_index: int) -> tuple[int, ...]:
+    return tuple(pr for batch in candidate_batches[start_index:] for pr in batch.prs)
+
+
+def conflict_mentions_blocked_pr(conflict: Mapping[str, object], blocked_numbers: set[int]) -> bool:
+    if int(conflict.get("pr", -1)) in blocked_numbers:
+        return True
+    against_batch = conflict.get("against_batch", ())
+    if not isinstance(against_batch, Sequence) or isinstance(against_batch, str):
+        return False
+    return any(int(pr) in blocked_numbers for pr in against_batch)
+
+
 def verified_fallback_batches(
     *,
     repo: pathlib.Path,
@@ -2470,6 +2486,7 @@ def verified_fallback_batches(
     output_policy: OutputPolicy,
     start_index: int,
 ) -> VerifiedBatchFallback:
+    """Recover from a failed optimistic batch by verifying each PR, then rebuilding batches."""
     blocked_prs: list[dict[str, object]] = []
     blocked_numbers: set[int] = set()
     base_verifiers: dict[int, tuple[VerifierResult, ...]] = {}
@@ -2616,11 +2633,12 @@ def verify_final_batches_with_fallback(
     input_timeout_seconds: int,
     output_policy: OutputPolicy,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[Batch]]:
+    """Verify optimistic batches, falling back over the remaining suffix after the first failure."""
     blocked_prs: list[dict[str, object]] = []
     conflicts: list[dict[str, object]] = []
     batches: list[Batch] = []
     batch_index = 1
-    for batch in candidate_batches:
+    for candidate_index, batch in enumerate(candidate_batches):
         verifier_results = run_verifier_commands(
             repo,
             batch.commit,
@@ -2649,7 +2667,7 @@ def verify_final_batches_with_fallback(
         fallback = verified_fallback_batches(
             repo=repo,
             base_sha=base_sha,
-            prs=batch.prs,
+            prs=remaining_batch_prs(candidate_batches, candidate_index),
             heads=heads,
             base_commits=base_commits,
             batch_max_limits=batch_max_limits,
@@ -2663,6 +2681,7 @@ def verify_final_batches_with_fallback(
         conflicts.extend(fallback.conflicts)
         batches.extend(fallback.batches)
         batch_index += len(fallback.batches)
+        break
     return blocked_prs, conflicts, batches
 
 
@@ -3207,6 +3226,12 @@ def preflight_with_fetch_refs(
         input_timeout_seconds=input_timeout_seconds,
         output_policy=output_policy,
     )
+    fallback_blocked_numbers = {int(block["pr"]) for block in fallback_blocked_prs}
+    conflicts = [
+        conflict
+        for conflict in conflicts
+        if not conflict_mentions_blocked_pr(conflict, fallback_blocked_numbers)
+    ]
     blocked_prs.extend(fallback_blocked_prs)
     conflicts.extend(fallback_conflicts)
     contract_findings = (

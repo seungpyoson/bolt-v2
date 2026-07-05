@@ -180,6 +180,7 @@ def discover_test_paths(
     fence_paths: list[pathlib.Path],
     scripts_dir: pathlib.Path = SCRIPTS_DIR,
 ) -> list[pathlib.Path]:
+    # These suites validate fence logic with fixtures; merged-tree scanning belongs to the verify phase.
     paths: list[pathlib.Path] = []
     seen: set[pathlib.Path] = set()
     for fence_path in fence_paths:

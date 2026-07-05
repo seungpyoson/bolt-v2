@@ -1410,4 +1410,9 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+
+    fn drain_shutdown(&self) -> anyhow::Result<()> {
+        // Deliberate no-op: this basket execution fixture never owns durable evidence.
+        Ok(())
+    }
 }

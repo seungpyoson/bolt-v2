@@ -5,11 +5,18 @@ use std::sync::{
 
 use tokio::sync::Notify;
 
+use crate::bolt_v3_operator_health::BoltV3OperatorHealthTransitionEmitter;
 use crate::bolt_v3_venue_truth::{
     VenueTruthCaptureFailureEvidence, venue_truth_capture_failure_parts,
 };
 
 use super::*;
+
+const OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE: &str =
+    stringify!(venue_truth_capture_failure);
+const OPERATOR_HEALTH_REASON_VENUE_TRUTH_RUNTIME_FAILURE: &str =
+    stringify!(venue_truth_runtime_failure);
+const OPERATOR_HEALTH_REASON_VENUE_TRUTH_DIVERGENCE: &str = stringify!(venue_truth_divergence);
 
 #[derive(Debug, Clone)]
 pub(super) struct BoltV3CapitalAdmissionVenueSpendabilitySourceConfig {
@@ -159,6 +166,7 @@ pub(super) fn spawn_venue_truth_runtime(
     feed: Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     stop_handle: LiveNodeHandle,
+    health_emitter: Option<BoltV3OperatorHealthTransitionEmitter>,
 ) -> BoltV3VenueTruthRuntimeGuard {
     let shutdown_requested = Arc::new(AtomicBool::new(false));
     let shutdown_notify = Arc::new(Notify::new());
@@ -166,6 +174,7 @@ pub(super) fn spawn_venue_truth_runtime(
     let thread_shutdown_notify = Arc::clone(&shutdown_notify);
     let spawn_submit_admission = Arc::clone(&submit_admission);
     let spawn_stop_handle = stop_handle.clone();
+    let spawn_health_emitter = health_emitter.clone();
     let handle = std::thread::Builder::new()
         .name("bolt-v3-venue-truth-runtime".to_string())
         .spawn(move || {
@@ -180,6 +189,7 @@ pub(super) fn spawn_venue_truth_runtime(
                         &spawn_stop_handle,
                         0,
                         format!("venue truth runtime build failed: {error:#}"),
+                        spawn_health_emitter.as_ref(),
                     );
                     return;
                 }
@@ -191,6 +201,7 @@ pub(super) fn spawn_venue_truth_runtime(
                 spawn_stop_handle,
                 thread_shutdown_requested,
                 thread_shutdown_notify,
+                spawn_health_emitter,
             ));
         });
     let handle = match handle {
@@ -201,6 +212,7 @@ pub(super) fn spawn_venue_truth_runtime(
                 &stop_handle,
                 0,
                 format!("venue truth runtime thread spawn failed: {error:#}"),
+                health_emitter.as_ref(),
             );
             None
         }
@@ -219,6 +231,7 @@ async fn run_venue_truth_runtime(
     stop_handle: LiveNodeHandle,
     shutdown_requested: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
+    health_emitter: Option<BoltV3OperatorHealthTransitionEmitter>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(config.poll_interval_ms));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -242,6 +255,7 @@ async fn run_venue_truth_runtime(
                     &stop_handle,
                     0,
                     format!("clock failed before venue truth poll: {error:#}"),
+                    health_emitter.as_ref(),
                 );
                 break;
             }
@@ -260,6 +274,9 @@ async fn run_venue_truth_runtime(
                     captures_missed,
                     &error,
                 );
+                if let Some(health_emitter) = health_emitter.as_ref() {
+                    health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE);
+                }
                 continue;
             }
         };
@@ -271,6 +288,7 @@ async fn run_venue_truth_runtime(
                 &config.kill_switch_store,
                 &stop_handle,
                 *divergence,
+                health_emitter.as_ref(),
             );
             break;
         }
@@ -323,6 +341,7 @@ fn halt_for_venue_truth(
     stop_handle: &LiveNodeHandle,
     source_timestamp_unix_nanos: u64,
     reason: String,
+    health_emitter: Option<&BoltV3OperatorHealthTransitionEmitter>,
 ) {
     let state = latch_non_durable_venue_truth_runtime_failure(
         submit_admission,
@@ -333,6 +352,9 @@ fn halt_for_venue_truth(
         "venue truth runtime failure latched memory-only kill switch: {:?}",
         state.kind()
     );
+    if let Some(health_emitter) = health_emitter {
+        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_RUNTIME_FAILURE);
+    }
     stop_handle.stop();
 }
 
@@ -341,6 +363,7 @@ fn halt_for_venue_truth_divergence(
     kill_switch_store: &KillSwitchStore,
     stop_handle: &LiveNodeHandle,
     divergence: crate::bolt_v3_venue_truth::VenueTruthDivergence,
+    health_emitter: Option<&BoltV3OperatorHealthTransitionEmitter>,
 ) {
     let state =
         durably_halt_for_venue_truth_divergence(submit_admission, kill_switch_store, divergence);
@@ -348,6 +371,9 @@ fn halt_for_venue_truth_divergence(
         "venue truth divergence latched kill switch: {:?}",
         state.kind()
     );
+    if let Some(health_emitter) = health_emitter {
+        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_DIVERGENCE);
+    }
     stop_handle.stop();
 }
 
@@ -1807,6 +1833,10 @@ mod tests {
                 .lock()
                 .expect("test venue truth divergence records mutex should not be poisoned")
                 .push(evidence.clone());
+            Ok(())
+        }
+
+        fn drain_shutdown(&self) -> Result<()> {
             Ok(())
         }
     }

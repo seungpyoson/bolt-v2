@@ -4179,6 +4179,10 @@ mod loss_governor_halt_evidence_tests {
         ) -> anyhow::Result<()> {
             Ok(())
         }
+
+        fn drain_shutdown(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Default)]

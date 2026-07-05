@@ -1,15 +1,23 @@
+use std::sync::Arc;
+
 use serde::Serialize;
 
 use crate::{
+    bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE,
     bolt_v3_capital_admission_state::NtDerivedCapitalAdmissionState,
     bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_iv::runtime::cargo_pinned_nt_revision,
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchHaltTriggerKind, KillSwitchState},
     bolt_v3_order_reject_observer_feed::BoltV3OrderRejectObserverHealthSnapshot,
-    bolt_v3_reference_price::reference_price_source_is_runtime_available,
+    bolt_v3_reference_price::{
+        reference_price_source_is_runtime_available, reference_price_source_is_unsupported,
+    },
     bolt_v3_reference_price_health::ReferenceCurrentPriceHealthReport,
     bolt_v3_strategy_registration::BoltV3StrategyRegistrationSummary,
     bolt_v3_submit_admission::VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE,
 };
+
+pub type BoltV3OperatorHealthTransitionEmitter = Arc<dyn Fn(&'static str) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -18,6 +26,7 @@ pub enum BoltV3OperatorHealthStatus {
     Degraded,
     Halted,
     MissingInput,
+    Unobserved,
     NotConfigured,
 }
 
@@ -29,6 +38,7 @@ pub struct BoltV3RejectObserverHealth {
     pub total_retry_count: u32,
     pub oldest_episode_first_ns: Option<u64>,
     pub latest_client_order_id: Option<String>,
+    pub read_error: Option<String>,
 }
 
 impl BoltV3RejectObserverHealth {
@@ -40,6 +50,31 @@ impl BoltV3RejectObserverHealth {
             total_retry_count: 0,
             oldest_episode_first_ns: None,
             latest_client_order_id: None,
+            read_error: None,
+        }
+    }
+
+    pub fn unobserved() -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::Unobserved,
+            configured: true,
+            active_episode_count: 0,
+            total_retry_count: 0,
+            oldest_episode_first_ns: None,
+            latest_client_order_id: None,
+            read_error: None,
+        }
+    }
+
+    pub fn read_error(error: impl Into<String>) -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::Degraded,
+            configured: true,
+            active_episode_count: 0,
+            total_retry_count: 0,
+            oldest_episode_first_ns: None,
+            latest_client_order_id: None,
+            read_error: Some(error.into()),
         }
     }
 
@@ -55,6 +90,7 @@ impl BoltV3RejectObserverHealth {
             total_retry_count: snapshot.total_retry_count,
             oldest_episode_first_ns: snapshot.oldest_episode_first_ns,
             latest_client_order_id: snapshot.latest_client_order_id.clone(),
+            read_error: None,
         }
     }
 }
@@ -84,6 +120,26 @@ impl BoltV3VenueTruthHealth {
             capital_state_source: None,
             venue_truth_capture_suspended: false,
         }
+    }
+
+    pub fn unobserved(kill_switch_state: &KillSwitchState) -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::Unobserved,
+            kill_switch_state: kill_switch_state_kind_label(kill_switch_state),
+            divergence: None,
+            capital_state_source: None,
+            venue_truth_capture_suspended: false,
+        }
+    }
+
+    pub fn from_configured_kill_switch_and_capital_state(
+        kill_switch_state: &KillSwitchState,
+        capital_state: Option<&NtDerivedCapitalAdmissionState>,
+    ) -> Self {
+        if capital_state.is_none() && matches!(kill_switch_state, KillSwitchState::Armed) {
+            return Self::unobserved(kill_switch_state);
+        }
+        Self::from_kill_switch_and_capital_state(kill_switch_state, capital_state)
     }
 
     pub fn from_kill_switch_and_capital_state(
@@ -147,6 +203,15 @@ impl BoltV3InputHealth {
         }
     }
 
+    pub fn unobserved(configured_source_count: usize) -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::Unobserved,
+            configured_source_count,
+            observed_source_count: 0,
+            missing_sources: Vec::new(),
+        }
+    }
+
     pub fn from_reference_current_price_report(report: &ReferenceCurrentPriceHealthReport) -> Self {
         let configured_source_count = report.source_update_observations.len();
         let observed_source_count = report
@@ -200,23 +265,56 @@ impl BoltV3OperatorHealthSurface {
     }
 
     pub fn from_parts(
-        reject_observer: Option<&BoltV3OrderRejectObserverHealthSnapshot>,
-        kill_switch_state: &KillSwitchState,
-        capital_state: Option<&NtDerivedCapitalAdmissionState>,
-        input_health: Option<BoltV3InputHealth>,
+        reject_observer: BoltV3RejectObserverHealth,
+        venue_truth: BoltV3VenueTruthHealth,
+        input_health: BoltV3InputHealth,
     ) -> Self {
         Self {
-            reject_observer: reject_observer.map_or_else(
-                BoltV3RejectObserverHealth::not_configured,
-                BoltV3RejectObserverHealth::from_snapshot,
-            ),
-            venue_truth: BoltV3VenueTruthHealth::from_kill_switch_and_capital_state(
-                kill_switch_state,
-                capital_state,
-            ),
-            input_health: input_health.unwrap_or_else(BoltV3InputHealth::not_configured),
+            reject_observer,
+            venue_truth,
+            input_health,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3NodeScopedRuntimeSourceAnnouncements {
+    pub venue_truth_rest_capture: Option<BoltV3VenueTruthRestCaptureAnnouncement>,
+    pub iv_runtime_sources: Vec<BoltV3IvRuntimeSourceAnnouncement>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3RuntimeFeedAnnouncementStatus {
+    Active,
+    Disabled,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3VenueTruthRestCaptureAnnouncement {
+    pub source_id: String,
+    pub venue_id: String,
+    pub account_id: String,
+    pub collateral_currency: String,
+    pub enabled: bool,
+    pub runtime_available: bool,
+    pub status: BoltV3RuntimeFeedAnnouncementStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3IvRuntimeSourceAnnouncement {
+    pub profile_id: String,
+    pub source_id: String,
+    pub source_kind: String,
+    pub client_id: String,
+    pub subscription_generation: u64,
+    pub selector_fingerprint: String,
+    pub nt_symbol: String,
+    pub nt_revision: String,
+    pub enabled: bool,
+    pub runtime_available: bool,
+    pub status: BoltV3RuntimeFeedAnnouncementStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -250,6 +348,9 @@ pub struct BoltV3ReferencePriceSourceAnnouncement {
     pub client_id: String,
     pub provider_instrument: Option<String>,
     pub required: bool,
+    pub enabled: bool,
+    pub runtime_available: bool,
+    pub status: BoltV3RuntimeFeedAnnouncementStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -260,6 +361,70 @@ pub struct BoltV3RealizedVolatilitySourceAnnouncement {
     pub instrument_id: String,
     pub enabled: bool,
     pub counts_toward_quorum: bool,
+}
+
+pub fn node_scoped_runtime_source_announcements(
+    loaded: &LoadedBoltV3Config,
+    venue_truth_runtime_available: bool,
+) -> BoltV3NodeScopedRuntimeSourceAnnouncements {
+    let venue_truth_rest_capture = loaded
+        .root
+        .risk
+        .capital_pools
+        .as_ref()
+        .and_then(|pools| {
+            pools.iter().find(|pool| {
+                pool.enforce_submit_admission && pool.prediction_market_binary.is_some()
+            })
+        })
+        .map(|pool| {
+            let status = if venue_truth_runtime_available {
+                BoltV3RuntimeFeedAnnouncementStatus::Active
+            } else {
+                BoltV3RuntimeFeedAnnouncementStatus::Unsupported
+            };
+            BoltV3VenueTruthRestCaptureAnnouncement {
+                source_id: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
+                venue_id: pool.venue_id.clone(),
+                account_id: pool.account_id.to_string(),
+                collateral_currency: pool.collateral_currency.clone(),
+                enabled: venue_truth_runtime_available,
+                runtime_available: venue_truth_runtime_available,
+                status,
+            }
+        });
+    let iv_runtime_sources = loaded
+        .root
+        .iv
+        .as_ref()
+        .map(|iv| {
+            iv.profiles
+                .iter()
+                .flat_map(|profile| {
+                    profile
+                        .sources
+                        .iter()
+                        .map(|source| BoltV3IvRuntimeSourceAnnouncement {
+                            profile_id: profile.profile_id.clone(),
+                            source_id: source.source_id.clone(),
+                            source_kind: format!("{:?}", source.source_kind),
+                            client_id: source.client_id.clone(),
+                            subscription_generation: source.subscription_generation,
+                            selector_fingerprint: source.selector_fingerprint.clone(),
+                            nt_symbol: source.nt_provenance.nt_symbol.clone(),
+                            nt_revision: cargo_pinned_nt_revision().to_string(),
+                            enabled: true,
+                            runtime_available: true,
+                            status: BoltV3RuntimeFeedAnnouncementStatus::Active,
+                        })
+                })
+                .collect()
+        })
+        .unwrap_or_else(Vec::new);
+    BoltV3NodeScopedRuntimeSourceAnnouncements {
+        venue_truth_rest_capture,
+        iv_runtime_sources,
+    }
 }
 
 pub fn runtime_source_announcements(
@@ -313,10 +478,16 @@ pub fn runtime_source_announcements(
                                     strategy.config.strategy_instance_id
                                 )
                             })?;
-                            if !reference_price_source_is_runtime_available(reference, source) {
-                                return Ok(None);
-                            }
-                            Ok(Some(BoltV3ReferencePriceSourceAnnouncement {
+                            let runtime_available =
+                                reference_price_source_is_runtime_available(reference, source);
+                            let status = if !source.enabled {
+                                BoltV3RuntimeFeedAnnouncementStatus::Disabled
+                            } else if reference_price_source_is_unsupported(reference, source) {
+                                BoltV3RuntimeFeedAnnouncementStatus::Unsupported
+                            } else {
+                                BoltV3RuntimeFeedAnnouncementStatus::Active
+                            };
+                            Ok(BoltV3ReferencePriceSourceAnnouncement {
                                 source_id: source_id.clone(),
                                 provider: source.provider.as_str().to_string(),
                                 client_id: source.client_id.to_string(),
@@ -325,12 +496,10 @@ pub fn runtime_source_announcements(
                                     .clone()
                                     .or_else(|| source.symbol.clone()),
                                 required: source.required,
-                            }))
-                        })
-                        .filter_map(|source| match source {
-                            Ok(Some(announcement)) => Some(Ok(announcement)),
-                            Ok(None) => None,
-                            Err(error) => Some(Err(error)),
+                                enabled: source.enabled,
+                                runtime_available,
+                                status,
+                            })
                         })
                         .collect::<Result<Vec<_>, String>>()
                 })

@@ -31,7 +31,10 @@ use bolt_v2::{
         LaunchIdentity, WrittenOperatorArtifact, is_lowercase_git_sha, read_launch_identity,
         write_launch_identity,
     },
-    bolt_v3_operator_health::{BoltV3InputHealth, BoltV3OperatorHealthSurface},
+    bolt_v3_operator_health::{
+        BoltV3InputHealth, BoltV3OperatorHealthSurface, BoltV3RejectObserverHealth,
+        BoltV3VenueTruthHealth,
+    },
     bolt_v3_prod_profile::{
         GENERATOR_FORMAT_VERSION, ProductionInvariants, generate_live_config, live_config_path,
         verify_live_config,
@@ -1175,7 +1178,42 @@ fn ops_status_operator_health_from_loaded(
             reason: error.to_string(),
         },
     };
-    BoltV3OperatorHealthSurface::from_parts(None, &kill_switch_state, None, None)
+    let capital_admission_configured =
+        loaded
+            .root
+            .risk
+            .capital_pools
+            .as_ref()
+            .is_some_and(|pools| {
+                pools.iter().any(|pool| {
+                    pool.enforce_submit_admission && pool.prediction_market_binary.is_some()
+                })
+            });
+    let reference_source_count = loaded
+        .strategies
+        .iter()
+        .filter_map(|strategy| strategy.config.reference_current_price.as_ref())
+        .map(|reference| reference.source_order.len())
+        .sum();
+    let reject_observer = if capital_admission_configured {
+        BoltV3RejectObserverHealth::unobserved()
+    } else {
+        BoltV3RejectObserverHealth::not_configured()
+    };
+    let venue_truth = if capital_admission_configured {
+        BoltV3VenueTruthHealth::from_configured_kill_switch_and_capital_state(
+            &kill_switch_state,
+            None,
+        )
+    } else {
+        BoltV3VenueTruthHealth::not_configured()
+    };
+    let input_health = if reference_source_count == 0 {
+        BoltV3InputHealth::not_configured()
+    } else {
+        BoltV3InputHealth::unobserved(reference_source_count)
+    };
+    BoltV3OperatorHealthSurface::from_parts(reject_observer, venue_truth, input_health)
 }
 
 fn run_ops_status(

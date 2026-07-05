@@ -1085,5 +1085,10 @@ mod tests {
         fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
             Ok(())
         }
+
+        fn drain_shutdown(&self) -> Result<()> {
+            // Deliberate no-op: this loss-protection fixture never owns durable evidence.
+            Ok(())
+        }
     }
 }

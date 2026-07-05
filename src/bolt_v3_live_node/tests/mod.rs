@@ -13,6 +13,7 @@ use crate::bolt_v3_config::{
 use crate::bolt_v3_iv::config::IvRootConfig;
 use crate::bolt_v3_iv::error::IvRejectReason;
 use crate::bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps};
+use crate::bolt_v3_operator_health::BoltV3OperatorHealthStatus;
 use crate::bolt_v3_providers::hyperliquid::{
     ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
 };
@@ -48,3 +49,92 @@ mod strategy_free_probe;
 mod transport_scope;
 
 use fixtures::*;
+
+#[test]
+fn live_operator_health_surface_renders_poisoned_reject_feed_as_degraded() {
+    let writer = Arc::new(NoStrategyDecisionEvidenceWriter);
+    let feed = Arc::new(Mutex::new(BoltV3OrderRejectObserverFeed::new(
+        writer.clone(),
+        AccountId::from("ACCOUNT-POISON"),
+    )));
+    let poison_feed = feed.clone();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _guard = poison_feed
+            .lock()
+            .expect("test should acquire feed lock before poisoning it");
+        panic!("poison reject feed");
+    }));
+    let submit_admission = BoltV3SubmitAdmissionState::new(writer);
+
+    let surface = live_operator_health_surface(Some(&feed), &submit_admission, false, 0, None);
+
+    assert_eq!(
+        surface.reject_observer.status,
+        BoltV3OperatorHealthStatus::Degraded
+    );
+    assert_eq!(
+        surface.reject_observer.read_error.as_deref(),
+        Some(OPERATOR_HEALTH_REJECT_OBSERVER_READ_ERROR)
+    );
+}
+
+#[test]
+fn shutdown_classifier_surfaces_drain_failure_after_clean_run_and_capture() {
+    let error = classify_live_node_shutdown(
+        Ok(()),
+        Ok(()),
+        Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(
+            anyhow::anyhow!("drain failed"),
+        )),
+    )
+    .expect_err("drain failure must be surfaced");
+
+    assert!(matches!(
+        error,
+        BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(_)
+    ));
+}
+
+#[test]
+fn shutdown_classifier_composes_runtime_failure_with_drain_failure() {
+    let error = classify_live_node_shutdown(
+        Err(BoltV3LiveNodeError::RuntimeCaptureShutdown(
+            anyhow::anyhow!("capture failed"),
+        )),
+        Ok(()),
+        Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(
+            anyhow::anyhow!("drain failed"),
+        )),
+    )
+    .expect_err("runtime and drain failures must compose");
+
+    assert!(matches!(
+        error,
+        BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain { .. }
+    ));
+    assert!(error.to_string().contains(
+        "LiveNode run, runtime-capture, or IV lifecycle stop failed and bolt-v3 decision evidence shutdown drain failed"
+    ));
+}
+
+#[test]
+fn shutdown_classifier_composes_iv_stop_failure_with_drain_failure() {
+    let error = classify_live_node_shutdown(
+        Ok(()),
+        Err(BoltV3LiveNodeError::Run(anyhow::anyhow!(
+            "iv lifecycle stop failed"
+        ))),
+        Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(
+            anyhow::anyhow!("drain failed"),
+        )),
+    )
+    .expect_err("IV stop and drain failures must compose");
+
+    assert!(matches!(
+        error,
+        BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain { .. }
+    ));
+    assert!(error.to_string().contains(
+        "LiveNode run, runtime-capture, or IV lifecycle stop failed and bolt-v3 decision evidence shutdown drain failed"
+    ));
+}

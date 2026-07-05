@@ -178,11 +178,13 @@ use crate::{
         LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
     },
     bolt_v3_operator_health::{
-        BoltV3InputHealth, BoltV3OperatorHealthSurface, runtime_source_announcements,
+        BoltV3InputHealth, BoltV3OperatorHealthSurface, BoltV3OperatorHealthTransitionEmitter,
+        BoltV3RejectObserverHealth, BoltV3VenueTruthHealth,
+        node_scoped_runtime_source_announcements, runtime_source_announcements,
     },
     bolt_v3_order_reject_observer_feed::{
         BoltV3OrderRejectObserverFeed, OrderRejectObserverFeedSubscription,
-        subscribe_order_reject_observer_feed,
+        subscribe_order_reject_observer_feed_with_health_emitter,
     },
     bolt_v3_providers::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
@@ -281,6 +283,10 @@ pub fn current_build_head_sha() -> Option<&'static str> {
     crate::bolt_v3_operator_artifacts::current_build_head_sha()
 }
 
+const OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP: &str = stringify!(live_node_startup);
+const OPERATOR_HEALTH_REJECT_OBSERVER_READ_ERROR: &str =
+    stringify!(order_reject_observer_feed_lock_poisoned);
+
 pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     registration_summary: BoltV3RegistrationSummary,
@@ -300,6 +306,8 @@ pub struct BoltV3LiveNodeRuntime {
     submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
     iv_runtime: Option<IvRuntimeEngine>,
     iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
+    operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
+    input_health_configured_source_count: usize,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -409,6 +417,11 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
     fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
         Ok(())
     }
+
+    fn drain_shutdown(&self) -> Result<()> {
+        // Deliberate no-op: strategy-free live nodes do not create decision evidence.
+        Ok(())
+    }
 }
 
 struct BoltV3LiveNodeRuntimeFeeds {
@@ -427,6 +440,87 @@ struct BoltV3LiveNodeRuntimeFeeds {
     submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
 }
 
+#[derive(Clone)]
+struct BoltV3OperatorHealthTransitionLogger {
+    last_surface: Arc<Mutex<Option<BoltV3OperatorHealthSurface>>>,
+}
+
+impl BoltV3OperatorHealthTransitionLogger {
+    fn new() -> Self {
+        Self {
+            last_surface: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn emit_surface(&self, reason: &'static str, surface: BoltV3OperatorHealthSurface) {
+        let mut last_surface = match self.last_surface.lock() {
+            Ok(last_surface) => last_surface,
+            Err(_) => {
+                log::error!(
+                    "bolt-v3 operator health transition cache lock poisoned; rendering current health surface without dedupe: reason={} surface={}",
+                    reason,
+                    serde_json::to_string(&surface)
+                        .unwrap_or_else(|error| format!("serialization_failed:{error}"))
+                );
+                return;
+            }
+        };
+        if last_surface.as_ref() == Some(&surface) {
+            return;
+        }
+        log::warn!(
+            "bolt-v3 operator health transition: reason={} surface={}",
+            reason,
+            serde_json::to_string(&surface)
+                .unwrap_or_else(|error| format!("serialization_failed:{error}"))
+        );
+        *last_surface = Some(surface);
+    }
+}
+
+fn live_operator_health_surface(
+    order_reject_observer_feed: Option<&Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
+    submit_admission: &BoltV3SubmitAdmissionState,
+    venue_truth_configured: bool,
+    input_health_configured_source_count: usize,
+    input_health: Option<BoltV3InputHealth>,
+) -> BoltV3OperatorHealthSurface {
+    let reject_observer = order_reject_observer_feed.map_or_else(
+        BoltV3RejectObserverHealth::not_configured,
+        |feed| match feed.lock() {
+            Ok(feed) => BoltV3RejectObserverHealth::from_snapshot(&feed.health_snapshot()),
+            Err(_) => {
+                BoltV3RejectObserverHealth::read_error(OPERATOR_HEALTH_REJECT_OBSERVER_READ_ERROR)
+            }
+        },
+    );
+    let capital_state = submit_admission.capital_admission_state_snapshot();
+    let kill_switch_state = submit_admission.kill_switch_state();
+    let venue_truth = if venue_truth_configured {
+        BoltV3VenueTruthHealth::from_configured_kill_switch_and_capital_state(
+            &kill_switch_state,
+            capital_state.as_ref(),
+        )
+    } else {
+        BoltV3VenueTruthHealth::not_configured()
+    };
+    BoltV3OperatorHealthSurface::from_parts(
+        reject_observer,
+        venue_truth,
+        input_health
+            .unwrap_or_else(|| BoltV3InputHealth::unobserved(input_health_configured_source_count)),
+    )
+}
+
+fn configured_reference_current_price_source_count(loaded: &LoadedBoltV3Config) -> usize {
+    loaded
+        .strategies
+        .iter()
+        .filter_map(|strategy| strategy.config.reference_current_price.as_ref())
+        .map(|reference| reference.source_order.len())
+        .sum()
+}
+
 impl BoltV3LiveNodeRuntime {
     fn new(
         node: LiveNode,
@@ -435,6 +529,8 @@ impl BoltV3LiveNodeRuntime {
         feeds: BoltV3LiveNodeRuntimeFeeds,
         iv_runtime: Option<IvRuntimeEngine>,
         iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
+        operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
+        input_health_configured_source_count: usize,
         redaction_values: Vec<Zeroizing<String>>,
     ) -> Self {
         Self {
@@ -457,6 +553,8 @@ impl BoltV3LiveNodeRuntime {
             submit_reservation_recovery: feeds.submit_reservation_recovery,
             iv_runtime,
             iv_event_bindings,
+            operator_health_transition_logger,
+            input_health_configured_source_count,
             redaction_values,
         }
     }
@@ -939,19 +1037,18 @@ impl BoltV3LiveNodeRuntime {
         &self,
         input_health: Option<BoltV3InputHealth>,
     ) -> BoltV3OperatorHealthSurface {
-        let reject_snapshot = self.order_reject_observer_feed.as_ref().map(|feed| {
-            feed.lock()
-                .expect("order reject observer feed lock poisoned")
-                .health_snapshot()
-        });
-        let capital_state = self.submit_admission.capital_admission_state_snapshot();
-        let kill_switch_state = self.submit_admission.kill_switch_state();
-        BoltV3OperatorHealthSurface::from_parts(
-            reject_snapshot.as_ref(),
-            &kill_switch_state,
-            capital_state.as_ref(),
+        live_operator_health_surface(
+            self.order_reject_observer_feed.as_ref(),
+            &self.submit_admission,
+            self.capital_admission_runtime_feed.is_some(),
+            self.input_health_configured_source_count,
             input_health,
         )
+    }
+
+    pub fn emit_operator_health_surface_transition(&self, reason: &'static str) {
+        self.operator_health_transition_logger
+            .emit_surface(reason, self.operator_health_surface(None));
     }
 
     fn drain_decision_evidence_shutdown(&self) -> Result<(), BoltV3LiveNodeError> {
@@ -1540,7 +1637,7 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 drain_error,
             } => write!(
                 f,
-                "LiveNode run or runtime-capture shutdown failed and bolt-v3 decision \
+                "LiveNode run, runtime-capture, or IV lifecycle stop failed and bolt-v3 decision \
                  evidence shutdown drain failed: run error: {run_error}; drain error: {drain_error}"
             ),
             BoltV3LiveNodeError::ConnectTimeout { timeout_secs } => write!(
@@ -1709,6 +1806,7 @@ pub async fn run_bolt_v3_live_node(
     // the accumulator to position events and spawn its halt-action retry loop.
     // The guard unsubscribes and aborts the retry task on drop.
     let _loss_protection_guards = wire_bolt_v3_loss_protection_runtime(runtime);
+    runtime.emit_operator_health_surface_transition(OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP);
     let node_handle = runtime.node.handle();
     let mut capture_guards = {
         let node = &runtime.node;
@@ -1744,44 +1842,7 @@ pub async fn run_bolt_v3_live_node(
     let run_and_capture_result =
         classify_live_node_run_and_capture_shutdown(run_result, shutdown_result);
     let drain_result = runtime.drain_decision_evidence_shutdown();
-    match (run_and_capture_result, iv_stop_result, drain_result) {
-        (
-            Err(run_or_capture_error),
-            Err(iv_stop_error),
-            Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(drain_error)),
-        ) => {
-            log::error!("IV lifecycle stop failed after live-node run failure: {iv_stop_error}");
-            Err(BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain {
-                run_error: Box::new(run_or_capture_error),
-                drain_error,
-            })
-        }
-        (Err(run_or_capture_error), Err(iv_stop_error), Ok(())) => {
-            log::error!("IV lifecycle stop failed after live-node run failure: {iv_stop_error}");
-            Err(run_or_capture_error)
-        }
-        (
-            Err(run_or_capture_error),
-            Ok(()),
-            Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(drain_error)),
-        ) => Err(BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain {
-            run_error: Box::new(run_or_capture_error),
-            drain_error,
-        }),
-        (Err(error), Ok(()), Ok(())) => Err(error),
-        (
-            Ok(()),
-            Err(iv_stop_error),
-            Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(drain_error)),
-        ) => Err(BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain {
-            run_error: Box::new(iv_stop_error),
-            drain_error,
-        }),
-        (Ok(()), Err(error), Ok(())) => Err(error),
-        (Ok(()), Ok(()), Err(error)) => Err(error),
-        (Ok(()), Ok(()), Ok(())) => Ok(()),
-        (_, _, Err(error)) => Err(error),
-    }
+    classify_live_node_shutdown(run_and_capture_result, iv_stop_result, drain_result)
 }
 
 fn fail_closed_on_unreconciled_startup_rebuild(
@@ -1835,6 +1896,39 @@ fn classify_live_node_run_and_capture_shutdown(
                 run_error,
                 shutdown_error,
             })
+        }
+    }
+}
+
+fn classify_live_node_shutdown(
+    run_and_capture_result: Result<(), BoltV3LiveNodeError>,
+    iv_stop_result: Result<(), BoltV3LiveNodeError>,
+    drain_result: Result<(), BoltV3LiveNodeError>,
+) -> Result<(), BoltV3LiveNodeError> {
+    let primary_result = match (run_and_capture_result, iv_stop_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(run_or_capture_error), Err(iv_stop_error)) => {
+            log::error!("IV lifecycle stop failed after live-node run failure: {iv_stop_error}");
+            Err(run_or_capture_error)
+        }
+    };
+    match (primary_result, drain_result) {
+        (
+            Err(primary_error),
+            Err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain(drain_error)),
+        ) => Err(BoltV3LiveNodeError::RunAndDecisionEvidenceShutdownDrain {
+            run_error: Box::new(primary_error),
+            drain_error,
+        }),
+        (Err(primary_error), Ok(())) => Err(primary_error),
+        (Ok(()), Err(drain_error)) => Err(drain_error),
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(primary_error), Err(drain_error)) => {
+            log::error!(
+                "bolt-v3 decision evidence shutdown drain returned unexpected error shape after primary shutdown failure: {drain_error}"
+            );
+            Err(primary_error)
         }
     }
 }
@@ -2031,18 +2125,38 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             }
             None => (None, None),
         };
-    let (order_reject_observer_feed, order_reject_observer_feed_subscription) =
-        match order_reject_observer_account_id {
-            Some(account_id) => {
-                let feed = Arc::new(Mutex::new(BoltV3OrderRejectObserverFeed::new(
-                    decision_evidence.clone(),
-                    account_id,
-                )));
-                let subscription = subscribe_order_reject_observer_feed(feed.clone());
-                (Some(feed), Some(subscription))
-            }
-            None => (None, None),
-        };
+    let order_reject_observer_feed = order_reject_observer_account_id.map(|account_id| {
+        Arc::new(Mutex::new(BoltV3OrderRejectObserverFeed::new(
+            decision_evidence.clone(),
+            account_id,
+        )))
+    });
+    let operator_health_transition_logger = BoltV3OperatorHealthTransitionLogger::new();
+    let input_health_configured_source_count =
+        configured_reference_current_price_source_count(loaded);
+    let operator_health_transition_emitter: BoltV3OperatorHealthTransitionEmitter = {
+        let order_reject_observer_feed = order_reject_observer_feed.clone();
+        let submit_admission = submit_admission.clone();
+        let logger = operator_health_transition_logger.clone();
+        let venue_truth_configured = capital_admission_runtime_feed.is_some();
+        let input_health_configured_source_count = input_health_configured_source_count;
+        Arc::new(move |reason| {
+            let surface = live_operator_health_surface(
+                order_reject_observer_feed.as_ref(),
+                &submit_admission,
+                venue_truth_configured,
+                input_health_configured_source_count,
+                None,
+            );
+            logger.emit_surface(reason, surface);
+        })
+    };
+    let order_reject_observer_feed_subscription = order_reject_observer_feed.as_ref().map(|feed| {
+        subscribe_order_reject_observer_feed_with_health_emitter(
+            feed.clone(),
+            operator_health_transition_emitter.clone(),
+        )
+    });
     let order_execution_policy =
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::from_mode(
             loaded.root.runtime.order_execution_mode,
@@ -2056,28 +2170,27 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
-    let venue_truth_runtime_guard = match (
-        venue_truth_runtime_config,
-        capital_admission_runtime_feed.as_ref(),
-    ) {
-        (Some(config), Some(feed)) => Some(spawn_venue_truth_runtime(
-            config,
-            feed.clone(),
-            submit_admission.clone(),
-            node.handle(),
-        )),
-        (None, _) => None,
-        (Some(_), None) => {
-            return Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
-                "venue truth runtime requires the capital admission runtime feed"
-            )));
-        }
-    };
     // Sync the recovered kill-switch state into NT's RiskEngine trading state so
     // the NT risk engine and the submit-admission latch agree on the halt. The
     // loss-protection seed below can override this for fail-closed cases.
     if let Some(state) = kill_switch_startup_state.as_ref() {
         sync_nt_trading_state_for_kill_switch(&mut node, state);
+    }
+    let node_scoped_source_announcements =
+        node_scoped_runtime_source_announcements(loaded, venue_truth_runtime_config.is_some());
+    if let Some(announcement) = &node_scoped_source_announcements.venue_truth_rest_capture {
+        log::warn!(
+            "bolt-v3 runtime feed announcement: {}",
+            serde_json::to_string(announcement)
+                .expect("node-scoped runtime source announcement should serialize")
+        );
+    }
+    for announcement in &node_scoped_source_announcements.iv_runtime_sources {
+        log::warn!(
+            "bolt-v3 runtime feed announcement: {}",
+            serde_json::to_string(announcement)
+                .expect("node-scoped runtime source announcement should serialize")
+        );
     }
     let iv_runtime = loaded
         .root
@@ -2166,6 +2279,24 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                 .expect("runtime source announcement should serialize")
         );
     }
+    let venue_truth_runtime_guard = match (
+        venue_truth_runtime_config,
+        capital_admission_runtime_feed.as_ref(),
+    ) {
+        (Some(config), Some(feed)) => Some(spawn_venue_truth_runtime(
+            config,
+            feed.clone(),
+            submit_admission.clone(),
+            node.handle(),
+            Some(operator_health_transition_emitter.clone()),
+        )),
+        (None, _) => None,
+        (Some(_), None) => {
+            return Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
+                "venue truth runtime requires the capital admission runtime feed"
+            )));
+        }
+    };
     // Configure the durable kill-switch loss-protection accumulator after
     // strategies are registered (its flatten targets are the registered NT
     // strategy ids) and seed it from the durable store. `seed_from_store` can
@@ -2221,6 +2352,8 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         },
         iv_runtime,
         iv_event_bindings,
+        operator_health_transition_logger,
+        input_health_configured_source_count,
         resolved.redaction_values(),
     );
     runtime.refresh_capital_admission_venue_spendability_from_configured_source()?;

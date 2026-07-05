@@ -146,9 +146,7 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
         let _ = evidence;
         Ok(())
     }
-    fn drain_shutdown(&self) -> Result<()> {
-        Ok(())
-    }
+    fn drain_shutdown(&self) -> Result<()>;
 }
 
 /// Risk direction of a runtime trading decision, used by [`commit_decision`]

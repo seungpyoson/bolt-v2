@@ -1099,7 +1099,7 @@ impl BoltV3SubmitAdmissionState {
                         .gate
                         .live_reserved_liability(&capital_admission.capital_pool.pool_id)
                 })
-                .unwrap_or(Decimal::ZERO),
+                .expect("Capital admission state missing"),
             missing_nt_account_cache_balance: None,
         }
     }

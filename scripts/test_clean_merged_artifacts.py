@@ -1620,6 +1620,44 @@ class CleanupContractTests(unittest.TestCase):
             global_commit_msg.read_text(encoding="utf-8"),
         )
 
+    def test_install_hooks_tracks_global_hook_path_move(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        global_hooks_v1 = self.tmp / "global-hooks-move-v1"
+        global_hooks_v1.mkdir()
+        global_commit_msg_v1 = global_hooks_v1 / "commit-msg"
+        global_commit_msg_v1.write_text("#!/bin/sh\nprintf global-v1\n", encoding="utf-8")
+        global_commit_msg_v1.chmod(0o755)
+        global_config = self.tmp / "global-move.gitconfig"
+        global_config.write_text(
+            f"[core]\n\thooksPath = {global_hooks_v1}\n",
+            encoding="utf-8",
+        )
+        env = {"GIT_CONFIG_GLOBAL": str(global_config)}
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks", env=env).returncode, 0)
+        global_hooks_v2 = self.tmp / "global-hooks-move-v2"
+        global_hooks_v2.mkdir()
+        global_commit_msg_v2 = global_hooks_v2 / "commit-msg"
+        global_commit_msg_v2.write_text("#!/bin/sh\nprintf global-v2\n", encoding="utf-8")
+        global_commit_msg_v2.chmod(0o755)
+        global_config.write_text(
+            f"[core]\n\thooksPath = {global_hooks_v2}\n",
+            encoding="utf-8",
+        )
+
+        proc = run_clean_proc(self.work, "--install-hooks", env=env)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        runtime_hook = git_common_dir_compat(self.work) / "hooks" / "commit-msg"
+        self.assertEqual(
+            runtime_hook.read_text(encoding="utf-8"),
+            global_commit_msg_v2.read_text(encoding="utf-8"),
+        )
+        manifest = json.loads(
+            (git_common_dir_compat(self.work) / "clean-merged.hooks-manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["hooks"]["commit-msg"]["source_path"], str(global_commit_msg_v2))
+
     def test_install_hooks_removes_adopted_hook_when_manifest_source_disappears(
         self,
     ) -> None:
@@ -1669,6 +1707,33 @@ class CleanupContractTests(unittest.TestCase):
         proc = run_clean_proc(self.work, "--doctor", env=env)
 
         self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("hook commit-msg source changed", proc.stdout)
+
+    def test_doctor_on_config_error_reports_manifest_hook_source_drift(self) -> None:
+        self._write_clean_merged_hook_sources(self.work)
+        global_hooks = self.tmp / "global-hooks-doctor-config-error"
+        global_hooks.mkdir()
+        global_commit_msg = global_hooks / "commit-msg"
+        global_commit_msg.write_text("#!/bin/sh\nprintf global-v1\n", encoding="utf-8")
+        global_commit_msg.chmod(0o755)
+        global_config = self.tmp / "global-doctor-config-error.gitconfig"
+        global_config.write_text(
+            f"[core]\n\thooksPath = {global_hooks}\n",
+            encoding="utf-8",
+        )
+        env = {"GIT_CONFIG_GLOBAL": str(global_config)}
+        self.assertEqual(run_clean_proc(self.work, "--install-hooks", env=env).returncode, 0)
+        global_commit_msg.write_text("#!/bin/sh\nprintf global-v2\n", encoding="utf-8")
+        cfg = self.work / "config" / "clean-merged.toml"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8") + "\nunknown_key = true\n",
+            encoding="utf-8",
+        )
+
+        proc = run_clean_proc(self.work, "--doctor", env=env)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("CONFIG ERROR", proc.stdout)
         self.assertIn("hook commit-msg source changed", proc.stdout)
 
     def test_install_hooks_records_shadowed_same_name_active_hook(self) -> None:

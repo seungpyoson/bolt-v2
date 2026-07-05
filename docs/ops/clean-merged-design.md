@@ -189,10 +189,11 @@ aligned to quarantine grace). Recovery: `git branch <name> <sha>`.
   previous active hook directory when those names are not owned by tracked repo
   hook sources, so local/global agent hooks keep firing after the path changes.
   Later setup runs refresh adopted external hooks and shadowed-hook records from
-  their manifest source paths, and remove manifest-owned runtime copies whose
-  source file disappeared. Same-name external hooks are shadowed by the repo
-  hook source and recorded in the manifest instead of guessed, merged, or
-  dispatched. Setup records hook source path, Git config scope, and byte hashes in
+  their manifest source paths, follows the current global `core.hooksPath` for
+  global-sourced hooks, and removes manifest-owned runtime copies whose source
+  file disappeared. Same-name external hooks are shadowed by the repo hook
+  source and recorded in the manifest instead of guessed, merged, or dispatched.
+  Setup records hook source path, Git config scope, and byte hashes in
   `$(git rev-parse --git-common-dir)/clean-merged.hooks-manifest.json`.
   Runtime overwrites are allowed only for exact byte matches or entries whose
   current runtime hash matches that installer manifest; otherwise setup refuses.

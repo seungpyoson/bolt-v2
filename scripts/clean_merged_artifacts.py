@@ -594,7 +594,7 @@ def _manifest_authorizes_overwrite(
         isinstance(entry, dict)
         and entry.get("source_kind") == source_kind
         and entry.get("source_scope") == source_scope
-        and entry.get("source_path") == source_path
+        and (entry.get("source_path") == source_path or source_scope == "global")
         and entry.get("runtime_sha256") == destination_sha
     )
 
@@ -662,9 +662,27 @@ def _remove_hook_with_provenance(
     destination.unlink()
 
 
-def _manifest_source_file(repo_root: pathlib.Path, entry: Any) -> pathlib.Path | None:
+def _manifest_source_file(
+    repo_root: pathlib.Path,
+    entry: Any,
+    *,
+    hook_name: str | None = None,
+    invoke_root: pathlib.Path | None = None,
+    home_dir: pathlib.Path | None = None,
+) -> pathlib.Path | None:
     if not isinstance(entry, dict):
         return None
+    if hook_name is not None and entry.get("source_scope") == "global":
+        global_raw = _git_config_value(
+            invoke_root or repo_root,
+            ["--global", "--get", "core.hooksPath"],
+        )
+        if global_raw:
+            return _resolve_hooks_path(
+                invoke_root or repo_root,
+                global_raw,
+                home_dir=home_dir,
+            ) / hook_name
     raw = entry.get("source_path")
     if not isinstance(raw, str) or not raw:
         return None
@@ -886,7 +904,13 @@ def install_hooks(
                 raise CleanMergedError(
                     f"shadowed hook manifest entry for {hook_name} is invalid"
                 )
-            source_file = _manifest_source_file(source_root, entry)
+            source_file = _manifest_source_file(
+                source_root,
+                entry,
+                hook_name=hook_name,
+                invoke_root=invoke_root,
+                home_dir=home_dir,
+            )
             if source_file is None:
                 raise CleanMergedError(
                     f"shadowed hook manifest entry for {hook_name} has invalid source_path"
@@ -916,7 +940,13 @@ def install_hooks(
     for hook_name, entry in sorted(_hook_manifest_hooks(manifest).items()):
         if not isinstance(entry, dict) or entry.get("source_kind") != "active-hook":
             continue
-        source_file = _manifest_source_file(source_root, entry)
+        source_file = _manifest_source_file(
+            source_root,
+            entry,
+            hook_name=hook_name,
+            invoke_root=invoke_root,
+            home_dir=home_dir,
+        )
         if source_file is None:
             raise CleanMergedError(f"hook manifest entry for {hook_name} has invalid source_path")
         if not source_file.is_file():
@@ -2976,90 +3006,14 @@ def _redirect_output_to(path: pathlib.Path, max_bytes: int, rotated_retention_da
     return handle
 
 
-def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
-    """Doctor path that runs even when config parse failed.
-
-    main() catches ConfigError before the doctor dispatch and returned 0 — so
-    the one failure doctor most needs to report was unsurfaced. This helper
-    reports the config error and the install state, returns 1.
-    """
-    print(f"[{SCRIPT_NAME}] doctor")
-    print(f"  CONFIG ERROR             = {exc}")
-    print(f"  python                   = {_python_runtime_status()}")
-    try:
-        common = git_common_dir(repo_root)
-        print(f"  git-common-dir           = {common}")
-        active = _git(repo_root, ["config", "--get", "core.hooksPath"], check=False)
-        if active.returncode == 0 and active.stdout.strip():
-            hooks_dir = _resolve_hooks_path(
-                repo_root,
-                active.stdout.strip(),
-                home_dir=_resolve_home_dir(),
-            )
-            print(f"  core.hooksPath           = {hooks_dir}")
-            manifest_hooks = _hook_manifest_hooks(_load_hook_manifest(common))
-            for h in CLEAN_MERGED_HOOKS:
-                f = hooks_dir / h
-                exists = f.is_file()
-                source = repo_root / ".githooks" / h
-                source_match = exists and source.is_file() and f.read_bytes() == source.read_bytes()
-                entry = manifest_hooks.get(h)
-                manifest_match = (
-                    exists
-                    and isinstance(entry, dict)
-                    and entry.get("runtime_sha256") == _file_sha256(f)
-                )
-                print(
-                    f"  hook {h:14s} exists={exists} "
-                    f"source_match={source_match} manifest_match={manifest_match}"
-                )
-        # heartbeat freshness even on config error
-        import datetime as _dt
-        hb_paths = [
-            common / "clean-merged.heartbeat",
-            repo_root / ".git" / "clean-merged.heartbeat",
-        ]
-        for hb in hb_paths:
-            if hb.is_file():
-                try:
-                    hb_ts = _dt.datetime.fromisoformat(hb.read_text(encoding="utf-8").strip())
-                    age = _dt.datetime.now(_dt.timezone.utc) - hb_ts
-                    print(f"  heartbeat age            = {age} (at {hb})")
-                except (ValueError, OSError):
-                    pass
-                break
-    except Exception as inner:  # noqa: BLE001
-        print(f"  (additional error during doctor: {inner})")
-    print()
-    print(f"[{SCRIPT_NAME}] config parse failed; lanes are silently halted. "
-          "Fix the config to resume automatic cleanup.")
-    return 1
-
-
-def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
-    problems: list[str] = []
-    print(f"[{SCRIPT_NAME}] doctor")
-
-    # Python / tomllib availability
-    print(f"  python                   = {_python_runtime_status()}")
-
-    # config
-    print(f"  config.enabled           = {config.enabled}")
-    print(f"  config.trunk_branch      = {config.trunk_branch}")
-    print(f"  config.remote_name       = {config.remote_name}")
-    print(f"  config.origin_owner      = {config.origin_owner}")
-
-    # trunk resolution
-    trunk_sha = resolve_trunk_sha(repo_root, config.trunk_branch, config.remote_name)
-    print(f"  trunk_sha                = {trunk_sha}")
-    if not trunk_sha:
-        problems.append("trunk ref does not resolve")
-
-    # git-common-dir
-    common = git_common_dir(repo_root)
-    print(f"  git-common-dir           = {common}")
+def _diagnose_hook_install_state(
+    repo_root: pathlib.Path,
+    common: pathlib.Path,
+    problems: list[str],
+) -> None:
     expected_hooks_dir = common / "hooks"
     source_hooks_dir = repo_root / ".githooks"
+    home_dir = _resolve_home_dir()
     try:
         hook_manifest = _load_hook_manifest(common)
         manifest_hooks = _hook_manifest_hooks(hook_manifest)
@@ -3069,13 +3023,12 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
         manifest_shadowed = {}
         problems.append(str(exc))
 
-    # hooks install
     active_hooks_dir_raw = _git(repo_root, ["config", "--get", "core.hooksPath"], check=False)
     if active_hooks_dir_raw.returncode == 0 and active_hooks_dir_raw.stdout.strip():
         active_hooks_dir = _resolve_hooks_path(
             repo_root,
             active_hooks_dir_raw.stdout.strip(),
-            home_dir=_resolve_home_dir(),
+            home_dir=home_dir,
         )
         print(f"  core.hooksPath           = {active_hooks_dir}")
         if not _same_path(active_hooks_dir, expected_hooks_dir):
@@ -3108,6 +3061,7 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     else:
         print("  core.hooksPath           = (unset; hooks would live in .git/hooks)")
         problems.append("core.hooksPath unset; clean-merged hooks not active")
+
     dirty_sources = _dirty_tracked_hook_sources(repo_root)
     if dirty_sources:
         problems.append(
@@ -3124,7 +3078,13 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
             hook_file.is_file()
             and entry.get("runtime_sha256") == _file_sha256(hook_file)
         )
-        source_file = _manifest_source_file(repo_root, entry)
+        source_file = _manifest_source_file(
+            repo_root,
+            entry,
+            hook_name=hook_name,
+            invoke_root=repo_root,
+            home_dir=home_dir,
+        )
         source_match = (
             source_file is not None
             and source_file.is_file()
@@ -3144,11 +3104,19 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
             problems.append(f"shadowed hook {hook_name} manifest entry is invalid")
             continue
         for entry in entries:
-            source_file = _manifest_source_file(repo_root, entry)
+            if not isinstance(entry, dict):
+                problems.append(f"shadowed hook {hook_name} manifest entry is invalid")
+                continue
+            source_file = _manifest_source_file(
+                repo_root,
+                entry,
+                hook_name=hook_name,
+                invoke_root=repo_root,
+                home_dir=home_dir,
+            )
             source_match = (
                 source_file is not None
                 and source_file.is_file()
-                and isinstance(entry, dict)
                 and entry.get("source_sha256") == _file_sha256(source_file)
             )
             print(
@@ -3156,6 +3124,74 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
             )
             if not source_match:
                 problems.append(f"shadowed hook {hook_name} source changed since install")
+
+
+def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
+    """Doctor path that runs even when config parse failed.
+
+    main() catches ConfigError before the doctor dispatch and returned 0 — so
+    the one failure doctor most needs to report was unsurfaced. This helper
+    reports the config error and the install state, returns 1.
+    """
+    print(f"[{SCRIPT_NAME}] doctor")
+    print(f"  CONFIG ERROR             = {exc}")
+    print(f"  python                   = {_python_runtime_status()}")
+    problems: list[str] = []
+    try:
+        common = git_common_dir(repo_root)
+        print(f"  git-common-dir           = {common}")
+        _diagnose_hook_install_state(repo_root, common, problems)
+        # heartbeat freshness even on config error
+        import datetime as _dt
+        hb_paths = [
+            common / "clean-merged.heartbeat",
+            repo_root / ".git" / "clean-merged.heartbeat",
+        ]
+        for hb in hb_paths:
+            if hb.is_file():
+                try:
+                    hb_ts = _dt.datetime.fromisoformat(hb.read_text(encoding="utf-8").strip())
+                    age = _dt.datetime.now(_dt.timezone.utc) - hb_ts
+                    print(f"  heartbeat age            = {age} (at {hb})")
+                except (ValueError, OSError):
+                    pass
+                break
+    except Exception as inner:  # noqa: BLE001
+        print(f"  (additional error during doctor: {inner})")
+    print()
+    if problems:
+        print(f"[{SCRIPT_NAME}] {len(problems)} hook/config problem(s):")
+        for problem in problems:
+            print(f"  - {problem}")
+        print()
+    print(f"[{SCRIPT_NAME}] config parse failed; lanes are silently halted. "
+          "Fix the config to resume automatic cleanup.")
+    return 1
+
+
+def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
+    problems: list[str] = []
+    print(f"[{SCRIPT_NAME}] doctor")
+
+    # Python / tomllib availability
+    print(f"  python                   = {_python_runtime_status()}")
+
+    # config
+    print(f"  config.enabled           = {config.enabled}")
+    print(f"  config.trunk_branch      = {config.trunk_branch}")
+    print(f"  config.remote_name       = {config.remote_name}")
+    print(f"  config.origin_owner      = {config.origin_owner}")
+
+    # trunk resolution
+    trunk_sha = resolve_trunk_sha(repo_root, config.trunk_branch, config.remote_name)
+    print(f"  trunk_sha                = {trunk_sha}")
+    if not trunk_sha:
+        problems.append("trunk ref does not resolve")
+
+    # git-common-dir
+    common = git_common_dir(repo_root)
+    print(f"  git-common-dir           = {common}")
+    _diagnose_hook_install_state(repo_root, common, problems)
 
     # remote.<remote>.prune must follow the configured remote name.
     prune_key = f"remote.{config.remote_name}.prune"
@@ -3443,7 +3479,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.print_remote_name:
             return 1
         if args.doctor:
-            return cmd_doctor_on_error(repo_root=pathlib.Path.cwd(), exc=exc)
+            return cmd_doctor_on_error(repo_root=repo_root, exc=exc)
         return 0
 
     if args.print_remote_name:

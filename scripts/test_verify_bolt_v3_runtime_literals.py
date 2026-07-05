@@ -235,6 +235,31 @@ def test_context_shape_bypasses_emit() -> None:
     )
 
 
+def test_structural_flatten_context_literals_emit_narrowly() -> None:
+    assert_emits(
+        """
+        pub fn structural_flatten_probe() {
+            let _context = BoltV3KillSwitchFlattenRoutingContext {
+                max_fee_bps: Decimal::ZERO,
+                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
+            };
+        }
+        """,
+        "Decimal::ZERO",
+        "false",
+    )
+    assert_no_emits(
+        """
+        pub fn unrelated_structural_literals() {
+            let zero = Decimal::ZERO;
+            let disabled = false;
+        }
+        """,
+        "Decimal::ZERO",
+        "false",
+    )
+
+
 def test_multiline_log_diagnostics_are_ignored_by_callsite() -> None:
     assert_no_emits(
         """

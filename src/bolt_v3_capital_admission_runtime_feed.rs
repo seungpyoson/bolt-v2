@@ -362,6 +362,10 @@ impl CapitalAdmissionRuntimeFeed {
                 .record_order_event(venue_truth_order_event);
         }
         if let OrderEventAny::Filled(fill) = event {
+            if fill.account_id == self.config.account_id {
+                self.submit_admission
+                    .record_kill_switch_forced_reduction_terminal(fill.client_order_id.as_str());
+            }
             return self.on_fill_event(fill);
         }
         if is_live_order_event(event) {
@@ -395,6 +399,8 @@ impl CapitalAdmissionRuntimeFeed {
         }
 
         let observed_at_ns = event.ts_event().as_u64();
+        self.submit_admission
+            .record_kill_switch_forced_reduction_terminal(event.client_order_id().as_str());
         self.component_builder.record_terminal_order_event(
             event.client_order_id().to_string(),
             observed_at_ns,

@@ -317,10 +317,6 @@ pub struct KillSwitchConfigBlock {
 #[serde(deny_unknown_fields)]
 pub struct KillSwitchCancelConfigBlock {
     pub enabled: bool,
-    pub retry_max_attempts: u32,
-    pub retry_timeout_ms: u64,
-    pub retry_backoff_ms: u64,
-    pub source_freshness_max_age_ms: u64,
     pub mandatory_surfaces: Vec<String>,
 }
 
@@ -328,11 +324,6 @@ pub struct KillSwitchCancelConfigBlock {
 #[serde(deny_unknown_fields)]
 pub struct KillSwitchFlattenConfigBlock {
     pub enabled: bool,
-    pub retry_max_attempts: u32,
-    pub retry_timeout_ms: u64,
-    pub retry_backoff_ms: u64,
-    pub source_freshness_max_age_ms: u64,
-    pub max_position_proof_age_ms: u64,
     pub route_kind: KillSwitchFlattenRouteKindConfig,
     pub max_live_order_count: u32,
     pub max_notional_per_order: String,

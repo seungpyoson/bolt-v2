@@ -208,6 +208,7 @@ struct BoltV3SubmitAdmissionInner {
     admitted_order_count: u32,
     admitted_order_count_by_execution_client: BTreeMap<String, u32>,
     live_kill_switch_forced_reduction_order_count: u32,
+    live_kill_switch_forced_reduction_client_order_ids: BTreeSet<String>,
     loss_policy: Option<LossGovernorPolicy>,
     loss_snapshot: Option<LossSnapshot>,
     loss_source_observations: LossSourceObservationTimestamps,
@@ -477,6 +478,7 @@ impl BoltV3SubmitAdmissionState {
                 admitted_order_count: 0,
                 admitted_order_count_by_execution_client: BTreeMap::new(),
                 live_kill_switch_forced_reduction_order_count: 0,
+                live_kill_switch_forced_reduction_client_order_ids: BTreeSet::new(),
                 loss_policy,
                 loss_snapshot: None,
                 // No feed event has been observed at construction time, so all
@@ -1417,14 +1419,21 @@ impl BoltV3SubmitAdmissionState {
         }
     }
 
-    pub fn record_kill_switch_forced_reduction_terminal(&self) {
+    pub fn record_kill_switch_forced_reduction_terminal(&self, client_order_id: &str) -> bool {
         let mut inner = self
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
+        if !inner
+            .live_kill_switch_forced_reduction_client_order_ids
+            .remove(client_order_id)
+        {
+            return false;
+        }
         inner.live_kill_switch_forced_reduction_order_count = inner
             .live_kill_switch_forced_reduction_order_count
             .saturating_sub(1);
+        true
     }
 
     pub fn replace_kill_switch_state(&self, state: KillSwitchState) {
@@ -1536,16 +1545,21 @@ impl BoltV3SubmitAdmissionState {
             } else {
                 inner.live_kill_switch_forced_reduction_order_count
             };
+            let forced_reduction_client_order_id = (request.intent_kind
+                == BoltV3SubmitIntentKind::KillSwitchForcedReduction)
+                .then(|| request.client_order_id.clone());
             let counter_rollback = BoltV3SubmitAdmissionCounterRollback {
                 execution_client_id: request.execution_client_id.clone(),
                 order_count: next_admitted_order_count.saturating_sub(admitted_order_count_before),
                 forced_reduction_count: next_forced_reduction_count
                     .saturating_sub(forced_reduction_order_count_before),
+                forced_reduction_client_order_id: forced_reduction_client_order_id.clone(),
             };
             admitted_counter_update = Some((
                 next_admitted_order_count,
                 next_execution_client_count,
                 next_forced_reduction_count,
+                forced_reduction_client_order_id,
                 counter_rollback,
             ));
         }
@@ -1576,6 +1590,7 @@ impl BoltV3SubmitAdmissionState {
                     next_admitted_order_count,
                     next_execution_client_count,
                     next_forced_reduction_count,
+                    forced_reduction_client_order_id,
                     counter_rollback,
                 )) = admitted_counter_update
                 else {
@@ -1587,6 +1602,11 @@ impl BoltV3SubmitAdmissionState {
                     next_execution_client_count,
                 );
                 inner.live_kill_switch_forced_reduction_order_count = next_forced_reduction_count;
+                if let Some(client_order_id) = forced_reduction_client_order_id {
+                    inner
+                        .live_kill_switch_forced_reduction_client_order_ids
+                        .insert(client_order_id);
+                }
                 Ok(BoltV3SubmitAdmissionPermit {
                     inner: self.inner.clone(),
                     rollbacks: evaluation.rollback.into_iter().collect(),
@@ -2158,6 +2178,7 @@ impl BoltV3SubmitAdmissionState {
             execution_client_id: execution_client_id.to_string(),
             order_count: claim_count,
             forced_reduction_count,
+            forced_reduction_client_order_id: None,
         };
 
         for metadata in &reservation_metadata {
@@ -2357,10 +2378,20 @@ impl BoltV3SubmitAdmissionState {
         if claim.halt_id() != halt_id || claim.policy_sha256() != policy.policy_sha256() {
             return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid;
         }
+        // KillSwitchState exposes the admissible halt id, not the planner's action id.
+        // The action binding is enforced when the flatten planner constructs the
+        // forced-reduction claim, and the strategy/policy fence confines claim
+        // construction to that owning path.
         if request.notional <= Decimal::ZERO {
             return BoltV3AdmissionOutcome::RejectedNonPositiveNotional;
         }
         if request.notional > policy.max_notional_per_order() {
+            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded;
+        }
+        if inner
+            .live_kill_switch_forced_reduction_client_order_ids
+            .contains(&request.client_order_id)
+        {
             return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded;
         }
         if inner.live_kill_switch_forced_reduction_order_count >= policy.max_live_order_count() {
@@ -2524,6 +2555,7 @@ struct BoltV3SubmitAdmissionCounterRollback {
     execution_client_id: String,
     order_count: u32,
     forced_reduction_count: u32,
+    forced_reduction_client_order_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -3975,6 +4007,11 @@ fn rollback_admission_counters(
     inner.live_kill_switch_forced_reduction_order_count = inner
         .live_kill_switch_forced_reduction_order_count
         .saturating_sub(rollback.forced_reduction_count);
+    if let Some(client_order_id) = rollback.forced_reduction_client_order_id.as_ref() {
+        inner
+            .live_kill_switch_forced_reduction_client_order_ids
+            .remove(client_order_id);
+    }
 }
 
 fn map_capital_admission_rejection(

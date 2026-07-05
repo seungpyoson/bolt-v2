@@ -510,7 +510,7 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 - `state_path` is a non-empty root-relative path with no `..` components; `max_state_file_bytes` is positive and bounds both startup reads and writes, so oversized evidence fails closed instead of being read unbounded
 - before setting `enabled = true` on a fresh install, keep the block disabled, replace placeholder scopes with deployment values, run `bolt-v2 ops init-kill-switch-store --config <root.toml>`, then enable; the command creates the initial `Armed` + zero-loss snapshot at `state_path` and refuses to overwrite any existing store
 - `max_utc_daily_realized_loss` is a positive decimal string for the durable UTC-daily realized-loss accumulator; the first realized-PnL observation binds the accumulator to one settlement currency, and later mixed-currency observations fail closed to `FailedManualIntervention` with `mixed_settlement_currency` instead of being netted
-- `flatten_open_positions_on_breach` must currently be `false`; live flatten/market-exit side effects remain rejected until the shared execution-policy flatten path exists
+- `flatten_open_positions_on_breach` may be `true` only when `[risk.kill_switch.flatten]` is enabled with `route_kind = "live_node_command_router"`; halt-triggered flatten commands route through the shared submit policy as kill-switch forced reductions
 - `action_retry_interval_ms` and `action_retry_timeout_ms` are positive retry timing values for proof-only halt action persistence/retry bookkeeping; interval must be `<=` timeout
 - `mandatory_proof_max_age_ms` and `manual_reset_evidence_max_age_ms` bound operator reset proof freshness
 - `forced_reduction_policy_sha256` must be a 64-character SHA-256 hex digest; forced-reduction claims must match it
@@ -520,20 +520,20 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 ##### `[risk.kill_switch.cancel]`
 
 - required: no; when absent or `enabled = false`, no cancel-supervisor proof model is enabled
-- `retry_max_attempts`, `retry_timeout_ms`, `retry_backoff_ms`, and `source_freshness_max_age_ms` must be positive when enabled
 - `mandatory_surfaces` must include every mandatory outstanding-order risk surface: `open`, `inflight`, `pending-cancel`, `emulated`, `algorithm-managed`, `contingent`, and `accepted-but-not-terminal`
-- still proof-only: this block configures cancel-supervisor evidence and retry classification, not direct NT cancel calls
+- still proof-only: this block configures cancel-supervisor evidence and mandatory outstanding-risk surfaces, not direct NT cancel calls
 
 ##### `[risk.kill_switch.flatten]`
 
 - required: no; when absent or `enabled = false`, no flatten-supervisor proof model is enabled
-- `retry_max_attempts`, `retry_timeout_ms`, `retry_backoff_ms`, `source_freshness_max_age_ms`, `max_position_proof_age_ms`, and `max_live_order_count` must be positive when enabled
-- `route_kind` must be `per_strategy_action_port` or `live_node_command_router`
+- `route_kind` must be `per_strategy_action_port` or `live_node_command_router`; live flatten requires `live_node_command_router`
+- NT cache membership is the flatten position proof; position age does not block emergency flatten submissions
+- `max_live_order_count` must be positive when enabled
 - `max_live_order_count` must be `<= risk.kill_switch.forced_reduction_max_live_order_count`
 - `max_notional_per_order` is a positive decimal string and must be `<= risk.kill_switch.forced_reduction_max_notional_per_order`
 - `order_type`, `time_in_force`, and `is_post_only` are the proof order-template fields checked by the shared NT order-template validator
 - `is_reduce_only` must be `true` and `is_quote_quantity` must be `false`
-- still proof-only: this block configures flatten-supervisor evidence, retry classification, and reduce-only proof records, not live submit/close/market-exit calls
+- live-node-routed flatten commands build reduce-only forced-reduction submits with the halt id/action id/policy-SHA claim, then submit through the shared order-execution and submit-admission path. The venue-position clamp records the sizing outcome in `order_intent.clamp_outcome`; a zero venue position is a loud rejected no-op with `clamp_outcome = {"status":"rejected"}`.
 
 #### NautilusTrader risk-engine bypass (removed config field)
 
@@ -655,6 +655,7 @@ Decision-evidence JSONL records use `schema_version = 14` for `order_intent`, `a
 Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, `fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, `requote_throttle`, `capture_failure`, or `divergence`.
 The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `capital_admission_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, `submit_reservation_fill` for fill metadata, `entry_skip` for entry skip rationale, `exit_decision` for exit rationale, `loss_governor_halt` for loss-governor halt transitions, `requote_throttle` for maker requote budget throttle transitions, `venue_truth_capture_failure` for degraded venue REST capture authority evidence, and `venue_truth_divergence` for durable venue-truth halt evidence.
 `order_intent` payloads carry the configured strategy/order identity plus compiled NT order semantics under `order_fields`.
+`order_intent.clamp_outcome` is `null` for orders that do not enter the venue-position clamp. Clamp-eligible risk-reducing exits and kill-switch forced reductions record one of: `within_bounds` when the order quantity is already no larger than venue truth, `clamped` with `original_quantity` when the order is resized before submit, `rejected` when the clamp refuses the submit, or `not_evaluated` with `no_venue_truth` / `foreign_instrument` when venue truth cannot authoritatively size that instrument.
 `admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id` and the `execution_client_id` whose submit-admission limits were evaluated.
 `strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
 `exit_decision` and `exit_evaluation` payloads carry optional observed exit inputs when available: `spot_price`, `spot_venue_name`, `fast_venue_available`, `reference_current_price`, `reference_current_price_available`, `interval_open`, `fair_probability_up`, `fair_probability_down`, `uncertainty_band_probability`, `up_fee_bps`, and `down_fee_bps`. `exit_decision` also carries optional `submission_order_side`, `submission_price`, and `submission_quantity`. Numeric observed-input fields are serialized as decimal strings. Pre-extension schema-14 records may omit these keys; readers treat omitted optional fields as absent and omitted availability flags as `false`.

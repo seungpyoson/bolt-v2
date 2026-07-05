@@ -9727,7 +9727,7 @@ def fingerprint_reuse_gates_on_consumer_events(job_lines: list[str]) -> bool:
     return FINGERPRINT_REUSE_CONSUMER_EVENTS_EXPR in job_if_value(job_lines)
 
 
-def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
+def classified_top_level_env_errors(workflow_text: str, workflow_name: str) -> list[str]:
     errors = []
     scoped_keys = set(REUSE_RELEVANT_WORKFLOW_ENV_KEYS)
     overlap = sorted(scoped_keys & REUSE_NEUTRAL_TOP_LEVEL_ENV_KEYS)
@@ -9738,7 +9738,7 @@ def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
     try:
         env_lines = top_level_block_lines(workflow_text, "env")
     except ProvenanceError as exc:
-        return errors + [f"top-level env reuse scope could not parse ci.yml: {exc}"]
+        return errors + [f"top-level env reuse scope could not parse {workflow_name}: {exc}"]
 
     entry_lines = [
         structural_line
@@ -9774,20 +9774,9 @@ def top_level_env_reuse_scope_errors(workflow_text: str) -> list[str]:
             )
 
     for key in sorted(scoped_keys - seen_keys):
-        errors.append(f"top-level env.{key} is reuse-scoped but missing from ci.yml")
+        errors.append(f"top-level env.{key} is reuse-scoped but missing from {workflow_name}")
 
     return errors
-
-
-def top_level_defaults_reuse_scope_errors(workflow_text: str) -> list[str]:
-    for line in workflow_text.splitlines():
-        if line.startswith((" ", "\t")):
-            continue
-        key, separator, _value = workflow_yaml_structural_line(line).partition(":")
-        if separator and key.strip().strip("'\"") == "defaults":
-            return ["top-level defaults must not be used in ci.yml while nextest reuse is enabled"]
-    return []
-
 
 def workflow_structural_line_has_yaml_anchor_or_alias(line: str) -> bool:
     quote: str | None = None
@@ -11854,8 +11843,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
     append_cache_persistence_audit_contract_errors(errors, jobs)
 
     if "nextest-fingerprint-reuse" in jobs:
-        errors.extend(top_level_env_reuse_scope_errors(workflow_text))
-        errors.extend(top_level_defaults_reuse_scope_errors(workflow_text))
         errors.extend(workflow_yaml_anchor_alias_errors(workflow_text))
         errors.extend(workflow_yaml_unsupported_feature_errors(workflow_text))
         reuse_lines = jobs["nextest-fingerprint-reuse"]
@@ -12644,19 +12631,7 @@ def top_level_mapping_has_child(workflow_text: str, parent_key: str, child_key: 
 
 
 def partition_workflow_boundary_errors(workflow_text: str, workflow_name: str) -> list[str]:
-    errors: list[str] = []
-    try:
-        env_lines = top_level_env_immediate_entry_lines(workflow_text)
-    except ProvenanceError:
-        env_lines = []
-    for line in env_lines:
-        entry = top_level_env_entry_key_value(line)
-        if entry is None:
-            continue
-        key, _value = entry
-        if key in {"PATH", "BASH_ENV"}:
-            errors.append(f"{workflow_name} top-level env must not set PATH or BASH_ENV")
-            break
+    errors = classified_top_level_env_errors(workflow_text, workflow_name)
     if top_level_mapping_has_child(workflow_text, "defaults", "run"):
         errors.append(f"{workflow_name} top-level defaults.run must not be used")
     return errors

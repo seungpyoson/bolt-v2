@@ -14164,9 +14164,54 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         {".github/workflows/backtester-ci.yml": bvs_top_level_path_env}
     )
     assert any(
-        "backtester-ci.yml top-level env must not set PATH or BASH_ENV" in error
+        "top-level env.PATH must be classified as reuse-scoped or build-neutral" in error
         for error in bvs_top_level_path_errors
     ), bvs_top_level_path_errors
+    bvs_top_level_ld_preload_env = replace_once(
+        real_backtester_workflow,
+        "env:\n  JUST_VERSION: \"1.49.0\"\n",
+        "env:\n  LD_PRELOAD: /tmp/partition-shim.so\n  JUST_VERSION: \"1.49.0\"\n",
+    )
+    bvs_top_level_ld_preload_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_top_level_ld_preload_env}
+    )
+    assert any(
+        "top-level env.LD_PRELOAD must be classified as reuse-scoped or build-neutral" in error
+        for error in bvs_top_level_ld_preload_errors
+    ), bvs_top_level_ld_preload_errors
+    bvs_top_level_arbitrary_env = replace_once(
+        real_backtester_workflow,
+        "env:\n  JUST_VERSION: \"1.49.0\"\n",
+        "env:\n  EVIL_INJECT: x\n  JUST_VERSION: \"1.49.0\"\n",
+    )
+    bvs_top_level_arbitrary_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_top_level_arbitrary_env}
+    )
+    assert any(
+        "top-level env.EVIL_INJECT must be classified as reuse-scoped or build-neutral" in error
+        for error in bvs_top_level_arbitrary_errors
+    ), bvs_top_level_arbitrary_errors
+    bvs_top_level_flow_env = replace_once(
+        real_backtester_workflow,
+        """env:
+  JUST_VERSION: "1.49.0"
+  CARGO_TERM_COLOR: always
+  # Same single base as ci.yml — one base, two namespaces. The crate's namespace
+  # (backtesting-vertical-slice) is selected by --repo, not by a second base.
+  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
+permissions:
+""",
+        """env: {PATH: "/tmp/partition-shim:${{ env.PATH }}", JUST_VERSION: "1.49.0", CARGO_TERM_COLOR: always, RUST_VERIFICATION_ROOT_BASE: "${{ github.workspace }}/.rust-verification"}
+permissions:
+""",
+    )
+    bvs_top_level_flow_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": bvs_top_level_flow_env}
+    )
+    assert any(
+        "top-level env reuse scope could not parse backtester-ci.yml" in error
+        for error in bvs_top_level_flow_errors
+    ), bvs_top_level_flow_errors
     bvs_top_level_defaults = replace_once(
         real_backtester_workflow,
         "permissions:\n",
@@ -15065,11 +15110,11 @@ git() {
         ),
     )
     assert_error(
-        "top-level defaults must not be used in ci.yml while nextest reuse is enabled",
+        "ci.yml top-level defaults.run must not be used",
         replace_once(BASE_WORKFLOW, "permissions:\n", "defaults:\n  run:\n    shell: sh\n\npermissions:\n"),
     )
     assert_error(
-        "top-level defaults must not be used in ci.yml while nextest reuse is enabled",
+        "ci.yml top-level defaults.run must not be used",
         replace_once(BASE_WORKFLOW, "permissions:\n", "defaults: { run: { shell: sh } }\npermissions:\n"),
     )
     assert_error(
@@ -16237,7 +16282,7 @@ def main() -> int:
         "env:\n  JUST_VERSION: \"1.49.0\"\n",
         "env:\n  PATH: /tmp/partition-shim\n  JUST_VERSION: \"1.49.0\"\n",
     )
-    assert_error("ci.yml top-level env must not set PATH or BASH_ENV", root_top_level_path_env)
+    assert_error("top-level env.PATH must be classified as reuse-scoped or build-neutral", root_top_level_path_env)
     root_top_level_defaults = replace_once(
         real_ci_workflow,
         "permissions:\n",

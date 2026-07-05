@@ -24,6 +24,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SYNC_CI_DEBUG_SSH_PATH = REPO_ROOT / "scripts" / "sync_ci_debug_ssh_secret.py"
 DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
+DEBUG_TEST_WORKFLOW_PATH = ".github/workflows/debug-test.yml"
 SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
 GATE_NEEDS = "needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
 GATE_NAME = "name: ${{ needs.ci-policy.outputs.gate_name }}"
@@ -8504,6 +8505,83 @@ def assert_debug_workflow_checks_each_ssh_runner_step() -> None:
     errors = verifier.verify_ci_runner_debug_workflow({DEBUG_WORKFLOW_PATH: unpinned_first_job})
     if not any("debug-heavy" in error and SSH_RUNNER_ACTION in error for error in errors):
         raise AssertionError(f"debug verifier must check each SSH runner step, got: {errors}")
+
+
+def assert_debug_test_workflow_contract() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(DEBUG_TEST_WORKFLOW_PATH)
+    workflows = {
+        DEBUG_TEST_WORKFLOW_PATH: workflow,
+        ".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml"),
+    }
+    errors = verifier.verify_debug_test_workflow(workflows, repo_source_text("justfile"))
+    if errors:
+        raise AssertionError(f"debug-test workflow must satisfy its contract, got: {errors}")
+
+    mutations = (
+        (
+            "debug-test workflow must be workflow_dispatch-only",
+            workflow.replace("on:\n  workflow_dispatch:\n", "on:\n  push:\n    branches: [main]\n  workflow_dispatch:\n", 1),
+        ),
+        (
+            "debug-test workflow permissions must be contents: read only",
+            workflow.replace("permissions:\n  contents: read\n", "permissions:\n  contents: read\n  actions: read\n", 1),
+        ),
+        (
+            "debug-test workflow must not declare concurrency",
+            workflow.replace("permissions:\n  contents: read\n", "concurrency:\n  group: debug-test\n\npermissions:\n  contents: read\n", 1),
+        ),
+        (
+            "debug-test workflow must run on vars.CI_RUNNER_MANAGED_HEAVY",
+            workflow.replace("runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}", "runs-on: ubuntu-latest", 1),
+        ),
+        (
+            "debug-test workflow timeout must be 30 minutes",
+            workflow.replace("timeout-minutes: 30", "timeout-minutes: 60", 1),
+        ),
+        (
+            "debug-test workflow must call managed just debug-test recipe",
+            workflow.replace('just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE"', 'cargo nextest run -E "$DEBUG_TEST_FILTER" --locked', 1),
+        ),
+        (
+            "debug-test workflow must use the PR-readonly cache role only",
+            workflow.replace("AWS_CI_CACHE_PR_READONLY_ROLE_ARN", "AWS_CI_CACHE_ROLE_ARN", 1),
+        ),
+        (
+            "debug-test workflow must not reference provenance or gate jobs",
+            workflow.replace("name: debug-test", "name: debug-test\ngate: ignored", 1),
+        ),
+    )
+    for fragment, mutated in mutations:
+        mutated_errors = verifier.verify_debug_test_workflow(
+            {DEBUG_TEST_WORKFLOW_PATH: mutated, ".github/workflows/ci.yml": workflows[".github/workflows/ci.yml"]},
+            repo_source_text("justfile"),
+        )
+        if not any(fragment in error for error in mutated_errors):
+            raise AssertionError(f"expected {fragment!r}, got: {mutated_errors}")
+
+    mergify_text = repo_source_text(".mergify.yml") + "\n# debug-test\n"
+    mergify_errors = verifier.verify_debug_test_workflow(workflows, repo_source_text("justfile"), mergify_text)
+    if not any("debug-test workflow must not be referenced by .mergify.yml" in error for error in mergify_errors):
+        raise AssertionError(f"debug-test mergify reference must be rejected, got: {mergify_errors}")
+
+    justfile_without_recipe = repo_source_text("justfile").replace(
+        'debug-test filter package="": check-workspace require-rust-verification-owner\n',
+        "",
+        1,
+    )
+    recipe_errors = verifier.verify_debug_test_workflow(workflows, justfile_without_recipe)
+    if not any("justfile must define debug-test filter package" in error for error in recipe_errors):
+        raise AssertionError(f"missing debug-test just recipe must be rejected, got: {recipe_errors}")
+
+    unsafe_justfile = repo_source_text("justfile").replace(
+        'if [[ -z "$filter" ]]; then filter={{quote(filter)}}; fi\n',
+        'filter="${DEBUG_TEST_FILTER:-{{filter}}}"\n',
+        1,
+    )
+    quote_errors = verifier.verify_debug_test_workflow(workflows, unsafe_justfile)
+    if not any("justfile debug-test recipe must shell-quote direct filter/package arguments" in error for error in quote_errors):
+        raise AssertionError(f"unsafe direct debug-test filter interpolation must be rejected, got: {quote_errors}")
 
 
 def assert_bootstrap_uses_onepassword_key_generation() -> None:
@@ -17695,6 +17773,7 @@ def main() -> int:
     assert_self_authorizing_governance_detector_contract()
     assert_debug_workflow_rejects_non_manual_trigger()
     assert_debug_workflow_checks_each_ssh_runner_step()
+    assert_debug_test_workflow_contract()
     assert_bootstrap_uses_onepassword_key_generation()
     assert_sync_errors_redact_command_arguments()
     assert_sync_public_key_uses_stdin()

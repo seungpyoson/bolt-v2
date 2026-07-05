@@ -1,0 +1,334 @@
+name: Debug Test
+run-name: Debug Test [${{ inputs.ref }}]
+
+# Usage contract: iteration happens here; full CI runs only at merge time and for
+# final pre-merge evidence. This workflow is dispatch-only, non-gating, and never
+# emits provenance or check-run authorization.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to checkout"
+        required: true
+        type: string
+      filter:
+        description: "cargo-nextest filter expression"
+        required: true
+        type: string
+      package:
+        description: "Optional Cargo package"
+        required: false
+        type: string
+        default: ""
+
+env:
+  JUST_VERSION: "1.49.0"
+  CARGO_TERM_COLOR: always
+  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
+
+permissions:
+  contents: read
+
+jobs:
+  debug-test:
+    name: debug-test
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    timeout-minutes: 30
+    env:
+      NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+      ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
+      NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+      NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+      NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
+      NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
+      DEBUG_TEST_FILTER: ${{ inputs.filter }}
+      DEBUG_TEST_PACKAGE: ${{ inputs.package || '' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+          include-managed-target-dir: "true"
+          build-jobs-key: debug_test.debug-test
+
+      - name: Resolve debug nextest fingerprint
+        id: nextest-fingerprint
+        shell: bash
+        run: |
+          python3 scripts/nextest_fingerprint.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --config ci/nextest-fingerprint.toml \
+            --runners-config ci/github-actions-runners.toml \
+            --runner-os "${{ runner.os }}" \
+            --runner-arch "${{ runner.arch }}" \
+            --output-path .nextest-archive-fingerprint/cache-key.txt
+
+      - name: Resolve debug archive cache keys
+        id: debug-cache-keys
+        shell: bash
+        run: |
+          {
+            echo "nextest_archive_cache_key=${{ steps.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ steps.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ steps.nextest-fingerprint.outputs.nextest_shards }}-${{ steps.nextest-fingerprint.outputs.nextest_digest }}"
+            echo "root_bin_sidecars_cache_key=root-bin-sidecars-v${{ steps.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ steps.nextest-fingerprint.outputs.nextest_digest }}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve debug archive cache eligibility
+        id: debug-archive-cache
+        continue-on-error: true
+        env:
+          ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
+          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+          REGION: ${{ vars.CI_SCCACHE_REGION }}
+          PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
+        run: |
+          vars_present=true
+          [[ "$ENABLED" == "true" && -n "$PR_READONLY_ROLE_ARN" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false
+          if [[ "$vars_present" == "true" ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=read_only" >> "$GITHUB_OUTPUT"
+          echo "enabled=$ENABLED cache_mode=read_only vars_present=$vars_present"
+
+      - name: Configure AWS credentials for debug archive cache
+        id: debug-archive-cache-aws
+        if: steps.debug-archive-cache.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ steps.debug-archive-cache.outputs.role_arn }}
+          aws-region: ${{ vars.CI_SCCACHE_REGION }}
+
+      - name: Restore debug nextest archive from S3
+        id: debug-nextest-archive-cache
+        if: steps.debug-archive-cache.outputs.eligible == 'true' && steps.debug-archive-cache-aws.outcome == 'success'
+        env:
+          CACHE_KEY: ${{ steps.debug-cache-keys.outputs.nextest_archive_cache_key }}
+          DIGEST: ${{ steps.nextest-fingerprint.outputs.nextest_digest }}
+        run: |
+          set +e
+          start_epoch="$(date +%s)"
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/nextest-archive/${CACHE_KEY}.tar.zst"
+          uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
+          mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          head_rc=$?
+          if [[ "$head_rc" -ne 0 ]]; then
+            {
+              echo "cache-hit=false"
+              echo "restore-result=miss"
+              echo "restore-reason=head-miss-or-metadata-unavailable"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::debug nextest archive S3 cache miss or metadata unavailable for digest ${DIGEST}; compiling filtered tests"
+            exit 0
+          fi
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            {
+              echo "restore-result=error"
+              echo "restore-reason=digest-mismatch"
+            } >> "$GITHUB_OUTPUT"
+            echo "::error::debug nextest archive S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
+            exit 1
+          fi
+          if aws s3 cp "$uri" "$NEXTEST_ARCHIVE_PATH" --only-show-errors; then
+            elapsed="$(( $(date +%s) - start_epoch ))"
+            bytes="$(wc -c < "$NEXTEST_ARCHIVE_PATH" | tr -d ' ')"
+            {
+              echo "cache-hit=true"
+              echo "restore-result=hit"
+              echo "restore-reason=downloaded"
+            } >> "$GITHUB_OUTPUT"
+            echo "debug nextest archive S3 restore: hit bytes=$bytes seconds=$elapsed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            rm -f "$NEXTEST_ARCHIVE_PATH"
+            {
+              echo "cache-hit=false"
+              echo "restore-result=miss"
+              echo "restore-reason=copy-failed-or-unavailable"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::debug nextest archive S3 cache miss or restore unavailable for digest ${DIGEST}; compiling filtered tests"
+          fi
+          exit 0
+
+      - name: Restore debug root binary sidecars from S3
+        id: debug-root-bin-sidecars-cache
+        if: steps.debug-archive-cache.outputs.eligible == 'true' && steps.debug-archive-cache-aws.outcome == 'success'
+        env:
+          CACHE_KEY: ${{ steps.debug-cache-keys.outputs.root_bin_sidecars_cache_key }}
+          DIGEST: ${{ steps.nextest-fingerprint.outputs.nextest_digest }}
+        run: |
+          set +e
+          object_key="${NEXTEST_ARTIFACT_CACHE_KEY_PREFIX%/}/root-bin-sidecars/${CACHE_KEY}.tar.gz"
+          uri="s3://${NEXTEST_ARTIFACT_CACHE_BUCKET}/${object_key}"
+          mkdir -p "$(dirname "$ROOT_BIN_SIDECARS_PATH")"
+          metadata_digest="$(aws s3api head-object --bucket "$NEXTEST_ARTIFACT_CACHE_BUCKET" --key "$object_key" --query 'Metadata."nextest-digest"' --output text 2>/dev/null)"
+          head_rc=$?
+          if [[ "$head_rc" -ne 0 ]]; then
+            {
+              echo "cache-hit=false"
+              echo "restore-result=miss"
+              echo "restore-reason=head-miss-or-metadata-unavailable"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::debug root binary sidecar S3 cache miss or metadata unavailable for digest ${DIGEST}; compiling filtered tests"
+            exit 0
+          fi
+          if [[ "$metadata_digest" != "$DIGEST" ]]; then
+            {
+              echo "restore-result=error"
+              echo "restore-reason=digest-mismatch"
+            } >> "$GITHUB_OUTPUT"
+            echo "::error::debug root binary sidecar S3 object ${object_key} has missing or mismatched nextest-digest metadata; expected ${DIGEST}, got ${metadata_digest:-<empty>}. Delete the object or repopulate it from a main push."
+            exit 1
+          fi
+          if aws s3 cp "$uri" "$ROOT_BIN_SIDECARS_PATH" --only-show-errors; then
+            bytes="$(wc -c < "$ROOT_BIN_SIDECARS_PATH" | tr -d ' ')"
+            {
+              echo "cache-hit=true"
+              echo "restore-result=hit"
+              echo "restore-reason=downloaded"
+            } >> "$GITHUB_OUTPUT"
+            echo "debug root binary sidecars S3 restore: hit bytes=$bytes" >> "$GITHUB_STEP_SUMMARY"
+          else
+            rm -f "$ROOT_BIN_SIDECARS_PATH"
+            {
+              echo "cache-hit=false"
+              echo "restore-result=miss"
+              echo "restore-reason=copy-failed-or-unavailable"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::debug root binary sidecar S3 cache miss or restore unavailable for digest ${DIGEST}; compiling filtered tests"
+          fi
+          exit 0
+
+      - name: Resolve debug archive reuse
+        id: debug-archive-ready
+        shell: bash
+        run: |
+          if [[ "${{ steps.debug-nextest-archive-cache.outputs.cache-hit }}" == "true" && "${{ steps.debug-root-bin-sidecars-cache.outputs.cache-hit }}" == "true" ]]; then
+            mkdir -p "${{ steps.setup.outputs.managed_target_dir }}"
+            tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"
+            echo "value=true" >> "$GITHUB_OUTPUT"
+            echo "Debug archive reuse: hit" >> "$GITHUB_STEP_SUMMARY"
+          else
+            rm -f "$NEXTEST_ARCHIVE_PATH"
+            echo "value=false" >> "$GITHUB_OUTPUT"
+            echo "Debug archive reuse: miss" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: false
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Resolve sccache eligibility
+        id: sccache-eligible
+        if: steps.debug-archive-ready.outputs.value != 'true'
+        continue-on-error: true
+        env:
+          PR_READONLY_ROLE_ARN: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+          REGION: ${{ vars.CI_SCCACHE_REGION }}
+          PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
+        run: |
+          vars_present=true
+          [[ -n "$PR_READONLY_ROLE_ARN" && -n "$BUCKET" && -n "$REGION" && -n "$PREFIX" ]] || vars_present=false
+          location_matches=true
+          [[ "$BUCKET" == "bolt-v2-ci-cache-675819144420-us-east-2" && "$REGION" == "us-east-2" && "$PREFIX" == "sccache/bolt-v2/arm64/root-nextest/" ]] || location_matches=false
+          if [[ "$vars_present" == "true" && "$location_matches" == "true" ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "role_arn=$PR_READONLY_ROLE_ARN" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=read_only" >> "$GITHUB_OUTPUT"
+          echo "cache_mode=read_only vars_present=$vars_present location_matches=$location_matches"
+
+      - name: Configure AWS credentials for sccache
+        id: sccache-aws
+        if: steps.sccache-eligible.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ steps.sccache-eligible.outputs.role_arn }}
+          aws-region: ${{ vars.CI_SCCACHE_REGION }}
+
+      - name: Install sccache
+        id: sccache-install
+        if: steps.sccache-eligible.outputs.eligible == 'true' && steps.sccache-aws.outcome == 'success'
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: "v0.10.0"
+
+      - name: Resolve sccache enablement
+        id: sccache
+        if: steps.debug-archive-ready.outputs.value != 'true'
+        continue-on-error: true
+        run: |
+          enabled=false
+          if [[ "${{ steps.sccache-eligible.outputs.eligible }}" == "true" \
+                && "${{ steps.sccache-aws.outcome }}" == "success" \
+                && "${{ steps.sccache-install.outcome }}" == "success" \
+                && -n "${SCCACHE_PATH:-}" ]]; then
+            if "$SCCACHE_PATH" --start-server; then
+              "$SCCACHE_PATH" --zero-stats || true
+              enabled=true
+            else
+              echo "sccache server failed to start; building without cache"
+            fi
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "sccache enabled=$enabled"
+
+      - name: Run debug test
+        id: run-debug-test
+        shell: bash
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
+        run: |
+          log="$RUNNER_TEMP/debug-test.log"
+          set +e
+          just debug-test "$DEBUG_TEST_FILTER" "$DEBUG_TEST_PACKAGE" 2>&1 | tee "$log"
+          rc="${PIPESTATUS[0]}"
+          set -e
+          if [[ "$rc" -eq 0 ]]; then
+            echo "Debug test: pass" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::error title=debug-test failed::exit=${rc}"
+          {
+            echo "Debug test: fail"
+            echo "Failing tests:"
+            grep -E '(^[[:space:]]*FAIL[[:space:]]|FAILED|failures:)' "$log" | tail -20 || true
+            echo "Last relevant log lines:"
+            tail -120 "$log"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Print sccache stats
+        if: always() && steps.sccache.outputs.enabled == 'true'
+        run: '"$SCCACHE_PATH" --show-stats || true'

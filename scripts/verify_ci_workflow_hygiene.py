@@ -6786,7 +6786,7 @@ def ci_lint_suite_commands(errors: list[str]) -> tuple[str, ...]:
         import run_ci_lint_suites
 
         return tuple(" ".join(suite.command) for suite in run_ci_lint_suites.CI_LINT_SUITES)
-    except Exception as exc:
+    except (AttributeError, ImportError, SyntaxError, TypeError) as exc:
         errors.append(f"ci-lint workflow runner suite table must be importable: {type(exc).__name__}: {exc}")
         return ()
 

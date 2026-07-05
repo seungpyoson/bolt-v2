@@ -784,6 +784,7 @@ jobs:
             just bte-test-archive-run \
               "$BVS_NEXTEST_ARCHIVE_PATH" \
               "$RUNNER_TEMP/bvs-nextest-archive-extract-s3-smoke" \
+              --no-tests=fail \
               backtesting_vertical_slice_s3_catalog_smoke
 
       - name: test

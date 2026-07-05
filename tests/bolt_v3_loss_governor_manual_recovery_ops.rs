@@ -19,6 +19,7 @@ use rust_decimal::Decimal;
 
 const VALID_EVIDENCE_SHA256: &str =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;
 
 fn enabled_kill_switch_config(state_path: &str) -> KillSwitchConfigBlock {
     KillSwitchConfigBlock {
@@ -125,6 +126,51 @@ fn breaching_loss_snapshot() -> KillSwitchLossProtectionSnapshot {
     KillSwitchLossProtectionSnapshot {
         daily_realized_pnl: Decimal::new(-750, 2),
         ..zero_loss_snapshot()
+    }
+}
+
+fn persist_loss_governor_halted_state_with_reason(
+    store: &KillSwitchStore,
+    state: KillSwitchState,
+    snapshot: &KillSwitchLossProtectionSnapshot,
+    loss_halt_reason: &str,
+) {
+    store
+        .write_state_with_loss_snapshot(&state, Some(snapshot))
+        .expect("latched loss-governor halt should persist");
+    let mut persisted: serde_json::Value =
+        serde_json::from_slice(&fs::read(store.path()).expect("state file should read"))
+            .expect("state file should be JSON");
+    let variant = match &state {
+        KillSwitchState::Halted { .. } => "Halted",
+        KillSwitchState::Halting { .. } => "Halting",
+        _ => panic!("test helper requires a latched halt state"),
+    };
+    persisted["state"][variant]["trigger"]["loss_halt_reason"] =
+        serde_json::Value::String(loss_halt_reason.to_string());
+    fs::write(
+        store.path(),
+        serde_json::to_vec_pretty(&persisted).expect("state JSON should serialize"),
+    )
+    .expect("state file with explicit loss halt reason should write");
+}
+
+fn loss_governor_halted_state_at(observed_at_ns: u64) -> KillSwitchState {
+    KillSwitchState::Halted {
+        halt_id: "halt-loss-governor-1".to_string(),
+        trigger: KillSwitchHaltTrigger::loss_governor_breach(
+            "loss-governor",
+            observed_at_ns,
+            "loss governor triggered",
+        ),
+    }
+}
+
+fn command_at(now_ns: u64) -> LossGovernorManualRecoveryCommand {
+    LossGovernorManualRecoveryCommand {
+        now_ns,
+        observed_at_ns: now_ns,
+        ..valid_command()
     }
 }
 
@@ -307,6 +353,118 @@ fn manual_recovery_clears_loss_governor_halting_state_when_condition_has_passed(
             .load_recovery_state()
             .expect("store should recover after manual recovery"),
         KillSwitchRecoveryState::Recovered(KillSwitchState::Armed)
+    );
+}
+
+#[test]
+fn manual_recovery_clears_daily_halt_after_utc_day_rolls() {
+    let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halt_observed_at_ns = 10 * NANOS_PER_UTC_DAY + 1_000;
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        loss_governor_halted_state_at(halt_observed_at_ns),
+        &breaching_loss_snapshot(),
+        "daily_loss_limit",
+    );
+
+    let outcome =
+        recover_loss_governor_manual_halt(&loaded, command_at(11 * NANOS_PER_UTC_DAY + 1_000))
+            .expect("daily loss halt should clear after the UTC day rolls");
+
+    assert_eq!(outcome.recovered_state, KillSwitchStateKind::Armed);
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("store should recover after manual recovery"),
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Armed)
+    );
+}
+
+#[test]
+fn manual_recovery_refuses_same_day_daily_halt() {
+    let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halted = loss_governor_halted_state_at(10 * NANOS_PER_UTC_DAY + 1_000);
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        halted.clone(),
+        &breaching_loss_snapshot(),
+        "daily_loss_limit",
+    );
+
+    let error =
+        recover_loss_governor_manual_halt(&loaded, command_at(10 * NANOS_PER_UTC_DAY + 2_000))
+            .expect_err("same-day daily loss halt should remain latched");
+
+    assert!(
+        error.to_string().contains("daily_loss_limit"),
+        "refusal should identify the daily trigger clock check, got: {error}"
+    );
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("store should remain readable"),
+        KillSwitchRecoveryState::Recovered(halted)
+    );
+}
+
+#[test]
+fn manual_recovery_clears_rolling_halt_after_window_elapses() {
+    let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halted = loss_governor_halted_state_at(2_000);
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        halted,
+        &breaching_loss_snapshot(),
+        "rolling_loss_limit",
+    );
+
+    let outcome = recover_loss_governor_manual_halt(&loaded, command_at(300_000_000_001))
+        .expect("rolling loss halt should clear after the configured window elapses");
+
+    assert_eq!(outcome.recovered_state, KillSwitchStateKind::Armed);
+}
+
+#[test]
+fn manual_recovery_refuses_drawdown_trigger_with_runtime_path_diagnostic() {
+    let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halted = loss_governor_halted_state_at(2_000);
+    persist_loss_governor_halted_state_with_reason(
+        &store,
+        halted,
+        &breaching_loss_snapshot(),
+        "max_drawdown_limit",
+    );
+
+    let error = recover_loss_governor_manual_halt(&loaded, command_at(300_000_000_001))
+        .expect_err("drawdown-triggered halt requires runtime-path recovery");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("max_drawdown_limit") && message.contains("runtime-path recovery"),
+        "drawdown refusal should identify the runtime-path requirement, got: {message}"
+    );
+}
+
+#[test]
+fn manual_recovery_refuses_legacy_loss_governor_store_without_trigger_reason() {
+    let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    let halted = loss_governor_halted_state_at(10 * NANOS_PER_UTC_DAY + 1_000);
+    store
+        .write_state_with_loss_snapshot(&halted, Some(&breaching_loss_snapshot()))
+        .expect("legacy latched loss-governor halt should persist");
+
+    let error =
+        recover_loss_governor_manual_halt(&loaded, command_at(11 * NANOS_PER_UTC_DAY + 1_000))
+            .expect_err("legacy store without typed trigger reason must refuse fail closed");
+
+    assert!(
+        error.to_string().contains("legacy") && error.to_string().contains("trigger reason"),
+        "legacy refusal should identify missing typed trigger reason, got: {error}"
     );
 }
 

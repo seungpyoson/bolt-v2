@@ -397,6 +397,28 @@ fn manual_recovery_audit_is_sibling_jsonl_and_survives_state_writes() {
 }
 
 #[test]
+fn manual_recovery_audit_skips_one_unparseable_final_line() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    let store = KillSwitchStore::new(path, 65_536);
+    let first_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let valid_line =
+        serde_json::to_string(&manual_recovery_record(first_sha)).expect("record should serialize");
+    fs::write(
+        store.loss_governor_manual_recovery_audit_path(),
+        format!("{valid_line}\n{{\"operator_id\""),
+    )
+    .expect("audit fixture with torn final line should write");
+
+    let audit = store
+        .load_loss_governor_manual_recoveries()
+        .expect("one torn final audit line should be skipped loudly");
+
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0].evidence_sha256, first_sha);
+}
+
+#[test]
 fn config_relative_state_path_recovers_missing_evidence_fail_closed() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let root_path = temp.path().join("root.toml");

@@ -509,8 +509,8 @@ fn write_manifest(
             read_existing_error: |path, error| {
                 SourceProofEvidenceStagingError::ReadExistingManifest { path, error }
             },
-            mismatch_error: |path| {
-                SourceProofEvidenceStagingError::ExistingManifestMismatch { path }
+            mismatch_error: |path| SourceProofEvidenceStagingError::ExistingManifestMismatch {
+                path,
             },
             write_error: |path, error| SourceProofEvidenceStagingError::WriteManifest {
                 path,

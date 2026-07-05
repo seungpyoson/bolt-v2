@@ -383,8 +383,8 @@ pub fn write_backfill_conversion_batch_plan(
                 path,
                 error,
             },
-            mismatch_error: |path| {
-                BackfillConversionBatchPlanError::ExistingArtifactMismatch { path }
+            mismatch_error: |path| BackfillConversionBatchPlanError::ExistingArtifactMismatch {
+                path,
             },
             write_error: |path, error| BackfillConversionBatchPlanError::Write { path, error },
         },

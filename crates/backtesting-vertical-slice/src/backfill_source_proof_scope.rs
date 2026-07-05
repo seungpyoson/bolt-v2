@@ -300,9 +300,7 @@ pub fn write_backfill_source_proof_scope_report(
                 path,
                 error,
             },
-            mismatch_error: |path| BackfillSourceProofScopeError::ExistingArtifactMismatch {
-                path,
-            },
+            mismatch_error: |path| BackfillSourceProofScopeError::ExistingArtifactMismatch { path },
             write_error: |path, error| BackfillSourceProofScopeError::Write { path, error },
         },
     )?;

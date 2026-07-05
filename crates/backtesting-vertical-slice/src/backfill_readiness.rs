@@ -336,10 +336,7 @@ pub fn write_backfill_readiness_report(
         crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
         crate::reference_artifact::ReferenceArtifactErrorMappers {
             serialize_error: BackfillReadinessError::Serialize,
-            read_existing_error: |path, error| BackfillReadinessError::ReadExisting {
-                path,
-                error,
-            },
+            read_existing_error: |path, error| BackfillReadinessError::ReadExisting { path, error },
             mismatch_error: |path| BackfillReadinessError::ExistingArtifactMismatch { path },
             write_error: |path, error| BackfillReadinessError::Write { path, error },
         },

@@ -642,8 +642,8 @@ pub fn write_backfill_execution_readiness_report(
                 path,
                 error,
             },
-            mismatch_error: |path| {
-                BackfillExecutionReadinessError::ExistingArtifactMismatch { path }
+            mismatch_error: |path| BackfillExecutionReadinessError::ExistingArtifactMismatch {
+                path,
             },
             write_error: |path, error| BackfillExecutionReadinessError::Write { path, error },
         },

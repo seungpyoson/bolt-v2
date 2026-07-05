@@ -483,11 +483,12 @@ pub fn write_source_catalog_mapping_readiness_report(
         crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
         crate::reference_artifact::ReferenceArtifactErrorMappers {
             serialize_error: SourceCatalogMappingReadinessError::Serialize,
-            read_existing_error: |path, error| {
-                SourceCatalogMappingReadinessError::ReadExisting { path, error }
+            read_existing_error: |path, error| SourceCatalogMappingReadinessError::ReadExisting {
+                path,
+                error,
             },
-            mismatch_error: |path| {
-                SourceCatalogMappingReadinessError::ExistingArtifactMismatch { path }
+            mismatch_error: |path| SourceCatalogMappingReadinessError::ExistingArtifactMismatch {
+                path,
             },
             write_error: |path, error| SourceCatalogMappingReadinessError::Write { path, error },
         },

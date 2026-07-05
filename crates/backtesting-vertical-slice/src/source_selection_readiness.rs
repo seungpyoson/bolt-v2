@@ -387,9 +387,7 @@ pub fn write_source_selection_readiness_report(
                 path,
                 error,
             },
-            mismatch_error: |path| SourceSelectionReadinessError::ExistingArtifactMismatch {
-                path,
-            },
+            mismatch_error: |path| SourceSelectionReadinessError::ExistingArtifactMismatch { path },
             write_error: |path, error| SourceSelectionReadinessError::Write { path, error },
         },
     )?;

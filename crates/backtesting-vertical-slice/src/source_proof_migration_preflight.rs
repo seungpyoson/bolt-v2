@@ -259,8 +259,8 @@ pub fn write_source_proof_migration_preflight_report(
                 path,
                 error,
             },
-            mismatch_error: |path| {
-                SourceProofMigrationPreflightError::ExistingArtifactMismatch { path }
+            mismatch_error: |path| SourceProofMigrationPreflightError::ExistingArtifactMismatch {
+                path,
             },
             write_error: |path, error| SourceProofMigrationPreflightError::Write { path, error },
         },

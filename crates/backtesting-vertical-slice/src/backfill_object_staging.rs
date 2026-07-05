@@ -466,8 +466,9 @@ fn write_manifest(
         crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
         crate::reference_artifact::ReferenceArtifactErrorMappers {
             serialize_error: BackfillObjectStagingError::Serialize,
-            read_existing_error: |path, error| {
-                BackfillObjectStagingError::ReadExistingManifest { path, error }
+            read_existing_error: |path, error| BackfillObjectStagingError::ReadExistingManifest {
+                path,
+                error,
             },
             mismatch_error: |path| BackfillObjectStagingError::ExistingManifestMismatch { path },
             write_error: |path, error| BackfillObjectStagingError::WriteManifest { path, error },

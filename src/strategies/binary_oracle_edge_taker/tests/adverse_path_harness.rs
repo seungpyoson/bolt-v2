@@ -2,17 +2,30 @@
 
 use super::*;
 use crate::{
+    bolt_v3_decision_evidence::{
+        BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        BOLT_V3_SETTLEMENT_GATE_ID, BOLT_V3_SETTLEMENT_RECORD_KIND, BoltV3OutcomeSide,
+        BoltV3SettlementEvidence,
+    },
     bolt_v3_maker_runtime_settlement::{
         MakerRuntimeSettlementInput, settle_maker_runtime_reference_prices,
     },
     bolt_v3_maker_settlement::{BinarySettlementLot, BinarySettlementResult},
+    bolt_v3_providers::polymarket::{
+        PolymarketVenueTruthInput, build_polymarket_venue_truth_snapshot,
+        extract_polymarket_token_id,
+    },
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::QuoteSide,
+    bolt_v3_settlement_runtime::BoltV3SettlementRecoveryConfig,
+    bolt_v3_venue_truth::{VenueTruthReconciler, VenueTruthReconciliation},
 };
 use nautilus_model::{
     events::{OrderAccepted, OrderEventAny, OrderSubmitted},
     identifiers::{AccountId, VenueOrderId},
+    position::Position,
 };
+use nautilus_polymarket::http::{models::DataApiPosition, query::BalanceAllowance};
 use nautilus_trading::Strategy;
 use serde_json::{Value, json};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
@@ -539,6 +552,77 @@ fn booked_settlement_routes_to_runtime_sink_and_flattening() {
 }
 
 #[test]
+fn booked_settlement_explains_polymarket_venue_source_token_id_snapshot() {
+    assert_reality_fixtures();
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    let sink = Rc::new(RecordingSettlementRuntimeSink::default());
+    attach_settlement_runtime_sink(&mut strategy, sink.clone());
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let product_id = extract_polymarket_token_id(&instrument_id)
+        .expect("fixture instrument id should derive a Polymarket token id");
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-PRODUCT-DOMAIN"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+
+    emit_resolution_update(&mut strategy, 3_101.0);
+
+    let settlement_events = evidence.events();
+    let settlement = settlement_events
+        .iter()
+        .find_map(|event| match event {
+            RecordedDecisionEvidenceEvent::Settlement(settlement) => Some(settlement),
+            _ => None,
+        })
+        .expect("strategy should record settlement evidence");
+    assert_eq!(settlement.product_id, product_id);
+    let explanation = sink
+        .venue_explanations()
+        .into_iter()
+        .next()
+        .expect("runtime sink should receive a venue-truth settlement explanation");
+    assert_eq!(explanation.product_id, product_id);
+
+    let mut reconciler = VenueTruthReconciler::new();
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(polymarket_snapshot(
+                1_000,
+                Decimal::new(50_000_000, 0),
+                Some((&product_id, 10.0)),
+            ))
+            .expect("venue-source baseline should be accepted"),
+        VenueTruthReconciliation::BaselineAccepted
+    );
+    reconciler
+        .record_settlement(explanation)
+        .expect("strategy settlement explanation should record");
+
+    assert_eq!(
+        reconciler
+            .reconcile_snapshot(polymarket_snapshot(
+                1_100,
+                Decimal::new(60_000_000, 0),
+                None,
+            ))
+            .expect("settlement should explain the venue-source token-id snapshot delta"),
+        VenueTruthReconciliation::DeltaExplained
+    );
+}
+
+#[test]
 fn losing_settlement_moves_durable_loss_governor() {
     assert_reality_fixtures();
 
@@ -594,6 +678,109 @@ fn losing_settlement_moves_durable_loss_governor() {
     );
     assert_eq!(sink.venue_explanation_count(), 1);
     assert!(matches!(strategy.exposure, ExposureState::Flat));
+}
+
+#[test]
+fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
+    assert_reality_fixtures();
+
+    let temp = tempfile::tempdir().expect("settlement recovery tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission =
+        Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence));
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        Arc::new(RecordingSequencedDecisionEvidenceWriter::default()),
+        submit_admission,
+    );
+    let sink = Rc::new(RecordingSettlementRuntimeSink::default());
+    let sink_handle: crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle =
+        sink.clone();
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_settlement_runtime_sink(Some(sink_handle))
+        .with_settlement_recovery(Some(BoltV3SettlementRecoveryConfig {
+            path: evidence_path.clone(),
+            max_bytes: 100_000,
+        }));
+    let cache = register_test_strategy(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let instrument = updown_binary_option(
+        instrument_id.to_string().as_str(),
+        "settlement-recovery-market",
+        "settlement-recovery-market",
+        "Up",
+        1_000,
+        2_000,
+    );
+    let position_id = PositionId::from("P-SETTLEMENT-RECOVERY-CACHE");
+    let fill = order_filled_event_with_details(
+        ClientOrderId::from("SETTLEMENT-RECOVERY-ORDER"),
+        instrument.id(),
+        Some(position_id),
+        OrderSide::Buy,
+    );
+    let position = Position::new(&instrument, fill);
+    {
+        let mut cache = cache.borrow_mut();
+        cache
+            .add_instrument(instrument)
+            .expect("test cache should accept recovery instrument");
+        cache
+            .add_position(&position, NtOmsType::Netting)
+            .expect("test cache should accept recovery position");
+    }
+    let scope_position = OpenPositionState {
+        market_id: None,
+        instrument_id,
+        position_id,
+        outcome_side: None,
+        outcome_fees: OutcomeFeeState::empty(),
+        historical_entry_fee_bps: None,
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(10.0, 2),
+        avg_px_open: 0.45,
+        interval_open: None,
+        selection_published_at_ms: None,
+        seconds_to_expiry_at_selection: None,
+        book: OutcomeBookState::from_instrument_id(instrument_id),
+    };
+    write_settlement_evidence_line(
+        &evidence_path,
+        BoltV3SettlementEvidence {
+            strategy_id: strategy.config.strategy_id.clone(),
+            settlement_key: settlement_key_for_position(&scope_position),
+            market_id: "settlement-recovery-market".to_string(),
+            position_id: position_id.to_string(),
+            instrument_id: instrument_id.to_string(),
+            product_id: extract_polymarket_token_id(&instrument_id)
+                .expect("fixture instrument id should derive token id"),
+            outcome_side: BoltV3OutcomeSide::Up,
+            entry_order_side: OrderSide::Buy.to_string(),
+            quantity: "10".to_string(),
+            entry_price: "0.45".to_string(),
+            family_key: crate::bolt_v3_market_families::updown::KEY.to_string(),
+            strike_price: "3100".to_string(),
+            resolution_instrument_id: "RESOLUTION.SOURCE".to_string(),
+            resolution_ts_event_ns: 1_300_000_000,
+            reference_close_price: "3101".to_string(),
+            payout_per_share: "1".to_string(),
+            terminal_value: "10".to_string(),
+            realized_pnl: "5.5".to_string(),
+            settlement_currency: "PUSD".to_string(),
+        },
+    );
+
+    strategy.bootstrap_recovery_from_cache();
+
+    let explanations = sink.venue_explanations();
+    assert_eq!(explanations.len(), 1);
+    assert_eq!(
+        explanations[0].settlement_key,
+        settlement_key_for_position(&scope_position)
+    );
 }
 
 fn settlement_loss_config(
@@ -925,6 +1112,52 @@ fn settlement_evidence_matches(
                 if (evidence.realized_pnl - expected_realized_pnl).abs() <= f64::EPSILON
         )
     })
+}
+
+fn polymarket_snapshot(
+    captured_at: u64,
+    balance: Decimal,
+    position: Option<(&str, f64)>,
+) -> crate::bolt_v3_venue_truth::VenueTruthSnapshot {
+    build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
+        captured_at: UnixNanos::from(captured_at),
+        account_id: AccountId::from("POLYMARKET-001"),
+        collateral_currency: Currency::pUSD(),
+        collateral: BalanceAllowance {
+            balance,
+            allowance: Some(balance),
+        },
+        open_orders: Vec::new(),
+        positions: position
+            .map(|(asset, size)| DataApiPosition {
+                asset: asset.to_string(),
+                condition_id: "condition-MKT-1".to_string(),
+                size,
+                avg_price: Some(0.45),
+            })
+            .into_iter()
+            .collect(),
+    })
+    .expect("Polymarket venue-source fixture should build")
+}
+
+fn write_settlement_evidence_line(path: &std::path::Path, evidence: BoltV3SettlementEvidence) {
+    let line = json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 1_000_i64,
+        "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": BOLT_V3_SETTLEMENT_RECORD_KIND,
+        "evidence": evidence,
+    });
+    std::fs::write(
+        path,
+        format!(
+            "{}\n",
+            serde_json::to_string(&line).expect("settlement evidence should encode")
+        ),
+    )
+    .expect("settlement evidence fixture should write");
 }
 
 fn assert_incident_lifecycle_counts() {

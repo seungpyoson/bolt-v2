@@ -949,6 +949,23 @@ fn settlement_explanation_rejects_over_bound_payout_at_capture_fence() {
 }
 
 #[test]
+fn settlement_explanation_rejects_buy_side_at_record_boundary() {
+    let mut reconciler = VenueTruthReconciler::new();
+
+    let error = reconciler
+        .record_settlement(VenueTruthSettlementExplanation {
+            side: OrderSide::Buy,
+            ..settlement_explanation("MKT-1:P-BUY", Decimal::new(4, 0), Decimal::ONE)
+        })
+        .expect_err("buy-side settlement lots must fail loud at the venue-truth boundary");
+
+    assert_eq!(
+        error.to_string(),
+        "invalid venue-truth settlement explanation"
+    );
+}
+
+#[test]
 fn payout_shaped_collateral_delta_without_settlement_record_halts_at_fence() {
     let mut reconciler = VenueTruthReconciler::new();
     reconciler
@@ -1103,6 +1120,42 @@ fn replayed_settlement_explains_position_first_skew_after_restart() {
             .reconcile_snapshot(empty_snapshot(1_200, Decimal::new(54_000_000, 0)))
             .expect("replayed lot should explain the post-restart payout"),
         VenueTruthReconciliation::DeltaExplained
+    );
+}
+
+#[test]
+fn replayed_settlement_collateral_window_closes_before_unrelated_positive_delta() {
+    let mut restarted = VenueTruthReconciler::new();
+    restarted
+        .record_settlement(settlement_explanation(
+            "MKT-1:P-RESTART-PHANTOM",
+            Decimal::new(4, 0),
+            Decimal::ONE,
+        ))
+        .expect("replayed settlement explanation should record");
+    restarted
+        .record_snapshot_completion(empty_snapshot(1_100, Decimal::new(50_000_000, 0)))
+        .expect("restart baseline should be accepted after position burn arrived");
+
+    assert_eq!(
+        restarted
+            .reconcile_snapshot(empty_snapshot(1_200, Decimal::new(50_000_000, 0)))
+            .expect("first unchanged accepted capture should close the replayed collateral window"),
+        VenueTruthReconciliation::DeltaExplained
+    );
+    assert_eq!(
+        restarted
+            .reconcile_snapshot(empty_snapshot(1_300, Decimal::new(54_000_000, 0)))
+            .expect("unrelated positive balance delta should pend before its fence"),
+        VenueTruthReconciliation::DeltaPending
+    );
+
+    let divergence = restarted
+        .reconcile_snapshot(empty_snapshot(1_400, Decimal::new(54_000_000, 0)))
+        .expect_err("closed replayed collateral window must halt instead of absorbing later delta");
+    assert_eq!(
+        divergence.kind,
+        VenueTruthDivergenceKind::UnexplainedCollateralDelta
     );
 }
 

@@ -511,9 +511,11 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     SettlementBookingError(RecordedSettlementBookingErrorEvidenceEvent),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct RecordedSettlementEvidenceEvent {
     pub(super) realized_pnl: f64,
+    pub(super) product_id: String,
+    pub(super) market_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -534,13 +536,11 @@ impl RecordingSequencedDecisionEvidenceWriter {
             .clone()
     }
 
-    pub(super) fn push_settlement(&self, realized_pnl: f64) {
+    pub(super) fn push_settlement(&self, settlement: RecordedSettlementEvidenceEvent) {
         self.events
             .lock()
             .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::Settlement(
-                RecordedSettlementEvidenceEvent { realized_pnl },
-            ));
+            .push(RecordedDecisionEvidenceEvent::Settlement(settlement));
     }
 
     pub(super) fn push_settlement_booking_error(
@@ -711,7 +711,11 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .realized_pnl
             .parse::<f64>()
             .map_err(|error| anyhow::anyhow!("settlement realized_pnl did not parse: {error}"))?;
-        self.push_settlement(realized_pnl);
+        self.push_settlement(RecordedSettlementEvidenceEvent {
+            realized_pnl,
+            product_id: evidence.product_id.clone(),
+            market_id: evidence.market_id.clone(),
+        });
         Ok(())
     }
 

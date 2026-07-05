@@ -1691,6 +1691,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn restart_baseline_unconsumed_collateral_marks_lot_consumed_then_prunes() {
+        let mut reconciler = VenueTruthReconciler::new();
+        reconciler
+            .record_settlement(VenueTruthSettlementExplanation {
+                settlement_key: "settlement-restart-prune".to_string(),
+                market_id: "market-1".to_string(),
+                product_id: "product-1".to_string(),
+                side: OrderSide::Sell,
+                settled_quantity: Decimal::new(1, 0),
+                payout_per_share: Decimal::new(1, 0),
+                collateral_payout: Decimal::new(1, 0),
+            })
+            .expect("replayed settlement should record");
+
+        assert_eq!(
+            reconciler
+                .reconcile_snapshot(empty_snapshot(1))
+                .expect("restart baseline with position already burned should reconcile"),
+            VenueTruthReconciliation::BaselineAccepted
+        );
+        let lot = reconciler
+            .event_projection
+            .settlement_lots
+            .first()
+            .expect("replayed lot should survive baseline for the collateral window");
+        assert_eq!(lot.remaining_quantity, Decimal::ZERO);
+        assert_eq!(lot.remaining_collateral_balance_delta, Decimal::new(1, 0));
+        assert_eq!(lot.fully_consumed_at_capture_number, None);
+
+        assert_eq!(
+            reconciler
+                .reconcile_snapshot(empty_snapshot(2))
+                .expect("unchanged accepted capture should close the replayed collateral window"),
+            VenueTruthReconciliation::DeltaExplained
+        );
+        let lot = reconciler
+            .event_projection
+            .settlement_lots
+            .first()
+            .expect("dead lot should survive its same accepted boundary");
+        assert_eq!(lot.remaining_quantity, Decimal::ZERO);
+        assert_eq!(lot.remaining_collateral_balance_delta, Decimal::ZERO);
+        assert_eq!(lot.fully_consumed_at_capture_number, Some(2));
+
+        assert_eq!(
+            reconciler
+                .reconcile_snapshot(empty_snapshot(3))
+                .expect("following accepted boundary should prune the dead lot"),
+            VenueTruthReconciliation::DeltaExplained
+        );
+        assert!(
+            reconciler.event_projection.settlement_lots.is_empty(),
+            "fully consumed replayed settlement lot must prune at the following accepted boundary"
+        );
+    }
+
     fn empty_snapshot(captured_at: u64) -> VenueTruthSnapshot {
         let currency = Currency::from("USD");
         VenueTruthSnapshot {

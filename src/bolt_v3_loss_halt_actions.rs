@@ -9,9 +9,7 @@ use serde::Deserialize;
 use crate::bolt_v3_loss_governor::{
     LossAdmissionDecision, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
 };
-use crate::bolt_v3_numeric::is_sha256_hex_digest;
-
-const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;
+use crate::bolt_v3_numeric::{NANOS_PER_UTC_DAY, is_sha256_hex_digest};
 
 pub type LossGovernorHaltActionHandler =
     Rc<dyn Fn(Option<&LossSnapshot>, u64, LossSourceObservationTimestamps)>;

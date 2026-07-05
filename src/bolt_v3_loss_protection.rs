@@ -18,10 +18,10 @@ use crate::{
         KillSwitchStore,
     },
     bolt_v3_loss_governor::LossHaltReason,
+    bolt_v3_numeric::NANOS_PER_UTC_DAY,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
-const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;
 const NANOS_PER_MILLISECOND: u64 = 1_000_000;
 const FAIL_CLOSED_RECOVERY_HALT_ID: &str = "kill-switch-recovery-fail-closed";
 const LOSS_TRIGGER_REASON: &str = "max_utc_daily_realized_loss";

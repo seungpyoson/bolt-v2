@@ -76,6 +76,7 @@ pub struct KillSwitchLossGovernorManualRecoveryRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum KillSwitchLossGovernorManualRecoveryOutcome {
+    Attempted,
     Recovered,
     RefusedWithReason,
     WriteFailed,

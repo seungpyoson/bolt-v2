@@ -1,16 +1,25 @@
 //! Loss-governor manual recovery is a safety check, not an operator override.
 //! It clears a halt only when the triggering condition has verifiably passed by
 //! clock: a daily-loss halt clears only after the UTC day rolls, and a
-//! rolling-loss halt clears only after the configured rolling window elapses.
-//! Per-trade, drawdown, stale-snapshot, and legacy stores without a typed
-//! trigger reason require runtime-path recovery; every configured limit is
-//! re-checked live by the loss governor at the next node start.
+//! rolling-loss halt clears only when more than the full rolling window has
+//! elapsed. Exact equality refuses. The rolling-window authority is the current
+//! config value, so a reviewed config change is the sanctioned lever; every
+//! configured limit is still re-checked live by the loss governor at the next
+//! node start. Per-trade, drawdown, stale-snapshot, and legacy stores without a
+//! typed trigger reason require runtime-path recovery.
 //!
 //! Stop the node before running this command. The kill-switch state file remains
 //! last-writer-wins, so a live node can rewrite the state after the CLI writes
 //! it. Manual-recovery audit attempts are stored in a sibling unbounded
 //! append-only JSONL file, so state races cannot erase the audit trail.
-//! Operators rotate that audit file externally.
+//! Operators rotate that audit file externally. The last audit record for a
+//! given attempt is authoritative: `attempted` is written before the state write,
+//! followed by `recovered` after a successful state write or `write-failed` when
+//! the write fails.
+//!
+//! Refusals after config and store-path resolution are audited when the audit
+//! path is appendable. Pre-config failures and an unwritable audit path are the
+//! non-auditable boundary because no durable audit line can be written there.
 //!
 //! `evidence_path` and `evidence_sha256` are operator-attested audit metadata.
 //! This command never opens the evidence file and never hash-verifies it; the
@@ -104,6 +113,9 @@ pub enum LossGovernorManualRecoveryError {
         recovery_error: KillSwitchStoreError,
         failed_error: KillSwitchStoreError,
     },
+    RepairManualRecoveryAudit {
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,7 +180,7 @@ fn write_clock_refusal(
             rolling_window_ns,
         } => write!(
             f,
-            "rolling_loss_limit refused: configured rolling window has not elapsed; trigger_observed_at_ns={trigger_observed_at_ns} now_ns={now_ns} rolling_window_ns={rolling_window_ns}"
+            "rolling_loss_limit refused: more than the full CURRENT config rolling window must have elapsed and exact-equality refuses; trigger_observed_at_ns={trigger_observed_at_ns} now_ns={now_ns} rolling_window_ns={rolling_window_ns}"
         ),
         LossGovernorClockManualRecoveryRefusal::RuntimePathRequired { trigger_reason } => write!(
             f,
@@ -271,6 +283,11 @@ impl fmt::Display for LossGovernorManualRecoveryError {
                 "loss-governor manual recovery write failed for {}, and FailedManualIntervention persistence also failed: recovery_error={recovery_error}; failed_state_error={failed_error}",
                 path.display()
             ),
+            Self::RepairManualRecoveryAudit { path } => write!(
+                f,
+                "repair-the-audit-file-and-retry: loss-governor manual recovery audit file {} has a torn final line; halt state was left untouched",
+                path.display()
+            ),
         }
     }
 }
@@ -313,16 +330,26 @@ pub fn recover_loss_governor_manual_halt(
         return Err(LossGovernorManualRecoveryError::LossGovernorDisabled);
     }
 
+    let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
     let action_policy = halt_action_policy(loss_governor)?;
-    let evidence = LossGovernorManualRecoveryEvidence::new(
-        command.operator_id,
-        command.evidence_path,
-        command.evidence_sha256,
+    let evidence = match LossGovernorManualRecoveryEvidence::new(
+        command.operator_id.clone(),
+        command.evidence_path.clone(),
+        command.evidence_sha256.clone(),
         command.observed_at_ns,
         action_policy.manual_recovery_evidence_max_path_bytes,
-    )
-    .map_err(LossGovernorManualRecoveryError::InvalidManualRecoveryEvidence)?;
-    let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
+    ) {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            record_refused_manual_recovery_command_attempt(
+                &store,
+                &command,
+                command.now_ns,
+                &format!("invalid manual recovery evidence: {error:?}"),
+            )?;
+            return Err(LossGovernorManualRecoveryError::InvalidManualRecoveryEvidence(error));
+        }
+    };
     if !kill_switch
         .authorized_operator_ids
         .iter()
@@ -333,7 +360,7 @@ pub fn recover_loss_governor_manual_halt(
             &evidence,
             command.now_ns,
             "authorization refused: operator is not authorized by risk.kill_switch.authorized_operator_ids",
-        );
+        )?;
         return Err(LossGovernorManualRecoveryError::UnauthorizedOperator {
             operator_id: evidence.operator_id().to_string(),
         });
@@ -342,13 +369,45 @@ pub fn recover_loss_governor_manual_halt(
     let record = store
         .load_recovery_record()
         .map_err(LossGovernorManualRecoveryError::StoreLoad)?;
-    let current_state = recoverable_current_state(&record, store.path().to_path_buf())?;
-    let recoverable_halt = loss_governor_recoverable_halt(&current_state)?;
-    let loss_protection = record.loss_protection.as_ref().ok_or_else(|| {
-        LossGovernorManualRecoveryError::MissingLossProtectionSnapshot {
-            path: store.path().to_path_buf(),
+    let current_state = match recoverable_current_state(&record, store.path().to_path_buf()) {
+        Ok(current_state) => current_state,
+        Err(error) => {
+            record_refused_manual_recovery_attempt(
+                &store,
+                &evidence,
+                command.now_ns,
+                &error.to_string(),
+            )?;
+            return Err(error);
         }
-    })?;
+    };
+    let recoverable_halt = match loss_governor_recoverable_halt(&current_state) {
+        Ok(recoverable_halt) => recoverable_halt,
+        Err(error) => {
+            record_refused_manual_recovery_attempt(
+                &store,
+                &evidence,
+                command.now_ns,
+                &error.to_string(),
+            )?;
+            return Err(error);
+        }
+    };
+    let loss_protection = match record.loss_protection.as_ref() {
+        Some(loss_protection) => loss_protection,
+        None => {
+            let error = LossGovernorManualRecoveryError::MissingLossProtectionSnapshot {
+                path: store.path().to_path_buf(),
+            };
+            record_refused_manual_recovery_attempt(
+                &store,
+                &evidence,
+                command.now_ns,
+                &error.to_string(),
+            )?;
+            return Err(error);
+        }
+    };
 
     if let Err(reason) = next_loss_governor_clock_verified_manual_recovery_trading_state(
         LossGovernorClockManualRecoveryRequest {
@@ -368,7 +427,7 @@ pub fn recover_loss_governor_manual_halt(
             &evidence,
             command.now_ns,
             &refusal.to_string(),
-        );
+        )?;
         return Err(LossGovernorManualRecoveryError::RecoveryRefused { reason: refusal });
     }
 
@@ -376,7 +435,7 @@ pub fn recover_loss_governor_manual_halt(
     let manual_recovery = manual_recovery_record(
         &evidence,
         command.now_ns,
-        KillSwitchLossGovernorManualRecoveryOutcome::Recovered,
+        KillSwitchLossGovernorManualRecoveryOutcome::Attempted,
         None,
     );
     let manual_recovery_count =
@@ -433,9 +492,17 @@ fn persist_manual_recovery_attempt(
     manual_recovery: KillSwitchLossGovernorManualRecoveryRecord,
 ) -> Result<usize, LossGovernorManualRecoveryError> {
     let write_failed_manual_recovery = manual_recovery.clone();
+    let recovered_manual_recovery = KillSwitchLossGovernorManualRecoveryRecord {
+        outcome: Some(KillSwitchLossGovernorManualRecoveryOutcome::Recovered),
+        outcome_reason: None,
+        ..manual_recovery.clone()
+    };
     let manual_recovery_count = match store.append_loss_governor_manual_recovery(manual_recovery) {
         Ok(count) => count,
         Err(recovery_error) => {
+            if let Some(error) = repair_manual_recovery_audit_error(&recovery_error) {
+                return Err(error);
+            }
             let failed = failed_manual_intervention_state(
                 current_state,
                 format!("loss governor manual recovery audit write failed: {recovery_error:?}"),
@@ -485,7 +552,16 @@ fn persist_manual_recovery_attempt(
             }),
         };
     }
-    Ok(manual_recovery_count)
+    match store.append_loss_governor_manual_recovery(recovered_manual_recovery) {
+        Ok(count) => Ok(count),
+        Err(audit_error) => {
+            log::error!(
+                "failed to append recovered loss-governor manual recovery audit line for {} after Armed state write succeeded: {audit_error}",
+                store.path().display()
+            );
+            Ok(manual_recovery_count)
+        }
+    }
 }
 
 fn record_refused_manual_recovery_attempt(
@@ -493,18 +569,61 @@ fn record_refused_manual_recovery_attempt(
     evidence: &LossGovernorManualRecoveryEvidence,
     recorded_at_ns: u64,
     refusal: &str,
-) {
+) -> Result<(), LossGovernorManualRecoveryError> {
     let refused = manual_recovery_record(
         evidence,
         recorded_at_ns,
         KillSwitchLossGovernorManualRecoveryOutcome::RefusedWithReason,
         Some(refusal.to_string()),
     );
-    if let Err(error) = store.append_loss_governor_manual_recovery(refused) {
-        log::error!(
-            "failed to append refused loss-governor manual recovery audit line for {}: {error}",
-            store.path().display()
-        );
+    append_refused_manual_recovery_record(store, refused)
+}
+
+fn record_refused_manual_recovery_command_attempt(
+    store: &impl LossGovernorManualRecoveryStoreWriter,
+    command: &LossGovernorManualRecoveryCommand,
+    recorded_at_ns: u64,
+    refusal: &str,
+) -> Result<(), LossGovernorManualRecoveryError> {
+    let refused = KillSwitchLossGovernorManualRecoveryRecord {
+        operator_id: command.operator_id.clone(),
+        evidence_path: command.evidence_path.clone(),
+        evidence_sha256: command.evidence_sha256.clone(),
+        observed_at_ns: command.observed_at_ns,
+        recorded_at_ns,
+        outcome: Some(KillSwitchLossGovernorManualRecoveryOutcome::RefusedWithReason),
+        outcome_reason: Some(refusal.to_string()),
+    };
+    append_refused_manual_recovery_record(store, refused)
+}
+
+fn append_refused_manual_recovery_record(
+    store: &impl LossGovernorManualRecoveryStoreWriter,
+    refused: KillSwitchLossGovernorManualRecoveryRecord,
+) -> Result<(), LossGovernorManualRecoveryError> {
+    match store.append_loss_governor_manual_recovery(refused) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            if let Some(error) = repair_manual_recovery_audit_error(&error) {
+                return Err(error);
+            }
+            log::error!(
+                "failed to append refused loss-governor manual recovery audit line for {}: {error}",
+                store.path().display()
+            );
+            Ok(())
+        }
+    }
+}
+
+fn repair_manual_recovery_audit_error(
+    error: &KillSwitchStoreError,
+) -> Option<LossGovernorManualRecoveryError> {
+    match error {
+        KillSwitchStoreError::TornManualRecoveryAudit { path } => {
+            Some(LossGovernorManualRecoveryError::RepairManualRecoveryAudit { path: path.clone() })
+        }
+        _ => None,
     }
 }
 
@@ -741,7 +860,7 @@ mod tests {
                 .to_string(),
             observed_at_ns: 2_500,
             recorded_at_ns: 2_600,
-            outcome: Some(KillSwitchLossGovernorManualRecoveryOutcome::Recovered),
+            outcome: Some(KillSwitchLossGovernorManualRecoveryOutcome::Attempted),
             outcome_reason: None,
         }
     }
@@ -766,7 +885,7 @@ mod tests {
         let appended_records = store.appended_records();
         assert_eq!(
             appended_records[0].outcome,
-            Some(KillSwitchLossGovernorManualRecoveryOutcome::Recovered)
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Attempted)
         );
         assert_eq!(
             appended_records[1].outcome,
@@ -801,7 +920,7 @@ mod tests {
         let appended_records = store.appended_records();
         assert_eq!(
             appended_records[0].outcome,
-            Some(KillSwitchLossGovernorManualRecoveryOutcome::Recovered)
+            Some(KillSwitchLossGovernorManualRecoveryOutcome::Attempted)
         );
         assert_eq!(
             appended_records[1].outcome,

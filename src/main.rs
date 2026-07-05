@@ -170,7 +170,7 @@ enum OpsCommand {
         config: PathBuf,
     },
     #[command(
-        about = "Recover only loss-governor halts whose triggering condition has verifiably passed by clock - daily UTC day rolled or rolling window elapsed; every limit is re-checked live at next node start. node must be stopped because state is last-writer-wins; not an operator override. The audit file is unbounded append-only and operators rotate it externally. evidence_path/evidence_sha256 are operator-attested audit metadata, not file or hash verification."
+        about = "Recover only loss-governor halts whose triggering condition has verifiably passed by clock - daily UTC day rolled or rolling window elapsed. Rolling recovery uses the CURRENT config value: more than the full window must have elapsed; exact-equality refuses. Every limit is re-checked live at next node start. node must be stopped because state is last-writer-wins; not an operator override. The audit file is unbounded append-only and operators rotate it externally; last audit record per attempt is authoritative. evidence_path/evidence_sha256 are operator-attested audit metadata, not file or hash verification."
     )]
     LossGovernorManualRecovery {
         #[arg(short, long)]

@@ -6965,20 +6965,12 @@ classification = "kill_switch_loss_protection_time_unit_conversion"
 reason = "Fixed nanoseconds-per-millisecond unit conversion used with TOML-owned retry intervals; not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_loss_protection.rs"
+path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''86_400_000_000_000'''
-context = '''const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;'''
-classification = "kill_switch_loss_protection_utc_day_unit"
-reason = "Fixed UTC day nanosecond unit used to bucket realized PnL; the loss threshold is TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_loss_halt_actions.rs"
-kind = "number"
-literal = '''86_400_000_000_000'''
-context = '''const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;'''
-classification = "loss_governor_manual_recovery_utc_day_unit"
-reason = "Fixed UTC day nanosecond unit used to decide whether the stored daily-loss trigger's calendar day has rolled; configured loss limits remain TOML-owned and are re-checked live at node start."
+context = '''pub(crate) const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;'''
+classification = "bolt_v3_utc_day_unit"
+reason = "Fixed UTC day nanosecond unit used to bucket realized PnL and decide whether a stored daily-loss trigger's calendar day has rolled; configured loss limits remain TOML-owned and are re-checked live at node start."
 
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
@@ -14152,6 +14144,14 @@ literal = '''"kill-switch store at {} has no loss-protection snapshot; refusing 
 context = '''"kill-switch store at {} has no loss-protection snapshot; refusing manual recovery",'''
 classification = "kill_switch_manual_recovery_fail_closed_diagnostic"
 reason = "Operator-facing fail-closed diagnostic for a durable store missing its loss-protection snapshot; no runtime threshold or venue value is hardcoded."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"
+kind = "string"
+literal = '''"repair-the-audit-file-and-retry: loss-governor manual recovery audit file {} has a torn final line; halt state was left untouched"'''
+context = '''"repair-the-audit-file-and-retry: loss-governor manual recovery audit file {} has a torn final line; halt state was left untouched",'''
+classification = "kill_switch_manual_recovery_audit_repair_diagnostic"
+reason = "Operator-facing remediation diagnostic for a torn append-only manual-recovery audit file; it carries no runtime threshold or venue value."
 
 [[allowed]]
 path = "src/bolt_v3_loss_governor_manual_recovery_ops.rs"

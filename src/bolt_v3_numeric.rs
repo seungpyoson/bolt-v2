@@ -19,6 +19,7 @@ pub(crate) const SECONDS_PER_YEAR_F64: f64 =
 pub(crate) const MILLIS_PER_SECOND_U64: u64 = 1_000;
 pub(crate) const MILLIS_PER_MINUTE_U64: u64 = 60_000;
 pub(crate) const NANOS_PER_MILLI_U64: u64 = MILLIS_PER_SECOND_U64 * MILLIS_PER_SECOND_U64;
+pub(crate) const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;
 pub(crate) const MILLIS_PER_SECOND_F64: f64 = MILLIS_PER_SECOND_U64 as f64;
 pub(crate) const BPS_DENOMINATOR: f64 = 10_000.0;
 pub(crate) const CENTS_PER_SHARE: f64 = 100.0;

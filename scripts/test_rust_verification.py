@@ -1517,12 +1517,37 @@ def assert_managed_env_scrubs_then_injects_fast_linker_wrapper() -> None:
                 f"fast linker wrapper must add mold link arg before link command args: {logged_args!r}"
             )
         cc_log.write_text("", encoding="utf-8")
-        run = subprocess.run(["cc", "-c", "input.c"], executable=str(wrapper), check=False)
+        pass_through_cases = [
+            (["-c", "input.c"], "compile-only"),
+            (["-S", "input.c"], "assembly-only"),
+            (["-E", "input.c"], "preprocess-only"),
+            (["-M", "input.c"], "dependency-only"),
+            (["-MM", "input.c"], "user-dependency-only"),
+            (["-print-prog-name=ld"], "compiler-query"),
+            (["-dumpmachine"], "compiler-query"),
+            (["--version"], "compiler-query"),
+            (["-fuse-ld=gold", "input.o", "-o", "output"], "explicit-linker"),
+        ]
+        for args, description in pass_through_cases:
+            cc_log.write_text("", encoding="utf-8")
+            run = subprocess.run(["cc", *args], executable=str(wrapper), check=False)
+            if run.returncode != 0:
+                raise AssertionError(f"fast linker wrapper {description} pass-through failed with rc={run.returncode}")
+            pass_through_args = cc_log.read_text(encoding="utf-8").splitlines()
+            if "-fuse-ld=mold" in pass_through_args:
+                raise AssertionError(
+                    f"fast linker wrapper must not add link args to {description} commands: {pass_through_args!r}"
+                )
+        cc_log.write_text("", encoding="utf-8")
+        run = subprocess.run(["cc", "-Xlinker", "-E", "input.o", "-o", "output"], executable=str(wrapper), check=False)
         if run.returncode != 0:
-            raise AssertionError(f"fast linker wrapper compile pass-through failed with rc={run.returncode}")
-        compile_args = cc_log.read_text(encoding="utf-8").splitlines()
-        if "-fuse-ld=mold" in compile_args:
-            raise AssertionError(f"fast linker wrapper must not add link args to compile-only commands: {compile_args!r}")
+            raise AssertionError(f"fast linker wrapper link command with forwarded -E failed with rc={run.returncode}")
+        forwarded_link_args = cc_log.read_text(encoding="utf-8").splitlines()
+        if forwarded_link_args[:1] != ["-fuse-ld=mold"]:
+            raise AssertionError(
+                "fast linker wrapper must still add mold when -E is forwarded as a linker argument: "
+                f"{forwarded_link_args!r}"
+            )
 
     with _patched_environ(
         {

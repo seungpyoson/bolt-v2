@@ -682,6 +682,15 @@ pub struct BinaryOracleEdgeTaker {
     live_input_subscription_retry_events: Vec<LiveInputSubscriptionRetryEvent>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SettlementEvidenceComputation {
+    outcome_side: OutcomeSide,
+    strike_price: f64,
+    payout_per_share: f64,
+    terminal_value: f64,
+    realized_pnl: f64,
+}
+
 #[derive(Clone, Debug)]
 struct SelectedReferenceQuoteEvidence {
     quote: ReferenceQuote,
@@ -956,12 +965,14 @@ impl BinaryOracleEdgeTaker {
         let evidence = self.settlement_evidence(
             &position,
             settlement_key.clone(),
-            outcome_side,
-            strike_price,
             update,
-            payout_per_share,
-            result.terminal_value,
-            result.realized_pnl,
+            SettlementEvidenceComputation {
+                outcome_side,
+                strike_price,
+                payout_per_share,
+                terminal_value: result.terminal_value,
+                realized_pnl: result.realized_pnl,
+            },
         );
         self.context
             .decision_evidence()
@@ -1002,12 +1013,8 @@ impl BinaryOracleEdgeTaker {
         &self,
         position: &OpenPositionState,
         settlement_key: String,
-        outcome_side: OutcomeSide,
-        strike_price: f64,
         update: &IndexPriceUpdate,
-        payout_per_share: f64,
-        terminal_value: f64,
-        realized_pnl: f64,
+        computation: SettlementEvidenceComputation,
     ) -> BoltV3SettlementEvidence {
         BoltV3SettlementEvidence {
             strategy_id: self.config.strategy_id.clone(),
@@ -1016,18 +1023,18 @@ impl BinaryOracleEdgeTaker {
             position_id: position.position_id.to_string(),
             instrument_id: position.instrument_id.to_string(),
             product_id: settlement_product_id(position.instrument_id),
-            outcome_side: outcome_side_to_evidence(outcome_side),
+            outcome_side: outcome_side_to_evidence(computation.outcome_side),
             entry_order_side: position.entry_order_side.to_string(),
             quantity: position.quantity.to_string(),
             entry_price: evidence_number(position.avg_px_open),
             family_key: self.config.rotating_market_family.clone(),
-            strike_price: evidence_number(strike_price),
+            strike_price: evidence_number(computation.strike_price),
             resolution_instrument_id: update.instrument_id.to_string(),
             resolution_ts_event_ns: update.ts_event.as_u64(),
             reference_close_price: evidence_number(update.value.as_f64()),
-            payout_per_share: evidence_number(payout_per_share),
-            terminal_value: evidence_number(terminal_value),
-            realized_pnl: evidence_number(realized_pnl),
+            payout_per_share: evidence_number(computation.payout_per_share),
+            terminal_value: evidence_number(computation.terminal_value),
+            realized_pnl: evidence_number(computation.realized_pnl),
             settlement_currency: Currency::USDC().code.as_str().to_string(),
         }
     }

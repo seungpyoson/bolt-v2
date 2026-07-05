@@ -1717,8 +1717,12 @@ mod tests {
             Decimal::new(5, 0),
             Decimal::new(5, 0),
         );
+        request.order_side = OrderSide::Buy;
         request.intent_kind = BoltV3SubmitIntentKind::KillSwitchForcedReduction;
         request.risk_reducing_exit_proof = None;
+        if let Some(admission_evidence) = request.admission_evidence.as_mut() {
+            admission_evidence.side = BoltV3CompiledOrderSide::Buy;
+        }
 
         let (intent, request, order) =
             clamp_risk_reducing_exit_to_venue_position(admission.as_ref(), intent, request, order)

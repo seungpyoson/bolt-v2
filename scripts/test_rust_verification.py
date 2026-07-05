@@ -9,6 +9,7 @@ import os
 import json
 import importlib.util
 import pathlib
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1363,6 +1364,35 @@ def assert_managed_remote_fast_linker_env_selects_available_program() -> None:
             raise AssertionError("fast linker path must prepend a generated cc wrapper")
         if bin_dir.as_posix() not in env["PATH"]:
             raise AssertionError(env)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        bin_dir = pathlib.Path(tmp) / "bin"
+        bin_dir.mkdir()
+        fake_real_cc = bin_dir / "cc"
+        write_executable(fake_real_cc, "#!/usr/bin/env bash\nexit 0\n")
+        write_executable(bin_dir / "mold", "#!/usr/bin/env bash\nexit 0\n")
+        rv_root = pathlib.Path(tmp) / "rv-root"
+        with _patched_environ({"RUST_VERIFICATION_ROOT_BASE": str(rv_root)}):
+            wrapper_dir = owner.target_dir(REPO_ROOT, policy) / "fast-linker-bin"
+        wrapper_dir.mkdir(parents=True)
+        fake_recursive_cc = wrapper_dir / "cc"
+        write_executable(fake_recursive_cc, "#!/usr/bin/env bash\nexit 99\n")
+        base_path = os.environ.get("PATH", "")
+        with _patched_environ(
+            {
+                "PATH": f"{wrapper_dir}{os.pathsep}{bin_dir}{os.pathsep}{base_path}",
+                "RUST_VERIFICATION_ROOT_BASE": str(rv_root),
+                "GITHUB_ACTIONS": "true",
+                "BOLT_RUST_FAST_LINKER": "mold",
+            }
+        ):
+            env = owner.managed_remote_fast_linker_env(REPO_ROOT, policy)
+        wrapper = pathlib.Path(env["PATH"].split(os.pathsep)[0]) / "cc"
+        wrapper_text = wrapper.read_text(encoding="utf-8")
+        if f"real_cc={shlex.quote(str(fake_real_cc))}" not in wrapper_text:
+            raise AssertionError(f"fast linker wrapper must resolve real cc outside wrapper dir: {wrapper_text!r}")
+        if str(fake_recursive_cc) in wrapper_text:
+            raise AssertionError(f"fast linker wrapper must not resolve itself as real cc: {wrapper_text!r}")
 
     gate_off_cases = [
         {"GITHUB_ACTIONS": None, "BOLT_RUST_FAST_LINKER": "mold"},

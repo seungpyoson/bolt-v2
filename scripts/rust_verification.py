@@ -1019,12 +1019,19 @@ def managed_remote_fast_linker_env(repo: pathlib.Path, policy: dict[str, Any]) -
     programs = list(linker_policy["programs"])
     if selected not in programs:
         return {}
-    if shutil.which(selected) is None:
+    wrapper_dir = target_dir(repo, policy) / "fast-linker-bin"
+    base_path = os.environ.get("PATH", "")
+    wrapper_dir_key = os.path.normcase(os.path.abspath(wrapper_dir))
+    filtered_path = os.pathsep.join(
+        part
+        for part in base_path.split(os.pathsep)
+        if part and os.path.normcase(os.path.abspath(part)) != wrapper_dir_key
+    )
+    if shutil.which(selected, path=filtered_path) is None:
         return {}
-    real_cc = shutil.which("cc")
+    real_cc = shutil.which("cc", path=filtered_path)
     if real_cc is None:
         return {}
-    wrapper_dir = target_dir(repo, policy) / "fast-linker-bin"
     wrapper_dir.mkdir(parents=True, exist_ok=True)
     wrapper = wrapper_dir / "cc"
     wrapper.write_text(
@@ -1051,8 +1058,7 @@ def managed_remote_fast_linker_env(repo: pathlib.Path, policy: dict[str, Any]) -
         encoding="utf-8",
     )
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    base_path = os.environ.get("PATH", "")
-    return {"PATH": f"{wrapper_dir}{os.pathsep}{base_path}" if base_path else str(wrapper_dir)}
+    return {"PATH": f"{wrapper_dir}{os.pathsep}{filtered_path}" if filtered_path else str(wrapper_dir)}
 
 
 def scrubbed_local_env() -> dict[str, str]:

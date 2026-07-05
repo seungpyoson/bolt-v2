@@ -792,7 +792,9 @@ TEST_ARCHIVE_PARTITION_ERROR_ANNOTATION = (
 )
 TEST_ARCHIVE_PARTITION_LOG_TAIL = 'tail -80 "$partition_log"'
 TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
-    f"{TEST_ARCHIVE_PARTITION_TEE}\n"
+    f"            {TEST_ARCHIVE_PARTITION_LOG_ASSIGN}\n"
+    "            set +e\n"
+    f"            {TEST_ARCHIVE_PARTITION_TEE}\n"
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
     "            if [[ \"$rc\" -ne 0 ]]; then\n"
@@ -807,6 +809,24 @@ NEXTEST_REUSE_SUMMARY_LINE = (
     'echo "Nextest reuse: decision=${decision} detector_allowed=${detector_allowed} '
     'reuse_found=${reuse_found} source_run=${source_run:-none} source_sha=${source_sha:-none} '
     'artifact=${artifact:-none} reason=${reason:-none}" >> "$GITHUB_STEP_SUMMARY"'
+)
+NEXTEST_REUSE_SUMMARY_ENV_LINES = (
+    "DETECTOR_ALLOWED: ${{ needs.detector.outputs.fingerprint_reuse_allowed || 'false' }}",
+    "DETECTOR_REASON: ${{ needs.detector.outputs.fingerprint_reuse_reason || 'non-consumer-event' }}",
+    "REUSE_FOUND: ${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}",
+    "REUSE_SOURCE_RUN: ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id || 'none' }}",
+    "REUSE_SOURCE_SHA: ${{ needs.nextest-fingerprint-reuse.outputs.source_sha || 'none' }}",
+    "REUSE_ARTIFACT: ${{ needs.nextest-fingerprint-reuse.outputs.source_artifact_id || 'none' }}",
+    "REUSE_REASON: ${{ needs.nextest-fingerprint-reuse.outputs.reason || '' }}",
+)
+NEXTEST_REUSE_SUMMARY_ASSIGNMENTS = (
+    'detector_allowed="${DETECTOR_ALLOWED:-false}"',
+    'detector_reason="${DETECTOR_REASON:-non-consumer-event}"',
+    'reuse_found="${REUSE_FOUND:-false}"',
+    'source_run="${REUSE_SOURCE_RUN:-none}"',
+    'source_sha="${REUSE_SOURCE_SHA:-none}"',
+    'artifact="${REUSE_ARTIFACT:-none}"',
+    'reason="${REUSE_REASON:-}"',
 )
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
@@ -11847,6 +11867,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         test_text = uncommented_text(jobs["test"])
         if "ci-policy" not in test_needs:
             errors.append("test needs ci-policy")
+        if "detector" not in test_needs:
+            errors.append("test needs detector")
         if not job_gates_on_full_ci_required(jobs["test"]):
             errors.append("test must gate on full_ci_required")
         if "nextest-fingerprint" not in test_needs:
@@ -11865,6 +11887,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test must use always()")
         if NEXTEST_REUSE_SUMMARY_LINE not in test_text:
             errors.append("test must summarize nextest fingerprint reuse decision")
+        if any(fragment not in test_text for fragment in NEXTEST_REUSE_SUMMARY_ENV_LINES):
+            errors.append("test must pass nextest reuse summary inputs through env")
+        if any(fragment not in test_text for fragment in NEXTEST_REUSE_SUMMARY_ASSIGNMENTS):
+            errors.append("test must read nextest reuse summary inputs from env")
 
     if "build" in jobs:
         build_needs = extract_needs(jobs["build"])

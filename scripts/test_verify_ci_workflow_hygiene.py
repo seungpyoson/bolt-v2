@@ -974,18 +974,26 @@ jobs:
 
   test:
     name: test
-    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]
+    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          detector_allowed="${{ needs.detector.outputs.fingerprint_reuse_allowed || 'false' }}"
-          detector_reason="${{ needs.detector.outputs.fingerprint_reuse_reason || 'non-consumer-event' }}"
-          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}"
-          source_run="${{ needs.nextest-fingerprint-reuse.outputs.source_run_id || 'none' }}"
-          source_sha="${{ needs.nextest-fingerprint-reuse.outputs.source_sha || 'none' }}"
-          artifact="${{ needs.nextest-fingerprint-reuse.outputs.source_artifact_id || 'none' }}"
-          reason="${{ needs.nextest-fingerprint-reuse.outputs.reason || '' }}"
+      - env:
+          DETECTOR_ALLOWED: ${{ needs.detector.outputs.fingerprint_reuse_allowed || 'false' }}
+          DETECTOR_REASON: ${{ needs.detector.outputs.fingerprint_reuse_reason || 'non-consumer-event' }}
+          REUSE_FOUND: ${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}
+          REUSE_SOURCE_RUN: ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id || 'none' }}
+          REUSE_SOURCE_SHA: ${{ needs.nextest-fingerprint-reuse.outputs.source_sha || 'none' }}
+          REUSE_ARTIFACT: ${{ needs.nextest-fingerprint-reuse.outputs.source_artifact_id || 'none' }}
+          REUSE_REASON: ${{ needs.nextest-fingerprint-reuse.outputs.reason || '' }}
+        run: |
+          detector_allowed="${DETECTOR_ALLOWED:-false}"
+          detector_reason="${DETECTOR_REASON:-non-consumer-event}"
+          reuse_found="${REUSE_FOUND:-false}"
+          source_run="${REUSE_SOURCE_RUN:-none}"
+          source_sha="${REUSE_SOURCE_SHA:-none}"
+          artifact="${REUSE_ARTIFACT:-none}"
+          reason="${REUSE_REASON:-}"
           decision="not-applicable"
           if [[ "$detector_allowed" == "true" ]]; then
             if [[ "$reuse_found" == "true" ]]; then
@@ -5969,8 +5977,8 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "test needs ci-policy",
             replace_once(
                 workflow,
-                "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
-                "  test:\n    name: test\n    needs: [nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+                "  test:\n    name: test\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+                "  test:\n    name: test\n    needs: [detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
             ),
         ),
         (
@@ -16645,10 +16653,18 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, " && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'", ""),
     )
     assert_error(
+        "test needs detector",
+        replace_once(
+            BASE_WORKFLOW,
+            "  test:\n    name: test\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+            "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+        ),
+    )
+    assert_error(
         "test needs nextest-fingerprint",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+            "  test:\n    name: test\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
             "  test:\n    name: test\n    needs: ci-policy",
         ),
     )
@@ -16672,8 +16688,8 @@ def main() -> int:
         "test must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
-            "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+            "  test:\n    name: test\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  test:\n    name: test\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
         ),
     )
     assert_error(
